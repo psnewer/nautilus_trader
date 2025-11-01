@@ -47,67 +47,7 @@ use ustr::Ustr;
 ///
 /// An empty string in the symbol set indicates a channel-level subscription
 /// that applies to all symbols for that channel.
-static CHANNEL_LEVEL_MARKER: LazyLock<Ustr> = LazyLock::new(|| Ustr::from(""));
-
-/// Splits a topic into channel and optional symbol using the specified delimiter.
-pub fn split_topic(topic: &str, delimiter: char) -> (&str, Option<&str>) {
-    topic
-        .split_once(delimiter)
-        .map_or((topic, None), |(channel, symbol)| (channel, Some(symbol)))
-}
-
-/// Tracks a topic in the given map by adding it to the channel's symbol set.
-///
-/// Channel-level subscriptions are stored using an empty string marker,
-/// allowing both channel-level and symbol-level subscriptions to coexist.
-fn track_topic(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) {
-    let channel_ustr = Ustr::from(channel);
-    let mut entry = map.entry(channel_ustr).or_default();
-
-    if let Some(symbol) = symbol {
-        entry.insert(Ustr::from(symbol));
-    } else {
-        entry.insert(*CHANNEL_LEVEL_MARKER);
-    }
-}
-
-/// Removes a topic from the given map by removing it from the channel's symbol set.
-///
-/// Removes the entire channel entry if no subscriptions remain after removal.
-fn untrack_topic(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) {
-    let channel_ustr = Ustr::from(channel);
-    let symbol_to_remove = if let Some(symbol) = symbol {
-        Ustr::from(symbol)
-    } else {
-        *CHANNEL_LEVEL_MARKER
-    };
-
-    let mut remove_channel = false;
-    if let Some(mut entry) = map.get_mut(&channel_ustr) {
-        entry.remove(&symbol_to_remove);
-        remove_channel = entry.is_empty();
-    }
-
-    if remove_channel {
-        map.remove(&channel_ustr);
-    }
-}
-
-/// Checks if a topic exists in the given map.
-fn is_tracked(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) -> bool {
-    let channel_ustr = Ustr::from(channel);
-    let symbol_to_check = if let Some(symbol) = symbol {
-        Ustr::from(symbol)
-    } else {
-        *CHANNEL_LEVEL_MARKER
-    };
-
-    if let Some(entry) = map.get(&channel_ustr) {
-        entry.contains(&symbol_to_check)
-    } else {
-        false
-    }
-}
+pub(crate) static CHANNEL_LEVEL_MARKER: LazyLock<Ustr> = LazyLock::new(|| Ustr::from(""));
 
 /// Generic subscription state tracker for WebSocket connections.
 ///
@@ -362,16 +302,20 @@ impl SubscriptionState {
     /// if the API is used correctly).
     pub fn remove_reference(&self, topic: &str) -> bool {
         let topic_ustr = Ustr::from(topic);
-        if let Some(mut entry) = self.reference_counts.get_mut(&topic_ustr) {
-            let current = entry.get();
+
+        // Use entry API to atomically decrement and remove if zero
+        // This prevents race where another thread adds a reference between the check and remove
+        if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+            self.reference_counts.entry(topic_ustr)
+        {
+            let current = entry.get().get();
 
             if current == 1 {
-                drop(entry);
-                self.reference_counts.remove(&topic_ustr);
+                entry.remove();
                 return true;
             }
 
-            *entry = NonZeroUsize::new(current - 1)
+            *entry.get_mut() = NonZeroUsize::new(current - 1)
                 .expect("reference count should never reach zero here");
         }
 
@@ -396,6 +340,65 @@ impl SubscriptionState {
         self.pending_subscribe.clear();
         self.pending_unsubscribe.clear();
         self.reference_counts.clear();
+    }
+}
+
+/// Splits a topic into channel and optional symbol using the specified delimiter.
+pub fn split_topic(topic: &str, delimiter: char) -> (&str, Option<&str>) {
+    topic
+        .split_once(delimiter)
+        .map_or((topic, None), |(channel, symbol)| (channel, Some(symbol)))
+}
+
+/// Tracks a topic in the given map by adding it to the channel's symbol set.
+///
+/// Channel-level subscriptions are stored using an empty string marker,
+/// allowing both channel-level and symbol-level subscriptions to coexist.
+fn track_topic(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) {
+    let channel_ustr = Ustr::from(channel);
+    let mut entry = map.entry(channel_ustr).or_default();
+
+    if let Some(symbol) = symbol {
+        entry.insert(Ustr::from(symbol));
+    } else {
+        entry.insert(*CHANNEL_LEVEL_MARKER);
+    }
+}
+
+/// Removes a topic from the given map by removing it from the channel's symbol set.
+///
+/// Removes the entire channel entry if no subscriptions remain after removal.
+fn untrack_topic(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) {
+    let channel_ustr = Ustr::from(channel);
+    let symbol_to_remove = if let Some(symbol) = symbol {
+        Ustr::from(symbol)
+    } else {
+        *CHANNEL_LEVEL_MARKER
+    };
+
+    // Use entry API to atomically remove symbol and check if empty
+    // This prevents race conditions where another thread adds a symbol between operations
+    if let dashmap::mapref::entry::Entry::Occupied(mut entry) = map.entry(channel_ustr) {
+        entry.get_mut().remove(&symbol_to_remove);
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+    }
+}
+
+/// Checks if a topic exists in the given map.
+fn is_tracked(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option<&str>) -> bool {
+    let channel_ustr = Ustr::from(channel);
+    let symbol_to_check = if let Some(symbol) = symbol {
+        Ustr::from(symbol)
+    } else {
+        *CHANNEL_LEVEL_MARKER
+    };
+
+    if let Some(entry) = map.get(&channel_ustr) {
+        entry.contains(&symbol_to_check)
+    } else {
+        false
     }
 }
 
