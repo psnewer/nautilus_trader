@@ -25,13 +25,16 @@
 use std::{
     collections::HashMap,
     num::NonZeroU32,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-use ahash::AHashMap;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use nautilus_core::{
-    MUTEX_POISONED, UnixNanos,
+    UnixNanos,
     consts::{NAUTILUS_TRADER, NAUTILUS_USER_AGENT},
     env::get_env_var,
     time::get_atomic_clock_realtime,
@@ -736,14 +739,32 @@ impl BitmexRawHttpClient {
 ///
 /// This is the high-level client that wraps the inner client and provides
 /// Nautilus-specific functionality for trading operations.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
 )]
 pub struct BitmexHttpClient {
     inner: Arc<BitmexRawHttpClient>,
-    instruments_cache: Arc<Mutex<AHashMap<Ustr, InstrumentAny>>>,
+    pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    cache_initialized: AtomicBool,
+}
+
+impl Clone for BitmexHttpClient {
+    fn clone(&self) -> Self {
+        let cache_initialized = AtomicBool::new(false);
+
+        let is_initialized = self.cache_initialized.load(Ordering::Acquire);
+        if is_initialized {
+            cache_initialized.store(true, Ordering::Release);
+        }
+
+        Self {
+            inner: self.inner.clone(),
+            instruments_cache: self.instruments_cache.clone(),
+            cache_initialized,
+        }
+    }
 }
 
 impl Default for BitmexHttpClient {
@@ -825,7 +846,8 @@ impl BitmexHttpClient {
 
         Ok(Self {
             inner: Arc::new(inner),
-            instruments_cache: Arc::new(Mutex::new(AHashMap::new())),
+            instruments_cache: Arc::new(DashMap::new()),
+            cache_initialized: AtomicBool::new(false),
         })
     }
 
@@ -1123,16 +1145,20 @@ impl BitmexHttpClient {
         self.inner.cancellation_token().clone()
     }
 
-    /// Adds an instrument to the cache for precision lookups.
+    /// Caches a single instrument.
     ///
-    /// # Panics
-    ///
-    /// Panics if the instruments cache mutex is poisoned.
-    pub fn add_instrument(&self, instrument: InstrumentAny) {
+    /// Any existing instrument with the same symbol will be replaced.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
-            .lock()
-            .unwrap()
             .insert(instrument.raw_symbol().inner(), instrument);
+        self.cache_initialized.store(true, Ordering::Release);
+    }
+
+    /// Gets an instrument from the cache by symbol.
+    pub fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
+        self.instruments_cache
+            .get(symbol)
+            .map(|entry| entry.value().clone())
     }
 
     /// Request a single instrument and parse it into a Nautilus type.
@@ -1234,18 +1260,13 @@ impl BitmexHttpClient {
         inner.get_orders(params).await
     }
 
-    /// Get price precision for a symbol from the instruments cache (if found).
+    /// Get instrument from the instruments cache (if found).
     ///
     /// # Errors
     ///
     /// Returns an error if the instrument is not found in the cache.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the instruments cache mutex is poisoned.
     fn instrument_from_cache(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
-        let cache = self.instruments_cache.lock().expect(MUTEX_POISONED);
-        cache.get(&symbol).cloned().ok_or_else(|| {
+        self.get_instrument(&symbol).ok_or_else(|| {
             anyhow::anyhow!(
                 "Instrument {symbol} not found in cache, ensure instruments loaded first"
             )
@@ -2074,7 +2095,7 @@ impl BitmexHttpClient {
         let mut reports = Vec::new();
 
         for pos in response {
-            let symbol = Ustr::from(pos.symbol.as_str());
+            let symbol = pos.symbol;
             let instrument = match self.instrument_from_cache(symbol) {
                 Ok(instrument) => instrument,
                 Err(e) => {

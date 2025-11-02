@@ -20,6 +20,7 @@ from typing import Any
 from nautilus_trader.adapters.okx.config import OKXExecClientConfig
 from nautilus_trader.adapters.okx.constants import OKX_VENUE
 from nautilus_trader.adapters.okx.providers import OKXInstrumentProvider
+from nautilus_trader.adapters.okx.types import OkxInstrument
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -371,6 +372,7 @@ class OKXExecutionClient(LiveExecutionClient):
         # Ensures instrument definitions are available for correct
         # price and size precisions when parsing responses.
         instruments_pyo3 = self.okx_instrument_provider.instruments_pyo3()
+
         for inst in instruments_pyo3:
             self._http_client.cache_instrument(inst)
 
@@ -1488,6 +1490,15 @@ class OKXExecutionClient(LiveExecutionClient):
                 self._log.debug(f"Received unhandled message type: {type(msg)}")
         except Exception as e:
             self._log.exception("Error handling websocket message", e)
+
+    def _handle_instrument_update(self, pyo3_instrument: OkxInstrument) -> None:
+        self._http_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
+
+        if self._ws_client is not None:
+            self._ws_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
+
+        if self._ws_business_client is not None:
+            self._ws_business_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
 
     def _handle_account_state(self, pyo3_account_state: nautilus_pyo3.AccountState) -> None:
         account_state = AccountState.from_dict(pyo3_account_state.to_dict())

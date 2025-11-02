@@ -48,7 +48,7 @@ impl Credential {
         let api_key = api_key.into();
         let api_secret_bytes = api_secret.into().into_bytes();
 
-        let api_key = Ustr::from(api_key.as_str());
+        let api_key = Ustr::from(&api_key);
 
         Self {
             api_key,

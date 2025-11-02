@@ -22,14 +22,15 @@ use std::{
     fmt::Debug,
     num::NonZeroU32,
     sync::{
-        Arc, LazyLock, Mutex,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use nautilus_core::{
-    MUTEX_POISONED, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+    consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
@@ -113,7 +114,8 @@ pub struct BybitRawHttpClient {
     recv_window_ms: u64,
     retry_manager: RetryManager<BybitHttpError>,
     cancellation_token: CancellationToken,
-    instruments_cache: Arc<Mutex<HashMap<Ustr, InstrumentAny>>>,
+    pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    cache_initialized: AtomicBool,
     use_spot_position_reports: AtomicBool,
 }
 
@@ -193,7 +195,8 @@ impl BybitRawHttpClient {
             recv_window_ms: recv_window_ms.unwrap_or(DEFAULT_RECV_WINDOW_MS),
             retry_manager,
             cancellation_token: CancellationToken::new(),
-            instruments_cache: Arc::new(Mutex::new(HashMap::new())),
+            instruments_cache: Arc::new(DashMap::new()),
+            cache_initialized: AtomicBool::new(false),
             use_spot_position_reports: AtomicBool::new(false),
         })
     }
@@ -248,7 +251,8 @@ impl BybitRawHttpClient {
             recv_window_ms: recv_window_ms.unwrap_or(DEFAULT_RECV_WINDOW_MS),
             retry_manager,
             cancellation_token: CancellationToken::new(),
-            instruments_cache: Arc::new(Mutex::new(HashMap::new())),
+            instruments_cache: Arc::new(DashMap::new()),
+            cache_initialized: AtomicBool::new(false),
             use_spot_position_reports: AtomicBool::new(false),
         })
     }
@@ -809,29 +813,34 @@ impl BybitRawHttpClient {
         self.credential.as_ref()
     }
 
-    /// Add an instrument to the cache.
+    /// Caches a single instrument.
     ///
-    /// # Panics
-    ///
-    /// Panics if the instruments cache mutex is poisoned.
-    pub fn add_instrument(&self, instrument: InstrumentAny) {
-        let mut cache = self.instruments_cache.lock().expect(MUTEX_POISONED);
-        let symbol = Ustr::from(instrument.id().symbol.as_str());
-        cache.insert(symbol, instrument);
+    /// Any existing instrument with the same symbol will be replaced.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        self.instruments_cache
+            .insert(instrument.symbol().inner(), instrument);
+        self.cache_initialized.store(true, Ordering::Release);
     }
 
-    /// Get an instrument from the cache.
+    /// Caches multiple instruments.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the instrument is not found in the cache.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the instruments cache mutex is poisoned.
+    /// Any existing instruments with the same symbols will be replaced.
+    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
+        for instrument in instruments {
+            self.instruments_cache
+                .insert(instrument.symbol().inner(), instrument);
+        }
+        self.cache_initialized.store(true, Ordering::Release);
+    }
+
+    pub fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
+        self.instruments_cache
+            .get(symbol)
+            .map(|entry| entry.value().clone())
+    }
+
     pub fn instrument_from_cache(&self, symbol: &Symbol) -> anyhow::Result<InstrumentAny> {
-        let cache = self.instruments_cache.lock().expect(MUTEX_POISONED);
-        cache.get(&symbol.inner()).cloned().ok_or_else(|| {
+        self.get_instrument(&symbol.inner()).ok_or_else(|| {
             anyhow::anyhow!(
                 "Instrument {symbol} not found in cache, ensure instruments loaded first"
             )
@@ -888,11 +897,10 @@ impl BybitRawHttpClient {
         }
 
         let mut reports = Vec::new();
-        let cache = self.instruments_cache.lock().unwrap();
 
         if let Some(instrument_id) = instrument_id {
             // Generate report for specific instrument
-            if let Some(instrument) = cache.get(&instrument_id.symbol.inner()) {
+            if let Some(instrument) = self.instruments_cache.get(&instrument_id.symbol.inner()) {
                 let base_currency = instrument
                     .base_currency()
                     .expect("SPOT instrument should have base currency");
@@ -927,7 +935,9 @@ impl BybitRawHttpClient {
             }
         } else {
             // Generate reports for all SPOT instruments with non-zero balance
-            for (symbol, instrument) in cache.iter() {
+            for entry in self.instruments_cache.iter() {
+                let symbol = entry.key();
+                let instrument = entry.value();
                 // Only consider SPOT instruments
                 if !symbol.as_str().ends_with("-SPOT") {
                     continue;
@@ -1538,7 +1548,6 @@ impl BybitRawHttpClient {
             order.order_link_id.as_str()
         );
 
-        // Get instrument from cache with better error context
         let instrument = self
             .instrument_from_cache(&instrument_id.symbol)
             .map_err(|e| {
@@ -1582,9 +1591,7 @@ impl BybitRawHttpClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The request fails.
-    /// - Parsing fails.
+    /// Returns an error if the request fails or parsing fails.
     pub async fn request_instruments(
         &self,
         product_type: BybitProductType,
@@ -1737,9 +1744,8 @@ impl BybitRawHttpClient {
             }
         }
 
-        // Add all instruments to cache
         for instrument in &instruments {
-            self.add_instrument(instrument.clone());
+            self.cache_instrument(instrument.clone());
         }
 
         Ok(instruments)
@@ -2472,10 +2478,6 @@ impl BybitRawHttpClient {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Outer Client
-////////////////////////////////////////////////////////////////////////////////
-
 /// Provides a HTTP client for connecting to the [Bybit](https://bybit.com) REST API.
 #[derive(Clone)]
 #[cfg_attr(
@@ -2838,9 +2840,23 @@ impl BybitHttpClient {
     // High-level methods using Nautilus domain objects
     // =========================================================================
 
-    /// Add an instrument to the cache.
-    pub fn add_instrument(&self, instrument: InstrumentAny) {
-        self.inner.add_instrument(instrument);
+    /// Caches a single instrument.
+    ///
+    /// Any existing instrument with the same symbol will be replaced.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        self.inner.cache_instrument(instrument);
+    }
+
+    /// Caches multiple instruments.
+    ///
+    /// Any existing instruments with the same symbols will be replaced.
+    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
+        self.inner.cache_instruments(instruments);
+    }
+
+    /// Gets an instrument from the cache by symbol.
+    pub fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
+        self.inner.get_instrument(symbol)
     }
 
     /// Submit a new order.

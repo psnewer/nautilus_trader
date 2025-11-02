@@ -192,7 +192,7 @@ impl OKXExecutionClient {
                 "Instrument bootstrap yielded no instruments; WebSocket submissions may fail"
             );
         } else {
-            self.ws_client.initialize_instruments_cache(all_instruments);
+            self.ws_client.cache_instruments(all_instruments);
         }
 
         self.instruments_initialized = true;

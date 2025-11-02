@@ -242,10 +242,11 @@ impl OKXDataClient {
         self.http_client.cache_instruments(collected.clone());
 
         if let Some(ws) = self.ws_public.as_mut() {
-            ws.initialize_instruments_cache(collected.clone());
+            ws.cache_instruments(collected.clone());
         }
+
         if let Some(ws) = self.ws_business.as_mut() {
-            ws.initialize_instruments_cache(collected.clone());
+            ws.cache_instruments(collected.clone());
         }
 
         {

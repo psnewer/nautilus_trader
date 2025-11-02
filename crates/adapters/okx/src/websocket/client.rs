@@ -427,20 +427,9 @@ impl OKXWebSocketClient {
         }
     }
 
-    /// Initialize the instruments cache with the given `instruments`.
-    ///
-    /// Populates the outer cache (for API calls). When `connect()` is called,
-    /// the cached instruments will be sent to the handler's internal cache.
-    pub fn initialize_instruments_cache(&self, instruments: Vec<InstrumentAny>) {
-        for inst in &instruments {
-            self.instruments_cache
-                .insert(inst.symbol().inner(), inst.clone());
-        }
-    }
-
     /// Caches multiple instruments.
     ///
-    /// Any existing instruments will be replaced.
+    /// Any existing instruments with the same symbols will be replaced.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for inst in instruments {
             self.instruments_cache.insert(inst.symbol().inner(), inst);
@@ -449,7 +438,7 @@ impl OKXWebSocketClient {
 
     /// Caches a single instrument.
     ///
-    /// Any existing instrument will be replaced.
+    /// Any existing instrument with the same symbol will be replaced.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
             .insert(instrument.symbol().inner(), instrument);

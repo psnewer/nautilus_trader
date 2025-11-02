@@ -894,10 +894,17 @@ pub struct OKXHttpClient {
 
 impl Clone for OKXHttpClient {
     fn clone(&self) -> Self {
+        let cache_initialized = AtomicBool::new(false);
+
+        let is_initialized = self.cache_initialized.load(Ordering::Acquire);
+        if is_initialized {
+            cache_initialized.store(true, Ordering::Release);
+        }
+
         Self {
             inner: self.inner.clone(),
             instruments_cache: self.instruments_cache.clone(),
-            cache_initialized: AtomicBool::new(self.cache_initialized.load(Ordering::Relaxed)),
+            cache_initialized,
         }
     }
 }
@@ -1081,7 +1088,7 @@ impl OKXHttpClient {
     /// The client is considered initialized if any instruments have been cached from the venue.
     #[must_use]
     pub fn is_initialized(&self) -> bool {
-        self.cache_initialized.load(Ordering::Relaxed)
+        self.cache_initialized.load(Ordering::Acquire)
     }
 
     /// Returns a snapshot of all instrument symbols currently held in the
@@ -1096,22 +1103,22 @@ impl OKXHttpClient {
 
     /// Caches multiple instruments.
     ///
-    /// Any existing instruments will be replaced.
+    /// Any existing instruments with the same symbols will be replaced.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for inst in instruments {
             self.instruments_cache
                 .insert(inst.raw_symbol().inner(), inst);
         }
-        self.cache_initialized.store(true, Ordering::Relaxed);
+        self.cache_initialized.store(true, Ordering::Release);
     }
 
     /// Caches a single instrument.
     ///
-    /// Any existing instrument will be replaced.
+    /// Any existing instrument with the same symbol will be replaced.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
             .insert(instrument.raw_symbol().inner(), instrument);
-        self.cache_initialized.store(true, Ordering::Relaxed);
+        self.cache_initialized.store(true, Ordering::Release);
     }
 
     /// Gets an instrument from the cache by symbol.

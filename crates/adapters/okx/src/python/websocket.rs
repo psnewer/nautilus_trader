@@ -219,7 +219,7 @@ impl OKXWebSocketClient {
             instruments_any.push(inst_any);
         }
 
-        self.initialize_instruments_cache(instruments_any);
+        self.cache_instruments(instruments_any);
 
         let mut client = self.clone();
 

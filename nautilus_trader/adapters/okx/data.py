@@ -15,13 +15,14 @@
 
 import asyncio
 from typing import Any
-from typing import cast
 
 from nautilus_trader.adapters.okx.config import OKXDataClientConfig
 from nautilus_trader.adapters.okx.constants import OKX_VENUE
 from nautilus_trader.adapters.okx.providers import OKXInstrumentProvider
+from nautilus_trader.adapters.okx.types import OKX_INSTRUMENT_TYPES
+from nautilus_trader.adapters.okx.types import OkxInstrument
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.cache.transformers import transform_instrument_to_pyo3
+from nautilus_trader.cache.transformers import transform_instrument_from_pyo3
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
@@ -528,6 +529,7 @@ class OKXDataClient(LiveMarketDataClient):
     def _handle_msg(self, msg: Any) -> None:
         if isinstance(msg, nautilus_pyo3.OKXWebSocketError):
             self._log.error(repr(msg))
+            return
 
         try:
             if nautilus_pyo3.is_pycapsule(msg):
@@ -536,7 +538,7 @@ class OKXDataClient(LiveMarketDataClient):
                 # to `Data` is still owned and managed by Rust.
                 data = capsule_to_data(msg)
                 self._handle_data(data)
-            elif isinstance(msg, Instrument):
+            elif isinstance(msg, OKX_INSTRUMENT_TYPES):
                 self._handle_instrument_update(msg)
             elif isinstance(msg, nautilus_pyo3.FundingRateUpdate):
                 self._handle_data(FundingRateUpdate.from_pyo3(msg))
@@ -545,11 +547,15 @@ class OKXDataClient(LiveMarketDataClient):
         except Exception as e:
             self._log.exception("Error handling websocket message", e)
 
-    def _handle_instrument_update(self, instrument: Instrument) -> None:
-        pyo3_instrument = transform_instrument_to_pyo3(instrument)
-        self._http_client.cache_instrument(cast(nautilus_pyo3.Instrument, pyo3_instrument))
+    def _handle_instrument_update(self, pyo3_instrument: OkxInstrument) -> None:
+        self._http_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
 
         if self._ws_client is not None:
-            self._ws_client.cache_instruments([instrument])
+            self._ws_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
+
+        if self._ws_business_client is not None:
+            self._ws_business_client.cache_instrument(pyo3_instrument)  # type: ignore [arg-type]
+
+        instrument = transform_instrument_from_pyo3(pyo3_instrument)
 
         self._handle_data(instrument)

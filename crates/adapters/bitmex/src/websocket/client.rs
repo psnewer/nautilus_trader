@@ -82,6 +82,19 @@ use crate::{
 
 /// Provides a WebSocket client for connecting to the [BitMEX](https://bitmex.com) real-time API.
 ///
+/// Commands sent from the outer client to the inner message handler.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Commands are ephemeral and immediately consumed"
+)]
+pub enum HandlerCommand {
+    /// Initialize the instruments cache with the given instruments.
+    InitializeInstruments(Vec<InstrumentAny>),
+    /// Update a single instrument in the cache.
+    UpdateInstrument(InstrumentAny),
+}
+
 /// Key runtime patterns:
 /// - Authentication handshakes are managed by the internal auth tracker, ensuring resubscriptions
 ///   occur only after BitMEX acknowledges `authKey` messages.
@@ -103,9 +116,10 @@ pub struct BitmexWebSocketClient {
     account_id: AccountId,
     auth_tracker: AuthTracker,
     subscriptions: SubscriptionState,
-    instruments_cache: Arc<AHashMap<Ustr, InstrumentAny>>,
+    instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
     order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
+    handler_cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>,
 }
 
 impl BitmexWebSocketClient {
@@ -129,6 +143,9 @@ impl BitmexWebSocketClient {
 
         let account_id = account_id.unwrap_or(AccountId::from("BITMEX-master"));
 
+        // Create initial dummy channel (will be replaced on connect)
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+
         Ok(Self {
             url: url.unwrap_or(BITMEX_WS_URL.to_string()),
             credential,
@@ -140,9 +157,10 @@ impl BitmexWebSocketClient {
             account_id,
             auth_tracker: AuthTracker::new(),
             subscriptions: SubscriptionState::new(BITMEX_WS_TOPIC_DELIMITER),
-            instruments_cache: Arc::new(AHashMap::new()),
+            instruments_cache: Arc::new(DashMap::new()),
             order_type_cache: Arc::new(DashMap::new()),
             order_symbol_cache: Arc::new(DashMap::new()),
+            handler_cmd_tx: Arc::new(cmd_tx),
         })
     }
 
@@ -200,23 +218,39 @@ impl BitmexWebSocketClient {
         self.account_id = account_id;
     }
 
-    /// Initialize the instruments cache with the given `instruments`.
-    pub fn initialize_instruments_cache(&mut self, instruments: Vec<InstrumentAny>) {
-        let mut instruments_cache: AHashMap<Ustr, InstrumentAny> = AHashMap::new();
+    /// Caches multiple instruments.
+    ///
+    /// Clears the existing cache first, then adds all provided instruments.
+    pub fn cache_instruments(&mut self, instruments: Vec<InstrumentAny>) {
+        self.instruments_cache.clear();
         let mut count = 0;
 
-        log::info!("Initializing BitMEX instrument cache...");
+        log::debug!("Initializing BitMEX instrument cache");
 
         for inst in instruments {
             let symbol = inst.symbol().inner();
-            instruments_cache.insert(symbol, inst.clone());
+            self.instruments_cache.insert(symbol, inst.clone());
             log::debug!("Cached instrument: {symbol}");
             count += 1;
         }
 
-        self.instruments_cache = Arc::new(instruments_cache);
-
         log::info!("BitMEX instrument cache initialized with {count} instruments");
+    }
+
+    /// Caches a single instrument.
+    ///
+    /// Any existing instrument with the same symbol will be replaced.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        self.instruments_cache
+            .insert(instrument.symbol().inner(), instrument.clone());
+
+        // Send update command to inner handler
+        if let Err(e) = self
+            .handler_cmd_tx
+            .send(HandlerCommand::UpdateInstrument(instrument))
+        {
+            log::debug!("Failed to send instrument update to handler: {e}");
+        }
     }
 
     /// Connect to the BitMEX WebSocket server.
@@ -233,14 +267,29 @@ impl BitmexWebSocketClient {
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
         self.rx = Some(Arc::new(rx));
-        let signal = self.signal.clone();
 
+        // Create fresh command channel for this connection
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        self.handler_cmd_tx = Arc::new(cmd_tx.clone());
+
+        // Replay cached instruments to the new handler via the new channel
+        if !self.instruments_cache.is_empty() {
+            let cached_instruments: Vec<InstrumentAny> = self
+                .instruments_cache
+                .iter()
+                .map(|entry| entry.value().clone())
+                .collect();
+            if let Err(e) = cmd_tx.send(HandlerCommand::InitializeInstruments(cached_instruments)) {
+                tracing::error!("Failed to replay instruments to handler: {e}");
+            }
+        }
+
+        let signal = self.signal.clone();
         let account_id = self.account_id;
         let inner_client = self.inner.clone();
         let credential = self.credential.clone();
         let auth_tracker = self.auth_tracker.clone();
         let subscriptions = self.subscriptions.clone();
-        let instruments_cache = self.instruments_cache.clone();
         let order_type_cache = self.order_type_cache.clone();
         let order_symbol_cache = self.order_symbol_cache.clone();
 
@@ -252,7 +301,7 @@ impl BitmexWebSocketClient {
                 account_id,
                 auth_tracker.clone(),
                 subscriptions.clone(),
-                instruments_cache,
+                cmd_rx,
                 order_type_cache,
                 order_symbol_cache,
             );
@@ -667,7 +716,7 @@ impl BitmexWebSocketClient {
             op,
             args: topics
                 .iter()
-                .map(|topic| Ustr::from(topic.as_str()))
+                .map(|topic| Ustr::from(topic.as_ref()))
                 .collect(),
         };
 
@@ -1324,7 +1373,8 @@ struct BitmexWsMessageHandler {
     account_id: AccountId,
     auth_tracker: AuthTracker,
     subscriptions: SubscriptionState,
-    instruments_cache: Arc<AHashMap<Ustr, InstrumentAny>>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+    instruments_cache: AHashMap<Ustr, InstrumentAny>,
     order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
     order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
     quote_cache: QuoteCache,
@@ -1340,7 +1390,7 @@ impl BitmexWsMessageHandler {
         account_id: AccountId,
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
-        instruments_cache: Arc<AHashMap<Ustr, InstrumentAny>>,
+        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
         order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
         order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
     ) -> Self {
@@ -1351,7 +1401,8 @@ impl BitmexWsMessageHandler {
             account_id,
             auth_tracker,
             subscriptions,
-            instruments_cache,
+            cmd_rx,
+            instruments_cache: AHashMap::new(),
             order_type_cache,
             order_symbol_cache,
             quote_cache: QuoteCache::new(),
@@ -1361,14 +1412,34 @@ impl BitmexWsMessageHandler {
     // Run is now handled inline in the connect() method where we have access to reconnection resources
 
     #[inline]
-    fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
-        self.instruments_cache.get(symbol).cloned()
+    fn get_instrument(
+        cache: &AHashMap<Ustr, InstrumentAny>,
+        symbol: &Ustr,
+    ) -> Option<InstrumentAny> {
+        cache.get(symbol).cloned()
     }
 
     async fn next(&mut self) -> Option<NautilusWsMessage> {
         let clock = get_atomic_clock_realtime();
 
-        while let Some(msg) = self.handler.next().await {
+        loop {
+            tokio::select! {
+                Some(cmd) = self.cmd_rx.recv() => {
+                    match cmd {
+                        HandlerCommand::InitializeInstruments(instruments) => {
+                            for inst in instruments {
+                                self.instruments_cache.insert(inst.symbol().inner(), inst);
+                            }
+                        }
+                        HandlerCommand::UpdateInstrument(inst) => {
+                            self.instruments_cache.insert(inst.symbol().inner(), inst);
+                        }
+                    }
+                    // Continue processing following command
+                    continue;
+                }
+
+                Some(msg) = self.handler.next() => {
             match msg {
                 BitmexWsMessage::Reconnected => {
                     // Return reconnection signal to outer loop
@@ -1400,7 +1471,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_book_msg_vec(
                                 data,
                                 action,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1413,7 +1484,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_book_msg_vec(
                                 data,
                                 action,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1425,7 +1496,7 @@ impl BitmexWsMessageHandler {
                             }
                             let data = parse_book10_msg_vec(
                                 data,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1438,7 +1509,7 @@ impl BitmexWsMessageHandler {
                             }
 
                             let msg = data.remove(0);
-                            let Some(instrument) = self.get_instrument(&msg.symbol) else {
+                            let Some(instrument) = Self::get_instrument(&self.instruments_cache, &msg.symbol) else {
                                 tracing::error!(
                                     "Instrument cache miss: quote message dropped for symbol={}",
                                     msg.symbol
@@ -1459,7 +1530,7 @@ impl BitmexWsMessageHandler {
                                 continue;
                             }
                             let data =
-                                parse_trade_msg_vec(data, self.instruments_cache.as_ref(), ts_init);
+                                parse_trade_msg_vec(data, &self.instruments_cache, ts_init);
 
                             NautilusWsMessage::Data(data)
                         }
@@ -1470,7 +1541,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_trade_bin_msg_vec(
                                 data,
                                 BitmexWsTopic::TradeBin1m,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1483,7 +1554,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_trade_bin_msg_vec(
                                 data,
                                 BitmexWsTopic::TradeBin5m,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1496,7 +1567,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_trade_bin_msg_vec(
                                 data,
                                 BitmexWsTopic::TradeBin1h,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1509,7 +1580,7 @@ impl BitmexWsMessageHandler {
                             let data = parse_trade_bin_msg_vec(
                                 data,
                                 BitmexWsTopic::TradeBin1d,
-                                self.instruments_cache.as_ref(),
+                                &self.instruments_cache,
                                 ts_init,
                             );
 
@@ -1526,7 +1597,7 @@ impl BitmexWsMessageHandler {
                                 match order_data {
                                     OrderData::Full(order_msg) => {
                                         let Some(instrument) =
-                                            self.get_instrument(&order_msg.symbol)
+                                            Self::get_instrument(&self.instruments_cache, &order_msg.symbol)
                                         else {
                                             tracing::error!(
                                                 "Instrument cache miss: order message dropped for symbol={}, order_id={}",
@@ -1583,7 +1654,7 @@ impl BitmexWsMessageHandler {
                                         }
                                     }
                                     OrderData::Update(msg) => {
-                                        let Some(instrument) = self.get_instrument(&msg.symbol)
+                                        let Some(instrument) = Self::get_instrument(&self.instruments_cache, &msg.symbol)
                                         else {
                                             tracing::error!(
                                                 "Instrument cache miss: order update dropped for symbol={}, order_id={}",
@@ -1686,7 +1757,7 @@ impl BitmexWsMessageHandler {
                                     continue;
                                 };
 
-                                let Some(instrument) = self.get_instrument(&symbol) else {
+                                let Some(instrument) = Self::get_instrument(&self.instruments_cache, &symbol) else {
                                     tracing::error!(
                                         "Instrument cache miss: execution message dropped for symbol={}, exec_id={:?}, exec_type={:?}, Liquidation/ADL fills may be lost",
                                         symbol,
@@ -1708,7 +1779,7 @@ impl BitmexWsMessageHandler {
                         }
                         BitmexTableMessage::Position { data, .. } => {
                             if let Some(pos_msg) = data.into_iter().next() {
-                                let Some(instrument) = self.get_instrument(&pos_msg.symbol) else {
+                                let Some(instrument) = Self::get_instrument(&self.instruments_cache, &pos_msg.symbol) else {
                                     tracing::error!(
                                         "Instrument cache miss: position message dropped for symbol={}, account={}",
                                         pos_msg.symbol,
@@ -1735,20 +1806,95 @@ impl BitmexWsMessageHandler {
                             // which doesn't map well to Nautilus's per-instrument margin model
                             continue;
                         }
-                        BitmexTableMessage::Instrument { data, .. } => {
+                        BitmexTableMessage::Instrument { action, data } => {
                             let ts_init = clock.get_time_ns();
-                            let mut data_msgs = Vec::with_capacity(data.len());
 
-                            for msg in data {
-                                let parsed =
-                                    parse_instrument_msg(msg, &self.instruments_cache, ts_init);
-                                data_msgs.extend(parsed);
-                            }
+                            match action {
+                                BitmexAction::Partial | BitmexAction::Insert => {
+                                    let mut instruments = Vec::with_capacity(data.len());
+                                    let mut temp_cache = AHashMap::new();
 
-                            if data_msgs.is_empty() {
-                                continue;
+                                    let data_for_prices = data.clone();
+
+                                    for msg in data {
+                                        match msg.try_into() {
+                                            Ok(http_inst) => {
+                                                match crate::http::parse::parse_instrument_any(
+                                                    &http_inst, ts_init,
+                                                ) {
+                                                    Some(instrument_any) => {
+                                                        let symbol =
+                                                            instrument_any.symbol().inner();
+                                                        temp_cache
+                                                            .insert(symbol, instrument_any.clone());
+                                                        instruments.push(instrument_any);
+                                                    }
+                                                    None => {
+                                                        log::warn!(
+                                                            "Failed to parse instrument from WebSocket"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::debug!(
+                                                    "Skipping instrument (missing required fields): {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    // Update instruments_cache with new instruments
+                                    for (symbol, instrument) in temp_cache.iter() {
+                                        self.instruments_cache.insert(*symbol, instrument.clone());
+                                    }
+
+                                    if !instruments.is_empty()
+                                        && let Err(e) = self
+                                            .tx
+                                            .send(NautilusWsMessage::Instruments(instruments))
+                                    {
+                                        tracing::error!("Error sending instruments: {e}");
+                                    }
+
+                                    let mut data_msgs = Vec::with_capacity(data_for_prices.len());
+
+                                    for msg in data_for_prices {
+                                        let parsed =
+                                            parse_instrument_msg(msg, &temp_cache, ts_init);
+                                        data_msgs.extend(parsed);
+                                    }
+
+                                    if data_msgs.is_empty() {
+                                        continue;
+                                    }
+                                    NautilusWsMessage::Data(data_msgs)
+                                }
+                                BitmexAction::Update => {
+                                    let mut data_msgs = Vec::with_capacity(data.len());
+
+                                    for msg in data {
+                                        let parsed = parse_instrument_msg(
+                                            msg,
+                                            &self.instruments_cache,
+                                            ts_init,
+                                        );
+                                        data_msgs.extend(parsed);
+                                    }
+
+                                    if data_msgs.is_empty() {
+                                        continue;
+                                    }
+                                    NautilusWsMessage::Data(data_msgs)
+                                }
+                                BitmexAction::Delete => {
+                                    log::info!(
+                                        "Received instrument delete action for {} instrument(s)",
+                                        data.len()
+                                    );
+                                    continue;
+                                }
                             }
-                            NautilusWsMessage::Data(data_msgs)
                         }
                         BitmexTableMessage::Funding { data, .. } => {
                             let ts_init = clock.get_time_ns();
@@ -1775,9 +1921,15 @@ impl BitmexWsMessageHandler {
                 }
                 BitmexWsMessage::Welcome { .. } | BitmexWsMessage::Error { .. } => continue,
             }
-        }
+                }
 
-        None
+                // Handle shutdown - either channel closed or stream ended
+                else => {
+                    tracing::debug!("Handler shutting down: stream ended or command channel closed");
+                    return None;
+                }
+            }
+        }
     }
 
     fn handle_subscription_message(

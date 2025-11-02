@@ -106,7 +106,7 @@ trait CancelExecutor: Send + Sync {
 
 impl CancelExecutor for BitmexHttpClient {
     fn add_instrument(&self, instrument: InstrumentAny) {
-        Self::add_instrument(self, instrument);
+        Self::cache_instrument(self, instrument);
     }
 
     fn health_check(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {

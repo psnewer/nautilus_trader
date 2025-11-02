@@ -515,7 +515,7 @@ pub fn parse_option_instrument(
         raw_symbol,
         AssetClass::Cryptocurrency,
         None,
-        Ustr::from(definition.base_coin.as_str()),
+        definition.base_coin,
         option_kind,
         strike_price,
         quote_currency,

@@ -271,9 +271,9 @@ class BybitExecutionClient(LiveExecutionClient):
         instruments_pyo3 = self.bybit_instrument_provider.instruments_pyo3()
 
         for inst in instruments_pyo3:
-            self._http_client.add_instrument(inst)
-            self._ws_private_client.add_instrument(inst)
-            self._ws_trade_client.add_instrument(inst)
+            self._http_client.cache_instrument(inst)
+            self._ws_private_client.cache_instrument(inst)
+            self._ws_trade_client.cache_instrument(inst)
 
         self._log.debug("Cached instruments", LogColor.MAGENTA)
 

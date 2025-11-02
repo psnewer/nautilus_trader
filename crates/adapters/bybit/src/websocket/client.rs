@@ -383,6 +383,8 @@ impl BybitWebSocketClient {
         let product_type = self.product_type;
 
         let task_handle = get_runtime().spawn(async move {
+            let clock = get_atomic_clock_realtime();
+
             while let Some(message) = message_rx.recv().await {
                 if signal.load(Ordering::Relaxed) {
                     break;
@@ -472,6 +474,7 @@ impl BybitWebSocketClient {
                             product_type,
                             &quote_cache,
                             &funding_cache,
+                            clock.get_time_ns(),
                         )
                         .await;
 
@@ -643,21 +646,25 @@ impl BybitWebSocketClient {
         self.credential.as_ref()
     }
 
-    /// Adds an instrument to the cache for parsing WebSocket messages.
-    pub fn add_instrument(&self, instrument: InstrumentAny) {
+    /// Caches a single instrument.
+    ///
+    /// Any existing instrument with the same ID will be replaced.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
         let instrument_id = instrument.id();
         self.instruments_cache.insert(instrument_id, instrument);
-        tracing::debug!("Added instrument {instrument_id} to WebSocket client cache");
+        tracing::debug!("Cached instrument {instrument_id} in WebSocket client");
     }
 
-    /// Initializes the instruments cache with a collection of instruments.
-    pub fn initialize_instruments_cache(&self, instruments: Vec<InstrumentAny>) {
+    /// Caches multiple instruments.
+    ///
+    /// Any existing instruments with the same IDs will be replaced.
+    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for instrument in instruments {
             let instrument_id = instrument.id();
             self.instruments_cache.insert(instrument_id, instrument);
         }
         tracing::debug!(
-            "Initialized instruments cache with {} instruments",
+            "Cached {} instruments in WebSocket client",
             self.instruments_cache.len()
         );
     }
@@ -777,7 +784,7 @@ impl BybitWebSocketClient {
 
         // Clear funding rate cache to ensure fresh data on resubscribe
         let symbol = self.product_type.map_or_else(
-            || Ustr::from(instrument_id.symbol.as_str()),
+            || instrument_id.symbol.inner(),
             |pt| make_bybit_symbol(raw_symbol, pt),
         );
         self.funding_cache.write().await.remove(&symbol);
@@ -1644,8 +1651,8 @@ impl BybitWebSocketClient {
         product_type: Option<BybitProductType>,
         quote_cache: &Arc<RwLock<cache::QuoteCache>>,
         funding_cache: &FundingCache,
+        ts_init: UnixNanos,
     ) -> Vec<NautilusWsMessage> {
-        let clock = get_atomic_clock_realtime();
         let mut result = Vec::new();
 
         match msg {
@@ -1659,7 +1666,6 @@ impl BybitWebSocketClient {
                     .find(|e| e.key().symbol.as_str() == symbol.as_str())
                 {
                     let instrument = instrument_entry.value();
-                    let ts_init = clock.get_time_ns();
 
                     match parse_orderbook_deltas(&msg, instrument, ts_init) {
                         Ok(deltas) => result.push(NautilusWsMessage::Deltas(deltas)),
@@ -1681,7 +1687,6 @@ impl BybitWebSocketClient {
                         .find(|e| e.key().symbol.as_str() == symbol.as_str())
                     {
                         let instrument = instrument_entry.value();
-                        let ts_init = clock.get_time_ns();
 
                         match parse_ws_trade_tick(trade, instrument, ts_init) {
                             Ok(tick) => data_vec.push(Data::Trade(tick)),
@@ -1706,9 +1711,7 @@ impl BybitWebSocketClient {
                 {
                     let instrument = instrument_entry.value();
                     let instrument_id = instrument.id();
-                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts")
-                        .unwrap_or_else(|_| clock.get_time_ns());
-                    let ts_init = clock.get_time_ns();
+                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts").unwrap_or(ts_init);
 
                     match quote_cache.write().await.process_linear_ticker(
                         &msg.data,
@@ -1773,9 +1776,7 @@ impl BybitWebSocketClient {
                 {
                     let instrument = instrument_entry.value();
                     let instrument_id = instrument.id();
-                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts")
-                        .unwrap_or_else(|_| clock.get_time_ns());
-                    let ts_init = clock.get_time_ns();
+                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts").unwrap_or(ts_init);
 
                     match quote_cache.write().await.process_option_ticker(
                         &msg.data,
@@ -1814,7 +1815,6 @@ impl BybitWebSocketClient {
                     .find(|e| e.key().symbol.as_str() == symbol.as_str())
                 {
                     let instrument = instrument_entry.value();
-                    let ts_init = clock.get_time_ns();
 
                     let (step, aggregation) = match interval_str.parse::<usize>() {
                         Ok(minutes) if minutes > 0 => (minutes, BarAggregation::Minute),
@@ -1866,7 +1866,6 @@ impl BybitWebSocketClient {
                             .find(|e| e.key().symbol.as_str() == symbol.as_str())
                         {
                             let instrument = instrument_entry.value();
-                            let ts_init = clock.get_time_ns();
 
                             match parse_ws_order_status_report(
                                 order, instrument, account_id, ts_init,
@@ -1897,7 +1896,6 @@ impl BybitWebSocketClient {
                             .find(|e| e.key().symbol.as_str() == symbol.as_str())
                         {
                             let instrument = instrument_entry.value();
-                            let ts_init = clock.get_time_ns();
 
                             match parse_ws_fill_report(execution, account_id, instrument, ts_init) {
                                 Ok(report) => reports.push(report),
@@ -1918,7 +1916,6 @@ impl BybitWebSocketClient {
                 if let Some(account_id) = account_id {
                     for wallet in &msg.data {
                         let ts_event = UnixNanos::from(msg.creation_time as u64 * 1_000_000);
-                        let ts_init = clock.get_time_ns();
 
                         match parse_ws_account_state(wallet, account_id, ts_event, ts_init) {
                             Ok(state) => result.push(NautilusWsMessage::AccountState(state)),
@@ -1941,7 +1938,6 @@ impl BybitWebSocketClient {
                                 && inst_symbol.as_bytes().get(raw_symbol.len()) == Some(&b'-')
                         }) {
                             let instrument = instrument_entry.value();
-                            let ts_init = clock.get_time_ns();
 
                             match parse_ws_position_status_report(
                                 position, account_id, instrument, ts_init,

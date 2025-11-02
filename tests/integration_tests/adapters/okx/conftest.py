@@ -159,7 +159,7 @@ def mock_http_client():
     mock.api_passphrase = "test_passphrase"
 
     mock.request_instruments = AsyncMock(return_value=[])
-    mock.add_instrument = MagicMock()
+    mock.cache_instrument = MagicMock()
     mock.cancel_all_requests = MagicMock()
     mock.is_initialized = MagicMock(return_value=True)
     mock.get_server_time = AsyncMock(return_value=1234567890000)
