@@ -205,6 +205,8 @@ def _create_ws_mock() -> MagicMock:
     mock.wait_until_active = AsyncMock()
     mock.close = AsyncMock()
     mock.subscribe_instruments = AsyncMock()
+    mock.subscribe_instrument = AsyncMock()
+    mock.cache_instruments = MagicMock()
     mock.subscribe_book = AsyncMock()
     mock.subscribe_book50_l2_tbt = AsyncMock()
     mock.subscribe_book_l2_tbt = AsyncMock()

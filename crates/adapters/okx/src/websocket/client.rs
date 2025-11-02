@@ -98,8 +98,9 @@ use crate::{
             conditional_order_to_algo_type, is_conditional_order,
         },
         parse::{
-            bar_spec_as_okx_channel, okx_instrument_type, parse_account_state,
-            parse_client_order_id, parse_millisecond_timestamp, parse_price, parse_quantity,
+            bar_spec_as_okx_channel, okx_instrument_type, okx_instrument_type_from_symbol,
+            parse_account_state, parse_client_order_id, parse_millisecond_timestamp, parse_price,
+            parse_quantity,
         },
     },
     http::models::OKXAccount,
@@ -1510,7 +1511,8 @@ impl OKXWebSocketClient {
 
     /// Subscribes to instrument updates for a specific instrument.
     ///
-    /// Provides updates when instrument specifications change.
+    /// Since OKX doesn't support subscribing to individual instruments via `instId`,
+    /// this method subscribes to the entire instrument type if not already subscribed.
     ///
     /// # Errors
     ///
@@ -1523,13 +1525,22 @@ impl OKXWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), OKXWsError> {
-        let arg = OKXSubscriptionArg {
-            channel: OKXWsChannel::Instruments,
-            inst_type: None,
-            inst_family: None,
-            inst_id: Some(instrument_id.symbol.inner()),
-        };
-        self.subscribe(vec![arg]).await
+        let inst_type = okx_instrument_type_from_symbol(instrument_id.symbol.as_str());
+
+        let already_subscribed = self
+            .subscriptions_inst_type
+            .get(&OKXWsChannel::Instruments)
+            .is_some_and(|types| types.contains(&inst_type));
+
+        if already_subscribed {
+            tracing::debug!(
+                "Already subscribed to instrument type {inst_type:?} for {instrument_id}"
+            );
+            return Ok(());
+        }
+
+        tracing::info!("Subscribing to instrument type {inst_type:?} for {instrument_id}");
+        self.subscribe_instruments(inst_type).await
     }
 
     /// Subscribes to order book data for an instrument.
@@ -3850,12 +3861,10 @@ impl OKXWsMessageHandler {
                             {
                                 match params {
                                     PendingOrderParams::Regular(order_params) => {
-                                        // Check if this is an explicit quote-sized order
                                         let is_explicit_quote_sized = order_params
                                             .tgt_ccy
                                             .is_some_and(|tgt| tgt == OKXTargetCurrency::QuoteCcy);
 
-                                        // Check if this is an implicit quote-sized order:
                                         // SPOT market BUY in cash mode with no tgt_ccy defaults to quote-sizing
                                         let is_implicit_quote_sized =
                                             order_params.tgt_ccy.is_none()
@@ -4228,7 +4237,6 @@ impl OKXWsMessageHandler {
                                             report
                                         );
 
-                                        // Check for duplicate OrderAccepted events
                                         let is_duplicate_accepted =
                                             if let ExecutionReport::Order(ref status_report) =
                                                 report

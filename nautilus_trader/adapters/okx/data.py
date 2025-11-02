@@ -15,6 +15,7 @@
 
 import asyncio
 from typing import Any
+from typing import cast
 
 from nautilus_trader.adapters.okx.config import OKXDataClientConfig
 from nautilus_trader.adapters.okx.constants import OKX_VENUE
@@ -45,6 +46,8 @@ from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
 from nautilus_trader.data.messages import UnsubscribeFundingRates
 from nautilus_trader.data.messages import UnsubscribeIndexPrices
+from nautilus_trader.data.messages import UnsubscribeInstrument
+from nautilus_trader.data.messages import UnsubscribeInstruments
 from nautilus_trader.data.messages import UnsubscribeMarkPrices
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
@@ -261,6 +264,8 @@ class OKXDataClient(LiveMarketDataClient):
         pass
 
     async def _subscribe_instrument(self, command: SubscribeInstrument) -> None:
+        # OKX instruments channel doesn't support subscribing to individual instruments via instId
+        # Instead, subscribe to the instrument type if not already subscribed
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.subscribe_instrument(pyo3_instrument_id)
 
@@ -399,6 +404,19 @@ class OKXDataClient(LiveMarketDataClient):
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.unsubscribe_funding_rates(pyo3_instrument_id)
 
+    async def _unsubscribe_instruments(self, command: UnsubscribeInstruments) -> None:
+        # OKX instruments channel is subscribed at the type level, not per instrument
+        # Unsubscribing would affect all instruments of that type, which is not desirable
+        pass
+
+    async def _unsubscribe_instrument(self, command: UnsubscribeInstrument) -> None:
+        # OKX instruments channel doesn't support unsubscribing from individual instruments
+        # The subscription is at the type level (SPOT, SWAP, etc.)
+        self._log.debug(
+            f"Cannot unsubscribe from individual instrument {command.instrument_id}, "
+            "instruments channel is type-level only",
+        )
+
     # -- REQUESTS ---------------------------------------------------------------------------------
 
     async def _request_instrument(self, request: RequestInstrument) -> None:
@@ -529,7 +547,7 @@ class OKXDataClient(LiveMarketDataClient):
 
     def _handle_instrument_update(self, instrument: Instrument) -> None:
         pyo3_instrument = transform_instrument_to_pyo3(instrument)
-        self._http_client.cache_instrument(pyo3_instrument)
+        self._http_client.cache_instrument(cast(nautilus_pyo3.Instrument, pyo3_instrument))
 
         if self._ws_client is not None:
             self._ws_client.cache_instruments([instrument])
