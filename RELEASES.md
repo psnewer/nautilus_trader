@@ -29,6 +29,7 @@ This release adds support for Python 3.14 with the following limitations:
 TBD
 
 ### Fixes
+- Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
 - Fixed spawned order client_id caching in `ExecAlgorithm` (#3122), thanks for reporting @kirill-gr1
 - Fixed parse_dates parameter in CSV loaders (#3132), thanks @maomao9-0
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
