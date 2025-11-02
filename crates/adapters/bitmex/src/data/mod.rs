@@ -480,6 +480,7 @@ impl DataClient for BitmexDataClient {
 
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 match channel {
@@ -509,6 +510,7 @@ impl DataClient for BitmexDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 ws.subscribe_book_depth10(instrument_id)
@@ -538,6 +540,7 @@ impl DataClient for BitmexDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 ws.subscribe_book_depth10(instrument_id)
@@ -557,6 +560,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_quotes(instrument_id)
@@ -571,6 +575,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_trades(instrument_id)
@@ -585,6 +590,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_mark_prices(&mut self, cmd: &SubscribeMarkPrices) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_mark_prices(instrument_id)
@@ -599,6 +605,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_index_prices(&mut self, cmd: &SubscribeIndexPrices) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_index_prices(instrument_id)
@@ -613,6 +620,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_funding_rates(&mut self, cmd: &SubscribeFundingRates) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_funding_rates(instrument_id)
@@ -627,6 +635,7 @@ impl DataClient for BitmexDataClient {
     fn subscribe_bars(&mut self, cmd: &SubscribeBars) -> anyhow::Result<()> {
         let bar_type = cmd.bar_type;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_bars(bar_type)
@@ -642,6 +651,7 @@ impl DataClient for BitmexDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 let channel = book_channels
@@ -674,6 +684,7 @@ impl DataClient for BitmexDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 book_channels
@@ -693,6 +704,7 @@ impl DataClient for BitmexDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 book_channels
@@ -711,6 +723,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_quotes(&mut self, cmd: &UnsubscribeQuotes) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_quotes(instrument_id)
@@ -725,6 +738,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_trades(&mut self, cmd: &UnsubscribeTrades) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_trades(instrument_id)
@@ -739,6 +753,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_mark_prices(&mut self, cmd: &UnsubscribeMarkPrices) -> anyhow::Result<()> {
         let ws = self.ws_client()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_mark_prices(instrument_id)
@@ -753,6 +768,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
         let ws = self.ws_client()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_index_prices(instrument_id)
@@ -767,6 +783,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_funding_rates(&mut self, cmd: &UnsubscribeFundingRates) -> anyhow::Result<()> {
         let ws = self.ws_client()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_funding_rates(instrument_id)
@@ -781,6 +798,7 @@ impl DataClient for BitmexDataClient {
     fn unsubscribe_bars(&mut self, cmd: &UnsubscribeBars) -> anyhow::Result<()> {
         let bar_type = cmd.bar_type;
         let ws = self.ws_client()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_bars(bar_type)

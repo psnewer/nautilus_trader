@@ -552,6 +552,7 @@ impl DataClient for OKXDataClient {
         };
 
         let public_clone = self.public_ws()?.clone();
+
         self.spawn_ws(
             async move {
                 for inst_type in instrument_types {
@@ -649,6 +650,7 @@ impl DataClient for OKXDataClient {
         for inst_type in &self.config.instrument_types {
             let ws = self.public_ws()?.clone();
             let inst_type = *inst_type;
+
             self.spawn_ws(
                 async move {
                     ws.subscribe_instruments(inst_type)
@@ -663,13 +665,16 @@ impl DataClient for OKXDataClient {
     }
 
     fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
+        // OKX instruments channel doesn't support subscribing to individual instruments via instId
+        // Instead, subscribe to the instrument type if not already subscribed
         let instrument_id = cmd.instrument_id;
         let ws = self.public_ws()?.clone();
+
         self.spawn_ws(
             async move {
                 ws.subscribe_instrument(instrument_id)
                     .await
-                    .context("instrument subscription")?;
+                    .context("instrument type subscription")?;
                 Ok(())
             },
             "subscribe_instrument",
@@ -710,6 +715,7 @@ impl DataClient for OKXDataClient {
         let instrument_id = cmd.instrument_id;
         let ws = self.public_ws()?.clone();
         let book_channels = Arc::clone(&self.book_channels);
+
         self.spawn_ws(
             async move {
                 match channel {
@@ -749,6 +755,7 @@ impl DataClient for OKXDataClient {
 
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_book_depth5(instrument_id)
@@ -763,6 +770,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_quotes(instrument_id)
@@ -777,6 +785,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_trades(instrument_id, false)
@@ -791,6 +800,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_mark_prices(&mut self, cmd: &SubscribeMarkPrices) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_mark_prices(instrument_id)
@@ -805,6 +815,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_index_prices(&mut self, cmd: &SubscribeIndexPrices) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_index_prices(instrument_id)
@@ -819,6 +830,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_funding_rates(&mut self, cmd: &SubscribeFundingRates) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_funding_rates(instrument_id)
@@ -833,6 +845,7 @@ impl DataClient for OKXDataClient {
     fn subscribe_bars(&mut self, cmd: &SubscribeBars) -> anyhow::Result<()> {
         let ws = self.business_ws()?.clone();
         let bar_type = cmd.bar_type;
+
         self.spawn_ws(
             async move {
                 ws.subscribe_bars(bar_type)
@@ -852,6 +865,7 @@ impl DataClient for OKXDataClient {
             .write()
             .expect("book channel cache lock poisoned")
             .remove(&instrument_id);
+
         self.spawn_ws(
             async move {
                 match channel {
@@ -886,6 +900,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_book_snapshots(&mut self, cmd: &UnsubscribeBookSnapshots) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_book_depth5(instrument_id)
@@ -900,6 +915,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_quotes(&mut self, cmd: &UnsubscribeQuotes) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_quotes(instrument_id)
@@ -914,6 +930,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_trades(&mut self, cmd: &UnsubscribeTrades) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_trades(instrument_id, false) // TODO: Aggregated trades?
@@ -928,6 +945,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_mark_prices(&mut self, cmd: &UnsubscribeMarkPrices) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_mark_prices(instrument_id)
@@ -942,6 +960,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_index_prices(instrument_id)
@@ -956,6 +975,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_funding_rates(&mut self, cmd: &UnsubscribeFundingRates) -> anyhow::Result<()> {
         let ws = self.public_ws()?.clone();
         let instrument_id = cmd.instrument_id;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_funding_rates(instrument_id)
@@ -970,6 +990,7 @@ impl DataClient for OKXDataClient {
     fn unsubscribe_bars(&mut self, cmd: &UnsubscribeBars) -> anyhow::Result<()> {
         let ws = self.business_ws()?.clone();
         let bar_type = cmd.bar_type;
+
         self.spawn_ws(
             async move {
                 ws.unsubscribe_bars(bar_type)
