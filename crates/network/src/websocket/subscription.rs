@@ -17,7 +17,7 @@
 //!
 //! This module provides a robust subscription tracker that maintains confirmed and pending
 //! subscription states with reference counting support. It follows a proven pattern used in
-//! production exchange adapters.
+//! production.
 //!
 //! # Key Features
 //!

@@ -44,7 +44,8 @@ use nautilus_model::{
 use nautilus_network::{
     RECONNECTED,
     websocket::{
-        PingHandler, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
+        AUTHENTICATION_TIMEOUT_SECS, AuthTracker, PingHandler, SubscriptionState, WebSocketClient,
+        WebSocketConfig, auth::AuthResultReceiver, channel_message_handler,
     },
 };
 use reqwest::header::USER_AGENT;
@@ -73,12 +74,9 @@ use crate::{
         credential::Credential,
         enums::BitmexExecType,
     },
-    websocket::{
-        auth::{AUTHENTICATION_TIMEOUT_SECS, AuthResultReceiver, AuthTracker},
-        parse::{
-            parse_execution_msg, parse_funding_msg, parse_instrument_msg, parse_order_msg,
-            parse_position_msg,
-        },
+    websocket::parse::{
+        parse_execution_msg, parse_funding_msg, parse_instrument_msg, parse_order_msg,
+        parse_position_msg,
     },
 };
 
@@ -331,7 +329,7 @@ impl BitmexWebSocketClient {
                         get_runtime().spawn(async move {
                             if let Some(rx) = auth_rx_for_task {
                                 if let Err(e) = auth_tracker_for_task
-                                    .wait_for_result(
+                                    .wait_for_result::<BitmexWsError>(
                                         Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS),
                                         rx,
                                     )
@@ -545,7 +543,7 @@ impl BitmexWebSocketClient {
         let rx =
             Self::issue_authentication_request(&self.inner, credential, &self.auth_tracker).await?;
         self.auth_tracker
-            .wait_for_result(Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS), rx)
+            .wait_for_result::<BitmexWsError>(Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS), rx)
             .await
     }
 

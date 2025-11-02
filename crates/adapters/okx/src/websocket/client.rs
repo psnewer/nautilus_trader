@@ -58,8 +58,8 @@ use nautilus_network::{
     ratelimiter::quota::Quota,
     retry::{RetryManager, create_websocket_retry_manager},
     websocket::{
-        PingHandler, SubscriptionState, TEXT_PING, TEXT_PONG, WebSocketClient, WebSocketConfig,
-        channel_message_handler,
+        AUTHENTICATION_TIMEOUT_SECS, AuthTracker, PingHandler, SubscriptionState, TEXT_PING,
+        TEXT_PONG, WebSocketClient, WebSocketConfig, channel_message_handler,
     },
 };
 use reqwest::header::USER_AGENT;
@@ -70,7 +70,6 @@ use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use super::{
-    auth::{AUTHENTICATION_TIMEOUT_SECS, AuthTracker},
     enums::{OKXSubscriptionEvent, OKXWsChannel, OKXWsOperation},
     error::OKXWsError,
     messages::{
@@ -667,7 +666,7 @@ impl OKXWebSocketClient {
                             get_runtime().spawn(async move {
                                 let auth_succeeded = match auth_wait {
                                     Some(rx) => match auth_tracker_for_task
-                                        .wait_for_result(
+                                        .wait_for_result::<OKXWsError>(
                                             Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS),
                                             rx,
                                         )
@@ -961,7 +960,7 @@ impl OKXWebSocketClient {
 
         match self
             .auth_tracker
-            .wait_for_result(Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS), rx)
+            .wait_for_result::<OKXWsError>(Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS), rx)
             .await
         {
             Ok(()) => {

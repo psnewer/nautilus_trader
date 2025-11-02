@@ -33,6 +33,4 @@ pub mod error;
 pub mod messages;
 pub mod parse;
 
-mod auth;
-
 pub use crate::websocket::client::BitmexWebSocketClient;

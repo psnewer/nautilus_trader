@@ -44,7 +44,8 @@ use nautilus_network::{
     RECONNECTED,
     retry::{RetryManager, create_websocket_retry_manager},
     websocket::{
-        PingHandler, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
+        AUTHENTICATION_TIMEOUT_SECS, AuthTracker, PingHandler, SubscriptionState, WebSocketClient,
+        WebSocketConfig, channel_message_handler,
     },
 };
 use serde_json::{Value, json};
@@ -66,7 +67,6 @@ use crate::{
         urls::{bybit_ws_private_url, bybit_ws_public_url, bybit_ws_trade_url},
     },
     websocket::{
-        auth::{AUTHENTICATION_TIMEOUT_SECS, AuthTracker},
         cache,
         enums::{BybitWsOperation, BybitWsPrivateChannel, BybitWsPublicChannel},
         error::{BybitWsError, BybitWsResult},
