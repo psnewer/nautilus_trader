@@ -860,7 +860,8 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
 
         // Connect WebSocket client
         let url = crate::common::consts::ws_url(self.config.is_testnet);
-        self.ws_client = HyperliquidWebSocketClient::connect(url).await?;
+        self.ws_client =
+            HyperliquidWebSocketClient::connect(url, Some(self.core.account_id)).await?;
 
         // Subscribe to user-specific order updates and fills
         let user_address = self.get_user_address()?;
