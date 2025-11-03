@@ -332,14 +332,14 @@ pub fn parse_ticker_linear_funding(
     let funding_rate = funding_rate_str
         .as_str()
         .parse::<Decimal>()
-        .context("Invalid funding_rate value")?
+        .context("invalid funding_rate value")?
         .normalize();
 
     let next_funding_ns = if let Some(next_funding_time) = &data.next_funding_time {
         let next_funding_millis = next_funding_time
             .as_str()
             .parse::<i64>()
-            .context("Invalid next_funding_time value")?;
+            .context("invalid next_funding_time value")?;
         Some(parse_millis_i64(next_funding_millis, "next_funding_time")?)
     } else {
         None
@@ -672,7 +672,7 @@ pub fn parse_ws_position_status_report(
     let ts_last = parse_millis_timestamp(&position.updated_time, "position.updatedTime")?;
 
     let avg_px_open_decimal = if avg_px_open != 0.0 {
-        Some(Decimal::try_from(avg_px_open).context("Failed to convert avg_px_open to Decimal")?)
+        Some(Decimal::try_from(avg_px_open).context("failed to convert avg_px_open to Decimal")?)
     } else {
         None
     };
@@ -748,7 +748,7 @@ pub fn parse_ws_account_state(
         let free = Money::new(free_amount, currency);
 
         let balance = AccountBalance::new_checked(total, locked, free)
-            .context("Failed to create AccountBalance from wallet data")?;
+            .context("failed to create AccountBalance from wallet data")?;
         balances.push(balance);
     }
 

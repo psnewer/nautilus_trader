@@ -165,6 +165,16 @@ Use structured error handling patterns consistently:
 
    **Note**: Use `anyhow::bail!` for early returns, but `anyhow::anyhow!` in closure contexts like `ok_or_else()` where early returns aren't possible.
 
+5. **Error Context**: Use lowercase for `.context()` messages to support error chaining (except proper nouns/acronyms):
+
+   ```rust
+   // Good - lowercase chains naturally
+   parse_timestamp(value).context("failed to parse timestamp")?;
+
+   // Exception - proper nouns stay capitalized
+   connect().context("BitMEX websocket did not become active")?;
+   ```
+
 ### Async patterns
 
 Use consistent async/await patterns:

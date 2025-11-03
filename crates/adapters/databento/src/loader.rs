@@ -107,7 +107,7 @@ impl DatabentoDataLoader {
 
         loader
             .load_publishers(publishers_filepath)
-            .context("Error loading publishers.json")?;
+            .context("error loading publishers.json")?;
 
         Ok(loader)
     }
@@ -305,7 +305,7 @@ impl DatabentoDataLoader {
                             &self.publisher_venue_map,
                             &self.symbol_venue_map,
                         )
-                        .context("Failed to decode instrument id")?
+                        .context("failed to decode instrument id")?
                     };
                     let (item1, item2) = decode_record(
                         &record,
