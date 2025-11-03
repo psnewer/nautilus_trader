@@ -1958,18 +1958,12 @@ class LiveExecutionEngine(ExecutionEngine):
                 self._log_skipping_reconciliation_on_instrument_id(order_report)
                 continue
 
-            # Check and handle duplicate client order IDs
             client_order_id = order_report.client_order_id
 
             if client_order_id is not None:
                 if client_order_id in self.filtered_client_order_ids:
                     self._log_skipping_reconciliation_on_client_order_id(order_report)
                     continue
-
-                if client_order_id in reconciled_orders:
-                    self._log.error(f"Duplicate {client_order_id!r} detected: {order_report}")
-                    results.append(False)
-                    continue  # Determine how to handle this
 
             # Check for duplicate trade IDs
             for fill_report in trades:
