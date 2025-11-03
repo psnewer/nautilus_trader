@@ -14,9 +14,9 @@ NautilusTrader adapters follow a layered architecture pattern with:
 
 Good references for consistent patterns are currently:
 
+- OKX
 - BitMEX
 - Bybit
-- OKX
 
 ### Rust core (`crates/adapters/your_adapter/`)
 
@@ -108,8 +108,8 @@ Adapters use a standardized two-layer HTTP client architecture to separate low-l
 
 The architecture consists of two complementary clients:
 
-1. **Raw client** (`MyRawHttpClient`) - Low-level API methods matching venue endpoints
-2. **Domain client** (`MyHttpClient`) - High-level methods using Nautilus domain types
+1. **Raw client** (`MyRawHttpClient`) - Low-level API methods matching venue endpoints.
+2. **Domain client** (`MyHttpClient`) - High-level methods using Nautilus domain types.
 
 ```rust
 use std::sync::Arc;
@@ -242,11 +242,11 @@ State transitions follow this lifecycle:
 
 | Trigger           | Method Called        | From State | To State  | Notes |
 |-------------------|----------------------|------------|-----------|-------|
-| User subscribes   | `mark_subscribe()`   | —          | Pending   | Topic added to pending set |
-| Venue confirms    | `confirm()`          | Pending    | Confirmed | Moved from pending to confirmed |
-| Venue rejects     | `mark_failure()`     | Pending    | Pending   | Stays pending for retry on reconnect |
-| User unsubscribes | `mark_unsubscribe()` | Confirmed  | Pending   | Temporarily pending until ack |
-| Unsubscribe ack   | `clear_pending()`    | Pending    | Removed   | Topic fully removed |
+| User subscribes   | `mark_subscribe()`   | —          | Pending   | Topic added to pending set. |
+| Venue confirms    | `confirm()`          | Pending    | Confirmed | Moved from pending to confirmed. |
+| Venue rejects     | `mark_failure()`     | Pending    | Pending   | Stays pending for retry on reconnect. |
+| User unsubscribes | `mark_unsubscribe()` | Confirmed  | Pending   | Temporarily pending until ack. |
+| Unsubscribe ack   | `clear_pending()`    | Pending    | Removed   | Topic fully removed. |
 
 **Key principles**:
 
@@ -355,17 +355,17 @@ Keep the suites deterministic and colocated with the production code they protec
 crates/adapters/your_adapter/
 ├── src/
 │   ├── http/
-│   │   ├── client.rs      # HTTP client + unit tests
-│   │   └── parse.rs       # REST payload parsers + unit tests
+│   │   ├── client.rs                  # HTTP client + unit tests
+│   │   └── parse.rs                   # REST payload parsers + unit tests
 │   └── websocket/
-│       ├── client.rs      # WebSocket client + unit tests
-│       └── parse.rs       # Streaming parsers + unit tests
+│       ├── client.rs                  # WebSocket client + unit tests
+│       └── parse.rs                   # Streaming parsers + unit tests
 ├── tests/
-│   ├── http.rs            # Mock HTTP integration tests
-│   └── websocket.rs       # Mock WebSocket integration tests
-└── test_data/             # Canonical venue payloads used by the suites
-    ├── http_get_{endpoint}.json  # Full venue responses with retCode/result/time
-    └── ws_{message_type}.json    # WebSocket message samples
+│   ├── http.rs                        # Mock HTTP integration tests
+│   └── websocket.rs                   # Mock WebSocket integration tests
+└── test_data/                         # Canonical venue payloads used by the suites
+    ├── http_{method}_{endpoint}.json  # Full venue responses with retCode/result/time
+    └── ws_{message_type}.json         # WebSocket message samples
 ```
 
 - Place unit tests next to the module they exercise (`#[cfg(test)]` blocks). Use `src/common/testing.rs` (or an equivalent helper module) for shared fixtures so production files stay tidy.

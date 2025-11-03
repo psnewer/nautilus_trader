@@ -421,7 +421,7 @@ pub struct BybitWsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct BybitWsOrderResponse {
     /// Operation type (order.create, order.amend, order.cancel).
-    pub op: String,
+    pub op: Ustr,
     /// Connection ID.
     #[serde(default)]
     pub conn_id: Option<String>,
@@ -716,7 +716,7 @@ pub struct BybitWsAccountOrder {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BybitWsAccountOrderMsg {
-    pub topic: String,
+    pub topic: Ustr,
     pub id: String,
     pub creation_time: i64,
     pub data: Vec<BybitWsAccountOrder>,
@@ -760,7 +760,7 @@ pub struct BybitWsAccountExecution {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BybitWsAccountExecutionMsg {
-    pub topic: String,
+    pub topic: Ustr,
     pub id: String,
     pub creation_time: i64,
     pub data: Vec<BybitWsAccountExecution>,
@@ -809,7 +809,7 @@ pub struct BybitWsAccountWallet {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BybitWsAccountWalletMsg {
-    pub topic: String,
+    pub topic: Ustr,
     pub id: String,
     pub creation_time: i64,
     pub data: Vec<BybitWsAccountWallet>,
@@ -823,13 +823,13 @@ pub struct BybitWsAccountPosition {
     pub risk_id: i64,
     pub risk_limit_value: String,
     pub symbol: Ustr,
-    pub side: String,
+    pub side: Ustr,
     pub size: String,
     #[serde(default)]
     pub avg_price: Option<String>,
     pub position_value: String,
     pub trade_mode: i32,
-    pub position_status: String,
+    pub position_status: Ustr,
     pub auto_add_margin: i32,
     pub adl_rank_indicator: i32,
     pub leverage: String,
@@ -841,7 +841,7 @@ pub struct BybitWsAccountPosition {
     pub position_mm: String,
     #[serde(rename = "positionIM")]
     pub position_im: String,
-    pub tpsl_mode: String,
+    pub tpsl_mode: Ustr,
     pub take_profit: String,
     pub stop_loss: String,
     pub trailing_stop: String,
@@ -859,7 +859,7 @@ pub struct BybitWsAccountPosition {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BybitWsAccountPositionMsg {
-    pub topic: String,
+    pub topic: Ustr,
     pub id: String,
     pub creation_time: i64,
     pub data: Vec<BybitWsAccountPosition>,

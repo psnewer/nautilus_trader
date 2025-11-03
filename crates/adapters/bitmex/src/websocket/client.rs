@@ -143,7 +143,9 @@ impl BitmexWebSocketClient {
 
         let account_id = account_id.unwrap_or(AccountId::from("BITMEX-master"));
 
-        // Create initial dummy channel (will be replaced on connect)
+        // We don't have a handler yet; this placeholder keeps cache_instrument() working.
+        // connect() swaps in the real channel and replays any queued instruments so the
+        // handler sees them once it starts.
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
 
         Ok(Self {
@@ -244,7 +246,8 @@ impl BitmexWebSocketClient {
         self.instruments_cache
             .insert(instrument.symbol().inner(), instrument.clone());
 
-        // Send update command to inner handler
+        // Before connect() the handler isn't running; this send will fail and that's expected
+        // because connect() replays the instruments via InitializeInstruments
         if let Err(e) = self
             .handler_cmd_tx
             .send(HandlerCommand::UpdateInstrument(instrument))

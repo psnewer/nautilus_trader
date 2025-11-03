@@ -301,6 +301,77 @@ let mut prices: HashMap<InstrumentId, Price> = HashMap::new();
 - **Cryptographic security required**: Use standard `HashMap` when hash flooding attacks are a concern (e.g., handling untrusted user input in network protocols).
 - **Network clients**: Currently prefer standard `HashMap` for network-facing components where security considerations outweigh performance benefits.
 
+### Thread-safe hash map patterns
+
+`AHashMap` is not thread-safe. Wrapping it in `Arc` only enables sharing the pointer across threads but does not coordinate mutation. Use `Arc<AHashMap>` only when the map is immutable after construction, otherwise add proper synchronization.
+
+```rust
+// Avoid: Data races when multiple threads mutate
+let cache = Arc::new(AHashMap::new());
+let cache_clone = Arc::clone(&cache);
+tokio::spawn(async move {
+    cache_clone.insert(key, value);  // Data race
+});
+cache.insert(other_key, other_value);  // Data race
+```
+
+**Patterns:**
+
+1. **Immutable after construction** – Build the map once, then share it read-only:
+
+   ```rust
+   let mut map = AHashMap::new();
+   map.insert(key1, value1);
+   map.insert(key2, value2);
+   let shared_map = Arc::new(map);  // Now immutable
+
+   // Multiple threads can safely read
+   let map_clone = Arc::clone(&shared_map);
+   tokio::spawn(async move {
+       if let Some(value) = map_clone.get(&key1) {
+           // Safe read-only access
+       }
+   });
+   ```
+
+2. **Concurrent reads and writes** – Use `DashMap`:
+
+   ```rust
+   use dashmap::DashMap;
+
+   let cache: Arc<DashMap<K, V>> = Arc::new(DashMap::new());
+
+   // Multiple threads can safely read and write concurrently
+   cache.insert(key, value);
+   if let Some(entry) = cache.get(&key) {
+       // Safe concurrent access
+   }
+   ```
+
+   `DashMap` internally uses sharding and fine-grained locking for efficient concurrent access.
+
+3. **Single-threaded hot paths** – Use plain `AHashMap` in single-threaded contexts:
+
+   ```rust
+   struct Handler {
+       instruments: AHashMap<Ustr, InstrumentAny>,
+   }
+
+   impl Handler {
+       async fn next(&mut self) -> Option<()> {
+           // Handler runs on a single task, no concurrent access
+           self.instruments.insert(key, value);
+           Ok(())
+       }
+   }
+   ```
+
+**Decision tree:**
+
+- Immutable after construction → Use `Arc<AHashMap<K, V>>`
+- Concurrent access needed → Use `Arc<DashMap<K, V>>`
+- Single-threaded access → Use plain `AHashMap<K, V>`
+
 ### Re-export patterns
 
 Organize re-exports alphabetically and place at the end of lib.rs files:

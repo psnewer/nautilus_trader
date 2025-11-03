@@ -321,7 +321,9 @@ impl OKXWebSocketClient {
             emitted_order_accepted: Arc::new(DashMap::new()),
             client_id_aliases: Arc::new(DashMap::new()),
             handler_cmd_tx: {
-                // Placeholder channel, will be replaced when connecting
+                // We don't have a handler yet; this placeholder keeps cache_instrument() working.
+                // connect() swaps in the real channel and replays any queued instruments so the
+                // handler sees them once it starts.
                 let (tx, _) = tokio::sync::mpsc::unbounded_channel();
                 Arc::new(tx)
             },
@@ -431,8 +433,19 @@ impl OKXWebSocketClient {
     ///
     /// Any existing instruments with the same symbols will be replaced.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
-        for inst in instruments {
-            self.instruments_cache.insert(inst.symbol().inner(), inst);
+        for inst in &instruments {
+            self.instruments_cache
+                .insert(inst.symbol().inner(), inst.clone());
+        }
+
+        // Before connect() the handler isn't running; this send will fail and that's expected
+        // because connect() replays the instruments via InitializeInstruments
+        if !instruments.is_empty()
+            && let Err(e) = self
+                .handler_cmd_tx
+                .send(HandlerCommand::InitializeInstruments(instruments))
+        {
+            log::debug!("Failed to send bulk instrument update to handler: {e}");
         }
     }
 
@@ -441,7 +454,16 @@ impl OKXWebSocketClient {
     /// Any existing instrument with the same symbol will be replaced.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
-            .insert(instrument.symbol().inner(), instrument);
+            .insert(instrument.symbol().inner(), instrument.clone());
+
+        // Before connect() the handler isn't running; this send will fail and that's expected
+        // because connect() replays the instruments via InitializeInstruments
+        if let Err(e) = self
+            .handler_cmd_tx
+            .send(HandlerCommand::UpdateInstrument(instrument))
+        {
+            log::debug!("Failed to send instrument update to handler: {e}");
+        }
     }
 
     /// Sets the VIP level for this client.
