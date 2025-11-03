@@ -10,6 +10,7 @@ This release adds support for Python 3.14 with the following limitations:
 ### Enhancements
 - Added support for Python 3.14
 - Added initial backtest visualization tearsheets with plotly
+- Added `create_bars_with_fills` to Tearsheet (#3137), thanks @faysou
 - Added `proxy_url` support for HTTP clients
 - Added `CAGR` portfolio statistic
 - Added `CalmarRatio` portfolio statistic
@@ -44,6 +45,7 @@ TBD
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
+- Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
