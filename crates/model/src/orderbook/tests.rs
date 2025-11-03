@@ -5109,10 +5109,24 @@ fn test_orderbook_with_operations(book_type: BookType, operations: Vec<OrderBook
     }
 }
 
+// Property-based test for order book operations with comprehensive cache validation.
+//
+// This test generates random sequences of order book operations (add, update, delete, clear)
+// and verifies that the order book maintains consistency between its internal ladder state
+// and cached L1/L2 data.
+//
+// PRODUCTION CODE BUG: This test correctly identifies a cache consistency bug in ladder.rs:280
+// and ladder.rs:322. The assertions fail with messages like:
+//   "assertion `left == right` failed: Cache size should equal total orders across all levels"
+//   left: 5, right: 6
+//
+// The ladder cache is not being properly updated when orders are deleted or modified,
+// causing the cache size to drift from the actual number of orders in the ladder.
+//
+// TODO: Fix cache invalidation in crates/model/src/orderbook/ladder.rs before re-enabling.
+// The bug is in production code, not in this test.
 #[rstest]
-// Cache consistency bugs partially fixed, but property test still reveals edge cases
-// Keeping disabled until all edge cases are resolved
-#[ignore = "Cache consistency fixes in progress - multiple edge cases remain"]
+#[ignore = "Production bug: ladder.rs cache inconsistency - fix cache invalidation logic"]
 fn prop_test_orderbook_operations() {
     proptest!(|(config in orderbook_test_strategy())| {
         let (book_type, operations) = config;
@@ -5256,8 +5270,20 @@ fn test_orderbook_basic_invariants(book_type: BookType, operations: Vec<OrderBoo
     }
 }
 
+// Simplified property-based test focusing on basic order book invariants without cache assertions.
+//
+// This test verifies fundamental order book properties without the comprehensive cache
+// validation that causes failures in prop_test_orderbook_operations. It still hits
+// the same cache consistency issues due to debug assertions in the ladder implementation.
+//
+// PRODUCTION CODE BUG: Same as prop_test_orderbook_operations - this test hits the same
+// cache consistency bug in ladder.rs. Even though this test tries to avoid cache-specific
+// assertions, the debug assertions in the ladder code itself still trigger.
+//
+// TODO: Fix cache invalidation in crates/model/src/orderbook/ladder.rs before re-enabling.
+// The bug is in production code, not in this test.
 #[rstest]
-#[ignore = "Also hits cache consistency bug - debug assertions are in ladder code"]
+#[ignore = "Production bug: ladder.rs cache inconsistency - same as prop_test_orderbook_operations"]
 fn prop_test_orderbook_basic_invariants() {
     proptest!(|(config in orderbook_test_strategy())| {
         let (book_type, operations) = config;
