@@ -1843,9 +1843,18 @@ class LiveExecutionEngine(ExecutionEngine):
                     f"not in `reconciliation_instrument_ids` include list",
                 )
                 continue
-            reconciliation_instruments.append(self._cache.instrument(instrument_id))
 
-        self._log.debug(
+            instrument = self._cache.instrument(instrument_id)
+            if not instrument:
+                self._log.debug(
+                    f"Skipping fill adjustment for {instrument_id}: "
+                    f"instrument not found in cache",
+                )
+                continue
+
+            reconciliation_instruments.append(instrument)
+
+        self._log.info(
             f"Attempting to adjust fills for {len(reconciliation_instruments)} instruments",
             LogColor.BLUE,
         )
@@ -1854,12 +1863,15 @@ class LiveExecutionEngine(ExecutionEngine):
             reconciliation_instruments,
             self._log,
         )
-        self._log.debug(
+        self._log.info(
             f"Updating adjusted fills for {len(reconciliation_instruments)} instruments",
             LogColor.BLUE,
         )
 
-        for instrument_id, (adjusted_orders_for_instrument, adjusted_fills_for_instrument) in adjusted_results.items():
+        for instrument_id, (
+            adjusted_orders_for_instrument,
+            adjusted_fills_for_instrument,
+        ) in adjusted_results.items():
             # Remove old orders and fills for this instrument
             for venue_order_id in list(final_orders.keys()):
                 order = final_orders[venue_order_id]
