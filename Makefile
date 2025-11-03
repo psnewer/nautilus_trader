@@ -183,7 +183,6 @@ check-code: format  #-- Run format, clippy, and ruff --fix (use HYPERSYNC=true t
 	@uv run --active --no-sync ruff check . --fix
 	@printf "$(GREEN)Checks passed$(RESET)\n"
 
-
 .PHONY: pre-flight
 pre-flight:  #-- Run comprehensive pre-flight checks (format, pre-commit, cargo-test-hypersync, build-debug, pytest)
 	$(info $(M) Running pre-flight checks...)
