@@ -228,13 +228,24 @@ clippy-pedantic-crate-%:  #-- Run clippy linter for a specific Rust crate (usage
 outdated: check-edit-installed  #-- Check for outdated dependencies
 	cargo upgrade --dry-run --incompatible
 	uv tree --outdated --depth 1 --all-groups
+	@printf "\n$(CYAN)Checking tool versions...$(RESET)\n"
+	@outdated_count=0; \
+	for tool in cargo-audit:$(CARGO_AUDIT_VERSION) cargo-deny:$(CARGO_DENY_VERSION) cargo-llvm-cov:$(CARGO_LLVM_COV_VERSION) cargo-nextest:$(CARGO_NEXTEST_VERSION) lychee:$(LYCHEE_VERSION); do \
+		name=$${tool%%:*}; current=$${tool##*:}; \
+		latest=$$(cargo search $$name --limit 1 2>/dev/null | head -1 | awk -F\" '{print $$2}'); \
+		if [ "$$current" != "$$latest" ]; then \
+			printf "$(YELLOW)  $$name: $$current → $$latest$(RESET)\n"; \
+			outdated_count=$$((outdated_count + 1)); \
+		fi; \
+	done; \
+	[ $$outdated_count -eq 0 ] && printf "$(GREEN)  All tools up to date ✓$(RESET)\n"
 
-.PHONY: update update-tools cargo-update
-update: update-tools cargo-update  #-- Update all dependencies (cargo and uv)
+.PHONY: update cargo-update
+update: cargo-update  #-- Update all dependencies (cargo and uv)
 	uv lock --upgrade
 
-.PHONY: update-tools
-update-tools:  #-- Update or install required development tools (Rust tools from Cargo.toml, uv from uv-version)
+.PHONY: install-tools
+install-tools:  #-- Install required development tools (Rust tools from Cargo.toml, uv from uv-version)
 	cargo install cargo-deny --version $(CARGO_DENY_VERSION) --locked \
 	&& cargo install cargo-nextest --version $(CARGO_NEXTEST_VERSION) --locked \
 	&& cargo install cargo-llvm-cov --version $(CARGO_LLVM_COV_VERSION) --locked \
