@@ -23,6 +23,7 @@ This release adds support for Python 3.14 with the following limitations:
 ### Breaking Changes
 - Dropped support for Python 3.11
 - Removed `use_ws_trade_api` config option from Bybit execution client (using WebSocket trade API only)
+- Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
 - dYdX adapter extras (`[dydx]`) unavailable on Python 3.14 due to upstream `coincurve` compatibility (available on Python 3.12-3.13)
 - Interactive Brokers adapter extras (`[ib]`) unavailable on Python 3.14 due to upstream `nautilus-ibapi` compatibility (available on Python 3.12-3.13)
 
