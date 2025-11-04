@@ -1977,9 +1977,9 @@ impl OKXHttpClient {
                 }
             }
 
-            // Duplicate-window mitigation for Latest/Backward
+            // Duplicate-window mitigation for Latest/Backward/Range
             if contribution == 0
-                && matches!(mode, Mode::Latest | Mode::Backward)
+                && matches!(mode, Mode::Latest | Mode::Backward | Mode::Range)
                 && let Some(b) = before_ms
             {
                 let jump = (page_cap as i64).saturating_mul(slot_ms.max(1));
