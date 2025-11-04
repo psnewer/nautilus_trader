@@ -46,7 +46,7 @@ use super::{
     enums::{OKXSubscriptionEvent, OKXWsChannel, OKXWsOperation},
     messages::{
         ExecutionReport, NautilusWsMessage, OKXAlgoOrderMsg, OKXOrderMsg, OKXWebSocketArg,
-        OKXWebSocketError, OKXWebSocketEvent,
+        OKXWebSocketError, OKXWsMessage,
     },
     parse::{parse_algo_order_msg, parse_book_msg_vec, parse_order_msg, parse_ws_message_data},
     subscription::topic_from_websocket_arg,
@@ -62,19 +62,6 @@ use crate::{
     },
     http::models::OKXAccount,
 };
-
-/// Commands sent from the outer client to the inner message handler.
-#[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Commands are ephemeral and immediately consumed"
-)]
-pub enum HandlerCommand {
-    /// Initialize the instruments cache with the given instruments.
-    InitializeInstruments(Vec<InstrumentAny>),
-    /// Update a single instrument in the cache.
-    UpdateInstrument(InstrumentAny),
-}
 
 /// Data cached for pending place requests to correlate with responses.
 type PlaceRequestData = (
@@ -106,22 +93,38 @@ type AmendRequestData = (
 /// Data for pending mass cancel requests.
 type MassCancelRequestData = InstrumentId;
 
+/// Commands sent from the outer client to the inner message handler.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Commands are ephemeral and immediately consumed"
+)]
+pub enum HandlerCommand {
+    /// Initialize the instruments cache with the given instruments.
+    InitializeInstruments(Vec<InstrumentAny>),
+    /// Update a single instrument in the cache.
+    UpdateInstrument(InstrumentAny),
+}
+
 pub(super) struct RawFeedHandler {
-    receiver: UnboundedReceiver<Message>,
+    raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
     signal: Arc<AtomicBool>,
 }
 
 impl RawFeedHandler {
     /// Creates a new [`RawFeedHandler`] instance.
-    pub fn new(receiver: UnboundedReceiver<Message>, signal: Arc<AtomicBool>) -> Self {
-        Self { receiver, signal }
+    pub fn new(
+        raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
+        signal: Arc<AtomicBool>,
+    ) -> Self {
+        Self { raw_rx, signal }
     }
 
     /// Gets the next message from the WebSocket stream.
-    pub(super) async fn next(&mut self) -> Option<OKXWebSocketEvent> {
+    pub(super) async fn next(&mut self) -> Option<OKXWsMessage> {
         loop {
             tokio::select! {
-                msg = self.receiver.recv() => match msg {
+                msg = self.raw_rx.recv() => match msg {
                     Some(msg) => match msg {
                         Message::Text(text) => {
                             // Handle ping/pong messages
@@ -131,23 +134,23 @@ impl RawFeedHandler {
                             }
                             if text == TEXT_PING {
                                 tracing::trace!("Received ping from OKX (text)");
-                                return Some(OKXWebSocketEvent::Ping);
+                                return Some(OKXWsMessage::Ping);
                             }
 
                             // Check for reconnection signal
                             if text == RECONNECTED {
                                 tracing::debug!("Received WebSocket reconnection signal");
-                                return Some(OKXWebSocketEvent::Reconnected);
+                                return Some(OKXWsMessage::Reconnected);
                             }
                             tracing::trace!("Received WebSocket message: {text}");
 
                             match serde_json::from_str(&text) {
                                 Ok(ws_event) => match &ws_event {
-                                    OKXWebSocketEvent::Error { code, msg } => {
+                                    OKXWsMessage::Error { code, msg } => {
                                         tracing::error!("WebSocket error: {code} - {msg}");
                                         return Some(ws_event);
                                     }
-                                    OKXWebSocketEvent::Login {
+                                    OKXWsMessage::Login {
                                         event,
                                         code,
                                         msg,
@@ -164,7 +167,7 @@ impl RawFeedHandler {
                                         }
                                         return Some(ws_event);
                                     }
-                                    OKXWebSocketEvent::Subscription {
+                                    OKXWsMessage::Subscription {
                                         event,
                                         arg,
                                         conn_id, .. } => {
@@ -177,7 +180,7 @@ impl RawFeedHandler {
                                         );
                                         return Some(ws_event);
                                     }
-                                    OKXWebSocketEvent::ChannelConnCount {
+                                    OKXWsMessage::ChannelConnCount {
                                         event: _,
                                         channel,
                                         conn_count,
@@ -192,13 +195,13 @@ impl RawFeedHandler {
                                         );
                                         continue;
                                     }
-                                    OKXWebSocketEvent::Ping => {
+                                    OKXWsMessage::Ping => {
                                         tracing::trace!("Ignoring ping event parsed from text payload");
                                         continue;
                                     }
-                                    OKXWebSocketEvent::Data { .. } => return Some(ws_event),
-                                    OKXWebSocketEvent::BookData { .. } => return Some(ws_event),
-                                    OKXWebSocketEvent::OrderResponse {
+                                    OKXWsMessage::Data { .. } => return Some(ws_event),
+                                    OKXWsMessage::BookData { .. } => return Some(ws_event),
+                                    OKXWsMessage::OrderResponse {
                                         id,
                                         op,
                                         code,
@@ -222,7 +225,7 @@ impl RawFeedHandler {
                                         }
                                         return Some(ws_event);
                                     }
-                                    OKXWebSocketEvent::Reconnected => {
+                                    OKXWsMessage::Reconnected => {
                                         // This shouldn't happen as we handle RECONNECTED string directly
                                         tracing::warn!("Unexpected Reconnected event from deserialization");
                                         continue;
@@ -274,8 +277,8 @@ pub(super) struct FeedHandler {
     inner: Arc<tokio::sync::RwLock<Option<WebSocketClient>>>,
     handler: RawFeedHandler,
     #[allow(dead_code)]
-    pub tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+    pub out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     pending_place_requests: Arc<DashMap<String, PlaceRequestData>>,
     pending_cancel_requests: Arc<DashMap<String, CancelRequestData>>,
     pending_amend_requests: Arc<DashMap<String, AmendRequestData>>,
@@ -294,246 +297,15 @@ pub(super) struct FeedHandler {
 }
 
 impl FeedHandler {
-    fn schedule_text_pong(&self) {
-        let inner = self.inner.clone();
-        get_runtime().spawn(async move {
-            let guard = inner.read().await;
-
-            if let Some(client) = guard.as_ref() {
-                if let Err(e) = client.send_text(TEXT_PONG.to_string(), None).await {
-                    tracing::warn!(error = %e, "Failed to send pong response to OKX text ping");
-                } else {
-                    tracing::trace!("Sent pong response to OKX text ping");
-                }
-            } else {
-                tracing::debug!("Received text ping with no active websocket client");
-            }
-        });
-    }
-
-    fn try_handle_post_only_auto_cancel(
-        &mut self,
-        msg: &OKXOrderMsg,
-        ts_init: UnixNanos,
-        exec_reports: &mut Vec<ExecutionReport>,
-    ) -> bool {
-        if !Self::is_post_only_auto_cancel(msg) {
-            return false;
-        }
-
-        let Some(client_order_id) = parse_client_order_id(&msg.cl_ord_id) else {
-            return false;
-        };
-
-        let Some((_, (trader_id, strategy_id, instrument_id))) =
-            self.active_client_orders.remove(&client_order_id)
-        else {
-            return false;
-        };
-
-        self.client_id_aliases.remove(&client_order_id);
-
-        if !exec_reports.is_empty() {
-            let reports = std::mem::take(exec_reports);
-            self.pending_messages
-                .push_back(NautilusWsMessage::ExecutionReports(reports));
-        }
-
-        let reason = msg
-            .cancel_source_reason
-            .as_ref()
-            .filter(|reason| !reason.is_empty())
-            .map_or_else(
-                || Ustr::from(OKX_POST_ONLY_CANCEL_REASON),
-                |reason| Ustr::from(reason.as_str()),
-            );
-
-        let ts_event = parse_millisecond_timestamp(msg.u_time);
-        let rejected = OrderRejected::new(
-            trader_id,
-            strategy_id,
-            instrument_id,
-            client_order_id,
-            self.account_id,
-            reason,
-            UUID4::new(),
-            ts_event,
-            ts_init,
-            false,
-            true,
-        );
-
-        self.pending_messages
-            .push_back(NautilusWsMessage::OrderRejected(rejected));
-
-        true
-    }
-
-    pub(super) fn is_post_only_auto_cancel(msg: &OKXOrderMsg) -> bool {
-        if msg.state != OKXOrderStatus::Canceled {
-            return false;
-        }
-
-        let cancel_source_matches = matches!(
-            msg.cancel_source.as_deref(),
-            Some(source) if source == OKX_POST_ONLY_CANCEL_SOURCE
-        );
-
-        let reason_matches = matches!(
-            msg.cancel_source_reason.as_deref(),
-            Some(reason) if reason.contains("POST_ONLY")
-        );
-
-        if !(cancel_source_matches || reason_matches) {
-            return false;
-        }
-
-        msg.acc_fill_sz
-            .as_ref()
-            .is_none_or(|filled| filled == "0" || filled.is_empty())
-    }
-
-    fn register_client_order_aliases(
-        &self,
-        raw_child: &Option<ClientOrderId>,
-        parent_from_msg: &Option<ClientOrderId>,
-    ) -> Option<ClientOrderId> {
-        if let Some(parent) = parent_from_msg {
-            self.client_id_aliases.insert(*parent, *parent);
-            if let Some(child) = raw_child.as_ref().filter(|child| **child != *parent) {
-                self.client_id_aliases.insert(*child, *parent);
-            }
-            Some(*parent)
-        } else if let Some(child) = raw_child.as_ref() {
-            if let Some(mapped) = self.client_id_aliases.get(child) {
-                Some(*mapped.value())
-            } else {
-                self.client_id_aliases.insert(*child, *child);
-                Some(*child)
-            }
-        } else {
-            None
-        }
-    }
-
-    fn adjust_execution_report(
-        &self,
-        report: ExecutionReport,
-        effective_client_id: &Option<ClientOrderId>,
-        raw_child: &Option<ClientOrderId>,
-    ) -> ExecutionReport {
-        match report {
-            ExecutionReport::Order(status_report) => {
-                let mut adjusted = status_report;
-                let mut final_id = *effective_client_id;
-
-                if final_id.is_none() {
-                    final_id = adjusted.client_order_id;
-                }
-
-                if final_id.is_none()
-                    && let Some(child) = raw_child.as_ref()
-                    && let Some(mapped) = self.client_id_aliases.get(child)
-                {
-                    final_id = Some(*mapped.value());
-                }
-
-                if let Some(final_id_value) = final_id {
-                    if adjusted.client_order_id != Some(final_id_value) {
-                        adjusted = adjusted.with_client_order_id(final_id_value);
-                    }
-                    self.client_id_aliases
-                        .insert(final_id_value, final_id_value);
-
-                    if let Some(child) =
-                        raw_child.as_ref().filter(|child| **child != final_id_value)
-                    {
-                        adjusted = adjusted.with_linked_order_ids(vec![*child]);
-                    }
-                }
-
-                ExecutionReport::Order(adjusted)
-            }
-            ExecutionReport::Fill(mut fill_report) => {
-                let mut final_id = *effective_client_id;
-                if final_id.is_none() {
-                    final_id = fill_report.client_order_id;
-                }
-                if final_id.is_none()
-                    && let Some(child) = raw_child.as_ref()
-                    && let Some(mapped) = self.client_id_aliases.get(child)
-                {
-                    final_id = Some(*mapped.value());
-                }
-
-                if let Some(final_id_value) = final_id {
-                    fill_report.client_order_id = Some(final_id_value);
-                    self.client_id_aliases
-                        .insert(final_id_value, final_id_value);
-                }
-
-                ExecutionReport::Fill(fill_report)
-            }
-        }
-    }
-
-    fn update_caches_with_report(&mut self, report: &ExecutionReport) {
-        match report {
-            ExecutionReport::Fill(fill_report) => {
-                let order_id = fill_report.venue_order_id.inner();
-                let current_fee = self
-                    .fee_cache
-                    .get(&order_id)
-                    .copied()
-                    .unwrap_or_else(|| Money::new(0.0, fill_report.commission.currency));
-                let total_fee = current_fee + fill_report.commission;
-                self.fee_cache.insert(order_id, total_fee);
-
-                let current_filled_qty = self
-                    .filled_qty_cache
-                    .get(&order_id)
-                    .copied()
-                    .unwrap_or_else(|| Quantity::zero(fill_report.last_qty.precision));
-                let total_filled_qty = current_filled_qty + fill_report.last_qty;
-                self.filled_qty_cache.insert(order_id, total_filled_qty);
-            }
-            ExecutionReport::Order(status_report) => {
-                if matches!(status_report.order_status, OrderStatus::Filled) {
-                    self.fee_cache.remove(&status_report.venue_order_id.inner());
-                    self.filled_qty_cache
-                        .remove(&status_report.venue_order_id.inner());
-                }
-
-                if matches!(
-                    status_report.order_status,
-                    OrderStatus::Canceled
-                        | OrderStatus::Expired
-                        | OrderStatus::Filled
-                        | OrderStatus::Rejected,
-                ) {
-                    if let Some(client_order_id) = status_report.client_order_id {
-                        self.active_client_orders.remove(&client_order_id);
-                        self.client_id_aliases.remove(&client_order_id);
-                    }
-                    if let Some(linked) = &status_report.linked_order_ids {
-                        for child in linked {
-                            self.client_id_aliases.remove(child);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Creates a new [`FeedHandler`] instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         account_id: AccountId,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         reader: UnboundedReceiver<Message>,
         signal: Arc<AtomicBool>,
         inner: Arc<tokio::sync::RwLock<Option<WebSocketClient>>>,
-        tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         pending_place_requests: Arc<DashMap<String, PlaceRequestData>>,
         pending_cancel_requests: Arc<DashMap<String, CancelRequestData>>,
         pending_amend_requests: Arc<DashMap<String, AmendRequestData>>,
@@ -548,8 +320,8 @@ impl FeedHandler {
             account_id,
             inner,
             handler: RawFeedHandler::new(reader, signal),
-            tx,
             cmd_rx,
+            out_tx,
             pending_place_requests,
             pending_cancel_requests,
             pending_amend_requests,
@@ -572,16 +344,6 @@ impl FeedHandler {
         self.handler
             .signal
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[allow(dead_code)]
-    async fn run(&mut self) {
-        while let Some(data) = self.next().await {
-            if let Err(e) = self.tx.send(data) {
-                tracing::error!("Error sending data: {e}");
-                break; // Stop processing on channel error for now
-            }
-        }
     }
 
     pub(super) async fn next(&mut self) -> Option<NautilusWsMessage> {
@@ -612,11 +374,11 @@ impl FeedHandler {
                     let ts_init = clock.get_time_ns();
 
             match event {
-                OKXWebSocketEvent::Ping => {
+                OKXWsMessage::Ping => {
                     self.schedule_text_pong();
                     continue;
                 }
-                OKXWebSocketEvent::Login {
+                OKXWsMessage::Login {
                     code, msg, conn_id, ..
                 } => {
                     if code == "0" {
@@ -637,7 +399,7 @@ impl FeedHandler {
                         .push_back(NautilusWsMessage::Error(error));
                     continue;
                 }
-                OKXWebSocketEvent::BookData { arg, action, data } => {
+                OKXWsMessage::BookData { arg, action, data } => {
                     let Some(inst_id) = arg.inst_id else {
                         tracing::error!("Instrument ID missing for book data event");
                         continue;
@@ -666,7 +428,7 @@ impl FeedHandler {
                         }
                     }
                 }
-                OKXWebSocketEvent::OrderResponse {
+                OKXWsMessage::OrderResponse {
                     id,
                     op,
                     code,
@@ -1001,7 +763,7 @@ impl FeedHandler {
                     };
                     return Some(NautilusWsMessage::Error(error));
                 }
-                OKXWebSocketEvent::Data { arg, data } => {
+                OKXWsMessage::Data { arg, data } => {
                     let OKXWebSocketArg {
                         channel, inst_id, ..
                     } = arg;
@@ -1272,7 +1034,7 @@ impl FeedHandler {
                         }
                     }
                 }
-                OKXWebSocketEvent::Error { code, msg } => {
+                OKXWsMessage::Error { code, msg } => {
                     let error = OKXWebSocketError {
                         code,
                         message: msg,
@@ -1281,10 +1043,10 @@ impl FeedHandler {
                     };
                     return Some(NautilusWsMessage::Error(error));
                 }
-                OKXWebSocketEvent::Reconnected => {
+                OKXWsMessage::Reconnected => {
                     return Some(NautilusWsMessage::Reconnected);
                 }
-                OKXWebSocketEvent::Subscription {
+                OKXWsMessage::Subscription {
                     event,
                     arg,
                     code,
@@ -1318,7 +1080,7 @@ impl FeedHandler {
 
                     continue;
                 }
-                OKXWebSocketEvent::ChannelConnCount { .. } => continue,
+                OKXWsMessage::ChannelConnCount { .. } => continue,
             }
                 }
 
@@ -1326,6 +1088,237 @@ impl FeedHandler {
                 else => {
                     tracing::debug!("Handler shutting down: stream ended or command channel closed");
                     return None;
+                }
+            }
+        }
+    }
+
+    pub(super) fn is_post_only_auto_cancel(msg: &OKXOrderMsg) -> bool {
+        if msg.state != OKXOrderStatus::Canceled {
+            return false;
+        }
+
+        let cancel_source_matches = matches!(
+            msg.cancel_source.as_deref(),
+            Some(source) if source == OKX_POST_ONLY_CANCEL_SOURCE
+        );
+
+        let reason_matches = matches!(
+            msg.cancel_source_reason.as_deref(),
+            Some(reason) if reason.contains("POST_ONLY")
+        );
+
+        if !(cancel_source_matches || reason_matches) {
+            return false;
+        }
+
+        msg.acc_fill_sz
+            .as_ref()
+            .is_none_or(|filled| filled == "0" || filled.is_empty())
+    }
+
+    fn schedule_text_pong(&self) {
+        let inner = self.inner.clone();
+        get_runtime().spawn(async move {
+            let guard = inner.read().await;
+
+            if let Some(client) = guard.as_ref() {
+                if let Err(e) = client.send_text(TEXT_PONG.to_string(), None).await {
+                    tracing::warn!(error = %e, "Failed to send pong response to OKX text ping");
+                } else {
+                    tracing::trace!("Sent pong response to OKX text ping");
+                }
+            } else {
+                tracing::debug!("Received text ping with no active websocket client");
+            }
+        });
+    }
+
+    fn try_handle_post_only_auto_cancel(
+        &mut self,
+        msg: &OKXOrderMsg,
+        ts_init: UnixNanos,
+        exec_reports: &mut Vec<ExecutionReport>,
+    ) -> bool {
+        if !Self::is_post_only_auto_cancel(msg) {
+            return false;
+        }
+
+        let Some(client_order_id) = parse_client_order_id(&msg.cl_ord_id) else {
+            return false;
+        };
+
+        let Some((_, (trader_id, strategy_id, instrument_id))) =
+            self.active_client_orders.remove(&client_order_id)
+        else {
+            return false;
+        };
+
+        self.client_id_aliases.remove(&client_order_id);
+
+        if !exec_reports.is_empty() {
+            let reports = std::mem::take(exec_reports);
+            self.pending_messages
+                .push_back(NautilusWsMessage::ExecutionReports(reports));
+        }
+
+        let reason = msg
+            .cancel_source_reason
+            .as_ref()
+            .filter(|reason| !reason.is_empty())
+            .map_or_else(
+                || Ustr::from(OKX_POST_ONLY_CANCEL_REASON),
+                |reason| Ustr::from(reason.as_str()),
+            );
+
+        let ts_event = parse_millisecond_timestamp(msg.u_time);
+        let rejected = OrderRejected::new(
+            trader_id,
+            strategy_id,
+            instrument_id,
+            client_order_id,
+            self.account_id,
+            reason,
+            UUID4::new(),
+            ts_event,
+            ts_init,
+            false,
+            true,
+        );
+
+        self.pending_messages
+            .push_back(NautilusWsMessage::OrderRejected(rejected));
+
+        true
+    }
+
+    fn register_client_order_aliases(
+        &self,
+        raw_child: &Option<ClientOrderId>,
+        parent_from_msg: &Option<ClientOrderId>,
+    ) -> Option<ClientOrderId> {
+        if let Some(parent) = parent_from_msg {
+            self.client_id_aliases.insert(*parent, *parent);
+            if let Some(child) = raw_child.as_ref().filter(|child| **child != *parent) {
+                self.client_id_aliases.insert(*child, *parent);
+            }
+            Some(*parent)
+        } else if let Some(child) = raw_child.as_ref() {
+            if let Some(mapped) = self.client_id_aliases.get(child) {
+                Some(*mapped.value())
+            } else {
+                self.client_id_aliases.insert(*child, *child);
+                Some(*child)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn adjust_execution_report(
+        &self,
+        report: ExecutionReport,
+        effective_client_id: &Option<ClientOrderId>,
+        raw_child: &Option<ClientOrderId>,
+    ) -> ExecutionReport {
+        match report {
+            ExecutionReport::Order(status_report) => {
+                let mut adjusted = status_report;
+                let mut final_id = *effective_client_id;
+
+                if final_id.is_none() {
+                    final_id = adjusted.client_order_id;
+                }
+
+                if final_id.is_none()
+                    && let Some(child) = raw_child.as_ref()
+                    && let Some(mapped) = self.client_id_aliases.get(child)
+                {
+                    final_id = Some(*mapped.value());
+                }
+
+                if let Some(final_id_value) = final_id {
+                    if adjusted.client_order_id != Some(final_id_value) {
+                        adjusted = adjusted.with_client_order_id(final_id_value);
+                    }
+                    self.client_id_aliases
+                        .insert(final_id_value, final_id_value);
+
+                    if let Some(child) =
+                        raw_child.as_ref().filter(|child| **child != final_id_value)
+                    {
+                        adjusted = adjusted.with_linked_order_ids(vec![*child]);
+                    }
+                }
+
+                ExecutionReport::Order(adjusted)
+            }
+            ExecutionReport::Fill(mut fill_report) => {
+                let mut final_id = *effective_client_id;
+                if final_id.is_none() {
+                    final_id = fill_report.client_order_id;
+                }
+                if final_id.is_none()
+                    && let Some(child) = raw_child.as_ref()
+                    && let Some(mapped) = self.client_id_aliases.get(child)
+                {
+                    final_id = Some(*mapped.value());
+                }
+
+                if let Some(final_id_value) = final_id {
+                    fill_report.client_order_id = Some(final_id_value);
+                    self.client_id_aliases
+                        .insert(final_id_value, final_id_value);
+                }
+
+                ExecutionReport::Fill(fill_report)
+            }
+        }
+    }
+
+    fn update_caches_with_report(&mut self, report: &ExecutionReport) {
+        match report {
+            ExecutionReport::Fill(fill_report) => {
+                let order_id = fill_report.venue_order_id.inner();
+                let current_fee = self
+                    .fee_cache
+                    .get(&order_id)
+                    .copied()
+                    .unwrap_or_else(|| Money::new(0.0, fill_report.commission.currency));
+                let total_fee = current_fee + fill_report.commission;
+                self.fee_cache.insert(order_id, total_fee);
+
+                let current_filled_qty = self
+                    .filled_qty_cache
+                    .get(&order_id)
+                    .copied()
+                    .unwrap_or_else(|| Quantity::zero(fill_report.last_qty.precision));
+                let total_filled_qty = current_filled_qty + fill_report.last_qty;
+                self.filled_qty_cache.insert(order_id, total_filled_qty);
+            }
+            ExecutionReport::Order(status_report) => {
+                if matches!(status_report.order_status, OrderStatus::Filled) {
+                    self.fee_cache.remove(&status_report.venue_order_id.inner());
+                    self.filled_qty_cache
+                        .remove(&status_report.venue_order_id.inner());
+                }
+
+                if matches!(
+                    status_report.order_status,
+                    OrderStatus::Canceled
+                        | OrderStatus::Expired
+                        | OrderStatus::Filled
+                        | OrderStatus::Rejected,
+                ) {
+                    if let Some(client_order_id) = status_report.client_order_id {
+                        self.active_client_orders.remove(&client_order_id);
+                        self.client_id_aliases.remove(&client_order_id);
+                    }
+                    if let Some(linked) = &status_report.linked_order_ids {
+                        for child in linked {
+                            self.client_id_aliases.remove(child);
+                        }
+                    }
                 }
             }
         }

@@ -17,7 +17,7 @@
 
 /// Errors that can occur during Hyperliquid WebSocket operations.
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum HyperliquidError {
+pub enum HyperliquidWsError {
     #[error("URL parsing failed: {0}")]
     UrlParsing(String),
 

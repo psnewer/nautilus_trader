@@ -32,26 +32,26 @@ Typical Rust structure:
 ```
 crates/adapters/your_adapter/
 ├── src/
-│   ├── common/           # Shared types and utilities
-│   │   ├── consts.rs     # Venue constants / broker IDs
-│   │   ├── credential.rs # API key storage and signing helpers
-│   │   ├── enums.rs      # Venue enums mirrored in REST/WS payloads
-│   │   ├── urls.rs       # Environment & product aware base-url resolvers
-│   │   ├── parse.rs      # Shared parsing helpers
-│   │   └── testing.rs    # Fixtures reused across unit tests
-│   ├── http/             # HTTP client implementation
-│   │   ├── client.rs     # HTTP client with authentication
-│   │   ├── models.rs     # Structs for REST payloads
-│   │   ├── query.rs      # Request and query builders
-│   │   └── parse.rs      # Response parsing functions
-│   ├── websocket/        # WebSocket implementation
-│   │   ├── client.rs     # WebSocket client
-│   │   ├── messages.rs   # Structs for stream payloads
-│   │   └── parse.rs      # Message parsing functions
-│   ├── python/           # PyO3 Python bindings
-│   ├── config.rs         # Configuration structures
-│   └── lib.rs            # Library entry point
-└── tests/                # Integration tests with mock servers
+│   ├── common/            # Shared types and utilities
+│   │   ├── consts.rs      # Venue constants / broker IDs
+│   │   ├── credential.rs  # API key storage and signing helpers
+│   │   ├── enums.rs       # Venue enums mirrored in REST/WS payloads
+│   │   ├── urls.rs        # Environment & product aware base-url resolvers
+│   │   ├── parse.rs       # Shared parsing helpers
+│   │   └── testing.rs     # Fixtures reused across unit tests
+│   ├── http/              # HTTP client implementation
+│   │   ├── client.rs      # HTTP client with authentication
+│   │   ├── models.rs      # Structs for REST payloads
+│   │   ├── query.rs       # Request and query builders
+│   │   └── parse.rs       # Response parsing functions
+│   ├── websocket/         # WebSocket implementation
+│   │   ├── client.rs      # WebSocket client
+│   │   ├── messages.rs    # Structs for stream payloads
+│   │   └── parse.rs       # Message parsing functions
+│   ├── python/            # PyO3 Python bindings
+│   ├── config.rs          # Configuration structures
+│   └── lib.rs             # Library entry point
+└── tests/                 # Integration tests with mock servers
 ```
 
 ### Python layer (`nautilus_trader/adapters/your_adapter`)
@@ -322,6 +322,99 @@ impl MyWebSocketClient {
         )
     }
 }
+```
+
+### Naming conventions
+
+Adapters follow standardized naming conventions for consistency across all venue integrations.
+
+#### Channel naming: `raw` → `msg` → `out`
+
+WebSocket message channels follow a three-stage transformation pipeline:
+
+| Stage | Type | Description | Example |
+|-------|------|-------------|---------|
+| `raw` | Raw WebSocket frames | Bytes/text from the network layer. | `raw_rx: UnboundedReceiver<Message>` |
+| `msg` | Venue-specific messages | Parsed venue message types. | `msg_rx: UnboundedReceiver<BybitWsMessage>` |
+| `out` | Nautilus domain messages | Normalized platform messages. | `out_tx: UnboundedSender<NautilusWsMessage>` |
+
+**Example flow:**
+
+```rust
+// Client creates venue message and output channels
+let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel();  // Venue messages (BybitWsMessage)
+let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();  // Nautilus messages (NautilusWsMessage)
+
+// Handler receives venue messages, outputs Nautilus messages
+let handler = FeedHandler::new(
+    cmd_rx,
+    msg_rx,  // Input: BybitWsMessage
+    out_tx,  // Output: NautilusWsMessage
+    // ...
+);
+```
+
+Channel names reflect the data transformation stage, not the destination. Use `raw_*` only for raw WebSocket frames (`Message`), `msg_*` for venue-specific message types, and `out_*` for Nautilus domain messages.
+
+#### Field naming: `inner` and `handler`
+
+Structs holding references to lower-level components follow these conventions:
+
+| Field     | Type                                   | Description |
+|-----------|----------------------------------------|-------------|
+| `inner`   | `Arc<RwLock<Option<WebSocketClient>>>` | Network-level WebSocket client from `nautilus_network`. |
+| `handler` | `RawFeedHandler`                       | Raw message parsing component (handler structs only). |
+
+**Example:**
+
+```rust
+// Client struct
+pub struct OKXWebSocketClient {
+    inner: Arc<RwLock<Option<WebSocketClient>>>,  // Network client
+    // ...
+}
+
+// Handler struct
+pub struct FeedHandler {
+    inner: Arc<RwLock<Option<WebSocketClient>>>,  // Network client (when needed)
+    handler: RawFeedHandler,                      // Raw message handler
+    // ...
+}
+```
+
+The `inner` field refers to the network-level client from `nautilus_network` while `handler` refers to the adapter-specific raw feed handler component.
+
+#### Type naming: `{Venue}Ws{TypeSuffix}`
+
+All WebSocket-related types follow a standardized naming pattern: `{Venue}Ws{TypeSuffix}`
+
+- `{Venue}`: Capitalized venue name (e.g., `OKX`, `Bybit`, `Bitmex`, `Hyperliquid`).
+- `Ws`: Abbreviated "WebSocket" (not fully spelled out).
+- `{TypeSuffix}`: Full type descriptor (e.g., `Message`, `Error`, `Request`, `Response`).
+
+**Examples:**
+
+```rust
+// Correct - abbreviated Ws, full type suffix
+pub enum OKXWsMessage { ... }
+pub enum BybitWsError { ... }
+pub struct HyperliquidWsRequest { ... }
+```
+
+**Standard type suffixes:**
+
+- `Message`: WebSocket message enums.
+- `Error`: WebSocket error types.
+- `Request`: Request message types.
+- `Response`: Response message types.
+
+**Tokio channel qualification:**
+
+Always fully qualify tokio channel types as `tokio::sync::mpsc::` to avoid ambiguity with similarly-named types from other crates. Never import `mpsc` directly at module level.
+
+```rust
+// Correct
+let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MyMessage>();
 ```
 
 ## Modeling venue payloads

@@ -30,7 +30,7 @@ use ustr::Ustr;
 
 use super::{
     cache,
-    messages::{BybitWebSocketError, BybitWebSocketMessage, NautilusWsMessage},
+    messages::{BybitWebSocketError, BybitWsMessage, NautilusWsMessage},
     parse::{
         parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_ticker_linear_funding,
         parse_ws_account_state, parse_ws_fill_report, parse_ws_kline_bar,
@@ -56,9 +56,9 @@ pub enum HandlerCommand {
 type FundingCache = Arc<RwLock<AHashMap<Ustr, (Option<String>, Option<String>)>>>;
 
 pub(super) struct FeedHandler {
-    message_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWebSocketMessage>,
-    pub tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+    msg_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWsMessage>,
+    out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
     product_type: Option<BybitProductType>,
@@ -69,17 +69,17 @@ pub(super) struct FeedHandler {
 impl FeedHandler {
     /// Creates a new [`FeedHandler`] instance.
     pub(super) fn new(
-        message_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWebSocketMessage>,
-        tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+        msg_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWsMessage>,
+        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
         quote_cache: Arc<RwLock<cache::QuoteCache>>,
         funding_cache: FundingCache,
     ) -> Self {
         Self {
-            message_rx,
-            tx,
+            msg_rx,
+            out_tx,
             cmd_rx,
             instruments_cache: AHashMap::new(),
             account_id,
@@ -108,7 +108,7 @@ impl FeedHandler {
                     continue;
                 }
 
-                Some(msg) = self.message_rx.recv() => {
+                Some(msg) = self.msg_rx.recv() => {
                     let ts_init = clock.get_time_ns();
                     let nautilus_messages = Self::parse_to_nautilus_messages(
                         msg,
@@ -122,7 +122,7 @@ impl FeedHandler {
                     .await;
 
                     for nautilus_msg in nautilus_messages {
-                        if self.tx.send(nautilus_msg).is_err() {
+                        if self.out_tx.send(nautilus_msg).is_err() {
                             tracing::debug!("Receiver dropped, stopping handler");
                             return None;
                         }
@@ -138,7 +138,7 @@ impl FeedHandler {
     }
 
     async fn parse_to_nautilus_messages(
-        msg: BybitWebSocketMessage,
+        msg: BybitWsMessage,
         instruments: &AHashMap<Ustr, InstrumentAny>,
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
@@ -149,7 +149,7 @@ impl FeedHandler {
         let mut result = Vec::new();
 
         match msg {
-            BybitWebSocketMessage::Orderbook(msg) => {
+            BybitWsMessage::Orderbook(msg) => {
                 let raw_symbol = msg.data.s;
                 let symbol =
                     product_type.map_or(raw_symbol, |pt| make_bybit_symbol(raw_symbol, pt));
@@ -163,7 +163,7 @@ impl FeedHandler {
                     tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
                 }
             }
-            BybitWebSocketMessage::Trade(msg) => {
+            BybitWsMessage::Trade(msg) => {
                 let mut data_vec = Vec::new();
                 for trade in &msg.data {
                     let raw_symbol = trade.s;
@@ -184,7 +184,7 @@ impl FeedHandler {
                     result.push(NautilusWsMessage::Data(data_vec));
                 }
             }
-            BybitWebSocketMessage::Kline(msg) => {
+            BybitWsMessage::Kline(msg) => {
                 let (interval_str, raw_symbol) = match parse_kline_topic(&msg.topic) {
                     Ok(parts) => parts,
                     Err(e) => {
@@ -235,7 +235,7 @@ impl FeedHandler {
                     tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
                 }
             }
-            BybitWebSocketMessage::TickerLinear(msg) => {
+            BybitWsMessage::TickerLinear(msg) => {
                 let raw_symbol = msg.data.symbol;
                 let symbol =
                     product_type.map_or(raw_symbol, |pt| make_bybit_symbol(raw_symbol, pt));
@@ -294,7 +294,7 @@ impl FeedHandler {
                     tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
                 }
             }
-            BybitWebSocketMessage::TickerOption(msg) => {
+            BybitWsMessage::TickerOption(msg) => {
                 let raw_symbol = &msg.data.symbol;
                 let symbol = product_type.map_or_else(
                     || raw_symbol.as_str().into(),
@@ -325,7 +325,7 @@ impl FeedHandler {
                     tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
                 }
             }
-            BybitWebSocketMessage::AccountOrder(msg) => {
+            BybitWsMessage::AccountOrder(msg) => {
                 if let Some(account_id) = account_id {
                     let mut reports = Vec::new();
                     for order in &msg.data {
@@ -348,7 +348,7 @@ impl FeedHandler {
                     }
                 }
             }
-            BybitWebSocketMessage::AccountExecution(msg) => {
+            BybitWsMessage::AccountExecution(msg) => {
                 if let Some(account_id) = account_id {
                     let mut reports = Vec::new();
                     for execution in &msg.data {
@@ -369,7 +369,7 @@ impl FeedHandler {
                     }
                 }
             }
-            BybitWebSocketMessage::AccountPosition(msg) => {
+            BybitWsMessage::AccountPosition(msg) => {
                 if let Some(account_id) = account_id {
                     for position in &msg.data {
                         let raw_symbol = position.symbol;
@@ -397,7 +397,7 @@ impl FeedHandler {
                     }
                 }
             }
-            BybitWebSocketMessage::AccountWallet(msg) => {
+            BybitWsMessage::AccountWallet(msg) => {
                 if let Some(account_id) = account_id {
                     for wallet in &msg.data {
                         let ts_event = UnixNanos::from(msg.creation_time as u64 * 1_000_000);
@@ -409,7 +409,7 @@ impl FeedHandler {
                     }
                 }
             }
-            BybitWebSocketMessage::OrderResponse(resp) => {
+            BybitWsMessage::OrderResponse(resp) => {
                 if resp.ret_code == 0 {
                     tracing::debug!(op = %resp.op, ret_msg = %resp.ret_msg, "Order operation successful");
                 } else {
@@ -438,10 +438,10 @@ impl FeedHandler {
                     result.push(NautilusWsMessage::Error(error));
                 }
             }
-            BybitWebSocketMessage::Error(err) => {
+            BybitWsMessage::Error(err) => {
                 result.push(NautilusWsMessage::Error(err));
             }
-            BybitWebSocketMessage::Reconnected => {
+            BybitWsMessage::Reconnected => {
                 result.push(NautilusWsMessage::Reconnected);
             }
             _ => {} // Ignore other message types (pong, auth, subscription confirmations, etc.)

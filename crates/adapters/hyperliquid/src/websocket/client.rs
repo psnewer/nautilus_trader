@@ -23,7 +23,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_network::websocket::{WebSocketClient, WebSocketConfig, channel_message_handler};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
@@ -31,7 +31,6 @@ use crate::{
     common::{enums::HyperliquidBarInterval, parse::bar_type_to_interval},
     http::error::{Error, Result as HyperliquidResult},
     websocket::{
-        error::HyperliquidError,
         handler::{FeedHandler, HandlerCommand},
         messages::{
             ActionPayload, HyperliquidWsMessage, HyperliquidWsRequest, NautilusWsMessage,
@@ -42,49 +41,6 @@ use crate::{
         },
     },
 };
-
-/// Codec for encoding and decoding Hyperliquid WebSocket messages.
-///
-/// This struct provides methods to validate URLs and serialize/deserialize messages
-/// according to the Hyperliquid WebSocket protocol.
-#[derive(Debug, Default)]
-pub struct HyperliquidCodec;
-
-impl HyperliquidCodec {
-    /// Creates a new Hyperliquid codec instance.
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Validates that a URL is a proper WebSocket URL.
-    pub fn validate_url(url: &str) -> Result<(), HyperliquidError> {
-        if url.starts_with("ws://") || url.starts_with("wss://") {
-            Ok(())
-        } else {
-            Err(HyperliquidError::UrlParsing(format!(
-                "URL must start with ws:// or wss://, was: {}",
-                url
-            )))
-        }
-    }
-
-    /// Encodes a WebSocket request to JSON bytes.
-    pub fn encode(&self, request: &HyperliquidWsRequest) -> Result<Vec<u8>, HyperliquidError> {
-        serde_json::to_vec(request).map_err(|e| {
-            HyperliquidError::MessageSerialization(format!("Failed to serialize request: {e}"))
-        })
-    }
-
-    /// Decodes JSON bytes to a WebSocket message.
-    pub fn decode(&self, data: &[u8]) -> Result<HyperliquidWsMessage, HyperliquidError> {
-        serde_json::from_slice(data).map_err(|e| {
-            HyperliquidError::MessageDeserialization(format!(
-                "Failed to deserialize message: {}",
-                e
-            ))
-        })
-    }
-}
 
 /// Low-level Hyperliquid WebSocket client that wraps Nautilus WebSocketClient.
 ///
@@ -130,7 +86,8 @@ impl HyperliquidWebSocketInnerClient {
         let post_ids = PostIds::new(1);
         let (tx_inbound, rx_inbound) =
             tokio::sync::mpsc::unbounded_channel::<HyperliquidWsMessage>();
-        let (tx_outbound, mut rx_outbound) = mpsc::channel::<HyperliquidWsRequest>(1024);
+        let (tx_outbound, mut rx_outbound) =
+            tokio::sync::mpsc::channel::<HyperliquidWsRequest>(1024);
 
         let ws_sender = WsSender::new(tx_outbound);
 
@@ -472,17 +429,17 @@ impl HyperliquidWebSocketClient {
     pub async fn connect(url: &str, account_id: Option<AccountId>) -> anyhow::Result<Self> {
         let mut inner_client = HyperliquidWebSocketInnerClient::connect(url).await?;
 
-        let message_rx = inner_client
+        let msg_rx = inner_client
             .take_receiver()
             .ok_or_else(|| anyhow::anyhow!("Failed to take receiver from inner client"))?;
 
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
 
         let instruments_cache = Arc::new(DashMap::new());
 
         tokio::spawn(async move {
-            let mut handler = FeedHandler::new(message_rx, event_tx, cmd_rx, account_id);
+            let mut handler = FeedHandler::new(cmd_rx, msg_rx, out_tx, account_id);
 
             while handler.next().await.is_some() {}
 
@@ -495,7 +452,7 @@ impl HyperliquidWebSocketClient {
             instruments: instruments_cache,
             bar_types: Arc::new(DashMap::new()),
             handler_cmd_tx: Arc::new(cmd_tx),
-            rx: Some(event_rx),
+            rx: Some(out_rx),
             account_id,
         })
     }

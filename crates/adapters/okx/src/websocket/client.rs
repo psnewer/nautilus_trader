@@ -88,12 +88,6 @@ use crate::common::{
     parse::{bar_spec_as_okx_channel, okx_instrument_type, okx_instrument_type_from_symbol},
 };
 
-#[derive(Debug)]
-pub enum PendingOrderParams {
-    Regular(WsPostOrderParams),
-    Algo(()),
-}
-
 type PlaceRequestData = (
     PendingOrderParams,
     ClientOrderId,
@@ -101,6 +95,7 @@ type PlaceRequestData = (
     StrategyId,
     InstrumentId,
 );
+
 type CancelRequestData = (
     ClientOrderId,
     TraderId,
@@ -108,6 +103,7 @@ type CancelRequestData = (
     InstrumentId,
     Option<VenueOrderId>,
 );
+
 type AmendRequestData = (
     ClientOrderId,
     TraderId,
@@ -115,7 +111,14 @@ type AmendRequestData = (
     InstrumentId,
     Option<VenueOrderId>,
 );
+
 type MassCancelRequestData = InstrumentId;
+
+#[derive(Debug)]
+pub enum PendingOrderParams {
+    Regular(WsPostOrderParams),
+    Algo(()),
+}
 
 /// Default OKX WebSocket connection rate limit: 3 requests per second.
 ///
@@ -188,7 +191,7 @@ pub struct OKXWebSocketClient {
     heartbeat: Option<u64>,
     inner: Arc<tokio::sync::RwLock<Option<WebSocketClient>>>,
     auth_tracker: AuthTracker,
-    rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
+    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     signal: Arc<AtomicBool>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions_inst_type: Arc<DashMap<OKXWsChannel, AHashSet<OKXInstrumentType>>>,
@@ -271,7 +274,7 @@ impl OKXWebSocketClient {
             heartbeat,
             inner: Arc::new(tokio::sync::RwLock::new(None)),
             auth_tracker: AuthTracker::new(),
-            rx: None,
+            out_rx: None,
             signal,
             task_handle: None,
             subscriptions_inst_type,
@@ -515,9 +518,9 @@ impl OKXWebSocketClient {
         }
 
         let account_id = self.account_id;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
+        let (msg_tx, rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
 
-        self.rx = Some(Arc::new(rx));
+        self.out_rx = Some(Arc::new(rx));
 
         // Create fresh command channel for this connection
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
@@ -559,10 +562,10 @@ impl OKXWebSocketClient {
                 let mut handler = FeedHandler::new(
                     account_id,
                     cmd_rx,
+                    msg_tx,
                     reader,
                     signal.clone(),
                     inner_client.clone(),
-                    tx,
                     pending_place_requests,
                     pending_cancel_requests,
                     pending_amend_requests,
@@ -859,7 +862,7 @@ impl OKXWebSocketClient {
                             continue;
                         }
                         Some(msg) => {
-                            if handler.tx.send(msg).is_err() {
+                            if handler.out_tx.send(msg).is_err() {
                                 tracing::error!(
                                     "Failed to send message through channel: receiver dropped",
                                 );
@@ -961,7 +964,7 @@ impl OKXWebSocketClient {
     /// - `stream_data` has already been called somewhere else (stream receiver is then taken).
     pub fn stream(&mut self) -> impl Stream<Item = NautilusWsMessage> + 'static {
         let rx = self
-            .rx
+            .out_rx
             .take()
             .expect("Data stream receiver already taken or not connected");
         let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");
@@ -3266,7 +3269,7 @@ mod tests {
         },
         websocket::{
             handler,
-            messages::{OKXOrderMsg, OKXWebSocketError, OKXWebSocketEvent},
+            messages::{OKXOrderMsg, OKXWebSocketError, OKXWsMessage},
         },
     };
 
@@ -3587,7 +3590,7 @@ mod tests {
             .unwrap();
 
         let result = handler.next().await;
-        assert!(matches!(result, Some(OKXWebSocketEvent::Reconnected)));
+        assert!(matches!(result, Some(OKXWsMessage::Reconnected)));
     }
 
     #[tokio::test]
@@ -3613,14 +3616,11 @@ mod tests {
         tx.send(Message::Text(sub_msg.to_string().into())).unwrap();
 
         let first = handler.next().await;
-        assert!(matches!(first, Some(OKXWebSocketEvent::Ping)));
+        assert!(matches!(first, Some(OKXWsMessage::Ping)));
 
-        // Subscription event should now be returned (not swallowed)
+        // Subscription message should now be returned (not swallowed)
         let second = handler.next().await;
-        assert!(matches!(
-            second,
-            Some(OKXWebSocketEvent::Subscription { .. })
-        ));
+        assert!(matches!(second, Some(OKXWsMessage::Subscription { .. })));
 
         // Now ensure we can still shut down cleanly
         signal.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -3669,7 +3669,7 @@ mod tests {
                 .unwrap();
 
             let result = handler.next().await;
-            assert!(matches!(result, Some(OKXWebSocketEvent::Reconnected)));
+            assert!(matches!(result, Some(OKXWsMessage::Reconnected)));
         }
     }
 

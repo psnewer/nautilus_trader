@@ -66,13 +66,13 @@ use crate::{
         cache,
         enums::{BybitWsOperation, BybitWsPrivateChannel, BybitWsPublicChannel},
         error::{BybitWsError, BybitWsResult},
-        handler,
+        handler::{self, FeedHandler},
         messages::{
-            BybitAuthRequest, BybitSubscription, BybitWebSocketError, BybitWebSocketMessage,
-            BybitWsAccountExecutionMsg, BybitWsAccountOrderMsg, BybitWsAccountPositionMsg,
-            BybitWsAccountWalletMsg, BybitWsAmendOrderParams, BybitWsAuthResponse,
-            BybitWsBatchCancelItem, BybitWsBatchCancelOrderArgs, BybitWsBatchPlaceItem,
-            BybitWsBatchPlaceOrderArgs, BybitWsCancelOrderParams, BybitWsHeader, BybitWsKlineMsg,
+            BybitAuthRequest, BybitSubscription, BybitWebSocketError, BybitWsAccountExecutionMsg,
+            BybitWsAccountOrderMsg, BybitWsAccountPositionMsg, BybitWsAccountWalletMsg,
+            BybitWsAmendOrderParams, BybitWsAuthResponse, BybitWsBatchCancelItem,
+            BybitWsBatchCancelOrderArgs, BybitWsBatchPlaceItem, BybitWsBatchPlaceOrderArgs,
+            BybitWsCancelOrderParams, BybitWsHeader, BybitWsKlineMsg, BybitWsMessage,
             BybitWsOrderResponse, BybitWsOrderbookDepthMsg, BybitWsPlaceOrderParams,
             BybitWsRequest, BybitWsResponse, BybitWsSubscriptionMsg, BybitWsTickerLinearMsg,
             BybitWsTickerOptionMsg, BybitWsTradeMsg, NautilusWsMessage,
@@ -124,13 +124,13 @@ pub struct BybitWebSocketClient {
     auth_tracker: AuthTracker,
     heartbeat: Option<u64>,
     inner: Arc<RwLock<Option<WebSocketClient>>>,
-    rx: Option<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>,
+    out_rx: Option<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>,
     signal: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
     subscriptions: SubscriptionState,
     is_authenticated: Arc<AtomicBool>,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
-    handler_cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<handler::HandlerCommand>>,
+    cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<handler::HandlerCommand>>,
     account_id: Option<AccountId>,
     quote_cache: Arc<RwLock<cache::QuoteCache>>,
     funding_cache: FundingCache,
@@ -162,13 +162,13 @@ impl Clone for BybitWebSocketClient {
             auth_tracker: self.auth_tracker.clone(),
             heartbeat: self.heartbeat,
             inner: Arc::clone(&self.inner),
-            rx: None, // Each clone gets its own receiver
+            out_rx: None, // Each clone gets its own receiver
             signal: Arc::clone(&self.signal),
             task_handle: None, // Each clone gets its own task handle
             subscriptions: self.subscriptions.clone(),
             is_authenticated: Arc::clone(&self.is_authenticated),
             instruments_cache: Arc::clone(&self.instruments_cache),
-            handler_cmd_tx: Arc::clone(&self.handler_cmd_tx),
+            cmd_tx: Arc::clone(&self.cmd_tx),
             account_id: self.account_id,
             quote_cache: Arc::clone(&self.quote_cache),
             funding_cache: Arc::clone(&self.funding_cache),
@@ -216,13 +216,13 @@ impl BybitWebSocketClient {
             auth_tracker: AuthTracker::new(),
             heartbeat: heartbeat.or(Some(DEFAULT_HEARTBEAT_SECS)),
             inner: Arc::new(RwLock::new(None)),
-            rx: None,
+            out_rx: None,
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
-            handler_cmd_tx: Arc::new(cmd_tx),
+            cmd_tx: Arc::new(cmd_tx),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
@@ -259,13 +259,13 @@ impl BybitWebSocketClient {
             auth_tracker: AuthTracker::new(),
             heartbeat: heartbeat.or(Some(DEFAULT_HEARTBEAT_SECS)),
             inner: Arc::new(RwLock::new(None)),
-            rx: None,
+            out_rx: None,
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
-            handler_cmd_tx: Arc::new(cmd_tx),
+            cmd_tx: Arc::new(cmd_tx),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
@@ -291,7 +291,7 @@ impl BybitWebSocketClient {
         // We don't have a handler yet; this placeholder keeps cache_instrument() working.
         // connect() swaps in the real channel and replays any queued instruments so the
         // handler sees them once it starts.
-        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<handler::HandlerCommand>();
+        let (cmd_tx, _) = tokio::sync::mpsc::unbounded_channel::<handler::HandlerCommand>();
 
         Self {
             url: url.unwrap_or_else(|| bybit_ws_trade_url(environment).to_string()),
@@ -302,13 +302,13 @@ impl BybitWebSocketClient {
             auth_tracker: AuthTracker::new(),
             heartbeat: heartbeat.or(Some(DEFAULT_HEARTBEAT_SECS)),
             inner: Arc::new(RwLock::new(None)),
-            rx: None,
+            out_rx: None,
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
-            handler_cmd_tx: Arc::new(cmd_tx),
+            cmd_tx: Arc::new(cmd_tx),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
@@ -329,7 +329,7 @@ impl BybitWebSocketClient {
     ///
     /// Panics if the ping message cannot be serialized to JSON.
     pub async fn connect(&mut self) -> BybitWsResult<()> {
-        let (message_handler, mut message_rx) = channel_message_handler();
+        let (raw_handler, mut raw_rx) = channel_message_handler();
 
         let inner_for_ping = Arc::clone(&self.inner);
         let ping_handler: PingHandler = Arc::new(move |payload: Vec<u8>| {
@@ -356,7 +356,7 @@ impl BybitWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: Self::default_headers(),
-            message_handler: Some(message_handler),
+            message_handler: Some(raw_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: Some(ping_msg),
             ping_handler: Some(ping_handler),
@@ -376,12 +376,12 @@ impl BybitWebSocketClient {
             *guard = Some(client);
         }
 
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
-        self.rx = Some(event_rx);
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
+        self.out_rx = Some(out_rx);
         self.signal.store(false, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<handler::HandlerCommand>();
-        self.handler_cmd_tx = Arc::new(cmd_tx.clone());
+        self.cmd_tx = Arc::new(cmd_tx.clone());
 
         if !self.instruments_cache.is_empty() {
             let cached_instruments: Vec<InstrumentAny> = self
@@ -396,8 +396,7 @@ impl BybitWebSocketClient {
             }
         }
 
-        let (handler_msg_tx, handler_msg_rx) =
-            tokio::sync::mpsc::unbounded_channel::<BybitWebSocketMessage>();
+        let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<BybitWsMessage>();
 
         let inner = Arc::clone(&self.inner);
         let signal = Arc::clone(&self.signal);
@@ -413,13 +412,13 @@ impl BybitWebSocketClient {
 
         let handler_quote_cache = Arc::clone(&quote_cache);
         let handler_funding_cache = Arc::clone(&funding_cache);
-        let handler_event_tx = event_tx.clone();
+        let handler_out_tx = out_tx.clone();
 
         get_runtime().spawn(async move {
-            let mut handler = handler::FeedHandler::new(
-                handler_msg_rx,
-                handler_event_tx,
+            let mut handler = FeedHandler::new(
                 cmd_rx,
+                msg_rx,
+                handler_out_tx,
                 account_id,
                 product_type,
                 handler_quote_cache,
@@ -431,8 +430,12 @@ impl BybitWebSocketClient {
             tracing::debug!("Handler task completed");
         });
 
+        let msg_tx_for_task = msg_tx.clone();
+        let out_tx_for_reconnect = out_tx.clone();
+        let out_tx_for_task = out_tx.clone();
+
         let task_handle = get_runtime().spawn(async move {
-            while let Some(message) = message_rx.recv().await {
+            while let Some(message) = raw_rx.recv().await {
                 if signal.load(Ordering::Relaxed) {
                     break;
                 }
@@ -447,7 +450,7 @@ impl BybitWebSocketClient {
                 )
                 .await
                 {
-                    Ok(Some(BybitWebSocketMessage::Reconnected)) => {
+                    Ok(Some(BybitWsMessage::Reconnected)) => {
                         tracing::info!("Handling WebSocket reconnection");
 
                         let inner_for_task = inner.clone();
@@ -457,7 +460,7 @@ impl BybitWebSocketClient {
                         let credential_for_task = credential.clone();
                         let quote_cache_for_task = quote_cache.clone();
                         let funding_cache_for_task = funding_cache.clone();
-                        let event_tx_for_task = event_tx.clone();
+                        let event_tx_for_task = out_tx_for_reconnect.clone();
 
                         get_runtime().spawn(async move {
                             // Authenticate if required
@@ -512,17 +515,16 @@ impl BybitWebSocketClient {
                             }
                         });
                     }
-                    Ok(Some(event)) => {
-                        // Send message to handler for parsing
-                        if handler_msg_tx.send(event).is_err() {
-                            tracing::debug!("Handler receiver dropped, stopping main loop");
+                    Ok(Some(msg)) => {
+                        if msg_tx_for_task.send(msg).is_err() {
+                            tracing::debug!("Feed handler receiver dropped, stopping main loop");
                             break;
                         }
                     }
                     Ok(None) => {}
                     Err(e) => {
                         let error = BybitWebSocketError::from_message(e.to_string());
-                        if event_tx.send(NautilusWsMessage::Error(error)).is_err() {
+                        if out_tx_for_task.send(NautilusWsMessage::Error(error)).is_err() {
                             break;
                         }
                     }
@@ -559,7 +561,7 @@ impl BybitWebSocketClient {
             tracing::error!(error = %e, "Bybit websocket task terminated with error");
         }
 
-        self.rx = None;
+        self.out_rx = None;
         self.is_authenticated.store(false, Ordering::Relaxed);
 
         Ok(())
@@ -656,7 +658,7 @@ impl BybitWebSocketClient {
         &mut self,
     ) -> impl futures_util::Stream<Item = NautilusWsMessage> + Send + 'static {
         let rx = self
-            .rx
+            .out_rx
             .take()
             .expect("Stream receiver already taken or client not connected");
 
@@ -690,7 +692,7 @@ impl BybitWebSocketClient {
         // Before connect() the handler isn't running; this send will fail and that's expected
         // because connect() replays the instruments via InitializeInstruments.
         if let Err(e) = self
-            .handler_cmd_tx
+            .cmd_tx
             .send(handler::HandlerCommand::UpdateInstrument(instrument))
         {
             tracing::debug!("Failed to send instrument update to handler: {e}");
@@ -712,7 +714,7 @@ impl BybitWebSocketClient {
         // because connect() replays the instruments via InitializeInstruments.
         if !instruments.is_empty()
             && let Err(e) = self
-                .handler_cmd_tx
+                .cmd_tx
                 .send(handler::HandlerCommand::InitializeInstruments(instruments))
         {
             tracing::debug!("Failed to send bulk instrument update to handler: {e}");
@@ -1771,18 +1773,18 @@ impl BybitWebSocketClient {
         requires_auth: bool,
         is_authenticated: &Arc<AtomicBool>,
         message: Message,
-    ) -> BybitWsResult<Option<BybitWebSocketMessage>> {
+    ) -> BybitWsResult<Option<BybitWsMessage>> {
         match message {
             Message::Text(text) => {
                 tracing::trace!("Bybit WS message: {text}");
 
                 if text == RECONNECTED {
                     tracing::debug!("Bybit websocket reconnected signal received");
-                    return Ok(Some(BybitWebSocketMessage::Reconnected));
+                    return Ok(Some(BybitWsMessage::Reconnected));
                 }
 
                 if text.trim().eq_ignore_ascii_case(BYBIT_PONG) {
-                    return Ok(Some(BybitWebSocketMessage::Pong));
+                    return Ok(Some(BybitWsMessage::Pong));
                 }
 
                 let value: Value = serde_json::from_str(&text).map_err(BybitWsError::from)?;
@@ -1802,7 +1804,7 @@ impl BybitWebSocketClient {
                             return Ok(None);
                         }
                         BybitWsOperation::Pong => {
-                            return Ok(Some(BybitWebSocketMessage::Pong));
+                            return Ok(Some(BybitWsMessage::Pong));
                         }
                         _ => {}
                     }
@@ -1810,14 +1812,14 @@ impl BybitWebSocketClient {
 
                 if let Some(event) = Self::classify_message(&value) {
                     // Log raw JSON for error events to aid debugging
-                    if matches!(event, BybitWebSocketMessage::Error(_)) {
+                    if matches!(event, BybitWsMessage::Error(_)) {
                         tracing::debug!(
                             json = %serde_json::to_string(&value).unwrap_or_default(),
                             "Received error event from Bybit"
                         );
                     }
 
-                    if let BybitWebSocketMessage::Auth(auth) = &event {
+                    if let BybitWsMessage::Auth(auth) = &event {
                         // Auth is successful if either success=true OR retCode=0
                         let is_success =
                             auth.success.unwrap_or(false) || auth.ret_code.unwrap_or(-1) == 0;
@@ -1833,7 +1835,7 @@ impl BybitWebSocketClient {
                                 .unwrap_or_else(|| "Authentication failed".to_string());
                             auth_tracker.fail(message);
                         }
-                    } else if let BybitWebSocketMessage::Subscription(sub_msg) = &event {
+                    } else if let BybitWsMessage::Subscription(sub_msg) = &event {
                         // Handle subscription/unsubscription confirmation
                         match sub_msg.op {
                             BybitWsOperation::Subscribe => {
@@ -1880,13 +1882,13 @@ impl BybitWebSocketClient {
                             }
                             _ => {}
                         }
-                    } else if let BybitWebSocketMessage::Error(e) = &event
+                    } else if let BybitWsMessage::Error(e) = &event
                         && requires_auth
                         && !is_authenticated.load(Ordering::Relaxed)
                     {
                         auth_tracker.fail(e.message.clone());
                     }
-                    if let BybitWebSocketMessage::Error(e) = &event {
+                    if let BybitWsMessage::Error(e) = &event {
                         tracing::warn!(
                             code = e.code,
                             message = %e.message,
@@ -1899,20 +1901,20 @@ impl BybitWebSocketClient {
                     return Ok(Some(event));
                 }
 
-                Ok(Some(BybitWebSocketMessage::Raw(value)))
+                Ok(Some(BybitWsMessage::Raw(value)))
             }
             Message::Ping(payload) => {
                 Self::send_pong_inner(inner, payload.to_vec()).await?;
                 Ok(None)
             }
-            Message::Pong(_) => Ok(Some(BybitWebSocketMessage::Pong)),
+            Message::Pong(_) => Ok(Some(BybitWsMessage::Pong)),
             Message::Binary(_) => Ok(None),
             Message::Close(_) => Ok(None),
             Message::Frame(_) => Ok(None),
         }
     }
 
-    fn classify_message(value: &Value) -> Option<BybitWebSocketMessage> {
+    fn classify_message(value: &Value) -> Option<BybitWsMessage> {
         // Check for auth response first (by op field) to avoid confusion with subscription messages
         if let Ok(op) = serde_json::from_value::<BybitWsOperation>(
             value.get("op").cloned().unwrap_or(Value::Null),
@@ -1925,7 +1927,7 @@ impl BybitWebSocketClient {
 
                 if is_success {
                     tracing::debug!("Auth successful, returning Auth message");
-                    return Some(BybitWebSocketMessage::Auth(auth));
+                    return Some(BybitWsMessage::Auth(auth));
                 }
                 let resp = BybitWsResponse {
                     op: Some(auth.op.clone()),
@@ -1937,18 +1939,18 @@ impl BybitWebSocketClient {
                     ret_msg: auth.ret_msg,
                 };
                 let error = BybitWebSocketError::from_response(&resp);
-                return Some(BybitWebSocketMessage::Error(error));
+                return Some(BybitWsMessage::Error(error));
             }
         }
 
         if let Some(success) = value.get("success").and_then(Value::as_bool) {
             if success {
                 if let Ok(msg) = serde_json::from_value::<BybitWsSubscriptionMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::Subscription(msg));
+                    return Some(BybitWsMessage::Subscription(msg));
                 }
             } else if let Ok(resp) = serde_json::from_value::<BybitWsResponse>(value.clone()) {
                 let error = BybitWebSocketError::from_response(&resp);
-                return Some(BybitWebSocketMessage::Error(error));
+                return Some(BybitWsMessage::Error(error));
             }
         }
 
@@ -1959,11 +1961,11 @@ impl BybitWebSocketClient {
         {
             // Check ret_code to determine success or failure
             if order_resp.ret_code == 0 {
-                return Some(BybitWebSocketMessage::OrderResponse(order_resp));
+                return Some(BybitWsMessage::OrderResponse(order_resp));
             }
             // Convert failed order response to error
             let error = BybitWebSocketError::new(order_resp.ret_code, order_resp.ret_msg);
-            return Some(BybitWebSocketMessage::Error(error));
+            return Some(BybitWsMessage::Error(error));
         }
 
         if (value.get("ret_code").is_some() || value.get("retCode").is_some())
@@ -1971,16 +1973,16 @@ impl BybitWebSocketClient {
         {
             if resp.ret_code.unwrap_or_default() != 0 {
                 let error = BybitWebSocketError::from_response(&resp);
-                return Some(BybitWebSocketMessage::Error(error));
+                return Some(BybitWsMessage::Error(error));
             }
-            return Some(BybitWebSocketMessage::Response(resp));
+            return Some(BybitWsMessage::Response(resp));
         }
 
         if let Ok(auth) = serde_json::from_value::<BybitWsAuthResponse>(value.clone())
             && auth.op == BybitWsOperation::Auth
         {
             if auth.success.unwrap_or(false) {
-                return Some(BybitWebSocketMessage::Auth(auth));
+                return Some(BybitWsMessage::Auth(auth));
             }
             let resp = BybitWsResponse {
                 op: Some(auth.op.clone()),
@@ -1992,7 +1994,7 @@ impl BybitWebSocketClient {
                 ret_msg: auth.ret_msg,
             };
             let error = BybitWebSocketError::from_response(&resp);
-            return Some(BybitWebSocketMessage::Error(error));
+            return Some(BybitWsMessage::Error(error));
         }
 
         if let Some(topic) = value.get("topic").and_then(Value::as_str) {
@@ -2008,22 +2010,22 @@ impl BybitWebSocketClient {
 
             if topic.starts_with(orderbook_channel) {
                 if let Ok(msg) = serde_json::from_value::<BybitWsOrderbookDepthMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::Orderbook(msg));
+                    return Some(BybitWsMessage::Orderbook(msg));
                 }
             } else if topic.contains(public_trade_channel) || topic.starts_with(trade_channel) {
                 if let Ok(msg) = serde_json::from_value::<BybitWsTradeMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::Trade(msg));
+                    return Some(BybitWsMessage::Trade(msg));
                 }
             } else if topic.contains(kline_channel) {
                 if let Ok(msg) = serde_json::from_value::<BybitWsKlineMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::Kline(msg));
+                    return Some(BybitWsMessage::Kline(msg));
                 }
             } else if topic.contains(tickers_channel) {
                 if let Ok(msg) = serde_json::from_value::<BybitWsTickerOptionMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::TickerOption(msg));
+                    return Some(BybitWsMessage::TickerOption(msg));
                 }
                 if let Ok(msg) = serde_json::from_value::<BybitWsTickerLinearMsg>(value.clone()) {
-                    return Some(BybitWebSocketMessage::TickerLinear(msg));
+                    return Some(BybitWsMessage::TickerLinear(msg));
                 }
             } else if topic == order_channel
                 || topic
@@ -2031,7 +2033,7 @@ impl BybitWebSocketClient {
                     .is_some_and(|s| s.starts_with('.'))
             {
                 match serde_json::from_value::<BybitWsAccountOrderMsg>(value.clone()) {
-                    Ok(msg) => return Some(BybitWebSocketMessage::AccountOrder(msg)),
+                    Ok(msg) => return Some(BybitWsMessage::AccountOrder(msg)),
                     Err(e) => tracing::warn!("Failed to deserialize order message: {e}\n{value}"),
                 }
             } else if topic == execution_channel
@@ -2040,7 +2042,7 @@ impl BybitWebSocketClient {
                     .is_some_and(|s| s.starts_with('.'))
             {
                 match serde_json::from_value::<BybitWsAccountExecutionMsg>(value.clone()) {
-                    Ok(msg) => return Some(BybitWebSocketMessage::AccountExecution(msg)),
+                    Ok(msg) => return Some(BybitWsMessage::AccountExecution(msg)),
                     Err(e) => {
                         tracing::warn!("Failed to deserialize execution message: {e}\n{value}");
                     }
@@ -2051,7 +2053,7 @@ impl BybitWebSocketClient {
                     .is_some_and(|s| s.starts_with('.'))
             {
                 match serde_json::from_value::<BybitWsAccountWalletMsg>(value.clone()) {
-                    Ok(msg) => return Some(BybitWebSocketMessage::AccountWallet(msg)),
+                    Ok(msg) => return Some(BybitWsMessage::AccountWallet(msg)),
                     Err(e) => tracing::warn!("Failed to deserialize wallet message: {e}\n{value}"),
                 }
             } else if topic == position_channel
@@ -2060,7 +2062,7 @@ impl BybitWebSocketClient {
                     .is_some_and(|s| s.starts_with('.'))
             {
                 match serde_json::from_value::<BybitWsAccountPositionMsg>(value.clone()) {
-                    Ok(msg) => return Some(BybitWebSocketMessage::AccountPosition(msg)),
+                    Ok(msg) => return Some(BybitWsMessage::AccountPosition(msg)),
                     Err(e) => {
                         tracing::warn!("Failed to deserialize position message: {e}\n{value}");
                     }
@@ -2146,7 +2148,7 @@ mod tests {
             .expect("invalid fixture");
         let message =
             BybitWebSocketClient::classify_message(&json).expect("expected orderbook message");
-        assert!(matches!(message, BybitWebSocketMessage::Orderbook(_)));
+        assert!(matches!(message, BybitWsMessage::Orderbook(_)));
     }
 
     #[rstest]
@@ -2155,7 +2157,7 @@ mod tests {
             serde_json::from_str(&load_test_json("ws_public_trade.json")).expect("invalid fixture");
         let message =
             BybitWebSocketClient::classify_message(&json).expect("expected trade message");
-        assert!(matches!(message, BybitWebSocketMessage::Trade(_)));
+        assert!(matches!(message, BybitWsMessage::Trade(_)));
     }
 
     #[rstest]
@@ -2164,7 +2166,7 @@ mod tests {
             .expect("invalid fixture");
         let message =
             BybitWebSocketClient::classify_message(&json).expect("expected ticker message");
-        assert!(matches!(message, BybitWebSocketMessage::TickerLinear(_)));
+        assert!(matches!(message, BybitWsMessage::TickerLinear(_)));
     }
 
     #[rstest]
@@ -2173,7 +2175,7 @@ mod tests {
             .expect("invalid fixture");
         let message =
             BybitWebSocketClient::classify_message(&json).expect("expected ticker message");
-        assert!(matches!(message, BybitWebSocketMessage::TickerOption(_)));
+        assert!(matches!(message, BybitWsMessage::TickerOption(_)));
     }
 
     #[rstest]

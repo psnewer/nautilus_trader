@@ -62,24 +62,24 @@ pub enum HandlerCommand {
 }
 
 struct RawFeedHandler {
-    receiver: tokio::sync::mpsc::UnboundedReceiver<Message>,
+    raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
     signal: Arc<AtomicBool>,
 }
 
 impl RawFeedHandler {
     /// Creates a new [`RawFeedHandler`] instance.
     pub fn new(
-        receiver: tokio::sync::mpsc::UnboundedReceiver<Message>,
+        raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
         signal: Arc<AtomicBool>,
     ) -> Self {
-        Self { receiver, signal }
+        Self { raw_rx, signal }
     }
 
     /// Get the next message from the WebSocket stream.
     async fn next(&mut self) -> Option<BitmexWsMessage> {
         loop {
             tokio::select! {
-                msg = self.receiver.recv() => match msg {
+                msg = self.raw_rx.recv() => match msg {
                     Some(msg) => match msg {
                         Message::Text(text) => {
                             if text == RECONNECTED {
@@ -176,7 +176,7 @@ impl RawFeedHandler {
 
 pub(super) struct FeedHandler {
     handler: RawFeedHandler,
-    pub tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
+    pub out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     #[allow(
         dead_code,
         reason = "May be needed for future account-specific processing"
@@ -198,23 +198,24 @@ impl FeedHandler {
     pub(super) fn new(
         receiver: tokio::sync::mpsc::UnboundedReceiver<Message>,
         signal: Arc<AtomicBool>,
-        tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
+        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: AccountId,
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
-        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
         order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
         order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
     ) -> Self {
         let handler = RawFeedHandler::new(receiver, signal.clone());
+
         Self {
             handler,
-            tx,
+            cmd_rx,
+            out_tx,
             account_id,
             auth_tracker,
             subscriptions,
             signal,
-            cmd_rx,
             instruments_cache: AHashMap::new(),
             order_type_cache,
             order_symbol_cache,
@@ -662,7 +663,7 @@ impl FeedHandler {
 
                                     if !instruments.is_empty()
                                         && let Err(e) = self
-                                            .tx
+                                            .out_tx
                                             .send(NautilusWsMessage::Instruments(instruments))
                                     {
                                         tracing::error!("Error sending instruments: {e}");

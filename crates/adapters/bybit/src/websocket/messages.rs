@@ -48,7 +48,7 @@ pub struct BybitAuthRequest {
 
 /// High level message emitted by the Bybit WebSocket client.
 #[derive(Debug, Clone)]
-pub enum BybitWebSocketMessage {
+pub enum BybitWsMessage {
     /// Generic response (subscribe/auth acknowledgement).
     Response(BybitWsResponse),
     /// Authentication acknowledgement.

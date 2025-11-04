@@ -77,7 +77,8 @@ pub struct BitmexWebSocketClient {
     credential: Option<Credential>,
     heartbeat: Option<u64>,
     inner: Arc<RwLock<Option<WebSocketClient>>>,
-    rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
+    cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>,
+    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     signal: Arc<AtomicBool>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     account_id: AccountId,
@@ -86,7 +87,6 @@ pub struct BitmexWebSocketClient {
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
     order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
-    handler_cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>,
 }
 
 impl BitmexWebSocketClient {
@@ -120,7 +120,7 @@ impl BitmexWebSocketClient {
             credential,
             heartbeat,
             inner: Arc::new(RwLock::new(None)),
-            rx: None,
+            out_rx: None,
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             account_id,
@@ -129,7 +129,7 @@ impl BitmexWebSocketClient {
             instruments_cache: Arc::new(DashMap::new()),
             order_type_cache: Arc::new(DashMap::new()),
             order_symbol_cache: Arc::new(DashMap::new()),
-            handler_cmd_tx: Arc::new(cmd_tx),
+            cmd_tx: Arc::new(cmd_tx),
         })
     }
 
@@ -216,7 +216,7 @@ impl BitmexWebSocketClient {
         // Before connect() the handler isn't running; this send will fail and that's expected
         // because connect() replays the instruments via InitializeInstruments
         if let Err(e) = self
-            .handler_cmd_tx
+            .cmd_tx
             .send(HandlerCommand::UpdateInstrument(instrument))
         {
             log::debug!("Failed to send instrument update to handler: {e}");
@@ -235,12 +235,12 @@ impl BitmexWebSocketClient {
     pub async fn connect(&mut self) -> Result<(), BitmexWsError> {
         let reader = self.connect_inner().await?;
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
-        self.rx = Some(Arc::new(rx));
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
+        self.out_rx = Some(Arc::new(out_rx));
 
         // Create fresh command channel for this connection
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
-        self.handler_cmd_tx = Arc::new(cmd_tx.clone());
+        self.cmd_tx = Arc::new(cmd_tx.clone());
 
         // Replay cached instruments to the new handler via the new channel
         if !self.instruments_cache.is_empty() {
@@ -267,11 +267,11 @@ impl BitmexWebSocketClient {
             let mut handler = FeedHandler::new(
                 reader,
                 signal,
-                tx,
+                cmd_rx,
+                out_tx,
                 account_id,
                 auth_tracker.clone(),
                 subscriptions.clone(),
-                cmd_rx,
                 order_type_cache,
                 order_symbol_cache,
             );
@@ -389,7 +389,7 @@ impl BitmexWebSocketClient {
                         });
                     }
                     Some(msg) => {
-                        if let Err(e) = handler.tx.send(msg) {
+                        if let Err(e) = handler.out_tx.send(msg) {
                             tracing::error!("Error sending message: {e}");
                             break;
                         }
@@ -598,7 +598,7 @@ impl BitmexWebSocketClient {
     /// - If `stream` has already been called somewhere else (stream receiver is then taken).
     pub fn stream(&mut self) -> impl Stream<Item = NautilusWsMessage> + use<> {
         let rx = self
-            .rx
+            .out_rx
             .take()
             .expect("Stream receiver already taken or not connected");
         let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");

@@ -42,9 +42,9 @@ pub enum HandlerCommand {
 }
 
 pub(super) struct FeedHandler {
-    message_rx: tokio::sync::mpsc::UnboundedReceiver<HyperliquidWsMessage>,
-    tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+    msg_rx: tokio::sync::mpsc::UnboundedReceiver<HyperliquidWsMessage>,
+    out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
 }
@@ -52,15 +52,15 @@ pub(super) struct FeedHandler {
 impl FeedHandler {
     /// Creates a new [`FeedHandler`] instance.
     pub(super) fn new(
-        message_rx: tokio::sync::mpsc::UnboundedReceiver<HyperliquidWsMessage>,
-        tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+        msg_rx: tokio::sync::mpsc::UnboundedReceiver<HyperliquidWsMessage>,
+        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: Option<AccountId>,
     ) -> Self {
         Self {
-            message_rx,
-            tx,
             cmd_rx,
+            msg_rx,
+            out_tx,
             instruments_cache: AHashMap::new(),
             account_id,
         }
@@ -85,7 +85,7 @@ impl FeedHandler {
                     continue;
                 }
 
-                Some(msg) = self.message_rx.recv() => {
+                Some(msg) = self.msg_rx.recv() => {
                     let ts_init = clock.get_time_ns();
                     let nautilus_messages = Self::parse_to_nautilus_messages(
                         msg,
@@ -95,7 +95,7 @@ impl FeedHandler {
                     );
 
                     for nautilus_msg in nautilus_messages {
-                        if self.tx.send(nautilus_msg).is_err() {
+                        if self.out_tx.send(nautilus_msg).is_err() {
                             tracing::debug!("Receiver dropped, stopping handler");
                             return None;
                         }
