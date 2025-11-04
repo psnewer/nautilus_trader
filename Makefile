@@ -191,6 +191,7 @@ check-code:  #-- Run clippy, and ruff --fix (use HYPERSYNC=true to include hyper
 	@printf "$(GREEN)Checks passed$(RESET)\n"
 
 .PHONY: pre-flight
+pre-flight: export CARGO_TARGET_DIR=$(TARGET_DIR)
 pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-test, build-debug, pytest)
 	$(info $(M) Running pre-flight checks...)
 	@if ! git diff --quiet; then \
