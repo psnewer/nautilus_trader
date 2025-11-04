@@ -129,6 +129,7 @@ pub struct BybitWebSocketClient {
     task_handle: Option<tokio::task::JoinHandle<()>>,
     subscriptions: SubscriptionState,
     is_authenticated: Arc<AtomicBool>,
+    is_connected: Arc<AtomicBool>,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<handler::HandlerCommand>>,
     account_id: Option<AccountId>,
@@ -167,6 +168,7 @@ impl Clone for BybitWebSocketClient {
             task_handle: None, // Each clone gets its own task handle
             subscriptions: self.subscriptions.clone(),
             is_authenticated: Arc::clone(&self.is_authenticated),
+            is_connected: Arc::clone(&self.is_connected),
             instruments_cache: Arc::clone(&self.instruments_cache),
             cmd_tx: Arc::clone(&self.cmd_tx),
             account_id: self.account_id,
@@ -221,6 +223,7 @@ impl BybitWebSocketClient {
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
+            is_connected: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             cmd_tx: Arc::new(cmd_tx),
             account_id: None,
@@ -264,6 +267,7 @@ impl BybitWebSocketClient {
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
+            is_connected: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             cmd_tx: Arc::new(cmd_tx),
             account_id: None,
@@ -307,6 +311,7 @@ impl BybitWebSocketClient {
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
             is_authenticated: Arc::new(AtomicBool::new(false)),
+            is_connected: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             cmd_tx: Arc::new(cmd_tx),
             account_id: None,
@@ -534,6 +539,9 @@ impl BybitWebSocketClient {
 
         self.task_handle = Some(task_handle);
 
+        // Mark as connected to suppress pre-connect instrument caching logs
+        self.is_connected.store(true, Ordering::Relaxed);
+
         self.authenticate_if_required().await?;
 
         // Resubscribe to any pre-registered topics (e.g. configured before connect).
@@ -563,6 +571,7 @@ impl BybitWebSocketClient {
 
         self.out_rx = None;
         self.is_authenticated.store(false, Ordering::Relaxed);
+        self.is_connected.store(false, Ordering::Relaxed);
 
         Ok(())
     }
@@ -695,7 +704,10 @@ impl BybitWebSocketClient {
             .cmd_tx
             .send(handler::HandlerCommand::UpdateInstrument(instrument))
         {
-            tracing::debug!("Failed to send instrument update to handler: {e}");
+            // Only log if we're connected (unexpected failure)
+            if self.is_connected.load(Ordering::Relaxed) {
+                tracing::debug!("Failed to send instrument update to handler: {e}");
+            }
         }
 
         tracing::debug!("Cached instrument {symbol} in WebSocket client");
@@ -717,7 +729,10 @@ impl BybitWebSocketClient {
                 .cmd_tx
                 .send(handler::HandlerCommand::InitializeInstruments(instruments))
         {
-            tracing::debug!("Failed to send bulk instrument update to handler: {e}");
+            // Only log if we're connected (unexpected failure)
+            if self.is_connected.load(Ordering::Relaxed) {
+                tracing::debug!("Failed to send bulk instrument update to handler: {e}");
+            }
         }
 
         tracing::debug!(

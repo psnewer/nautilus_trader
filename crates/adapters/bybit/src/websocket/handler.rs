@@ -32,9 +32,10 @@ use super::{
     cache,
     messages::{BybitWebSocketError, BybitWsMessage, NautilusWsMessage},
     parse::{
-        parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_ticker_linear_funding,
-        parse_ws_account_state, parse_ws_fill_report, parse_ws_kline_bar,
-        parse_ws_order_status_report, parse_ws_position_status_report, parse_ws_trade_tick,
+        parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
+        parse_ticker_linear_funding, parse_ws_account_state, parse_ws_fill_report,
+        parse_ws_kline_bar, parse_ws_order_status_report, parse_ws_position_status_report,
+        parse_ws_trade_tick,
     },
 };
 use crate::common::{enums::BybitProductType, parse::make_bybit_symbol};
@@ -158,6 +159,23 @@ impl FeedHandler {
                     match parse_orderbook_deltas(&msg, instrument, ts_init) {
                         Ok(deltas) => result.push(NautilusWsMessage::Deltas(deltas)),
                         Err(e) => tracing::error!("Error parsing orderbook deltas: {e}"),
+                    }
+
+                    // For depth=1 subscriptions, also emit QuoteTick from top-of-book
+                    if let Some(depth_str) = msg.topic.as_str().split('.').nth(1)
+                        && depth_str == "1"
+                    {
+                        let instrument_id = instrument.id();
+                        let mut cache_guard = quote_cache.write().await;
+                        let last_quote = cache_guard.last_quotes.get(&instrument_id);
+
+                        match parse_orderbook_quote(&msg, instrument, last_quote, ts_init) {
+                            Ok(quote) => {
+                                cache_guard.last_quotes.insert(instrument_id, quote);
+                                result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
+                            }
+                            Err(e) => tracing::debug!("Skipping orderbook quote: {e}"),
+                        }
                     }
                 } else {
                     tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Orderbook message");
