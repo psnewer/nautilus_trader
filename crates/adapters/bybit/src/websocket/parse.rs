@@ -643,17 +643,12 @@ pub fn parse_ws_position_status_report(
         PositionSideSpecified::Flat
     };
 
-    let avg_px_open = if let Some(ref avg_price) = position.avg_price {
-        if !avg_price.is_empty() && avg_price != "0" {
-            avg_price
-                .parse::<f64>()
-                .with_context(|| format!("Failed to parse avgPrice='{}' as f64", avg_price))?
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    };
+    let avg_px_open = position.entry_price.parse::<f64>().with_context(|| {
+        format!(
+            "Failed to parse entryPrice='{}' as f64",
+            position.entry_price
+        )
+    })?;
 
     let _unrealized_pnl = position.unrealised_pnl.parse::<f64>().with_context(|| {
         format!(
@@ -1091,13 +1086,13 @@ mod tests {
 
         assert_eq!(report.account_id, account_id);
         assert_eq!(report.instrument_id, instrument.id());
-        assert_eq!(report.position_side.as_position_side(), PositionSide::Long);
-        assert_eq!(report.quantity, instrument.make_qty(0.15, None));
+        assert_eq!(report.position_side.as_position_side(), PositionSide::Short);
+        assert_eq!(report.quantity, instrument.make_qty(0.01, None));
         assert_eq!(
             report.avg_px_open,
-            Some(Decimal::try_from(28500.50).unwrap())
+            Some(Decimal::try_from(3641.075).unwrap())
         );
-        assert_eq!(report.ts_last, UnixNanos::new(1_697_682_317_038_000_000));
+        assert_eq!(report.ts_last, UnixNanos::new(1_762_199_125_472_000_000));
         assert_eq!(report.ts_init, TS);
     }
 
@@ -1129,12 +1124,12 @@ mod tests {
         assert_eq!(report.account_id, account_id);
         assert_eq!(report.instrument_id.symbol.as_str(), "ETHUSDT-LINEAR");
         assert_eq!(report.position_side.as_position_side(), PositionSide::Short);
-        assert_eq!(report.quantity, instrument.make_qty(2.5, None));
+        assert_eq!(report.quantity, instrument.make_qty(0.01, None));
         assert_eq!(
             report.avg_px_open,
-            Some(Decimal::try_from(2450.75).unwrap())
+            Some(Decimal::try_from(3641.075).unwrap())
         );
-        assert_eq!(report.ts_last, UnixNanos::new(1_697_682_417_038_000_000));
+        assert_eq!(report.ts_last, UnixNanos::new(1_762_199_125_472_000_000));
         assert_eq!(report.ts_init, TS);
     }
 
