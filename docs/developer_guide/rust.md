@@ -33,6 +33,41 @@ while zero-cost abstractions and the absence of a garbage collector deliver C-li
   - `ffi`: enables C FFI bindings.
   - `stubs`: exposes testing stubs.
 
+## Build configurations
+
+To avoid unnecessary rebuilds during development, align cargo features, profiles, and flags across different build targets.
+Cargo's build cache is keyed by the exact combination of features, profiles, and flags—any mismatch triggers a full rebuild.
+
+### Aligned targets (testing and linting)
+
+| Target                      | Features                         | Profile   | `--all-targets` | `--no-deps` | Purpose        |
+|-----------------------------|----------------------------------|-----------|-----------------|-------------|----------------|
+| `cargo-test`                | `ffi,python,high-precision,defi` | `nextest` | ✓ (implicit)    | n/a         | Run tests.     |
+| `cargo-clippy` (pre-commit) | `ffi,python,high-precision,defi` | `nextest` | ✓               | n/a         | Lint all code. |
+| `cargo-doc` (pre-commit)    | `ffi,python,high-precision,defi` | `nextest` | n/a             | ✓           | Lint docs.     |
+
+These targets share the same feature set and profile, allowing cargo to reuse compiled artifacts between linting, testing, and doc checking without rebuilds.
+The `nextest` profile is used to align with the workflow of the majority of core maintainers who use cargo-nextest for running tests.
+
+### Separate target (Python extension building)
+
+| Target        | Features                             | Profile   | Notes |
+|---------------|--------------------------------------|-----------|-------|
+| `build`       | Includes `extension-module` + subset | `release` | Requires different features for PyO3 extension module. |
+| `build-debug` | Includes `extension-module` + subset | `dev`     | Requires different features for PyO3 extension module. |
+
+Python extension building intentionally uses different features (`extension-module` is required) and will trigger rebuilds. This is expected and unavoidable.
+
+### Rebuild triggers to avoid
+
+Mismatches in any of these cause full rebuilds:
+
+- Different feature combinations (e.g., `--features "a,b"` vs `--features "a,c"`).
+- Different `--no-default-features` usage (enables/disables default features).
+- Different profiles (e.g., `dev` vs `nextest` vs `release`).
+
+When adding new build targets or modifying existing ones, maintain alignment with the testing/linting group to preserve fast incremental builds.
+
 ## Module organization
 
 - Keep modules focused on a single responsibility.

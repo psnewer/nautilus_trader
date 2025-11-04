@@ -190,16 +190,17 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy
-        description: Run the Clippy linter on the package
+        description: Run the Clippy linter on the workspace
         entry: cargo clippy
         language: system
         args:
           [
             "--workspace",
             "--all-targets",
-            "--no-default-features",
             "--features",
-            "high-precision,ffi,python,extension-module",
+            "ffi,python,high-precision,defi",
+            "--profile",
+            "nextest", # Reduce rebuild triggers between testing and linting
             "--",
             "-D",
             "warnings",
@@ -208,17 +209,16 @@ repos:
         types: [file]
         pass_filenames: false
 
-      # Disabled: cargo doc currently too slow for pre-commit workflow
-      # - id: cargo-doc
-      #   name: cargo doc
-      #   description: Check documentation builds without errors or warnings
-      #   entry:
-      #     bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc --no-default-features
-      #     --features "high-precision,ffi,python,extension-module" --no-deps --workspace --quiet'
-      #   language: system
-      #   files: '\.(rs|toml)$'
-      #   types: [file]
-      #   pass_filenames: false
+      - id: cargo-doc
+        name: cargo doc
+        description: Check documentation builds without errors or warnings
+        entry:
+          cargo doc --workspace --features "ffi,python,high-precision,defi"
+          --profile nextest --no-deps --quiet
+        language: system
+        files: '\.(rs|toml)$'
+        types: [file]
+        pass_filenames: false
 
   ##############################################################################
   #  Python/Cython formatting and linting

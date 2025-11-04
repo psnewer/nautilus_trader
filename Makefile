@@ -21,16 +21,15 @@ M = $(shell printf "\033[0;34m>\033[0m") # Message prefix for commands
 # Verbose options for specific targets (defaults to true, can be overridden)
 VERBOSE ?= true
 
+# TARGET_DIR controls where cargo places build artifacts.
+# Can be overridden to use a separate directory: make build-debug TARGET_DIR=target-python
+TARGET_DIR ?= target
+
 # FAIL_FAST controls whether `cargo nextest` should stop after the first test
 # failure. When set to `true` the `--no-fail-fast` flag is omitted so tests
 # abort on the first failure. When `false` (the default) the flag is included
 # allowing the full test suite to run.
 FAIL_FAST ?= false
-
-# HYPERSYNC controls whether hypersync feature is included in cargo features.
-# When set to `true` the hypersync feature is included. When `false` (the default)
-# the feature is excluded. Can be overridden: make check-code HYPERSYNC=true
-HYPERSYNC ?= false
 
 # Select the appropriate flag for `cargo nextest` depending on FAIL_FAST.
 ifeq ($(FAIL_FAST),true)
@@ -38,6 +37,11 @@ FAIL_FAST_FLAG :=
 else
 FAIL_FAST_FLAG := --no-fail-fast
 endif
+
+# HYPERSYNC controls whether hypersync feature is included in cargo features.
+# When set to `true` the hypersync feature is included. When `false` (the default)
+# the feature is excluded. Can be overridden: make check-code HYPERSYNC=true
+HYPERSYNC ?= false
 
 # Select cargo features based on HYPERSYNC flag (can be overridden with CARGO_FEATURES=...)
 ifeq ($(HYPERSYNC),true)
@@ -84,11 +88,13 @@ install-just-deps:  #-- Install dependencies only without building the package
 
 .PHONY: build
 build: export BUILD_MODE=release
+build: export CARGO_TARGET_DIR=$(TARGET_DIR)
 build:  #-- Build the package in release mode
 	uv run --active --no-sync build.py
 
 .PHONY: build-debug
 build-debug: export BUILD_MODE=debug
+build-debug: export CARGO_TARGET_DIR=$(TARGET_DIR)
 build-debug:  #-- Build the package in debug mode (recommended for development)
 ifeq ($(VERBOSE),true)
 	$(info $(M) Building in debug mode with verbose output...)
@@ -100,6 +106,7 @@ endif
 
 .PHONY: build-debug-pyo3
 build-debug-pyo3: export BUILD_MODE=debug-pyo3
+build-debug-pyo3: export CARGO_TARGET_DIR=$(TARGET_DIR)
 build-debug-pyo3:  #-- Build the package with PyO3 debug symbols (for debugging Rust code)
 ifeq ($(VERBOSE),true)
 	$(info $(M) Building in debug mode with PyO3 debug symbols...)
@@ -177,14 +184,14 @@ pre-commit:  #-- Run all pre-commit hooks on all files
 # The check-code target uses CARGO_FEATURES which is controlled by the HYPERSYNC flag.
 # By default, hypersync is excluded to speed up checks. Override with: make check-code HYPERSYNC=true
 .PHONY: check-code
-check-code: format  #-- Run format, clippy, and ruff --fix (use HYPERSYNC=true to include hypersync feature)
+check-code:  #-- Run clippy, and ruff --fix (use HYPERSYNC=true to include hypersync feature)
 	$(info $(M) Running code quality checks...)
-	@cargo clippy --all-targets --features "$(CARGO_FEATURES)" -- -D warnings
+	@cargo clippy --workspace --all-targets --features "$(CARGO_FEATURES)" --profile nextest -- -D warnings
 	@uv run --active --no-sync ruff check . --fix
 	@printf "$(GREEN)Checks passed$(RESET)\n"
 
 .PHONY: pre-flight
-pre-flight:  #-- Run comprehensive pre-flight checks (format, pre-commit, cargo-test-hypersync, build-debug, pytest)
+pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-test, build-debug, pytest)
 	$(info $(M) Running pre-flight checks...)
 	@if ! git diff --quiet; then \
 		printf "$(RED)ERROR: You have unstaged changes$(RESET)\n"; \
@@ -192,8 +199,8 @@ pre-flight:  #-- Run comprehensive pre-flight checks (format, pre-commit, cargo-
 		exit 1; \
 	fi
 	@$(MAKE) --no-print-directory format
-	@$(MAKE) --no-print-directory pre-commit
-	@$(MAKE) --no-print-directory cargo-test-hypersync
+	@$(MAKE) --no-print-directory check-code
+	@$(MAKE) --no-print-directory cargo-test
 	@$(MAKE) --no-print-directory build-debug
 	@$(MAKE) --no-print-directory pytest
 	@printf "$(GREEN)All pre-flight checks passed$(RESET)\n"
@@ -368,40 +375,30 @@ check-features: check-hack-installed
 
 .PHONY: cargo-test
 cargo-test: export RUST_BACKTRACE=1
-cargo-test: export HIGH_PRECISION=true
 cargo-test: check-nextest-installed
-cargo-test:  #-- Run all Rust tests with ffi,python,high-precision,defi features
+cargo-test:  #-- Run all Rust tests (use HYPERSYNC=true to include hypersync feature)
 ifeq ($(VERBOSE),true)
 	$(info $(M) Running Rust tests with verbose output...)
-	cargo nextest run --workspace --features "ffi,python,high-precision,defi" $(FAIL_FAST_FLAG) --cargo-profile nextest --verbose
+	cargo nextest run --workspace --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --cargo-profile nextest --verbose
 else
 	$(info $(M) Running Rust tests (showing summary and failures only)...)
-	cargo nextest run --workspace --features "ffi,python,high-precision,defi" $(FAIL_FAST_FLAG) --cargo-profile nextest --status-level fail --final-status-level flaky
+	cargo nextest run --workspace --features "$(CARGO_FEATURES)" $(FAIL_FAST_FLAG) --cargo-profile nextest --status-level fail --final-status-level flaky
 endif
-
-.PHONY: cargo-test-hypersync
-cargo-test-hypersync: export RUST_BACKTRACE=1
-cargo-test-hypersync: check-nextest-installed
-cargo-test-hypersync:  #-- Run all Rust tests with ffi,python,high-precision,defi,hypersync features
-	cargo nextest run --workspace --features "ffi,python,high-precision,defi,hypersync" --cargo-profile nextest
 
 .PHONY: cargo-test-lib
 cargo-test-lib: export RUST_BACKTRACE=1
-cargo-test-lib: export HIGH_PRECISION=true
 cargo-test-lib: check-nextest-installed
 cargo-test-lib:  #-- Run Rust library tests only with high precision
 	cargo nextest run --lib --workspace --no-default-features --features "ffi,python,high-precision,defi,stubs" $(FAIL_FAST_FLAG) --cargo-profile nextest
 
 .PHONY: cargo-test-standard-precision
 cargo-test-standard-precision: export RUST_BACKTRACE=1
-cargo-test-standard-precision: export HIGH_PRECISION=false
 cargo-test-standard-precision: check-nextest-installed
 cargo-test-standard-precision:  #-- Run Rust tests in debug mode with standard precision (64-bit)
 	cargo nextest run --workspace --features "ffi,python"
 
 .PHONY: cargo-test-debug
 cargo-test-debug: export RUST_BACKTRACE=1
-cargo-test-debug: export HIGH_PRECISION=true
 cargo-test-debug: check-nextest-installed
 cargo-test-debug:  #-- Run Rust tests in debug mode with high precision
 	cargo nextest run --workspace --features "ffi,python,high-precision,defi" $(FAIL_FAST_FLAG)
@@ -427,14 +424,12 @@ cargo-test-coverage:  #-- Run Rust tests with coverage reporting
 
 .PHONY: cargo-test-crate-%
 cargo-test-crate-%: export RUST_BACKTRACE=1
-cargo-test-crate-%: export HIGH_PRECISION=true
 cargo-test-crate-%: check-nextest-installed
 cargo-test-crate-%:  #-- Run Rust tests for a specific crate (usage: make cargo-test-crate-<crate_name>)
 	cargo nextest run --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)")
 
 .PHONY: cargo-test-coverage-crate-%
 cargo-test-coverage-crate-%: export RUST_BACKTRACE=1
-cargo-test-coverage-crate-%: export HIGH_PRECISION=true
 cargo-test-coverage-crate-%: check-nextest-installed check-llvm-cov-installed
 cargo-test-coverage-crate-%:  #-- Run Rust tests with coverage reporting for a specific crate (usage: make cargo-test-coverage-crate-<crate_name>)
 	cargo llvm-cov nextest --lib $(FAIL_FAST_FLAG) --cargo-profile nextest -p $* $(if $(FEATURES),--features "$(FEATURES)")
