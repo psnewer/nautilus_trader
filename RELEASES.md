@@ -50,6 +50,7 @@ TBD
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
+- Repaired Bybit `AccountPosition` message parsing (#3147), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.0
 - Upgraded `pyo3` crate to v0.27.0
