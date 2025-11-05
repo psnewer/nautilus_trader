@@ -1479,7 +1479,7 @@ impl BybitHttpClient {
             order_entry.reduce_only(Some(true));
         }
 
-        // Set is_leverage field: only for SPOT products use the user value, otherwise None
+        // Only SPOT products support is_leverage parameter
         let is_leverage_value = if product_type == BybitProductType::Spot {
             Some(i32::from(is_leverage))
         } else {

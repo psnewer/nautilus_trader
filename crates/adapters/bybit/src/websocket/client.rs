@@ -1163,6 +1163,7 @@ impl BybitWebSocketClient {
                 side: order.side,
                 order_type: order.order_type,
                 qty: order.qty,
+                is_leverage: order.is_leverage,
                 market_unit: order.market_unit,
                 price: order.price,
                 time_in_force: order.time_in_force,
@@ -1299,6 +1300,7 @@ impl BybitWebSocketClient {
         trigger_price: Option<Price>,
         post_only: Option<bool>,
         reduce_only: Option<bool>,
+        is_leverage: bool,
     ) -> BybitWsResult<BybitWsPlaceOrderParams> {
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
             .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
@@ -1351,6 +1353,13 @@ impl BybitWebSocketClient {
             None
         };
 
+        // Only SPOT products support is_leverage parameter
+        let is_leverage_value = if product_type == BybitProductType::Spot {
+            Some(i32::from(is_leverage))
+        } else {
+            None
+        };
+
         let params = if is_stop_order {
             BybitWsPlaceOrderParams {
                 category: product_type,
@@ -1358,6 +1367,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                is_leverage: is_leverage_value,
                 market_unit,
                 price: price.map(|p| p.to_string()),
                 time_in_force: if bybit_order_type == BybitOrderType::Market {
@@ -1390,6 +1400,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                is_leverage: is_leverage_value,
                 market_unit,
                 price: price.map(|p| p.to_string()),
                 time_in_force: if bybit_order_type == BybitOrderType::Market {
@@ -1469,6 +1480,7 @@ impl BybitWebSocketClient {
         trigger_price: Option<Price>,
         post_only: Option<bool>,
         reduce_only: Option<bool>,
+        is_leverage: bool,
     ) -> BybitWsResult<()> {
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
             .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
@@ -1526,6 +1538,13 @@ impl BybitWebSocketClient {
             None
         };
 
+        // Only SPOT products support is_leverage parameter
+        let is_leverage_value = if product_type == BybitProductType::Spot {
+            Some(i32::from(is_leverage))
+        } else {
+            None
+        };
+
         let params = if is_stop_order {
             // For conditional orders, ALL types use triggerPrice field
             // sl_trigger_price/tp_trigger_price are only for TP/SL attached to regular orders
@@ -1535,6 +1554,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                is_leverage: is_leverage_value,
                 market_unit: market_unit.clone(),
                 price: price.map(|p| p.to_string()),
                 time_in_force: if bybit_order_type == BybitOrderType::Market {
@@ -1568,6 +1588,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                is_leverage: is_leverage_value,
                 market_unit,
                 price: price.map(|p| p.to_string()),
                 time_in_force: if bybit_order_type == BybitOrderType::Market {
@@ -2357,5 +2378,55 @@ mod tests {
         let all = subscriptions.all_topics();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], topic);
+    }
+
+    #[rstest]
+    #[case::spot_with_leverage(BybitProductType::Spot, true, Some(1))]
+    #[case::spot_without_leverage(BybitProductType::Spot, false, Some(0))]
+    #[case::linear_with_leverage(BybitProductType::Linear, true, None)]
+    #[case::linear_without_leverage(BybitProductType::Linear, false, None)]
+    #[case::inverse_with_leverage(BybitProductType::Inverse, true, None)]
+    #[case::option_with_leverage(BybitProductType::Option, true, None)]
+    fn test_is_leverage_parameter(
+        #[case] product_type: BybitProductType,
+        #[case] is_leverage: bool,
+        #[case] expected: Option<i32>,
+    ) {
+        let symbol = match product_type {
+            BybitProductType::Spot => "BTCUSDT-SPOT.BYBIT",
+            BybitProductType::Linear => "ETHUSDT-LINEAR.BYBIT",
+            BybitProductType::Inverse => "BTCUSD-INVERSE.BYBIT",
+            BybitProductType::Option => "BTC-31MAY24-50000-C-OPTION.BYBIT",
+        };
+
+        let instrument_id = InstrumentId::from(symbol);
+        let client_order_id = ClientOrderId::from("test-order-1");
+        let quantity = Quantity::from("1.0");
+
+        let client = BybitWebSocketClient::new_trade(
+            BybitEnvironment::Testnet,
+            Credential::new("test-key", "test-secret"),
+            None,
+            Some(20),
+        );
+
+        let params = client
+            .build_place_order_params(
+                product_type,
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                OrderType::Limit,
+                quantity,
+                Some(TimeInForce::Gtc),
+                Some(Price::from("50000.0")),
+                None,
+                None,
+                None,
+                is_leverage,
+            )
+            .expect("Failed to build params");
+
+        assert_eq!(params.is_leverage, expected);
     }
 }

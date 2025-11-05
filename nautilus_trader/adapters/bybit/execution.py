@@ -696,6 +696,8 @@ class BybitExecutionClient(LiveExecutionClient):
             order.instrument_id.symbol.value,
         )
 
+        is_leverage = command.params.get("is_leverage", False) if command.params else False
+
         try:
             # Submit via WebSocket
             await self._ws_trade_client.submit_order(
@@ -710,6 +712,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 trigger_price=pyo3_trigger_price,
                 post_only=order.is_post_only,
                 reduce_only=order.is_reduce_only,
+                is_leverage=is_leverage,
             )
         except Exception as e:
             self._log.error(f"Failed to submit order {order.client_order_id}: {e}")
@@ -726,6 +729,8 @@ class BybitExecutionClient(LiveExecutionClient):
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
         if not command.order_list.orders:
             return
+
+        is_leverage = command.params.get("is_leverage", False) if command.params else False
 
         now_ns = self._clock.timestamp_ns()
         order_params = []
@@ -775,6 +780,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 trigger_price=pyo3_trigger_price,
                 post_only=post_only,
                 reduce_only=reduce_only,
+                is_leverage=is_leverage,
             )
             order_params.append(params)
 

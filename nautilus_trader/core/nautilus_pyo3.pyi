@@ -5912,6 +5912,7 @@ class BybitWebSocketClient:
         trigger_price: Price | None = None,
         post_only: bool | None = None,
         reduce_only: bool | None = None,
+        is_leverage: bool = False,
     ) -> None: ...
     async def modify_order(
         self,
@@ -5949,6 +5950,7 @@ class BybitWebSocketClient:
         trigger_price: Price | None = None,
         post_only: bool | None = None,
         reduce_only: bool | None = None,
+        is_leverage: bool = False,
     ) -> BybitWsPlaceOrderParams: ...
     def build_amend_order_params(
         self,
@@ -5974,6 +5976,7 @@ class BybitWsPlaceOrderParams:
     side: str
     order_type: str
     qty: str
+    is_leverage: int | None
     market_unit: str | None
     price: str | None
     time_in_force: str | None

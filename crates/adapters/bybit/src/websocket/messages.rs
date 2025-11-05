@@ -230,6 +230,8 @@ pub struct BybitWsPlaceOrderParams {
     pub order_type: BybitOrderType,
     pub qty: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_leverage: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub market_unit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
@@ -335,6 +337,8 @@ pub struct BybitWsBatchPlaceItem {
     pub side: BybitOrderSide,
     pub order_type: BybitOrderType,
     pub qty: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_leverage: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub market_unit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
