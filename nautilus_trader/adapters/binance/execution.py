@@ -285,9 +285,9 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         error_code = get_binance_error_code(exception) if exception else None
 
         match error_code:
-            case (
-                BinanceErrorCode.GTX_ORDER_REJECT
-            ) if not self._log_rejected_due_post_only_as_warning:
+            case BinanceErrorCode.GTX_ORDER_REJECT if (
+                not self._log_rejected_due_post_only_as_warning
+            ):
                 self._log.info(message)
             case code if code in BINANCE_RETRY_WARNINGS:
                 self._log.warning(message)
@@ -826,7 +826,6 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             self._deny_order_pre_submit(order, str(e))
             return
 
-        # Validate order before submission
         validation_error = self._validate_order_pre_submit(order)
         if validation_error:
             self._deny_order_pre_submit(order, validation_error)

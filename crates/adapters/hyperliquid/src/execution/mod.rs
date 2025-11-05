@@ -427,7 +427,6 @@ impl ExecutionClient for HyperliquidExecutionClient {
             return Ok(());
         }
 
-        // Validate order before submission
         if let Err(e) = self.validate_order_submission(order) {
             self.core.generate_order_rejected(
                 order.strategy_id(),

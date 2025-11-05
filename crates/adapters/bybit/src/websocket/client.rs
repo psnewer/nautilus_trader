@@ -52,7 +52,10 @@ use ustr::Ustr;
 
 use crate::{
     common::{
-        consts::{BYBIT_NAUTILUS_BROKER_ID, BYBIT_PONG, BYBIT_WS_TOPIC_DELIMITER},
+        consts::{
+            BYBIT_BASE_COIN, BYBIT_NAUTILUS_BROKER_ID, BYBIT_PONG, BYBIT_QUOTE_COIN,
+            BYBIT_WS_TOPIC_DELIMITER,
+        },
         credential::Credential,
         enums::{
             BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
@@ -1295,6 +1298,7 @@ impl BybitWebSocketClient {
         order_side: OrderSide,
         order_type: OrderType,
         quantity: Quantity,
+        is_quote_quantity: bool,
         time_in_force: Option<TimeInForce>,
         price: Option<Price>,
         trigger_price: Option<Price>,
@@ -1348,7 +1352,11 @@ impl BybitWebSocketClient {
         let market_unit = if product_type == BybitProductType::Spot
             && bybit_order_type == BybitOrderType::Market
         {
-            Some("baseCoin".to_string())
+            if is_quote_quantity {
+                Some(BYBIT_QUOTE_COIN.to_string())
+            } else {
+                Some(BYBIT_BASE_COIN.to_string())
+            }
         } else {
             None
         };
@@ -1475,6 +1483,7 @@ impl BybitWebSocketClient {
         order_side: OrderSide,
         order_type: OrderType,
         quantity: Quantity,
+        is_quote_quantity: bool,
         time_in_force: Option<TimeInForce>,
         price: Option<Price>,
         trigger_price: Option<Price>,
@@ -1533,7 +1542,11 @@ impl BybitWebSocketClient {
         let market_unit = if product_type == BybitProductType::Spot
             && bybit_order_type == BybitOrderType::Market
         {
-            Some("baseCoin".to_string())
+            if is_quote_quantity {
+                Some(BYBIT_QUOTE_COIN.to_string())
+            } else {
+                Some(BYBIT_BASE_COIN.to_string())
+            }
         } else {
             None
         };
@@ -2418,6 +2431,7 @@ mod tests {
                 OrderSide::Buy,
                 OrderType::Limit,
                 quantity,
+                false, // is_quote_quantity
                 Some(TimeInForce::Gtc),
                 Some(Price::from("50000.0")),
                 None,
@@ -2428,5 +2442,61 @@ mod tests {
             .expect("Failed to build params");
 
         assert_eq!(params.is_leverage, expected);
+    }
+
+    #[rstest]
+    #[case::spot_market_quote_quantity(BybitProductType::Spot, OrderType::Market, true, Some(BYBIT_QUOTE_COIN.to_string()))]
+    #[case::spot_market_base_quantity(BybitProductType::Spot, OrderType::Market, false, Some(BYBIT_BASE_COIN.to_string()))]
+    #[case::spot_limit_no_unit(BybitProductType::Spot, OrderType::Limit, false, None)]
+    #[case::spot_limit_quote(BybitProductType::Spot, OrderType::Limit, true, None)]
+    #[case::linear_market_no_unit(BybitProductType::Linear, OrderType::Market, false, None)]
+    #[case::inverse_market_no_unit(BybitProductType::Inverse, OrderType::Market, true, None)]
+    fn test_is_quote_quantity_parameter(
+        #[case] product_type: BybitProductType,
+        #[case] order_type: OrderType,
+        #[case] is_quote_quantity: bool,
+        #[case] expected: Option<String>,
+    ) {
+        let symbol = match product_type {
+            BybitProductType::Spot => "BTCUSDT-SPOT.BYBIT",
+            BybitProductType::Linear => "ETHUSDT-LINEAR.BYBIT",
+            BybitProductType::Inverse => "BTCUSD-INVERSE.BYBIT",
+            BybitProductType::Option => "BTC-31MAY24-50000-C-OPTION.BYBIT",
+        };
+
+        let instrument_id = InstrumentId::from(symbol);
+        let client_order_id = ClientOrderId::from("test-order-1");
+        let quantity = Quantity::from("1.0");
+
+        let client = BybitWebSocketClient::new_trade(
+            BybitEnvironment::Testnet,
+            Credential::new("test-key", "test-secret"),
+            None,
+            Some(20),
+        );
+
+        let params = client
+            .build_place_order_params(
+                product_type,
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                order_type,
+                quantity,
+                is_quote_quantity,
+                Some(TimeInForce::Gtc),
+                if order_type == OrderType::Market {
+                    None
+                } else {
+                    Some(Price::from("50000.0"))
+                },
+                None,
+                None,
+                None,
+                false,
+            )
+            .expect("Failed to build params");
+
+        assert_eq!(params.market_unit, expected);
     }
 }

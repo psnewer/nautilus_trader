@@ -58,8 +58,9 @@ use super::{
         BybitInstrumentLinearResponse, BybitInstrumentOptionResponse, BybitInstrumentSpotResponse,
         BybitKlinesResponse, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
         BybitPlaceOrderResponse, BybitPositionListResponse, BybitServerTimeResponse,
-        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSwitchModeResponse,
-        BybitTradeHistoryResponse, BybitTradesResponse, BybitWalletBalanceResponse,
+        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSetTradingStopResponse,
+        BybitSwitchModeResponse, BybitTradeHistoryResponse, BybitTradesResponse,
+        BybitWalletBalanceResponse,
     },
     query::{
         BybitAmendOrderParamsBuilder, BybitBatchAmendOrderEntryBuilder,
@@ -68,7 +69,7 @@ use super::{
         BybitCancelOrderParamsBuilder, BybitFeeRateParams, BybitInstrumentsInfoParams,
         BybitKlinesParams, BybitKlinesParamsBuilder, BybitOpenOrdersParamsBuilder,
         BybitOrderHistoryParamsBuilder, BybitPlaceOrderParamsBuilder, BybitPositionListParams,
-        BybitSetLeverageParamsBuilder, BybitSetMarginModeParamsBuilder,
+        BybitSetLeverageParamsBuilder, BybitSetMarginModeParamsBuilder, BybitSetTradingStopParams,
         BybitSwitchModeParamsBuilder, BybitTickersParams, BybitTradeHistoryParams,
         BybitTradesParams, BybitTradesParamsBuilder, BybitWalletBalanceParams,
     },
@@ -731,6 +732,27 @@ impl BybitRawHttpClient {
             .await
     }
 
+    /// Sets trading stop parameters including trailing stops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/trading-stop>
+    pub async fn set_trading_stop(
+        &self,
+        params: &BybitSetTradingStopParams,
+    ) -> Result<BybitSetTradingStopResponse, BybitHttpError> {
+        let body = serde_json::to_vec(params)?;
+        self.send_request(Method::POST, "/v5/position/trading-stop", Some(body), true)
+            .await
+    }
+
     /// Fetches tickers for market data.
     ///
     /// # Errors
@@ -975,10 +997,6 @@ impl BybitHttpClient {
     fn generate_ts_init(&self) -> UnixNanos {
         get_atomic_clock_realtime().get_time_ns()
     }
-
-    // =========================================================================
-    // Low-level HTTP API methods
-    // =========================================================================
 
     /// Fetches the current server time from Bybit.
     ///
@@ -1281,9 +1299,24 @@ impl BybitHttpClient {
             .await
     }
 
-    // =========================================================================
-    // High-level methods using Nautilus domain objects
-    // =========================================================================
+    /// Sets trading stop parameters including trailing stops (requires authentication).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/trading-stop>
+    pub async fn set_trading_stop(
+        &self,
+        params: &BybitSetTradingStopParams,
+    ) -> Result<BybitSetTradingStopResponse, BybitHttpError> {
+        self.inner.set_trading_stop(params).await
+    }
 
     /// Generate SPOT position reports from wallet balances.
     ///
