@@ -7,6 +7,7 @@ members = [
   "crates/adapters/bybit",
   "crates/adapters/coinbase_intx",
   "crates/adapters/databento",
+  "crates/adapters/dydx",
   "crates/adapters/hyperliquid",
   "crates/adapters/okx",
   "crates/adapters/tardis",
