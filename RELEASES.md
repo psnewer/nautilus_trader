@@ -44,10 +44,13 @@ TBD
 ### Internal Improvements
 - Added BitMEX submit broadcaster
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
+- Added initial dYdX crate (#3138), thanks @nicolad
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
+- Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
+- Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei

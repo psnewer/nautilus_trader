@@ -117,6 +117,7 @@ aws-lc-rs = { version = "1.14.1", default-features = false, features = [
 ] }
 base64 = "0.22.1"
 binary-heap-plus = "0.5.0"
+bip32 = "0.5.3"
 bytes = { version = "1.10.1", features = ["serde"] }
 chrono = { version = "0.4.42", default-features = false, features = [
   "serde",
@@ -126,6 +127,7 @@ chrono = { version = "0.4.42", default-features = false, features = [
 chrono-tz = "0.10.4"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 compare = "0.1.0"
+cosmrs = { version = "0.22.0", default-features = false, features = ["bip32"] }
 csv = "1.4.0"
 dashmap = "6.1.0"
 databento = { version = "0.35.0", default-features = false, features = [
@@ -183,6 +185,8 @@ parquet = { version = "56.2.0", default-features = false, features = [
   "async",
 ] }
 pem = "3.0.6"
+prost = { version = "0.14.1", default-features = false, features = ["std"] }
+prost-types = "0.14.1"
 pyo3 = { version = "0.27.1", default-features = false, features = [
   "chrono",
   "hashbrown",
@@ -242,6 +246,7 @@ serde_json = { version = "1.0.145", default-features = false, features = [
 ] }
 serde_repr = "0.1.20"
 serde_urlencoded = "0.7.1"
+serde_with = "3.15.1"
 simple_logger = "5.1.0"
 static_assertions = "1.1.0"
 sqlx = { version = "0.8.6", default-features = false, features = [
@@ -282,6 +287,11 @@ tokio-tungstenite = { version = "0.28.0", features = [
   "rustls-tls-webpki-roots",
 ] }
 tokio-util = { version = "0.7.17", default-features = false, features = ["io"] }
+tonic = { version = "0.14.2", default-features = false, features = [
+  "channel",
+  "tls-aws-lc",
+  "tls-webpki-roots",
+] }
 toml = { version = "0.9.8", default-features = false, features = [
   "parse",
   "serde",
