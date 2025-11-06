@@ -73,18 +73,21 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         """
         Load instruments using Gamma API markets.
         """
-        condition_ids = [get_polymarket_condition_id(inst_id) for inst_id in instrument_ids]
+        # Extract unique condition IDs (markets can have multiple tokens/instruments)
+        condition_ids = list({get_polymarket_condition_id(inst_id) for inst_id in instrument_ids})
+
+        # Build set of requested token_ids for filtering
+        requested_token_ids = {get_polymarket_token_id(inst_id) for inst_id in instrument_ids}
 
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
 
         if len(condition_ids) <= 100:  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
-            self._log.info(f"Loading {len(condition_ids)} instruments, using direct condition_id filtering")
+            self._log.info(f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using direct condition_id filtering")
             filters["condition_ids"] = condition_ids
         else:
-            self._log.info(f"Loading {len(condition_ids)} instruments, using bulk load of all markets")
+            self._log.info(f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using bulk load of all markets")
 
-        # Wrap synchronous blocking call with asyncio.to_thread
         markets = await asyncio.to_thread(list_markets, filters=filters)
         self._log.info(f"Loaded {len(markets)} markets using Gamma API")
         for market in markets:
@@ -97,9 +100,13 @@ class PolymarketInstrumentProvider(InstrumentProvider):
 
             normalized_market = normalize_gamma_market_to_clob_format(market)
 
-            # Use the normalized tokens array
             for token_info in normalized_market.get("tokens", []):
                 token_id = token_info["token_id"]
+
+                # Only load if this specific token was requested
+                if requested_token_ids and token_id not in requested_token_ids:
+                    continue
+
                 outcome = token_info["outcome"]
                 self._load_instrument(normalized_market, token_id, outcome)
 
