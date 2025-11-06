@@ -36,7 +36,7 @@ def fetch_active_markets(limit: int = 100) -> list[dict]:
         "archived": "false",
         "limit": limit,
     }
-    resp = requests.get("https://gamma-api.polymarket.com/markets", params=params)
+    resp = requests.get("https://gamma-api.polymarket.com/markets", params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
 

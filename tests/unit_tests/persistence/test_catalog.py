@@ -75,7 +75,7 @@ def test_catalog_query_filtered(
     trades = catalog_betfair.trade_ticks(start=1576875378384999936)
     assert len(trades) == 121
 
-    trades = catalog_betfair.trade_ticks(start=datetime.datetime(2019, 12, 20, 20, 56, 18))
+    trades = catalog_betfair.trade_ticks(start=datetime.datetime(2019, 12, 20, 20, 56, 18, tzinfo=datetime.UTC))
     assert len(trades) == 121
 
     deltas = catalog_betfair.order_book_deltas()

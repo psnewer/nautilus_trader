@@ -1847,7 +1847,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         where: str | None = None,
     ) -> str:
         # Build datafusion SQL query
-        query = f"SELECT * FROM {table}"  # noqa (possible SQL injection)
+        query = f"SELECT * FROM {table}"  # noqa: S608
         conditions: list[str] = [] + ([where] if where else [])
 
         if start:

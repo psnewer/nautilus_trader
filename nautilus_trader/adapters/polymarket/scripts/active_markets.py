@@ -26,7 +26,7 @@ params = {
     "limit": 5,
 }
 
-resp = requests.get("https://gamma-api.polymarket.com/markets", params=params)  # type: ignore
+resp = requests.get("https://gamma-api.polymarket.com/markets", params=params, timeout=30)  # type: ignore
 data = resp.json()
 
 for market in data:

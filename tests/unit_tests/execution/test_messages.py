@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from datetime import UTC
 from datetime import datetime
 
 from nautilus_trader.common.component import TestClock
@@ -505,8 +506,8 @@ class TestCommands:
     def test_generate_order_status_reports_command_to_from_dict_and_str_repr(self):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GenerateOrderStatusReports(
             instrument_id=AUDUSD_SIM.id,
@@ -532,8 +533,8 @@ class TestCommands:
     ):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GenerateOrderStatusReports(
             instrument_id=None,
@@ -557,8 +558,8 @@ class TestCommands:
     def test_generate_fill_reports_command_to_from_dict_and_str_repr(self):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GenerateFillReports(
             instrument_id=AUDUSD_SIM.id,
@@ -579,8 +580,8 @@ class TestCommands:
     def test_generate_fill_reports_command_with_none_venue_order_id_to_from_dict_and_str_repr(self):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GenerateFillReports(
             instrument_id=AUDUSD_SIM.id,
@@ -601,8 +602,8 @@ class TestCommands:
     def test_generate_position_status_reports_command_to_from_dict_and_str_repr(self):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GeneratePositionStatusReports(
             instrument_id=AUDUSD_SIM.id,
@@ -627,8 +628,8 @@ class TestCommands:
     ):
         # Arrange
         uuid = UUID4()
-        start_time = datetime(2023, 1, 1, 12, 0, 0)
-        end_time = datetime(2023, 1, 1, 18, 0, 0)
+        start_time = datetime(2023, 1, 1, 12, 0, 0, tzinfo=UTC)
+        end_time = datetime(2023, 1, 1, 18, 0, 0, tzinfo=UTC)
 
         command = GeneratePositionStatusReports(
             instrument_id=None,

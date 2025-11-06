@@ -101,7 +101,7 @@ def download_tardis_csv(api_key: str, data_dir: Path):
     print(f"Downloading Tardis CSV data from {url}...")
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    with requests.get(url, headers=headers, stream=True) as response:
+    with requests.get(url, headers=headers, stream=True, timeout=60) as response:
         response.raise_for_status()
         with open(file_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):

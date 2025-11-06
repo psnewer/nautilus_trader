@@ -774,10 +774,10 @@ def _tick_size_to_precision(tick_size: float | Decimal) -> int:
 def decade_digit(last_digit: str, contract: IBContract) -> int:
     if year := contract.lastTradeDateOrContractMonth[:4]:
         return int(year[2:3])
-    elif int(last_digit) > int(repr(datetime.datetime.now().year)[-1]):
-        return int(repr(datetime.datetime.now().year)[-2]) - 1
+    elif int(last_digit) > int(repr(datetime.datetime.now(tz=datetime.UTC).year)[-1]):
+        return int(repr(datetime.datetime.now(tz=datetime.UTC).year)[-2]) - 1
     else:
-        return int(repr(datetime.datetime.now().year)[-2])
+        return int(repr(datetime.datetime.now(tz=datetime.UTC).year)[-2])
 
 
 def ib_contract_to_instrument_id(

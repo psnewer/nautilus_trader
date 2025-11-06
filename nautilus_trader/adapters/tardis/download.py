@@ -30,7 +30,7 @@ def download_file(url: str):
     print(f"Downloading from {url}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     headers = {"Authorization": f"Bearer {os.environ['TM_API_KEY']}"}
-    with requests.get(url, headers=headers, stream=True) as response:
+    with requests.get(url, headers=headers, stream=True, timeout=60) as response:
         response.raise_for_status()
         with open(path, "wb") as file:
             for chunk in response.iter_content(chunk_size=8192):

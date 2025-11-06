@@ -173,7 +173,7 @@ select = [
   "W",
   "C90",
   "D",
-  # "DTZ",
+  "DTZ",
   "UP",
   "S",
   "T10",
@@ -189,7 +189,7 @@ select = [
   # "ARG",
   # "ERA",
   "PD",
-  # "PGH",
+  "PGH",
   # "PLW",
   "NPY",
   "RUF",
@@ -214,13 +214,12 @@ ignore = [
   "E501", # Line too long (will lint separately)
   "E741", # Ambiguous variable name (single char)
   "PYI021", # Docstrings should not be included in stubs (OK as this is the natural place for them)
+  "PGH003", # Blanket type-ignore (TODO: make these specific incrementally)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
   "RUF059", # Unpacked variable is never used (can still be clearer than a discard in some cases)
   "S101", # Use of assert detected (OK in test suite)
   "S105", # Use of hardcoded password (spurious)
   "S106", # Use of hardcoded password (spurious)
-  "S113", # Probable use of requests call without timeout **fix**
-  "S603", # `subprocess` call: check for execution of untrusted input **fix**
 ]
 
 # Allow autofix for all enabled rules (when `--fix`) is provided
@@ -247,6 +246,8 @@ max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 "test_perf_logger.py" = ["S311"]
+"examples/**/*.py" = ["DTZ"] # Examples can use naive datetimes for simplicity
+"build.py" = ["S603", "S607"] # Build script needs subprocess calls
 
 [tool.mypy]
 python_version = "3.12"
