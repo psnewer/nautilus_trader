@@ -142,6 +142,14 @@ repos:
         types: [text]
         pass_filenames: false
 
+      - id: check-copyright-year
+        name: check copyright year
+        description: Ensures copyright headers have current year
+        entry: .pre-commit-hooks/check_copyright_year.sh
+        language: script
+        types_or: [rust, python]
+        pass_filenames: false
+
   ##############################################################################
   #  Rust formatting and linting
   ##############################################################################
@@ -209,20 +217,27 @@ repos:
         types: [file]
         pass_filenames: false
 
-      - id: cargo-doc
-        name: cargo doc
-        description: Check documentation builds without errors or warnings
-        entry:
-          cargo doc --workspace --features "ffi,python,high-precision,defi"
-          --profile nextest --no-deps --quiet
-        language: system
-        files: '\.(rs|toml)$'
-        types: [file]
-        pass_filenames: false
+      # TODO: Disabling for now as too slow
+      # - id: cargo-doc
+      #   name: cargo doc
+      #   description: Check documentation builds without errors or warnings
+      #   entry:
+      #     cargo doc --workspace --features "ffi,python,high-precision,defi"
+      #     --profile nextest --no-deps --quiet
+      #   language: system
+      #   files: '\.(rs|toml)$'
+      #   types: [file]
+      #   pass_filenames: false
 
   ##############################################################################
   #  Python/Cython formatting and linting
   ##############################################################################
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.0
+    hooks:
+      - id: pyupgrade
+        args: ["--py312-plus"]
+
   - repo: https://github.com/asottile/add-trailing-comma
     rev: v4.0.0
     hooks:

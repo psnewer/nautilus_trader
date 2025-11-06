@@ -134,7 +134,7 @@ def iter_markets(
     filters: dict[str, Any] | None = None,
     base_url: str | None = None,
     timeout: float = 10.0,
-) -> Generator[dict[str, Any], None, None]:
+) -> Generator[dict[str, Any]]:
     """
     Iterate markets that pass server-side filters, yielding raw market dicts.
     """

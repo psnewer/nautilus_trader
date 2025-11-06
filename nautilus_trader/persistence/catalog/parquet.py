@@ -2321,7 +2321,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         instance_id: str,
         data_cls: type | None = None,
         identifiers: list[str] | None = None,
-    ) -> Generator[FeatherFile, None, None]:
+    ) -> Generator[FeatherFile]:
         """
         List feather files for a given instance.
 
@@ -2391,7 +2391,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         instance_id: str,
         data_cls: type,
         identifiers: list[str] | None = None,
-    ) -> Generator[FeatherFile, None, None]:
+    ) -> Generator[FeatherFile]:
         """
         List feather files for a specific data class.
         """
