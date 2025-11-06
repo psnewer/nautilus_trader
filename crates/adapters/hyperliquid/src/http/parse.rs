@@ -190,7 +190,7 @@ use nautilus_model::{
 
 use crate::common::consts::HYPERLIQUID_VENUE;
 
-fn get_currency(code: &str) -> Currency {
+pub fn get_currency(code: &str) -> Currency {
     Currency::try_from_str(code).unwrap_or_else(|| {
         let currency = Currency::new(code, 8, 0, code, CurrencyType::Crypto);
         if let Err(e) = Currency::register(currency, false) {

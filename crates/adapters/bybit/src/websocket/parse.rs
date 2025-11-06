@@ -32,7 +32,7 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     instruments::{Instrument, any::InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{AccountBalance, Currency, Money, Price, Quantity},
+    types::{AccountBalance, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
 
@@ -43,7 +43,10 @@ use super::messages::{
 };
 use crate::common::{
     enums::{BybitOrderStatus, BybitOrderType, BybitTimeInForce},
-    parse::{parse_millis_timestamp, parse_price_with_precision, parse_quantity_with_precision},
+    parse::{
+        get_currency, parse_millis_timestamp, parse_price_with_precision,
+        parse_quantity_with_precision,
+    },
 };
 
 /// Parses a Bybit WebSocket topic string into its components.
@@ -699,7 +702,7 @@ pub fn parse_ws_account_state(
     let mut balances = Vec::new();
 
     for coin_data in &wallet.coin {
-        let currency = Currency::from(coin_data.coin.as_str());
+        let currency = get_currency(coin_data.coin.as_str());
 
         let wallet_balance_amount = coin_data.wallet_balance.parse::<f64>().with_context(|| {
             format!(

@@ -20,6 +20,8 @@ use std::{num::NonZero, str::FromStr};
 use ahash::AHashMap;
 use dashmap::DashMap;
 use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime, uuid::UUID4};
+#[cfg(test)]
+use nautilus_model::types::Currency;
 use nautilus_model::{
     data::{
         Bar, BarSpecification, BarType, BookOrder, Data, FundingRateUpdate, IndexPriceUpdate,
@@ -37,7 +39,7 @@ use nautilus_model::{
     },
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
+    types::{AccountBalance, MarginBalance, Money, Price, Quantity},
 };
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 use ustr::Ustr;
@@ -62,6 +64,7 @@ use crate::{
             parse_position_side, parse_signed_contracts_quantity,
         },
     },
+    http::parse::get_currency,
     websocket::messages::BitmexOrderUpdateMsg,
 };
 
@@ -803,10 +806,8 @@ pub fn parse_execution_msg(
     let last_px = Price::new(msg.last_px?, instrument.price_precision());
     let settlement_currency_str = msg.settl_currency.unwrap_or(Ustr::from("XBT"));
     let mapped_currency = map_bitmex_currency(settlement_currency_str.as_str());
-    let commission = Money::new(
-        msg.commission.unwrap_or(0.0),
-        Currency::from(mapped_currency.as_str()),
-    );
+    let currency = get_currency(&mapped_currency);
+    let commission = Money::new(msg.commission.unwrap_or(0.0), currency);
     let liquidity_side = parse_liquidity_side(&msg.last_liquidity_ind);
     let client_order_id = msg.cl_ord_id.map(ClientOrderId::new);
     let venue_position_id = None; // Not applicable on BitMEX
@@ -987,8 +988,8 @@ pub fn parse_wallet_msg(msg: BitmexWalletMsg, ts_init: UnixNanos) -> AccountStat
     let account_id = AccountId::new(format!("BITMEX-{}", msg.account));
 
     // Map BitMEX currency to standard currency code
-    let currency_str = crate::common::parse::map_bitmex_currency(msg.currency.as_str());
-    let currency = Currency::from(currency_str.as_str());
+    let currency_str = map_bitmex_currency(msg.currency.as_str());
+    let currency = get_currency(&currency_str);
 
     // BitMEX returns values in satoshis for BTC (XBt) or microunits for USDT/LAMp
     let divisor = if msg.currency == "XBt" {
@@ -1026,8 +1027,8 @@ pub fn parse_wallet_msg(msg: BitmexWalletMsg, ts_init: UnixNanos) -> AccountStat
 #[must_use]
 pub fn parse_margin_msg(msg: BitmexMarginMsg, instrument_id: InstrumentId) -> MarginBalance {
     // Map BitMEX currency to standard currency code
-    let currency_str = crate::common::parse::map_bitmex_currency(msg.currency.as_str());
-    let currency = Currency::from(currency_str.as_str());
+    let currency_str = map_bitmex_currency(msg.currency.as_str());
+    let currency = get_currency(&currency_str);
 
     // BitMEX returns values in satoshis for BTC (XBt) or microunits for USDT/LAMp
     let divisor = if msg.currency == "XBt" {

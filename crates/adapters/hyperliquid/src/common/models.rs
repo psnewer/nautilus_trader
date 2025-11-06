@@ -23,13 +23,16 @@ use nautilus_model::{
     events::AccountState,
     identifiers::{AccountId, InstrumentId},
     reports::PositionStatusReport,
-    types::{AccountBalance, Currency, Money, Price, Quantity},
+    types::{AccountBalance, Money, Price, Quantity},
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use ustr::Ustr;
 
 use crate::{
-    http::models::{HyperliquidL2Book, HyperliquidLevel},
+    http::{
+        models::{HyperliquidL2Book, HyperliquidLevel},
+        parse::get_currency,
+    },
     websocket::messages::{WsBookData, WsLevelData},
 };
 
@@ -723,7 +726,7 @@ impl HyperliquidAccountState {
             .values()
             .map(|balance| {
                 // Create currency - Hyperliquid primarily uses USD/USDC
-                let currency = Currency::from(balance.asset.as_str());
+                let currency = get_currency(&balance.asset);
 
                 // Convert Decimal to f64 and create Money with proper currency
                 let total = Money::new(balance.total.to_f64().unwrap_or(0.0), currency);

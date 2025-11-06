@@ -643,7 +643,8 @@ pub fn parse_fill_report(
         .exec_fee
         .parse::<f64>()
         .with_context(|| format!("Failed to parse execFee='{}'", execution.exec_fee))?;
-    let commission = Money::new(-fee_f64, Currency::from(execution.fee_currency.as_str()));
+    let currency = get_currency(&execution.fee_currency);
+    let commission = Money::new(-fee_f64, currency);
 
     // Determine liquidity side from is_maker flag
     let liquidity_side = if execution.is_maker {
@@ -905,7 +906,7 @@ fn resolve_settlement_currency(
 ///
 /// Uses [`Currency::get_or_create_crypto`] to handle unknown currency codes,
 /// which automatically registers newly listed Bybit assets.
-fn get_currency(code: &str) -> Currency {
+pub fn get_currency(code: &str) -> Currency {
     Currency::get_or_create_crypto(code)
 }
 
