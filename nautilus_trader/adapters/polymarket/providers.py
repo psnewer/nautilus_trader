@@ -20,6 +20,8 @@ import msgspec
 from py_clob_client.client import ClobClient
 
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
+from nautilus_trader.adapters.polymarket.common.gamma_markets import list_markets
+from nautilus_trader.adapters.polymarket.common.gamma_markets import normalize_gamma_market_to_clob_format
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_token_id
@@ -63,6 +65,60 @@ class PolymarketInstrumentProvider(InstrumentProvider):
     async def load_all_async(self, filters: dict | None = None) -> None:
         await self._load_markets([], filters)
 
+    async def _load_ids_using_gamma_markets(
+        self,
+        instrument_ids: list[InstrumentId],
+        filters: dict | None = None,
+    ) -> None:
+        """
+        Load instruments using Gamma API markets.
+        """
+        condition_ids = [get_polymarket_condition_id(inst_id) for inst_id in instrument_ids]
+
+        # Create a copy to avoid mutating the caller's filters
+        filters = filters.copy() if filters is not None else {}
+
+        if len(condition_ids) <= 100:  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
+            self._log.info(f"Loading {len(condition_ids)} instruments, using direct condition_id filtering")
+            filters["condition_ids"] = condition_ids
+        else:
+            self._log.info(f"Loading {len(condition_ids)} instruments, using bulk load of all markets")
+
+        # Wrap synchronous blocking call with asyncio.to_thread
+        markets = await asyncio.to_thread(list_markets, filters=filters)
+        self._log.info(f"Loaded {len(markets)} markets using Gamma API")
+        for market in markets:
+            condition_id = market.get("conditionId")
+            if not condition_id:
+                continue
+
+            if condition_ids and condition_id not in condition_ids:
+                continue
+
+            normalized_market = normalize_gamma_market_to_clob_format(market)
+
+            # Use the normalized tokens array
+            for token_info in normalized_market.get("tokens", []):
+                token_id = token_info["token_id"]
+                outcome = token_info["outcome"]
+                self._load_instrument(normalized_market, token_id, outcome)
+
+    async def _load_ids_using_clob_api(
+        self,
+        instrument_ids: list[InstrumentId],
+        filters: dict | None = None,
+    ) -> None:
+        """
+        Load instruments using CLOB API.
+        """
+        if len(instrument_ids) > 200:
+            self._log.warning(
+                f"Loading {len(instrument_ids)} instruments, using bulk load of all markets as a faster alternative",
+            )
+            await self._load_markets(instrument_ids, filters)
+        else:
+            await self._load_markets_seq(instrument_ids, filters)
+
     async def load_ids_async(
         self,
         instrument_ids: list[InstrumentId],
@@ -81,13 +137,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 "POLYMARKET",
             )
 
-        if len(instrument_ids) > 200:
-            self._log.warning(
-                f"Loading {len(instrument_ids)} instruments, using bulk load of all markets as a faster alternative",
-            )
-            await self._load_markets(instrument_ids, filters)
+        if self._config.use_gamma_markets:
+            await self._load_ids_using_gamma_markets(instrument_ids, filters)
         else:
-            await self._load_markets_seq(instrument_ids, filters)
+            await self._load_ids_using_clob_api(instrument_ids, filters)
 
     async def load_async(self, instrument_id: InstrumentId, filters: dict | None = None) -> None:
         PyCondition.not_none(instrument_id, "instrument_id")
@@ -152,8 +205,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
     ) -> None:
-        if filters is None:
-            filters = {}
+        # Create a copy to avoid mutating the caller's filters
+        filters = filters.copy() if filters is not None else {}
 
         if instrument_ids:
             instruments_str = "instruments: " + ", ".join([str(x) for x in instrument_ids])
