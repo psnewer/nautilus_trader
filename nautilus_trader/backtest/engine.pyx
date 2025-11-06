@@ -1426,7 +1426,7 @@ cdef class BacktestEngine:
             iterations=self._iteration,
             total_events=self._kernel.exec_engine.event_count,
             total_orders=self._kernel.cache.orders_total_count(),
-            total_positions=self._kernel.cache.positions_total_count(),
+            total_positions=len(self._kernel.cache.positions()) + len(self._kernel.cache.position_snapshots()),
             stats_pnls=stats_pnls,
             stats_returns=self._kernel.portfolio.analyzer.get_performance_stats_returns(),
         )
