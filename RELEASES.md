@@ -17,6 +17,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `MaxDrawdown` portfolio statistic
 - Added `quote_quantity` parameter for `close_position(...)` and `close_all_positions(...)` strategy methods
 - Added PolymarketDataLoader for loading historical data with docs and example
+- Added OKX historical trades requests
 - Introduced `PositionAdjusted` events for tracking quantity/PnL changes outside normal order fills (base currency commissions, funding payments, manual adjustments)
 - Upgraded continuous reconciliation for execution engine using position reports to detect missed fills
 
@@ -37,7 +38,8 @@ TBD
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
 - Fixed OKX pre-open instrument parsing and standardize enum usage (#3134), thanks for reporting @3wtz
-- Fixed OKX request_bars pagination halting prematurely in Range mode (#3145), thanks for reporting @3wtz
+- Fixed OKX `request_bars` pagination halting prematurely in Range mode (#3145), thanks for reporting @3wtz
+- Fixed OKX `request_bars` pagination using correct backwards API semantics (#3145), thanks for reporting @3wtz
 - Fixed Polymarket maker fill order side inversion (#3126), thanks for reporting @santivazq
 - Fixed Polymarket instrument provider market filtering (#3133), thanks @MisterMM23
 

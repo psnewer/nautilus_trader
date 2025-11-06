@@ -1088,13 +1088,11 @@ async fn test_sends_pong_for_text_ping() {
         .await
         .expect("subscribe failed");
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while !state.received_text_pong.load(Ordering::Relaxed) {
-        if tokio::time::Instant::now() > deadline {
-            panic!("client did not respond to text ping");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_until_async(
+        || async { state.received_text_pong.load(Ordering::Relaxed) },
+        Duration::from_secs(1),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1120,22 +1118,16 @@ async fn test_sends_pong_for_control_ping() {
         .await
         .expect("subscribe failed");
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        {
+    wait_until_async(
+        || async {
             let guard = state.received_control_pong.lock().await;
-            if guard
+            guard
                 .as_ref()
                 .is_some_and(|payload| payload.as_slice() == CONTROL_PING_PAYLOAD)
-            {
-                break;
-            }
-        }
-        if tokio::time::Instant::now() > deadline {
-            panic!("client did not respond to control ping");
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+        },
+        Duration::from_secs(1),
+    )
+    .await;
 }
 
 #[tokio::test]
