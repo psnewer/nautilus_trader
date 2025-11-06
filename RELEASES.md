@@ -16,7 +16,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `CalmarRatio` portfolio statistic
 - Added `MaxDrawdown` portfolio statistic
 - Added `quote_quantity` parameter for `close_position(...)` and `close_all_positions(...)` strategy methods
-- Added PolymarketDataLoader for loading historical data with docs and example
+- Added `PolymarketDataLoader` for loading historical data with docs and example
+- Added Polymarket Gamma API support for instrument loading (#3141), thanks @DeirhX
 - Added OKX historical trades requests
 - Introduced `PositionAdjusted` events for tracking quantity/PnL changes outside normal order fills (base currency commissions, funding payments, manual adjustments)
 - Upgraded continuous reconciliation for execution engine using position reports to detect missed fills
@@ -49,6 +50,7 @@ TBD
 - Added BitMEX submit broadcaster
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added initial dYdX crate (#3138), thanks @nicolad
+- Added initial dYdX WebSocket in Rust (#3158), thanks @nicolad
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou

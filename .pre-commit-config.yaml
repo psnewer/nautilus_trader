@@ -73,7 +73,7 @@ repos:
         types_or: [rust, python, cython, toml, yaml, rst, markdown]
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.28.0
+    rev: v8.29.0
     hooks:
       - id: gitleaks
         name: gitleaks (secrets scan)
@@ -99,7 +99,7 @@ repos:
         description: Checks GitHub Actions workflow syntax and structural correctness
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.16.2
+    rev: v1.16.3
     hooks:
       - id: zizmor
         name: zizmor (security)

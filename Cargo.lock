@@ -4054,9 +4054,9 @@ dependencies = [
 
 [[package]]
 name = "hypersync-format"
-version = "0.5.8"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca6c46de9d77441338283b2f8fc81272bbbfa10f7751a28417f32a2b351f2180"
+checksum = "b04748c0c67699d9000588e6d9418ee1b580340ac1dff66bf5c3e09ff577ae80"
 dependencies = [
  "alloy-primitives",
  "arrayvec",
@@ -6978,9 +6978,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.41"
+version = "1.0.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce25767e7b499d1b604768e7cde645d14cc8584231ea6b295e9c9eb22c02e1d1"
+checksum = "a338cc41d27e6cc6dce6cefc13a0729dfbb81c262b1f519331575dd80ef3067f"
 dependencies = [
  "proc-macro2",
 ]
