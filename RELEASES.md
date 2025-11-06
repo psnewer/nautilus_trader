@@ -34,6 +34,7 @@ TBD
 ### Fixes
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
+- Fixed risk engine trailing stop order risk validations (#3160), thanks for reporting @GianC0
 - Fixed spawned order client_id caching in `ExecAlgorithm` (#3122), thanks for reporting @kirill-gr1
 - Fixed parse_dates parameter in CSV loaders (#3132), thanks @maomao9-0
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
