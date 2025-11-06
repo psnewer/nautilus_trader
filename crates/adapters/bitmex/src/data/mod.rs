@@ -234,6 +234,9 @@ impl BitmexDataClient {
             NautilusWsMessage::Reconnected => {
                 tracing::info!("BitMEX websocket reconnected");
             }
+            NautilusWsMessage::Authenticated => {
+                tracing::debug!("BitMEX websocket authenticated");
+            }
         }
     }
 

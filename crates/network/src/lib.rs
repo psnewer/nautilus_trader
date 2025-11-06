@@ -82,5 +82,5 @@ pub mod python;
 pub mod error;
 pub mod ratelimiter;
 
-/// Sentinel message to signal reconnection to Rust consumers.
+/// Sentinel message to signal reconnection completion to Rust consumers.
 pub const RECONNECTED: &str = "__RECONNECTED__";

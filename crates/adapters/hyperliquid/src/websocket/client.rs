@@ -22,7 +22,10 @@ use nautilus_model::{
     identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
 };
-use nautilus_network::websocket::{WebSocketClient, WebSocketConfig, channel_message_handler};
+use nautilus_network::{
+    RECONNECTED,
+    websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
+};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
@@ -80,7 +83,7 @@ impl HyperliquidWebSocketInnerClient {
         };
 
         let client = Arc::new(WebSocketClient::connect(cfg, None, vec![], None).await?);
-        tracing::info!("Hyperliquid WebSocket connected: {}", url);
+        tracing::info!("Hyperliquid WebSocket connected: {url}");
 
         let post_router = PostRouter::new();
         let post_ids = PostIds::new(1);
@@ -96,7 +99,12 @@ impl HyperliquidWebSocketInnerClient {
             while let Some(msg) = raw_rx.recv().await {
                 match msg {
                     Message::Text(txt) => {
-                        tracing::debug!("Received WS text: {}", txt);
+                        if txt == RECONNECTED {
+                            tracing::debug!("Skipping sentinel message: {txt}");
+                            continue;
+                        }
+
+                        tracing::debug!("Received WS text: {txt}");
                         match serde_json::from_str::<HyperliquidWsMessage>(&txt) {
                             Ok(hl_msg) => {
                                 if let HyperliquidWsMessage::Post { data } = &hl_msg {
@@ -109,9 +117,7 @@ impl HyperliquidWebSocketInnerClient {
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    "Failed to decode Hyperliquid message: {} | text: {}",
-                                    e,
-                                    txt
+                                    "Failed to decode Hyperliquid message: {e} | text: {txt}"
                                 );
                             }
                         }
@@ -126,7 +132,7 @@ impl HyperliquidWebSocketInnerClient {
                         tracing::debug!("Received pong frame ({} bytes)", data.len());
                     }
                     Message::Close(close_frame) => {
-                        tracing::info!("Received close frame: {:?}", close_frame);
+                        tracing::info!("Received close frame: {close_frame:?}");
                         break;
                     }
                     Message::Frame(_) => tracing::warn!("Received raw frame (unexpected)"),
@@ -181,7 +187,7 @@ impl HyperliquidWebSocketInnerClient {
     /// Low-level method to send a Hyperliquid WebSocket request.
     pub async fn ws_send(&self, request: &HyperliquidWsRequest) -> anyhow::Result<()> {
         let json = serde_json::to_string(request)?;
-        tracing::debug!("Sending WS message: {}", json);
+        tracing::debug!("Sending WS message: {json}");
         self.inner
             .send_text(json, None)
             .await
@@ -192,11 +198,11 @@ impl HyperliquidWebSocketInnerClient {
     pub async fn ws_send_once(&mut self, request: &HyperliquidWsRequest) -> anyhow::Result<()> {
         let json = serde_json::to_string(request)?;
         if self.sent_subscriptions.contains(&json) {
-            tracing::debug!("Skipping duplicate request: {}", json);
+            tracing::debug!("Skipping duplicate request: {json}");
             return Ok(());
         }
 
-        tracing::debug!("Sending WS message: {}", json);
+        tracing::debug!("Sending WS message: {json}");
         self.inner
             .send_text(json.clone(), None)
             .await

@@ -282,7 +282,8 @@ impl OKXWebSocketClient {
                         NautilusWsMessage::AccountUpdate(msg) => {
                             call_python_with_data(&callback, |py| msg.into_py_any(py));
                         }
-                        NautilusWsMessage::Reconnected => {} // Nothing to handle
+                        NautilusWsMessage::Reconnecting => {} // Nothing to handle
+                        NautilusWsMessage::Reconnected => {}  // Nothing to handle
                         NautilusWsMessage::Error(msg) => {
                             call_python_with_data(&callback, |py| msg.into_py_any(py));
                         }

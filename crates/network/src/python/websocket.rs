@@ -76,13 +76,12 @@ impl WebSocketConfig {
                 let data = match msg {
                     Message::Binary(data) => data.to_vec(),
                     Message::Text(text) => {
-                        // Disregard the RECONNECTED sentinel message used for Rust flows
                         if text == RECONNECTED {
                             return;
                         }
                         text.as_bytes().to_vec()
                     }
-                    _ => return, // Skip other message types
+                    _ => return,
                 };
                 if let Err(e) = handler_clone.call1(py, (PyBytes::new(py, &data),)) {
                     tracing::error!("Error calling Python message handler: {e}");

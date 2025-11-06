@@ -1819,3 +1819,168 @@ async fn test_reconnection_race_condition() {
 
     client.close().await.unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_after_stream_call() {
+    let (addr, _state) = start_test_server().await.unwrap();
+
+    let url = format!("ws://{addr}/realtime");
+    let mut client = BitmexWebSocketClient::new(
+        Some(url),
+        None,
+        None,
+        Some(AccountId::from("TEST-001")),
+        Some(1),
+    )
+    .unwrap();
+
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+
+    // Take stream (moves out_rx ownership)
+    let _stream = client.stream();
+
+    // Spawn task with stream
+    tokio::spawn(async move {
+        tokio::pin!(_stream);
+        // Stream processing would happen here
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now try to subscribe - should work because handler is still alive
+    let result = client
+        .subscribe(vec!["orderBookL2:XBTUSD".to_string()])
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Subscribe should work after stream() is called, but got error: {:?}",
+        result.err()
+    );
+
+    client.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_is_active_false_after_close() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let url = format!("ws://{addr}/realtime");
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(url),
+        None,
+        None,
+        Some(AccountId::from("TEST-001")),
+        Some(1),
+    )
+    .unwrap();
+
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+    assert!(
+        client.is_active(),
+        "Expected is_active() to be true after connect"
+    );
+
+    client.close().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !client.is_active(),
+        "Expected is_active() to be false after close"
+    );
+    assert!(
+        client.is_closed(),
+        "Expected is_closed() to be true after close"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_is_active_lifecycle() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/realtime", addr);
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url),
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some(AccountId::new("BITMEX-001")),
+        None,
+    )
+    .unwrap();
+
+    // Before connection: should not be active
+    assert!(
+        !client.is_active(),
+        "Client should not be active before connect"
+    );
+
+    // Connect and wait until active
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+
+    // After successful connection: should be active
+    assert!(
+        client.is_active(),
+        "Client should be active after connect completes"
+    );
+
+    // Close connection
+    client.close().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // After close: should not be active
+    assert!(
+        !client.is_active(),
+        "Client should not be active after close"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_is_active_false_during_reconnection() {
+    // Guard the is_active() semantics during reconnection:
+    // During reconnection, is_active() MUST return false so wait_until_active() waits
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/realtime", addr);
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url),
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
+        Some(AccountId::new("BITMEX-001")),
+        None,
+    )
+    .unwrap();
+
+    // Connect and verify active
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+    assert!(client.is_active(), "Client should be active after connect");
+
+    // Trigger server-side drop to force reconnection
+    state.drop_connections.store(true, Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // During reconnection: is_active() should return false
+    // This is critical - if is_active() returns true, wait_until_active() returns immediately
+    assert!(
+        !client.is_active(),
+        "Client should not be active during reconnection"
+    );
+
+    // Reset drop flag and wait for reconnection
+    state.drop_connections.store(false, Ordering::Relaxed);
+    client.wait_until_active(10.0).await.unwrap();
+
+    // After reconnection: should be active again
+    assert!(
+        client.is_active(),
+        "Client should be active after reconnection completes"
+    );
+
+    client.close().await.unwrap();
+}

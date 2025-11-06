@@ -753,6 +753,9 @@ fn dispatch_ws_message(message: NautilusWsMessage) {
         NautilusWsMessage::Reconnected => {
             tracing::info!("BitMEX execution websocket reconnected");
         }
+        NautilusWsMessage::Authenticated => {
+            tracing::debug!("BitMEX execution websocket authenticated");
+        }
     }
 }
 

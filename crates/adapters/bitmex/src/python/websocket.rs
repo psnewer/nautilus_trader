@@ -149,6 +149,8 @@ impl BitmexWebSocketClient {
 
         self.cache_instruments(instruments_any);
 
+        // We need to clone self to move into the async block,
+        // the clone will be connected and kept alive to maintain the handler.
         let mut client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -157,6 +159,7 @@ impl BitmexWebSocketClient {
             let stream = client.stream();
 
             tokio::spawn(async move {
+                let _client = client; // Keep client alive for the entire duration
                 tokio::pin!(stream);
 
                 while let Some(msg) = stream.next().await {
@@ -210,7 +213,8 @@ impl BitmexWebSocketClient {
                                 call_python(py, &callback, py_obj);
                             }
                         }
-                        NautilusWsMessage::Reconnected => {} // Nothing to handle
+                        NautilusWsMessage::Reconnected => {}
+                        NautilusWsMessage::Authenticated => {}
                     });
                 }
             });

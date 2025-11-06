@@ -307,6 +307,9 @@ impl OKXDataClient {
             NautilusWsMessage::Raw(value) => {
                 tracing::debug!("Unhandled websocket payload: {value:?}");
             }
+            NautilusWsMessage::Reconnecting => {
+                tracing::info!("Websocket reconnecting");
+            }
             NautilusWsMessage::Reconnected => {
                 tracing::info!("Websocket reconnected");
             }

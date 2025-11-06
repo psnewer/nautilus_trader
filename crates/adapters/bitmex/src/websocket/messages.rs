@@ -104,6 +104,7 @@ pub enum NautilusWsMessage {
     FundingRateUpdates(Vec<FundingRateUpdate>),
     AccountState(AccountState),
     Reconnected,
+    Authenticated,
 }
 
 /// Represents all possible message types from the BitMEX WebSocket API.
@@ -149,7 +150,7 @@ pub enum BitmexWsMessage {
         meta: HashMap<String, String>,
         request: BitmexHttpRequest,
     },
-    /// Indicates a WebSocket reconnection has occurred.
+    /// Indicates a WebSocket reconnection has completed.
     #[serde(skip)]
     Reconnected,
 }

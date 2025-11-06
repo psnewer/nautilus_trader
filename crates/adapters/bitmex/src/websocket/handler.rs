@@ -15,7 +15,10 @@
 
 //! WebSocket message handler for BitMEX.
 
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use ahash::AHashMap;
 use dashmap::DashMap;
@@ -28,9 +31,8 @@ use nautilus_model::{
 };
 use nautilus_network::{
     RECONNECTED,
-    websocket::{AuthTracker, SubscriptionState},
+    websocket::{AuthTracker, SubscriptionState, WebSocketClient},
 };
-use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
@@ -55,137 +57,31 @@ use crate::common::enums::BitmexExecType;
     reason = "Commands are ephemeral and immediately consumed"
 )]
 pub enum HandlerCommand {
+    /// Set the WebSocketClient for the handler to use.
+    SetClient(WebSocketClient),
+    /// Disconnect the WebSocket connection.
+    Disconnect,
+    /// Send authentication payload to the WebSocket.
+    Authenticate { payload: String },
+    /// Subscribe to the given topics.
+    Subscribe { topics: Vec<String> },
+    /// Unsubscribe from the given topics.
+    Unsubscribe { topics: Vec<String> },
     /// Initialize the instruments cache with the given instruments.
     InitializeInstruments(Vec<InstrumentAny>),
     /// Update a single instrument in the cache.
     UpdateInstrument(InstrumentAny),
 }
 
-struct RawFeedHandler {
-    raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    signal: Arc<AtomicBool>,
-}
-
-impl RawFeedHandler {
-    /// Creates a new [`RawFeedHandler`] instance.
-    pub fn new(
-        raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-        signal: Arc<AtomicBool>,
-    ) -> Self {
-        Self { raw_rx, signal }
-    }
-
-    /// Get the next message from the WebSocket stream.
-    async fn next(&mut self) -> Option<BitmexWsMessage> {
-        loop {
-            tokio::select! {
-                msg = self.raw_rx.recv() => match msg {
-                    Some(msg) => match msg {
-                        Message::Text(text) => {
-                            if text == RECONNECTED {
-                                tracing::info!("Received WebSocket reconnection signal");
-                                return Some(BitmexWsMessage::Reconnected);
-                            }
-
-                            tracing::trace!("Raw websocket message: {text}");
-
-                            if Self::is_heartbeat_message(&text) {
-                                tracing::trace!(
-                                    "Ignoring heartbeat control message: {text}"
-                                );
-                                continue;
-                            }
-
-                            match serde_json::from_str(&text) {
-                                Ok(msg) => match &msg {
-                                    BitmexWsMessage::Welcome {
-                                        version,
-                                        heartbeat_enabled,
-                                        limit,
-                                        ..
-                                    } => {
-                                        tracing::info!(
-                                            version = version,
-                                            heartbeat = heartbeat_enabled,
-                                            rate_limit = ?limit.remaining,
-                                            "Welcome to the BitMEX Realtime API:",
-                                        );
-                                    }
-                                    BitmexWsMessage::Subscription { .. } => return Some(msg),
-                                    BitmexWsMessage::Error { status, error, .. } => {
-                                        tracing::error!(
-                                            status = status,
-                                            error = error,
-                                            "Received error from BitMEX"
-                                        );
-                                    }
-                                    _ => return Some(msg),
-                                },
-                                Err(e) => {
-                                    tracing::error!("Failed to parse WebSocket message: {e}: {text}");
-                                }
-                            }
-                        }
-                        Message::Binary(msg) => {
-                            tracing::debug!("Raw binary: {msg:?}");
-                        }
-                        Message::Close(_) => {
-                            tracing::debug!("Received close message, waiting for reconnection");
-                            continue;
-                        }
-                        msg => match msg {
-                            Message::Ping(data) => {
-                                tracing::trace!("Received ping frame with {} bytes", data.len());
-                            }
-                            Message::Pong(data) => {
-                                tracing::trace!("Received pong frame with {} bytes", data.len());
-                            }
-                            Message::Frame(frame) => {
-                                tracing::debug!("Received raw frame: {frame:?}");
-                            }
-                            _ => {
-                                tracing::warn!("Unexpected message type: {msg:?}");
-                            }
-                        },
-                    }
-                    None => {
-                        tracing::info!("WebSocket stream closed");
-                        return None;
-                    }
-                },
-                _ = tokio::time::sleep(Duration::from_millis(1)) => {
-                    if self.signal.load(std::sync::atomic::Ordering::Relaxed) {
-                        tracing::debug!("Stop signal received");
-                        return None;
-                    }
-                }
-            }
-        }
-    }
-
-    fn is_heartbeat_message(text: &str) -> bool {
-        let trimmed = text.trim();
-
-        if !trimmed.starts_with('{') || trimmed.len() > 64 {
-            return false;
-        }
-
-        trimmed.contains("\"op\":\"ping\"") || trimmed.contains("\"op\":\"pong\"")
-    }
-}
-
 pub(super) struct FeedHandler {
-    handler: RawFeedHandler,
-    pub out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
-    #[allow(
-        dead_code,
-        reason = "May be needed for future account-specific processing"
-    )]
     account_id: AccountId,
-    pub auth_tracker: AuthTracker,
-    pub subscriptions: SubscriptionState,
-    pub signal: Arc<AtomicBool>,
+    signal: Arc<AtomicBool>,
+    client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+    raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
+    out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
+    auth_tracker: AuthTracker,
+    subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
     order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
@@ -196,9 +92,9 @@ impl FeedHandler {
     /// Creates a new [`FeedHandler`] instance.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        receiver: tokio::sync::mpsc::UnboundedReceiver<Message>,
         signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
+        raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
         out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: AccountId,
         auth_tracker: AuthTracker,
@@ -206,21 +102,28 @@ impl FeedHandler {
         order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
         order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
     ) -> Self {
-        let handler = RawFeedHandler::new(receiver, signal.clone());
-
         Self {
-            handler,
-            cmd_rx,
-            out_tx,
             account_id,
+            signal,
+            client: None,
+            cmd_rx,
+            raw_rx,
+            out_tx,
             auth_tracker,
             subscriptions,
-            signal,
             instruments_cache: AHashMap::new(),
             order_type_cache,
             order_symbol_cache,
             quote_cache: QuoteCache::new(),
         }
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.signal.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn send(&self, msg: NautilusWsMessage) -> Result<(), ()> {
+        self.out_tx.send(msg).map_err(|_| ())
     }
 
     #[inline]
@@ -238,6 +141,50 @@ impl FeedHandler {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
+                        HandlerCommand::SetClient(client) => {
+                            tracing::debug!("WebSocketClient received by handler");
+                            self.client = Some(client);
+                        }
+                        HandlerCommand::Disconnect => {
+                            tracing::debug!("Disconnect command received");
+                            if let Some(client) = self.client.take() {
+                                client.disconnect().await;
+                            }
+                        }
+                        HandlerCommand::Authenticate { payload } => {
+                            tracing::debug!("Authenticate command received");
+                            if let Some(client) = &self.client {
+                                if let Err(e) = client.send_text(payload, None).await {
+                                    tracing::error!("Error sending authentication: {e}");
+                                }
+                            } else {
+                                tracing::error!("Cannot authenticate: WebSocketClient not set");
+                            }
+                        }
+                        HandlerCommand::Subscribe { topics } => {
+                            tracing::debug!("Subscribe command received for {} topics", topics.len());
+                            if let Some(client) = &self.client {
+                                for topic in topics {
+                                    if let Err(e) = client.send_text(topic, None).await {
+                                        tracing::error!("Error sending subscription: {e}");
+                                    }
+                                }
+                            } else {
+                                tracing::error!("Cannot subscribe: WebSocketClient not set");
+                            }
+                        }
+                        HandlerCommand::Unsubscribe { topics } => {
+                            tracing::debug!("Unsubscribe command received for {} topics", topics.len());
+                            if let Some(client) = &self.client {
+                                for topic in topics {
+                                    if let Err(e) = client.send_text(topic, None).await {
+                                        tracing::error!("Error sending unsubscription: {e}");
+                                    }
+                                }
+                            } else {
+                                tracing::error!("Cannot unsubscribe: WebSocketClient not set");
+                            }
+                        }
                         HandlerCommand::InitializeInstruments(instruments) => {
                             for inst in instruments {
                                 self.instruments_cache.insert(inst.symbol().inner(), inst);
@@ -251,10 +198,46 @@ impl FeedHandler {
                     continue;
                 }
 
-                Some(msg) = self.handler.next() => {
-            match msg {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if self.signal.load(std::sync::atomic::Ordering::Relaxed) {
+                        tracing::debug!("Stop signal received during idle period");
+                        return None;
+                    }
+                    continue;
+                }
+
+                msg = self.raw_rx.recv() => {
+                    let msg = match msg {
+                        Some(msg) => msg,
+                        None => {
+                            tracing::debug!("WebSocket stream closed");
+                            return None;
+                        }
+                    };
+
+                    // Handle ping frames directly for minimal latency
+                    if let Message::Ping(data) = &msg {
+                        tracing::trace!("Received ping frame with {} bytes", data.len());
+                        if let Some(client) = &self.client
+                            && let Err(e) = client.send_pong(data.to_vec()).await
+                        {
+                            tracing::warn!(error = %e, "Failed to send pong frame");
+                        }
+                        continue;
+                    }
+
+                    let event = match Self::parse_raw_message(msg) {
+                        Some(event) => event,
+                        None => continue,
+                    };
+
+                    if self.signal.load(std::sync::atomic::Ordering::Relaxed) {
+                        tracing::debug!("Stop signal received");
+                        return None;
+                    }
+
+            match event {
                 BitmexWsMessage::Reconnected => {
-                    // Return reconnection signal to outer loop
                     self.quote_cache.clear();
                     return Some(NautilusWsMessage::Reconnected);
                 }
@@ -264,12 +247,14 @@ impl FeedHandler {
                     request,
                     error,
                 } => {
-                    self.handle_subscription_message(
+                    if let Some(msg) = self.handle_subscription_message(
                         success,
                         subscribe.as_ref(),
                         request.as_ref(),
                         error.as_deref(),
-                    );
+                    ) {
+                        return Some(msg);
+                    }
                     continue;
                 }
                 BitmexWsMessage::Table(table_msg) => {
@@ -750,7 +735,7 @@ impl FeedHandler {
         subscribe: Option<&String>,
         request: Option<&BitmexHttpRequest>,
         error: Option<&str>,
-    ) {
+    ) -> Option<NautilusWsMessage> {
         if let Some(req) = request {
             if req
                 .op
@@ -759,12 +744,13 @@ impl FeedHandler {
                 if success {
                     tracing::info!("Authenticated BitMEX WebSocket session");
                     self.auth_tracker.succeed();
+                    return Some(NautilusWsMessage::Authenticated);
                 } else {
                     let reason = error.unwrap_or("Authentication rejected").to_string();
                     tracing::error!(error = %reason, "Authentication failed");
                     self.auth_tracker.fail(reason);
                 }
-                return;
+                return None;
             }
 
             if req
@@ -772,7 +758,7 @@ impl FeedHandler {
                 .eq_ignore_ascii_case(BitmexWsOperation::Subscribe.as_ref())
             {
                 self.handle_subscription_ack(success, request, subscribe, error);
-                return;
+                return None;
             }
 
             if req
@@ -780,13 +766,13 @@ impl FeedHandler {
                 .eq_ignore_ascii_case(BitmexWsOperation::Unsubscribe.as_ref())
             {
                 self.handle_unsubscribe_ack(success, request, subscribe, error);
-                return;
+                return None;
             }
         }
 
         if subscribe.is_some() {
             self.handle_subscription_ack(success, request, subscribe, error);
-            return;
+            return None;
         }
 
         if let Some(error) = error {
@@ -796,6 +782,8 @@ impl FeedHandler {
                 "Unhandled subscription control message"
             );
         }
+
+        None
     }
 
     fn handle_subscription_ack(
@@ -869,6 +857,82 @@ impl FeedHandler {
 
         fallback.into_iter().map(|topic| topic.as_str()).collect()
     }
+
+    fn parse_raw_message(msg: Message) -> Option<BitmexWsMessage> {
+        match msg {
+            Message::Text(text) => {
+                if text == RECONNECTED {
+                    tracing::info!("Received WebSocket reconnected signal");
+                    return Some(BitmexWsMessage::Reconnected);
+                }
+
+                tracing::trace!("Raw websocket message: {text}");
+
+                if Self::is_heartbeat_message(&text) {
+                    tracing::trace!("Ignoring heartbeat control message: {text}");
+                    return None;
+                }
+
+                match serde_json::from_str(&text) {
+                    Ok(msg) => match &msg {
+                        BitmexWsMessage::Welcome {
+                            version,
+                            heartbeat_enabled,
+                            limit,
+                            ..
+                        } => {
+                            tracing::info!(
+                                version = version,
+                                heartbeat = heartbeat_enabled,
+                                rate_limit = ?limit.remaining,
+                                "Welcome to the BitMEX Realtime API:",
+                            );
+                        }
+                        BitmexWsMessage::Subscription { .. } => return Some(msg),
+                        BitmexWsMessage::Error { status, error, .. } => {
+                            tracing::error!(
+                                status = status,
+                                error = error,
+                                "Received error from BitMEX"
+                            );
+                        }
+                        _ => return Some(msg),
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to parse WebSocket message: {e}: {text}");
+                    }
+                }
+            }
+            Message::Binary(msg) => {
+                tracing::debug!("Raw binary: {msg:?}");
+            }
+            Message::Close(_) => {
+                tracing::debug!("Received close message, waiting for reconnection");
+            }
+            Message::Ping(data) => {
+                // Handled in select! loop before parse_raw_message
+                tracing::trace!("Ping frame with {} bytes (already handled)", data.len());
+            }
+            Message::Pong(data) => {
+                tracing::trace!("Received pong frame with {} bytes", data.len());
+            }
+            Message::Frame(frame) => {
+                tracing::debug!("Received raw frame: {frame:?}");
+            }
+        }
+
+        None
+    }
+
+    fn is_heartbeat_message(text: &str) -> bool {
+        let trimmed = text.trim();
+
+        if !trimmed.starts_with('{') || trimmed.len() > 64 {
+            return false;
+        }
+
+        trimmed.contains("\"op\":\"ping\"") || trimmed.contains("\"op\":\"pong\"")
+    }
 }
 
 fn is_terminal_order_status(status: OrderStatus) -> bool {
@@ -888,9 +952,9 @@ mod tests {
 
     #[test]
     fn test_is_heartbeat_message_detection() {
-        assert!(RawFeedHandler::is_heartbeat_message("{\"op\":\"ping\"}"));
-        assert!(RawFeedHandler::is_heartbeat_message("{\"op\":\"pong\"}"));
-        assert!(!RawFeedHandler::is_heartbeat_message(
+        assert!(FeedHandler::is_heartbeat_message("{\"op\":\"ping\"}"));
+        assert!(FeedHandler::is_heartbeat_message("{\"op\":\"pong\"}"));
+        assert!(!FeedHandler::is_heartbeat_message(
             "{\"op\":\"subscribe\",\"args\":[\"trade:XBTUSD\"]}"
         ));
     }

@@ -221,13 +221,93 @@ WebSocket clients handle real-time streaming data and require careful management
 
 ### Client structure
 
-WebSocket clients typically don't need the inner/outer pattern since they're not frequently cloned. Use a single struct with clear state management.
+WebSocket adapters use a **two-layer architecture** to separate Python-accessible state from high-performance async I/O:
+
+#### Connection state tracking
+
+Track connection state using `Arc<ArcSwap<AtomicU8>>` to provide lock-free, race-free visibility across all clones:
+
+```rust
+use arc_swap::ArcSwap;
+
+pub struct MyWebSocketClient {
+    connection_mode: Arc<ArcSwap<AtomicU8>>,  // Shared connection state (lock-free)
+    signal: Arc<AtomicBool>,                   // Manual disconnect signal
+    // ...
+}
+```
+
+**Pattern breakdown:**
+
+- **Outer `Arc`**: Shared across all clones (Python bindings clone clients before async operations).
+- **`ArcSwap`**: Enables atomic pointer replacement via `.store()` without replacing the outer Arc.
+- **Inner `Arc<AtomicU8>`**: The actual connection state from `WebSocketClient::connection_mode_atomic()`.
+
+Initialize with a placeholder atomic (`ConnectionMode::Closed`), then in `connect()` call `.store(client.connection_mode_atomic())` to atomically swap to the underlying client's state. All clones see updates instantly through lock-free `.load()` calls in `is_active()`.
+
+The underlying `WebSocketClient` sends a `RECONNECTED` sentinel message when reconnection completes, triggering resubscription logic in the handler.
+
+**Outer client** (`{Venue}WebSocketClient`):
+
+- Orchestrates connection lifecycle, authentication, subscriptions.
+- Maintains state for Python access using `Arc<DashMap<K, V>>`.
+- Tracks subscription state for reconnection logic.
+- Stores instruments cache for replay on reconnect.
+- Sends commands to handler via `cmd_tx` channel.
+- Receives domain events via `out_rx` channel.
+
+**Inner handler** (`{Venue}WsFeedHandler`):
+
+- Runs in dedicated Tokio task as stateless I/O boundary.
+- Owns `WebSocketClient` exclusively (no `RwLock` needed).
+- Processes commands from `cmd_rx` → serializes to JSON → sends via WebSocket.
+- Receives raw WebSocket messages → deserializes → transforms to `NautilusWsMessage` → emits via `out_tx`.
+- Owns pending request state using `AHashMap<K, V>` (single-threaded, no locking).
+- Owns working instruments cache for transformations.
+
+**Communication pattern:**
+
+```
+Client (orchestrator)                Handler (I/O boundary)
+─────────────────────                ──────────────────────
+cmd_tx ──────────────────────────→ cmd_rx
+  ├─ Subscribe { args }                │
+  ├─ PlaceOrder { params }             ├─→ serialize → WebSocket
+  └─ MassCancel { id }                 │
+                                       │
+out_rx ←────────────────────────── out_tx
+         ← NautilusWsMessage           │
+         ← Authenticated               ├─← WebSocket → parse → transform
+         ← OrderAccepted               │
+```
+
+**Key principles:**
+
+- **No shared locks on hot path**: Handler owns `WebSocketClient`, client sends commands via lock-free mpsc channel.
+- **Command pattern for all sends**: Subscriptions, orders, cancellations all route through `HandlerCommand` enum.
+- **Event pattern for state**: Handler emits `NautilusWsMessage` events (including `Authenticated`), client maintains state from events.
+- **Pending state ownership**: Handler owns `AHashMap` for matching responses (no `Arc<DashMap>` between layers).
+- **Python constraint**: Client uses `Arc<DashMap>` only for state Python might query; handler uses `AHashMap` for internal matching.
 
 ### Authentication
 
-Handle authentication separately from subscriptions.
+Authentication state is managed through events:
+
+- Handler processes `Login` response → **returns** `NautilusWsMessage::Authenticated` immediately.
+- Client receives event → updates local auth state → proceeds with subscriptions.
+- `AuthTracker` may be shared via `Arc` for state queries, but handler returns events directly (no blocking).
+
+**Note**: The `Authenticated` message is consumed in the client's spawn loop for reconnection flow coordination and is not forwarded to downstream consumers (data/execution clients). Downstream consumers can query authentication state via `AuthTracker` if needed. The execution client's `Authenticated` handler only logs at debug level with no critical logic depending on this event.
 
 ### Subscription management
+
+#### Shared SubscriptionState pattern
+
+The `SubscriptionState` struct from `nautilus_network::websocket` is shared between client and handler using `Arc<DashMap<>>` internally for thread-safe access:
+
+- **SubscriptionState is shared via Arc** - Both client and handler receive `.clone()` of the same instance (shallow clone of Arc pointers).
+- **Responsibility split** - Client tracks user intent (`mark_subscribe`, `mark_unsubscribe`), handler tracks server confirmations (`confirm_subscribe`, `confirm_unsubscribe`, `mark_failure`).
+- **Why both need it** - Single source of truth with lock-free concurrent access, no synchronization overhead.
 
 #### Subscription lifecycle
 
@@ -269,7 +349,14 @@ Parse topics using `split_once()` with the appropriate delimiter to extract chan
 
 ### Reconnection logic
 
-On reconnection, restore authentication and public subscriptions, but skip private channels that were explicitly unsubscribed.
+On reconnection, restore authentication and subscriptions:
+
+1. **Track subscriptions**: Preserve original subscription arguments in collections (e.g., `Arc<DashMap>`) to avoid parsing topics back to arguments.
+
+2. **Reconnection flow**:
+   - Receive `NautilusWsMessage::Reconnected` from handler
+   - If authenticated: Re-authenticate and wait for confirmation
+   - Restore all tracked subscriptions via handler commands
 
 ### Ping/Pong handling
 
@@ -370,19 +457,23 @@ Structs holding references to lower-level components follow these conventions:
 ```rust
 // Client struct
 pub struct OKXWebSocketClient {
-    inner: Arc<RwLock<Option<WebSocketClient>>>,  // Network client
+    cmd_tx: Arc<RwLock<UnboundedSender<HandlerCommand>>>,  // Command channel to handler
+    out_rx: Option<Arc<UnboundedReceiver<NautilusWsMessage>>>,  // Message stream from handler
+    task_handle: Option<Arc<JoinHandle<()>>>,  // Handler task
     // ...
 }
 
 // Handler struct
 pub struct FeedHandler {
-    inner: Arc<RwLock<Option<WebSocketClient>>>,  // Network client (when needed)
-    handler: RawFeedHandler,                      // Raw message handler
+    inner: Option<WebSocketClient>,  // Network client from nautilus_network
+    cmd_rx: UnboundedReceiver<HandlerCommand>,  // Commands from client
+    raw_rx: UnboundedReceiver<Message>,  // Raw messages from WebSocket
+    out_tx: UnboundedSender<NautilusWsMessage>,  // Parsed messages to client
     // ...
 }
 ```
 
-The `inner` field refers to the network-level client from `nautilus_network` while `handler` refers to the adapter-specific raw feed handler component.
+The `inner` field in the handler holds the network-level client from `nautilus_network`. The client communicates with the handler via channels (`cmd_tx`/`cmd_rx` for commands, `out_tx`/`out_rx` for data). The `cmd_tx` is wrapped in `RwLock` to allow updates when reconnecting.
 
 #### Type naming: `{Venue}Ws{TypeSuffix}`
 

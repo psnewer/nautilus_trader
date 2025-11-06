@@ -142,6 +142,7 @@ impl RawFeedHandler {
                                 tracing::debug!("Received WebSocket reconnection signal");
                                 return Some(OKXWsMessage::Reconnected);
                             }
+
                             tracing::trace!("Received WebSocket message: {text}");
 
                             match serde_json::from_str(&text) {

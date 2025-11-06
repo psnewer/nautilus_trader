@@ -821,6 +821,15 @@ impl WebSocketClient {
         ConnectionMode::from_atomic(&self.connection_mode)
     }
 
+    /// Returns a clone of the connection mode atomic for external state tracking.
+    ///
+    /// This allows adapter clients to track connection state across reconnections
+    /// without message-passing delays.
+    #[must_use]
+    pub fn connection_mode_atomic(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.connection_mode)
+    }
+
     /// Check if the client connection is active.
     ///
     /// Returns `true` if the client is connected and has not been signalled to disconnect.
