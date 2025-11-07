@@ -947,6 +947,17 @@ async fn test_subscription_restoration_tracking() {
     .await;
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
     state.drop_next_connection.store(true, Ordering::Relaxed);
 
     client
@@ -1422,6 +1433,17 @@ async fn test_auth_and_subscription_restoration_order() {
         .expect("subscribe orders failed");
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
     state.drop_next_connection.store(true, Ordering::Relaxed);
 
     wait_until_async(
@@ -1552,6 +1574,16 @@ async fn test_rapid_consecutive_reconnections() {
         // Clear subscription events to verify fresh resubscriptions
         state.clear_subscription_events().await;
 
+        // Wait to ensure events are cleared
+        wait_until_async(
+            || {
+                let state = state.clone();
+                async move { state.subscription_events().await.is_empty() }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
         state.drop_next_connection.store(true, Ordering::Relaxed);
 
         // Trigger disconnect by subscribing to a new channel
@@ -1668,6 +1700,16 @@ async fn test_multiple_partial_subscription_failures() {
     .await;
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Set up one subscription to fail on next reconnect
     {

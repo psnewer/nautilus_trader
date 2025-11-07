@@ -834,6 +834,16 @@ async fn test_reconnection_retries_failed_subscriptions() {
 
     state.clear_subscription_events().await;
 
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
     client
         .subscribe_trades(Ustr::from("BTC"))
         .await
@@ -954,6 +964,17 @@ async fn test_rapid_consecutive_reconnections() {
     // Trigger multiple rapid disconnects
     for _ in 0..3 {
         state.clear_subscription_events().await;
+
+        // Wait to ensure events are cleared
+        wait_until_async(
+            || {
+                let state = state.clone();
+                async move { state.subscription_events().await.is_empty() }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
         state.drop_next_connection.store(true, Ordering::Relaxed);
 
         let _ = client.subscribe_bbo(Ustr::from("ETH")).await;
@@ -1031,6 +1052,16 @@ async fn test_multiple_partial_subscription_failures() {
     wait_for_subscription_events(&state, Duration::from_secs(2), |events| events.len() >= 3).await;
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Set one to fail on next attempt
     state.fail_next_subscription("trades").await;

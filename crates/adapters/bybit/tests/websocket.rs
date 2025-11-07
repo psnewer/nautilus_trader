@@ -1252,6 +1252,17 @@ async fn test_rapid_consecutive_reconnections() {
 
     for i in 0..3 {
         state.clear_subscription_events().await;
+
+        // Wait to ensure events are cleared
+        wait_until_async(
+            || {
+                let state = state.clone();
+                async move { state.subscription_events().await.is_empty() }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
         state.disconnect_trigger.store(true, Ordering::Relaxed);
 
         let _ = client.subscribe(vec![format!("publicTrade.ETH{i}")]).await;
@@ -1296,6 +1307,16 @@ async fn test_reconnection_race_condition() {
     .await;
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     state.disconnect_trigger.store(true, Ordering::Relaxed);
     let _ = client
@@ -1387,6 +1408,16 @@ async fn test_multiple_partial_subscription_failures() {
         .await;
 
     state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     let mixed_topics = vec![
         "publicTrade.SOLUSDT".to_string(),
