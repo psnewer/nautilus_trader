@@ -301,13 +301,13 @@ Authentication state is managed through events:
 
 ### Subscription management
 
-#### Shared SubscriptionState pattern
+#### Shared `SubscriptionState` pattern
 
 The `SubscriptionState` struct from `nautilus_network::websocket` is shared between client and handler using `Arc<DashMap<>>` internally for thread-safe access:
 
-- **SubscriptionState is shared via Arc** - Both client and handler receive `.clone()` of the same instance (shallow clone of Arc pointers).
-- **Responsibility split** - Client tracks user intent (`mark_subscribe`, `mark_unsubscribe`), handler tracks server confirmations (`confirm_subscribe`, `confirm_unsubscribe`, `mark_failure`).
-- **Why both need it** - Single source of truth with lock-free concurrent access, no synchronization overhead.
+- **`SubscriptionState` is shared via `Arc`**: Both client and handler receive `.clone()` of the same instance (shallow clone of Arc pointers).
+- **Responsibility split**: Client tracks user intent (`mark_subscribe`, `mark_unsubscribe`), handler tracks server confirmations (`confirm_subscribe`, `confirm_unsubscribe`, `mark_failure`).
+- **Why both need it**: Single source of truth with lock-free concurrent access, no synchronization overhead.
 
 #### Subscription lifecycle
 
@@ -315,8 +315,8 @@ A **subscription** represents any topic in one of two states:
 
 | State         | Description |
 |---------------|-------------|
-| **Pending**   | Subscription request sent to venue, awaiting acknowledgment |
-| **Confirmed** | Venue acknowledged subscription and is actively streaming data |
+| **Pending**   | Subscription request sent to venue, awaiting acknowledgment. |
+| **Confirmed** | Venue acknowledged subscription and is actively streaming data. |
 
 State transitions follow this lifecycle:
 
@@ -383,33 +383,82 @@ Route different message types to appropriate handlers.
 
 ### Error handling
 
-Classify errors to determine retry behavior:
+#### Client-side error propagation
+
+Channel send failures (client → handler) should propagate loudly as `Result<(), Error>`:
 
 ```rust
-#[derive(Debug, thiserror::Error)]
-pub enum WebSocketError {
-    #[error("Connection failed: {0}")]
-    ConnectionFailed(String),
-
-    #[error("Authentication failed: {0}")]
-    AuthenticationFailed(String),
-
-    #[error("Subscription failed: {0}")]
-    SubscriptionFailed(String),
-
-    #[error("Message parse error: {0}")]
-    ParseError(String),
-}
-
 impl MyWebSocketClient {
-    fn should_reconnect(&self, error: &WebSocketError) -> bool {
-        matches!(
-            error,
-            WebSocketError::ConnectionFailed(_)
-        )
+    async fn send_cmd(&self, cmd: HandlerCommand) -> Result<(), Error> {
+        self.cmd_tx.read().await.send(cmd)
+            .map_err(|e| Error::ClientError(format!("Handler not available: {e}")))
+    }
+
+    pub async fn submit_order(...) -> Result<(), Error> {
+        let cmd = HandlerCommand::PlaceOrder { ... };
+        self.send_cmd(cmd).await  // Propagates channel failures
     }
 }
 ```
+
+#### Handler-side retry logic
+
+WebSocket send failures (handler → network) should be retried by the handler using `RetryManager`:
+
+```rust
+pub struct FeedHandler {
+    inner: Option<WebSocketClient>,
+    retry_manager: RetryManager<MyWsError>,
+    // ...
+}
+
+impl FeedHandler {
+    async fn send_with_retry(&self, payload: String, rate_limit_keys: Option<Vec<String>>) -> Result<(), MyWsError> {
+        if let Some(client) = &self.inner {
+            self.retry_manager.execute_with_retry(
+                "websocket_send",
+                || async {
+                    client.send_text(payload.clone(), rate_limit_keys.clone())
+                        .await
+                        .map_err(|e| MyWsError::ClientError(format!("Send failed: {e}")))
+                },
+                should_retry_error,
+                create_timeout_error,
+            ).await
+        } else {
+            Err(MyWsError::ClientError("No active WebSocket client".to_string()))
+        }
+    }
+
+    async fn handle_place_order(...) -> anyhow::Result<()> {
+        let payload = serde_json::to_string(&request)?;
+
+        match self.send_with_retry(payload, Some(vec![RATE_LIMIT_KEY])).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Emit OrderRejected event after retries exhausted
+                let rejected = OrderRejected::new(...);
+                let _ = self.out_tx.send(NautilusWsMessage::OrderRejected(rejected));
+                Err(anyhow::anyhow!("Failed to send order: {e}"))
+            }
+        }
+    }
+}
+
+fn should_retry_error(error: &MyWsError) -> bool {
+    match error {
+        MyWsError::NetworkError(_) | MyWsError::Timeout(_) => true,
+        MyWsError::AuthenticationError(_) | MyWsError::ParseError(_) => false,
+    }
+}
+```
+
+**Key principles:**
+
+- Client propagates channel failures immediately (handler unavailable)
+- Handler retries transient WebSocket failures (network issues, timeouts)
+- Emit error events (OrderRejected, OrderCancelRejected) when retries exhausted
+- Use `RetryManager` from `nautilus_network::retry` for consistent backoff
 
 ### Naming conventions
 
@@ -443,37 +492,50 @@ let handler = FeedHandler::new(
 
 Channel names reflect the data transformation stage, not the destination. Use `raw_*` only for raw WebSocket frames (`Message`), `msg_*` for venue-specific message types, and `out_*` for Nautilus domain messages.
 
-#### Field naming: `inner` and `handler`
+#### Field naming: `inner` and command channels
 
 Structs holding references to lower-level components follow these conventions:
 
-| Field     | Type                                   | Description |
-|-----------|----------------------------------------|-------------|
-| `inner`   | `Arc<RwLock<Option<WebSocketClient>>>` | Network-level WebSocket client from `nautilus_network`. |
-| `handler` | `RawFeedHandler`                       | Raw message parsing component (handler structs only). |
+| Field         | Type                                                | Description |
+|---------------|-----------------------------------------------------|-------------|
+| `inner`       | `Option<WebSocketClient>`                           | Network-level WebSocket client (handler only, exclusively owned). |
+| `cmd_tx`      | `Arc<tokio::sync::RwLock<UnboundedSender<...>>>`   | Command channel to handler (client side). |
+| `cmd_rx`      | `UnboundedReceiver<HandlerCommand>`                 | Command channel from client (handler side). |
+| `out_tx`      | `UnboundedSender<NautilusWsMessage>`                | Output channel to client (handler side). |
+| `out_rx`      | `Option<Arc<UnboundedReceiver<NautilusWsMessage>>>` | Output channel from handler (client side). |
+| `task_handle` | `Option<Arc<JoinHandle<()>>>`                       | Handler task handle. |
 
 **Example:**
 
 ```rust
 // Client struct
 pub struct OKXWebSocketClient {
-    cmd_tx: Arc<RwLock<UnboundedSender<HandlerCommand>>>,  // Command channel to handler
-    out_rx: Option<Arc<UnboundedReceiver<NautilusWsMessage>>>,  // Message stream from handler
-    task_handle: Option<Arc<JoinHandle<()>>>,  // Handler task
+    cmd_tx: Arc<tokio::sync::RwLock<UnboundedSender<HandlerCommand>>>,
+    out_rx: Option<Arc<UnboundedReceiver<NautilusWsMessage>>>,
+    task_handle: Option<Arc<JoinHandle<()>>>,
+    connection_mode: Arc<ArcSwap<AtomicU8>>,  // Lock-free connection state
     // ...
+}
+
+impl OKXWebSocketClient {
+    async fn send_cmd(&self, cmd: HandlerCommand) -> Result<(), Error> {
+        self.cmd_tx.read().await.send(cmd)
+            .map_err(|e| Error::ClientError(format!("Handler not available: {e}")))
+    }
 }
 
 // Handler struct
 pub struct FeedHandler {
-    inner: Option<WebSocketClient>,  // Network client from nautilus_network
-    cmd_rx: UnboundedReceiver<HandlerCommand>,  // Commands from client
-    raw_rx: UnboundedReceiver<Message>,  // Raw messages from WebSocket
-    out_tx: UnboundedSender<NautilusWsMessage>,  // Parsed messages to client
+    inner: Option<WebSocketClient>,  // Exclusively owned - no RwLock
+    cmd_rx: UnboundedReceiver<HandlerCommand>,
+    raw_rx: UnboundedReceiver<Message>,
+    out_tx: UnboundedSender<NautilusWsMessage>,
+    pending_requests: AHashMap<String, RequestData>,  // Single-threaded - no locks
     // ...
 }
 ```
 
-The `inner` field in the handler holds the network-level client from `nautilus_network`. The client communicates with the handler via channels (`cmd_tx`/`cmd_rx` for commands, `out_tx`/`out_rx` for data). The `cmd_tx` is wrapped in `RwLock` to allow updates when reconnecting.
+The handler exclusively owns `WebSocketClient` without locks. The client sends commands via `cmd_tx` (wrapped in `RwLock` to allow reconnection channel replacement) and receives events via `out_rx`. Use a `send_cmd()` helper to standardize command sending.
 
 #### Type naming: `{Venue}Ws{TypeSuffix}`
 

@@ -38,7 +38,7 @@ use axum::{
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::testing::wait_until_async;
 use nautilus_core::UnixNanos;
-use nautilus_model::identifiers::{AccountId, InstrumentId};
+use nautilus_model::identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId};
 use nautilus_okx::{
     common::{enums::OKXInstrumentType, parse::parse_instrument_any},
     websocket::client::OKXWebSocketClient,
@@ -188,24 +188,6 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<TestServerState>) {
 
     let trades_payload = load_json("ws_trades.json");
 
-    if state.send_text_ping.load(Ordering::Relaxed)
-        && socket
-            .send(Message::Text(TEXT_PING.to_string().into()))
-            .await
-            .is_err()
-    {
-        return;
-    }
-
-    if state.send_control_ping.load(Ordering::Relaxed)
-        && socket
-            .send(Message::Ping(CONTROL_PING_PAYLOAD.to_vec().into()))
-            .await
-            .is_err()
-    {
-        return;
-    }
-
     while let Some(message) = socket.next().await {
         let Ok(message) = message else { break };
 
@@ -334,6 +316,27 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<TestServerState>) {
                             if success
                                 && socket
                                     .send(Message::Text(trades_payload.to_string().into()))
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+
+                            // Send pings after successful subscription (handler is ready)
+                            if success
+                                && state.send_text_ping.load(Ordering::Relaxed)
+                                && socket
+                                    .send(Message::Text(TEXT_PING.to_string().into()))
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+
+                            if success
+                                && state.send_control_ping.load(Ordering::Relaxed)
+                                && socket
+                                    .send(Message::Ping(CONTROL_PING_PAYLOAD.to_vec().into()))
                                     .await
                                     .is_err()
                             {
@@ -1838,6 +1841,74 @@ async fn test_reconnection_race_condition() {
         orders_count >= 1,
         "Should have at least 1 order subscription restored"
     );
+
+    client.close().await.expect("close failed");
+}
+
+#[tokio::test]
+async fn test_subscribe_after_stream_call() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_ws_server(state.clone()).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    let instruments = load_instruments();
+
+    let mut client = connect_client(&ws_url).await;
+    client.cache_instruments(instruments);
+    client.connect().await.expect("connect failed");
+    client.wait_until_active(5.0).await.expect("wait failed");
+
+    // Take stream (moves out_rx ownership)
+    let _stream = client.stream();
+
+    // Spawn task with stream
+    tokio::spawn(async move {
+        tokio::pin!(_stream);
+        // Stream processing would happen here
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now try to subscribe - should work because handler is still alive
+    let result = client
+        .subscribe_book(InstrumentId::from("BTC-USD.OKX"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Subscribe should work after stream() is called, but got error: {:?}",
+        result.err()
+    );
+
+    client.close().await.expect("close failed");
+}
+
+#[tokio::test]
+async fn test_batch_cancel_orders_sends_message() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_ws_server(state.clone()).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    let instruments = load_instruments();
+
+    let mut client = connect_client(&ws_url).await;
+    client.cache_instruments(instruments);
+    client.connect().await.expect("connect failed");
+    client
+        .wait_until_active(1.0)
+        .await
+        .expect("client inactive");
+
+    let inst_id = InstrumentId::from("BTC-USDT-SWAP.OKX");
+    let client_order_id = ClientOrderId::from("test-order-1");
+    let venue_order_id = VenueOrderId::from("12345");
+
+    let orders = vec![(inst_id, Some(client_order_id), Some(venue_order_id))];
+
+    let result = client.batch_cancel_orders(orders).await;
+    assert!(result.is_ok(), "batch_cancel_orders should succeed");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     client.close().await.expect("close failed");
 }

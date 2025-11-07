@@ -33,6 +33,7 @@ use std::{
 };
 
 use ahash::AHashSet;
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::Stream;
 use nautilus_common::runtime::get_runtime;
@@ -48,8 +49,8 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_network::{
+    mode::ConnectionMode,
     ratelimiter::quota::Quota,
-    retry::{RetryManager, create_websocket_retry_manager},
     websocket::{
         AUTHENTICATION_TIMEOUT_SECS, AuthTracker, PingHandler, SubscriptionState, TEXT_PING,
         WebSocketClient, WebSocketConfig, channel_message_handler,
@@ -62,23 +63,20 @@ use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use super::{
-    enums::{OKXWsChannel, OKXWsOperation},
+    enums::OKXWsChannel,
     error::OKXWsError,
-    handler::{FeedHandler, HandlerCommand},
+    handler::{HandlerCommand, OKXWsFeedHandler},
     messages::{
-        NautilusWsMessage, OKXAuthentication, OKXAuthenticationArg, OKXSubscription,
-        OKXSubscriptionArg, OKXWsRequest, WsAmendOrderParams, WsAmendOrderParamsBuilder,
-        WsCancelAlgoOrderParams, WsCancelAlgoOrderParamsBuilder, WsCancelOrderParams,
-        WsCancelOrderParamsBuilder, WsMassCancelParams, WsPostAlgoOrderParams,
-        WsPostAlgoOrderParamsBuilder, WsPostOrderParams, WsPostOrderParamsBuilder,
+        NautilusWsMessage, OKXAuthentication, OKXAuthenticationArg, OKXSubscriptionArg,
+        WsAmendOrderParamsBuilder, WsCancelOrderParamsBuilder, WsPostAlgoOrderParamsBuilder,
+        WsPostOrderParamsBuilder,
     },
     subscription::topic_from_subscription_arg,
 };
 use crate::common::{
     consts::{
-        OKX_NAUTILUS_BROKER_ID, OKX_POST_ONLY_ERROR_CODE, OKX_SUPPORTED_ORDER_TYPES,
-        OKX_SUPPORTED_TIME_IN_FORCE, OKX_WS_PUBLIC_URL, OKX_WS_TOPIC_DELIMITER,
-        should_retry_error_code,
+        OKX_NAUTILUS_BROKER_ID, OKX_SUPPORTED_ORDER_TYPES, OKX_SUPPORTED_TIME_IN_FORCE,
+        OKX_WS_PUBLIC_URL, OKX_WS_TOPIC_DELIMITER,
     },
     credential::Credential,
     enums::{
@@ -87,38 +85,6 @@ use crate::common::{
     },
     parse::{bar_spec_as_okx_channel, okx_instrument_type, okx_instrument_type_from_symbol},
 };
-
-type PlaceRequestData = (
-    PendingOrderParams,
-    ClientOrderId,
-    TraderId,
-    StrategyId,
-    InstrumentId,
-);
-
-type CancelRequestData = (
-    ClientOrderId,
-    TraderId,
-    StrategyId,
-    InstrumentId,
-    Option<VenueOrderId>,
-);
-
-type AmendRequestData = (
-    ClientOrderId,
-    TraderId,
-    StrategyId,
-    InstrumentId,
-    Option<VenueOrderId>,
-);
-
-type MassCancelRequestData = InstrumentId;
-
-#[derive(Debug)]
-pub enum PendingOrderParams {
-    Regular(WsPostOrderParams),
-    Algo(()),
-}
 
 /// Default OKX WebSocket connection rate limit: 3 requests per second.
 ///
@@ -140,42 +106,29 @@ pub static OKX_WS_SUBSCRIPTION_QUOTA: LazyLock<Quota> =
 pub static OKX_WS_ORDER_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(250).unwrap()));
 
-/// Determines if an OKX WebSocket error should trigger a retry.
-fn should_retry_okx_error(error: &OKXWsError) -> bool {
-    match error {
-        OKXWsError::OkxError { error_code, .. } => should_retry_error_code(error_code),
-        OKXWsError::TungsteniteError(_) => true, // Network errors are retryable
-        OKXWsError::ClientError(msg) => {
-            // Retry on timeout and connection errors (case-insensitive)
-            let msg_lower = msg.to_lowercase();
-            msg_lower.contains("timeout")
-                || msg_lower.contains("timed out")
-                || msg_lower.contains("connection")
-                || msg_lower.contains("network")
-        }
-        OKXWsError::AuthenticationError(_)
-        | OKXWsError::JsonError(_)
-        | OKXWsError::ParsingError(_) => {
-            // Don't retry authentication or parsing errors automatically
-            false
-        }
-    }
-}
+/// Rate limit key for subscription operations (subscribe/unsubscribe/login).
+///
+/// See: <https://www.okx.com/docs-v5/en/#websocket-api-login>
+/// See: <https://www.okx.com/docs-v5/en/#websocket-api-subscribe>
+pub const OKX_RATE_LIMIT_KEY_SUBSCRIPTION: &str = "subscription";
 
-/// Creates a timeout error for OKX operations.
-fn create_okx_timeout_error(msg: String) -> OKXWsError {
-    OKXWsError::ClientError(msg)
-}
+/// Rate limit key for order operations (place regular and algo orders).
+///
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-place-order>
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-ws-place-algo-order>
+pub const OKX_RATE_LIMIT_KEY_ORDER: &str = "order";
 
-fn channel_requires_auth(channel: &OKXWsChannel) -> bool {
-    matches!(
-        channel,
-        OKXWsChannel::Account
-            | OKXWsChannel::Orders
-            | OKXWsChannel::Fills
-            | OKXWsChannel::OrdersAlgo
-    )
-}
+/// Rate limit key for cancel operations (cancel regular and algo orders, mass cancel).
+///
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-cancel-order>
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-ws-cancel-algo-order>
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-mass-cancel-order>
+pub const OKX_RATE_LIMIT_KEY_CANCEL: &str = "cancel";
+
+/// Rate limit key for amend operations (amend orders).
+///
+/// See: <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-amend-order>
+pub const OKX_RATE_LIMIT_KEY_AMEND: &str = "amend";
 
 /// Provides a WebSocket client for connecting to [OKX](https://okx.com).
 #[derive(Clone)]
@@ -189,10 +142,11 @@ pub struct OKXWebSocketClient {
     vip_level: Arc<AtomicU8>,
     credential: Option<Credential>,
     heartbeat: Option<u64>,
-    inner: Arc<tokio::sync::RwLock<Option<WebSocketClient>>>,
     auth_tracker: AuthTracker,
-    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     signal: Arc<AtomicBool>,
+    connection_mode: Arc<ArcSwap<AtomicU8>>,
+    cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
+    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions_inst_type: Arc<DashMap<OKXWsChannel, AHashSet<OKXInstrumentType>>>,
     subscriptions_inst_family: Arc<DashMap<OKXWsChannel, AHashSet<Ustr>>>,
@@ -200,16 +154,10 @@ pub struct OKXWebSocketClient {
     subscriptions_bare: Arc<DashMap<OKXWsChannel, bool>>, // For channels without inst params (e.g., Account)
     subscriptions_state: SubscriptionState,
     request_id_counter: Arc<AtomicU64>,
-    pending_place_requests: Arc<DashMap<String, PlaceRequestData>>,
-    pending_cancel_requests: Arc<DashMap<String, CancelRequestData>>,
-    pending_amend_requests: Arc<DashMap<String, AmendRequestData>>,
-    pending_mass_cancel_requests: Arc<DashMap<String, MassCancelRequestData>>,
     active_client_orders: Arc<DashMap<ClientOrderId, (TraderId, StrategyId, InstrumentId)>>,
     emitted_order_accepted: Arc<DashMap<VenueOrderId, ()>>, // Track orders we've already emitted OrderAccepted for
     client_id_aliases: Arc<DashMap<ClientOrderId, ClientOrderId>>,
-    handler_cmd_tx: Arc<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
-    retry_manager: Arc<RetryManager<OKXWsError>>,
     cancellation_token: CancellationToken,
 }
 
@@ -272,10 +220,17 @@ impl OKXWebSocketClient {
             vip_level: Arc::new(AtomicU8::new(0)), // Default to VIP 0
             credential,
             heartbeat,
-            inner: Arc::new(tokio::sync::RwLock::new(None)),
             auth_tracker: AuthTracker::new(),
-            out_rx: None,
             signal,
+            connection_mode: Arc::new(ArcSwap::from_pointee(AtomicU8::new(
+                ConnectionMode::Closed.as_u8(),
+            ))),
+            cmd_tx: {
+                // Placeholder channel until connect() creates the real handler and replays queued instruments
+                let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+                Arc::new(tokio::sync::RwLock::new(tx))
+            },
+            out_rx: None,
             task_handle: None,
             subscriptions_inst_type,
             subscriptions_inst_family,
@@ -283,22 +238,10 @@ impl OKXWebSocketClient {
             subscriptions_bare,
             subscriptions_state,
             request_id_counter: Arc::new(AtomicU64::new(1)),
-            pending_place_requests: Arc::new(DashMap::new()),
-            pending_cancel_requests: Arc::new(DashMap::new()),
-            pending_amend_requests: Arc::new(DashMap::new()),
-            pending_mass_cancel_requests: Arc::new(DashMap::new()),
             active_client_orders: Arc::new(DashMap::new()),
             emitted_order_accepted: Arc::new(DashMap::new()),
             client_id_aliases: Arc::new(DashMap::new()),
-            handler_cmd_tx: {
-                // We don't have a handler yet; this placeholder keeps cache_instrument() working.
-                // connect() swaps in the real channel and replays any queued instruments so the
-                // handler sees them once it starts.
-                let (tx, _) = tokio::sync::mpsc::unbounded_channel();
-                Arc::new(tx)
-            },
             instruments_cache: Arc::new(DashMap::new()),
-            retry_manager: Arc::new(create_websocket_retry_manager()?),
             cancellation_token: CancellationToken::new(),
         })
     }
@@ -374,29 +317,18 @@ impl OKXWebSocketClient {
         self.credential.clone().map(|c| c.api_key.as_str())
     }
 
-    /// Get a read lock on the inner client
     /// Returns a value indicating whether the client is active.
     pub fn is_active(&self) -> bool {
-        // Use try_read to avoid blocking
-        match self.inner.try_read() {
-            Ok(guard) => match &*guard {
-                Some(inner) => inner.is_active(),
-                None => false,
-            },
-            Err(_) => false, // If we can't get the lock, assume not active
-        }
+        let connection_mode_arc = self.connection_mode.load();
+        ConnectionMode::from_atomic(&connection_mode_arc).is_active()
+            && !self.signal.load(Ordering::Relaxed)
     }
 
     /// Returns a value indicating whether the client is closed.
     pub fn is_closed(&self) -> bool {
-        // Use try_read to avoid blocking
-        match self.inner.try_read() {
-            Ok(guard) => match &*guard {
-                Some(inner) => inner.is_closed(),
-                None => true,
-            },
-            Err(_) => true, // If we can't get the lock, assume closed
-        }
+        let connection_mode_arc = self.connection_mode.load();
+        ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
+            || self.signal.load(Ordering::Relaxed)
     }
 
     /// Caches multiple instruments.
@@ -411,9 +343,8 @@ impl OKXWebSocketClient {
         // Before connect() the handler isn't running; this send will fail and that's expected
         // because connect() replays the instruments via InitializeInstruments
         if !instruments.is_empty()
-            && let Err(e) = self
-                .handler_cmd_tx
-                .send(HandlerCommand::InitializeInstruments(instruments))
+            && let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(HandlerCommand::InitializeInstruments(instruments))
         {
             log::debug!("Failed to send bulk instrument update to handler: {e}");
         }
@@ -428,9 +359,8 @@ impl OKXWebSocketClient {
 
         // Before connect() the handler isn't running; this send will fail and that's expected
         // because connect() replays the instruments via InitializeInstruments
-        if let Err(e) = self
-            .handler_cmd_tx
-            .send(HandlerCommand::UpdateInstrument(instrument))
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(HandlerCommand::UpdateInstrument(instrument))
         {
             log::debug!("Failed to send instrument update to handler: {e}");
         }
@@ -459,26 +389,12 @@ impl OKXWebSocketClient {
     ///
     /// Panics if subscription arguments fail to serialize to JSON.
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-        let (message_handler, reader) = channel_message_handler();
+        let (message_handler, raw_rx) = channel_message_handler();
 
-        let inner_for_ping = self.inner.clone();
-        let ping_handler: PingHandler = Arc::new(move |payload: Vec<u8>| {
-            let inner = inner_for_ping.clone();
-
-            get_runtime().spawn(async move {
-                let len = payload.len();
-                let guard = inner.read().await;
-
-                if let Some(client) = guard.as_ref() {
-                    if let Err(e) = client.send_pong(payload).await {
-                        tracing::warn!(error = %e, "Failed to send pong frame");
-                    } else {
-                        tracing::trace!("Sent pong frame ({len} bytes)");
-                    }
-                } else {
-                    tracing::debug!("Ping received with no active websocket client");
-                }
-            });
+        // No-op ping handler: handler owns the WebSocketClient and responds to pings directly
+        // in the message loop for minimal latency (see handler.rs TEXT_PONG response)
+        let ping_handler: PingHandler = Arc::new(move |_payload: Vec<u8>| {
+            // Handler responds to pings internally via select! loop
         });
 
         let config = WebSocketConfig {
@@ -497,10 +413,13 @@ impl OKXWebSocketClient {
 
         // Configure rate limits for different operation types
         let keyed_quotas = vec![
-            ("subscription".to_string(), *OKX_WS_SUBSCRIPTION_QUOTA),
-            ("order".to_string(), *OKX_WS_ORDER_QUOTA),
-            ("cancel".to_string(), *OKX_WS_ORDER_QUOTA),
-            ("amend".to_string(), *OKX_WS_ORDER_QUOTA),
+            (
+                OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string(),
+                *OKX_WS_SUBSCRIPTION_QUOTA,
+            ),
+            (OKX_RATE_LIMIT_KEY_ORDER.to_string(), *OKX_WS_ORDER_QUOTA),
+            (OKX_RATE_LIMIT_KEY_CANCEL.to_string(), *OKX_WS_ORDER_QUOTA),
+            (OKX_RATE_LIMIT_KEY_AMEND.to_string(), *OKX_WS_ORDER_QUOTA),
         ];
 
         let client = WebSocketClient::connect(
@@ -511,11 +430,8 @@ impl OKXWebSocketClient {
         )
         .await?;
 
-        // Set the inner client with write lock
-        {
-            let mut inner_guard = self.inner.write().await;
-            *inner_guard = Some(client);
-        }
+        // Replace connection state so all clones see the underlying WebSocketClient's state
+        self.connection_mode.store(client.connection_mode_atomic());
 
         let account_id = self.account_id;
         let (msg_tx, rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
@@ -524,7 +440,7 @@ impl OKXWebSocketClient {
 
         // Create fresh command channel for this connection
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
-        self.handler_cmd_tx = Arc::new(cmd_tx.clone());
+        *self.cmd_tx.write().await = cmd_tx.clone();
 
         // Replay cached instruments to the new handler via the new channel
         if !self.instruments_cache.is_empty() {
@@ -539,37 +455,30 @@ impl OKXWebSocketClient {
         }
 
         let signal = self.signal.clone();
-        let pending_place_requests = self.pending_place_requests.clone();
-        let pending_cancel_requests = self.pending_cancel_requests.clone();
-        let pending_amend_requests = self.pending_amend_requests.clone();
-        let pending_mass_cancel_requests = self.pending_mass_cancel_requests.clone();
         let active_client_orders = self.active_client_orders.clone();
         let emitted_order_accepted = self.emitted_order_accepted.clone();
         let auth_tracker = self.auth_tracker.clone();
-        let inner_client = self.inner.clone();
-        let credential_clone = self.credential.clone();
-        let subscriptions_inst_type = self.subscriptions_inst_type.clone();
-        let subscriptions_inst_family = self.subscriptions_inst_family.clone();
-        let subscriptions_inst_id = self.subscriptions_inst_id.clone();
-        let subscriptions_bare = self.subscriptions_bare.clone();
         let subscriptions_state = self.subscriptions_state.clone();
         let client_id_aliases = self.client_id_aliases.clone();
 
         let stream_handle = get_runtime().spawn({
             let auth_tracker = auth_tracker.clone();
             let signal = signal.clone();
+            let credential = self.credential.clone();
+            let cmd_tx_for_reconnect = cmd_tx.clone();
+            let subscriptions_bare = self.subscriptions_bare.clone();
+            let subscriptions_inst_type = self.subscriptions_inst_type.clone();
+            let subscriptions_inst_family = self.subscriptions_inst_family.clone();
+            let subscriptions_inst_id = self.subscriptions_inst_id.clone();
+            let mut has_reconnected = false;
+
             async move {
-                let mut handler = FeedHandler::new(
+                let mut handler = OKXWsFeedHandler::new(
                     account_id,
-                    cmd_rx,
-                    msg_tx,
-                    reader,
                     signal.clone(),
-                    inner_client.clone(),
-                    pending_place_requests,
-                    pending_cancel_requests,
-                    pending_amend_requests,
-                    pending_mass_cancel_requests,
+                    cmd_rx,
+                    raw_rx,
+                    msg_tx,
                     active_client_orders,
                     client_id_aliases,
                     emitted_order_accepted,
@@ -577,292 +486,155 @@ impl OKXWebSocketClient {
                     subscriptions_state.clone(),
                 );
 
+                // Helper closure to resubscribe all tracked subscriptions after reconnection
+                let resubscribe_all = || {
+                    for entry in subscriptions_inst_id.iter() {
+                        let (channel, inst_ids) = entry.pair();
+                        for inst_id in inst_ids.iter() {
+                            let arg = OKXSubscriptionArg {
+                                channel: channel.clone(),
+                                inst_type: None,
+                                inst_family: None,
+                                inst_id: Some(*inst_id),
+                            };
+                            if let Err(e) = cmd_tx_for_reconnect.send(HandlerCommand::Subscribe { args: vec![arg] }) {
+                                tracing::error!(error = %e, "Failed to send resubscribe command");
+                            }
+                        }
+                    }
+
+                    for entry in subscriptions_bare.iter() {
+                        let channel = entry.key();
+                        let arg = OKXSubscriptionArg {
+                            channel: channel.clone(),
+                            inst_type: None,
+                            inst_family: None,
+                            inst_id: None,
+                        };
+                        if let Err(e) = cmd_tx_for_reconnect.send(HandlerCommand::Subscribe { args: vec![arg] }) {
+                            tracing::error!(error = %e, "Failed to send resubscribe command");
+                        }
+                    }
+
+                    for entry in subscriptions_inst_type.iter() {
+                        let (channel, inst_types) = entry.pair();
+                        for inst_type in inst_types.iter() {
+                            let arg = OKXSubscriptionArg {
+                                channel: channel.clone(),
+                                inst_type: Some(*inst_type),
+                                inst_family: None,
+                                inst_id: None,
+                            };
+                            if let Err(e) = cmd_tx_for_reconnect.send(HandlerCommand::Subscribe { args: vec![arg] }) {
+                                tracing::error!(error = %e, "Failed to send resubscribe command");
+                            }
+                        }
+                    }
+
+                    for entry in subscriptions_inst_family.iter() {
+                        let (channel, inst_families) = entry.pair();
+                        for inst_family in inst_families.iter() {
+                            let arg = OKXSubscriptionArg {
+                                channel: channel.clone(),
+                                inst_type: None,
+                                inst_family: Some(*inst_family),
+                                inst_id: None,
+                            };
+                            if let Err(e) = cmd_tx_for_reconnect.send(HandlerCommand::Subscribe { args: vec![arg] }) {
+                                tracing::error!(error = %e, "Failed to send resubscribe command");
+                            }
+                        }
+                    }
+                };
+
                 // Main message loop with explicit reconnection handling
                 loop {
                     match handler.next().await {
                         Some(NautilusWsMessage::Reconnected) => {
                             if signal.load(Ordering::Relaxed) {
-                                tracing::debug!("Skipping reconnection resubscription due to stop signal");
                                 continue;
                             }
 
-                            tracing::debug!("Handling WebSocket reconnection");
+                            has_reconnected = true;
 
-                            let auth_tracker_for_task = auth_tracker.clone();
-                            let inner_client_for_task = inner_client.clone();
-                            let subscriptions_inst_type_for_task = subscriptions_inst_type.clone();
-                            let subscriptions_inst_family_for_task = subscriptions_inst_family.clone();
-                            let subscriptions_inst_id_for_task = subscriptions_inst_id.clone();
-                            let subscriptions_bare_for_task = subscriptions_bare.clone();
-                            let subscriptions_state_for_task = subscriptions_state.clone();
-
-                            let auth_wait = if let Some(cred) = &credential_clone {
-                                let rx = auth_tracker.begin();
-                                let inner_guard = inner_client.read().await;
-
-                                if let Some(client) = &*inner_guard {
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .expect("System time should be after UNIX epoch")
-                                        .as_secs()
-                                        .to_string();
-                                    let signature =
-                                        cred.sign(&timestamp, "GET", "/users/self/verify", "");
-
-                                    let auth_message = OKXAuthentication {
-                                        op: "login",
-                                        args: vec![OKXAuthenticationArg {
-                                            api_key: cred.api_key.to_string(),
-                                            passphrase: cred.api_passphrase.clone(),
-                                            timestamp,
-                                            sign: signature,
-                                        }],
-                                    };
-
-                                    if let Err(e) = client
-                                        .send_text(serde_json::to_string(&auth_message).unwrap(), None)
-                                        .await
-                                    {
-                                        tracing::error!(
-                                            "Failed to send re-authentication request: {e}",
-                                        );
-                                        auth_tracker.fail(e.to_string());
-                                    } else {
-                                        tracing::debug!(
-                                            "Sent re-authentication request, waiting for response before resubscribing",
-                                        );
+                            // Mark all confirmed subscriptions as failed so they transition to pending state
+                            let confirmed_topics_vec: Vec<String> = {
+                                let confirmed = subscriptions_state.confirmed();
+                                let mut topics = Vec::new();
+                                for entry in confirmed.iter() {
+                                    let channel = entry.key();
+                                    for symbol in entry.value().iter() {
+                                        if symbol.as_str() == "#" {
+                                            topics.push(channel.to_string());
+                                        } else {
+                                            topics.push(format!("{}{}{}", channel, OKX_WS_TOPIC_DELIMITER, symbol));
+                                        }
                                     }
-                                } else {
-                                    auth_tracker
-                                        .fail("Cannot authenticate: not connected".to_string());
                                 }
-
-                                drop(inner_guard);
-
-                                Some(rx)
-                            } else {
-                                None
+                                topics
                             };
 
-                            get_runtime().spawn(async move {
-                                let auth_succeeded = match auth_wait {
-                                    Some(rx) => match auth_tracker_for_task
-                                        .wait_for_result::<OKXWsError>(
-                                            Duration::from_secs(AUTHENTICATION_TIMEOUT_SECS),
-                                            rx,
-                                        )
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            tracing::debug!(
-                                                "Authentication successful after reconnect, proceeding with resubscription",
-                                            );
-                                            true
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Authentication after reconnect failed: {e}",
-                                            );
-                                            false
-                                        }
-                                    },
-                                    None => true,
+                            if !confirmed_topics_vec.is_empty() {
+                                tracing::debug!(count = confirmed_topics_vec.len(), "Marking confirmed subscriptions as pending for replay");
+                                for topic in confirmed_topics_vec {
+                                    subscriptions_state.mark_failure(&topic);
+                                }
+                            }
+
+                            if let Some(cred) = &credential {
+                                tracing::debug!("Re-authenticating after reconnection");
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                    .expect("System time should be after UNIX epoch")
+                                    .as_secs()
+                                    .to_string();
+                                let signature = cred.sign(&timestamp, "GET", "/users/self/verify", "");
+
+                                let auth_message = super::messages::OKXAuthentication {
+                                    op: "login",
+                                    args: vec![super::messages::OKXAuthenticationArg {
+                                        api_key: cred.api_key.to_string(),
+                                        passphrase: cred.api_passphrase.clone(),
+                                        timestamp,
+                                        sign: signature,
+                                    }],
                                 };
 
-                                let confirmed_topic_count = subscriptions_state_for_task.len();
-                                if confirmed_topic_count == 0 {
-                                    tracing::debug!(
-                                        "No confirmed subscriptions recorded before reconnect; resubscribe will rely on pending topics"
-                                    );
+                                if let Ok(payload) = serde_json::to_string(&auth_message) {
+                                    if let Err(e) = cmd_tx_for_reconnect.send(HandlerCommand::Authenticate { payload }) {
+                                        tracing::error!(error = %e, "Failed to send reconnection auth command");
+                                    }
                                 } else {
-                                    tracing::debug!(confirmed_topic_count, "Confirmed subscriptions recorded before reconnect");
+                                    tracing::error!("Failed to serialize reconnection auth message");
                                 }
-                                let confirmed_topics = subscriptions_state_for_task.confirmed();
-                                if confirmed_topic_count <= 10 {
-                                    let topics: Vec<_> = confirmed_topics
-                                        .iter()
-                                        .map(|entry| *entry.key())
-                                        .collect();
-                                    if !topics.is_empty() {
-                                        tracing::trace!(topics = ?topics, "Confirmed topics before reconnect");
-                                    }
-                                }
-                                drop(confirmed_topics);
+                            }
 
-                                let pending_topics = subscriptions_state_for_task.pending_subscribe();
-                                let pending_topic_count = pending_topics.len();
-                                if pending_topic_count > 0 {
-                                    tracing::debug!(pending_topic_count, "Pending subscriptions awaiting replay after reconnect");
-                                }
-                                drop(pending_topics);
+                            // Unauthenticated sessions resubscribe immediately after reconnection,
+                            // authenticated sessions wait for Authenticated message
+                            if credential.is_none() {
+                                tracing::debug!("No authentication required, resubscribing immediately");
+                                resubscribe_all();
+                            }
 
-                                let inner_guard = inner_client_for_task.read().await;
-                                if let Some(client) = &*inner_guard {
-                                    let should_resubscribe = |channel: &OKXWsChannel| {
-                                        if channel_requires_auth(channel) && !auth_succeeded {
-                                            tracing::warn!(
-                                                ?channel,
-                                                "Skipping private channel resubscription due to missing authentication",
-                                            );
-                                            return false;
-                                        }
-                                        true
-                                    };
-
-                                    let mut inst_type_args = Vec::new();
-                                    for entry in subscriptions_inst_type_for_task.iter() {
-                                        let (channel, inst_types) = entry.pair();
-                                        if !should_resubscribe(channel) {
-                                            continue;
-                                        }
-                                        for inst_type in inst_types.iter() {
-                                            let arg = OKXSubscriptionArg {
-                                                channel: channel.clone(),
-                                                inst_type: Some(*inst_type),
-                                                inst_family: None,
-                                                inst_id: None,
-                                            };
-                                            let topic = topic_from_subscription_arg(&arg);
-                                            subscriptions_state_for_task.mark_subscribe(&topic);
-                                            inst_type_args.push(arg);
-                                        }
-                                    }
-                                    if !inst_type_args.is_empty() {
-                                        let sub_request = OKXSubscription {
-                                            op: OKXWsOperation::Subscribe,
-                                            args: inst_type_args,
-                                        };
-                                        if let Err(e) = client
-                                            .send_text(
-                                                serde_json::to_string(&sub_request).unwrap(),
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to re-subscribe inst_type channels: {e}",
-                                            );
-                                        }
-                                    }
-
-                                    let mut inst_family_args = Vec::new();
-                                    for entry in subscriptions_inst_family_for_task.iter() {
-                                        let (channel, inst_families) = entry.pair();
-                                        if !should_resubscribe(channel) {
-                                            continue;
-                                        }
-                                        for inst_family in inst_families.iter() {
-                                            let arg = OKXSubscriptionArg {
-                                                channel: channel.clone(),
-                                                inst_type: None,
-                                                inst_family: Some(*inst_family),
-                                                inst_id: None,
-                                            };
-                                            let topic = topic_from_subscription_arg(&arg);
-                                            subscriptions_state_for_task.mark_subscribe(&topic);
-                                            inst_family_args.push(arg);
-                                        }
-                                    }
-                                    if !inst_family_args.is_empty() {
-                                        let sub_request = OKXSubscription {
-                                            op: OKXWsOperation::Subscribe,
-                                            args: inst_family_args,
-                                        };
-                                        if let Err(e) = client
-                                            .send_text(
-                                                serde_json::to_string(&sub_request).unwrap(),
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to re-subscribe inst_family channels: {e}",
-                                            );
-                                        }
-                                    }
-
-                                    let mut inst_id_args = Vec::new();
-                                    for entry in subscriptions_inst_id_for_task.iter() {
-                                        let (channel, inst_ids) = entry.pair();
-                                        if !should_resubscribe(channel) {
-                                            continue;
-                                        }
-                                        for inst_id in inst_ids.iter() {
-                                            let arg = OKXSubscriptionArg {
-                                                channel: channel.clone(),
-                                                inst_type: None,
-                                                inst_family: None,
-                                                inst_id: Some(*inst_id),
-                                            };
-                                            let topic = topic_from_subscription_arg(&arg);
-                                            subscriptions_state_for_task.mark_subscribe(&topic);
-                                            inst_id_args.push(arg);
-                                        }
-                                    }
-                                    if !inst_id_args.is_empty() {
-                                        let sub_request = OKXSubscription {
-                                            op: OKXWsOperation::Subscribe,
-                                            args: inst_id_args,
-                                        };
-                                        if let Err(e) = client
-                                            .send_text(
-                                                serde_json::to_string(&sub_request).unwrap(),
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to re-subscribe inst_id channels: {e}",
-                                            );
-                                        }
-                                    }
-
-                                    let mut bare_args = Vec::new();
-                                    for entry in subscriptions_bare_for_task.iter() {
-                                        let channel = entry.key();
-                                        if !should_resubscribe(channel) {
-                                            continue;
-                                        }
-                                        let arg = OKXSubscriptionArg {
-                                            channel: channel.clone(),
-                                            inst_type: None,
-                                            inst_family: None,
-                                            inst_id: None,
-                                        };
-                                        let topic = topic_from_subscription_arg(&arg);
-                                        subscriptions_state_for_task.mark_subscribe(&topic);
-                                        bare_args.push(arg);
-                                    }
-                                    if !bare_args.is_empty() {
-                                        let sub_request = OKXSubscription {
-                                            op: OKXWsOperation::Subscribe,
-                                            args: bare_args,
-                                        };
-                                        if let Err(e) = client
-                                            .send_text(
-                                                serde_json::to_string(&sub_request).unwrap(),
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to re-subscribe bare channels: {e}",
-                                            );
-                                        }
-                                    }
-
-                                    tracing::debug!("Completed re-subscription after reconnect");
-                                } else {
-                                    tracing::warn!(
-                                        "Skipping resubscription after reconnect: websocket client unavailable",
-                                    );
-                                }
-                            });
+                            // TODO: Implement proper Reconnected event forwarding to consumers.
+                            // Currently intercepted for internal housekeeping only. Will add new
+                            // message type from WebSocketClient to notify consumers of reconnections.
 
                             continue;
                         }
+                        Some(NautilusWsMessage::Authenticated) => {
+                            if has_reconnected {
+                                resubscribe_all();
+                            }
+
+                            // NOTE: Not forwarded to out_tx as it's only used internally for
+                            // reconnection flow coordination. Downstream consumers have access to
+                            // authentication state via AuthTracker if needed. The execution client's
+                            // Authenticated handler only logs at debug level (no critical logic).
+                            continue;
+                        }
                         Some(msg) => {
-                            if handler.out_tx.send(msg).is_err() {
+                            if handler.send(msg).is_err() {
                                 tracing::error!(
                                     "Failed to send message through channel: receiver dropped",
                                 );
@@ -881,13 +653,26 @@ impl OKXWebSocketClient {
                         }
                     }
                 }
+
+                tracing::debug!("Handler task exiting");
             }
         });
 
         self.task_handle = Some(Arc::new(stream_handle));
 
-        if self.credential.is_some() {
-            self.authenticate().await?;
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SetClient(client))
+            .map_err(|e| {
+                OKXWsError::ClientError(format!("Failed to send WebSocket client to handler: {e}"))
+            })?;
+        tracing::debug!("Sent WebSocket client to handler");
+
+        if self.credential.is_some()
+            && let Err(e) = self.authenticate().await
+        {
+            anyhow::bail!("Authentication failed: {e}");
         }
 
         Ok(())
@@ -920,24 +705,21 @@ impl OKXWebSocketClient {
             }],
         };
 
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner
-                    .send_text(serde_json::to_string(&auth_message).unwrap(), None)
-                    .await
-                {
-                    tracing::error!("Error sending auth message: {e:?}");
-                    self.auth_tracker.fail(e.to_string());
-                    return Err(Error::Io(std::io::Error::other(e.to_string())));
-                }
-            } else {
-                log::error!("Cannot authenticate: not connected");
-                self.auth_tracker
-                    .fail("Cannot authenticate: not connected".to_string());
-                return Err(Error::ConnectionClosed);
-            }
-        }
+        let payload = serde_json::to_string(&auth_message).map_err(|e| {
+            Error::Io(std::io::Error::other(format!(
+                "Failed to serialize auth message: {e}"
+            )))
+        })?;
+
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::Authenticate { payload })
+            .map_err(|e| {
+                Error::Io(std::io::Error::other(format!(
+                    "Failed to send authenticate command: {e}"
+                )))
+            })?;
 
         match self
             .auth_tracker
@@ -1009,20 +791,15 @@ impl OKXWebSocketClient {
 
         self.signal.store(true, Ordering::Relaxed);
 
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                log::debug!("Disconnecting websocket");
+        if let Err(e) = self.cmd_tx.read().await.send(HandlerCommand::Disconnect) {
+            log::warn!("Failed to send disconnect command to handler: {e}");
+        } else {
+            log::debug!("Sent disconnect command to handler");
+        }
 
-                match tokio::time::timeout(Duration::from_secs(3), inner.disconnect()).await {
-                    Ok(()) => log::debug!("Websocket disconnected successfully"),
-                    Err(_) => {
-                        log::warn!(
-                            "Timeout waiting for websocket disconnect, continuing with cleanup"
-                        );
-                    }
-                }
-            } else {
+        // Handler drops the WebSocketClient on Disconnect
+        {
+            if false {
                 log::debug!("No active connection to disconnect");
             }
         }
@@ -1084,57 +861,6 @@ impl OKXWebSocketClient {
         clippy::result_large_err,
         reason = "OKXWsError contains large tungstenite::Error variant"
     )]
-    fn get_instrument_type_and_family_from_instrument(
-        instrument: &InstrumentAny,
-    ) -> Result<(OKXInstrumentType, String), OKXWsError> {
-        let inst_type =
-            okx_instrument_type(instrument).map_err(|e| OKXWsError::ClientError(e.to_string()))?;
-
-        let symbol = instrument.symbol().inner();
-
-        // Determine instrument family based on instrument type
-        let inst_family = match instrument {
-            InstrumentAny::CurrencyPair(_) => symbol.as_str().to_string(),
-            InstrumentAny::CryptoPerpetual(_) => {
-                // For SWAP: "BTC-USDT-SWAP" -> "BTC-USDT"
-                symbol
-                    .as_str()
-                    .strip_suffix("-SWAP")
-                    .unwrap_or(symbol.as_str())
-                    .to_string()
-            }
-            InstrumentAny::CryptoFuture(_) => {
-                // For FUTURES: extract the underlying pair
-                let parts: Vec<&str> = symbol.as_str().split('-').collect();
-                if parts.len() >= 2 {
-                    format!("{}-{}", parts[0], parts[1])
-                } else {
-                    return Err(OKXWsError::ClientError(format!(
-                        "Unable to parse futures instrument family from symbol: {symbol}",
-                    )));
-                }
-            }
-            InstrumentAny::CryptoOption(_) => {
-                // For OPTIONS: "BTC-USD-241217-92000-C" -> "BTC-USD"
-                let parts: Vec<&str> = symbol.as_str().split('-').collect();
-                if parts.len() >= 2 {
-                    format!("{}-{}", parts[0], parts[1])
-                } else {
-                    return Err(OKXWsError::ClientError(format!(
-                        "Unable to parse option instrument family from symbol: {symbol}",
-                    )));
-                }
-            }
-            _ => {
-                return Err(OKXWsError::ClientError(format!(
-                    "Unsupported instrument type: {instrument:?}",
-                )));
-            }
-        };
-
-        Ok((inst_type, inst_family))
-    }
-
     async fn subscribe(&self, args: Vec<OKXSubscriptionArg>) -> Result<(), OKXWsError> {
         for arg in &args {
             let topic = topic_from_subscription_arg(arg);
@@ -1171,31 +897,11 @@ impl OKXWebSocketClient {
             }
         }
 
-        let message = OKXSubscription {
-            op: OKXWsOperation::Subscribe,
-            args,
-        };
-
-        let json_txt =
-            serde_json::to_string(&message).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner
-                    .send_text(json_txt, Some(vec!["subscription".to_string()]))
-                    .await
-                {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-            } else {
-                return Err(OKXWsError::ClientError(
-                    "Cannot send message: not connected".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::Subscribe { args })
+            .map_err(|e| OKXWsError::ClientError(format!("Failed to send subscribe command: {e}")))
     }
 
     #[allow(clippy::collapsible_if, reason = "Clearer uncollapsed")]
@@ -1244,28 +950,13 @@ impl OKXWebSocketClient {
             }
         }
 
-        let message = OKXSubscription {
-            op: OKXWsOperation::Unsubscribe,
-            args,
-        };
-
-        let json_txt = serde_json::to_string(&message).expect("Must be valid JSON");
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner
-                    .send_text(json_txt, Some(vec!["subscription".to_string()]))
-                    .await
-                {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-            } else {
-                log::error!("Cannot send message: not connected");
-            }
-        }
-
-        Ok(())
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::Unsubscribe { args })
+            .map_err(|e| {
+                OKXWsError::ClientError(format!("Failed to send unsubscribe command: {e}"))
+            })
     }
 
     /// Unsubscribes from all active subscriptions in batched messages.
@@ -1339,130 +1030,6 @@ impl OKXWebSocketClient {
         }
 
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn resubscribe_all(&self) {
-        // Collect bare channel subscriptions (e.g., Account)
-        let mut subs_bare = Vec::new();
-        for entry in self.subscriptions_bare.iter() {
-            let channel = entry.key();
-            subs_bare.push(channel.clone());
-        }
-
-        let mut subs_inst_type = Vec::new();
-        for entry in self.subscriptions_inst_type.iter() {
-            let (channel, inst_types) = entry.pair();
-            if !inst_types.is_empty() {
-                subs_inst_type.push((channel.clone(), inst_types.clone()));
-            }
-        }
-
-        let mut subs_inst_family = Vec::new();
-        for entry in self.subscriptions_inst_family.iter() {
-            let (channel, inst_families) = entry.pair();
-            if !inst_families.is_empty() {
-                subs_inst_family.push((channel.clone(), inst_families.clone()));
-            }
-        }
-
-        let mut subs_inst_id = Vec::new();
-        for entry in self.subscriptions_inst_id.iter() {
-            let (channel, inst_ids) = entry.pair();
-            if !inst_ids.is_empty() {
-                subs_inst_id.push((channel.clone(), inst_ids.clone()));
-            }
-        }
-
-        // Process instrument type subscriptions
-        for (channel, inst_types) in subs_inst_type {
-            if inst_types.is_empty() {
-                continue;
-            }
-
-            tracing::debug!("Resubscribing: channel={channel}, instrument_types={inst_types:?}");
-
-            for inst_type in inst_types {
-                let arg = OKXSubscriptionArg {
-                    channel: channel.clone(),
-                    inst_type: Some(inst_type),
-                    inst_family: None,
-                    inst_id: None,
-                };
-
-                if let Err(e) = self.subscribe(vec![arg]).await {
-                    tracing::error!(
-                        "Failed to resubscribe to channel {channel} with instrument type: {e}"
-                    );
-                }
-            }
-        }
-
-        // Process instrument family subscriptions
-        for (channel, inst_families) in subs_inst_family {
-            if inst_families.is_empty() {
-                continue;
-            }
-
-            tracing::debug!(
-                "Resubscribing: channel={channel}, instrument_families={inst_families:?}"
-            );
-
-            for inst_family in inst_families {
-                let arg = OKXSubscriptionArg {
-                    channel: channel.clone(),
-                    inst_type: None,
-                    inst_family: Some(inst_family),
-                    inst_id: None,
-                };
-
-                if let Err(e) = self.subscribe(vec![arg]).await {
-                    tracing::error!(
-                        "Failed to resubscribe to channel {channel} with instrument family: {e}"
-                    );
-                }
-            }
-        }
-
-        // Process instrument ID subscriptions
-        for (channel, inst_ids) in subs_inst_id {
-            if inst_ids.is_empty() {
-                continue;
-            }
-
-            tracing::debug!("Resubscribing: channel={channel}, instrument_ids={inst_ids:?}");
-
-            for inst_id in inst_ids {
-                let arg = OKXSubscriptionArg {
-                    channel: channel.clone(),
-                    inst_type: None,
-                    inst_family: None,
-                    inst_id: Some(inst_id),
-                };
-
-                if let Err(e) = self.subscribe(vec![arg]).await {
-                    tracing::error!(
-                        "Failed to resubscribe to channel {channel} with instrument ID: {e}"
-                    );
-                }
-            }
-        }
-
-        // Process bare channel subscriptions (e.g., Account)
-        for channel in subs_bare {
-            tracing::debug!("Resubscribing to bare channel: {channel}");
-
-            let arg = OKXSubscriptionArg {
-                channel,
-                inst_type: None,
-                inst_family: None,
-                inst_id: None,
-            };
-
-            if let Err(e) = self.subscribe(vec![arg]).await {
-                tracing::error!("Failed to resubscribe to bare channel: {e}");
-            }
-        }
     }
 
     /// Subscribes to instrument updates for a specific instrument type.
@@ -2211,106 +1778,6 @@ impl OKXWebSocketClient {
         self.unsubscribe(vec![arg]).await
     }
 
-    /// Cancel an existing order via WebSocket.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-cancel-order>
-    async fn ws_cancel_order(
-        &self,
-        params: WsCancelOrderParams,
-        request_id: Option<String>,
-    ) -> Result<(), OKXWsError> {
-        let request_id = request_id.unwrap_or(self.generate_unique_request_id());
-
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::CancelOrder,
-            args: vec![params],
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["cancel".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-
-    /// Cancel multiple orders at once via WebSocket.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-mass-cancel-order>
-    async fn ws_mass_cancel_with_id(
-        &self,
-        args: Vec<Value>,
-        request_id: String,
-    ) -> Result<(), OKXWsError> {
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::MassCancel,
-            args,
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["cancel".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-
-    /// Amend an existing order via WebSocket.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-amend-order>
-    async fn ws_amend_order(
-        &self,
-        params: WsAmendOrderParams,
-        request_id: Option<String>,
-    ) -> Result<(), OKXWsError> {
-        let request_id = request_id.unwrap_or(self.generate_unique_request_id());
-
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::AmendOrder,
-            args: vec![params],
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["amend".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-
     /// Place multiple orders in a single batch via WebSocket.
     ///
     /// # References
@@ -2318,27 +1785,9 @@ impl OKXWebSocketClient {
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-batch-orders>
     async fn ws_batch_place_orders(&self, args: Vec<Value>) -> Result<(), OKXWsError> {
         let request_id = self.generate_unique_request_id();
+        let cmd = HandlerCommand::BatchPlaceOrders { args, request_id };
 
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::BatchOrders,
-            args,
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["order".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
+        self.send_cmd(cmd).await
     }
 
     /// Cancel multiple orders in a single batch via WebSocket.
@@ -2348,27 +1797,9 @@ impl OKXWebSocketClient {
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-batch-cancel-orders>
     async fn ws_batch_cancel_orders(&self, args: Vec<Value>) -> Result<(), OKXWsError> {
         let request_id = self.generate_unique_request_id();
+        let cmd = HandlerCommand::BatchCancelOrders { args, request_id };
 
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::BatchCancelOrders,
-            args,
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["cancel".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
+        self.send_cmd(cmd).await
     }
 
     /// Amend multiple orders in a single batch via WebSocket.
@@ -2378,27 +1809,9 @@ impl OKXWebSocketClient {
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-batch-amend-orders>
     async fn ws_batch_amend_orders(&self, args: Vec<Value>) -> Result<(), OKXWsError> {
         let request_id = self.generate_unique_request_id();
+        let cmd = HandlerCommand::BatchAmendOrders { args, request_id };
 
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::BatchAmendOrders,
-            args,
-            exp_time: None,
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["amend".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
+        self.send_cmd(cmd).await
     }
 
     /// Submits an order, automatically routing conditional orders to the algo endpoint.
@@ -2565,104 +1978,18 @@ impl OKXWebSocketClient {
             .build()
             .map_err(|e| OKXWsError::ClientError(format!("Build order params error: {e}")))?;
 
-        let request_id = self.generate_unique_request_id();
-
-        self.pending_place_requests.insert(
-            request_id.clone(),
-            (
-                PendingOrderParams::Regular(params.clone()),
-                client_order_id,
-                trader_id,
-                strategy_id,
-                instrument_id,
-            ),
-        );
-
         self.active_client_orders
             .insert(client_order_id, (trader_id, strategy_id, instrument_id));
 
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "submit_order",
-                || {
-                    let params = params.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_place_order(params, Some(request_id)).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
-            .await
-    }
+        let cmd = HandlerCommand::PlaceOrder {
+            params,
+            client_order_id,
+            trader_id,
+            strategy_id,
+            instrument_id,
+        };
 
-    /// Cancels an existing order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the cancel parameters are invalid or if the
-    /// cancellation request fails to send.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-cancel-order>.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn cancel_order(
-        &self,
-        trader_id: TraderId,
-        strategy_id: StrategyId,
-        instrument_id: InstrumentId,
-        client_order_id: Option<ClientOrderId>,
-        venue_order_id: Option<VenueOrderId>,
-    ) -> Result<(), OKXWsError> {
-        let mut builder = WsCancelOrderParamsBuilder::default();
-        // Note: instType should NOT be included in cancel order requests
-        // For WebSocket orders, use the full symbol (including SWAP/FUTURES suffix if present)
-        builder.inst_id(instrument_id.symbol.as_str());
-
-        if let Some(venue_order_id) = venue_order_id {
-            builder.ord_id(venue_order_id.as_str());
-        }
-
-        // Set client order ID before building params (fix for potential bug)
-        if let Some(client_order_id) = client_order_id {
-            builder.cl_ord_id(client_order_id.as_str());
-        }
-
-        let params = builder
-            .build()
-            .map_err(|e| OKXWsError::ClientError(format!("Build cancel params error: {e}")))?;
-
-        let request_id = self.generate_unique_request_id();
-
-        // External orders may not have a client order ID,
-        // for now we just track those with a client order ID as pending requests.
-        if let Some(client_order_id) = client_order_id {
-            self.pending_cancel_requests.insert(
-                request_id.clone(),
-                (
-                    client_order_id,
-                    trader_id,
-                    strategy_id,
-                    instrument_id,
-                    venue_order_id,
-                ),
-            );
-        }
-
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "cancel_order",
-                || {
-                    let params = params.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_cancel_order(params, Some(request_id)).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
-            .await
+        self.send_cmd(cmd).await
     }
 
     /// Place a new order via WebSocket.
@@ -2670,35 +1997,6 @@ impl OKXWebSocketClient {
     /// # References
     ///
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-place-order>
-    async fn ws_place_order(
-        &self,
-        params: WsPostOrderParams,
-        request_id: Option<String>,
-    ) -> Result<(), OKXWsError> {
-        let request_id = request_id.unwrap_or(self.generate_unique_request_id());
-
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::Order,
-            exp_time: None,
-            args: vec![params],
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner.send_text(txt, Some(vec!["order".to_string()])).await {
-                    tracing::error!("Error sending message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-
     /// Modifies an existing order.
     ///
     /// # Errors
@@ -2744,40 +2042,70 @@ impl OKXWebSocketClient {
             .build()
             .map_err(|e| OKXWsError::ClientError(format!("Build amend params error: {e}")))?;
 
-        // Generate unique request ID for WebSocket message
-        let request_id = self
-            .request_id_counter
-            .fetch_add(1, Ordering::SeqCst)
-            .to_string();
-
         // External orders may not have a client order ID,
-        // for now we just track those with a client order ID as pending requests.
+        // for now we just send commands for orders with a client order ID.
         if let Some(client_order_id) = client_order_id {
-            self.pending_amend_requests.insert(
-                request_id.clone(),
-                (
-                    client_order_id,
-                    trader_id,
-                    strategy_id,
-                    instrument_id,
-                    venue_order_id,
-                ),
-            );
-        }
+            let cmd = HandlerCommand::AmendOrder {
+                params,
+                client_order_id,
+                trader_id,
+                strategy_id,
+                instrument_id,
+                venue_order_id,
+            };
 
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "modify_order",
-                || {
-                    let params = params.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_amend_order(params, Some(request_id)).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
-            .await
+            self.send_cmd(cmd).await
+        } else {
+            // For external orders without client_order_id, we can't track them properly yet
+            Err(OKXWsError::ClientError(
+                "Cannot amend order without client_order_id".to_string(),
+            ))
+        }
+    }
+
+    /// Cancels an existing order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancel parameters are invalid or if the
+    /// cancellation request fails to send.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-cancel-order>.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cancel_order(
+        &self,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+    ) -> Result<(), OKXWsError> {
+        let cmd = HandlerCommand::CancelOrder {
+            client_order_id,
+            venue_order_id,
+            instrument_id,
+            trader_id,
+            strategy_id,
+        };
+
+        self.send_cmd(cmd).await
+    }
+
+    /// Mass cancels all orders for a given instrument via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if instrument metadata cannot be resolved or if the
+    /// cancel request fails to send.
+    ///
+    /// # References
+    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-mass-cancel-order>
+    pub async fn mass_cancel_orders(&self, instrument_id: InstrumentId) -> Result<(), OKXWsError> {
+        let cmd = HandlerCommand::MassCancel { instrument_id };
+
+        self.send_cmd(cmd).await
     }
 
     /// Submits multiple orders.
@@ -2864,99 +2192,7 @@ impl OKXWebSocketClient {
         self.ws_batch_place_orders(args).await
     }
 
-    /// Cancels multiple orders.
-    ///
-    /// Supports up to 20 orders per batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if cancel parameters are invalid or if the batch
-    /// request fails to send.
-    ///
-    /// # References
-    ///
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-batch-cancel-orders>
-    #[allow(clippy::type_complexity)]
-    pub async fn batch_cancel_orders(
-        &self,
-        orders: Vec<(InstrumentId, Option<ClientOrderId>, Option<VenueOrderId>)>,
-    ) -> Result<(), OKXWsError> {
-        let mut args: Vec<Value> = Vec::with_capacity(orders.len());
-        for (inst_id, cl_ord_id, ord_id) in orders {
-            let mut builder = WsCancelOrderParamsBuilder::default();
-            // Note: instType should NOT be included in cancel order requests
-            builder.inst_id(inst_id.symbol.inner());
-
-            if let Some(c) = cl_ord_id {
-                builder.cl_ord_id(c.as_str());
-            }
-
-            if let Some(o) = ord_id {
-                builder.ord_id(o.as_str());
-            }
-
-            let params = builder.build().map_err(|e| {
-                OKXWsError::ClientError(format!("Build cancel batch params error: {e}"))
-            })?;
-            let val =
-                serde_json::to_value(params).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-            args.push(val);
-        }
-
-        self.ws_batch_cancel_orders(args).await
-    }
-
-    /// Mass cancels all orders for a given instrument via WebSocket.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if instrument metadata cannot be resolved or if the
-    /// cancel request fails to send.
-    ///
-    /// # Parameters
-    /// - `inst_id`: The instrument ID. The instrument type will be automatically determined from the symbol.
-    ///
-    /// # References
-    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-mass-cancel-order>
-    /// Helper function to determine instrument type and family from symbol using instruments cache.
-    pub async fn mass_cancel_orders(&self, inst_id: InstrumentId) -> Result<(), OKXWsError> {
-        let instrument = self
-            .instruments_cache
-            .get(&inst_id.symbol.inner())
-            .ok_or_else(|| OKXWsError::ClientError(format!("Unknown instrument {inst_id}")))?;
-
-        let (inst_type, inst_family) =
-            Self::get_instrument_type_and_family_from_instrument(&instrument)?;
-
-        let params = WsMassCancelParams {
-            inst_type,
-            inst_family: Ustr::from(&inst_family),
-        };
-
-        let args =
-            vec![serde_json::to_value(params).map_err(|e| OKXWsError::JsonError(e.to_string()))?];
-
-        let request_id = self.generate_unique_request_id();
-
-        self.pending_mass_cancel_requests
-            .insert(request_id.clone(), inst_id);
-
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "mass_cancel_orders",
-                || {
-                    let args = args.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_mass_cancel_with_id(args, request_id).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
-            .await
-    }
-
-    /// Modifies multiple orders via WebSocket using Nautilus domain types.
+    /// Modifies multiple orders.
     ///
     /// # Errors
     ///
@@ -3000,6 +2236,48 @@ impl OKXWebSocketClient {
         }
 
         self.ws_batch_amend_orders(args).await
+    }
+
+    /// Cancels multiple orders.
+    ///
+    /// Supports up to 20 orders per batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cancel parameters are invalid or if the batch
+    /// request fails to send.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#order-book-trading-websocket-batch-cancel-orders>
+    #[allow(clippy::type_complexity)]
+    pub async fn batch_cancel_orders(
+        &self,
+        orders: Vec<(InstrumentId, Option<ClientOrderId>, Option<VenueOrderId>)>,
+    ) -> Result<(), OKXWsError> {
+        let mut args: Vec<Value> = Vec::with_capacity(orders.len());
+        for (inst_id, cl_ord_id, ord_id) in orders {
+            let mut builder = WsCancelOrderParamsBuilder::default();
+            // Note: instType should NOT be included in cancel order requests
+            builder.inst_id(inst_id.symbol.inner());
+
+            if let Some(c) = cl_ord_id {
+                builder.cl_ord_id(c.as_str());
+            }
+
+            if let Some(o) = ord_id {
+                builder.ord_id(o.as_str());
+            }
+
+            let params = builder.build().map_err(|e| {
+                OKXWsError::ClientError(format!("Build cancel batch params error: {e}"))
+            })?;
+            let val =
+                serde_json::to_value(params).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
+            args.push(val);
+        }
+
+        self.ws_batch_cancel_orders(args).await
     }
 
     /// Submits an algo order (conditional/stop order).
@@ -3073,32 +2351,18 @@ impl OKXWebSocketClient {
             .build()
             .map_err(|e| OKXWsError::ClientError(format!("Build algo order params error: {e}")))?;
 
-        let request_id = self.generate_unique_request_id();
+        self.active_client_orders
+            .insert(client_order_id, (trader_id, strategy_id, instrument_id));
 
-        self.pending_place_requests.insert(
-            request_id.clone(),
-            (
-                PendingOrderParams::Algo(()),
-                client_order_id,
-                trader_id,
-                strategy_id,
-                instrument_id,
-            ),
-        );
+        let cmd = HandlerCommand::PlaceAlgoOrder {
+            params,
+            client_order_id,
+            trader_id,
+            strategy_id,
+            instrument_id,
+        };
 
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "submit_algo_order",
-                || {
-                    let params = params.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_place_algo_order(params, Some(request_id)).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
-            .await
+        self.send_cmd(cmd).await
     }
 
     /// Cancels an algo order.
@@ -3119,134 +2383,25 @@ impl OKXWebSocketClient {
         client_order_id: Option<ClientOrderId>,
         algo_order_id: Option<String>,
     ) -> Result<(), OKXWsError> {
-        let mut builder = WsCancelAlgoOrderParamsBuilder::default();
-        builder.inst_id(instrument_id.symbol.inner());
+        let cmd = HandlerCommand::CancelAlgoOrder {
+            client_order_id,
+            algo_order_id: algo_order_id.map(|id| VenueOrderId::from(id.as_str())),
+            instrument_id,
+            trader_id,
+            strategy_id,
+        };
 
-        if let Some(client_order_id) = client_order_id {
-            builder.algo_cl_ord_id(client_order_id.as_str());
-        }
+        self.send_cmd(cmd).await
+    }
 
-        if let Some(algo_id) = algo_order_id {
-            builder.algo_id(algo_id);
-        }
-
-        let params = builder
-            .build()
-            .map_err(|e| OKXWsError::ClientError(format!("Build cancel algo params error: {e}")))?;
-
-        let request_id = self.generate_unique_request_id();
-
-        // Track pending cancellation if we have a client order ID
-        if let Some(client_order_id) = client_order_id {
-            self.pending_cancel_requests.insert(
-                request_id.clone(),
-                (client_order_id, trader_id, strategy_id, instrument_id, None),
-            );
-        }
-
-        self.retry_manager
-            .execute_with_retry_with_cancel(
-                "cancel_algo_order",
-                || {
-                    let params = params.clone();
-                    let request_id = request_id.clone();
-                    async move { self.ws_cancel_algo_order(params, Some(request_id)).await }
-                },
-                should_retry_okx_error,
-                create_okx_timeout_error,
-                &self.cancellation_token,
-            )
+    /// Sends a command to the handler.
+    async fn send_cmd(&self, cmd: HandlerCommand) -> Result<(), OKXWsError> {
+        self.cmd_tx
+            .read()
             .await
+            .send(cmd)
+            .map_err(|e| OKXWsError::ClientError(format!("Handler not available: {e}")))
     }
-
-    /// Place a new algo order via WebSocket.
-    async fn ws_place_algo_order(
-        &self,
-        params: WsPostAlgoOrderParams,
-        request_id: Option<String>,
-    ) -> Result<(), OKXWsError> {
-        let request_id = request_id.unwrap_or(self.generate_unique_request_id());
-
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::OrderAlgo,
-            exp_time: None,
-            args: vec![params],
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner
-                    .send_text(txt, Some(vec!["orders-algo".to_string()]))
-                    .await
-                {
-                    tracing::error!("Error sending algo order message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-
-    /// Cancel an algo order via WebSocket.
-    async fn ws_cancel_algo_order(
-        &self,
-        params: WsCancelAlgoOrderParams,
-        request_id: Option<String>,
-    ) -> Result<(), OKXWsError> {
-        let request_id = request_id.unwrap_or(self.generate_unique_request_id());
-
-        let req = OKXWsRequest {
-            id: Some(request_id),
-            op: OKXWsOperation::CancelAlgos,
-            exp_time: None,
-            args: vec![params],
-        };
-
-        let txt = serde_json::to_string(&req).map_err(|e| OKXWsError::JsonError(e.to_string()))?;
-
-        {
-            let inner_guard = self.inner.read().await;
-            if let Some(inner) = &*inner_guard {
-                if let Err(e) = inner
-                    .send_text(txt, Some(vec!["cancel-algos".to_string()]))
-                    .await
-                {
-                    tracing::error!("Error sending cancel algo message: {e:?}");
-                }
-                Ok(())
-            } else {
-                Err(OKXWsError::ClientError("Not connected".to_string()))
-            }
-        }
-    }
-}
-
-/// Returns `true` when an OKX error payload represents a post-only rejection.
-pub fn is_post_only_rejection(code: &str, data: &[Value]) -> bool {
-    if code == OKX_POST_ONLY_ERROR_CODE {
-        return true;
-    }
-
-    for entry in data {
-        if let Some(s_code) = entry.get("sCode").and_then(|value| value.as_str())
-            && s_code == OKX_POST_ONLY_ERROR_CODE
-        {
-            return true;
-        }
-
-        if let Some(inner_code) = entry.get("code").and_then(|value| value.as_str())
-            && inner_code == OKX_POST_ONLY_ERROR_CODE
-        {
-            return true;
-        }
-    }
-
-    false
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3255,7 +2410,6 @@ pub fn is_post_only_rejection(code: &str, data: &[Value]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use futures_util;
     use nautilus_core::time::get_atomic_clock_realtime;
     use nautilus_network::RECONNECTED;
     use rstest::rstest;
@@ -3268,7 +2422,7 @@ mod tests {
             enums::{OKXExecType, OKXOrderCategory, OKXOrderStatus, OKXSide},
         },
         websocket::{
-            handler,
+            handler::OKXWsFeedHandler,
             messages::{OKXOrderMsg, OKXWebSocketError, OKXWsMessage},
         },
     };
@@ -3352,46 +2506,9 @@ mod tests {
         assert_eq!(client_with_heartbeat.heartbeat.unwrap(), 30);
     }
 
-    #[rstest]
-    fn test_request_cache_operations() {
-        let client = OKXWebSocketClient::default();
-
-        assert_eq!(client.pending_place_requests.len(), 0);
-        assert_eq!(client.pending_cancel_requests.len(), 0);
-        assert_eq!(client.pending_amend_requests.len(), 0);
-
-        let client_order_id = ClientOrderId::from("test-order-123");
-        let trader_id = TraderId::from("test-trader-001");
-        let strategy_id = StrategyId::from("test-strategy-001");
-        let instrument_id = InstrumentId::from("BTC-USDT.OKX");
-
-        let dummy_params = WsPostOrderParamsBuilder::default()
-            .inst_id("BTC-USDT".to_string())
-            .td_mode(OKXTradeMode::Cash)
-            .side(OKXSide::Buy)
-            .ord_type(OKXOrderType::Limit)
-            .sz("1".to_string())
-            .build()
-            .unwrap();
-
-        client.pending_place_requests.insert(
-            "place-123".to_string(),
-            (
-                PendingOrderParams::Regular(dummy_params),
-                client_order_id,
-                trader_id,
-                strategy_id,
-                instrument_id,
-            ),
-        );
-
-        assert_eq!(client.pending_place_requests.len(), 1);
-        assert!(client.pending_place_requests.contains_key("place-123"));
-
-        let removed = client.pending_place_requests.remove("place-123");
-        assert!(removed.is_some());
-        assert_eq!(client.pending_place_requests.len(), 0);
-    }
+    // NOTE: This test was removed because pending_amend_requests moved to the handler
+    // and is no longer directly accessible from the client. The handler owns all pending
+    // request state in its private AHashMap for lock-free operation.
 
     #[rstest]
     fn test_websocket_error_handling() {
@@ -3473,76 +2590,6 @@ mod tests {
         assert_eq!(client_with_account.account_id, account_id);
     }
 
-    #[tokio::test]
-    async fn test_concurrent_request_handling() {
-        let client = Arc::new(OKXWebSocketClient::default());
-
-        let initial_counter = client
-            .request_id_counter
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let mut handles = Vec::new();
-
-        for i in 0..10 {
-            let client_clone = Arc::clone(&client);
-            let handle = tokio::spawn(async move {
-                let client_order_id = ClientOrderId::from(format!("order-{i}").as_str());
-                let trader_id = TraderId::from("trader-001");
-                let strategy_id = StrategyId::from("strategy-001");
-                let instrument_id = InstrumentId::from("BTC-USDT.OKX");
-
-                let request_id = client_clone
-                    .request_id_counter
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let request_id_str = request_id.to_string();
-
-                let dummy_params = WsPostOrderParamsBuilder::default()
-                    .inst_id(instrument_id.symbol.to_string())
-                    .td_mode(OKXTradeMode::Cash)
-                    .side(OKXSide::Buy)
-                    .ord_type(OKXOrderType::Limit)
-                    .sz("1".to_string())
-                    .build()
-                    .unwrap();
-
-                client_clone.pending_place_requests.insert(
-                    request_id_str.clone(),
-                    (
-                        PendingOrderParams::Regular(dummy_params),
-                        client_order_id,
-                        trader_id,
-                        strategy_id,
-                        instrument_id,
-                    ),
-                );
-
-                // Simulate processing delay
-                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-
-                // Remove from cache (simulating response processing)
-                let removed = client_clone.pending_place_requests.remove(&request_id_str);
-                assert!(removed.is_some());
-
-                request_id
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all operations to complete
-        let results: Vec<_> = futures_util::future::join_all(handles).await;
-
-        assert_eq!(results.len(), 10);
-        for result in results {
-            assert!(result.is_ok());
-        }
-
-        assert_eq!(client.pending_place_requests.len(), 0);
-
-        let final_counter = client
-            .request_id_counter
-            .load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(final_counter, initial_counter + 10);
-    }
-
     #[rstest]
     fn test_websocket_error_scenarios() {
         let clock = get_atomic_clock_realtime();
@@ -3580,30 +2627,21 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_feed_handler_reconnection_detection() {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let signal = Arc::new(AtomicBool::new(false));
-        let mut handler = handler::RawFeedHandler::new(rx, signal.clone());
-
-        tx.send(Message::Text(RECONNECTED.to_string().into()))
-            .unwrap();
-
-        let result = handler.next().await;
+    #[test]
+    fn test_feed_handler_reconnection_detection() {
+        let msg = Message::Text(RECONNECTED.to_string().into());
+        let result = OKXWsFeedHandler::parse_raw_message(msg);
         assert!(matches!(result, Some(OKXWsMessage::Reconnected)));
     }
 
-    #[tokio::test]
-    async fn test_feed_handler_normal_message_processing() {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let signal = Arc::new(AtomicBool::new(false));
-        let mut handler = handler::RawFeedHandler::new(rx, signal.clone());
+    #[test]
+    fn test_feed_handler_normal_message_processing() {
+        // Test ping message
+        let ping_msg = Message::Text(TEXT_PING.to_string().into());
+        let result = OKXWsFeedHandler::parse_raw_message(ping_msg);
+        assert!(matches!(result, Some(OKXWsMessage::Ping)));
 
-        // Send a ping message (OKX sends pings)
-        let ping_msg = TEXT_PING;
-        tx.send(Message::Text(ping_msg.to_string().into())).unwrap();
-
-        // Send a valid subscription response
+        // Test valid subscription response
         let sub_msg = r#"{
             "event": "subscribe",
             "arg": {
@@ -3613,62 +2651,32 @@ mod tests {
             "connId": "a4d3ae55"
         }"#;
 
-        tx.send(Message::Text(sub_msg.to_string().into())).unwrap();
+        let sub_result =
+            OKXWsFeedHandler::parse_raw_message(Message::Text(sub_msg.to_string().into()));
+        assert!(matches!(
+            sub_result,
+            Some(OKXWsMessage::Subscription { .. })
+        ));
+    }
 
-        let first = handler.next().await;
-        assert!(matches!(first, Some(OKXWsMessage::Ping)));
-
-        // Subscription message should now be returned (not swallowed)
-        let second = handler.next().await;
-        assert!(matches!(second, Some(OKXWsMessage::Subscription { .. })));
-
-        // Now ensure we can still shut down cleanly
-        signal.store(true, std::sync::atomic::Ordering::Relaxed);
-
-        let result = handler.next().await;
+    #[test]
+    fn test_feed_handler_close_message() {
+        // Close messages return None (filtered out)
+        let result = OKXWsFeedHandler::parse_raw_message(Message::Close(None));
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn test_feed_handler_stop_signal() {
-        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let signal = Arc::new(AtomicBool::new(true)); // Signal already set
-        let mut handler = handler::RawFeedHandler::new(rx, signal.clone());
-
-        let result = handler.next().await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_feed_handler_close_message() {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let signal = Arc::new(AtomicBool::new(false));
-        let mut handler = handler::RawFeedHandler::new(rx, signal.clone());
-
-        // Send close message
-        tx.send(Message::Close(None)).unwrap();
-
-        let result = handler.next().await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_reconnection_message_constant() {
+    #[test]
+    fn test_reconnection_message_constant() {
         assert_eq!(RECONNECTED, "__RECONNECTED__");
     }
 
-    #[tokio::test]
-    async fn test_multiple_reconnection_signals() {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let signal = Arc::new(AtomicBool::new(false));
-        let mut handler = handler::RawFeedHandler::new(rx, signal.clone());
-
-        // Send multiple reconnection messages
+    #[test]
+    fn test_multiple_reconnection_signals() {
+        // Test that multiple reconnection messages are properly parsed
         for _ in 0..3 {
-            tx.send(Message::Text(RECONNECTED.to_string().into()))
-                .unwrap();
-
-            let result = handler.next().await;
+            let msg = Message::Text(RECONNECTED.to_string().into());
+            let result = OKXWsFeedHandler::parse_raw_message(msg);
             assert!(matches!(result, Some(OKXWsMessage::Reconnected)));
         }
     }
@@ -3733,7 +2741,7 @@ mod tests {
         let mut msg = sample_canceled_order_msg();
         msg.cancel_source = Some(OKX_POST_ONLY_CANCEL_SOURCE.to_string());
 
-        assert!(handler::FeedHandler::is_post_only_auto_cancel(&msg));
+        assert!(OKXWsFeedHandler::is_post_only_auto_cancel(&msg));
     }
 
     #[rstest]
@@ -3741,14 +2749,14 @@ mod tests {
         let mut msg = sample_canceled_order_msg();
         msg.cancel_source_reason = Some("POST_ONLY would take liquidity".to_string());
 
-        assert!(handler::FeedHandler::is_post_only_auto_cancel(&msg));
+        assert!(OKXWsFeedHandler::is_post_only_auto_cancel(&msg));
     }
 
     #[rstest]
     fn test_is_post_only_auto_cancel_false_without_markers() {
         let msg = sample_canceled_order_msg();
 
-        assert!(!handler::FeedHandler::is_post_only_auto_cancel(&msg));
+        assert!(!OKXWsFeedHandler::is_post_only_auto_cancel(&msg));
     }
 
     #[rstest]
@@ -3756,28 +2764,7 @@ mod tests {
         let mut msg = sample_canceled_order_msg();
         msg.ord_type = OKXOrderType::PostOnly;
 
-        assert!(!handler::FeedHandler::is_post_only_auto_cancel(&msg));
-    }
-
-    #[rstest]
-    fn test_is_post_only_rejection_detects_by_code() {
-        assert!(super::is_post_only_rejection("51019", &[]));
-    }
-
-    #[rstest]
-    fn test_is_post_only_rejection_detects_by_inner_code() {
-        let data = vec![serde_json::json!({
-            "sCode": "51019"
-        })];
-        assert!(super::is_post_only_rejection("50000", &data));
-    }
-
-    #[rstest]
-    fn test_is_post_only_rejection_false_for_unrelated_error() {
-        let data = vec![serde_json::json!({
-            "sMsg": "Insufficient balance"
-        })];
-        assert!(!super::is_post_only_rejection("50000", &data));
+        assert!(!OKXWsFeedHandler::is_post_only_auto_cancel(&msg));
     }
 
     #[tokio::test]

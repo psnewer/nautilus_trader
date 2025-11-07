@@ -877,11 +877,11 @@ fn dispatch_ws_message(message: NautilusWsMessage) {
                 e.conn_id
             );
         }
-        NautilusWsMessage::Reconnecting => {
-            tracing::info!("OKX websocket reconnecting");
-        }
         NautilusWsMessage::Reconnected => {
             tracing::info!("OKX websocket reconnected");
+        }
+        NautilusWsMessage::Authenticated => {
+            tracing::debug!("OKX websocket authenticated");
         }
         NautilusWsMessage::Deltas(_)
         | NautilusWsMessage::Raw(_)

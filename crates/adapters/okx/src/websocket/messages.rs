@@ -54,8 +54,8 @@ pub enum NautilusWsMessage {
     ExecutionReports(Vec<ExecutionReport>),
     Error(OKXWebSocketError),
     Raw(serde_json::Value), // Unhandled channels
-    Reconnecting,
     Reconnected,
+    Authenticated,
 }
 
 /// Represents an OKX WebSocket error.
