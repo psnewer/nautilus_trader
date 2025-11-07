@@ -9,6 +9,12 @@ if ! command -v rg &> /dev/null; then
   exit 0
 fi
 
+# Exit cleanly if bash version doesn't support mapfile (requires bash 4+)
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "WARNING: bash 4+ required for copyright checks (current: $BASH_VERSION), skipping"
+  exit 0
+fi
+
 CURRENT_YEAR=$(date +%Y)
 FAILED=0
 

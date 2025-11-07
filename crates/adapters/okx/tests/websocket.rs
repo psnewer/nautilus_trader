@@ -1912,3 +1912,148 @@ async fn test_batch_cancel_orders_sends_message() {
 
     client.close().await.expect("close failed");
 }
+
+#[tokio::test]
+async fn test_is_active_lifecycle() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_ws_server(state.clone()).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    let instruments = load_instruments();
+
+    let mut client = connect_client(&ws_url).await;
+    client.cache_instruments(instruments);
+
+    assert!(
+        !client.is_active(),
+        "Client should not be active before connect"
+    );
+
+    client.connect().await.expect("connect failed");
+    client
+        .wait_until_active(5.0)
+        .await
+        .expect("wait until active failed");
+
+    assert!(
+        client.is_active(),
+        "Client should be active after connect completes"
+    );
+
+    client.close().await.expect("close failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !client.is_active(),
+        "Client should not be active after close"
+    );
+}
+
+#[tokio::test]
+async fn test_is_active_false_after_close() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_ws_server(state.clone()).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    let instruments = load_instruments();
+
+    let mut client = connect_client(&ws_url).await;
+    client.cache_instruments(instruments);
+
+    client.connect().await.expect("connect failed");
+    client
+        .wait_until_active(5.0)
+        .await
+        .expect("wait until active failed");
+
+    assert!(
+        client.is_active(),
+        "Expected is_active() to be true after connect"
+    );
+
+    client.close().await.expect("close failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        !client.is_active(),
+        "Expected is_active() to be false after close"
+    );
+    assert!(
+        client.is_closed(),
+        "Expected is_closed() to be true after close"
+    );
+}
+
+#[tokio::test]
+async fn test_is_active_false_during_reconnection() {
+    // Guard the is_active() semantics during reconnection:
+    // During reconnection, is_active() MUST return false so wait_until_active() waits
+    let state = Arc::new(TestServerState::default());
+    let addr = start_ws_server(state.clone()).await;
+    let ws_url = format!("ws://{addr}/ws");
+
+    let instruments = load_instruments();
+
+    let mut client = connect_client(&ws_url).await;
+    client.cache_instruments(instruments);
+
+    client.connect().await.expect("connect failed");
+    client
+        .wait_until_active(5.0)
+        .await
+        .expect("wait until active failed");
+    assert!(client.is_active(), "Client should be active after connect");
+
+    client
+        .subscribe_trades(InstrumentId::from("BTC-USD.OKX"), false)
+        .await
+        .expect("subscribe trades failed");
+
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                state
+                    .subscription_events()
+                    .await
+                    .iter()
+                    .any(|(key, _, ok)| key.starts_with("trades") && *ok)
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    state.drop_next_connection.store(true, Ordering::Relaxed);
+
+    let _ = client
+        .subscribe_book(InstrumentId::from("ETH-USD.OKX"))
+        .await;
+
+    wait_until_async(
+        || {
+            let client = &client;
+            async move { !client.is_active() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // This is critical - if is_active() returns true, wait_until_active() returns immediately
+    assert!(
+        !client.is_active(),
+        "Client should not be active during reconnection"
+    );
+
+    client
+        .wait_until_active(10.0)
+        .await
+        .expect("reconnection failed");
+
+    assert!(
+        client.is_active(),
+        "Client should be active after reconnection completes"
+    );
+
+    client.close().await.expect("close failed");
+}

@@ -103,7 +103,9 @@ pyo3-async-runtimes = { workspace = true, optional = true }
 
 [dev-dependencies]
 nautilus-testkit = { workspace = true }
+axum = { workspace = true }
 criterion = { workspace = true }
+futures-util = { workspace = true }
 rstest = { workspace = true }
 tracing-test = { workspace = true }
 

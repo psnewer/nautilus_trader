@@ -702,8 +702,17 @@ async fn test_subscribe_to_public_data() {
     let instrument_id = nautilus_model::identifiers::InstrumentId::from("XBTUSD.BITMEX");
     client.subscribe_trades(instrument_id).await.unwrap();
 
-    // Wait for subscription confirmation and data
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"trade:XBTUSD".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Verify subscription state
     assert!(client.is_active());
@@ -740,8 +749,18 @@ async fn test_subscribe_to_orderbook() {
     client.subscribe_book(instrument_id).await.unwrap();
     client.subscribe_trades(instrument_id).await.unwrap();
 
-    // Wait for subscription confirmation and data
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"orderBookL2:XBTUSD".to_string())
+                    && subs.contains(&"trade:XBTUSD".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Verify both subscriptions are active
     assert!(client.is_active());
@@ -778,8 +797,20 @@ async fn test_subscribe_to_private_data() {
     client.subscribe_orders().await.unwrap();
     client.subscribe_executions().await.unwrap();
 
-    // Wait for subscription confirmations and data
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"position".to_string())
+                    && subs.contains(&"order".to_string())
+                    && subs.contains(&"execution".to_string())
+                    && state.authenticated.load(Ordering::Relaxed)
+            }
+        },
+        Duration::from_secs(3),
+    )
+    .await;
 
     // Verify client is active and authenticated
     assert!(client.is_active());
@@ -923,8 +954,17 @@ async fn test_unsubscribe() {
     let instrument_id = nautilus_model::identifiers::InstrumentId::from("XBTUSD.BITMEX");
     client.subscribe_trades(instrument_id).await.unwrap();
 
-    // Wait for subscription
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"trade:XBTUSD".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Verify subscription exists
     {
@@ -935,8 +975,17 @@ async fn test_unsubscribe() {
     // Unsubscribe
     client.unsubscribe_trades(instrument_id).await.unwrap();
 
-    // Wait for unsubscription
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                !subs.contains(&"trade:XBTUSD".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
 
     // Verify topic was removed from subscriptions
     {
@@ -997,8 +1046,19 @@ async fn test_multiple_symbols_subscription() {
     client.subscribe_trades(eth_id).await.unwrap();
     client.subscribe_book(xbt_id).await.unwrap();
 
-    // Wait for subscriptions
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"trade:XBTUSD".to_string())
+                    && subs.contains(&"trade:ETHUSD".to_string())
+                    && subs.contains(&"orderBookL2:XBTUSD".to_string())
+            }
+        },
+        Duration::from_secs(3),
+    )
+    .await;
 
     // Verify all subscriptions are tracked
     assert!(client.is_active());
@@ -1045,7 +1105,22 @@ async fn test_true_auto_reconnect_with_verification() {
 
     // Wait for initial setup to complete
     client.wait_until_active(2.0).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                subs.contains(&"trade:XBTUSD".to_string())
+                    && subs.contains(&"orderBookL2:XBTUSD".to_string())
+                    && subs.contains(&"position".to_string())
+                    && subs.contains(&"order".to_string())
+                    && state.authenticated.load(Ordering::Relaxed)
+            }
+        },
+        Duration::from_secs(3),
+    )
+    .await;
 
     // Capture initial state
     let initial_connection_count = *state.connection_count.lock().await;
@@ -1262,7 +1337,11 @@ async fn test_reconnection_retries_failed_subscriptions() {
     client.subscribe_positions().await.unwrap();
 
     client.wait_until_active(2.0).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+        events.iter().any(|(topic, ok)| topic == "position" && *ok)
+    })
+    .await;
 
     let initial_events = state.subscription_events().await;
     assert!(
@@ -1535,33 +1614,41 @@ async fn test_rapid_consecutive_reconnections() {
     client.subscribe_positions().await.unwrap();
 
     client.wait_until_active(2.0).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
+            && events
+                .iter()
+                .any(|(topic, ok)| topic == "orderBookL2:XBTUSD" && *ok)
+            && events.iter().any(|(topic, ok)| topic == "position" && *ok)
+    })
+    .await;
 
     let initial_auth_calls = *state.auth_calls.lock().await;
     assert_eq!(initial_auth_calls, 1, "Should have 1 initial auth call");
 
-    // Perform 3 rapid disconnect/reconnect cycles
     for cycle in 1..=3 {
         println!("Starting cycle {cycle}");
 
-        // Clear subscription events to verify fresh resubscriptions
+        // Clear events FIRST before triggering disconnect
         state.clear_subscription_events().await;
 
-        // Trigger server drop
         state.drop_connections.store(true, Ordering::Relaxed);
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Allow reconnection
+        wait_for_connection_count(&state, 0, Duration::from_secs(2)).await;
+
         state.drop_connections.store(false, Ordering::Relaxed);
 
-        // Wait for reconnection
         let reconnect_result = client.wait_until_active(10.0).await;
         assert!(
             reconnect_result.is_ok(),
             "Reconnection cycle {cycle} failed"
         );
 
-        // Wait for subscription restoration (20s to account for slower CI runners)
+        wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
+
         let events = wait_for_subscription_events(&state, Duration::from_secs(20), |events| {
             events
                 .iter()
@@ -1573,7 +1660,6 @@ async fn test_rapid_consecutive_reconnections() {
         })
         .await;
 
-        // Verify all subscriptions were restored in this cycle
         assert!(
             events
                 .iter()
@@ -1632,25 +1718,35 @@ async fn test_multiple_partial_subscription_failures() {
     client.subscribe_orders().await.unwrap();
 
     client.wait_until_active(2.0).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
+            && events
+                .iter()
+                .any(|(topic, ok)| topic == "orderBookL2:XBTUSD" && *ok)
+            && events
+                .iter()
+                .any(|(topic, ok)| topic == "trade:ETHUSD" && *ok)
+            && events.iter().any(|(topic, ok)| topic == "position" && *ok)
+            && events.iter().any(|(topic, ok)| topic == "order" && *ok)
+    })
+    .await;
 
     state.clear_subscription_events().await;
 
-    // Set up 3 subscriptions to fail on next reconnect
     state.fail_next_subscription("trade:XBTUSD").await;
     state.fail_next_subscription("position").await;
     state.fail_next_subscription("order").await;
 
-    // Trigger disconnect
     state.drop_connections.store(true, Ordering::Relaxed);
     wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
     state.drop_connections.store(false, Ordering::Relaxed);
 
-    // Wait for reconnection
     client.wait_until_active(10.0).await.unwrap();
     wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
 
-    // Wait for subscription restoration attempts
     let first_events = wait_for_subscription_events(&state, Duration::from_secs(20), |events| {
         let trade_xbt_failed = events
             .iter()
@@ -1980,6 +2076,105 @@ async fn test_is_active_false_during_reconnection() {
     assert!(
         client.is_active(),
         "Client should be active after reconnection completes"
+    );
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/realtime", addr);
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url.clone()),
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
+        Some(AccountId::new("BITMEX-001")),
+        None,
+    )
+    .unwrap();
+
+    client.connect().await.unwrap();
+
+    let instrument_id = nautilus_model::identifiers::InstrumentId::from("XBTUSD.BITMEX");
+    client.subscribe_trades(instrument_id).await.unwrap();
+    client.subscribe_positions().await.unwrap();
+
+    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
+            && events.iter().any(|(topic, ok)| topic == "position" && *ok)
+    })
+    .await;
+
+    {
+        let subs = state.subscriptions.lock().await;
+        assert!(subs.contains(&"trade:XBTUSD".to_string()));
+        assert!(subs.contains(&"position".to_string()));
+    }
+
+    client.unsubscribe_positions().await.unwrap();
+
+    nautilus_common::testing::wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                !subs.contains(&"position".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    {
+        let subs = state.subscriptions.lock().await;
+        assert!(!subs.contains(&"position".to_string()));
+        assert!(subs.contains(&"trade:XBTUSD".to_string()));
+    }
+
+    state.clear_subscription_events().await;
+
+    state.drop_connections.store(true, Ordering::Relaxed);
+    wait_for_connection_count(&state, 0, Duration::from_secs(2)).await;
+
+    state.drop_connections.store(false, Ordering::Relaxed);
+
+    client.wait_until_active(10.0).await.unwrap();
+    wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
+
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
+    })
+    .await;
+
+    let subs = state.subscriptions.lock().await;
+    let events = state.subscription_events().await;
+
+    assert!(
+        subs.contains(&"trade:XBTUSD".to_string()),
+        "Trade subscription should be restored after reconnection"
+    );
+    assert!(
+        !subs.contains(&"position".to_string()),
+        "Position subscription should NOT be restored after unsubscribe and reconnect"
+    );
+
+    assert!(
+        !events.iter().any(|(topic, _ok)| topic == "position"),
+        "Position should not appear in subscription events after reconnect; events={events:?}"
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok),
+        "Trade subscription should be restored; events={events:?}"
     );
 
     client.close().await.unwrap();
