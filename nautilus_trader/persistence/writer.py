@@ -130,8 +130,8 @@ class StreamingFeatherWriter:
         self._instrument_writers: dict[tuple[str, str], RecordBatchStreamWriter] = {}
         self._per_instrument_writers = {
             "bar",
-            "order_book_delta",
-            "order_book_depth10",
+            "order_book_deltas",
+            "order_book_depths",
             "quote_tick",
             "trade_tick",
         }
