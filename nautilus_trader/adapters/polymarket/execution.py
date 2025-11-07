@@ -15,6 +15,7 @@
 
 import asyncio
 import json
+import urllib.parse
 from collections import defaultdict
 from collections import deque
 from collections.abc import Coroutine
@@ -62,6 +63,9 @@ from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.datetime import millis_to_nanos
 from nautilus_trader.core.datetime import nanos_to_secs
+from nautilus_trader.core.nautilus_pyo3 import HttpClient
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
+from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 from nautilus_trader.core.stats import basis_points_as_percentage
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import BatchCancelOrders
@@ -172,11 +176,20 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         validate_ethereum_address(wallet_address)
         self._wallet_address = wallet_address
+
+        # Get the user address (funder) - this is the address that holds positions
+        # For proxy wallets, this differs from the signer address
+        user_address = http_client.builder.funder if hasattr(http_client, "builder") else config.funder or wallet_address
+        validate_ethereum_address(user_address)
+        self._user_address = user_address
+
         self._api_key = http_client.creds.api_key
         self._log.info(f"{wallet_address=}", LogColor.BLUE)
+        self._log.info(f"{user_address=}", LogColor.BLUE)
 
         # HTTP API
         self._http_client = http_client
+        self._http_client_async = HttpClient(timeout_secs=15)
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=config.max_retries or 0,
@@ -296,6 +309,54 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts_event=self._clock.timestamp_ns(),
         )
 
+    async def _fetch_user_positions(self, *, limit: int = 100, size_threshold: int = 0) -> list[dict[str, Any]]:
+        """
+        Fetch all current positions for the configured user using the Polymarket Data
+        API.
+
+        Implements pagination as the endpoint returns a maximum of 100 entries per
+        request.
+
+        """
+        base_url = "https://data-api.polymarket.com/positions"
+        results: list[dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            params = {
+                "user": self._user_address,
+                "limit": str(limit),
+                "offset": str(offset),
+                "sizeThreshold": str(size_threshold),
+                "sortBy": "TOKENS",
+                "sortDirection": "DESC",
+            }
+            url = f"{base_url}?{urllib.parse.urlencode(params)}"
+            response: HttpResponse = await self._http_client_async.request(
+                HttpMethod.GET,
+                url=url,
+            )
+
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status}: Failed to fetch positions")
+
+            data = msgspec.json.decode(response.body)
+            if not data:
+                break
+            if isinstance(data, list):
+                results.extend(data)
+                if len(data) < limit:
+                    break
+            else:
+                # Unexpected shape; stop to avoid loop
+                break
+            offset += limit
+            if offset > 10000:
+                self._log.warning("Offset exceeded 10000; stopping")
+                break
+
+        return results
+
     # -- EXECUTION REPORTS ------------------------------------------------------------------------
 
     async def generate_order_status_reports(  # noqa: C901
@@ -366,14 +427,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 if order.client_order_id in reported_client_order_ids:
                     continue  # Already reported
 
-                order_status_command = GenerateOrderStatusReport(
+                command = GenerateOrderStatusReport(
                     instrument_id=order.instrument_id,
                     client_order_id=order.client_order_id,
                     venue_order_id=order.venue_order_id,
                     command_id=UUID4(),
                     ts_init=self._clock.timestamp_ns(),
                 )
-                maybe_report = await self.generate_order_status_report(order_status_command)
+                maybe_report = await self.generate_order_status_report(command)
                 if maybe_report:
                     reports.append(maybe_report)
 
@@ -630,27 +691,25 @@ class PolymarketExecutionClient(LiveExecutionClient):
         else:
             instrument_ids = [inst.id for inst in self._cache.instruments(venue=POLYMARKET_VENUE)]
 
-        for instrument_id in instrument_ids:
-            self._log.debug(f"Requesting PositionStatusReport for {instrument_id}")
-            token_id = get_polymarket_token_id(instrument_id)
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.CONDITIONAL,
-                token_id=token_id,
-                signature_type=self._config.signature_type,
-            )
-            response: dict[str, Any] = await asyncio.to_thread(
-                self._http_client.get_balance_allowance,
-                params,
-            )
-            usdce_balance = usdce_from_units(int(response["balance"]))
-            position_side = PositionSide.LONG if usdce_balance.raw > 0 else PositionSide.FLAT
-            now = self._clock.timestamp_ns()
+        if self._config.use_data_api:
+            # Fetch all positions once (bulk operation)
+            quantities_by_instrument = await self._fetch_quantities_from_gamma_api(instrument_ids)
+        else:
+            # Fetch positions individually (one API call per instrument)
+            quantities_by_instrument = await self._fetch_quantities_from_clob_api(instrument_ids)
 
+        # Generate reports from quantities
+        for instrument_id, quantity in quantities_by_instrument.items():
+            position_side = PositionSide.LONG if quantity.raw > 0 else PositionSide.FLAT
+            if position_side == PositionSide.LONG:
+                self._log.info(f"Long position for {instrument_id} of {quantity} shares")
+
+            now = self._clock.timestamp_ns()
             report = PositionStatusReport(
                 account_id=self.account_id,
                 instrument_id=instrument_id,
                 position_side=position_side,
-                quantity=Quantity.from_raw(usdce_balance.raw, precision=USDC_POS.precision),
+                quantity=quantity,
                 report_id=UUID4(),
                 ts_last=now,
                 ts_init=now,
@@ -662,6 +721,69 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._log.info(f"Received {len(reports)} PositionReport{plural}")
 
         return reports
+
+    async def _fetch_quantities_from_gamma_api(
+        self,
+        instrument_ids: list[InstrumentId],
+    ) -> dict[InstrumentId, Quantity]:
+        """
+        Fetch position quantities using Gamma API (bulk fetch).
+        """
+        self._log.debug("Fetching positions from Gamma API")
+
+        # Fetch all user positions once (paginated)
+        positions: list[dict[str, Any]] = await self._fetch_user_positions(
+            limit=100,
+            size_threshold=0,
+        )
+
+        # Map asset (token id) -> size (shares)
+        size_by_asset: dict[str, float] = {}
+        for p in positions:
+            instrument_id = InstrumentId.from_str(p.get("conditionId", "") + "-" + str(p.get("asset", "") + ".POLYMARKET"))
+            size_val = p.get("size", 0) or 0
+            try:
+                size_by_asset[instrument_id] = float(size_val)
+            except Exception as e:
+                self._log.warning(f"Failed to parse position size for instrument {instrument_id}: {e}")
+                continue
+
+        # Convert to quantities by instrument ID
+        quantities: dict[InstrumentId, Quantity] = {}
+
+        for instrument_id in instrument_ids:
+            size = size_by_asset.get(instrument_id, 0.0)
+            # Gamma API returns size as decimal float (e.g., 1.5 shares)
+            quantities[instrument_id] = Quantity(float(size), precision=USDC_POS.precision)
+
+        return quantities
+
+    async def _fetch_quantities_from_clob_api(
+        self,
+        instrument_ids: list[InstrumentId],
+    ) -> dict[InstrumentId, Quantity]:
+        """
+        Fetch position quantities using CLOB API (individual queries).
+        """
+        quantities: dict[InstrumentId, Quantity] = {}
+
+        for instrument_id in instrument_ids:
+            self._log.debug(f"Requesting position for {instrument_id} from CLOB API")
+            token_id = str(get_polymarket_token_id(instrument_id))
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_id,
+                signature_type=self._config.signature_type,
+            )
+            response: dict[str, Any] = await asyncio.to_thread(
+                self._http_client.get_balance_allowance,
+                params,
+            )
+            quantities[instrument_id] = Quantity.from_raw(usdce_from_units(int(response["balance"])).raw, precision=USDC_POS.precision)
+
+        return quantities
+
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
