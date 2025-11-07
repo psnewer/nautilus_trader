@@ -238,39 +238,24 @@ impl FeedHandler {
                         }
                         HandlerCommand::Authenticate { payload } => {
                             tracing::debug!("Authenticate command received");
-
-                            if let Some(client) = &self.client {
-                                if let Err(e) = client.send_text(payload, None).await {
-                                    tracing::error!("Error sending authentication: {e}");
-                                }
-                            } else {
-                                tracing::error!("Cannot authenticate: WebSocketClient not set");
+                            if let Err(e) = self.send_with_retry(payload).await {
+                                tracing::error!("Failed to send authentication after retries: {e}");
                             }
                         }
                         HandlerCommand::Subscribe { topics } => {
                             tracing::debug!("Subscribe command received for {} topics", topics.len());
-
-                            if let Some(client) = &self.client {
-                                for topic in topics {
-                                    if let Err(e) = client.send_text(topic, None).await {
-                                        tracing::error!("Error sending subscription: {e}");
-                                    }
+                            for topic in topics {
+                                if let Err(e) = self.send_with_retry(topic).await {
+                                    tracing::error!("Failed to send subscription after retries: {e}");
                                 }
-                            } else {
-                                tracing::error!("Cannot subscribe: WebSocketClient not set");
                             }
                         }
                         HandlerCommand::Unsubscribe { topics } => {
                             tracing::debug!("Unsubscribe command received for {} topics", topics.len());
-
-                            if let Some(client) = &self.client {
-                                for topic in topics {
-                                    if let Err(e) = client.send_text(topic, None).await {
-                                        tracing::error!("Error sending unsubscription: {e}");
-                                    }
+                            for topic in topics {
+                                if let Err(e) = self.send_with_retry(topic).await {
+                                    tracing::error!("Failed to send unsubscription after retries: {e}");
                                 }
-                            } else {
-                                tracing::error!("Cannot unsubscribe: WebSocketClient not set");
                             }
                         }
                         HandlerCommand::SendText { payload } => {

@@ -1890,19 +1890,14 @@ impl OKXWsFeedHandler {
         let json_txt = serde_json::to_string(&message)
             .map_err(|e| anyhow::anyhow!("Failed to serialize subscription: {e}"))?;
 
-        if let Some(client) = &self.inner {
-            client
-                .send_text(
-                    json_txt,
-                    Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to send subscription: {e}"))?;
-            tracing::debug!("Sent subscription request");
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("No active WebSocket client"))
-        }
+        self.send_with_retry(
+            json_txt,
+            Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send subscription after retries: {e}"))?;
+        tracing::debug!("Sent subscription request");
+        Ok(())
     }
 
     async fn handle_unsubscribe(&self, args: Vec<OKXSubscriptionArg>) -> anyhow::Result<()> {
@@ -1914,19 +1909,14 @@ impl OKXWsFeedHandler {
         let json_txt = serde_json::to_string(&message)
             .map_err(|e| anyhow::anyhow!("Failed to serialize unsubscription: {e}"))?;
 
-        if let Some(client) = &self.inner {
-            client
-                .send_text(
-                    json_txt,
-                    Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to send unsubscription: {e}"))?;
-            tracing::debug!("Sent unsubscription request");
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("No active WebSocket client"))
-        }
+        self.send_with_retry(
+            json_txt,
+            Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send unsubscription after retries: {e}"))?;
+        tracing::debug!("Sent unsubscription request");
+        Ok(())
     }
 
     async fn handle_place_order(
