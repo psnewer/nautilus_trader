@@ -1243,7 +1243,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The data client ID. If supplied then a `Subscribe` command will be
             sent to the corresponding data client.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1301,7 +1301,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The specific client ID for the command.
             If ``None`` then will be inferred from the venue.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1348,7 +1348,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The specific client ID for the command.
             If ``None`` then will be inferred from the venue in the instrument ID.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1473,7 +1473,7 @@ cdef class Actor(Component):
         pyo3_conversion : bool, default False
             If received deltas should be converted to `nautilus_pyo3.OrderBookDepth`
             prior to being passed to the `on_order_book_depth` handler.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1612,7 +1612,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The specific client ID for the command.
             If ``None`` then will be inferred from the venue in the instrument ID.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1662,7 +1662,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The specific client ID for the command.
             If ``None`` then will be inferred from the venue in the instrument ID.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -1838,7 +1838,7 @@ cdef class Actor(Component):
         client_id : ClientId, optional
             The specific client ID for the command.
             If ``None`` then will be inferred from the venue in the instrument ID.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
             Only useful when downloading data during a backtest.
         params : dict[str, Any], optional
@@ -2683,7 +2683,7 @@ cdef class Actor(Component):
         datetime end = None,
         int limit = 0,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -2713,7 +2713,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -2774,7 +2774,7 @@ cdef class Actor(Component):
         datetime end = None,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -2803,7 +2803,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -2867,7 +2867,7 @@ cdef class Actor(Component):
         datetime end = None,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -2896,7 +2896,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client:
@@ -3025,7 +3025,7 @@ cdef class Actor(Component):
         int depth = 10,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        bint update_catalog: bool = True,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -3054,7 +3054,7 @@ cdef class Actor(Component):
             If None, it will be inferred from the venue in the instrument ID.
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has completed processing.
-        update_catalog : bool, default True
+        update_catalog : bool, default False
             If the data catalog should be updated with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -3108,7 +3108,7 @@ cdef class Actor(Component):
         int limit = 0,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -3140,7 +3140,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -3199,7 +3199,7 @@ cdef class Actor(Component):
         int limit = 0,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -3231,7 +3231,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -3290,7 +3290,7 @@ cdef class Actor(Component):
         int limit = 0,
         ClientId client_id = None,
         callback: Callable[[UUID4], None] | None = None,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -3322,7 +3322,7 @@ cdef class Actor(Component):
         callback : Callable[[UUID4], None], optional
             The registered callback, to be called with the request ID when the response has
             completed processing.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
@@ -3383,7 +3383,7 @@ cdef class Actor(Component):
         callback: Callable[[UUID4], None] | None = None,
         bint include_external_data = False,
         bint update_subscriptions = False,
-        update_catalog: bool = False,
+        bint update_catalog = False,
         dict[str, object] params = None,
     ):
         """
@@ -3425,7 +3425,7 @@ cdef class Actor(Component):
             If True, includes the queried external data in the response.
         update_subscriptions : bool, default False
             If True, updates the aggregators of any existing or future subscription with the queried external data.
-        update_catalog : bool, optional
+        update_catalog : bool, default False
             Whether to update a catalog with the received data.
         params : dict[str, Any], optional
             Additional parameters potentially used by a specific client.
