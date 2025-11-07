@@ -5878,6 +5878,7 @@ class BybitWebSocketClient:
     def set_account_id(self, account_id: AccountId) -> None: ...
     def cache_instrument(self, instrument: Instrument) -> None: ...
     async def is_active(self) -> bool: ...
+    async def is_closed(self) -> bool: ...
     async def connect(self, callback: Any) -> None: ...
     async def close(self) -> None: ...
     async def wait_until_active(self, timeout_secs: float) -> None: ...
@@ -5902,6 +5903,8 @@ class BybitWebSocketClient:
     async def submit_order(
         self,
         product_type: BybitProductType,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
         order_side: OrderSide,
@@ -5918,6 +5921,8 @@ class BybitWebSocketClient:
     async def modify_order(
         self,
         product_type: BybitProductType,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
         instrument_id: InstrumentId,
         venue_order_id: VenueOrderId | None = None,
         client_order_id: ClientOrderId | None = None,
@@ -5927,13 +5932,29 @@ class BybitWebSocketClient:
     async def cancel_order(
         self,
         product_type: BybitProductType,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
         instrument_id: InstrumentId,
         venue_order_id: VenueOrderId | None = None,
         client_order_id: ClientOrderId | None = None,
     ) -> None: ...
+    async def batch_place_orders(
+        self,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        orders: list[BybitWsPlaceOrderParams],
+    ) -> None: ...
+    async def batch_modify_orders(
+        self,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        orders: list[BybitWsAmendOrderParams],
+    ) -> None: ...
     async def batch_cancel_orders(
         self,
         product_type: BybitProductType,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
         instrument_ids: list[InstrumentId],
         venue_order_ids: list[VenueOrderId | None],
         client_order_ids: list[ClientOrderId | None],
@@ -5963,14 +5984,6 @@ class BybitWebSocketClient:
         quantity: Quantity | None = None,
         price: Price | None = None,
     ) -> BybitWsAmendOrderParams: ...
-    async def batch_place_orders(
-        self,
-        orders: list[BybitWsPlaceOrderParams],
-    ) -> None: ...
-    async def batch_modify_orders(
-        self,
-        orders: list[BybitWsAmendOrderParams],
-    ) -> None: ...
 
 class BybitWsPlaceOrderParams:
     category: BybitProductType

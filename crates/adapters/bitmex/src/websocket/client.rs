@@ -327,6 +327,7 @@ impl BitmexWebSocketClient {
                         let confirmed_topics: Vec<String> = {
                             let confirmed = subscriptions.confirmed();
                             let mut topics = Vec::new();
+
                             for entry in confirmed.iter() {
                                 let (channel, symbols) = entry.pair();
 
@@ -342,6 +343,7 @@ impl BitmexWebSocketClient {
                                     }
                                 }
                             }
+
                             topics
                         };
 

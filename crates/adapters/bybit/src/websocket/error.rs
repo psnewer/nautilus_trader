@@ -22,7 +22,7 @@ use thiserror::Error;
 pub type BybitWsResult<T> = Result<T, BybitWsError>;
 
 /// Error type for Bybit WebSocket client failures.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum BybitWsError {
     /// The WebSocket client is not currently connected.
     #[error("WebSocket not connected")]

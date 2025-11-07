@@ -115,6 +115,8 @@ pub enum NautilusWsMessage {
     Error(BybitWebSocketError),
     /// WebSocket reconnected notification.
     Reconnected,
+    /// Authentication successful notification.
+    Authenticated,
 }
 
 /// Represents an error event surfaced by the WebSocket client.

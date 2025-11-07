@@ -15,21 +15,35 @@
 
 //! WebSocket message handler for Bybit.
 
-use std::{num::NonZero, sync::Arc};
+use std::{
+    collections::VecDeque,
+    num::NonZero,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use ahash::AHashMap;
-use nautilus_core::{nanos::UnixNanos, time::get_atomic_clock_realtime};
+use dashmap::DashMap;
+use nautilus_core::{UUID4, nanos::UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::{BarSpecification, BarType, Data},
     enums::{AggregationSource, BarAggregation, PriceType},
-    identifiers::AccountId,
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
 };
+use nautilus_network::{
+    retry::{RetryManager, create_websocket_retry_manager},
+    websocket::{AuthTracker, SubscriptionState, WebSocketClient},
+};
 use tokio::sync::RwLock;
+use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
 use super::{
     cache,
+    error::BybitWsError,
     messages::{BybitWebSocketError, BybitWsMessage, NautilusWsMessage},
     parse::{
         parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
@@ -38,7 +52,12 @@ use super::{
         parse_ws_trade_tick,
     },
 };
-use crate::common::{enums::BybitProductType, parse::make_bybit_symbol};
+use crate::{
+    common::{enums::BybitProductType, parse::make_bybit_symbol},
+    websocket::messages::{
+        BybitWsAmendOrderParams, BybitWsCancelOrderParams, BybitWsPlaceOrderParams,
+    },
+};
 
 /// Commands sent from the outer client to the inner message handler.
 #[derive(Debug)]
@@ -47,56 +66,218 @@ use crate::common::{enums::BybitProductType, parse::make_bybit_symbol};
     reason = "Commands are ephemeral and immediately consumed"
 )]
 pub enum HandlerCommand {
-    /// Initialize the instruments cache with the given instruments.
+    SetClient(WebSocketClient),
+    Disconnect,
+    Authenticate {
+        payload: String,
+    },
+    Subscribe {
+        topics: Vec<String>,
+    },
+    Unsubscribe {
+        topics: Vec<String>,
+    },
+    SendText {
+        payload: String,
+    },
+    PlaceOrder {
+        params: BybitWsPlaceOrderParams,
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+    },
+    AmendOrder {
+        params: BybitWsAmendOrderParams,
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+    },
+    CancelOrder {
+        params: BybitWsCancelOrderParams,
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+    },
     InitializeInstruments(Vec<InstrumentAny>),
-    /// Update a single instrument in the cache.
     UpdateInstrument(InstrumentAny),
 }
 
 /// Type alias for the funding rate cache.
 type FundingCache = Arc<RwLock<AHashMap<Ustr, (Option<String>, Option<String>)>>>;
 
+/// Data cached for pending place requests to correlate with responses.
+type PlaceRequestData = (TraderId, StrategyId, InstrumentId);
+
+/// Data cached for pending cancel requests to correlate with responses.
+type CancelRequestData = (TraderId, StrategyId, InstrumentId, Option<VenueOrderId>);
+
+/// Data cached for pending amend requests to correlate with responses.
+type AmendRequestData = (TraderId, StrategyId, InstrumentId, Option<VenueOrderId>);
+
 pub(super) struct FeedHandler {
+    signal: Arc<AtomicBool>,
+    client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
-    msg_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWsMessage>,
+    raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
+    #[allow(dead_code)]
     out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
+    #[allow(dead_code)]
+    auth_tracker: AuthTracker,
+    #[allow(dead_code)]
+    subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
     product_type: Option<BybitProductType>,
     quote_cache: Arc<RwLock<cache::QuoteCache>>,
     funding_cache: FundingCache,
+    #[allow(dead_code)]
+    retry_manager: RetryManager<BybitWsError>,
+    pending_place_requests: DashMap<String, PlaceRequestData>,
+    pending_cancel_requests: DashMap<String, CancelRequestData>,
+    pending_amend_requests: DashMap<String, AmendRequestData>,
+    message_queue: VecDeque<NautilusWsMessage>,
 }
 
 impl FeedHandler {
     /// Creates a new [`FeedHandler`] instance.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
+        signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
-        msg_rx: tokio::sync::mpsc::UnboundedReceiver<BybitWsMessage>,
+        raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
         out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
+        auth_tracker: AuthTracker,
+        subscriptions: SubscriptionState,
         quote_cache: Arc<RwLock<cache::QuoteCache>>,
         funding_cache: FundingCache,
     ) -> Self {
         Self {
-            msg_rx,
-            out_tx,
+            signal,
+            client: None,
             cmd_rx,
+            raw_rx,
+            out_tx,
+            auth_tracker,
+            subscriptions,
             instruments_cache: AHashMap::new(),
             account_id,
             product_type,
             quote_cache,
             funding_cache,
+            retry_manager: create_websocket_retry_manager(),
+            pending_place_requests: DashMap::new(),
+            pending_cancel_requests: DashMap::new(),
+            pending_amend_requests: DashMap::new(),
+            message_queue: VecDeque::new(),
         }
     }
 
-    pub(super) async fn next(&mut self) -> Option<()> {
+    pub(super) fn is_stopped(&self) -> bool {
+        self.signal.load(Ordering::Relaxed)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn send(&self, msg: NautilusWsMessage) -> Result<(), ()> {
+        self.out_tx.send(msg).map_err(|_| ())
+    }
+
+    /// Sends a WebSocket message with retry logic.
+    async fn send_with_retry(&self, payload: String) -> Result<(), BybitWsError> {
+        if let Some(client) = &self.client {
+            self.retry_manager
+                .execute_with_retry(
+                    "websocket_send",
+                    || {
+                        let payload = payload.clone();
+                        async move {
+                            client
+                                .send_text(payload, None)
+                                .await
+                                .map_err(|e| BybitWsError::Transport(format!("Send failed: {e}")))
+                        }
+                    },
+                    should_retry_bybit_error,
+                    create_bybit_timeout_error,
+                )
+                .await
+        } else {
+            Err(BybitWsError::ClientError(
+                "No active WebSocket client".to_string(),
+            ))
+        }
+    }
+
+    pub(super) async fn next(&mut self) -> Option<NautilusWsMessage> {
         let clock = get_atomic_clock_realtime();
 
         loop {
+            if let Some(msg) = self.message_queue.pop_front() {
+                return Some(msg);
+            }
+
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
+                        HandlerCommand::SetClient(client) => {
+                            tracing::debug!("WebSocketClient received by handler");
+                            self.client = Some(client);
+                        }
+                        HandlerCommand::Disconnect => {
+                            tracing::debug!("Disconnect command received");
+
+                            if let Some(client) = self.client.take() {
+                                client.disconnect().await;
+                            }
+                        }
+                        HandlerCommand::Authenticate { payload } => {
+                            tracing::debug!("Authenticate command received");
+
+                            if let Some(client) = &self.client {
+                                if let Err(e) = client.send_text(payload, None).await {
+                                    tracing::error!("Error sending authentication: {e}");
+                                }
+                            } else {
+                                tracing::error!("Cannot authenticate: WebSocketClient not set");
+                            }
+                        }
+                        HandlerCommand::Subscribe { topics } => {
+                            tracing::debug!("Subscribe command received for {} topics", topics.len());
+
+                            if let Some(client) = &self.client {
+                                for topic in topics {
+                                    if let Err(e) = client.send_text(topic, None).await {
+                                        tracing::error!("Error sending subscription: {e}");
+                                    }
+                                }
+                            } else {
+                                tracing::error!("Cannot subscribe: WebSocketClient not set");
+                            }
+                        }
+                        HandlerCommand::Unsubscribe { topics } => {
+                            tracing::debug!("Unsubscribe command received for {} topics", topics.len());
+
+                            if let Some(client) = &self.client {
+                                for topic in topics {
+                                    if let Err(e) = client.send_text(topic, None).await {
+                                        tracing::error!("Error sending unsubscription: {e}");
+                                    }
+                                }
+                            } else {
+                                tracing::error!("Cannot unsubscribe: WebSocketClient not set");
+                            }
+                        }
+                        HandlerCommand::SendText { payload } => {
+                            if let Err(e) = self.send_with_retry(payload).await {
+                                tracing::error!("Error sending text with retry: {e}");
+                            }
+                        }
                         HandlerCommand::InitializeInstruments(instruments) => {
                             for inst in instruments {
                                 self.instruments_cache.insert(inst.symbol().inner(), inst);
@@ -105,14 +286,135 @@ impl FeedHandler {
                         HandlerCommand::UpdateInstrument(inst) => {
                             self.instruments_cache.insert(inst.symbol().inner(), inst);
                         }
+                        HandlerCommand::PlaceOrder {
+                            params,
+                            client_order_id,
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                        } => {
+                            let request_id = client_order_id.to_string();
+
+                            self.pending_place_requests.insert(
+                                request_id.clone(),
+                                (trader_id, strategy_id, instrument_id),
+                            );
+
+                            let request = super::messages::BybitWsRequest {
+                                op: crate::common::enums::BybitWsOrderRequestOp::Create,
+                                header: super::messages::BybitWsHeader::now(),
+                                args: vec![params],
+                            };
+
+                            if let Ok(payload) = serde_json::to_string(&request)
+                                && let Err(e) = self.send_with_retry(payload).await
+                            {
+                                tracing::error!("Failed to send place order after retries: {e}");
+                                self.pending_place_requests.remove(&request_id);
+                            }
+                        }
+                        HandlerCommand::AmendOrder {
+                            params,
+                            client_order_id,
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            venue_order_id,
+                        } => {
+                            let request_id = client_order_id.to_string();
+
+                            self.pending_amend_requests.insert(
+                                request_id.clone(),
+                                (trader_id, strategy_id, instrument_id, venue_order_id),
+                            );
+
+                            let request = super::messages::BybitWsRequest {
+                                op: crate::common::enums::BybitWsOrderRequestOp::Amend,
+                                header: super::messages::BybitWsHeader::now(),
+                                args: vec![params],
+                            };
+
+                            if let Ok(payload) = serde_json::to_string(&request)
+                                && let Err(e) = self.send_with_retry(payload).await
+                            {
+                                tracing::error!("Failed to send amend order after retries: {e}");
+                                self.pending_amend_requests.remove(&request_id);
+                            }
+                        }
+                        HandlerCommand::CancelOrder {
+                            params,
+                            client_order_id,
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            venue_order_id,
+                        } => {
+                            let request_id = client_order_id.to_string();
+
+                            self.pending_cancel_requests.insert(
+                                request_id.clone(),
+                                (trader_id, strategy_id, instrument_id, venue_order_id),
+                            );
+
+                            let request = super::messages::BybitWsRequest {
+                                op: crate::common::enums::BybitWsOrderRequestOp::Cancel,
+                                header: super::messages::BybitWsHeader::now(),
+                                args: vec![params],
+                            };
+
+                            if let Ok(payload) = serde_json::to_string(&request)
+                                && let Err(e) = self.send_with_retry(payload).await
+                            {
+                                tracing::error!("Failed to send cancel order after retries: {e}");
+                                self.pending_cancel_requests.remove(&request_id);
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if self.signal.load(Ordering::Relaxed) {
+                        tracing::debug!("Stop signal received during idle period");
+                        return None;
                     }
                     continue;
                 }
 
-                Some(msg) = self.msg_rx.recv() => {
+                msg = self.raw_rx.recv() => {
+                    let msg = match msg {
+                        Some(msg) => msg,
+                        None => {
+                            tracing::debug!("WebSocket stream closed");
+                            return None;
+                        }
+                    };
+
+                    if let Message::Ping(data) = &msg {
+                        tracing::trace!("Received ping frame with {} bytes", data.len());
+
+                        if let Some(client) = &self.client
+                            && let Err(e) = client.send_pong(data.to_vec()).await
+                        {
+                            tracing::warn!(error = %e, "Failed to send pong frame");
+                        }
+                        continue;
+                    }
+
+                    let event = match Self::parse_raw_message(msg) {
+                        Some(event) => event,
+                        None => continue,
+                    };
+
+                    if self.signal.load(Ordering::Relaxed) {
+                        tracing::debug!("Stop signal received");
+                        return None;
+                    }
+
                     let ts_init = clock.get_time_ns();
-                    let nautilus_messages = Self::parse_to_nautilus_messages(
-                        msg,
+                    let nautilus_messages = self.parse_to_nautilus_messages(
+                        event,
                         &self.instruments_cache,
                         self.account_id,
                         self.product_type,
@@ -122,23 +424,152 @@ impl FeedHandler {
                     )
                     .await;
 
-                    for nautilus_msg in nautilus_messages {
-                        if self.out_tx.send(nautilus_msg).is_err() {
-                            tracing::debug!("Receiver dropped, stopping handler");
-                            return None;
-                        }
-                    }
-                }
-
-                else => {
-                    tracing::debug!("Handler shutting down: stream ended or command channel closed");
-                    return None;
+                    // Enqueue all parsed messages to emit them one by one
+                    self.message_queue.extend(nautilus_messages);
                 }
             }
         }
     }
 
+    fn parse_raw_message(msg: Message) -> Option<BybitWsMessage> {
+        use serde_json::Value;
+
+        match msg {
+            Message::Text(text) => {
+                if text == nautilus_network::RECONNECTED {
+                    tracing::info!("Received WebSocket reconnected signal");
+                    return Some(BybitWsMessage::Reconnected);
+                }
+
+                if text.trim().eq_ignore_ascii_case("pong") {
+                    return None;
+                }
+
+                tracing::trace!("Raw websocket message: {text}");
+
+                let value: Value = match serde_json::from_str(&text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("Failed to parse WebSocket message: {e}: {text}");
+                        return None;
+                    }
+                };
+
+                Self::classify_bybit_message(&value).or(Some(BybitWsMessage::Raw(value)))
+            }
+            Message::Binary(msg) => {
+                tracing::debug!("Raw binary: {msg:?}");
+                None
+            }
+            Message::Close(_) => {
+                tracing::debug!("Received close message, waiting for reconnection");
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn classify_bybit_message(value: &serde_json::Value) -> Option<BybitWsMessage> {
+        use super::{
+            enums::BybitWsOperation,
+            messages::{
+                BybitWsAuthResponse, BybitWsOrderResponse, BybitWsResponse, BybitWsSubscriptionMsg,
+            },
+        };
+
+        if let Ok(op) = serde_json::from_value::<BybitWsOperation>(
+            value.get("op").cloned().unwrap_or(serde_json::Value::Null),
+        ) && op == BybitWsOperation::Auth
+            && let Ok(auth) = serde_json::from_value::<BybitWsAuthResponse>(value.clone())
+        {
+            let is_success = auth.success.unwrap_or(false) || auth.ret_code.unwrap_or(-1) == 0;
+            if is_success {
+                return Some(BybitWsMessage::Auth(auth));
+            }
+            let resp = BybitWsResponse {
+                op: Some(auth.op.clone()),
+                topic: None,
+                success: auth.success,
+                conn_id: auth.conn_id.clone(),
+                req_id: None,
+                ret_code: auth.ret_code,
+                ret_msg: auth.ret_msg,
+            };
+            let error = BybitWebSocketError::from_response(&resp);
+            return Some(BybitWsMessage::Error(error));
+        }
+
+        if let Some(success) = value.get("success").and_then(serde_json::Value::as_bool) {
+            if success {
+                if let Ok(msg) = serde_json::from_value::<BybitWsSubscriptionMsg>(value.clone()) {
+                    return Some(BybitWsMessage::Subscription(msg));
+                }
+            } else if let Ok(resp) = serde_json::from_value::<BybitWsResponse>(value.clone()) {
+                let error = BybitWebSocketError::from_response(&resp);
+                return Some(BybitWsMessage::Error(error));
+            }
+        }
+
+        if let Some(op) = value.get("op").and_then(serde_json::Value::as_str)
+            && op.starts_with("order.")
+            && let Ok(order_resp) = serde_json::from_value::<BybitWsOrderResponse>(value.clone())
+        {
+            return Some(BybitWsMessage::OrderResponse(order_resp));
+        }
+
+        if let Some(topic) = value.get("topic").and_then(serde_json::Value::as_str) {
+            if topic.starts_with("orderbook")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::Orderbook(msg));
+            } else if (topic.contains("publicTrade") || topic.starts_with("trade"))
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::Trade(msg));
+            } else if topic.starts_with("kline")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::Kline(msg));
+            } else if topic.starts_with("tickers") {
+                // Option symbols have format: BTC-6JAN23-17500-C (with hyphens, date, strike, and C/P)
+                if let Some(symbol) = value
+                    .get("data")
+                    .and_then(|d| d.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    && symbol.contains('-')
+                    && symbol.matches('-').count() >= 3
+                    && let Ok(msg) = serde_json::from_value(value.clone())
+                {
+                    return Some(BybitWsMessage::TickerOption(msg));
+                }
+                if let Ok(msg) = serde_json::from_value(value.clone()) {
+                    return Some(BybitWsMessage::TickerLinear(msg));
+                }
+            } else if topic.starts_with("order")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::AccountOrder(msg));
+            } else if topic.starts_with("execution")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::AccountExecution(msg));
+            } else if topic.starts_with("wallet")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::AccountWallet(msg));
+            } else if topic.starts_with("position")
+                && let Ok(msg) = serde_json::from_value(value.clone())
+            {
+                return Some(BybitWsMessage::AccountPosition(msg));
+            }
+        }
+
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn parse_to_nautilus_messages(
+        &self,
         msg: BybitWsMessage,
         instruments: &AHashMap<Ustr, InstrumentAny>,
         account_id: Option<AccountId>,
@@ -423,32 +854,105 @@ impl FeedHandler {
                 }
             }
             BybitWsMessage::OrderResponse(resp) => {
+                // Extract orderLinkId from response data to match with pending requests
+                let request_id = resp
+                    .data
+                    .get("orderLinkId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
                 if resp.ret_code == 0 {
                     tracing::debug!(op = %resp.op, ret_msg = %resp.ret_msg, "Order operation successful");
+                    if let Some(req_id) = request_id {
+                        if resp.op.contains("create") {
+                            self.pending_place_requests.remove(&req_id);
+                        } else if resp.op.contains("cancel") {
+                            self.pending_cancel_requests.remove(&req_id);
+                        } else if resp.op.contains("amend") {
+                            self.pending_amend_requests.remove(&req_id);
+                        }
+                    }
+                } else if let Some(req_id) = request_id {
+                    let clock = get_atomic_clock_realtime();
+                    let ts_init = clock.get_time_ns();
+
+                    if resp.op.contains("create")
+                        && let Some((_, (trader_id, strategy_id, instrument_id))) =
+                            self.pending_place_requests.remove(&req_id)
+                    {
+                        let client_order_id = ClientOrderId::from(req_id.as_str());
+                        let account_id = self
+                            .account_id
+                            .expect("Account ID required for rejection events");
+                        let rejected = nautilus_model::events::OrderRejected::new(
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            client_order_id,
+                            account_id,
+                            Ustr::from(&resp.ret_msg),
+                            UUID4::new(),
+                            ts_init,
+                            ts_init,
+                            false,
+                            false,
+                        );
+                        result.push(NautilusWsMessage::OrderRejected(rejected));
+                    } else if resp.op.contains("cancel")
+                        && let Some((_, (trader_id, strategy_id, instrument_id, venue_order_id))) =
+                            self.pending_cancel_requests.remove(&req_id)
+                    {
+                        let client_order_id = ClientOrderId::from(req_id.as_str());
+                        let rejected = nautilus_model::events::OrderCancelRejected::new(
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            client_order_id,
+                            Ustr::from(&resp.ret_msg),
+                            UUID4::new(),
+                            ts_init,
+                            ts_init,
+                            false,
+                            venue_order_id,
+                            self.account_id,
+                        );
+                        result.push(NautilusWsMessage::OrderCancelRejected(rejected));
+                    } else if resp.op.contains("amend")
+                        && let Some((_, (trader_id, strategy_id, instrument_id, venue_order_id))) =
+                            self.pending_amend_requests.remove(&req_id)
+                    {
+                        let client_order_id = ClientOrderId::from(req_id.as_str());
+                        let rejected = nautilus_model::events::OrderModifyRejected::new(
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            client_order_id,
+                            Ustr::from(&resp.ret_msg),
+                            UUID4::new(),
+                            ts_init,
+                            ts_init,
+                            false,
+                            venue_order_id,
+                            self.account_id,
+                        );
+                        result.push(NautilusWsMessage::OrderModifyRejected(rejected));
+                    }
+                }
+            }
+            BybitWsMessage::Auth(auth_response) => {
+                let is_success =
+                    auth_response.success.unwrap_or(false) || (auth_response.ret_code == Some(0));
+
+                if is_success {
+                    tracing::info!("Authentication successful");
+                    result.push(NautilusWsMessage::Authenticated);
                 } else {
-                    let operation_type = if resp.op.contains("create") {
-                        "order submission"
-                    } else if resp.op.contains("cancel") {
-                        "order cancellation"
-                    } else if resp.op.contains("amend") {
-                        "order modification"
-                    } else {
-                        "order operation"
-                    };
-
-                    tracing::warn!(
-                        op = %resp.op,
-                        ret_code = resp.ret_code,
-                        ret_msg = %resp.ret_msg,
-                        "Order operation failed: {} rejected", operation_type
-                    );
-
-                    let error_msg = format!(
-                        "Bybit {} failed: {} (code: {})",
-                        operation_type, resp.ret_msg, resp.ret_code
-                    );
-                    let error = BybitWebSocketError::new(resp.ret_code, error_msg);
-                    result.push(NautilusWsMessage::Error(error));
+                    tracing::error!("Authentication failed: {:?}", auth_response.ret_msg);
+                    result.push(NautilusWsMessage::Error(BybitWebSocketError::from_message(
+                        auth_response
+                            .ret_msg
+                            .unwrap_or_else(|| "Authentication failed".to_string()),
+                    )));
                 }
             }
             BybitWsMessage::Error(err) => {
@@ -457,9 +961,71 @@ impl FeedHandler {
             BybitWsMessage::Reconnected => {
                 result.push(NautilusWsMessage::Reconnected);
             }
-            _ => {} // Ignore other message types (pong, auth, subscription confirmations, etc.)
+            BybitWsMessage::Subscription(sub_msg) => {
+                let pending_topics = self.subscriptions.pending_subscribe_topics();
+                match sub_msg.op {
+                    super::enums::BybitWsOperation::Subscribe => {
+                        if sub_msg.success {
+                            for topic in pending_topics {
+                                self.subscriptions.confirm_subscribe(&topic);
+                                tracing::debug!(topic = topic, "Subscription confirmed");
+                            }
+                        } else {
+                            for topic in pending_topics {
+                                self.subscriptions.mark_failure(&topic);
+                                tracing::warn!(
+                                    topic = topic,
+                                    error = ?sub_msg.ret_msg,
+                                    "Subscription failed, will retry on reconnect"
+                                );
+                            }
+                        }
+                    }
+                    super::enums::BybitWsOperation::Unsubscribe => {
+                        let pending_unsub = self.subscriptions.pending_unsubscribe_topics();
+                        if sub_msg.success {
+                            for topic in pending_unsub {
+                                self.subscriptions.confirm_unsubscribe(&topic);
+                                tracing::debug!(topic = topic, "Unsubscription confirmed");
+                            }
+                        } else {
+                            for topic in pending_unsub {
+                                tracing::warn!(
+                                    topic = topic,
+                                    error = ?sub_msg.ret_msg,
+                                    "Unsubscription failed"
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
 
         result
     }
+}
+
+/// Determines if a Bybit WebSocket error should trigger a retry.
+pub(crate) fn should_retry_bybit_error(error: &BybitWsError) -> bool {
+    match error {
+        BybitWsError::Transport(_) => true,
+        BybitWsError::Send(_) => true,
+        BybitWsError::ClientError(msg) => {
+            let msg_lower = msg.to_lowercase();
+            msg_lower.contains("timeout")
+                || msg_lower.contains("timed out")
+                || msg_lower.contains("connection")
+                || msg_lower.contains("network")
+        }
+        BybitWsError::NotConnected => true,
+        BybitWsError::Authentication(_) | BybitWsError::Json(_) => false,
+    }
+}
+
+/// Creates a timeout error for Bybit operations.
+pub(crate) fn create_bybit_timeout_error(msg: String) -> BybitWsError {
+    BybitWsError::ClientError(msg)
 }

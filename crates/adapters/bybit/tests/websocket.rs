@@ -422,7 +422,7 @@ async fn test_public_client_connection() {
     )
     .await;
 
-    assert!(client.is_active().await);
+    assert!(client.is_active());
     assert_eq!(*state.connection_count.lock().await, 1);
 
     client.close().await.unwrap();
@@ -793,7 +793,7 @@ async fn test_sends_pong_for_control_ping() {
 
     // Control ping/pong is handled by the WebSocket layer
     // This test verifies the connection remains active
-    assert!(client.is_active().await);
+    assert!(client.is_active());
 
     client.close().await.unwrap();
 }
