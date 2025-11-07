@@ -48,26 +48,21 @@ while IFS=: read -r file _ line_content; do
   fi
 done < <(rg --line-number --no-heading "Copyright \(C\) 2015-[0-9]{4}" -g '*.rs' -g '*.py' -g '*.pyx' -g '*.pxd')
 
-# Get list of files with copyright headers
-mapfile -t FILES_WITH_HEADERS < <(rg --files-with-matches "Copyright \(C\)" -g '*.rs' -g '*.py' -g '*.pyx' -g '*.pxd' 2> /dev/null || true)
+# Get list of files with copyright headers (sorted for comm)
+rg --files-with-matches "Copyright \(C\)" -g '*.rs' -g '*.py' -g '*.pyx' -g '*.pxd' 2> /dev/null | sort > /tmp/files_with_headers.$$ || true
 
-# Get all tracked files
-mapfile -t ALL_FILES < <(git ls-files '*.rs' '*.py' '*.pyx' '*.pxd')
+# Get all tracked files (sorted for comm)
+git ls-files '*.rs' '*.py' '*.pyx' '*.pxd' | sort > /tmp/all_files.$$
 
-# Convert files with headers to associative array for fast lookup
-declare -A HAS_HEADER
-for file in "${FILES_WITH_HEADERS[@]}"; do
-  HAS_HEADER["$file"]=1
-done
-
-# Check for missing headers
-for file in "${ALL_FILES[@]}"; do
-  if [[ -z "${HAS_HEADER[$file]:-}" ]]; then
-    if ! is_excluded_from_header_check "$file"; then
-      echo "⚠️  $file: Missing copyright header"
-    fi
+# Find files without headers (in all_files but not in files_with_headers)
+while IFS= read -r file; do
+  if ! is_excluded_from_header_check "$file"; then
+    echo "⚠️  $file: Missing copyright header"
   fi
-done
+done < <(comm -23 /tmp/all_files.$$ /tmp/files_with_headers.$$)
+
+# Cleanup temp files
+rm -f /tmp/files_with_headers.$$ /tmp/all_files.$$
 
 if [[ $FAILED -eq 1 ]]; then
   echo ""
