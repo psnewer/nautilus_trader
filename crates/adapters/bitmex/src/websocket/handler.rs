@@ -31,6 +31,7 @@ use nautilus_model::{
 };
 use nautilus_network::{
     RECONNECTED,
+    retry::{RetryManager, create_websocket_retry_manager},
     websocket::{AuthTracker, SubscriptionState, WebSocketClient},
 };
 use tokio_tungstenite::tungstenite::Message;
@@ -39,6 +40,7 @@ use ustr::Ustr;
 use super::{
     cache::QuoteCache,
     enums::{BitmexAction, BitmexWsAuthAction, BitmexWsOperation, BitmexWsTopic},
+    error::BitmexWsError,
     messages::{
         BitmexHttpRequest, BitmexTableMessage, BitmexWsMessage, NautilusWsMessage, OrderData,
     },
@@ -82,6 +84,7 @@ pub(super) struct FeedHandler {
     out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
     auth_tracker: AuthTracker,
     subscriptions: SubscriptionState,
+    retry_manager: RetryManager<BitmexWsError>,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
     order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
@@ -111,6 +114,7 @@ impl FeedHandler {
             out_tx,
             auth_tracker,
             subscriptions,
+            retry_manager: create_websocket_retry_manager(),
             instruments_cache: AHashMap::new(),
             order_type_cache,
             order_symbol_cache,
@@ -124,6 +128,30 @@ impl FeedHandler {
 
     pub(super) fn send(&self, msg: NautilusWsMessage) -> Result<(), ()> {
         self.out_tx.send(msg).map_err(|_| ())
+    }
+
+    /// Sends a WebSocket message with retry logic.
+    async fn send_with_retry(&self, payload: String) -> anyhow::Result<()> {
+        if let Some(client) = &self.client {
+            self.retry_manager
+                .execute_with_retry(
+                    "websocket_send",
+                    || {
+                        let payload = payload.clone();
+                        async move {
+                            client.send_text(payload, None).await.map_err(|e| {
+                                BitmexWsError::ClientError(format!("Send failed: {e}"))
+                            })
+                        }
+                    },
+                    should_retry_bitmex_error,
+                    create_bitmex_timeout_error,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        } else {
+            Err(anyhow::anyhow!("No active WebSocket client"))
+        }
     }
 
     #[inline]
@@ -153,36 +181,24 @@ impl FeedHandler {
                         }
                         HandlerCommand::Authenticate { payload } => {
                             tracing::debug!("Authenticate command received");
-                            if let Some(client) = &self.client {
-                                if let Err(e) = client.send_text(payload, None).await {
-                                    tracing::error!("Error sending authentication: {e}");
-                                }
-                            } else {
-                                tracing::error!("Cannot authenticate: WebSocketClient not set");
+                            if let Err(e) = self.send_with_retry(payload).await {
+                                tracing::error!(error = %e, "Failed to send authentication after retries");
                             }
                         }
                         HandlerCommand::Subscribe { topics } => {
                             tracing::debug!("Subscribe command received for {} topics", topics.len());
-                            if let Some(client) = &self.client {
-                                for topic in topics {
-                                    if let Err(e) = client.send_text(topic, None).await {
-                                        tracing::error!("Error sending subscription: {e}");
-                                    }
+                            for topic in topics {
+                                if let Err(e) = self.send_with_retry(topic).await {
+                                    tracing::error!(error = %e, "Failed to send subscription after retries");
                                 }
-                            } else {
-                                tracing::error!("Cannot subscribe: WebSocketClient not set");
                             }
                         }
                         HandlerCommand::Unsubscribe { topics } => {
                             tracing::debug!("Unsubscribe command received for {} topics", topics.len());
-                            if let Some(client) = &self.client {
-                                for topic in topics {
-                                    if let Err(e) = client.send_text(topic, None).await {
-                                        tracing::error!("Error sending unsubscription: {e}");
-                                    }
+                            for topic in topics {
+                                if let Err(e) = self.send_with_retry(topic).await {
+                                    tracing::error!(error = %e, "Failed to send unsubscription after retries");
                                 }
-                            } else {
-                                tracing::error!("Cannot unsubscribe: WebSocketClient not set");
                             }
                         }
                         HandlerCommand::InitializeInstruments(instruments) => {
@@ -940,6 +956,27 @@ fn is_terminal_order_status(status: OrderStatus) -> bool {
         status,
         OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::Rejected | OrderStatus::Filled,
     )
+}
+
+/// Returns `true` when a BitMEX error should be retried.
+pub(crate) fn should_retry_bitmex_error(error: &BitmexWsError) -> bool {
+    match error {
+        BitmexWsError::TungsteniteError(_) => true, // Network errors are retryable
+        BitmexWsError::ClientError(msg) => {
+            // Retry on timeout and connection errors (case-insensitive)
+            let msg_lower = msg.to_lowercase();
+            msg_lower.contains("timeout")
+                || msg_lower.contains("timed out")
+                || msg_lower.contains("connection")
+                || msg_lower.contains("network")
+        }
+        _ => false,
+    }
+}
+
+/// Creates a timeout error for BitMEX retry logic.
+pub(crate) fn create_bitmex_timeout_error(msg: String) -> BitmexWsError {
+    BitmexWsError::ClientError(msg)
 }
 
 ////////////////////////////////////////////////////////////////////////////////

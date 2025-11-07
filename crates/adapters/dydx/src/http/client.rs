@@ -140,8 +140,7 @@ impl DydxRawHttpClient {
             base_url.unwrap_or_else(|| DYDX_HTTP_URL.to_string())
         };
 
-        let retry_manager = RetryManager::new(retry_config.unwrap_or_default())
-            .map_err(|e| DydxHttpError::ValidationError(e.to_string()))?;
+        let retry_manager = RetryManager::new(retry_config.unwrap_or_default());
 
         // Build headers
         let mut headers = std::collections::HashMap::new();

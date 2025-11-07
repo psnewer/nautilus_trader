@@ -174,9 +174,7 @@ impl BybitRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            BybitHttpError::NetworkError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         Ok(Self {
             base_url: base_url
@@ -203,7 +201,7 @@ impl BybitRawHttpClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the retry manager cannot be created.
+    /// Returns an error if the HTTP client cannot be created.
     #[allow(clippy::too_many_arguments)]
     pub fn with_credentials(
         api_key: String,
@@ -227,9 +225,7 @@ impl BybitRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            BybitHttpError::NetworkError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         Ok(Self {
             base_url: base_url

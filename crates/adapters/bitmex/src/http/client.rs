@@ -180,9 +180,7 @@ impl BitmexRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            BitmexHttpError::NetworkError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         let max_req_per_sec =
             max_requests_per_second.unwrap_or(BITMEX_DEFAULT_RATE_LIMIT_PER_SECOND);
@@ -240,9 +238,7 @@ impl BitmexRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            BitmexHttpError::NetworkError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         let max_req_per_sec =
             max_requests_per_second.unwrap_or(BITMEX_DEFAULT_RATE_LIMIT_PER_SECOND);

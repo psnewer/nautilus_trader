@@ -266,9 +266,7 @@ impl OKXRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            OKXHttpError::ValidationError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         Ok(Self {
             base_url: base_url.unwrap_or(OKX_HTTP_URL.to_string()),
@@ -320,9 +318,7 @@ impl OKXRawHttpClient {
             max_elapsed_ms: Some(180_000),
         };
 
-        let retry_manager = RetryManager::new(retry_config).map_err(|e| {
-            OKXHttpError::ValidationError(format!("Failed to create retry manager: {e}"))
-        })?;
+        let retry_manager = RetryManager::new(retry_config);
 
         Ok(Self {
             base_url,

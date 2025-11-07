@@ -249,8 +249,7 @@ impl OKXWsFeedHandler {
             out_tx,
             auth_tracker,
             subscriptions_state,
-            retry_manager: create_websocket_retry_manager()
-                .expect("Failed to create retry manager"), // TODO: Refactor to infallible
+            retry_manager: create_websocket_retry_manager(),
             pending_place_requests: AHashMap::new(),
             pending_cancel_requests: AHashMap::new(),
             pending_amend_requests: AHashMap::new(),

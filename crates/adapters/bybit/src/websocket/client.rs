@@ -196,10 +196,6 @@ impl BybitWebSocketClient {
     }
 
     /// Creates a new Bybit public WebSocket client targeting the specified product/environment.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_public_with(
         product_type: BybitProductType,
@@ -232,18 +228,12 @@ impl BybitWebSocketClient {
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
-            retry_manager: Arc::new(
-                create_websocket_retry_manager().expect("Failed to create retry manager"),
-            ),
+            retry_manager: Arc::new(create_websocket_retry_manager()),
             cancellation_token: CancellationToken::new(),
         }
     }
 
     /// Creates a new Bybit private WebSocket client.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_private(
         environment: BybitEnvironment,
@@ -276,18 +266,12 @@ impl BybitWebSocketClient {
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
-            retry_manager: Arc::new(
-                create_websocket_retry_manager().expect("Failed to create retry manager"),
-            ),
+            retry_manager: Arc::new(create_websocket_retry_manager()),
             cancellation_token: CancellationToken::new(),
         }
     }
 
     /// Creates a new Bybit trade WebSocket client for order operations.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the retry manager cannot be created.
     #[must_use]
     pub fn new_trade(
         environment: BybitEnvironment,
@@ -320,9 +304,7 @@ impl BybitWebSocketClient {
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
-            retry_manager: Arc::new(
-                create_websocket_retry_manager().expect("Failed to create retry manager"),
-            ),
+            retry_manager: Arc::new(create_websocket_retry_manager()),
             cancellation_token: CancellationToken::new(),
         }
     }

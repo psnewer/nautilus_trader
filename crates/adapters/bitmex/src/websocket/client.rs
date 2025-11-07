@@ -379,6 +379,10 @@ impl BitmexWebSocketClient {
                             resubscribe_all();
                         }
 
+                        // TODO: Implement proper Reconnected event forwarding to consumers.
+                        // Currently intercepted for internal housekeeping only. Will add new
+                        // message type from WebSocketClient to notify consumers of reconnections.
+
                         continue;
                     }
                     Some(NautilusWsMessage::Authenticated) => {
@@ -671,15 +675,11 @@ impl BitmexWebSocketClient {
         }
 
         // Send Subscribe command to handler
-        self.cmd_tx
-            .read()
-            .await
-            .send(HandlerCommand::Subscribe { topics: payloads })
-            .map_err(|e| {
-                BitmexWsError::SubscriptionError(format!("Failed to send subscribe command: {e}"))
-            })?;
+        let cmd = HandlerCommand::Subscribe { topics: payloads };
 
-        Ok(())
+        self.send_cmd(cmd).await.map_err(|e| {
+            BitmexWsError::SubscriptionError(format!("Failed to send subscribe command: {e}"))
+        })
     }
 
     /// Unsubscribe from the specified topics.
@@ -713,12 +713,9 @@ impl BitmexWebSocketClient {
         }
 
         // Send Unsubscribe command to handler
-        if let Err(e) = self
-            .cmd_tx
-            .read()
-            .await
-            .send(HandlerCommand::Unsubscribe { topics: payloads })
-        {
+        let cmd = HandlerCommand::Unsubscribe { topics: payloads };
+
+        if let Err(e) = self.send_cmd(cmd).await {
             tracing::debug!(error = %e, "Failed to send unsubscribe command");
         }
 
@@ -1191,6 +1188,15 @@ impl BitmexWebSocketClient {
     pub async fn unsubscribe_wallet(&self) -> Result<(), BitmexWsError> {
         self.unsubscribe(vec![BitmexWsAuthChannel::Wallet.to_string()])
             .await
+    }
+
+    /// Sends a command to the handler.
+    async fn send_cmd(&self, cmd: HandlerCommand) -> Result<(), BitmexWsError> {
+        self.cmd_tx
+            .read()
+            .await
+            .send(cmd)
+            .map_err(|e| BitmexWsError::ClientError(format!("Handler not available: {e}")))
     }
 }
 
