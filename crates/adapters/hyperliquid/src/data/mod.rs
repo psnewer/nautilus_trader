@@ -56,7 +56,7 @@ use crate::{
     http::{client::HyperliquidHttpClient, models::HyperliquidCandle},
     websocket::{
         client::HyperliquidWebSocketClient,
-        messages::HyperliquidWsMessage,
+        messages::{HyperliquidWsMessage, NautilusWsMessage},
         parse::{
             parse_ws_candle, parse_ws_order_book_deltas, parse_ws_quote_tick, parse_ws_trade_tick,
         },
@@ -114,7 +114,7 @@ impl HyperliquidDataClient {
             )?
         };
 
-        let ws_client = HyperliquidWebSocketClient::new(None, config.is_testnet);
+        let ws_client = HyperliquidWebSocketClient::new(None, config.is_testnet, None);
 
         Ok(Self {
             client_id,
@@ -157,9 +157,7 @@ impl HyperliquidDataClient {
                 coin_map.insert(Ustr::from(coin), instrument_id);
             }
 
-            // Also add instrument to the WebSocket client's cache for fast lookups
-            // used by the WebSocket client and execution path.
-            self.ws_client.add_instrument(instrument.clone());
+            self.ws_client.cache_instrument(instrument.clone());
         }
 
         tracing::info!(
@@ -171,13 +169,14 @@ impl HyperliquidDataClient {
     }
 
     async fn spawn_ws(&mut self) -> anyhow::Result<()> {
-        self.ws_client
-            .ensure_connected()
+        // Clone client before connecting so the clone can have out_rx set
+        let mut ws_client = self.ws_client.clone();
+
+        ws_client
+            .connect()
             .await
             .context("failed to connect to Hyperliquid WebSocket")?;
 
-        // Spawn background task to consume WebSocket events
-        let ws_client = self.ws_client.clone();
         let data_sender = self.data_sender.clone();
         let instruments = Arc::clone(&self.instruments);
         let coin_to_instrument_id = Arc::clone(&self.coin_to_instrument_id);
@@ -196,15 +195,28 @@ impl HyperliquidDataClient {
                     }
                     msg_opt = ws_client.next_event() => {
                         if let Some(msg) = msg_opt {
-                            Self::handle_ws_message(
-                                msg,
-                                &ws_client,
-                                &data_sender,
-                                &instruments,
-                                &coin_to_instrument_id,
-                                venue,
-                                clock,
-                            );
+                            match msg {
+                                NautilusWsMessage::Data(hl_msg) => {
+                                    Self::handle_ws_message(
+                                        hl_msg,
+                                        &ws_client,
+                                        &data_sender,
+                                        &instruments,
+                                        &coin_to_instrument_id,
+                                        venue,
+                                        clock,
+                                    );
+                                }
+                                NautilusWsMessage::Reconnected => {
+                                    tracing::info!("WebSocket reconnected");
+                                }
+                                NautilusWsMessage::Error(e) => {
+                                    tracing::error!("WebSocket error: {e}");
+                                }
+                                NautilusWsMessage::ExecutionReports(_) => {
+                                    // Execution reports are handled by execution client, ignore
+                                }
+                            }
                         } else {
                             // Connection closed or error
                             tracing::warn!("WebSocket next_event returned None, connection may be closed");
@@ -917,20 +929,11 @@ impl DataClient for HyperliquidDataClient {
 
         drop(instruments);
 
-        let interval = bar_type_to_interval(&subscription.bar_type)?;
-
-        let coin = instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .context("invalid instrument symbol")?;
-        let coin = Ustr::from(coin);
-
+        let bar_type = subscription.bar_type;
         let ws = self.ws_client.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = ws.subscribe_candle(coin, interval).await {
+            if let Err(e) = ws.subscribe_bars(bar_type).await {
                 tracing::error!("Failed to subscribe to bars: {e:?}");
             }
         });
@@ -943,21 +946,11 @@ impl DataClient for HyperliquidDataClient {
     fn unsubscribe_bars(&mut self, unsubscription: &UnsubscribeBars) -> anyhow::Result<()> {
         tracing::debug!("Unsubscribing from bars: {}", unsubscription.bar_type);
 
-        let interval = bar_type_to_interval(&unsubscription.bar_type)?;
-
-        let instrument_id = unsubscription.bar_type.instrument_id();
-        let coin = instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .context("invalid instrument symbol")?;
-        let coin = Ustr::from(coin);
-
+        let bar_type = unsubscription.bar_type;
         let ws = self.ws_client.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = ws.unsubscribe_candle(coin, interval).await {
+            if let Err(e) = ws.unsubscribe_bars(bar_type).await {
                 tracing::error!("Failed to unsubscribe from bars: {e:?}");
             }
         });

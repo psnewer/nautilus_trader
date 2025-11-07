@@ -34,7 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = ws_url(testnet);
     tracing::info!("WebSocket URL: {ws_url}");
 
-    let client = HyperliquidWebSocketClient::connect(ws_url, None).await?;
+    let mut client = HyperliquidWebSocketClient::new(Some(ws_url.to_string()), testnet, None);
+    client.connect().await?;
     tracing::info!("Connected to Hyperliquid WebSocket");
 
     // Subscribe to execution channels

@@ -257,9 +257,10 @@ impl HyperliquidHttpClient {
             .address()
     }
 
-    /// Add an instrument to the internal cache for report generation.
+    /// Caches a single instrument.
     ///
     /// This is required for parsing orders, fills, and positions into reports.
+    /// Any existing instrument with the same symbol will be replaced.
     /// Instruments are stored under two keys:
     /// 1. The Nautilus symbol (e.g., "BTC-USD-PERP")
     /// 2. The Hyperliquid coin identifier (base currency, e.g., "BTC" or "vntls:vCURSOR")
@@ -267,7 +268,7 @@ impl HyperliquidHttpClient {
     /// # Panics
     ///
     /// Panics if the instrument lock cannot be acquired.
-    pub fn add_instrument(&self, instrument: InstrumentAny) {
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
         let mut instruments = self
             .instruments
             .write()
@@ -371,8 +372,7 @@ impl HyperliquidHttpClient {
                     ts_event,
                 ));
 
-            // Add to cache for future lookups
-            self.add_instrument(instrument.clone());
+            self.cache_instrument(instrument.clone());
 
             Some(instrument)
         } else {
@@ -1398,7 +1398,7 @@ impl HyperliquidHttpClient {
     /// Request order status reports for a user.
     ///
     /// Fetches open orders via `info_frontend_open_orders` and parses them into OrderStatusReports.
-    /// This method requires instruments to be added to the client cache via `add_instrument()`.
+    /// This method requires instruments to be added to the client cache via `cache_instrument()`.
     ///
     /// For vault tokens (starting with "vntls:") that are not in the cache, synthetic instruments
     /// will be created automatically.
@@ -1466,7 +1466,7 @@ impl HyperliquidHttpClient {
     /// Request fill reports for a user.
     ///
     /// Fetches user fills via `info_user_fills` and parses them into FillReports.
-    /// This method requires instruments to be added to the client cache via `add_instrument()`.
+    /// This method requires instruments to be added to the client cache via `cache_instrument()`.
     ///
     /// For vault tokens (starting with "vntls:") that are not in the cache, synthetic instruments
     /// will be created automatically.
@@ -1516,7 +1516,7 @@ impl HyperliquidHttpClient {
     /// Request position status reports for a user.
     ///
     /// Fetches clearinghouse state via `info_clearinghouse_state` and parses positions into PositionStatusReports.
-    /// This method requires instruments to be added to the client cache via `add_instrument()`.
+    /// This method requires instruments to be added to the client cache via `cache_instrument()`.
     ///
     /// For vault tokens (starting with "vntls:") that are not in the cache, synthetic instruments
     /// will be created automatically.
@@ -1683,8 +1683,8 @@ mod tests {
             ts,
         ));
 
-        // Add the instrument
-        client.add_instrument(instrument);
+        // Cache the instrument
+        client.cache_instrument(instrument);
 
         // Verify it can be looked up by Nautilus symbol
         let instruments = client.instruments.read().unwrap();

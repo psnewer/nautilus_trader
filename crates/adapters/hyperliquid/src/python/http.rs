@@ -326,7 +326,7 @@ impl HyperliquidHttpClient {
     /// This is required before calling report generation methods.
     #[pyo3(name = "add_instrument")]
     fn py_add_instrument(&self, py: Python<'_>, instrument: Py<PyAny>) -> PyResult<()> {
-        self.add_instrument(pyobject_to_instrument_any(py, instrument)?);
+        self.cache_instrument(pyobject_to_instrument_any(py, instrument)?);
         Ok(())
     }
 

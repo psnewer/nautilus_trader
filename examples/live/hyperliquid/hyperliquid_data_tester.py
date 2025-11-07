@@ -22,7 +22,6 @@ from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.strategies.tester_data import DataTester
@@ -39,7 +38,11 @@ if __name__ == "__main__":
     # Configure the trading node
     config_node = TradingNodeConfig(
         trader_id=TraderId("TESTER-001"),
-        logging=LoggingConfig(log_level="INFO"),
+        logging=LoggingConfig(
+            log_level="INFO",
+            log_level_file="DEBUG",
+            use_pyo3=True,
+        ),
         exec_engine=LiveExecEngineConfig(
             reconciliation=True,
             reconciliation_lookback_mins=1440,
@@ -62,10 +65,10 @@ if __name__ == "__main__":
 
     # Configure your strategy
     strat_config = DataTesterConfig(
-        instrument_ids=[InstrumentId.from_str("ETH-USD.HYPERLIQUID")],
+        instrument_ids=[InstrumentId.from_str("BTCUSD-PERP.HYPERLIQUID")],
+        subscribe_quotes=True,
         subscribe_trades=True,
-        subscribe_bars=True,
-        book_type=BookType.L2_MBP,
+        # subscribe_bars=True,
     )
     # Instantiate your strategy
     strategy = DataTester(config=strat_config)

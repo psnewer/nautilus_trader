@@ -22,7 +22,7 @@ pub mod messages;
 pub mod parse;
 pub mod post;
 
-pub use client::{HyperliquidWebSocketClient, HyperliquidWebSocketInnerClient};
+pub use client::HyperliquidWebSocketClient;
 pub use error::HyperliquidWsError;
 pub use handler::HandlerCommand;
 pub use messages::{ExecutionReport, NautilusWsMessage};

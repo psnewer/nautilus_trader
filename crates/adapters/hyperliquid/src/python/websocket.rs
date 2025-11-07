@@ -27,19 +27,19 @@ use ustr::Ustr;
 
 use crate::websocket::{
     HyperliquidWebSocketClient,
-    messages::{HyperliquidWsMessage, WsUserEventData},
+    messages::{ExecutionReport, HyperliquidWsMessage, NautilusWsMessage},
     parse::{
-        parse_ws_candle, parse_ws_fill_report, parse_ws_order_book_deltas,
-        parse_ws_order_status_report, parse_ws_quote_tick, parse_ws_trade_tick,
+        parse_ws_candle, parse_ws_order_book_deltas, parse_ws_quote_tick, parse_ws_trade_tick,
     },
 };
 
 #[pymethods]
 impl HyperliquidWebSocketClient {
     #[new]
-    #[pyo3(signature = (url=None, testnet=false))]
-    fn py_new(url: Option<String>, testnet: bool) -> PyResult<Self> {
-        Ok(Self::new(url, testnet))
+    #[pyo3(signature = (url=None, testnet=false, account_id=None))]
+    fn py_new(url: Option<String>, testnet: bool, account_id: Option<String>) -> PyResult<Self> {
+        let account_id = account_id.map(|s| AccountId::from(s.as_str()));
+        Ok(Self::new(url, testnet, account_id))
     }
 
     #[getter]
@@ -50,15 +50,13 @@ impl HyperliquidWebSocketClient {
     }
 
     #[pyo3(name = "is_active")]
-    fn py_is_active<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(client.is_active().await) })
+    fn py_is_active(&self) -> bool {
+        self.is_active()
     }
 
     #[pyo3(name = "is_closed")]
-    fn py_is_closed<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(client.is_closed().await) })
+    fn py_is_closed(&self) -> bool {
+        !self.is_active()
     }
 
     #[pyo3(name = "connect")]
@@ -70,13 +68,13 @@ impl HyperliquidWebSocketClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         for inst in instruments {
             let inst_any = pyobject_to_instrument_any(py, inst)?;
-            self.add_instrument(inst_any);
+            self.cache_instrument(inst_any);
         }
 
-        let client = self.clone();
+        let mut client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.ensure_connected().await.map_err(to_pyruntime_err)?;
+            client.connect().await.map_err(to_pyruntime_err)?;
 
             tokio::spawn(async move {
                 let clock = get_atomic_clock_realtime();
@@ -89,7 +87,7 @@ impl HyperliquidWebSocketClient {
                             tracing::debug!("Received WebSocket message: {:?}", msg);
 
                             match msg {
-                                HyperliquidWsMessage::Trades { data } => {
+                                NautilusWsMessage::Data(HyperliquidWsMessage::Trades { data }) => {
                                     for trade in data {
                                         if let Some(instrument) =
                                             client.get_instrument_by_symbol(&trade.coin)
@@ -128,7 +126,7 @@ impl HyperliquidWebSocketClient {
                                         }
                                     }
                                 }
-                                HyperliquidWsMessage::L2Book { data } => {
+                                NautilusWsMessage::Data(HyperliquidWsMessage::L2Book { data }) => {
                                     if let Some(instrument) =
                                         client.get_instrument_by_symbol(&data.coin)
                                     {
@@ -170,7 +168,7 @@ impl HyperliquidWebSocketClient {
                                         );
                                     }
                                 }
-                                HyperliquidWsMessage::Bbo { data } => {
+                                NautilusWsMessage::Data(HyperliquidWsMessage::Bbo { data }) => {
                                     if let Some(instrument) =
                                         client.get_instrument_by_symbol(&data.coin)
                                     {
@@ -201,7 +199,7 @@ impl HyperliquidWebSocketClient {
                                         );
                                     }
                                 }
-                                HyperliquidWsMessage::Candle { data } => {
+                                NautilusWsMessage::Data(HyperliquidWsMessage::Candle { data }) => {
                                     if let Some(instrument) =
                                         client.get_instrument_by_symbol(&data.s)
                                     {
@@ -251,113 +249,65 @@ impl HyperliquidWebSocketClient {
                                         );
                                     }
                                 }
-                                HyperliquidWsMessage::OrderUpdates { data } => {
-                                    for order_update in data {
-                                        if let Some(instrument) = client
-                                            .get_instrument_by_symbol(&order_update.order.coin)
-                                        {
-                                            let ts_init = clock.get_time_ns();
-                                            let account_id = AccountId::new("HYPERLIQUID-001");
-
-                                            match parse_ws_order_status_report(
-                                                &order_update,
-                                                &instrument,
-                                                account_id,
-                                                ts_init,
-                                            ) {
-                                                Ok(report) => {
-                                                    tracing::info!(
-                                                        "Parsed order status report: order_id={}, status={:?}",
-                                                        report.venue_order_id,
-                                                        report.order_status
+                                NautilusWsMessage::ExecutionReports(reports) => {
+                                    Python::attach(|py| {
+                                        for report in reports {
+                                            match report {
+                                                ExecutionReport::Order(order_report) => {
+                                                    tracing::debug!(
+                                                        "Forwarding order status report: order_id={}, status={:?}",
+                                                        order_report.venue_order_id,
+                                                        order_report.order_status
                                                     );
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "Error parsing order update: {}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        } else {
-                                            tracing::warn!(
-                                                "No instrument found for symbol: {}",
-                                                order_update.order.coin
-                                            );
-                                        }
-                                    }
-                                }
-                                HyperliquidWsMessage::UserEvents { data } => {
-                                    let account_id = AccountId::new("HYPERLIQUID-001");
-                                    let ts_init = clock.get_time_ns();
-
-                                    match data {
-                                        WsUserEventData::Fills { fills } => {
-                                            for fill in fills {
-                                                if let Some(instrument) =
-                                                    client.get_instrument_by_symbol(&fill.coin)
-                                                {
-                                                    match parse_ws_fill_report(
-                                                        &fill,
-                                                        &instrument,
-                                                        account_id,
-                                                        ts_init,
-                                                    ) {
-                                                        Ok(report) => {
-                                                            tracing::info!(
-                                                                "Parsed fill report: trade_id={}, side={:?}, qty={}, price={}",
-                                                                report.trade_id,
-                                                                report.order_side,
-                                                                report.last_qty,
-                                                                report.last_px
-                                                            );
+                                                    match Py::new(py, order_report) {
+                                                        Ok(py_obj) => {
+                                                            if let Err(e) =
+                                                                callback.bind(py).call1((py_obj,))
+                                                            {
+                                                                tracing::error!(
+                                                                    "Error calling Python callback: {}",
+                                                                    e
+                                                                );
+                                                            }
                                                         }
                                                         Err(e) => {
                                                             tracing::error!(
-                                                                "Error parsing fill: {}",
+                                                                "Error converting OrderStatusReport to Python: {}",
                                                                 e
                                                             );
                                                         }
                                                     }
-                                                } else {
-                                                    tracing::warn!(
-                                                        "No instrument found for symbol: {}",
-                                                        fill.coin
+                                                }
+                                                ExecutionReport::Fill(fill_report) => {
+                                                    tracing::debug!(
+                                                        "Forwarding fill report: trade_id={}, side={:?}, qty={}, price={}",
+                                                        fill_report.trade_id,
+                                                        fill_report.order_side,
+                                                        fill_report.last_qty,
+                                                        fill_report.last_px
                                                     );
+                                                    match Py::new(py, fill_report) {
+                                                        Ok(py_obj) => {
+                                                            if let Err(e) =
+                                                                callback.bind(py).call1((py_obj,))
+                                                            {
+                                                                tracing::error!(
+                                                                    "Error calling Python callback: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::error!(
+                                                                "Error converting FillReport to Python: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
-                                        WsUserEventData::Funding { funding } => {
-                                            tracing::debug!(
-                                                "Received funding update: {:?}",
-                                                funding
-                                            );
-                                        }
-                                        WsUserEventData::Liquidation { liquidation } => {
-                                            tracing::warn!(
-                                                "Received liquidation event: {:?}",
-                                                liquidation
-                                            );
-                                        }
-                                        WsUserEventData::NonUserCancel { non_user_cancel } => {
-                                            tracing::info!(
-                                                "Received non-user cancel events: {:?}",
-                                                non_user_cancel
-                                            );
-                                        }
-                                        WsUserEventData::TriggerActivated { trigger_activated } => {
-                                            tracing::debug!(
-                                                "Trigger order activated: {:?}",
-                                                trigger_activated
-                                            );
-                                        }
-                                        WsUserEventData::TriggerTriggered { trigger_triggered } => {
-                                            tracing::debug!(
-                                                "Trigger order triggered: {:?}",
-                                                trigger_triggered
-                                            );
-                                        }
-                                    }
+                                    });
                                 }
                                 _ => {
                                     tracing::debug!("Unhandled message type: {:?}", msg);
@@ -387,7 +337,7 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let start = std::time::Instant::now();
             loop {
-                if client.is_active().await {
+                if client.is_active() {
                     return Ok(());
                 }
 
@@ -405,7 +355,7 @@ impl HyperliquidWebSocketClient {
 
     #[pyo3(name = "close")]
     fn py_close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
+        let mut client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             if let Err(e) = client.disconnect().await {
@@ -422,7 +372,7 @@ impl HyperliquidWebSocketClient {
         instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
-        let coin = Ustr::from(instrument_id.symbol.as_str());
+        let coin = instrument_id.symbol.inner();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
@@ -440,7 +390,7 @@ impl HyperliquidWebSocketClient {
         instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
-        let coin = Ustr::from(instrument_id.symbol.as_str());
+        let coin = instrument_id.symbol.inner();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
@@ -552,15 +502,7 @@ impl HyperliquidWebSocketClient {
         instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
-        let coin_str = instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid instrument symbol")
-            })?;
-        let coin = Ustr::from(coin_str);
+        let coin = instrument_id.symbol.inner();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client.subscribe_bbo(coin).await.map_err(to_pyruntime_err)?;
@@ -575,15 +517,7 @@ impl HyperliquidWebSocketClient {
         instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
-        let coin_str = instrument_id
-            .symbol
-            .as_str()
-            .split('-')
-            .next()
-            .ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid instrument symbol")
-            })?;
-        let coin = Ustr::from(coin_str);
+        let coin = instrument_id.symbol.inner();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
@@ -604,7 +538,7 @@ impl HyperliquidWebSocketClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .subscribe_bars(&bar_type)
+                .subscribe_bars(bar_type)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -621,7 +555,7 @@ impl HyperliquidWebSocketClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .unsubscribe_bars(&bar_type)
+                .unsubscribe_bars(bar_type)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

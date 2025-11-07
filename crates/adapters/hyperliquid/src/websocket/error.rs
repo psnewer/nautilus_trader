@@ -32,4 +32,10 @@ pub enum HyperliquidWsError {
 
     #[error("Channel send failed: {0}")]
     ChannelSend(String),
+
+    #[error("Client error: {0}")]
+    ClientError(String),
+
+    #[error("Tungstenite error: {0}")]
+    TungsteniteError(String),
 }

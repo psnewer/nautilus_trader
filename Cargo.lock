@@ -5298,6 +5298,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "anyhow",
+ "arc-swap",
  "async-stream",
  "async-trait",
  "aws-lc-rs",
