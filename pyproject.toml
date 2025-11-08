@@ -101,7 +101,7 @@ dev = [
   "setuptools>=75",
   "mypy==1.18.2,<2.0.0", # Pinned to 1.18.2 (keep in line with pre-commit)
   "pandas-stubs>=2.3.2,<3.0.0",
-  "pre-commit>=4.3.0,<5.0.0",
+  "pre-commit>=4.4.0,<5.0.0",
   "requests>=2.32.5,<3.0.0",
   "ruff==0.14.4", # Pinned to 0.14.4 (keep in line with pre-commit)
   "types-pytz>=2025.2,<2026.0",
@@ -110,7 +110,7 @@ dev = [
 ]
 test = [
   "aiohttp==3.12.14,<4.0.0", # Pinned to 3.12.14 (fixes GHSA-9548-qrrj-x5pj)
-  "coverage>=7.11.0,<8.0.0",
+  "coverage>=7.11.2,<8.0.0",
   "pytest>=7.4.4,<8.0.0", # Intentionally held at 7.x
   "pytest-aiohttp>=1.1.0,<2.0.0",
   "pytest-asyncio==0.23.8", # Pinned to 0.23.8 for stability
@@ -258,7 +258,7 @@ disallow_incomplete_defs = true
 explicit_package_bases = true
 ignore_missing_imports = true
 namespace_packages = true
-no_strict_optional = false
+strict_optional = true
 warn_no_return = true
 warn_unused_configs = true
 warn_unused_ignores = true
@@ -266,7 +266,7 @@ mypy_path = ["."]
 exclude = "(^python/examples/|^examples/)"
 
 [[tool.mypy.overrides]]
-no_strict_optional = true
+strict_optional = false
 module = [
   "examples/*",
   "nautilus_trader/adapters/betfair/*",

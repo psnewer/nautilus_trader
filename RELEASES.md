@@ -10,6 +10,7 @@ This release adds support for Python 3.14 with the following limitations:
 ### Enhancements
 - Added support for Python 3.14
 - Added initial backtest visualization tearsheets with plotly
+- Added price protection support for market orders (#3065), thanks @Antifrajz
 - Added `create_bars_with_fills` to Tearsheet (#3137), thanks @faysou
 - Added `proxy_url` support for HTTP clients
 - Added `CAGR` portfolio statistic
@@ -47,6 +48,7 @@ TBD
 - Fixed spawned order client_id caching in `ExecAlgorithm` (#3122), thanks for reporting @kirill-gr1
 - Fixed parse_dates parameter in CSV loaders (#3132), thanks @maomao9-0
 - Fixed `GreeksCalculator` handling of missing price data (#3116), thanks for reporting @q351941406
+- Fixed active liquidity calculation Pool profiler simulation (#3165), thanks @filipmacek
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
@@ -61,9 +63,12 @@ TBD
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added initial dYdX crate (#3138), thanks @nicolad
 - Added initial dYdX WebSocket in Rust (#3158), thanks @nicolad
+- Added initial DydxDataClient in Rust (#3162), thanks @nicolad
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
+- Refactored processing of historical data (#3038), thanks @faysou
+- Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
