@@ -185,7 +185,10 @@ select = [
   # "I",  # Disabled - using isort instead
   "RSE",
   "TID",
-  # "SIM",
+  # "SIM",  # Partially enabled below
+  "SIM105", # Use contextlib.suppress() instead of try-except-pass
+  "SIM117", # Use combined with statement
+  "SIM118", # Remove redundant .keys() calls
   # "ARG",
   # "ERA",
   "PD",

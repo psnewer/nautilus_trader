@@ -539,7 +539,7 @@ def test_adjust_fills_incomplete_lifecycle_adds_synthetic_fill(ethusdt_instrumen
     assert venue_order_id in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
+    synthetic_venue_order_ids = [vid for vid in result if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -839,7 +839,7 @@ def test_adjust_fills_oldest_lifecycle_incomplete_adds_synthetic(ethusdt_instrum
     assert VenueOrderId("ORDER-002") in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
+    synthetic_venue_order_ids = [vid for vid in result if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -934,7 +934,7 @@ def test_adjust_fills_short_position(ethusdt_instrument):
     assert venue_order_id in result  # Original order still present
 
     # Find the synthetic venue_order_id
-    synthetic_venue_order_ids = [vid for vid in result.keys() if str(vid).startswith("S-")]
+    synthetic_venue_order_ids = [vid for vid in result if str(vid).startswith("S-")]
     assert len(synthetic_venue_order_ids) == 1
     synthetic_venue_order_id = synthetic_venue_order_ids[0]
 
@@ -1316,7 +1316,7 @@ def test_adjust_fills_multi_instrument_preserves_all_fills(eurusd_instrument, et
     # Simulate the execution engine loop that processes multiple instruments
     final_fills = dict(mass_status._fill_reports)
 
-    for instrument_id in mass_status.position_reports.keys():
+    for instrument_id in mass_status.position_reports:
         instrument = (
             eurusd_instrument if instrument_id == eurusd_instrument.id else ethusdt_instrument
         )

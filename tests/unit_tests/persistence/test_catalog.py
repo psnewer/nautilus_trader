@@ -730,17 +730,19 @@ class TestConsolidateDataByPeriod:
         request_end = pd.Timestamp("1970-01-01 00:00:00.000004", tz="UTC")  # 4000 ns
 
         # Mock the filesystem exists check to return False (no existing target files)
-        with patch.object(self.catalog.fs, "exists", return_value=False):
-            with patch.object(self.catalog, "_make_path", return_value="/test/path"):
-                queries = self.catalog._prepare_consolidation_queries(
-                    intervals=intervals,
-                    period=period,
-                    start=request_start,
-                    end=request_end,
-                    ensure_contiguous_files=False,
-                    data_cls=QuoteTick,
-                    identifier="EURUSD.SIM",
-                )
+        with (
+            patch.object(self.catalog.fs, "exists", return_value=False),
+            patch.object(self.catalog, "_make_path", return_value="/test/path"),
+        ):
+            queries = self.catalog._prepare_consolidation_queries(
+                intervals=intervals,
+                period=period,
+                start=request_start,
+                end=request_end,
+                ensure_contiguous_files=False,
+                data_cls=QuoteTick,
+                identifier="EURUSD.SIM",
+            )
 
         # Should have 3 queries: split before, split after, and consolidation
         assert len(queries) == 3

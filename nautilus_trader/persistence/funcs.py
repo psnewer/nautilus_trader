@@ -62,7 +62,7 @@ def filename_to_class(filename: str) -> type | None:
     if filename in builtin_filename_to_class:
         return builtin_filename_to_class[filename]
 
-    for data_cls in _ARROW_ENCODERS.keys():
+    for data_cls in _ARROW_ENCODERS:
         if class_to_filename(data_cls) == filename:
             return data_cls
 

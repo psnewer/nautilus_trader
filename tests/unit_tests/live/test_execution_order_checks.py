@@ -21,6 +21,7 @@ checks during live trading.
 """
 
 import asyncio
+import contextlib
 from decimal import Decimal
 
 import pytest
@@ -568,10 +569,8 @@ async def test_open_check_periodic_execution(exec_engine_open_check):
     task = asyncio.create_task(exec_engine._continuous_reconciliation_loop())
 
     # Wait for task to complete or timeout
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        pass
 
     # Assert
     assert check_count >= 2
@@ -857,10 +856,8 @@ async def test_inflight_check_periodic_execution(exec_engine_inflight_check):
     task = asyncio.create_task(exec_engine._continuous_reconciliation_loop())
 
     # Wait for task to complete or timeout
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        pass
 
     # Assert
     assert check_count >= 2
@@ -893,10 +890,8 @@ async def test_inflight_check_handles_exceptions(exec_engine_inflight_check):
     task = asyncio.create_task(exec_engine._continuous_reconciliation_loop())
 
     # Wait for task to complete or timeout
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        pass
 
     # Assert
     assert check_count >= 2
@@ -1284,10 +1279,8 @@ async def test_reconciliation_loop_runs_both_checks(
     task = asyncio.create_task(exec_engine._continuous_reconciliation_loop())
 
     # Wait for task to complete or timeout
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        pass
 
     # Assert
     # Problematic checks should run more frequently (50ms interval)

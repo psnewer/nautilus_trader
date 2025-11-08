@@ -28,25 +28,24 @@ async def run():
     WS_REPLAY_URL = "ws://localhost:8001/ws-replay"
     URL = f"{WS_REPLAY_URL}?exchange=bitmex&from=2019-10-01&to=2019-10-02"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(URL) as websocket:
+    async with aiohttp.ClientSession() as session, session.ws_connect(URL) as websocket:
 
-            await websocket.send_str(
-                json.dumps(
-                    {
-                        "op": "subscribe",
-                        "args": [
-                            "trade:XBTUSD",
-                            "trade:ETHUSD",
-                            "orderBookL2:XBTUSD",
-                            "orderBookL2:ETHUSD",
-                        ],
-                    },
-                ),
-            )
+        await websocket.send_str(
+            json.dumps(
+                {
+                    "op": "subscribe",
+                    "args": [
+                        "trade:XBTUSD",
+                        "trade:ETHUSD",
+                        "orderBookL2:XBTUSD",
+                        "orderBookL2:ETHUSD",
+                    ],
+                },
+            ),
+        )
 
-            async for msg in websocket:
-                print(msg.data)
+        async for msg in websocket:
+            print(msg.data)
 
 
 if __name__ == "__main__":

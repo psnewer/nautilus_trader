@@ -1835,7 +1835,7 @@ class LiveExecutionEngine(ExecutionEngine):
         final_fills = dict(mass_status._fill_reports)
 
         reconciliation_instruments: list[Instrument] = []
-        for instrument_id in mass_status.position_reports.keys():
+        for instrument_id in mass_status.position_reports:
             # Respect reconciliation_instrument_ids filter
             if not self._consider_for_reconciliation(instrument_id):
                 self._log.debug(
