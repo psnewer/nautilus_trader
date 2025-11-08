@@ -219,8 +219,8 @@ impl BitmexExecutionClient {
 
         for instrument in &instruments {
             self.http_client.cache_instrument(instrument.clone());
-            self._submitter.add_instrument(instrument.clone());
-            self._canceller.add_instrument(instrument.clone());
+            self._submitter.cache_instrument(instrument.clone());
+            self._canceller.cache_instrument(instrument.clone());
         }
 
         self.ws_client.cache_instruments(instruments);

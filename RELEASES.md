@@ -68,6 +68,7 @@ TBD
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
+- Optimized BitMEX submit and cancel broadcasters by removing unnecessary lock on internal transport clients
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
