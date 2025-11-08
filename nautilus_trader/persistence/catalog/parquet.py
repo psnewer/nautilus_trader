@@ -541,14 +541,16 @@ class ParquetDataCatalog(BaseDataCatalog):
             for j in range(row_group_metadata.num_columns):
                 col_metadata = row_group_metadata.column(j)
 
-                if col_metadata.path_in_schema == column_name:
-                    if col_metadata.statistics is not None:
-                        min_value = col_metadata.statistics.min
-                        max_value = col_metadata.statistics.max
+                if (
+                    col_metadata.path_in_schema == column_name
+                    and col_metadata.statistics is not None
+                ):
+                    min_value = col_metadata.statistics.min
+                    max_value = col_metadata.statistics.max
 
-                        if overall_min_value is None or min_value < overall_min_value:
-                            overall_min_value = min_value
-                        if overall_max_value is None or max_value > overall_max_value:
+                    if overall_min_value is None or min_value < overall_min_value:
+                        overall_min_value = min_value
+                    if overall_max_value is None or max_value > overall_max_value:
                             overall_max_value = max_value
 
         if overall_min_value is None or overall_max_value is None:

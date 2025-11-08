@@ -356,15 +356,18 @@ class InteractiveBrokersClientOrderMixin(BaseMixin):
         # Check if this is for a get_executions request
         execution_request_name = f"Executions-{execution.acctNumber}"
 
-        if request := self._requests.get(name=execution_request_name):
-            if request.req_id == req_id and cache.get("commission_report"):
-                # Add complete execution detail to request result
-                execution_detail = {
-                    "execution": cache["execution"],
-                    "contract": cache["contract"],
-                    "commission_report": cache["commission_report"],
-                }
-                request.result.append(execution_detail)
+        if (
+            (request := self._requests.get(name=execution_request_name))
+            and request.req_id == req_id
+            and cache.get("commission_report")
+        ):
+            # Add complete execution detail to request result
+            execution_detail = {
+                "execution": cache["execution"],
+                "contract": cache["contract"],
+                "commission_report": cache["commission_report"],
+            }
+            request.result.append(execution_detail)
                 # Don't remove from cache yet, wait for execDetailsEnd
 
         # Handle event-based response for live executions

@@ -569,14 +569,13 @@ class PolymarketDataClient(LiveMarketDataClient):
 
             last_quote = self._last_quotes.get(instrument.id)
 
-            if last_quote is not None:
-                if (
-                    quote.bid_price == last_quote.bid_price
-                    and quote.ask_price == last_quote.ask_price
-                    and quote.bid_size == last_quote.bid_size
-                    and quote.ask_size == last_quote.ask_size
-                ):
-                    return  # No top-of-book change
+            if last_quote is not None and (
+                quote.bid_price == last_quote.bid_price
+                and quote.ask_price == last_quote.ask_price
+                and quote.bid_size == last_quote.bid_size
+                and quote.ask_size == last_quote.ask_size
+            ):
+                return  # No top-of-book change
 
             self._last_quotes[instrument.id] = quote
             self._handle_data(quote)

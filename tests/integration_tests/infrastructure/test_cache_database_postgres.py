@@ -266,7 +266,7 @@ class TestCachePostgresAdapter:
         )
 
         # Assert
-        assert _AUDUSD_SIM == self.database.load_instrument(_AUDUSD_SIM.id)
+        assert self.database.load_instrument(_AUDUSD_SIM.id) == _AUDUSD_SIM
 
         # Update some fields, to check that add_instrument is idempotent
         aud_usd_currency_pair_updated = CurrencyPair(

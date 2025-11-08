@@ -249,7 +249,4 @@ class HyperliquidInstrumentProvider(InstrumentProvider):
 
         symbol_value = getattr(getattr(instrument, "symbol", None), "value", None)
         symbols = _normalize(filters.get("symbols"))
-        if symbols and (not symbol_value or symbol_value.upper() not in symbols):
-            return False
-
-        return True
+        return not (symbols and (not symbol_value or symbol_value.upper() not in symbols))

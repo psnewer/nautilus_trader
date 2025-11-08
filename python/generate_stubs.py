@@ -358,13 +358,11 @@ def main():
     print(f"Starting nautilus-trader v2 {args.action}...")
 
     try:
-        if args.action in ["stubs", "all"]:
-            if not generate_stubs():
-                return 1
+        if args.action in ["stubs", "all"] and not generate_stubs():
+            return 1
 
-        if args.action in ["build", "all"]:
-            if not build_extension():
-                return 1
+        if args.action in ["build", "all"] and not build_extension():
+            return 1
 
         print(f"{'Build' if args.action != 'stubs' else 'Stub generation'} completed successfully")
         return 0

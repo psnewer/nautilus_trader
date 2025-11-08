@@ -185,10 +185,16 @@ select = [
   # "I",  # Disabled - using isort instead
   "RSE",
   "TID",
-  # "SIM",  # Partially enabled below
-  "SIM105", # Use contextlib.suppress() instead of try-except-pass
-  "SIM117", # Use combined with statement
-  "SIM118", # Remove redundant .keys() calls
+  # "SIM",  # Partially enabled below:
+  "SIM101", # - Multiple isinstance calls, merge into single call
+  "SIM102", # - Use single if statement instead of nested if statements
+  "SIM103", # - Return the condition directly
+  "SIM105", # - Use contextlib.suppress() instead of try-except-pass
+  "SIM109", # - Use tuple to compare value against multiple values
+  "SIM114", # - Combine if branches using logical or operator
+  "SIM117", # - Use combined with statement
+  "SIM118", # - Remove redundant .keys() calls
+  "SIM300", # - Yoda conditions
   # "ARG",
   # "ERA",
   "PD",

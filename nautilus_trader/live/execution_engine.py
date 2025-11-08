@@ -1411,9 +1411,11 @@ class LiveExecutionEngine(ExecutionEngine):
                 continue  # Already checked above
 
             # Apply instrument filter
-            if self.reconciliation_instrument_ids:
-                if instrument_id not in self.reconciliation_instrument_ids:
-                    continue
+            if (
+                self.reconciliation_instrument_ids
+                and instrument_id not in self.reconciliation_instrument_ids
+            ):
+                continue
 
             # Venue has a position but we don't - this is a discrepancy
             if venue_report.signed_decimal_qty == 0:
@@ -1960,10 +1962,12 @@ class LiveExecutionEngine(ExecutionEngine):
 
             client_order_id = order_report.client_order_id
 
-            if client_order_id is not None:
-                if client_order_id in self.filtered_client_order_ids:
-                    self._log_skipping_reconciliation_on_client_order_id(order_report)
-                    continue
+            if (
+                client_order_id is not None
+                and client_order_id in self.filtered_client_order_ids
+            ):
+                self._log_skipping_reconciliation_on_client_order_id(order_report)
+                continue
 
             # Check for duplicate trade IDs
             for fill_report in trades:
@@ -2265,51 +2269,51 @@ class LiveExecutionEngine(ExecutionEngine):
 
             existing_fill = self._get_existing_fill_for_trade_id(order, report.trade_id)
 
-            if existing_fill:
-                if not self._fill_reports_equal(existing_fill, report):
-                    differences: list[str] = []
+            if existing_fill and not self._fill_reports_equal(existing_fill, report):
+                differences: list[str] = []
 
-                    # Last quantity
-                    if existing_fill.last_qty != report.last_qty:
-                        differences.append(f"qty: {existing_fill.last_qty} vs {report.last_qty}")
+                # Last quantity
+                if existing_fill.last_qty != report.last_qty:
+                    differences.append(f"qty: {existing_fill.last_qty} vs {report.last_qty}")
 
-                    # Last price
-                    if existing_fill.last_px != report.last_px:
-                        differences.append(f"px: {existing_fill.last_px} vs {report.last_px}")
+                # Last price
+                if existing_fill.last_px != report.last_px:
+                    differences.append(f"px: {existing_fill.last_px} vs {report.last_px}")
 
-                    # Commission
-                    if existing_fill.commission is None and report.commission is not None:
-                        differences.append(f"commission: None vs {report.commission}")
-                    elif existing_fill.commission is not None and report.commission is None:
-                        differences.append(f"commission: {existing_fill.commission} vs None")
-                    elif existing_fill.commission is not None and report.commission is not None:
-                        if existing_fill.commission.currency != report.commission.currency:
-                            differences.append(
-                                f"commission currency: {existing_fill.commission.currency} vs {report.commission.currency}",
-                            )
-                        elif existing_fill.commission != report.commission:
-                            differences.append(
-                                f"commission: {existing_fill.commission} vs {report.commission}",
-                            )
-
-                    # Liquidity side
-                    if existing_fill.liquidity_side != report.liquidity_side:
+                # Commission
+                if existing_fill.commission is None and report.commission is not None:
+                    differences.append(f"commission: None vs {report.commission}")
+                elif existing_fill.commission is not None and report.commission is None:
+                    differences.append(f"commission: {existing_fill.commission} vs None")
+                elif existing_fill.commission is not None and report.commission is not None:
+                    if existing_fill.commission.currency != report.commission.currency:
                         differences.append(
-                            f"liquidity: {existing_fill.liquidity_side} vs {report.liquidity_side}",
+                            f"commission currency: {existing_fill.commission.currency} vs {report.commission.currency}",
+                        )
+                    elif existing_fill.commission != report.commission:
+                        differences.append(
+                            f"commission: {existing_fill.commission} vs {report.commission}",
                         )
 
-                    # Timestamp
-                    if existing_fill.ts_event != report.ts_event:
-                        differences.append(
-                            f"ts_event: {existing_fill.ts_event} vs {report.ts_event}",
-                        )
-
-                    self._log.warning(
-                        f"Fill report data differs from existing data for trade_id {report.trade_id}, "
-                        f"differences: {', '.join(differences)}; retaining cached data for consistency",
+                # Liquidity side
+                if existing_fill.liquidity_side != report.liquidity_side:
+                    differences.append(
+                        f"liquidity: {existing_fill.liquidity_side} vs {report.liquidity_side}",
                     )
 
-            return True  # Fill already applied, continue with existing data
+                # Timestamp
+                if existing_fill.ts_event != report.ts_event:
+                    differences.append(
+                        f"ts_event: {existing_fill.ts_event} vs {report.ts_event}",
+                    )
+
+                self._log.warning(
+                    f"Fill report data differs from existing data for trade_id {report.trade_id}, "
+                    f"differences: {', '.join(differences)}; retaining cached data for consistency",
+                )
+
+            if existing_fill:
+                return True  # Fill already applied, continue with existing data
 
         # Check if fill would cause overfill
         potential_filled_qty = order.filled_qty + report.last_qty
@@ -3034,9 +3038,4 @@ class LiveExecutionEngine(ExecutionEngine):
         ):
             return True
 
-        if order.order_type in [OrderType.STOP_LIMIT, OrderType.TRAILING_STOP_LIMIT] and (
-            report.trigger_price != order.trigger_price or report.price != order.price
-        ):
-            return True
-
-        return False
+        return bool(order.order_type in [OrderType.STOP_LIMIT, OrderType.TRAILING_STOP_LIMIT] and (report.trigger_price != order.trigger_price or report.price != order.price))

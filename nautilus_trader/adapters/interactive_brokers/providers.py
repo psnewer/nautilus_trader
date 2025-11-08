@@ -348,12 +348,11 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
         # We try to quickly build the contract details if they are already present in an instrument
         if (
             instrument := self._client._cache.instrument(instrument_id)
-        ) and not force_instrument_update:
-            if instrument.info and instrument.info.get("contract"):
-                converted_contract_details = dict_to_contract_details(instrument.info)
-                processed_ids = self._process_contract_details([converted_contract_details], venue)
+        ) and not force_instrument_update and instrument.info and instrument.info.get("contract"):
+            converted_contract_details = dict_to_contract_details(instrument.info)
+            processed_ids = self._process_contract_details([converted_contract_details], venue)
 
-                return bool(processed_ids)  # Return True if any instruments were processed
+            return bool(processed_ids)  # Return True if any instruments were processed
 
         # VENUE_MEMBERS associates a MIC venue to several possible IB exchanges
         possible_exchanges = VENUE_MEMBERS.get(venue, [venue])

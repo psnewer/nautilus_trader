@@ -1009,16 +1009,19 @@ class OKXExecutionClient(LiveExecutionClient):
         # Validate quote quantity for spot margin market orders
         if order.order_type == OrderType.MARKET and order.side == OrderSide.BUY:
             instrument = self._cache.instrument(order.instrument_id)
-            if instrument and isinstance(instrument, CurrencyPair):
-                if self._config.use_spot_margin:
-                    # Spot margin market buy orders must use quote quantity
-                    if not order.is_quote_quantity:
-                        self._deny_market_order_quantity(
-                            order,
-                            "OKX spot margin MARKET BUY orders require quote-denominated quantities; "
-                            "resubmit with `quote_quantity=True`",
-                        )
-                        return
+            # Spot margin market buy orders must use quote quantity
+            if (
+                instrument
+                and isinstance(instrument, CurrencyPair)
+                and self._config.use_spot_margin
+                and not order.is_quote_quantity
+            ):
+                self._deny_market_order_quantity(
+                    order,
+                    "OKX spot margin MARKET BUY orders require quote-denominated quantities; "
+                    "resubmit with `quote_quantity=True`",
+                )
+                return
 
         # Check if this is a conditional order that needs to go via REST API
         is_conditional = order.order_type in (

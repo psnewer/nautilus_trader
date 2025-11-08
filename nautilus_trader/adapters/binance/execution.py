@@ -403,10 +403,13 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             # Check if graceful shutdown is configured
             if hasattr(self, "graceful_shutdown_on_exception"):
                 execution_engine = getattr(self, "_execution_engine", None)
-                if execution_engine and hasattr(execution_engine, "graceful_shutdown_on_exception"):
-                    if execution_engine.graceful_shutdown_on_exception:
-                        execution_engine.shutdown_system(f"Listen key recovery failed: {e}")
-                        return
+                if (
+                    execution_engine
+                    and hasattr(execution_engine, "graceful_shutdown_on_exception")
+                    and execution_engine.graceful_shutdown_on_exception
+                ):
+                    execution_engine.shutdown_system(f"Listen key recovery failed: {e}")
+                    return
 
             self._log.error(
                 "Terminating process to prevent operation with invalid authentication",
@@ -940,24 +943,16 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
                 return "UNSUPPORTED_QUOTE_QUANTITY"
 
         # Stop limit order validations
-        elif isinstance(order, StopLimitOrder):
-            if not self._binance_account_type.is_spot_or_margin:
-                if order.trigger_type not in (
+        elif isinstance(order, (StopLimitOrder, StopMarketOrder)):
+            if (
+                not self._binance_account_type.is_spot_or_margin
+                and order.trigger_type not in (
                     TriggerType.DEFAULT,
                     TriggerType.LAST_PRICE,
                     TriggerType.MARK_PRICE,
-                ):
-                    return f"INVALID_TRIGGER_TYPE: {trigger_type_to_str(order.trigger_type)}"
-
-        # Stop market order validations
-        elif isinstance(order, StopMarketOrder):
-            if not self._binance_account_type.is_spot_or_margin:
-                if order.trigger_type not in (
-                    TriggerType.DEFAULT,
-                    TriggerType.LAST_PRICE,
-                    TriggerType.MARK_PRICE,
-                ):
-                    return f"INVALID_TRIGGER_TYPE: {trigger_type_to_str(order.trigger_type)}"
+                )
+            ):
+                return f"INVALID_TRIGGER_TYPE: {trigger_type_to_str(order.trigger_type)}"
 
         # Trailing stop market order validations
         elif isinstance(order, TrailingStopMarketOrder):
@@ -1274,13 +1269,15 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
                     symbol=command.instrument_id.symbol.value,
                 )
                 if not retry_manager.result:
-                    if retry_manager.message is not None:
-                        if "Unknown order sent" in retry_manager.message:
-                            self._log.info(
-                                "No open orders to cancel according to Binance",
-                                LogColor.GREEN,
-                            )
-                            return
+                    if (
+                        retry_manager.message is not None
+                        and "Unknown order sent" in retry_manager.message
+                    ):
+                        self._log.info(
+                            "No open orders to cancel according to Binance",
+                            LogColor.GREEN,
+                        )
+                        return
                     for order in open_orders_strategy:
                         if order.is_closed:
                             continue
