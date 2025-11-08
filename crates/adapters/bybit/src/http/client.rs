@@ -1713,7 +1713,14 @@ impl BybitHttpClient {
             .iter()
             .zip(client_order_ids.iter().zip(venue_order_ids.iter()))
         {
-            let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
+            let Ok(instrument) = self.instrument_from_cache(&instrument_id.symbol) else {
+                tracing::debug!(
+                    symbol = %instrument_id.symbol,
+                    "Skipping cancelled order report for instrument not in cache"
+                );
+                continue;
+            };
+
             let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
             let mut query_params = BybitOpenOrdersParamsBuilder::default();
@@ -2480,6 +2487,8 @@ impl BybitHttpClient {
 
     /// Request multiple order status reports.
     ///
+    /// Orders for instruments not currently loaded in cache will be skipped.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -2712,11 +2721,21 @@ impl BybitHttpClient {
                 if !order.symbol.is_empty() {
                     let symbol_with_product =
                         Symbol::from_ustr_unchecked(make_bybit_symbol(order.symbol, product_type));
-                    if let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
-                        && let Ok(report) =
-                            parse_order_status_report(&order, &instrument, account_id, ts_init)
-                    {
-                        reports.push(report);
+
+                    let Ok(instrument) = self.instrument_from_cache(&symbol_with_product) else {
+                        tracing::debug!(
+                            symbol = %order.symbol,
+                            full_symbol = %symbol_with_product,
+                            "Skipping order report for instrument not in cache"
+                        );
+                        continue;
+                    };
+
+                    match parse_order_status_report(&order, &instrument, account_id, ts_init) {
+                        Ok(report) => reports.push(report),
+                        Err(e) => {
+                            tracing::error!("Failed to parse order status report: {e}");
+                        }
                     }
                 }
             }
@@ -2727,13 +2746,11 @@ impl BybitHttpClient {
 
     /// Fetches execution history (fills) for the account and returns a list of [`FillReport`]s.
     ///
+    /// Executions for instruments not currently loaded in cache will be skipped.
+    ///
     /// # Errors
     ///
-    /// This function returns an error if:
-    /// - Required instruments are not cached.
-    /// - The instrument is not found in cache.
-    /// - The request fails.
-    /// - Parsing fails.
+    /// This function returns an error if the request fails.
     ///
     /// # References
     ///
@@ -2808,10 +2825,21 @@ impl BybitHttpClient {
             // Bybit returns raw symbol (e.g. "ETHUSDT"), need to add product suffix for cache lookup
             let symbol_with_product =
                 Symbol::from_ustr_unchecked(make_bybit_symbol(execution.symbol, product_type));
-            let instrument = self.instrument_from_cache(&symbol_with_product)?;
 
-            if let Ok(report) = parse_fill_report(&execution, account_id, &instrument, ts_init) {
-                reports.push(report);
+            let Ok(instrument) = self.instrument_from_cache(&symbol_with_product) else {
+                tracing::debug!(
+                    symbol = %execution.symbol,
+                    full_symbol = %symbol_with_product,
+                    "Skipping fill report for instrument not in cache"
+                );
+                continue;
+            };
+
+            match parse_fill_report(&execution, account_id, &instrument, ts_init) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::error!("Failed to parse fill report: {e}");
+                }
             }
         }
 
@@ -2820,13 +2848,11 @@ impl BybitHttpClient {
 
     /// Fetches position information for the account and returns a list of [`PositionStatusReport`]s.
     ///
+    /// Positions for instruments not currently loaded in cache will be skipped.
+    ///
     /// # Errors
     ///
-    /// This function returns an error if:
-    /// - Required instruments are not cached.
-    /// - The instrument is not found in cache.
-    /// - The request fails.
-    /// - Parsing fails.
+    /// This function returns an error if the request fails.
     ///
     /// # References
     ///
@@ -2894,15 +2920,26 @@ impl BybitHttpClient {
                             product_type.suffix()
                         ));
 
-                        if let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
-                            && let Ok(report) = parse_position_status_report(
-                                &position,
-                                account_id,
-                                &instrument,
-                                ts_init,
-                            )
-                        {
-                            reports.push(report);
+                        let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
+                        else {
+                            tracing::debug!(
+                                symbol = %position.symbol,
+                                full_symbol = %symbol_with_product,
+                                "Skipping position report for instrument not in cache"
+                            );
+                            continue;
+                        };
+
+                        match parse_position_status_report(
+                            &position,
+                            account_id,
+                            &instrument,
+                            ts_init,
+                        ) {
+                            Ok(report) => reports.push(report),
+                            Err(e) => {
+                                tracing::error!("Failed to parse position status report: {e}");
+                            }
                         }
                     }
 
@@ -2939,15 +2976,21 @@ impl BybitHttpClient {
                         product_type.suffix()
                     ));
 
-                    if let Ok(instrument) = self.instrument_from_cache(&symbol_with_product)
-                        && let Ok(report) = parse_position_status_report(
-                            &position,
-                            account_id,
-                            &instrument,
-                            ts_init,
-                        )
+                    let Ok(instrument) = self.instrument_from_cache(&symbol_with_product) else {
+                        tracing::debug!(
+                            symbol = %position.symbol,
+                            full_symbol = %symbol_with_product,
+                            "Skipping position report for instrument not in cache"
+                        );
+                        continue;
+                    };
+
+                    match parse_position_status_report(&position, account_id, &instrument, ts_init)
                     {
-                        reports.push(report);
+                        Ok(report) => reports.push(report),
+                        Err(e) => {
+                            tracing::error!("Failed to parse position status report: {e}");
+                        }
                     }
                 }
 

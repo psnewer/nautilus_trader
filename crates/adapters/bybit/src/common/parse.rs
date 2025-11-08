@@ -725,8 +725,12 @@ pub fn parse_position_status_report(
         Some(Decimal::from_str(&position.avg_price)?)
     };
 
-    // Parse timestamps
-    let ts_last = parse_millis_timestamp(&position.updated_time, "position.updatedTime")?;
+    // Use ts_init if updatedTime is empty (initial/flat positions)
+    let ts_last = if position.updated_time.is_empty() {
+        ts_init
+    } else {
+        parse_millis_timestamp(&position.updated_time, "position.updatedTime")?
+    };
 
     Ok(PositionStatusReport::new(
         account_id,

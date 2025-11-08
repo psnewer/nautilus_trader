@@ -1813,7 +1813,13 @@ impl BitmexHttpClient {
                 continue;
             };
 
-            let instrument = self.instrument_from_cache(symbol)?;
+            let Ok(instrument) = self.instrument_from_cache(symbol) else {
+                tracing::debug!(
+                    symbol = %symbol,
+                    "Skipping order report for instrument not in cache"
+                );
+                continue;
+            };
 
             match parse_order_status_report(&order, &instrument, ts_init) {
                 Ok(report) => reports.push(report),

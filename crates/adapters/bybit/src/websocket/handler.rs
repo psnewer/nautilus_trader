@@ -594,7 +594,7 @@ impl FeedHandler {
                         }
                     }
                 } else {
-                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Orderbook message");
+                    tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Orderbook message");
                 }
             }
             BybitWsMessage::Trade(msg) => {
@@ -610,7 +610,7 @@ impl FeedHandler {
                             Err(e) => tracing::error!("Error parsing trade tick: {e}"),
                         }
                     } else {
-                        tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Trade message");
+                        tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Trade message");
                     }
                 }
 
@@ -666,7 +666,7 @@ impl FeedHandler {
                         tracing::error!("Invalid step value: {}", step);
                     }
                 } else {
-                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Kline message");
+                    tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in Kline message");
                 }
             }
             BybitWsMessage::TickerLinear(msg) => {
@@ -725,7 +725,7 @@ impl FeedHandler {
                         }
                     }
                 } else {
-                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in TickerLinear message");
+                    tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in TickerLinear message");
                 }
             }
             BybitWsMessage::TickerOption(msg) => {
@@ -756,7 +756,7 @@ impl FeedHandler {
                         }
                     }
                 } else {
-                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in TickerOption message");
+                    tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in TickerOption message");
                 }
             }
             BybitWsMessage::AccountOrder(msg) => {
@@ -774,7 +774,7 @@ impl FeedHandler {
                                 Err(e) => tracing::error!("Error parsing order status report: {e}"),
                             }
                         } else {
-                            tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountOrder message");
+                            tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountOrder message");
                         }
                     }
                     if !reports.is_empty() {
@@ -795,7 +795,7 @@ impl FeedHandler {
                                 Err(e) => tracing::error!("Error parsing fill report: {e}"),
                             }
                         } else {
-                            tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountExecution message");
+                            tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountExecution message");
                         }
                     }
                     if !reports.is_empty() {
@@ -821,7 +821,7 @@ impl FeedHandler {
                                 }
                             }
                         } else {
-                            tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountPosition message");
+                            tracing::debug!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol in AccountPosition message");
                         }
                     }
                 }

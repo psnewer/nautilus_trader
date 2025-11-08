@@ -557,12 +557,23 @@ class BybitExecutionClient(LiveExecutionClient):
 
         try:
             pyo3_instrument_id = None
+            product_types_to_query = self._product_types
+
             if command.instrument_id:
                 pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
                     command.instrument_id.value,
                 )
 
-            for product_type in self._product_types:
+                try:
+                    product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+                        command.instrument_id.symbol.value,
+                    )
+                    product_types_to_query = [product_type]
+                except ValueError:
+                    # Symbol lacks suffix, fall back to querying all configured types
+                    pass
+
+            for product_type in product_types_to_query:
                 response = await self._http_client.request_position_status_reports(
                     account_id=self.pyo3_account_id,
                     product_type=product_type,

@@ -1009,38 +1009,11 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the instrument is not found in the cache.
-    fn get_instrument_from_cache(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
+    fn instrument_from_cache(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
         self.instruments_cache
             .get(&symbol)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| anyhow::anyhow!("Instrument {symbol} not in cache"))
-    }
-
-    async fn instrument_or_fetch(&self, symbol: Ustr) -> anyhow::Result<InstrumentAny> {
-        if let Ok(inst) = self.get_instrument_from_cache(symbol) {
-            return Ok(inst);
-        }
-
-        for group in [
-            OKXInstrumentType::Spot,
-            OKXInstrumentType::Margin,
-            OKXInstrumentType::Futures,
-            OKXInstrumentType::Swap,
-            OKXInstrumentType::Option,
-        ] {
-            if let Ok(instruments) = self.request_instruments(group, None).await {
-                for inst in instruments {
-                    self.instruments_cache
-                        .insert(inst.raw_symbol().inner(), inst);
-                }
-
-                if let Ok(inst) = self.get_instrument_from_cache(symbol) {
-                    return Ok(inst);
-                }
-            }
-        }
-
-        anyhow::bail!("Instrument {symbol} not in cache and fetch failed");
     }
 
     /// Cancel all pending HTTP requests.
@@ -1394,9 +1367,7 @@ impl OKXHttpClient {
         let raw = resp
             .first()
             .ok_or_else(|| anyhow::anyhow!("No mark price returned from OKX"))?;
-        let inst = self
-            .instrument_or_fetch(instrument_id.symbol.inner())
-            .await?;
+        let inst = self.instrument_from_cache(instrument_id.symbol.inner())?;
         let ts_init = self.generate_ts_init();
 
         let mark_price =
@@ -1427,9 +1398,7 @@ impl OKXHttpClient {
         let raw = resp
             .first()
             .ok_or_else(|| anyhow::anyhow!("No index price returned from OKX"))?;
-        let inst = self
-            .instrument_or_fetch(instrument_id.symbol.inner())
-            .await?;
+        let inst = self.instrument_from_cache(instrument_id.symbol.inner())?;
         let ts_init = self.generate_ts_init();
 
         let index_price =
@@ -1496,9 +1465,7 @@ impl OKXHttpClient {
         let end_ms = end.map(|e| e.timestamp_millis());
 
         let ts_init = self.generate_ts_init();
-        let inst = self
-            .instrument_or_fetch(instrument_id.symbol.inner())
-            .await?;
+        let inst = self.instrument_from_cache(instrument_id.symbol.inner())?;
 
         // Historical pagination walks backwards using trade IDs, OKX does not honour timestamps for
         // standalone `before` requests (type=2)
@@ -1919,7 +1886,7 @@ impl OKXHttpClient {
         let now_ms = now.timestamp_millis();
 
         let symbol = bar_type.instrument_id().symbol;
-        let inst = self.instrument_or_fetch(symbol.inner()).await?;
+        let inst = self.instrument_from_cache(symbol.inner())?;
 
         let mut out: Vec<Bar> = Vec::new();
         let mut pages = 0usize;
@@ -2439,9 +2406,7 @@ impl OKXHttpClient {
             let instrument_id = instrument_id.ok_or_else(|| {
                 anyhow::anyhow!("Instrument ID required if `instrument_type` not provided")
             })?;
-            let instrument = self
-                .instrument_or_fetch(instrument_id.symbol.inner())
-                .await?;
+            let instrument = self.instrument_from_cache(instrument_id.symbol.inner())?;
             okx_instrument_type(&instrument)?
         };
 
@@ -2523,16 +2488,28 @@ impl OKXHttpClient {
                 continue; // Reserved pending already reported
             }
 
-            let inst = self.instrument_or_fetch(order.inst_id).await?;
+            let Ok(inst) = self.instrument_from_cache(order.inst_id) else {
+                tracing::debug!(
+                    symbol = %order.inst_id,
+                    "Skipping order report for instrument not in cache"
+                );
+                continue;
+            };
 
-            let report = parse_order_status_report(
+            let report = match parse_order_status_report(
                 &order,
                 account_id,
                 inst.id(),
                 inst.price_precision(),
                 inst.size_precision(),
                 ts_init,
-            )?;
+            ) {
+                Ok(report) => report,
+                Err(e) => {
+                    tracing::error!("Failed to parse order status report: {e}");
+                    continue;
+                }
+            };
 
             if let Some(start_ns) = start_ns
                 && report.ts_last < start_ns
@@ -2577,18 +2554,14 @@ impl OKXHttpClient {
             let instrument_id = instrument_id.ok_or_else(|| {
                 anyhow::anyhow!("Instrument ID required if `instrument_type` not provided")
             })?;
-            let instrument = self
-                .instrument_or_fetch(instrument_id.symbol.inner())
-                .await?;
+            let instrument = self.instrument_from_cache(instrument_id.symbol.inner())?;
             okx_instrument_type(&instrument)?
         };
 
         params.inst_type(instrument_type);
 
         if let Some(instrument_id) = instrument_id {
-            let instrument = self
-                .instrument_or_fetch(instrument_id.symbol.inner())
-                .await?;
+            let instrument = self.instrument_from_cache(instrument_id.symbol.inner())?;
             let instrument_type = okx_instrument_type(&instrument)?;
             params.inst_type(instrument_type);
             params.inst_id(instrument_id.symbol.inner().to_string());
@@ -2627,16 +2600,28 @@ impl OKXHttpClient {
                 continue;
             }
 
-            let inst = self.instrument_or_fetch(detail.inst_id).await?;
+            let Ok(inst) = self.instrument_from_cache(detail.inst_id) else {
+                tracing::debug!(
+                    symbol = %detail.inst_id,
+                    "Skipping fill report for instrument not in cache"
+                );
+                continue;
+            };
 
-            let report = parse_fill_report(
+            let report = match parse_fill_report(
                 detail,
                 account_id,
                 inst.id(),
                 inst.price_precision(),
                 inst.size_precision(),
                 ts_init,
-            )?;
+            ) {
+                Ok(report) => report,
+                Err(e) => {
+                    tracing::error!("Failed to parse fill report: {e}");
+                    continue;
+                }
+            };
 
             if let Some(start_ns) = start_ns
                 && report.ts_event < start_ns
@@ -2696,9 +2681,7 @@ impl OKXHttpClient {
             let instrument_id = instrument_id.ok_or_else(|| {
                 anyhow::anyhow!("Instrument ID required if `instrument_type` not provided")
             })?;
-            let instrument = self
-                .instrument_or_fetch(instrument_id.symbol.inner())
-                .await?;
+            let instrument = self.instrument_from_cache(instrument_id.symbol.inner())?;
             okx_instrument_type(&instrument)?
         };
 
@@ -2720,16 +2703,27 @@ impl OKXHttpClient {
         let mut reports = Vec::with_capacity(resp.len());
 
         for position in resp {
-            let inst = self.instrument_or_fetch(position.inst_id).await?;
+            let Ok(inst) = self.instrument_from_cache(position.inst_id) else {
+                tracing::debug!(
+                    symbol = %position.inst_id,
+                    "Skipping position report for instrument not in cache"
+                );
+                continue;
+            };
 
-            let report = parse_position_status_report(
+            match parse_position_status_report(
                 position,
                 account_id,
                 inst.id(),
                 inst.size_precision(),
                 ts_init,
-            )?;
-            reports.push(report);
+            ) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::error!("Failed to parse position status report: {e}");
+                    continue;
+                }
+            };
         }
 
         Ok(reports)
@@ -2892,7 +2886,7 @@ impl OKXHttpClient {
         let inst_type = if let Some(inst_type) = instrument_type {
             inst_type
         } else if let Some(inst_id) = instrument_id {
-            let instrument = self.instrument_or_fetch(inst_id.symbol.inner()).await?;
+            let instrument = self.instrument_from_cache(inst_id.symbol.inner())?;
             let inst_type = okx_instrument_type(&instrument)?;
             instruments_cache.insert(inst_id.symbol.inner(), instrument);
             inst_type
@@ -3016,13 +3010,23 @@ impl OKXHttpClient {
             let instrument = if let Some(instrument) = instruments_cache.get(&order.inst_id) {
                 instrument.clone()
             } else {
-                let instrument = self.instrument_or_fetch(order.inst_id).await?;
+                let Ok(instrument) = self.instrument_from_cache(order.inst_id) else {
+                    tracing::debug!(
+                        symbol = %order.inst_id,
+                        "Skipping algo order report for instrument not in cache"
+                    );
+                    continue;
+                };
                 instruments_cache.insert(order.inst_id, instrument.clone());
                 instrument
             };
 
-            let report = parse_http_algo_order(order, account_id, &instrument, ts_init)?;
-            reports.push(report);
+            match parse_http_algo_order(order, account_id, &instrument, ts_init) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::error!("Failed to parse algo order report: {e}");
+                }
+            }
         }
 
         Ok(())
