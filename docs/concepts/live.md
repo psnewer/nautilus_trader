@@ -271,7 +271,7 @@ The following additional options provide further control over execution behavior
 
 | Setting                            | Default | Description                                                                                                |
 |------------------------------------|---------|------------------------------------------------------------------------------------------------------------|
-| `generate_missing_orders`          | True    | If `LIMIT` order events will be generated during reconciliation to align position discrepancies. These orders use the strategy ID `INTERNAL-DIFF` and calculate precise prices to achieve target average positions. |
+| `generate_missing_orders`          | True    | If `LIMIT` order events will be generated during reconciliation to align position discrepancies. These orders use strategy ID `EXTERNAL` with tag `RECONCILIATION`, ensuring proper position netting. |
 | `snapshot_orders`                  | False   | If order snapshots should be taken on order events.                                                        |
 | `snapshot_positions`               | False   | If position snapshots should be taken on position events.                                                  |
 | `snapshot_positions_interval_secs` | None    | The interval (seconds) between position snapshots when enabled.                                            |
@@ -413,7 +413,7 @@ reconciliation using the `external_order_claims` configuration parameter.
 This is useful in situations where, at system start, there is no cached state or it is desirable for
 a strategy to resume its operations and continue managing existing open orders for a specific instrument.
 
-Orders generated with strategy ID `INTERNAL-DIFF` during position reconciliation are internal to the engine and cannot be claimed via `external_order_claims`.
+Orders generated with strategy ID `EXTERNAL` and tag `RECONCILIATION` during position reconciliation are internal to the engine and cannot be claimed via `external_order_claims`.
 They exist solely to align position discrepancies and should not be managed by user strategies.
 
 For a full list of live trading options see the `LiveExecEngineConfig` [API Reference](../api_reference/config#class-liveexecengineconfig).
@@ -440,7 +440,7 @@ The system state is then reconciled with the reports, which represent external "
 - **Position Reconciliation**:
   - Ensure the net position per instrument matches the position reports returned from the venue using instrument precision handling.
   - If the position state resulting from order reconciliation does not match the external state, external order events will be generated to resolve discrepancies.
-  - When `generate_missing_orders` is enabled (default: True), orders are generated with strategy ID `INTERNAL-DIFF` to align position discrepancies discovered during reconciliation.
+  - When `generate_missing_orders` is enabled (default: True), orders are generated with strategy ID `EXTERNAL` and tag `RECONCILIATION` to align position discrepancies discovered during reconciliation.
   - A hierarchical price determination strategy ensures reconciliation can proceed even with limited data:
     1. **Calculated reconciliation price** (preferred): Uses the reconciliation price function to achieve target average positions.
     2. **Market mid-price**: Falls back to current bid-ask midpoint if reconciliation price cannot be calculated.
@@ -484,7 +484,7 @@ The scenarios below are split between startup reconciliation (mass status) and r
 | **Position quantity mismatch (short)** | Internal short position differs from external (e.g., internal: -100, external: -150).             | Generates SELL LIMIT order with calculated price when `generate_missing_orders=True`. |
 | **Position reduction**                 | External position smaller than internal (e.g., internal: 150 long, external: 100 long).           | Generates opposite side LIMIT order with calculated price to reduce position.             |
 | **Position side flip**                 | Internal position opposite of external (e.g., internal: 100 long, external: 50 short).            | Generates LIMIT order with calculated price to close internal and open external position. |
-| **INTERNAL-DIFF orders**               | Position reconciliation orders with strategy ID "INTERNAL-DIFF".                                  | Never filtered, regardless of `filter_unclaimed_external_orders`.                         |
+| **Internal reconciliation orders**     | Position reconciliation orders with strategy ID "EXTERNAL" and tag "RECONCILIATION".                    | Never filtered, regardless of `filter_unclaimed_external_orders` (filtered by tag check). |
 
 #### Runtime/continuous checks
 

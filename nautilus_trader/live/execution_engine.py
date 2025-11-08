@@ -2886,18 +2886,20 @@ class LiveExecutionEngine(ExecutionEngine):
         strategy_id = self.get_external_order_claim(report.instrument_id)
 
         if strategy_id is None:
+            # All unclaimed reconciliation uses EXTERNAL strategy ID
+            # Tags distinguish the source for filtering purposes
+            strategy_id = StrategyId("EXTERNAL")
             if is_external:
-                # Generating from external order
-                strategy_id = StrategyId("EXTERNAL")
-                tags = ["EXTERNAL"]
+                # Actual external order found on venue
+                tags = ["VENUE"]
             else:
-                # Generating from internal position diff alignment
-                strategy_id = StrategyId("INTERNAL-DIFF")
-                tags = ["INTERNAL"]
+                # Internal position diff alignment (synthetic fill)
+                tags = ["RECONCILIATION"]
         else:
             tags = None
 
-        if self.filter_unclaimed_external_orders and strategy_id.is_external():
+        # Filter unclaimed external orders (but not reconciliation fills)
+        if self.filter_unclaimed_external_orders and tags and "VENUE" in tags:
             self._filtered_external_orders_count += 1
 
             if self._filtered_external_orders_count == 1:
