@@ -500,7 +500,7 @@ mod tests {
         // Stale unsubscribe ACK arrives - should be ignored (pending_unsubscribe already cleared)
         state.confirm_unsubscribe("tickers.BTCUSDT");
         assert!(state.pending_unsubscribe_topics().is_empty());
-        assert_eq!(state.pending_subscribe_topics(), vec!["tickers.BTCUSDT"]); // CRITICAL: Must still be pending
+        assert_eq!(state.pending_subscribe_topics(), vec!["tickers.BTCUSDT"]); // Must still be pending
 
         // Subscribe ACK confirms successfully
         state.confirm_subscribe("tickers.BTCUSDT");
@@ -542,11 +542,11 @@ mod tests {
         assert!(state.pending_subscribe_topics().is_empty());
 
         // NOW the stale unsubscribe ACK arrives
-        // CRITICAL: This must be ignored because topic is no longer in pending_unsubscribe
+        // This must be ignored because topic is no longer in pending_unsubscribe
         state.confirm_unsubscribe("tickers.BTCUSDT");
 
         // Topic should STILL be confirmed (not removed by stale ACK)
-        assert_eq!(state.len(), 1); // CRITICAL: Must remain confirmed
+        assert_eq!(state.len(), 1); // Must remain confirmed
         assert!(state.pending_unsubscribe_topics().is_empty());
         assert!(state.pending_subscribe_topics().is_empty());
 

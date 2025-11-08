@@ -1953,7 +1953,7 @@ mod tests {
         // NOW the unsubscribe ACK arrives - should NOT clear pending_subscribe
         subscriptions.confirm_unsubscribe(topic);
         assert!(subscriptions.pending_unsubscribe_topics().is_empty());
-        assert_eq!(subscriptions.pending_subscribe_topics(), vec![topic]); // CRITICAL
+        assert_eq!(subscriptions.pending_subscribe_topics(), vec![topic]);
 
         // Subscribe ACK arrives
         subscriptions.confirm_subscribe(topic);

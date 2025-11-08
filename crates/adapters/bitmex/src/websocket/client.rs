@@ -1473,7 +1473,7 @@ mod tests {
         assert_eq!(
             client.subscriptions.pending_subscribe_topics(),
             vec![topic.clone()]
-        ); // CRITICAL
+        );
 
         // Subscribe ACK arrives
         client.subscriptions.confirm_subscribe(&topic);

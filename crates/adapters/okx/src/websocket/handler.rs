@@ -522,7 +522,7 @@ impl OKXWsFeedHandler {
                     if code == "0" {
                         self.auth_tracker.succeed();
 
-                        // CRITICAL: Must return immediately to deliver Authenticated message.
+                        // Must return immediately to deliver Authenticated message.
                         // Using push_back() + continue blocks the select! loop and prevents
                         // the spawn block from receiving this event, breaking reconnection flow.
                         return Some(NautilusWsMessage::Authenticated);

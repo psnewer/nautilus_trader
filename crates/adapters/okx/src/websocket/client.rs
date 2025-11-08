@@ -2982,7 +2982,7 @@ mod tests {
         assert_eq!(
             client.subscriptions_state.pending_subscribe_topics(),
             vec![topic]
-        ); // CRITICAL
+        );
 
         // Subscribe ACK arrives
         client.subscriptions_state.confirm_subscribe(topic);
