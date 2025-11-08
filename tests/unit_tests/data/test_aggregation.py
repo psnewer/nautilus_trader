@@ -3503,6 +3503,62 @@ class TestSpreadQuoteAggregator:
             len(self.handler) >= 0
         )  # May or may not generate quotes depending on underlying price availability
 
+    def test_greeks_calculator_handles_missing_price_for_futures(self):
+        """
+        Test that GreeksCalculator returns None gracefully when price data is not
+        available for non-option instruments (futures).
+
+        This is a regression test for issue #3116 where TypeError was raised when trying
+        to convert None to float.
+
+        """
+        # Arrange
+        from nautilus_trader.model.greeks import GreeksCalculator
+        from nautilus_trader.model.instruments import CryptoFuture
+
+        greeks_calculator = GreeksCalculator(
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Create a futures contract without adding price data
+        future = CryptoFuture(
+            instrument_id=InstrumentId(Symbol("BTCUSD-PERP"), Venue("BINANCE")),
+            raw_symbol=Symbol("BTCUSD-PERP"),
+            underlying=Currency.from_str("BTC"),
+            quote_currency=Currency.from_str("USDT"),
+            settlement_currency=Currency.from_str("USDT"),
+            is_inverse=False,
+            activation_ns=0,
+            expiration_ns=0,
+            price_precision=2,
+            size_precision=6,
+            price_increment=Price.from_str("0.01"),
+            size_increment=Quantity.from_str("0.000001"),
+            multiplier=Quantity.from_int(1),
+            lot_size=Quantity.from_str("0.000001"),
+            max_quantity=None,
+            min_quantity=None,
+            max_price=None,
+            min_price=None,
+            margin_init=Decimal("0.05"),
+            margin_maint=Decimal("0.03"),
+            maker_fee=Decimal("0.0002"),
+            taker_fee=Decimal("0.0004"),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(future)
+        # Note: Not adding any price data to cache
+
+        # Act
+        result = greeks_calculator.instrument_greeks(future.id)
+
+        # Assert
+        # Should return None instead of raising TypeError
+        assert result is None
+
     def test_spread_quote_with_ratio_spread(self):
         """
         Test spread quote generation with different ratios (e.g., 1x2 ratio spread).
