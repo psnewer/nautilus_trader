@@ -22,12 +22,14 @@ use std::sync::{
 
 use ahash::AHashMap;
 use dashmap::DashMap;
-use nautilus_core::time::get_atomic_clock_realtime;
+use nautilus_common::cache::quote::QuoteCache;
+use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::Data,
     enums::{OrderStatus, OrderType},
     identifiers::{AccountId, ClientOrderId},
     instruments::{Instrument, InstrumentAny},
+    types::Price,
 };
 use nautilus_network::{
     RECONNECTED,
@@ -38,7 +40,6 @@ use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
 use super::{
-    cache::QuoteCache,
     enums::{BitmexAction, BitmexWsAuthAction, BitmexWsOperation, BitmexWsTopic},
     error::BitmexWsError,
     messages::{
@@ -50,7 +51,7 @@ use super::{
         parse_trade_bin_msg_vec, parse_trade_msg_vec, parse_wallet_msg,
     },
 };
-use crate::common::enums::BitmexExecType;
+use crate::common::{enums::BitmexExecType, parse::parse_contracts_quantity};
 
 /// Commands sent from the outer client to the inner message handler.
 #[derive(Debug)]
@@ -330,12 +331,29 @@ impl FeedHandler {
                                 continue;
                             };
 
-                            if let Some(quote) =
-                                self.quote_cache.process(&msg, &instrument, ts_init)
-                            {
-                                NautilusWsMessage::Data(vec![Data::Quote(quote)])
-                            } else {
-                                continue;
+                            let instrument_id = instrument.id();
+                            let price_precision = instrument.price_precision();
+
+                            let bid_price = msg.bid_price.map(|p| Price::new(p, price_precision));
+                            let ask_price = msg.ask_price.map(|p| Price::new(p, price_precision));
+                            let bid_size = msg.bid_size.map(|s| parse_contracts_quantity(s, &instrument));
+                            let ask_size = msg.ask_size.map(|s| parse_contracts_quantity(s, &instrument));
+                            let ts_event = UnixNanos::from(msg.timestamp);
+
+                            match self.quote_cache.process(
+                                instrument_id,
+                                bid_price,
+                                ask_price,
+                                bid_size,
+                                ask_size,
+                                ts_event,
+                                ts_init,
+                            ) {
+                                Ok(quote) => NautilusWsMessage::Data(vec![Data::Quote(quote)]),
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Failed to process quote");
+                                    continue;
+                                }
                             }
                         }
                         BitmexTableMessage::Trade { data, .. } => {

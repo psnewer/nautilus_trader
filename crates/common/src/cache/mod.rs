@@ -19,6 +19,7 @@
 
 pub mod config;
 pub mod database;
+pub mod quote;
 
 mod index;
 

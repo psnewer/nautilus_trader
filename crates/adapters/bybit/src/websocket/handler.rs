@@ -26,6 +26,7 @@ use std::{
 
 use ahash::AHashMap;
 use dashmap::DashMap;
+use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{UUID4, nanos::UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::{BarSpecification, BarType, Data},
@@ -42,9 +43,11 @@ use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
 use super::{
-    cache,
+    enums::BybitWsOperation,
     error::BybitWsError,
-    messages::{BybitWebSocketError, BybitWsMessage, NautilusWsMessage},
+    messages::{
+        BybitWebSocketError, BybitWsHeader, BybitWsMessage, BybitWsRequest, NautilusWsMessage,
+    },
     parse::{
         parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
         parse_ticker_linear_funding, parse_ws_account_state, parse_ws_fill_report,
@@ -53,7 +56,10 @@ use super::{
     },
 };
 use crate::{
-    common::{enums::BybitProductType, parse::make_bybit_symbol},
+    common::{
+        enums::{BybitProductType, BybitWsOrderRequestOp},
+        parse::{make_bybit_symbol, parse_price_with_precision, parse_quantity_with_precision},
+    },
     websocket::messages::{
         BybitWsAmendOrderParams, BybitWsCancelOrderParams, BybitWsPlaceOrderParams,
     },
@@ -124,18 +130,14 @@ pub(super) struct FeedHandler {
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    #[allow(dead_code)]
     out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
-    #[allow(dead_code)]
     auth_tracker: AuthTracker,
-    #[allow(dead_code)]
     subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     account_id: Option<AccountId>,
     product_type: Option<BybitProductType>,
-    quote_cache: Arc<RwLock<cache::QuoteCache>>,
+    quote_cache: QuoteCache,
     funding_cache: FundingCache,
-    #[allow(dead_code)]
     retry_manager: RetryManager<BybitWsError>,
     pending_place_requests: DashMap<String, PlaceRequestData>,
     pending_cancel_requests: DashMap<String, CancelRequestData>,
@@ -155,7 +157,6 @@ impl FeedHandler {
         product_type: Option<BybitProductType>,
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
-        quote_cache: Arc<RwLock<cache::QuoteCache>>,
         funding_cache: FundingCache,
     ) -> Self {
         Self {
@@ -169,7 +170,7 @@ impl FeedHandler {
             instruments_cache: AHashMap::new(),
             account_id,
             product_type,
-            quote_cache,
+            quote_cache: QuoteCache::new(),
             funding_cache,
             retry_manager: create_websocket_retry_manager(),
             pending_place_requests: DashMap::new(),
@@ -285,9 +286,9 @@ impl FeedHandler {
                                 (trader_id, strategy_id, instrument_id),
                             );
 
-                            let request = super::messages::BybitWsRequest {
-                                op: crate::common::enums::BybitWsOrderRequestOp::Create,
-                                header: super::messages::BybitWsHeader::now(),
+                            let request = BybitWsRequest {
+                                op: BybitWsOrderRequestOp::Create,
+                                header: BybitWsHeader::now(),
                                 args: vec![params],
                             };
 
@@ -313,9 +314,9 @@ impl FeedHandler {
                                 (trader_id, strategy_id, instrument_id, venue_order_id),
                             );
 
-                            let request = super::messages::BybitWsRequest {
-                                op: crate::common::enums::BybitWsOrderRequestOp::Amend,
-                                header: super::messages::BybitWsHeader::now(),
+                            let request = BybitWsRequest {
+                                op: BybitWsOrderRequestOp::Amend,
+                                header: BybitWsHeader::now(),
                                 args: vec![params],
                             };
 
@@ -341,9 +342,9 @@ impl FeedHandler {
                                 (trader_id, strategy_id, instrument_id, venue_order_id),
                             );
 
-                            let request = super::messages::BybitWsRequest {
-                                op: crate::common::enums::BybitWsOrderRequestOp::Cancel,
-                                header: super::messages::BybitWsHeader::now(),
+                            let request = BybitWsRequest {
+                                op: BybitWsOrderRequestOp::Cancel,
+                                header: BybitWsHeader::now(),
                                 args: vec![params],
                             };
 
@@ -398,13 +399,14 @@ impl FeedHandler {
                     }
 
                     let ts_init = clock.get_time_ns();
+                    let instruments = self.instruments_cache.clone();
+                    let funding_cache = Arc::clone(&self.funding_cache);
                     let nautilus_messages = self.parse_to_nautilus_messages(
                         event,
-                        &self.instruments_cache,
+                        &instruments,
                         self.account_id,
                         self.product_type,
-                        &self.quote_cache,
-                        &self.funding_cache,
+                        &funding_cache,
                         ts_init,
                     )
                     .await;
@@ -554,12 +556,11 @@ impl FeedHandler {
 
     #[allow(clippy::too_many_arguments)]
     async fn parse_to_nautilus_messages(
-        &self,
+        &mut self,
         msg: BybitWsMessage,
         instruments: &AHashMap<Ustr, InstrumentAny>,
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
-        quote_cache: &Arc<RwLock<cache::QuoteCache>>,
         funding_cache: &FundingCache,
         ts_init: UnixNanos,
     ) -> Vec<NautilusWsMessage> {
@@ -582,12 +583,11 @@ impl FeedHandler {
                         && depth_str == "1"
                     {
                         let instrument_id = instrument.id();
-                        let mut cache_guard = quote_cache.write().await;
-                        let last_quote = cache_guard.last_quotes.get(&instrument_id);
+                        let last_quote = self.quote_cache.get(&instrument_id);
 
                         match parse_orderbook_quote(&msg, instrument, last_quote, ts_init) {
                             Ok(quote) => {
-                                cache_guard.last_quotes.insert(instrument_id, quote);
+                                self.quote_cache.insert(instrument_id, quote);
                                 result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
                             }
                             Err(e) => tracing::debug!("Skipping orderbook quote: {e}"),
@@ -677,20 +677,63 @@ impl FeedHandler {
                 if let Some(instrument) = instruments.get(&symbol) {
                     let instrument_id = instrument.id();
                     let ts_event = parse_millis_i64(msg.ts, "ticker.ts").unwrap_or(ts_init);
+                    let price_precision = instrument.price_precision();
+                    let size_precision = instrument.size_precision();
 
-                    match quote_cache.write().await.process_linear_ticker(
-                        &msg.data,
-                        instrument_id,
-                        instrument,
-                        ts_event,
-                        ts_init,
-                    ) {
-                        Ok(quote) => result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)])),
-                        Err(e) => {
+                    // Parse Bybit linear ticker fields, propagate errors
+                    let bid_price = msg
+                        .data
+                        .bid1_price
+                        .as_deref()
+                        .map(|s| parse_price_with_precision(s, price_precision, "bid1Price"))
+                        .transpose();
+                    let ask_price = msg
+                        .data
+                        .ask1_price
+                        .as_deref()
+                        .map(|s| parse_price_with_precision(s, price_precision, "ask1Price"))
+                        .transpose();
+                    let bid_size = msg
+                        .data
+                        .bid1_size
+                        .as_deref()
+                        .map(|s| parse_quantity_with_precision(s, size_precision, "bid1Size"))
+                        .transpose();
+                    let ask_size = msg
+                        .data
+                        .ask1_size
+                        .as_deref()
+                        .map(|s| parse_quantity_with_precision(s, size_precision, "ask1Size"))
+                        .transpose();
+
+                    match (bid_price, ask_price, bid_size, ask_size) {
+                        (Ok(bp), Ok(ap), Ok(bs), Ok(as_)) => {
+                            match self.quote_cache.process(
+                                instrument_id,
+                                bp,
+                                ap,
+                                bs,
+                                as_,
+                                ts_event,
+                                ts_init,
+                            ) {
+                                Ok(quote) => {
+                                    result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
+                                }
+                                Err(e) => {
+                                    let raw_data = serde_json::to_string(&msg.data)
+                                        .unwrap_or_else(|_| "<failed to serialize>".to_string());
+                                    tracing::debug!(
+                                        "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
                             let raw_data = serde_json::to_string(&msg.data)
                                 .unwrap_or_else(|_| "<failed to serialize>".to_string());
-                            tracing::debug!(
-                                "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                            tracing::warn!(
+                                "Failed to parse ticker fields, skipping update, raw_data: {raw_data}"
                             );
                         }
                     }
@@ -738,20 +781,59 @@ impl FeedHandler {
                 if let Some(instrument) = instruments.get(&symbol) {
                     let instrument_id = instrument.id();
                     let ts_event = parse_millis_i64(msg.ts, "ticker.ts").unwrap_or(ts_init);
+                    let price_precision = instrument.price_precision();
+                    let size_precision = instrument.size_precision();
 
-                    match quote_cache.write().await.process_option_ticker(
-                        &msg.data,
-                        instrument_id,
-                        instrument,
-                        ts_event,
-                        ts_init,
-                    ) {
-                        Ok(quote) => result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)])),
-                        Err(e) => {
+                    // Parse Bybit option ticker fields (always complete), propagate errors
+                    let bid_price = parse_price_with_precision(
+                        &msg.data.bid_price,
+                        price_precision,
+                        "bidPrice",
+                    );
+                    let ask_price = parse_price_with_precision(
+                        &msg.data.ask_price,
+                        price_precision,
+                        "askPrice",
+                    );
+                    let bid_size = parse_quantity_with_precision(
+                        &msg.data.bid_size,
+                        size_precision,
+                        "bidSize",
+                    );
+                    let ask_size = parse_quantity_with_precision(
+                        &msg.data.ask_size,
+                        size_precision,
+                        "askSize",
+                    );
+
+                    match (bid_price, ask_price, bid_size, ask_size) {
+                        (Ok(bp), Ok(ap), Ok(bs), Ok(as_)) => {
+                            match self.quote_cache.process(
+                                instrument_id,
+                                Some(bp),
+                                Some(ap),
+                                Some(bs),
+                                Some(as_),
+                                ts_event,
+                                ts_init,
+                            ) {
+                                Ok(quote) => {
+                                    result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
+                                }
+                                Err(e) => {
+                                    let raw_data = serde_json::to_string(&msg.data)
+                                        .unwrap_or_else(|_| "<failed to serialize>".to_string());
+                                    tracing::debug!(
+                                        "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
                             let raw_data = serde_json::to_string(&msg.data)
                                 .unwrap_or_else(|_| "<failed to serialize>".to_string());
-                            tracing::debug!(
-                                "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                            tracing::warn!(
+                                "Failed to parse ticker fields, skipping update, raw_data: {raw_data}"
                             );
                         }
                     }
@@ -929,6 +1011,7 @@ impl FeedHandler {
                     auth_response.success.unwrap_or(false) || (auth_response.ret_code == Some(0));
 
                 if is_success {
+                    self.auth_tracker.succeed();
                     tracing::info!("WebSocket authenticated");
                     result.push(NautilusWsMessage::Authenticated);
                 } else {
@@ -936,6 +1019,7 @@ impl FeedHandler {
                         .ret_msg
                         .as_deref()
                         .unwrap_or("Authentication rejected");
+                    self.auth_tracker.fail(error_msg);
                     tracing::error!(error = error_msg, "WebSocket authentication failed");
                     result.push(NautilusWsMessage::Error(BybitWebSocketError::from_message(
                         error_msg.to_string(),
@@ -946,12 +1030,13 @@ impl FeedHandler {
                 result.push(NautilusWsMessage::Error(err));
             }
             BybitWsMessage::Reconnected => {
+                self.quote_cache.clear();
                 result.push(NautilusWsMessage::Reconnected);
             }
             BybitWsMessage::Subscription(sub_msg) => {
                 let pending_topics = self.subscriptions.pending_subscribe_topics();
                 match sub_msg.op {
-                    super::enums::BybitWsOperation::Subscribe => {
+                    BybitWsOperation::Subscribe => {
                         if sub_msg.success {
                             for topic in pending_topics {
                                 self.subscriptions.confirm_subscribe(&topic);
@@ -968,7 +1053,7 @@ impl FeedHandler {
                             }
                         }
                     }
-                    super::enums::BybitWsOperation::Unsubscribe => {
+                    BybitWsOperation::Unsubscribe => {
                         let pending_unsub = self.subscriptions.pending_unsubscribe_topics();
                         if sub_msg.success {
                             for topic in pending_unsub {

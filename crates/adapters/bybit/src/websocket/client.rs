@@ -65,7 +65,6 @@ use crate::{
         urls::{bybit_ws_private_url, bybit_ws_public_url, bybit_ws_trade_url},
     },
     websocket::{
-        cache,
         enums::{BybitWsOperation, BybitWsPrivateChannel, BybitWsPublicChannel},
         error::{BybitWsError, BybitWsResult},
         handler::{FeedHandler, HandlerCommand},
@@ -103,7 +102,6 @@ pub struct BybitWebSocketClient {
     is_authenticated: Arc<AtomicBool>,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     account_id: Option<AccountId>,
-    quote_cache: Arc<tokio::sync::RwLock<cache::QuoteCache>>,
     funding_cache: FundingCache,
     cancellation_token: CancellationToken,
 }
@@ -140,7 +138,6 @@ impl Clone for BybitWebSocketClient {
             is_authenticated: Arc::clone(&self.is_authenticated),
             instruments_cache: Arc::clone(&self.instruments_cache),
             account_id: self.account_id,
-            quote_cache: Arc::clone(&self.quote_cache),
             funding_cache: Arc::clone(&self.funding_cache),
             cancellation_token: self.cancellation_token.clone(),
         }
@@ -192,7 +189,6 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
-            quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
         }
@@ -231,7 +227,6 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
-            quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
         }
@@ -270,7 +265,6 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
-            quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
             funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
         }
@@ -415,7 +409,6 @@ impl BybitWebSocketClient {
         let subscriptions = self.subscriptions.clone();
         let credential = self.credential.clone();
         let requires_auth = self.requires_auth;
-        let quote_cache = Arc::clone(&self.quote_cache);
         let funding_cache = Arc::clone(&self.funding_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
@@ -433,7 +426,6 @@ impl BybitWebSocketClient {
                 product_type,
                 auth_tracker,
                 subscriptions.clone(),
-                quote_cache.clone(),
                 funding_cache.clone(),
             );
 
@@ -504,7 +496,6 @@ impl BybitWebSocketClient {
                         }
 
                         // Clear caches to prevent stale data after reconnection
-                        quote_cache.write().await.clear();
                         funding_cache.write().await.clear();
 
                         if requires_auth {
@@ -855,12 +846,6 @@ impl BybitWebSocketClient {
     #[must_use]
     pub fn product_type(&self) -> Option<BybitProductType> {
         self.product_type
-    }
-
-    /// Returns a reference to the quote cache.
-    #[must_use]
-    pub fn quote_cache(&self) -> &Arc<RwLock<cache::QuoteCache>> {
-        &self.quote_cache
     }
 
     /// Subscribes to orderbook updates for a specific instrument.
