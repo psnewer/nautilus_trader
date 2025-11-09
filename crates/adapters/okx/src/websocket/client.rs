@@ -727,11 +727,11 @@ impl OKXWebSocketClient {
             .await
         {
             Ok(()) => {
-                tracing::info!("Authentication confirmed by client");
+                tracing::info!("WebSocket authenticated");
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("Authentication failed: {e}");
+                tracing::error!(error = %e, "WebSocket authentication failed");
                 Err(Error::Io(std::io::Error::other(e.to_string())))
             }
         }

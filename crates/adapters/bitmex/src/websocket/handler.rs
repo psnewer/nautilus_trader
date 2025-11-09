@@ -186,18 +186,18 @@ impl FeedHandler {
                             }
                         }
                         HandlerCommand::Subscribe { topics } => {
-                            tracing::debug!("Subscribe command received for {} topics", topics.len());
                             for topic in topics {
-                                if let Err(e) = self.send_with_retry(topic).await {
-                                    tracing::error!(error = %e, "Failed to send subscription after retries");
+                                tracing::debug!(topic = %topic, "Subscribing to topic");
+                                if let Err(e) = self.send_with_retry(topic.clone()).await {
+                                    tracing::error!(topic = %topic, error = %e, "Failed to send subscription after retries");
                                 }
                             }
                         }
                         HandlerCommand::Unsubscribe { topics } => {
-                            tracing::debug!("Unsubscribe command received for {} topics", topics.len());
                             for topic in topics {
-                                if let Err(e) = self.send_with_retry(topic).await {
-                                    tracing::error!(error = %e, "Failed to send unsubscription after retries");
+                                tracing::debug!(topic = %topic, "Unsubscribing from topic");
+                                if let Err(e) = self.send_with_retry(topic.clone()).await {
+                                    tracing::error!(topic = %topic, error = %e, "Failed to send unsubscription after retries");
                                 }
                             }
                         }
@@ -758,12 +758,12 @@ impl FeedHandler {
                 .eq_ignore_ascii_case(BitmexWsAuthAction::AuthKeyExpires.as_ref())
             {
                 if success {
-                    tracing::info!("Authenticated BitMEX WebSocket session");
+                    tracing::info!("WebSocket authenticated");
                     self.auth_tracker.succeed();
                     return Some(NautilusWsMessage::Authenticated);
                 } else {
                     let reason = error.unwrap_or("Authentication rejected").to_string();
-                    tracing::error!(error = %reason, "Authentication failed");
+                    tracing::error!(error = %reason, "WebSocket authentication failed");
                     self.auth_tracker.fail(reason);
                 }
                 return None;

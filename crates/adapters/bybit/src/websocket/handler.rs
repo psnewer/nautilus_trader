@@ -243,18 +243,18 @@ impl FeedHandler {
                             }
                         }
                         HandlerCommand::Subscribe { topics } => {
-                            tracing::debug!("Subscribe command received for {} topics", topics.len());
                             for topic in topics {
-                                if let Err(e) = self.send_with_retry(topic).await {
-                                    tracing::error!("Failed to send subscription after retries: {e}");
+                                tracing::debug!(topic = %topic, "Subscribing to topic");
+                                if let Err(e) = self.send_with_retry(topic.clone()).await {
+                                    tracing::error!(topic = %topic, error = %e, "Failed to send subscription after retries");
                                 }
                             }
                         }
                         HandlerCommand::Unsubscribe { topics } => {
-                            tracing::debug!("Unsubscribe command received for {} topics", topics.len());
                             for topic in topics {
-                                if let Err(e) = self.send_with_retry(topic).await {
-                                    tracing::error!("Failed to send unsubscription after retries: {e}");
+                                tracing::debug!(topic = %topic, "Unsubscribing from topic");
+                                if let Err(e) = self.send_with_retry(topic.clone()).await {
+                                    tracing::error!(topic = %topic, error = %e, "Failed to send unsubscription after retries");
                                 }
                             }
                         }
@@ -929,14 +929,16 @@ impl FeedHandler {
                     auth_response.success.unwrap_or(false) || (auth_response.ret_code == Some(0));
 
                 if is_success {
-                    tracing::info!("Authentication successful");
+                    tracing::info!("WebSocket authenticated");
                     result.push(NautilusWsMessage::Authenticated);
                 } else {
-                    tracing::error!("Authentication failed: {:?}", auth_response.ret_msg);
+                    let error_msg = auth_response
+                        .ret_msg
+                        .as_deref()
+                        .unwrap_or("Authentication rejected");
+                    tracing::error!(error = error_msg, "WebSocket authentication failed");
                     result.push(NautilusWsMessage::Error(BybitWebSocketError::from_message(
-                        auth_response
-                            .ret_msg
-                            .unwrap_or_else(|| "Authentication failed".to_string()),
+                        error_msg.to_string(),
                     )));
                 }
             }

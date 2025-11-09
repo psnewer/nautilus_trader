@@ -528,7 +528,7 @@ impl OKXWsFeedHandler {
                         return Some(NautilusWsMessage::Authenticated);
                     }
 
-                    tracing::error!("Authentication failed: {msg}");
+                    tracing::error!(error = %msg, "WebSocket authentication failed");
                     self.auth_tracker.fail(msg.clone());
 
                     let error = OKXWebSocketError {
@@ -1601,11 +1601,9 @@ impl OKXWsFeedHandler {
                             conn_id,
                         } => {
                             if code == "0" {
-                                tracing::info!(
-                                    "Successfully authenticated with OKX WebSocket, conn_id={conn_id}"
-                                );
+                                tracing::info!(conn_id = %conn_id, "WebSocket authenticated");
                             } else {
-                                tracing::error!("Authentication failed: {event} {code} - {msg}");
+                                tracing::error!(event = %event, code = %code, error = %msg, "WebSocket authentication failed");
                             }
                             Some(ws_event)
                         }
@@ -1882,6 +1880,10 @@ impl OKXWsFeedHandler {
     }
 
     async fn handle_subscribe(&self, args: Vec<OKXSubscriptionArg>) -> anyhow::Result<()> {
+        for arg in &args {
+            tracing::debug!(channel = ?arg.channel, inst_id = ?arg.inst_id, "Subscribing to channel");
+        }
+
         let message = OKXSubscription {
             op: OKXWsOperation::Subscribe,
             args,
@@ -1896,11 +1898,14 @@ impl OKXWsFeedHandler {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send subscription after retries: {e}"))?;
-        tracing::debug!("Sent subscription request");
         Ok(())
     }
 
     async fn handle_unsubscribe(&self, args: Vec<OKXSubscriptionArg>) -> anyhow::Result<()> {
+        for arg in &args {
+            tracing::debug!(channel = ?arg.channel, inst_id = ?arg.inst_id, "Unsubscribing from channel");
+        }
+
         let message = OKXSubscription {
             op: OKXWsOperation::Unsubscribe,
             args,
@@ -1915,7 +1920,6 @@ impl OKXWsFeedHandler {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send unsubscription after retries: {e}"))?;
-        tracing::debug!("Sent unsubscription request");
         Ok(())
     }
 
