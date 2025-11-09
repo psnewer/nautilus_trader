@@ -42,6 +42,7 @@ This release adds support for Python 3.14 with the following limitations:
 TBD
 
 ### Fixes
+- Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
 - Fixed risk engine trailing stop order risk validations (#3160), thanks for reporting @GianC0
