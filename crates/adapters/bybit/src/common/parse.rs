@@ -23,7 +23,7 @@ use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{
         AccountType, AggressorSide, AssetClass, BarAggregation, LiquiditySide, OptionKind,
-        OrderSide, OrderStatus, OrderType, PositionSideSpecified, TimeInForce,
+        OrderSide, OrderStatus, OrderType, PositionSideSpecified, TimeInForce, TriggerType,
     },
     events::account::state::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, TradeId, Venue, VenueOrderId},
@@ -942,17 +942,96 @@ pub fn parse_order_status_report(
     account_id: nautilus_model::identifiers::AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<nautilus_model::reports::OrderStatusReport> {
-    use crate::common::enums::{BybitOrderStatus, BybitOrderType, BybitTimeInForce};
+    use crate::common::enums::{
+        BybitOrderStatus, BybitOrderType, BybitStopOrderType, BybitTimeInForce,
+        BybitTriggerDirection,
+    };
 
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(order.order_id);
 
     let order_side: OrderSide = order.side.into();
 
-    let order_type: OrderType = match order.order_type {
-        BybitOrderType::Market => OrderType::Market,
-        BybitOrderType::Limit => OrderType::Limit,
-        BybitOrderType::Unknown => OrderType::Limit,
+    // Bybit represents conditional orders using orderType + stopOrderType + triggerDirection + side
+    use crate::common::enums::BybitOrderSide;
+    let order_type: OrderType = match (
+        order.order_type,
+        order.stop_order_type,
+        order.trigger_direction,
+        order.side,
+    ) {
+        (BybitOrderType::Market, BybitStopOrderType::None | BybitStopOrderType::Unknown, _, _) => {
+            OrderType::Market
+        }
+        (BybitOrderType::Limit, BybitStopOrderType::None | BybitStopOrderType::Unknown, _, _) => {
+            OrderType::Limit
+        }
+
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::StopMarket,
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::MarketIfTouched,
+
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::StopMarket,
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::MarketIfTouched,
+
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::StopLimit,
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::LimitIfTouched,
+
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::StopLimit,
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::LimitIfTouched,
+
+        // triggerDirection=None means regular order with TP/SL attached, not a standalone conditional order
+        (BybitOrderType::Market, BybitStopOrderType::Stop, BybitTriggerDirection::None, _) => {
+            OrderType::Market
+        }
+        (BybitOrderType::Limit, BybitStopOrderType::Stop, BybitTriggerDirection::None, _) => {
+            OrderType::Limit
+        }
+
+        // TP/SL stopOrderTypes are attached to positions, not standalone conditional orders
+        (BybitOrderType::Market, _, _, _) => OrderType::Market,
+        (BybitOrderType::Limit, _, _, _) => OrderType::Limit,
+
+        (BybitOrderType::Unknown, _, _, _) => OrderType::Limit,
     };
 
     let time_in_force: TimeInForce = match order.time_in_force {
@@ -1043,6 +1122,10 @@ pub fn parse_order_status_report(
             "order.triggerPrice",
         )?;
         report = report.with_trigger_price(trigger_price);
+
+        // Set trigger_type for conditional orders
+        let trigger_type: TriggerType = order.trigger_by.into();
+        report = report.with_trigger_type(trigger_type);
     }
 
     Ok(report)

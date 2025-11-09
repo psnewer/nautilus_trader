@@ -17,7 +17,7 @@
 
 use std::fmt::Display;
 
-use nautilus_model::enums::{AggressorSide, OrderSide};
+use nautilus_model::enums::{AggressorSide, OrderSide, TriggerType};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use strum::{AsRefStr, EnumIter, EnumString};
@@ -425,6 +425,17 @@ impl From<BybitOrderSide> for OrderSide {
             BybitOrderSide::Buy => Self::Buy,
             BybitOrderSide::Sell => Self::Sell,
             BybitOrderSide::Unknown => Self::NoOrderSide,
+        }
+    }
+}
+
+impl From<BybitTriggerType> for TriggerType {
+    fn from(value: BybitTriggerType) -> Self {
+        match value {
+            BybitTriggerType::None => Self::Default,
+            BybitTriggerType::LastPrice => Self::LastPrice,
+            BybitTriggerType::IndexPrice => Self::IndexPrice,
+            BybitTriggerType::MarkPrice => Self::MarkPrice,
         }
     }
 }

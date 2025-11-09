@@ -1527,90 +1527,133 @@ mod conditional_order_tests {
         websocket::messages::BybitWsPlaceOrderParams,
     };
     use nautilus_model::{enums::OrderType, types::Price};
+    use rstest::rstest;
 
-    #[test]
-    fn test_stop_market_order_uses_trigger_price() {
-        let params = create_conditional_order_params(
+    #[rstest]
+    fn test_buy_stop_market_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
             OrderType::StopMarket,
+            BybitOrderSide::Buy,
             Some(Price::from("4500.00")),
             None,
         );
 
-        // Stop orders should use triggerPrice, not sl_trigger_price
-        assert!(params.trigger_price.is_some());
+        // Buy stop should trigger when price rises to trigger price
+        assert_eq!(params.trigger_direction, Some(1)); // RisesTo
         assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
-        assert!(params.sl_trigger_price.is_none());
-        assert!(params.tp_trigger_price.is_none());
-
-        // Should be Market type at Bybit level
         assert_eq!(params.order_type, BybitOrderType::Market);
     }
 
-    #[test]
-    fn test_stop_limit_order_uses_trigger_price() {
-        let params = create_conditional_order_params(
+    #[rstest]
+    fn test_sell_stop_market_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
+            OrderType::StopMarket,
+            BybitOrderSide::Sell,
+            Some(Price::from("4500.00")),
+            None,
+        );
+
+        // Sell stop should trigger when price falls to trigger price
+        assert_eq!(params.trigger_direction, Some(2)); // FallsTo
+        assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
+        assert_eq!(params.order_type, BybitOrderType::Market);
+    }
+
+    #[rstest]
+    fn test_buy_stop_limit_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
             OrderType::StopLimit,
+            BybitOrderSide::Buy,
             Some(Price::from("4500.00")),
             Some(Price::from("4505.00")),
         );
 
-        // Stop limit orders should use triggerPrice
-        assert!(params.trigger_price.is_some());
+        // Buy stop-limit should trigger when price rises to trigger price
+        assert_eq!(params.trigger_direction, Some(1)); // RisesTo
         assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
-
-        // Price should be set for limit
-        assert!(params.price.is_some());
         assert_eq!(params.price.as_ref().unwrap(), "4505.00");
-
-        // Should not use sl/tp fields for standalone stop orders
-        assert!(params.sl_trigger_price.is_none());
-        assert!(params.tp_trigger_price.is_none());
-
-        // Should be Limit type at Bybit level
         assert_eq!(params.order_type, BybitOrderType::Limit);
     }
 
-    #[test]
-    fn test_market_if_touched_order_uses_trigger_price() {
-        let params = create_conditional_order_params(
+    #[rstest]
+    fn test_sell_stop_limit_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
+            OrderType::StopLimit,
+            BybitOrderSide::Sell,
+            Some(Price::from("4500.00")),
+            Some(Price::from("4495.00")),
+        );
+
+        // Sell stop-limit should trigger when price falls to trigger price
+        assert_eq!(params.trigger_direction, Some(2)); // FallsTo
+        assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
+        assert_eq!(params.price.as_ref().unwrap(), "4495.00");
+        assert_eq!(params.order_type, BybitOrderType::Limit);
+    }
+
+    #[rstest]
+    fn test_buy_market_if_touched_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
             OrderType::MarketIfTouched,
+            BybitOrderSide::Buy,
             Some(Price::from("4500.00")),
             None,
         );
 
-        // MIT orders should use triggerPrice
-        assert!(params.trigger_price.is_some());
+        // Buy MIT should trigger when price falls to trigger price (buy on pullback)
+        assert_eq!(params.trigger_direction, Some(2)); // FallsTo
         assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
-        assert!(params.sl_trigger_price.is_none());
-        assert!(params.tp_trigger_price.is_none());
-
-        // Should be Market type at Bybit level
         assert_eq!(params.order_type, BybitOrderType::Market);
     }
 
-    #[test]
-    fn test_limit_if_touched_order_uses_trigger_price() {
-        let params = create_conditional_order_params(
+    #[rstest]
+    fn test_sell_market_if_touched_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
+            OrderType::MarketIfTouched,
+            BybitOrderSide::Sell,
+            Some(Price::from("5500.00")),
+            None,
+        );
+
+        // Sell MIT should trigger when price rises to trigger price (sell on rally)
+        assert_eq!(params.trigger_direction, Some(1)); // RisesTo
+        assert_eq!(params.trigger_price.as_ref().unwrap(), "5500.00");
+        assert_eq!(params.order_type, BybitOrderType::Market);
+    }
+
+    #[rstest]
+    fn test_buy_limit_if_touched_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
             OrderType::LimitIfTouched,
+            BybitOrderSide::Buy,
             Some(Price::from("4500.00")),
             Some(Price::from("4505.00")),
         );
 
-        // LIT orders should use triggerPrice
-        assert!(params.trigger_price.is_some());
+        // Buy LIT should trigger when price falls to trigger price (buy on pullback)
+        assert_eq!(params.trigger_direction, Some(2)); // FallsTo
         assert_eq!(params.trigger_price.as_ref().unwrap(), "4500.00");
-        assert!(params.sl_trigger_price.is_none());
-        assert!(params.tp_trigger_price.is_none());
-
-        // Price should be set for limit
-        assert!(params.price.is_some());
         assert_eq!(params.price.as_ref().unwrap(), "4505.00");
-
-        // Should be Limit type at Bybit level
         assert_eq!(params.order_type, BybitOrderType::Limit);
     }
 
-    #[test]
+    #[rstest]
+    fn test_sell_limit_if_touched_order_trigger_direction() {
+        let params = create_conditional_order_params_with_side(
+            OrderType::LimitIfTouched,
+            BybitOrderSide::Sell,
+            Some(Price::from("5500.00")),
+            Some(Price::from("5495.00")),
+        );
+
+        // Sell LIT should trigger when price rises to trigger price (sell on rally)
+        assert_eq!(params.trigger_direction, Some(1)); // RisesTo
+        assert_eq!(params.trigger_price.as_ref().unwrap(), "5500.00");
+        assert_eq!(params.price.as_ref().unwrap(), "5495.00");
+        assert_eq!(params.order_type, BybitOrderType::Limit);
+    }
+
+    #[rstest]
     fn test_reduce_only_false_omitted() {
         let params = create_conditional_order_params_with_reduce_only(
             OrderType::StopMarket,
@@ -1623,7 +1666,7 @@ mod conditional_order_tests {
         assert!(params.reduce_only.is_none());
     }
 
-    #[test]
+    #[rstest]
     fn test_reduce_only_explicit_true() {
         let params = create_conditional_order_params_with_reduce_only(
             OrderType::StopMarket,
@@ -1637,20 +1680,48 @@ mod conditional_order_tests {
         assert!(params.reduce_only.unwrap());
     }
 
-    // Helper function to create conditional order params for testing
-    fn create_conditional_order_params(
+    // Helper function to create conditional order params using actual client logic
+    fn create_conditional_order_params_with_side(
         order_type: OrderType,
+        side: BybitOrderSide,
         trigger_price: Option<Price>,
         price: Option<Price>,
     ) -> BybitWsPlaceOrderParams {
-        create_conditional_order_params_with_reduce_only(
-            order_type,
-            trigger_price,
-            price,
-            Some(false),
-        )
+        use nautilus_bybit::websocket::client::BybitWebSocketClient;
+        use nautilus_model::{
+            enums::OrderSide,
+            identifiers::{ClientOrderId, InstrumentId},
+            types::Quantity,
+        };
+
+        let client = BybitWebSocketClient::new_public(None, None);
+
+        let nautilus_side = match side {
+            BybitOrderSide::Buy => OrderSide::Buy,
+            BybitOrderSide::Sell => OrderSide::Sell,
+            BybitOrderSide::Unknown => panic!("Unknown side not supported in tests"),
+        };
+
+        client
+            .build_place_order_params(
+                BybitProductType::Linear,
+                InstrumentId::from("ETHUSDT-LINEAR.BYBIT"),
+                ClientOrderId::from("test-order-1"),
+                nautilus_side,
+                order_type,
+                Quantity::from("0.01"),
+                false, // is_quote_quantity
+                Some(nautilus_model::enums::TimeInForce::Gtc),
+                price,
+                trigger_price,
+                None,  // post_only
+                None,  // reduce_only
+                false, // is_leverage
+            )
+            .unwrap()
     }
 
+    #[allow(dead_code)]
     fn create_conditional_order_params_with_reduce_only(
         order_type: OrderType,
         trigger_price: Option<Price>,

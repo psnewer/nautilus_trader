@@ -58,7 +58,7 @@ use crate::{
         credential::Credential,
         enums::{
             BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
-            BybitTriggerType, BybitWsOrderRequestOp,
+            BybitTriggerDirection, BybitTriggerType, BybitWsOrderRequestOp,
         },
         parse::{extract_raw_symbol, make_bybit_symbol},
         symbol::BybitSymbol,
@@ -1461,6 +1461,28 @@ impl BybitWebSocketClient {
             None
         };
 
+        // Stop semantics: Buy stops trigger on rise (breakout), sell stops trigger on fall (breakdown)
+        // MIT semantics: Buy MIT triggers on fall (pullback entry), sell MIT triggers on rise (rally entry)
+        let trigger_direction = if is_stop_order {
+            match (order_type, order_side) {
+                (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Buy) => {
+                    Some(BybitTriggerDirection::RisesTo as i32)
+                }
+                (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Sell) => {
+                    Some(BybitTriggerDirection::FallsTo as i32)
+                }
+                (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Buy) => {
+                    Some(BybitTriggerDirection::FallsTo as i32)
+                }
+                (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Sell) => {
+                    Some(BybitTriggerDirection::RisesTo as i32)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let params = if is_stop_order {
             // For conditional orders, ALL types use triggerPrice field
             // sl_trigger_price/tp_trigger_price are only for TP/SL attached to regular orders
@@ -1483,7 +1505,7 @@ impl BybitWebSocketClient {
                 close_on_trigger: None,
                 trigger_price: trigger_price.map(|p| p.to_string()),
                 trigger_by: Some(BybitTriggerType::LastPrice),
-                trigger_direction: None,
+                trigger_direction,
                 tpsl_mode: None, // Not needed for standalone conditional orders
                 take_profit: None,
                 stop_loss: None,
@@ -1751,6 +1773,28 @@ impl BybitWebSocketClient {
             None
         };
 
+        // Stop semantics: Buy stops trigger on rise (breakout), sell stops trigger on fall (breakdown)
+        // MIT semantics: Buy MIT triggers on fall (pullback entry), sell MIT triggers on rise (rally entry)
+        let trigger_direction = if is_stop_order {
+            match (order_type, order_side) {
+                (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Buy) => {
+                    Some(BybitTriggerDirection::RisesTo as i32)
+                }
+                (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Sell) => {
+                    Some(BybitTriggerDirection::FallsTo as i32)
+                }
+                (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Buy) => {
+                    Some(BybitTriggerDirection::FallsTo as i32)
+                }
+                (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Sell) => {
+                    Some(BybitTriggerDirection::RisesTo as i32)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let params = if is_stop_order {
             BybitWsPlaceOrderParams {
                 category: product_type,
@@ -1771,7 +1815,7 @@ impl BybitWebSocketClient {
                 close_on_trigger: None,
                 trigger_price: trigger_price.map(|p| p.to_string()),
                 trigger_by: Some(BybitTriggerType::LastPrice),
-                trigger_direction: None,
+                trigger_direction,
                 tpsl_mode: None,
                 take_profit: None,
                 stop_loss: None,

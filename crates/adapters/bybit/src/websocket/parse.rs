@@ -26,7 +26,7 @@ use nautilus_model::{
     },
     enums::{
         AccountType, AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus, OrderType,
-        PositionSideSpecified, RecordFlag, TimeInForce,
+        PositionSideSpecified, RecordFlag, TimeInForce, TriggerType,
     },
     events::account::state::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
@@ -42,7 +42,10 @@ use super::messages::{
     BybitWsTickerOptionMsg, BybitWsTrade,
 };
 use crate::common::{
-    enums::{BybitOrderStatus, BybitOrderType, BybitTimeInForce},
+    enums::{
+        BybitOrderStatus, BybitOrderType, BybitStopOrderType, BybitTimeInForce,
+        BybitTriggerDirection,
+    },
     parse::{
         get_currency, parse_millis_timestamp, parse_price_with_precision,
         parse_quantity_with_precision,
@@ -439,10 +442,86 @@ pub fn parse_ws_order_status_report(
     let venue_order_id = VenueOrderId::new(order.order_id.as_str());
     let order_side: OrderSide = order.side.into();
 
-    let order_type: OrderType = match order.order_type {
-        BybitOrderType::Market => OrderType::Market,
-        BybitOrderType::Limit => OrderType::Limit,
-        BybitOrderType::Unknown => OrderType::Limit,
+    // Bybit represents conditional orders using orderType + stopOrderType + triggerDirection + side
+    use crate::common::enums::BybitOrderSide;
+    let order_type: OrderType = match (
+        order.order_type,
+        order.stop_order_type,
+        order.trigger_direction,
+        order.side,
+    ) {
+        (BybitOrderType::Market, BybitStopOrderType::None | BybitStopOrderType::Unknown, _, _) => {
+            OrderType::Market
+        }
+        (BybitOrderType::Limit, BybitStopOrderType::None | BybitStopOrderType::Unknown, _, _) => {
+            OrderType::Limit
+        }
+
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::StopMarket,
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::MarketIfTouched,
+
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::StopMarket,
+        (
+            BybitOrderType::Market,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::MarketIfTouched,
+
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::StopLimit,
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Buy,
+        ) => OrderType::LimitIfTouched,
+
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::FallsTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::StopLimit,
+        (
+            BybitOrderType::Limit,
+            BybitStopOrderType::Stop,
+            BybitTriggerDirection::RisesTo,
+            BybitOrderSide::Sell,
+        ) => OrderType::LimitIfTouched,
+
+        // triggerDirection=None means regular order with TP/SL attached, not a standalone conditional order
+        (BybitOrderType::Market, BybitStopOrderType::Stop, BybitTriggerDirection::None, _) => {
+            OrderType::Market
+        }
+        (BybitOrderType::Limit, BybitStopOrderType::Stop, BybitTriggerDirection::None, _) => {
+            OrderType::Limit
+        }
+
+        // TP/SL stopOrderTypes are attached to positions, not standalone conditional orders
+        (BybitOrderType::Market, _, _, _) => OrderType::Market,
+        (BybitOrderType::Limit, _, _, _) => OrderType::Limit,
+
+        (BybitOrderType::Unknown, _, _, _) => OrderType::Limit,
     };
 
     let time_in_force: TimeInForce = match order.time_in_force {
@@ -531,6 +610,10 @@ pub fn parse_ws_order_status_report(
             "order.triggerPrice",
         )?;
         report = report.with_trigger_price(trigger_price);
+
+        // Set trigger_type for conditional orders
+        let trigger_type: TriggerType = order.trigger_by.into();
+        report = report.with_trigger_type(trigger_type);
     }
 
     if order.reduce_only {
@@ -1189,5 +1272,144 @@ mod tests {
         );
         assert_eq!(funding.ts_event, ts_event);
         assert_eq!(funding.ts_init, TS);
+    }
+
+    #[rstest]
+    fn parse_ws_order_stop_market_sell_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_stop_market.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify sell StopMarket: orderType=Market + stopOrderType=Stop + triggerDirection=2 (falls to)
+        assert_eq!(report.order_type, OrderType::StopMarket);
+        assert_eq!(report.order_side, OrderSide::Sell);
+        assert_eq!(report.order_status, OrderStatus::Accepted); // Untriggered maps to Accepted
+        assert_eq!(report.trigger_price, Some(instrument.make_price(45000.00)));
+        assert_eq!(report.trigger_type, Some(TriggerType::LastPrice));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-stop-market-001"
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_stop_market_buy_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_buy_stop_market.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify buy StopMarket: orderType=Market + stopOrderType=Stop + triggerDirection=1 (rises to)
+        assert_eq!(report.order_type, OrderType::StopMarket);
+        assert_eq!(report.order_side, OrderSide::Buy);
+        assert_eq!(report.order_status, OrderStatus::Accepted);
+        assert_eq!(report.trigger_price, Some(instrument.make_price(55000.00)));
+        assert_eq!(report.trigger_type, Some(TriggerType::LastPrice));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-buy-stop-market-001"
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_market_if_touched_buy_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_market_if_touched.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify buy MIT: orderType=Market + stopOrderType=Stop + triggerDirection=2 (falls to)
+        assert_eq!(report.order_type, OrderType::MarketIfTouched);
+        assert_eq!(report.order_side, OrderSide::Buy);
+        assert_eq!(report.order_status, OrderStatus::Accepted); // Untriggered maps to Accepted
+        assert_eq!(report.trigger_price, Some(instrument.make_price(55000.00)));
+        assert_eq!(report.trigger_type, Some(TriggerType::LastPrice));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-mit-001"
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_market_if_touched_sell_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_sell_market_if_touched.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify sell MIT: orderType=Market + stopOrderType=Stop + triggerDirection=1 (rises to)
+        assert_eq!(report.order_type, OrderType::MarketIfTouched);
+        assert_eq!(report.order_side, OrderSide::Sell);
+        assert_eq!(report.order_status, OrderStatus::Accepted);
+        assert_eq!(report.trigger_price, Some(instrument.make_price(55000.00)));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-sell-mit-001"
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_stop_limit_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_stop_limit.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify StopLimit order type is correctly parsed
+        // orderType=Limit + stopOrderType=Stop + triggerDirection=2 (falls to)
+        assert_eq!(report.order_type, OrderType::StopLimit);
+        assert_eq!(report.order_side, OrderSide::Sell);
+        assert_eq!(report.order_status, OrderStatus::Accepted); // Untriggered maps to Accepted
+        assert_eq!(report.price, Some(instrument.make_price(44500.00)));
+        assert_eq!(report.trigger_price, Some(instrument.make_price(45000.00)));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-stop-limit-001"
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_limit_if_touched_preserves_type() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_limit_if_touched.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        // Verify LimitIfTouched order type is correctly parsed
+        // orderType=Limit + stopOrderType=Stop + triggerDirection=1 (rises to)
+        assert_eq!(report.order_type, OrderType::LimitIfTouched);
+        assert_eq!(report.order_side, OrderSide::Buy);
+        assert_eq!(report.order_status, OrderStatus::Accepted); // Untriggered maps to Accepted
+        assert_eq!(report.price, Some(instrument.make_price(55500.00)));
+        assert_eq!(report.trigger_price, Some(instrument.make_price(55000.00)));
+        assert_eq!(
+            report.client_order_id.as_ref().unwrap().to_string(),
+            "test-client-lit-001"
+        );
     }
 }
