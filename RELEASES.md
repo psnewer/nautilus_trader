@@ -58,13 +58,15 @@ TBD
 - Fixed OKX `request_bars` pagination using correct backwards API semantics (#3145), thanks for reporting @3wtz
 - Fixed Polymarket maker fill order side inversion (#3126), thanks for reporting @santivazq
 - Fixed Polymarket instrument provider market filtering (#3133), thanks @MisterMM23
+- Fixed Polymarket websocket client cancellation on concurrent subscriptions (#3169), thanks @DeirhX
 
 ### Internal Improvements
 - Added BitMEX submit broadcaster
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
-- Added initial dYdX crate (#3138), thanks @nicolad
-- Added initial dYdX WebSocket in Rust (#3158), thanks @nicolad
-- Added initial DydxDataClient in Rust (#3162), thanks @nicolad
+- Added initial dYdX v4 crate (#3138), thanks @nicolad
+- Added initial dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
+- Added initial dYdX v4 DataClient in Rust (#3162), thanks @nicolad
+- Added initial dYdX v4 ExecutionClient in Rust (#3163), thanks @nicolad
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
@@ -72,6 +74,7 @@ TBD
 - Improved Databento live connection stability and reconnects
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
+- Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
