@@ -24,12 +24,13 @@
 //! - Markets: <https://docs.dydx.exchange/api_integration-indexer/indexer_api#markets>
 //! - Accounts: <https://docs.dydx.exchange/api_integration-indexer/indexer_api#accounts>
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use nautilus_model::enums::OrderSide;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
-use std::collections::HashMap;
 use ustr::Ustr;
 
 use crate::common::enums::{

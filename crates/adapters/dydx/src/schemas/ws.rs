@@ -24,11 +24,13 @@ use serde_json::Value;
 use strum::{AsRefStr, Display, EnumString, FromRepr};
 use ustr::Ustr;
 
-use crate::common::enums::{
-    DydxFillType, DydxLiquidity, DydxOrderStatus, DydxOrderType, DydxPositionStatus,
-    DydxTickerType, DydxTimeInForce,
+use crate::{
+    common::enums::{
+        DydxFillType, DydxLiquidity, DydxOrderStatus, DydxOrderType, DydxPositionStatus,
+        DydxTickerType, DydxTimeInForce,
+    },
+    websocket::enums::DydxWsChannel,
 };
-use crate::websocket::enums::DydxWsChannel;
 
 /// WebSocket message types for dYdX.
 #[derive(

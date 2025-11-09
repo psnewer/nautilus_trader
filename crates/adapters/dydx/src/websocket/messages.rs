@@ -25,10 +25,12 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schemas::ws::DydxWsMessageType;
-use crate::websocket::{
-    enums::{DydxWsChannel, DydxWsOperation},
-    error::DydxWebSocketError,
+use crate::{
+    schemas::ws::DydxWsMessageType,
+    websocket::{
+        enums::{DydxWsChannel, DydxWsOperation},
+        error::DydxWebSocketError,
+    },
 };
 
 /// dYdX WebSocket subscription message.
