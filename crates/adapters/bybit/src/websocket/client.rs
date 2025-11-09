@@ -38,6 +38,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_network::{
+    backoff::ExponentialBackoff,
     mode::ConnectionMode,
     websocket::{
         AuthTracker, PingHandler, SubscriptionState, WebSocketClient, WebSocketConfig,
@@ -279,11 +280,8 @@ impl BybitWebSocketClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying WebSocket connection cannot be established.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the ping message cannot be serialized to JSON.
+    /// Returns an error if the underlying WebSocket connection cannot be established,
+    /// after retrying multiple times with exponential backoff.
     pub async fn connect(&mut self) -> BybitWsResult<()> {
         self.signal.store(false, Ordering::Relaxed);
 
@@ -298,8 +296,7 @@ impl BybitWebSocketClient {
         let ping_msg = serde_json::to_string(&BybitSubscription {
             op: BybitWsOperation::Ping,
             args: vec![],
-        })
-        .expect("Failed to serialize ping message");
+        })?;
 
         let config = WebSocketConfig {
             url: self.url.clone(),
@@ -315,9 +312,81 @@ impl BybitWebSocketClient {
             reconnect_jitter_ms: Some(250),
         };
 
-        let client = WebSocketClient::connect(config, None, vec![], None)
+        // Retry initial connection with exponential backoff to handle transient DNS/network issues
+        // TODO: Eventually expose client config options for this
+        const MAX_RETRIES: u32 = 5;
+        const CONNECTION_TIMEOUT_SECS: u64 = 10;
+
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(500),
+            Duration::from_millis(5000),
+            2.0,
+            250,
+            false,
+        )
+        .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+
+        #[allow(unused_assignments)]
+        let mut last_error = String::new();
+        let mut attempt = 0;
+        let client = loop {
+            attempt += 1;
+
+            match tokio::time::timeout(
+                Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+                WebSocketClient::connect(config.clone(), None, vec![], None),
+            )
             .await
-            .map_err(BybitWsError::from)?;
+            {
+                Ok(Ok(client)) => {
+                    if attempt > 1 {
+                        tracing::info!("WebSocket connection established after {attempt} attempts");
+                    }
+                    break client;
+                }
+                Ok(Err(e)) => {
+                    last_error = e.to_string();
+                    tracing::warn!(
+                        attempt,
+                        max_retries = MAX_RETRIES,
+                        url = %self.url,
+                        error = %last_error,
+                        "WebSocket connection attempt failed"
+                    );
+                }
+                Err(_) => {
+                    last_error = format!(
+                        "Connection timeout after {CONNECTION_TIMEOUT_SECS}s (possible DNS resolution failure)"
+                    );
+                    tracing::warn!(
+                        attempt,
+                        max_retries = MAX_RETRIES,
+                        url = %self.url,
+                        "WebSocket connection attempt timed out"
+                    );
+                }
+            }
+
+            if attempt >= MAX_RETRIES {
+                return Err(BybitWsError::Transport(format!(
+                    "Failed to connect to {} after {MAX_RETRIES} attempts: {}. \
+                    If this is a DNS error, check your network configuration and DNS settings.",
+                    self.url,
+                    if last_error.is_empty() {
+                        "unknown error"
+                    } else {
+                        &last_error
+                    }
+                )));
+            }
+
+            let delay = backoff.next_duration();
+            tracing::debug!(
+                "Retrying in {delay:?} (attempt {}/{MAX_RETRIES})",
+                attempt + 1
+            );
+            tokio::time::sleep(delay).await;
+        };
 
         self.connection_mode.store(client.connection_mode_atomic());
 

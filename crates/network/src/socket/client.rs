@@ -122,7 +122,81 @@ impl SocketClientInner {
             None
         };
 
-        let (reader, writer) = Self::tls_connect_with_server(url, *mode, connector.clone()).await?;
+        // Retry initial connection with exponential backoff to handle transient DNS/network issues
+        // TODO: Eventually expose client config options for this
+        const MAX_RETRIES: u32 = 5;
+        const CONNECTION_TIMEOUT_SECS: u64 = 10;
+
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(500),
+            Duration::from_millis(5000),
+            2.0,
+            250,
+            false,
+        )?;
+
+        #[allow(unused_assignments)]
+        let mut last_error = String::new();
+        let mut attempt = 0;
+        let (reader, writer) = loop {
+            attempt += 1;
+
+            match tokio::time::timeout(
+                Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+                Self::tls_connect_with_server(url, *mode, connector.clone()),
+            )
+            .await
+            {
+                Ok(Ok(result)) => {
+                    if attempt > 1 {
+                        tracing::info!("Socket connection established after {attempt} attempts");
+                    }
+                    break result;
+                }
+                Ok(Err(e)) => {
+                    last_error = e.to_string();
+                    tracing::warn!(
+                        attempt,
+                        max_retries = MAX_RETRIES,
+                        url = %url,
+                        error = %last_error,
+                        "Socket connection attempt failed"
+                    );
+                }
+                Err(_) => {
+                    last_error = format!(
+                        "Connection timeout after {CONNECTION_TIMEOUT_SECS}s (possible DNS resolution failure)"
+                    );
+                    tracing::warn!(
+                        attempt,
+                        max_retries = MAX_RETRIES,
+                        url = %url,
+                        "Socket connection attempt timed out"
+                    );
+                }
+            }
+
+            if attempt >= MAX_RETRIES {
+                anyhow::bail!(
+                    "Failed to connect to {} after {MAX_RETRIES} attempts: {}. \
+                    If this is a DNS error, check your network configuration and DNS settings.",
+                    url,
+                    if last_error.is_empty() {
+                        "unknown error"
+                    } else {
+                        &last_error
+                    }
+                );
+            }
+
+            let delay = backoff.next_duration();
+            tracing::debug!(
+                "Retrying in {delay:?} (attempt {}/{MAX_RETRIES})",
+                attempt + 1
+            );
+            tokio::time::sleep(delay).await;
+        };
+
         tracing::debug!("Connected");
 
         let connection_mode = Arc::new(AtomicU8::new(ConnectionMode::Active.as_u8()));
