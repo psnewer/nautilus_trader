@@ -33,8 +33,7 @@ def download_file(url: str):
     with requests.get(url, headers=headers, stream=True, timeout=60) as response:
         response.raise_for_status()
         with open(path, "wb") as file:
-            for chunk in response.iter_content(chunk_size=8192):
-                file.write(chunk)
+            file.writelines(response.iter_content(chunk_size=8192))
     return path
 
 

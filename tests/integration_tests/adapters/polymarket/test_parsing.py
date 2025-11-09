@@ -135,7 +135,7 @@ def test_parse_quote_ticks() -> None:
     # Assert - Test that we can access the new schema fields
     assert len(ws_message.price_changes) == 3
 
-    for i, price_change in enumerate(ws_message.price_changes):
+    for _, price_change in enumerate(ws_message.price_changes):
         assert (
             price_change.asset_id
             == "52114319501245915516055106046884209969926127482827954674443846427813813222426"

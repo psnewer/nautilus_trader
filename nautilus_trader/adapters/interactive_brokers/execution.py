@@ -115,7 +115,7 @@ def _price_condition_str(self):
 
 
 # Apply the monkey patch
-if hasattr(PriceCondition, "__str__") and not callable(getattr(PriceCondition, "__str__")):
+if hasattr(PriceCondition, "__str__") and not callable(PriceCondition.__str__):
     PriceCondition.__str__ = _price_condition_str
 
 

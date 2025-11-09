@@ -38,7 +38,7 @@ DEFAULT_GAMMA_BASE_URL = os.getenv("GAMMA_API_URL", "https://gamma-api.polymarke
 
 def _normalize_base_url(base_url: str | None) -> str:
     url = base_url or DEFAULT_GAMMA_BASE_URL
-    return url[:-1] if url.endswith("/") else url
+    return url.removesuffix("/")
 
 
 def build_markets_query(filters: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -284,10 +284,8 @@ def list_markets(
 
     """
     results: list[dict[str, Any]] = []
-    count = 0
     for market in iter_markets(filters=filters, base_url=base_url, timeout=timeout):
         results.append(market)
-        count += 1
         if max_results is not None and len(results) >= max_results:
             break
     return results

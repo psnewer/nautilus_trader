@@ -154,10 +154,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         self.max_rows_per_group = max_rows_per_group
         self.show_query_paths = show_query_paths
 
-        if self.fs_protocol == "file":
-            final_path = str(make_path_posix(str(path)))
-        else:
-            final_path = str(path)
+        final_path = str(make_path_posix(str(path))) if self.fs_protocol == "file" else str(path)
 
         if (
             isinstance(self.fs, MemoryFileSystem)
@@ -1896,10 +1893,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         if used_end is not None:
             filters.append(pds.field("ts_init") <= used_end.value)
 
-        if filters:
-            combined_filters = combine_filters(*filters)
-        else:
-            combined_filters = None
+        combined_filters = combine_filters(*filters) if filters else None
 
         table = dataset.to_table(filter=combined_filters)
 
@@ -2497,11 +2491,7 @@ def _are_intervals_contiguous(intervals: list[tuple[int, int]]) -> bool:
     if n <= 1:
         return True
 
-    for i in range(1, n):
-        if intervals[i - 1][1] + 1 != intervals[i][0]:
-            return False
-
-    return True
+    return all(intervals[i - 1][1] + 1 == intervals[i][0] for i in range(1, n))
 
 
 def _query_interval_diff(

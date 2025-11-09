@@ -192,10 +192,20 @@ select = [
   "SIM103", # - Return the condition directly
   "SIM105", # - Use contextlib.suppress() instead of try-except-pass
   "SIM109", # - Use tuple to compare value against multiple values
+  "SIM110", # - Use any()/all() instead of for loops
+  "SIM113", # - Use enumerate() for index variables
   "SIM114", # - Combine if branches using logical or operator
   "SIM117", # - Use combined with statement
   "SIM118", # - Remove redundant .keys() calls
+  "SIM211", # - Use `not x` instead of `False if x else True`
+  "SIM212", # - Simplify twisted ternary expressions
   "SIM300", # - Yoda conditions
+  "B007", # - Unused loop control variable
+  "B009", # - Do not call getattr with a constant attribute value
+  "PERF102", # - When using only dict values use the values() method
+  "FURB122", # - Use writelines instead of write in a loop
+  "FURB166", # - int() on sliced str
+  "FURB188", # - Use removeprefix/removesuffix instead of slicing
   # "ARG",
   # "ERA",
   "PD",
@@ -223,6 +233,7 @@ ignore = [
   "D416", # Section name should end with a colon ('Warnings:', not 'Warnings') (incorrect?)
   "E501", # Line too long (will lint separately)
   "E741", # Ambiguous variable name (single char)
+  "FURB166", # int() on sliced str (explicit base is clearer than auto-detection)
   "PYI021", # Docstrings should not be included in stubs (OK as this is the natural place for them)
   "PGH003", # Blanket type-ignore (TODO: make these specific incrementally)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
