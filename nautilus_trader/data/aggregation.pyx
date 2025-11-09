@@ -237,6 +237,10 @@ cdef class BarAggregator:
     """
     Provides a means of aggregating specified bars and sending to a registered handler.
 
+    The aggregator maintains two state flags exposed as properties:
+    - `historical_mode`: Indicates the aggregator is processing historical data.
+    - `is_running`: Indicates the aggregator is receiving data from the message bus.
+
     Parameters
     ----------
     instrument : Instrument
@@ -260,20 +264,51 @@ cdef class BarAggregator:
     ) -> None:
         Condition.equal(instrument.id, bar_type.instrument_id, "instrument.id", "bar_type.instrument_id")
 
-        self.bar_type = bar_type
         self._handler = handler
         self._handler_backup = None
         self._log = Logger(name=type(self).__name__)
         self._builder = BarBuilder(
             instrument=instrument,
-            bar_type=self.bar_type,
+            bar_type=bar_type,
         )
+
+        self.bar_type = bar_type
         self.historical_mode = False
-        self.is_running = False # is_running means that an aggregator receives data from the message bus
+        self.is_running = False
 
     cpdef void set_historical_mode(self, bint historical_mode, handler: Callable[[Bar], None]):
+        """
+        Set the historical mode state of the aggregator.
+
+        Parameters
+        ----------
+        historical_mode : bool
+            Whether the aggregator is processing historical data.
+        handler : Callable[[Bar], None]
+            The bar handler to use in this mode.
+
+        Raises
+        ------
+        TypeError
+            If `handler` is ``None`` or not callable.
+
+        """
+        Condition.callable(handler, "handler")
+
         self.historical_mode = historical_mode
         self._handler = handler
+
+    cpdef void set_running(self, bint is_running):
+        """
+        Set the running state of the aggregator.
+
+        Parameters
+        ----------
+        is_running : bool
+            Whether the aggregator is running (receiving data from message bus).
+
+        """
+        self.is_running = is_running
 
     cpdef void handle_quote_tick(self, QuoteTick tick):
         """

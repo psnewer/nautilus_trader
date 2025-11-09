@@ -61,13 +61,16 @@ cdef class BarAggregator:
     cdef BarBuilder _builder
     cdef object _handler
     cdef object _handler_backup
-    cdef public bint historical_mode
-    cdef public bint is_running
 
     cdef readonly BarType bar_type
     """The aggregators bar type.\n\n:returns: `BarType`"""
+    cdef readonly bint historical_mode
+    """If the aggregator is processing historical data.\n\n:returns: `bool`"""
+    cdef readonly bint is_running
+    """If the aggregator is receiving data from the message bus.\n\n:returns: `bool`"""
 
     cpdef void set_historical_mode(self, bint historical_mode, handler)
+    cpdef void set_running(self, bint is_running)
     cpdef void handle_quote_tick(self, QuoteTick tick)
     cpdef void handle_trade_tick(self, TradeTick tick)
     cpdef void handle_bar(self, Bar bar)

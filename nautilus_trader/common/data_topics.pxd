@@ -20,24 +20,23 @@ from nautilus_trader.model.identifiers cimport Venue
 
 
 cdef class TopicCache:
-    cdef dict _topic_cache_instruments
-    cdef dict _topic_cache_instruments_pattern
-    cdef dict _topic_cache_deltas
-    cdef dict _topic_cache_depth
-    cdef dict _topic_cache_quotes
-    cdef dict _topic_cache_trades
-    cdef dict _topic_cache_status
-    cdef dict _topic_cache_mark_prices
-    cdef dict _topic_cache_index_prices
-    cdef dict _topic_cache_funding_rates
-    cdef dict _topic_cache_close_prices
-    cdef dict _topic_cache_snapshots
-    cdef dict _topic_cache_custom
-    cdef dict _topic_cache_custom_simple
-    cdef dict _topic_cache_bars
-    cdef dict _topic_cache_signal
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_instruments
+    cdef dict[Venue, str] _topic_cache_instruments_pattern
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_deltas
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_depth
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_quotes
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_trades
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_status
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_mark_prices
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_index_prices
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_funding_rates
+    cdef dict[tuple[InstrumentId, bint], str] _topic_cache_close_prices
+    cdef dict[tuple[InstrumentId, int, bint], str] _topic_cache_snapshots
+    cdef dict[tuple[DataType, InstrumentId, bint], str] _topic_cache_custom
+    cdef dict[tuple[DataType, bint], str] _topic_cache_custom_simple
+    cdef dict[tuple[BarType, bint], str] _topic_cache_bars
+    cdef dict[str, str] _topic_cache_signal
 
-    # Topic generation methods
     cpdef str get_instrument_topic(self, InstrumentId instrument_id, bint historical = *)
     cpdef str get_instruments_topic(self, Venue venue)
     cpdef str get_book_topic(self, type book_data_type, InstrumentId instrument_id, bint historical = *)
@@ -55,5 +54,4 @@ cdef class TopicCache:
     cpdef str get_bars_topic(self, BarType bar_type, bint historical = *)
     cpdef str get_signal_topic(self, str name)
 
-    # Cache management methods
     cpdef void clear_cache(self)

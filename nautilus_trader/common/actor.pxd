@@ -56,6 +56,7 @@ cdef class Actor(Component):
     cdef object _executor
     cdef bint _log_events
     cdef bint _log_commands
+    cdef TopicCache _topic_cache
     cdef set[type] _warning_events
     cdef dict[UUID4, RequestData] _requests
     cdef dict[UUID4, object] _pending_requests
@@ -65,7 +66,6 @@ cdef class Actor(Component):
     cdef dict[InstrumentId, list[Indicator]] _indicators_for_quotes
     cdef dict[InstrumentId, list[Indicator]] _indicators_for_trades
     cdef dict[BarType, list[Indicator]] _indicators_for_bars
-    cdef readonly TopicCache _topic_cache
 
     cdef readonly PortfolioFacade portfolio
     """The read-only portfolio for the actor.\n\n:returns: `PortfolioFacade`"""

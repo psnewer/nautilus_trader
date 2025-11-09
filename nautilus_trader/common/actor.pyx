@@ -155,20 +155,19 @@ cdef class Actor(Component):
             config=config,
         )
 
+        self._topic_cache = TopicCache()
         self._warning_events: set[type] = set()
         self._requests: dict[UUID4, RequestData] = {}
         self._pending_requests: dict[UUID4, Callable[[UUID4], None] | None] = {}
         self._pyo3_conversion_types = set()
         self._signal_classes: dict[str, type] = {}
 
-        # Indicators
         self._indicators: list[Indicator] = []
         self._indicators_for_quotes: dict[InstrumentId, list[Indicator]] = {}
         self._indicators_for_trades: dict[InstrumentId, list[Indicator]] = {}
         self._indicators_for_bars: dict[BarType, list[Indicator]] = {}
 
         # Topic cache
-        self._topic_cache = TopicCache()
 
         # Configuration
         self._log_events = config.log_events

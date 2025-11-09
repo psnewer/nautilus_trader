@@ -2637,7 +2637,7 @@ cdef class DataEngine(Component):
                 aggregator.set_clock(self._clock)
                 aggregator.start_timer()
 
-        aggregator.is_running = True
+        aggregator.set_running(True)
 
     cpdef void _subscribe_bar_aggregator(self, MarketDataClient client, SubscribeBars command):
         # Subscribe to required market data
@@ -2691,7 +2691,7 @@ cdef class DataEngine(Component):
 
             # Setting aggregator.is_running to False allows to start a live subscription
             # allowing the aggregator to still aggregate historical data if update_subscriptions is True
-            aggregator.is_running = False
+            aggregator.set_running(False)
 
             if not update_subscriptions:
                 self._dispose_bar_aggregator(bar_type, historical=True)
