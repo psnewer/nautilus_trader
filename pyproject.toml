@@ -288,9 +288,6 @@ addopts = "-ra --new-first --failed-first --doctest-modules --doctest-glob=\"*.p
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
 filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning"]
-# Retry flaky tests due to PyArrow file locking in parallel execution
-reruns = 2
-reruns_delay = 1
 
 [tool.coverage.run]
 plugins = ["Cython.Coverage"]
