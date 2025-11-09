@@ -118,6 +118,7 @@ test = [
   "pytest-codspeed==4.2.0", # Pinned to 4.2.0 for stability
   "pytest-cov==6.3.0", # Pinned to 6.3.0 due pytest 8.x requirement
   "pytest-mock>=3.15.1,<4.0.0",
+  "pytest-rerunfailures>=16.1,<17.0.0",
   "pytest-xdist[psutil]>=3.8.0,<4.0.0",
 ]
 docs = [
@@ -287,6 +288,9 @@ addopts = "-ra --new-first --failed-first --doctest-modules --doctest-glob=\"*.p
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
 filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning"]
+# Retry flaky tests due to PyArrow file locking in parallel execution
+reruns = 2
+reruns_delay = 1
 
 [tool.coverage.run]
 plugins = ["Cython.Coverage"]

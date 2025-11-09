@@ -132,7 +132,7 @@ version = "0.17.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251108", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251109", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ae/7d/43298c788796e98cf852ec50777e6586163ac653d192d3c748a22f0b150a/betfair_parser-0.17.2.tar.gz", hash = "sha256:86a1f2205a80ffcd1d1fa45db22bdc7be82da84d208ff07a33ffdfa8a6c4b8d1", size = 55758, upload-time = "2025-10-26T12:47:50.465Z" }
 wheels = [
@@ -1248,7 +1248,7 @@ wheels = [
 
 [[package]]
 name = "msgspec"
-version = "0.19.1.dev22+g0c764a6ed.d20251108"
+version = "0.19.1.dev22+g0c764a6ed.d20251109"
 source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
@@ -1437,7 +1437,7 @@ dependencies = [
     { name = "click" },
     { name = "fsspec" },
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251108", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251109", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "portion" },
@@ -1504,6 +1504,7 @@ test = [
     { name = "pytest-codspeed" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "pytest-rerunfailures" },
     { name = "pytest-xdist", extra = ["psutil"] },
 ]
 
@@ -1567,6 +1568,7 @@ test = [
     { name = "pytest-codspeed", specifier = "==4.2.0" },
     { name = "pytest-cov", specifier = "==6.3.0" },
     { name = "pytest-mock", specifier = ">=3.15.1,<4.0.0" },
+    { name = "pytest-rerunfailures", specifier = ">=16.1,<17.0.0" },
     { name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.8.0,<4.0.0" },
 ]
 
@@ -2351,6 +2353,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/68/14/eb014d26be205d38ad5ad20d9a80f7d201472e08167f0bb4361e251084a9/pytest_mock-3.15.1.tar.gz", hash = "sha256:1849a238f6f396da19762269de72cb1814ab44416fa73a8686deac10b0d87a0f", size = 34036, upload-time = "2025-09-16T16:37:27.081Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/cc/06253936f4a7fa2e0f48dfe6d851d9c56df896a9ab09ac019d70b760619c/pytest_mock-3.15.1-py3-none-any.whl", hash = "sha256:0a25e2eb88fe5168d535041d09a4529a188176ae608a6d249ee65abc0949630d", size = 10095, upload-time = "2025-09-16T16:37:25.734Z" },
+]
+
+[[package]]
+name = "pytest-rerunfailures"
+version = "16.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/de/04/71e9520551fc8fe2cf5c1a1842e4e600265b0815f2016b7c27ec85688682/pytest_rerunfailures-16.1.tar.gz", hash = "sha256:c38b266db8a808953ebd71ac25c381cb1981a78ff9340a14bcb9f1b9bff1899e", size = 30889, upload-time = "2025-10-10T07:06:01.238Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/54/60eabb34445e3db3d3d874dc1dfa72751bfec3265bd611cb13c8b290adea/pytest_rerunfailures-16.1-py3-none-any.whl", hash = "sha256:5d11b12c0ca9a1665b5054052fcc1084f8deadd9328962745ef6b04e26382e86", size = 14093, upload-time = "2025-10-10T07:06:00.019Z" },
 ]
 
 [[package]]
