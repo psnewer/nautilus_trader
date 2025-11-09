@@ -6356,6 +6356,7 @@ class DatabentoLiveClient:
         publishers_filepath: str,
         use_exchange_as_venue: bool,
         bars_timestamp_on_close: bool = True,
+        reconnect_timeout_mins: int | None = None,
     ) -> None: ...
     @property
     def key(self) -> str: ...
