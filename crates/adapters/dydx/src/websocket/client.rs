@@ -31,7 +31,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use arc_swap::ArcSwap;
@@ -42,7 +42,9 @@ use nautilus_model::{
 };
 use nautilus_network::{
     mode::ConnectionMode,
-    websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
+    websocket::{
+        AuthTracker, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
+    },
 };
 use ustr::Ustr;
 
@@ -81,11 +83,17 @@ pub struct DydxWebSocketClient {
     /// The WebSocket connection URL.
     url: String,
     /// Optional credential for private channels (only wallet address is used).
-    credential: Option<DydxCredential>,
+    credential: Option<Arc<DydxCredential>>,
     /// Whether authentication is required for this client.
     requires_auth: bool,
+    /// Authentication tracker for WebSocket connections.
+    #[allow(dead_code)]
+    auth_tracker: AuthTracker,
+    /// Subscription state tracker for managing channel subscriptions.
+    #[allow(dead_code)]
+    subscriptions: SubscriptionState,
     /// Shared connection state (lock-free atomic).
-    connection_mode: Arc<ArcSwap<std::sync::atomic::AtomicU8>>,
+    connection_mode: Arc<ArcSwap<AtomicU8>>,
     /// Manual disconnect signal.
     signal: Arc<AtomicBool>,
     /// Cached instruments for parsing market data (Python-accessible).
@@ -115,6 +123,8 @@ impl DydxWebSocketClient {
             url,
             credential: None,
             requires_auth: false,
+            auth_tracker: AuthTracker::new(),
+            subscriptions: SubscriptionState::new(':'), // dYdX uses ":" as delimiter (e.g., "v4_markets:BTC-USD")
             connection_mode: Arc::new(ArcSwap::from_pointee(AtomicU8::new(
                 ConnectionMode::Closed as u8,
             ))),
@@ -143,8 +153,10 @@ impl DydxWebSocketClient {
 
         Self {
             url,
-            credential: Some(credential),
+            credential: Some(Arc::new(credential)),
             requires_auth: true,
+            auth_tracker: AuthTracker::new(),
+            subscriptions: SubscriptionState::new(':'), // dYdX uses ":" as delimiter
             connection_mode: Arc::new(ArcSwap::from_pointee(AtomicU8::new(
                 ConnectionMode::Closed as u8,
             ))),
@@ -160,7 +172,7 @@ impl DydxWebSocketClient {
 
     /// Returns the credential associated with this client, if any.
     #[must_use]
-    pub fn credential(&self) -> Option<&DydxCredential> {
+    pub fn credential(&self) -> Option<&Arc<DydxCredential>> {
         self.credential.as_ref()
     }
 

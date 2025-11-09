@@ -22,6 +22,7 @@
 //! Tokio task within the lock-free I/O boundary.
 
 use std::{
+    fmt::{Debug, Formatter},
     str::FromStr,
     sync::{
         Arc,
@@ -38,7 +39,7 @@ use nautilus_model::{
     },
     enums::{AggressorSide, BookAction, OrderSide, RecordFlag},
     identifiers::{AccountId, InstrumentId, TradeId},
-    instruments::Instrument,
+    instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
 };
 use nautilus_network::{RECONNECTED, websocket::WebSocketClient};
@@ -58,15 +59,14 @@ use super::{
         DydxTradeContents,
     },
 };
-use crate::common::enums::DydxOrderSide;
 
 /// Commands sent to the feed handler.
 #[derive(Debug, Clone)]
 pub enum HandlerCommand {
     /// Update a single instrument in the cache.
-    UpdateInstrument(Box<nautilus_model::instruments::InstrumentAny>),
+    UpdateInstrument(Box<InstrumentAny>),
     /// Initialize instruments in bulk.
-    InitializeInstruments(Vec<nautilus_model::instruments::InstrumentAny>),
+    InitializeInstruments(Vec<InstrumentAny>),
     /// Send a text message via WebSocket.
     SendText(String),
 }
@@ -89,13 +89,13 @@ pub struct FeedHandler {
     /// Manual disconnect signal.
     signal: Arc<AtomicBool>,
     /// Cached instruments for parsing market data.
-    instruments: AHashMap<Ustr, nautilus_model::instruments::InstrumentAny>,
+    instruments: AHashMap<Ustr, InstrumentAny>,
     /// Cached bar types by topic (e.g., "BTC-USD/1MIN").
     bar_types: AHashMap<String, BarType>,
 }
 
-impl std::fmt::Debug for FeedHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for FeedHandler {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FeedHandler")
             .field("account_id", &self.account_id)
             .field("instruments_count", &self.instruments.len())
@@ -312,11 +312,7 @@ impl FeedHandler {
             DydxWsChannel::Orderbook => self.parse_orderbook(&data, false),
             DydxWsChannel::Candles => self.parse_candles(&data),
             DydxWsChannel::Markets => self.parse_markets(&data),
-            DydxWsChannel::Subaccounts => {
-                // TODO: Parse subaccount updates (orders, fills, positions)
-                tracing::debug!("Subaccount channel_data not yet implemented");
-                Ok(None)
-            }
+            DydxWsChannel::Subaccounts => self.parse_subaccounts(&data),
             DydxWsChannel::BlockHeight => {
                 tracing::debug!("Block height update received");
                 Ok(None)
@@ -354,8 +350,9 @@ impl FeedHandler {
 
         for trade in contents.trades {
             let aggressor_side = match trade.side {
-                DydxOrderSide::Buy => AggressorSide::Buyer,
-                DydxOrderSide::Sell => AggressorSide::Seller,
+                OrderSide::Buy => AggressorSide::Buyer,
+                OrderSide::Sell => AggressorSide::Seller,
+                _ => continue, // Skip NoOrderSide
             };
 
             let price = Decimal::from_str(&trade.price)
@@ -768,6 +765,40 @@ impl FeedHandler {
         Ok(None)
     }
 
+    fn parse_subaccounts(
+        &self,
+        data: &DydxWsChannelDataMsg,
+    ) -> DydxWsResult<Option<NautilusWsMessage>> {
+        use crate::schemas::ws::DydxWsSubaccountsChannelContents;
+
+        let contents: DydxWsSubaccountsChannelContents =
+            serde_json::from_value(data.contents.clone()).map_err(|e| {
+                DydxWsError::Parse(format!("Failed to parse subaccounts contents: {e}"))
+            })?;
+
+        // Handle orders
+        if let Some(orders) = contents.orders
+            && !orders.is_empty()
+        {
+            tracing::debug!("Received {} order update(s)", orders.len());
+            // Orders are handled by execution client, not data client
+            // For now, log and skip
+            return Ok(None);
+        }
+
+        // Handle fills
+        if let Some(fills) = contents.fills
+            && !fills.is_empty()
+        {
+            tracing::debug!("Received {} fill update(s)", fills.len());
+            // Fills are handled by execution client, not data client
+            // For now, log and skip
+            return Ok(None);
+        }
+
+        Ok(None)
+    }
+
     fn parse_instrument_id(&self, symbol: &str) -> DydxWsResult<InstrumentId> {
         // dYdX WS uses raw symbols (e.g., "BTC-USD")
         // Need to append "-PERP" to match Nautilus instrument IDs
@@ -775,10 +806,7 @@ impl FeedHandler {
         Ok(crate::common::parse::parse_instrument_id(&symbol_with_perp))
     }
 
-    fn get_instrument(
-        &self,
-        instrument_id: &InstrumentId,
-    ) -> DydxWsResult<&nautilus_model::instruments::InstrumentAny> {
+    fn get_instrument(&self, instrument_id: &InstrumentId) -> DydxWsResult<&InstrumentAny> {
         self.instruments
             .get(&instrument_id.symbol.inner())
             .ok_or_else(|| DydxWsError::Parse(format!("No instrument cached for {instrument_id}")))
