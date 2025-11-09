@@ -1,4 +1,4 @@
-# Rust Style Guide
+# Rust
 
 The [Rust](https://www.rust-lang.org/learn) programming language is an ideal fit for implementing the mission-critical core of the platform and systems.
 Its strong type system, ownership model, and compile-time checks eliminate memory errors and data races by construction,

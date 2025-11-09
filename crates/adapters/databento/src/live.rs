@@ -103,7 +103,7 @@ impl DatabentoFeedHandler {
     ///
     /// # Panics
     ///
-    /// Panics if exponential backoff creation fails (should never happen with valid hard-coded parameters).
+    /// Panics if exponential backoff creation fails (should never happen with valid hardcoded parameters).
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -126,7 +126,7 @@ impl DatabentoFeedHandler {
             Duration::from_secs(600)
         };
 
-        // SAFETY: Hard-coded parameters are all valid
+        // SAFETY: Hardcoded parameters are all valid
         let backoff =
             ExponentialBackoff::new(Duration::from_secs(1), delay_max, 2.0, 1000, false).unwrap();
 
