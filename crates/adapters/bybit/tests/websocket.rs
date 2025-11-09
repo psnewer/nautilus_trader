@@ -1721,7 +1721,6 @@ mod conditional_order_tests {
             .unwrap()
     }
 
-    #[allow(dead_code)]
     fn create_conditional_order_params_with_reduce_only(
         order_type: OrderType,
         trigger_price: Option<Price>,
