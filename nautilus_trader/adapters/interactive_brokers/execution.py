@@ -486,12 +486,6 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         self,
         command: GenerateFillReports,
     ) -> list[FillReport]:
-        """
-        Generate a list of `FillReport`s with optional query filters.
-
-        The returned list may be empty if no executions match the given parameters.
-
-        """
         self._log.debug("Requesting FillReports...")
         reports: list[FillReport] = []
 

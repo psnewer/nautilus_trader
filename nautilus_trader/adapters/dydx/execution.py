@@ -431,9 +431,6 @@ class DYDXExecutionClient(LiveExecutionClient):
         self,
         command: GenerateOrderStatusReport,
     ) -> OrderStatusReport | None:
-        """
-        Create an order status report for a specific order.
-        """
         self._log.debug("Requesting OrderStatusReport...")
 
         client_order_id = command.client_order_id
@@ -520,9 +517,6 @@ class DYDXExecutionClient(LiveExecutionClient):
         self,
         command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
-        """
-        Create an order status report.
-        """
         self._log.debug("Requesting OrderStatusReports...")
         reports: list[OrderStatusReport] = []
 
@@ -602,9 +596,6 @@ class DYDXExecutionClient(LiveExecutionClient):
         self,
         command: GenerateFillReports,
     ) -> list[FillReport]:
-        """
-        Create an order fill report.
-        """
         self._log.debug("Requesting FillReports...")
         reports: list[FillReport] = []
 
@@ -671,9 +662,6 @@ class DYDXExecutionClient(LiveExecutionClient):
         self,
         command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
-        """
-        Generate position status reports.
-        """
         self._log.debug("Requesting PositionStatusReports...")
         reports: list[PositionStatusReport] = []
 
