@@ -15,7 +15,6 @@
 
 import asyncio
 import json
-import urllib.parse
 from collections import defaultdict
 from collections import deque
 from collections.abc import Coroutine
@@ -64,7 +63,6 @@ from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.datetime import millis_to_nanos
 from nautilus_trader.core.datetime import nanos_to_secs
 from nautilus_trader.core.nautilus_pyo3 import HttpClient
-from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 from nautilus_trader.core.nautilus_pyo3 import HttpResponse
 from nautilus_trader.core.stats import basis_points_as_percentage
 from nautilus_trader.core.uuid import UUID4
@@ -331,10 +329,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 "sortBy": "TOKENS",
                 "sortDirection": "DESC",
             }
-            url = f"{base_url}?{urllib.parse.urlencode(params)}"
-            response: HttpResponse = await self._http_client_async.request(
-                HttpMethod.GET,
-                url=url,
+            response: HttpResponse = await self._http_client_async.get(
+                url=base_url,
+                params=params,
             )
 
             if response.status >= 400:
