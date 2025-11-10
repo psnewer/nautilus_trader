@@ -904,7 +904,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         if command.order_side != OrderSide.NO_ORDER_SIDE:
             self._log.warning(
                 f"Polymarket does not support order_side filtering for cancel all orders; "
-                f"ignoring order_side={command.order_side.name} and canceling all orders",
+                f"ignoring order_side={order_side_to_str(command.order_side)} and canceling all orders",
             )
 
         open_orders_strategy: list[Order] = self._cache.orders_open(
