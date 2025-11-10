@@ -270,13 +270,11 @@ impl HttpClient {
     }
 }
 
-/// Converts Python params to HashMap<String, Vec<String>> for URL parameter encoding.
+/// Converts Python dict params to HashMap<String, Vec<String>> for URL encoding.
 ///
-/// This mimics Python's `urllib.parse.urlencode(params, doseq=True)` behavior by handling:
-/// - Dicts with single values or sequences (lists/tuples)
-/// - Lists of tuples: `[('key', 'val1'), ('key', 'val2')]`
-/// - Sequences (lists/tuples) as values
-#[allow(deprecated)]
+/// Accepts a dict where values can be:
+/// - Single values (str, int, float, bool) -> converted to single-item vec.
+/// - Lists/tuples of values -> each item converted to string.
 fn params_to_hashmap(
     params: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<HashMap<String, Vec<String>>>> {
@@ -284,65 +282,33 @@ fn params_to_hashmap(
         return Ok(None);
     };
 
+    let Ok(dict) = params.cast::<PyDict>() else {
+        return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "params must be a dict",
+        ));
+    };
+
     let mut result = HashMap::new();
 
-    // Try dict first (most common case)
-    if let Ok(dict) = params.downcast::<PyDict>() {
-        for (key, value) in dict {
-            let key_py_str = key.str()?;
-            let key_str = key_py_str.to_str()?.to_string();
+    for (key, value) in dict {
+        let key_str = key.str()?.to_str()?.to_string();
 
-            // Try to handle as sequence (list/tuple)
-            if let Ok(iter) = value.try_iter() {
-                // Check if it's a sequence of values (not a string)
-                if !value.is_instance_of::<pyo3::types::PyString>() {
-                    let mut values = Vec::new();
-                    for item in iter {
-                        let item = item?;
-                        let item_py_str = item.str()?;
-                        values.push(item_py_str.to_str()?.to_string());
-                    }
-                    result.insert(key_str, values);
-                    continue;
-                }
-            }
-
-            // Handle as single value
-            let value_py_str = value.str()?;
-            result.insert(key_str, vec![value_py_str.to_str()?.to_string()]);
-        }
-    }
-    // Try list of tuples: [('key', 'val'), ...]
-    else if let Ok(iter) = params.try_iter() {
-        for item in iter {
-            let item = item?;
-            if let Ok(tuple) = item.downcast::<pyo3::types::PyTuple>() {
-                if tuple.len() == 2 {
-                    let key = tuple.get_item(0)?;
-                    let value = tuple.get_item(1)?;
-
-                    let key_str = key.str()?.to_str()?.to_string();
-                    let value_str = value.str()?.to_str()?.to_string();
-
-                    result
-                        .entry(key_str)
-                        .or_insert_with(Vec::new)
-                        .push(value_str);
-                } else {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                        "params tuples must be (key, value) pairs",
-                    ));
-                }
-            } else {
-                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                    "params must be a dict or list of (key, value) tuples",
-                ));
+        if let Ok(seq) = value.cast::<pyo3::types::PySequence>() {
+            // Exclude strings (which are technically sequences in Python)
+            if !value.is_instance_of::<pyo3::types::PyString>() {
+                let values: Vec<String> = (0..seq.len()?)
+                    .map(|i| {
+                        let item = seq.get_item(i)?;
+                        Ok(item.str()?.to_str()?.to_string())
+                    })
+                    .collect::<PyResult<_>>()?;
+                result.insert(key_str, values);
+                continue;
             }
         }
-    } else {
-        return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "params must be a dict or list of (key, value) tuples",
-        ));
+
+        let value_str = value.str()?.to_str()?.to_string();
+        result.insert(key_str, vec![value_str]);
     }
 
     Ok(Some(result))
@@ -623,10 +589,237 @@ mod tests {
     use std::net::{SocketAddr, TcpListener as StdTcpListener};
 
     use axum::{Router, routing::get};
+    use pyo3::types::{PyDict, PyList, PyTuple};
     use rstest::rstest;
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[rstest]
+    fn test_params_to_hashmap_none() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|_py| params_to_hashmap(None)).unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_empty_dict() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap();
+
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_single_string_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("key", "value").unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("key").unwrap(), &vec!["value"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_multiple_string_values() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("foo", "bar").unwrap();
+            dict.set_item("limit", "100").unwrap();
+            dict.set_item("offset", "0").unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get("foo").unwrap(), &vec!["bar"]);
+        assert_eq!(result.get("limit").unwrap(), &vec!["100"]);
+        assert_eq!(result.get("offset").unwrap(), &vec!["0"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_int_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("limit", 100).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("limit").unwrap(), &vec!["100"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_float_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("price", 123.45).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("price").unwrap(), &vec!["123.45"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_bool_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("active", true).unwrap();
+            dict.set_item("closed", false).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("active").unwrap(), &vec!["True"]);
+        assert_eq!(result.get("closed").unwrap(), &vec!["False"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_list_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            let list = PyList::new(py, ["1", "2", "3"]).unwrap();
+            dict.set_item("id", list).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("id").unwrap(), &vec!["1", "2", "3"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_tuple_value() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            let tuple = PyTuple::new(py, ["a", "b", "c"]).unwrap();
+            dict.set_item("letters", tuple).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("letters").unwrap(), &vec!["a", "b", "c"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_list_with_mixed_types() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            let list = PyList::new(py, [1, 2, 3]).unwrap();
+            dict.set_item("nums", list).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get("nums").unwrap(), &vec!["1", "2", "3"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_mixed_values() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("name", "test").unwrap();
+            dict.set_item("limit", 50).unwrap();
+            let ids = PyList::new(py, ["1", "2"]).unwrap();
+            dict.set_item("id", ids).unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get("name").unwrap(), &vec!["test"]);
+        assert_eq!(result.get("limit").unwrap(), &vec!["50"]);
+        assert_eq!(result.get("id").unwrap(), &vec!["1", "2"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_string_not_treated_as_sequence() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("text", "hello").unwrap();
+            params_to_hashmap(Some(dict.as_any()))
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        // String should be treated as single value, not as sequence of chars
+        assert_eq!(result.get("text").unwrap(), &vec!["hello"]);
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_invalid_non_dict() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let list = PyList::new(py, ["a", "b"]).unwrap();
+            params_to_hashmap(Some(list.as_any()))
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("params must be a dict"));
+    }
+
+    #[rstest]
+    fn test_params_to_hashmap_invalid_string_param() {
+        pyo3::Python::initialize();
+
+        let result = Python::attach(|py| {
+            let string = pyo3::types::PyString::new(py, "not a dict");
+            params_to_hashmap(Some(string.as_any()))
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("params must be a dict"));
+    }
 
     fn get_unique_port() -> u16 {
         let listener =
