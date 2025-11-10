@@ -50,6 +50,7 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 struct TestServerState {
     connection_count: Arc<Mutex<usize>>,
+    subscriptions: Arc<Mutex<Vec<String>>>,
     subscription_events: Arc<Mutex<Vec<(String, bool)>>>, // (topic, success)
     fail_next_subscriptions: Arc<Mutex<Vec<String>>>,
     auth_response_delay_ms: Arc<Mutex<Option<u64>>>,
@@ -63,6 +64,7 @@ impl Default for TestServerState {
     fn default() -> Self {
         Self {
             connection_count: Arc::new(Mutex::new(0)),
+            subscriptions: Arc::new(Mutex::new(Vec::new())),
             subscription_events: Arc::new(Mutex::new(Vec::new())),
             fail_next_subscriptions: Arc::new(Mutex::new(Vec::new())),
             auth_response_delay_ms: Arc::new(Mutex::new(None)),
@@ -78,6 +80,7 @@ impl TestServerState {
     #[allow(dead_code)]
     async fn reset(&self) {
         *self.connection_count.lock().await = 0;
+        self.subscriptions.lock().await.clear();
         self.subscription_events.lock().await.clear();
         self.fail_next_subscriptions.lock().await.clear();
         *self.auth_response_delay_ms.lock().await = None;
@@ -132,7 +135,29 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
     });
 
     // Main message handling loop
-    while let Some(Ok(msg)) = socket.recv().await {
+    loop {
+        if state.disconnect_trigger.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let msg_opt = match tokio::time::timeout(Duration::from_millis(50), socket.recv()).await {
+            Ok(opt) => opt,
+            Err(_) => continue,
+        };
+
+        let Some(msg) = msg_opt else {
+            break;
+        };
+
+        let msg = match msg {
+            Ok(m) => m,
+            Err(_) => break,
+        };
+
+        if state.disconnect_trigger.load(Ordering::Relaxed) {
+            break;
+        }
+
         match msg {
             Message::Text(text) => {
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -216,7 +241,6 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                                 if let Some(topic_str) = topic.as_str() {
                                     let should_fail = fail_list.contains(&topic_str.to_string());
 
-                                    // Track the subscription event
                                     state
                                         .subscription_events
                                         .lock()
@@ -225,6 +249,11 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
 
                                     if should_fail {
                                         failed_topics.push(topic_str);
+                                    } else {
+                                        let mut subs = state.subscriptions.lock().await;
+                                        if !subs.contains(&topic_str.to_string()) {
+                                            subs.push(topic_str.to_string());
+                                        }
                                     }
                                 }
                             }
@@ -299,6 +328,10 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                                 if let Some(topic_str) = topic.as_str() {
                                     let mut events = state.subscription_events.lock().await;
                                     events.retain(|(t, _)| t != topic_str);
+                                    drop(events);
+
+                                    let mut subs = state.subscriptions.lock().await;
+                                    subs.retain(|s| s != topic_str);
                                 }
                             }
                         }
@@ -337,11 +370,13 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
             _ => {}
         }
 
-        // Check if we should trigger a disconnect
         if state.disconnect_trigger.load(Ordering::Relaxed) {
             break;
         }
     }
+
+    let mut count = state.connection_count.lock().await;
+    *count = count.saturating_sub(1);
 }
 
 // Load test data from existing files
@@ -398,6 +433,17 @@ where
         Ok(events) => events,
         Err(_) => state.subscription_events().await,
     }
+}
+
+async fn wait_for_connection_count(state: &TestServerState, expected: usize, timeout: Duration) {
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { *state.connection_count.lock().await == expected }
+        },
+        timeout,
+    )
+    .await;
 }
 
 #[rstest]
@@ -1807,4 +1853,220 @@ mod conditional_order_tests {
             }
         }
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_is_active_lifecycle() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/v5/private", addr);
+
+    let credential = Credential::new("test_key", "test_secret");
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        credential,
+        Some(ws_url),
+        None,
+    );
+
+    assert!(
+        !client.is_active(),
+        "Client should not be active before connect"
+    );
+
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+
+    assert!(
+        client.is_active(),
+        "Client should be active after connect completes"
+    );
+
+    client.close().await.unwrap();
+
+    wait_until_async(|| async { !client.is_active() }, Duration::from_secs(2)).await;
+
+    assert!(
+        !client.is_active(),
+        "Client should not be active after close"
+    );
+}
+
+#[tokio::test]
+async fn test_is_active_false_after_close() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/v5/private", addr);
+
+    let credential = Credential::new("test_key", "test_secret");
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        credential,
+        Some(ws_url),
+        None,
+    );
+
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+    assert!(
+        client.is_active(),
+        "Expected is_active() to be true after connect"
+    );
+
+    client.close().await.unwrap();
+
+    wait_until_async(|| async { !client.is_active() }, Duration::from_secs(2)).await;
+
+    assert!(
+        !client.is_active(),
+        "Expected is_active() to be false after close"
+    );
+    assert!(
+        client.is_closed(),
+        "Expected is_closed() to be true after close"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_subscribe_after_stream_call() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/v5/public/linear", addr);
+
+    let mut client = BybitWebSocketClient::new_public_with(
+        BybitProductType::Linear,
+        BybitEnvironment::Mainnet,
+        Some(ws_url),
+        None,
+    );
+
+    client.connect().await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
+
+    let _stream = client.stream();
+
+    tokio::spawn(async move {
+        tokio::pin!(_stream);
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = client
+        .subscribe(vec!["publicTrade.BTCUSDT".to_string()])
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Subscribe should work after stream() is called, but got error: {:?}",
+        result.err()
+    );
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{}/v5/private", addr);
+
+    let credential = Credential::new("test_api_key", "test_api_secret");
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        credential,
+        Some(ws_url.clone()),
+        None,
+    );
+
+    client.connect().await.unwrap();
+
+    let instrument_id = InstrumentId::from("BTCUSDT.BYBIT");
+    client.subscribe_trades(instrument_id).await.unwrap();
+    client.subscribe_positions().await.unwrap();
+
+    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "publicTrade.BTCUSDT" && *ok)
+            && events.iter().any(|(topic, ok)| topic == "position" && *ok)
+    })
+    .await;
+
+    {
+        let subs = state.subscriptions.lock().await;
+        assert!(subs.contains(&"publicTrade.BTCUSDT".to_string()));
+        assert!(subs.contains(&"position".to_string()));
+    }
+
+    client.unsubscribe_positions().await.unwrap();
+
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move {
+                let subs = state.subscriptions.lock().await;
+                !subs.contains(&"position".to_string())
+            }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    {
+        let subs = state.subscriptions.lock().await;
+        assert!(!subs.contains(&"position".to_string()));
+        assert!(subs.contains(&"publicTrade.BTCUSDT".to_string()));
+    }
+
+    state.clear_subscription_events().await;
+
+    // Wait to ensure events are cleared
+    wait_until_async(
+        || {
+            let state = state.clone();
+            async move { state.subscription_events().await.is_empty() }
+        },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    state.disconnect_trigger.store(true, Ordering::Relaxed);
+    wait_for_connection_count(&state, 0, Duration::from_secs(2)).await;
+
+    state.disconnect_trigger.store(false, Ordering::Relaxed);
+
+    client.wait_until_active(10.0).await.unwrap();
+    wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
+
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "publicTrade.BTCUSDT" && *ok)
+    })
+    .await;
+
+    let subs = state.subscriptions.lock().await;
+    let events = state.subscription_events().await;
+
+    assert!(
+        subs.contains(&"publicTrade.BTCUSDT".to_string()),
+        "Trade subscription should be restored after reconnection"
+    );
+    assert!(
+        !subs.contains(&"position".to_string()),
+        "Position subscription should NOT be restored after unsubscribe and reconnect"
+    );
+
+    assert!(
+        !events.iter().any(|(topic, _ok)| topic == "position"),
+        "Position should not appear in subscription events after reconnect; events={events:?}"
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|(topic, ok)| topic == "publicTrade.BTCUSDT" && *ok),
+        "Trade subscription should be restored; events={events:?}"
+    );
+
+    client.close().await.unwrap();
 }
