@@ -30,25 +30,28 @@ use axum::{
     extract::Query,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use nautilus_okx::{
-    common::enums::{OKXInstrumentType, OKXOrderStatus},
+    common::enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode},
     http::{
         client::{OKXHttpClient, OKXRawHttpClient},
         error::OKXHttpError,
         query::{
-            GetInstrumentsParamsBuilder, GetOrderHistoryParams, GetOrderListParams,
-            GetOrderParamsBuilder,
+            GetAlgoOrdersParamsBuilder, GetInstrumentsParamsBuilder, GetOrderHistoryParams,
+            GetOrderListParams, GetOrderParamsBuilder, GetPositionTiersParamsBuilder,
+            GetPositionsParamsBuilder, GetTradeFeeParamsBuilder,
+            GetTransactionDetailsParamsBuilder, SetPositionModeParamsBuilder,
         },
     },
 };
 use rstest::rstest;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+use ustr::Ustr;
 
 #[derive(Clone, Default)]
 struct TestServerState {
@@ -232,6 +235,159 @@ fn create_router(state: Arc<TestServerState>) -> Router {
                 },
             ),
         )
+        .route(
+            "/api/v5/trade/order-algo-pending",
+            get(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_get_orders_algo_pending.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/trade/order-algo-history",
+            get(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_get_orders_algo_history.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/trade/order-algo",
+            post(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_place_algo_order_response.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/trade/cancel-algos",
+            post(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_cancel_algo_order_response.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/account/set-position-mode",
+            post(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_set_position_mode_response.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/account/trade-fee",
+            get(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_get_trade_fee_response.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/account/positions",
+            get(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(load_test_data("http_get_positions.json")).into_response()
+            }),
+        )
+        .route(
+            "/api/v5/trade/fills",
+            get(|headers: HeaderMap| async move {
+                if !has_auth_headers(&headers) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "code": "401",
+                            "msg": "Missing authentication headers",
+                            "data": [],
+                        })),
+                    )
+                        .into_response();
+                }
+
+                Json(json!({
+                    "code": "0",
+                    "msg": "",
+                    "data": [load_test_data("http_transaction_detail.json")],
+                }))
+                .into_response()
+            }),
+        )
+        .route(
+            "/api/v5/public/position-tiers",
+            get(|| async { Json(load_test_data("http_get_position_tiers.json")) }),
+        )
 }
 
 async fn start_test_server(state: Arc<TestServerState>) -> SocketAddr {
@@ -289,7 +445,7 @@ async fn test_http_get_balance_requires_credentials() {
 
     match result {
         Err(OKXHttpError::MissingCredentials) => {}
-        other => panic!("expected MissingCredentials error, got {other:?}"),
+        other => panic!("expected MissingCredentials error: {other:?}"),
     }
 }
 
@@ -353,7 +509,7 @@ async fn test_http_get_instruments_handles_rate_limit_error() {
 
     match last_error.unwrap() {
         OKXHttpError::OkxError { error_code, .. } => assert_eq!(error_code, "50116"),
-        other => panic!("expected OkxError, got {other:?}"),
+        other => panic!("expected OkxError: {other:?}"),
     }
 }
 
@@ -378,7 +534,7 @@ async fn test_http_get_pending_orders_requires_credentials() {
 
     match client.get_orders_pending(params).await {
         Err(OKXHttpError::MissingCredentials) => {}
-        other => panic!("expected MissingCredentials error, got {other:?}"),
+        other => panic!("expected MissingCredentials error: {other:?}"),
     }
 }
 
@@ -1555,4 +1711,677 @@ async fn test_request_trades_multiple_trades_same_id() {
         3,
         "Should have all 3 trades with ID 1003"
     );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_order_algo_pending_requires_credentials() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetAlgoOrdersParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Swap)
+        .build()
+        .unwrap();
+
+    let result = client.get_order_algo_pending(params).await;
+
+    match result {
+        Err(OKXHttpError::MissingCredentials) => {}
+        other => panic!("expected MissingCredentials error: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_order_algo_pending_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetAlgoOrdersParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Swap)
+        .build()
+        .unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let orders = client.get_order_algo_pending(params).await.unwrap();
+
+    assert!(!orders.is_empty());
+    assert_eq!(orders[0].algo_id, "123456789");
+    assert_eq!(orders[0].inst_type, OKXInstrumentType::Swap);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_order_algo_history_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetAlgoOrdersParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Swap)
+        .build()
+        .unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let orders = client.get_order_algo_history(params).await.unwrap();
+
+    assert!(!orders.is_empty());
+    assert_eq!(orders[0].algo_id, "987654321");
+    assert_eq!(orders[0].state, OKXOrderStatus::Effective);
+}
+
+// Note: place_algo_order and cancel_algo_order are on OKXHttpClient (not Raw),
+// and will be tested via WebSocket client tests instead.
+
+#[rstest]
+#[tokio::test]
+async fn test_http_set_position_mode_requires_credentials() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = SetPositionModeParamsBuilder::default()
+        .pos_mode(OKXPositionMode::LongShortMode)
+        .build()
+        .unwrap();
+
+    let result = client.set_position_mode(params).await;
+
+    match result {
+        Err(OKXHttpError::MissingCredentials) => {}
+        other => panic!("expected MissingCredentials error: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_set_position_mode_returns_response() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let params = SetPositionModeParamsBuilder::default()
+        .pos_mode(OKXPositionMode::LongShortMode)
+        .build()
+        .unwrap();
+
+    let response = client.set_position_mode(params).await.unwrap();
+
+    assert!(!response.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_position_tiers_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetPositionTiersParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .inst_id("BTC-USDT")
+        .build()
+        .unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let tiers = client.get_position_tiers(params).await.unwrap();
+
+    assert!(!tiers.is_empty());
+    assert_eq!(tiers[0].inst_id, Ustr::from("BTC-USDT"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_trade_fee_requires_credentials() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetTradeFeeParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .uly("")
+        .inst_family("")
+        .build()
+        .unwrap();
+
+    let result = client.get_trade_fee(params).await;
+
+    match result {
+        Err(OKXHttpError::MissingCredentials) => {}
+        other => panic!("expected MissingCredentials error: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_trade_fee_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetTradeFeeParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .uly("")
+        .inst_family("")
+        .build()
+        .unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let fees = client.get_trade_fee(params).await.unwrap();
+
+    assert!(!fees.is_empty());
+    assert_eq!(fees[0].inst_type, OKXInstrumentType::Spot);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_positions_requires_credentials() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetPositionsParamsBuilder::default().build().unwrap();
+
+    let result = client.get_positions(params).await;
+
+    match result {
+        Err(OKXHttpError::MissingCredentials) => {}
+        other => panic!("expected MissingCredentials error: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_positions_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetPositionsParamsBuilder::default().build().unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let positions = client.get_positions(params).await.unwrap();
+
+    assert!(!positions.is_empty());
+    assert_eq!(positions[0].inst_id, Ustr::from("BTC-USDT-SWAP"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_fills_requires_credentials() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetTransactionDetailsParamsBuilder::default()
+        .build()
+        .unwrap();
+
+    let result = client.get_fills(params).await;
+
+    match result {
+        Err(OKXHttpError::MissingCredentials) => {}
+        other => panic!("expected MissingCredentials error: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_get_fills_returns_data() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{}", addr);
+
+    let params = GetTransactionDetailsParamsBuilder::default()
+        .build()
+        .unwrap();
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let fills = client.get_fills(params).await.unwrap();
+
+    assert!(!fills.is_empty());
+}
+
+// Error Handling Tests
+
+#[rstest]
+#[tokio::test]
+async fn test_http_network_error_invalid_port() {
+    let base_url = "http://127.0.0.1:1".to_string();
+
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(1), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::HttpClientError(_)) => {}
+        other => panic!("expected HttpClientError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_okx_error_response() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "51000",
+                    "msg": "Parameter instType can not be empty",
+                    "data": [],
+                })),
+            )
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::OkxError {
+            error_code,
+            message,
+        }) => {
+            assert_eq!(error_code, "51000");
+            assert!(message.contains("instType"));
+        }
+        other => panic!("expected OkxError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_malformed_json_response() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async { "not valid json" }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::JsonError(_)) => {}
+        other => panic!("expected JsonError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_500_internal_server_error() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "code": "50000",
+                    "msg": "Internal server error",
+                    "data": [],
+                })),
+            )
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::OkxError { error_code, .. }) => {
+            assert_eq!(error_code, "50000");
+        }
+        other => panic!("expected OkxError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_503_service_unavailable() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service temporarily unavailable",
+            )
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::UnexpectedStatus { status, .. }) => {
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        }
+        other => panic!("expected UnexpectedStatus: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_invalid_response_structure() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async {
+            Json(json!({
+                "code": "0",
+                "msg": "",
+                "data": [
+                    {
+                        "instId": "BTC-USDT",
+                        "missing_required_field": "value"
+                    }
+                ],
+            }))
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::JsonError(msg)) => {
+            assert!(msg.contains("missing field") || msg.contains("UninitializedField"));
+        }
+        other => panic!("expected JsonError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_rate_limit_error_different_code() {
+    let router = Router::new().route(
+        "/api/v5/account/balance",
+        get(|| async {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "code": "50011",
+                    "msg": "Request too frequent",
+                    "data": [],
+                })),
+            )
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client = OKXRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        "test_secret".to_string(),
+        "test_passphrase".to_string(),
+        base_url,
+        Some(60),
+        None,
+        None,
+        None,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let result = client.get_balance().await;
+
+    assert!(result.is_err());
+    match result {
+        Err(OKXHttpError::OkxError {
+            error_code,
+            message,
+        }) => {
+            assert_eq!(error_code, "50011");
+            assert!(message.contains("frequent"));
+        }
+        other => panic!("expected OkxError: {other:?}"),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_http_empty_response_data() {
+    let router = Router::new().route(
+        "/api/v5/public/instruments",
+        get(|| async {
+            Json(json!({
+                "code": "0",
+                "msg": "",
+                "data": [],
+            }))
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let base_url = format!("http://{}", addr);
+    let client =
+        OKXRawHttpClient::new(Some(base_url), Some(60), None, None, None, false, None).unwrap();
+
+    let params = GetInstrumentsParamsBuilder::default()
+        .inst_type(OKXInstrumentType::Spot)
+        .build()
+        .unwrap();
+
+    let result = client.get_instruments(params).await.unwrap();
+
+    assert!(result.is_empty());
 }
