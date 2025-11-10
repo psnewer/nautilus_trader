@@ -4457,8 +4457,43 @@ class HttpClient:
         self,
         method: HttpMethod,
         url: str,
+        params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         body: bytes | None = None,
+        keys: list[str] | None = None,
+        timeout_secs: int | None = None,
+    ) -> HttpResponse: ...
+    async def get(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        keys: list[str] | None = None,
+        timeout_secs: int | None = None,
+    ) -> HttpResponse: ...
+    async def post(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        keys: list[str] | None = None,
+        timeout_secs: int | None = None,
+    ) -> HttpResponse: ...
+    async def patch(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        keys: list[str] | None = None,
+        timeout_secs: int | None = None,
+    ) -> HttpResponse: ...
+    async def delete(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         keys: list[str] | None = None,
         timeout_secs: int | None = None,
     ) -> HttpResponse: ...
@@ -4477,6 +4512,40 @@ class HttpResponse:
     def body(self) -> bytes: ...
     @property
     def headers(self) -> dict[str, str]: ...
+
+def http_get(
+    url: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_secs: int | None = None,
+) -> HttpResponse: ...
+def http_post(
+    url: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+    timeout_secs: int | None = None,
+) -> HttpResponse: ...
+def http_patch(
+    url: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+    timeout_secs: int | None = None,
+) -> HttpResponse: ...
+def http_delete(
+    url: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_secs: int | None = None,
+) -> HttpResponse: ...
+def http_download(
+    url: str,
+    filepath: str,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_secs: int | None = None,
+) -> None: ...
 
 class Quota:
     @classmethod

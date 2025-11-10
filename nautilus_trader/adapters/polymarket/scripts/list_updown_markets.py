@@ -23,7 +23,9 @@ backtesting with high-frequency orderbook and trade data.
 
 import ast
 
-import requests
+import msgspec
+
+from nautilus_trader.core.nautilus_pyo3.network import http_get
 
 
 def fetch_active_markets(limit: int = 100) -> list[dict]:
@@ -36,9 +38,14 @@ def fetch_active_markets(limit: int = 100) -> list[dict]:
         "archived": "false",
         "limit": limit,
     }
-    resp = requests.get("https://gamma-api.polymarket.com/markets", params=params, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    base_url = "https://gamma-api.polymarket.com/markets"
+
+    resp = http_get(base_url, params=params, timeout_secs=30)
+
+    if resp.status != 200:
+        raise RuntimeError(f"HTTP error: {resp.status}")
+
+    return msgspec.json.decode(resp.body)
 
 
 def filter_updown_markets(markets: list[dict], asset: str | None = None) -> list[dict]:

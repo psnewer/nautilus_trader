@@ -453,6 +453,7 @@ impl OKXRawHttpClient {
                     .request_with_ustr_keys(
                         method.clone(),
                         url,
+                        None,
                         Some(headers),
                         body,
                         None,

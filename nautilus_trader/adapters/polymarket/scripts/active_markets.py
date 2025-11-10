@@ -16,7 +16,9 @@
 
 import ast
 
-import requests
+import msgspec
+
+from nautilus_trader.core.nautilus_pyo3.network import http_get
 
 
 params = {
@@ -26,8 +28,10 @@ params = {
     "limit": 5,
 }
 
-resp = requests.get("https://gamma-api.polymarket.com/markets", params=params, timeout=30)  # type: ignore
-data = resp.json()
+base_url = "https://gamma-api.polymarket.com/markets"
+
+resp = http_get(base_url, params=params, timeout_secs=30)
+data = msgspec.json.decode(resp.body)
 
 for market in data:
     slug = market.get("slug", "")

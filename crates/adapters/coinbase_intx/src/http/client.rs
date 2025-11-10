@@ -233,7 +233,7 @@ impl CoinbaseIntxHttpInnerClient {
 
         let resp = self
             .client
-            .request(method.clone(), url, headers, body, None, None)
+            .request(method.clone(), url, None, headers, body, None, None)
             .await?;
 
         tracing::trace!("Response: {resp:?}");

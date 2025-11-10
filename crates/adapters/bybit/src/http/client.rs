@@ -337,6 +337,7 @@ impl BybitRawHttpClient {
                     .request(
                         method,
                         url,
+                        None,
                         Some(headers),
                         body,
                         None,

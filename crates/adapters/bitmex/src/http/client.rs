@@ -380,7 +380,7 @@ impl BitmexRawHttpClient {
                 let rate_keys = Self::rate_limit_keys();
                 let resp = self
                     .client
-                    .request_with_ustr_keys(method, url, headers, body, None, Some(rate_keys))
+                    .request_with_ustr_keys(method, url, None, headers, body, None, Some(rate_keys))
                     .await?;
 
                 if resp.status.is_success() {

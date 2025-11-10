@@ -5489,7 +5489,9 @@ dependencies = [
  "rstest",
  "rustls",
  "rustls-pemfile",
+ "serde",
  "serde_json",
+ "serde_urlencoded",
  "strum 0.27.2",
  "thiserror 2.0.17",
  "tokio",
@@ -5499,6 +5501,7 @@ dependencies = [
  "tracing",
  "tracing-test",
  "turmoil",
+ "url",
  "ustr",
  "webpki-roots 1.0.4",
 ]

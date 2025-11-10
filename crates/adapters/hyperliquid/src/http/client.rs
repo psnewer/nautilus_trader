@@ -624,6 +624,7 @@ impl HyperliquidHttpClient {
                 Method::POST,
                 url.clone(),
                 None,
+                None,
                 Some(body_bytes),
                 None,
                 None,
@@ -1317,6 +1318,7 @@ impl HyperliquidHttpClient {
             .request(
                 Method::POST,
                 url.clone(),
+                None,
                 None,
                 Some(body_bytes),
                 None,

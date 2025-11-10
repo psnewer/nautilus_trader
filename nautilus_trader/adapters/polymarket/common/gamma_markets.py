@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Generator
+from math import ceil
 from typing import Any
 
-import requests
+import msgspec
+
+from nautilus_trader.core.nautilus_pyo3.network import http_get
 
 
 DEFAULT_GAMMA_BASE_URL = os.getenv("GAMMA_API_URL", "https://gamma-api.polymarket.com")
@@ -99,7 +102,6 @@ def build_markets_query(filters: dict[str, Any] | None = None) -> dict[str, Any]
 
 
 def _request_markets_page(
-    session: requests.Session,
     base_url: str,
     params: dict[str, Any],
     offset: int,
@@ -112,16 +114,17 @@ def _request_markets_page(
     Returns a list of market dicts.
 
     """
-    url = f"{base_url}/markets"
+    base_endpoint = f"{base_url}/markets"
     effective_params = dict(params)
     effective_params["limit"] = limit
     effective_params["offset"] = offset
 
-    resp = session.get(url, params=effective_params, timeout=timeout)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gamma Get Markets failed: {resp.status_code} for url {url} with params {effective_params} and body {resp.text}")
+    resp = http_get(base_endpoint, params=effective_params, timeout_secs=max(1, ceil(timeout)))
+    if resp.status != 200:
+        body = resp.body.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gamma Get Markets failed: {resp.status} for url {base_endpoint} with params {effective_params} and body {body}")
 
-    data = resp.json()
+    data = msgspec.json.decode(resp.body)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and "data" in data:
@@ -143,22 +146,20 @@ def iter_markets(
     limit = int(filters.get("limit", 500)) if filters else 500
     offset = int(filters.get("offset", 0)) if filters else 0
 
-    with requests.Session() as session:
-        while True:
-            markets = _request_markets_page(
-                session=session,
-                base_url=base,
-                params=params,
-                offset=offset,
-                limit=limit,
-                timeout=timeout,
-            )
-            if not markets:
-                break
-            yield from markets
-            if len(markets) < limit:
-                break
-            offset += limit
+    while True:
+        markets = _request_markets_page(
+            base_url=base,
+            params=params,
+            offset=offset,
+            limit=limit,
+            timeout=timeout,
+        )
+        if not markets:
+            break
+        yield from markets
+        if len(markets) < limit:
+            break
+        offset += limit
 
 
 def normalize_gamma_market_to_clob_format(gamma_market: dict[str, Any]) -> dict[str, Any]:
@@ -179,8 +180,6 @@ def normalize_gamma_market_to_clob_format(gamma_market: dict[str, Any]) -> dict[
         Market data normalized to CLOB API format with snake_case fields.
 
     """
-    import json
-
     # Handle rewards field
     rewards = gamma_market.get("clobRewards", [])
     rewards_dict = None
@@ -200,11 +199,11 @@ def normalize_gamma_market_to_clob_format(gamma_market: dict[str, Any]) -> dict[
 
     # Parse JSON strings if needed
     if isinstance(clob_token_ids, str):
-        clob_token_ids = json.loads(clob_token_ids)
+        clob_token_ids = msgspec.json.decode(clob_token_ids)
     if isinstance(outcomes, str):
-        outcomes = json.loads(outcomes)
+        outcomes = msgspec.json.decode(outcomes)
     if isinstance(outcome_prices, str):
-        outcome_prices = json.loads(outcome_prices)
+        outcome_prices = msgspec.json.decode(outcome_prices)
 
     # Create tokens array in CLOB format
     for i, (token_id, outcome) in enumerate(zip(clob_token_ids, outcomes)):

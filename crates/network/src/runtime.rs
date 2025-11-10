@@ -13,33 +13,25 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use nautilus_network::http::InnerHttpClient;
-use reqwest::Method;
+//! A common Tokio runtime for network operations.
 
-const CONCURRENCY: usize = 256;
-const TOTAL: usize = 1_000_000;
+use std::sync::OnceLock;
 
-#[tokio::main]
-async fn main() {
-    let client = InnerHttpClient::default();
-    let mut reqs = Vec::new();
-    for _ in 0..(TOTAL / CONCURRENCY) {
-        for _ in 0..CONCURRENCY {
-            reqs.push(client.send_request(
-                Method::GET,
-                "http://127.0.0.1:3000".to_string(),
-                None,
-                None,
-                None,
-                None,
-            ));
-        }
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-        let resp = futures::future::join_all(reqs.drain(0..)).await;
-        assert!(resp.iter().all(|res| if let Ok(resp) = res {
-            resp.status.is_success()
-        } else {
-            false
-        }));
-    }
+/// Returns a reference to the global network Tokio runtime.
+///
+/// The runtime is lazily initialized on the first call and reused thereafter.
+///
+/// # Panics
+///
+/// Panics if the Tokio runtime fails to build, which should only occur in
+/// extremely rare circumstances such as system resource exhaustion.
+pub fn get_runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime")
+    })
 }
