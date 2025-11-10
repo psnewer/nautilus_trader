@@ -1193,11 +1193,11 @@ impl OKXHttpClient {
             match self.inner.get_trade_fee(fee_params).await {
                 Ok(rates) => rates.into_iter().next(),
                 Err(OKXHttpError::MissingCredentials) => {
-                    log::debug!("Missing credentials for fee rates, using None");
+                    tracing::debug!("Missing credentials for fee rates, using None");
                     None
                 }
                 Err(e) => {
-                    log::warn!("Failed to fetch fee rates for {instrument_type}: {e}");
+                    tracing::warn!("Failed to fetch fee rates for {instrument_type}: {e}");
                     None
                 }
             }
@@ -1246,7 +1246,7 @@ impl OKXHttpClient {
                     // Unsupported instrument type, skip silently
                 }
                 Err(e) => {
-                    log::warn!("Failed to parse instrument {}: {e}", inst.inst_id);
+                    tracing::warn!("Failed to parse instrument {}: {e}", inst.inst_id);
                 }
             }
         }
@@ -1302,11 +1302,11 @@ impl OKXHttpClient {
             match self.inner.get_trade_fee(fee_params).await {
                 Ok(rates) => rates.into_iter().next(),
                 Err(OKXHttpError::MissingCredentials) => {
-                    log::debug!("Missing credentials for fee rates, using None");
+                    tracing::debug!("Missing credentials for fee rates, using None");
                     None
                 }
                 Err(e) => {
-                    log::warn!("Failed to fetch fee rates for {symbol}: {e}");
+                    tracing::warn!("Failed to fetch fee rates for {symbol}: {e}");
                     None
                 }
             }
