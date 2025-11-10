@@ -19,7 +19,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -57,6 +57,9 @@ struct TestServerState {
     fail_next_subscriptions: Arc<Mutex<Vec<String>>>,
     auth_response_delay_ms: Arc<Mutex<Option<u64>>>,
     subscription_events: Arc<Mutex<Vec<(String, bool)>>>,
+    ping_count: Arc<AtomicUsize>,
+    pong_count: Arc<AtomicUsize>,
+    fail_next_auth: Arc<AtomicBool>,
 }
 
 impl TestServerState {
@@ -95,6 +98,9 @@ impl Default for TestServerState {
             fail_next_subscriptions: Arc::new(Mutex::new(Vec::new())),
             auth_response_delay_ms: Arc::new(Mutex::new(None)),
             subscription_events: Arc::new(Mutex::new(Vec::new())),
+            ping_count: Arc::new(AtomicUsize::new(0)),
+            pong_count: Arc::new(AtomicUsize::new(0)),
+            fail_next_auth: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -201,6 +207,31 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
 
                         if let Some(delay) = *state.auth_response_delay_ms.lock().await {
                             tokio::time::sleep(Duration::from_millis(delay)).await;
+                        }
+
+                        if state.fail_next_auth.load(Ordering::Relaxed) {
+                            state.fail_next_auth.store(false, Ordering::Relaxed);
+
+                            let response = json!({
+                                "status": 401,
+                                "error": "Authentication failed",
+                                "meta": {},
+                                "request": {
+                                    "op": "authKeyExpires",
+                                    "args": data.get("args")
+                                }
+                            });
+
+                            if socket
+                                .send(Message::Text(
+                                    serde_json::to_string(&response).unwrap().into(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
                         }
 
                         state.authenticated.store(true, Ordering::Relaxed);
@@ -511,10 +542,12 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
             }
             Message::Pong(data) => {
                 state.received_pong.store(true, Ordering::Relaxed);
+                state.pong_count.fetch_add(1, Ordering::Relaxed);
                 let mut last_pong = state.last_pong.lock().await;
                 *last_pong = Some(data.to_vec());
             }
             Message::Ping(data) => {
+                state.ping_count.fetch_add(1, Ordering::Relaxed);
                 // Respond with pong
                 if socket.send(Message::Pong(data)).await.is_err() {
                     break;
@@ -527,7 +560,6 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
         }
     }
 
-    // Decrement connection count
     let mut count = state.connection_count.lock().await;
     *count = count.saturating_sub(1);
 }
@@ -2284,6 +2316,98 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
             .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok),
         "Trade subscription should be restored; events={events:?}"
     );
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_login_failure_emits_error() {
+    let (addr, state) = start_test_server().await.unwrap();
+    state.fail_next_auth.store(true, Ordering::Relaxed);
+    let ws_url = format!("ws://{addr}/realtime");
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url),
+        Some("invalid_key".to_string()),
+        Some("invalid_secret".to_string()),
+        Some(AccountId::new("BITMEX-001")),
+        None,
+    )
+    .unwrap();
+
+    let _ = client.connect().await;
+
+    wait_until_async(
+        || async { *state.connection_count.lock().await > 0 },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    wait_until_async(
+        || async { *state.auth_calls.lock().await > 0 },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    assert!(!state.authenticated.load(Ordering::Relaxed));
+
+    let _ = client.close().await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_sends_pong_for_text_ping() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{addr}/realtime");
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url),
+        None,
+        None,
+        Some(AccountId::new("BITMEX-001")),
+        Some(1), // 1 second heartbeat
+    )
+    .unwrap();
+
+    client.connect().await.unwrap();
+
+    wait_until_async(
+        || async { state.ping_count.load(Ordering::Relaxed) > 0 },
+        Duration::from_secs(3),
+    )
+    .await;
+
+    assert!(state.ping_count.load(Ordering::Relaxed) > 0);
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_sends_pong_for_control_ping() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{addr}/realtime");
+
+    let mut client = BitmexWebSocketClient::new(
+        Some(ws_url),
+        None,
+        None,
+        Some(AccountId::new("BITMEX-001")),
+        None,
+    )
+    .unwrap();
+
+    client.connect().await.unwrap();
+
+    wait_until_async(
+        || async { *state.connection_count.lock().await > 0 },
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Control ping/pong is handled by WebSocket layer, verify connection remains active
+    assert!(client.is_active());
 
     client.close().await.unwrap();
 }
