@@ -38,9 +38,9 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     data::{Bar, BarType, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick, order::BookOrder},
     enums::{
-        AccountType, AggregationSource, AggressorSide, BarAggregation, BookType, ContingencyType,
-        LiquiditySide, MarketStatus, MarketStatusAction, OmsType, OrderSide, OrderSideSpecified,
-        OrderStatus, OrderType, PriceType, TimeInForce,
+        AccountType, AggregationSource, AggressorSide, BookType, ContingencyType, LiquiditySide,
+        MarketStatus, MarketStatusAction, OmsType, OrderSide, OrderSideSpecified, OrderStatus,
+        OrderType, PriceType, TimeInForce,
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny, OrderExpired,
@@ -306,11 +306,6 @@ impl OrderMatchingEngine {
         let bar_type = bar.bar_type;
         // Do not process internally aggregated bars
         if bar_type.aggregation_source() == AggregationSource::Internal {
-            return;
-        }
-
-        // Do not process monthly bars (no `timedelta` available)
-        if bar_type.spec().aggregation == BarAggregation::Month {
             return;
         }
 

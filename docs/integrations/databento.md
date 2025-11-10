@@ -774,24 +774,6 @@ The `reconnect_timeout_mins` parameter controls how long the client attempts rec
 - Prevents wasting resources overnight when markets are closed.
 - Requires manual intervention for longer outages.
 
-**Custom timeout**: Configure a specific timeout in minutes.
-
-```python
-config = DatabentoDataClientConfig(
-    api_key="db-xxx",
-    reconnect_timeout_mins=30,  # Try for 30 minutes
-)
-```
-
-**Infinite retries** (`None`): Use only for fully unattended systems.
-
-```python
-config = DatabentoDataClientConfig(
-    api_key="db-xxx",
-    reconnect_timeout_mins=None,  # Never give up
-)
-```
-
 :::warning
 Setting `reconnect_timeout_mins=None` causes indefinite retry attempts. Use this only for unattended systems that must survive overnight market closures without manual intervention. This can mask persistent configuration or authentication issues.
 :::
@@ -802,9 +784,9 @@ Databento restarts their live gateways every Sunday at the following times (all 
 
 | Dataset            | Maintenance Time (UTC) |
 |--------------------|------------------------|
-| CME Globex         | 09:30 |
-| All ICE venues     | 09:45 |
-| All other datasets | 10:30 |
+| CME Globex         | 09:30                  |
+| All ICE venues     | 09:45                  |
+| All other datasets | 10:30                  |
 
 The default 10-minute timeout handles typical maintenance restarts. For unattended systems running through the maintenance window, consider using `reconnect_timeout_mins=None` or a longer timeout. See the [Databento Maintenance Schedule](https://databento.com/docs/api-reference-live/basics/maintenance-schedule) for details.
 

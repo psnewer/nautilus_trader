@@ -29,7 +29,7 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    data::{BookOrder, TradeTick, stubs::OrderBookDeltaTestBuilder},
+    data::{Bar, BarType, BookOrder, TradeTick, stubs::OrderBookDeltaTestBuilder},
     enums::{
         AccountType, AggressorSide, BookAction, BookType, ContingencyType, LiquiditySide, OmsType,
         OrderSide, OrderType, TimeInForce, TrailingOffsetType,
@@ -2979,4 +2979,70 @@ fn test_process_stop_orders_with_protection_rejeceted_and_valid(
         _ => panic!("Expected Accepted event in third message"),
     };
     assert_eq!(accepted.client_order_id, client_order_id_market_buy);
+}
+
+#[rstest]
+fn test_process_monthly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
+    // Arrange
+    let config = OrderMatchingEngineConfig {
+        bar_execution: true,
+        ..Default::default()
+    };
+    let mut engine = get_order_matching_engine(instrument_eth_usdt, None, None, Some(config), None);
+
+    // Create a monthly bar (EXTERNAL source to ensure it's processed for execution)
+    let bar_type = BarType::from("ETHUSDT-PERP.BINANCE-1-MONTH-LAST-EXTERNAL");
+    let monthly_bar = Bar {
+        bar_type,
+        open: Price::from("1500.00"),
+        high: Price::from("1510.00"),
+        low: Price::from("1490.00"),
+        close: Price::from("1505.00"),
+        volume: Quantity::from("100000"),
+        ts_event: UnixNanos::from(1_000_000_000),
+        ts_init: UnixNanos::from(1_000_000_000),
+    };
+
+    // Act - process the monthly bar
+    engine.process_bar(&monthly_bar);
+
+    // Assert - verify the bar was processed by checking that last price was updated
+    // Monthly bars should now be processed for execution (LAST price type bars update last price)
+    assert!(
+        engine.core.is_last_initialized,
+        "Monthly bar should be processed and update market state"
+    );
+}
+
+#[rstest]
+fn test_process_yearly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
+    // Arrange
+    let config = OrderMatchingEngineConfig {
+        bar_execution: true,
+        ..Default::default()
+    };
+    let mut engine = get_order_matching_engine(instrument_eth_usdt, None, None, Some(config), None);
+
+    // Create a yearly bar (EXTERNAL source to ensure it's processed for execution)
+    let bar_type = BarType::from("ETHUSDT-PERP.BINANCE-1-YEAR-LAST-EXTERNAL");
+    let yearly_bar = Bar {
+        bar_type,
+        open: Price::from("1500.00"),
+        high: Price::from("1510.00"),
+        low: Price::from("1490.00"),
+        close: Price::from("1505.00"),
+        volume: Quantity::from("100000"),
+        ts_event: UnixNanos::from(1_000_000_000),
+        ts_init: UnixNanos::from(1_000_000_000),
+    };
+
+    // Act - process the yearly bar
+    engine.process_bar(&yearly_bar);
+
+    // Assert - verify the bar was processed by checking that last price was updated
+    // Yearly bars should now be processed for execution (LAST price type bars update last price)
+    assert!(
+        engine.core.is_last_initialized,
+        "Yearly bar should be processed and update market state"
+    );
 }

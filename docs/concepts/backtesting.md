@@ -384,8 +384,7 @@ Even when you provide bar data, Nautilus maintains an internal order book for ea
 Bars will **not** be processed for execution (and will not update the order book) in the following cases:
 
 - **Internally aggregated bars**: Bars with `AggregationSource.INTERNAL` are skipped to avoid processing bars that are derived from already-processed tick data.
-- **Monthly bars**: Bars with `BarAggregation.MONTH` are not supported for execution as they lack a fixed timedelta.
-- **Non-L1 book types**: When the venue's `book_type` is configured as `L2_MBP` or `L3_MBO`, bar data is ignored for execution processing. The matching engine only processes order book data in these modes.
+- **Non-L1 book types**: When the venue's `book_type` is configured as `L2_MBP` or `L3_MBO`, bar data is ignored for execution processing, as bars are derived from top-of-book prices only.
 
 In these cases, bars will still be received by strategies for analytics and decision-making, but they won't trigger order matching or update the simulated order book.
 :::
