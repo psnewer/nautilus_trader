@@ -1681,7 +1681,16 @@ version = "0.19.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e985a566bdaae9a428a957d12b10c318d41b2afddb54cfbb764878059df636e"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
+]
+
+[[package]]
+name = "capnp"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbffb6e69e1ea2cf518ac5037a78a223ecb82b4ac81e7ab33cb5211b43d712ac"
+dependencies = [
+ "embedded-io 0.7.1",
 ]
 
 [[package]]
@@ -1690,7 +1699,16 @@ version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c75ba30e0f08582d53c2f3710cf4bb65ff562614b1ba86906d7391adffe189ec"
 dependencies = [
- "capnp",
+ "capnp 0.19.8",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1cd4f042d6725da6245bde08c9e7c74f6fcb2d8bd5e0378e57991be8d711d8"
+dependencies = [
+ "capnp 0.23.0",
 ]
 
 [[package]]
@@ -3297,6 +3315,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
 name = "enum-ordinalize"
 version = "4.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4028,7 +4052,7 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "bincode",
- "capnp",
+ "capnp 0.19.8",
  "faster-hex",
  "fastrange-rs",
  "futures",
@@ -4076,8 +4100,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17d9e57292112442d5320ee0f245fc4bd0b87ea439767b4ffbbe2c0686d2b5c6"
 dependencies = [
  "arrayvec",
- "capnp",
- "capnpc",
+ "capnp 0.19.8",
+ "capnpc 0.19.0",
  "hypersync-format",
  "serde",
 ]
@@ -5714,6 +5738,9 @@ name = "nautilus-serialization"
 version = "0.52.0"
 dependencies = [
  "arrow",
+ "capnp 0.23.0",
+ "capnpc 0.23.2",
+ "indexmap 2.12.0",
  "nautilus-core",
  "nautilus-model",
  "nautilus-testkit",
@@ -5724,6 +5751,9 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "thiserror 2.0.17",
+ "ustr",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

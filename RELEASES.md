@@ -9,6 +9,7 @@ This release adds support for Python 3.14 with the following limitations:
 
 ### Enhancements
 - Added support for Python 3.14
+- Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
 - Added initial backtest visualization tearsheets with plotly
 - Added price protection support for market orders (#3065), thanks @Antifrajz
 - Added `create_bars_with_fills` to Tearsheet (#3137), thanks @faysou
