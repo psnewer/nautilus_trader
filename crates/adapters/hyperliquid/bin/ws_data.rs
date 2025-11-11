@@ -16,7 +16,8 @@
 use std::{env, time::Duration};
 
 use nautilus_hyperliquid::{
-    common::consts::ws_url, http::HyperliquidHttpClient,
+    common::{HyperliquidProductType, consts::ws_url},
+    http::HyperliquidHttpClient,
     websocket::client::HyperliquidWebSocketClient,
 };
 use nautilus_model::instruments::Instrument;
@@ -54,7 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_url = ws_url(testnet);
     tracing::info!("WebSocket URL: {ws_url}");
 
-    let mut client = HyperliquidWebSocketClient::new(Some(ws_url.to_string()), testnet, None);
+    let mut client = HyperliquidWebSocketClient::new(
+        Some(ws_url.to_string()),
+        testnet,
+        HyperliquidProductType::Perp,
+        None,
+    );
 
     // Cache instruments before connecting
     client.cache_instruments(instruments);

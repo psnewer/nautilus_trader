@@ -34,7 +34,7 @@ use nautilus_network::{
 use ustr::Ustr;
 
 use crate::{
-    common::parse::bar_type_to_interval,
+    common::{HyperliquidProductType, parse::bar_type_to_interval},
     websocket::{
         handler::{FeedHandler, HandlerCommand},
         messages::{NautilusWsMessage, SubscriptionRequest},
@@ -52,6 +52,7 @@ use crate::{
 )]
 pub struct HyperliquidWebSocketClient {
     url: String,
+    product_type: HyperliquidProductType,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
     signal: Arc<AtomicBool>,
     auth_tracker: AuthTracker,
@@ -68,6 +69,7 @@ impl Clone for HyperliquidWebSocketClient {
     fn clone(&self) -> Self {
         Self {
             url: self.url.clone(),
+            product_type: self.product_type,
             connection_mode: Arc::clone(&self.connection_mode),
             signal: Arc::clone(&self.signal),
             auth_tracker: self.auth_tracker.clone(),
@@ -90,7 +92,12 @@ impl HyperliquidWebSocketClient {
     /// - `testnet=true`: `wss://api.hyperliquid-testnet.xyz/ws`
     ///
     /// The connection will be established when `connect()` is called.
-    pub fn new(url: Option<String>, testnet: bool, account_id: Option<AccountId>) -> Self {
+    pub fn new(
+        url: Option<String>,
+        testnet: bool,
+        product_type: HyperliquidProductType,
+        account_id: Option<AccountId>,
+    ) -> Self {
         let url = url.unwrap_or_else(|| {
             if testnet {
                 "wss://api.hyperliquid-testnet.xyz/ws".to_string()
@@ -104,6 +111,7 @@ impl HyperliquidWebSocketClient {
         ))));
         Self {
             url,
+            product_type,
             connection_mode,
             signal: Arc::new(AtomicBool::new(false)),
             auth_tracker: AuthTracker::new(),

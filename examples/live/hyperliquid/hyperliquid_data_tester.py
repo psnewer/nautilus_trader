@@ -70,10 +70,10 @@ if __name__ == "__main__":
     # Configure your strategy
     config_strat = DataTesterConfig(
         instrument_ids=instrument_ids,
-        # subscribe_book_at_interval=True,
-        # book_interval_ms=10,
-        subscribe_quotes=True,
-        subscribe_trades=True,
+        subscribe_book_at_interval=True,
+        book_interval_ms=10,
+        # subscribe_quotes=True,
+        # subscribe_trades=True,
         # subscribe_bars=True,
     )
     # Instantiate your strategy

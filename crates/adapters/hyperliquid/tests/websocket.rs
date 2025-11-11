@@ -36,7 +36,9 @@ use axum::{
 };
 use futures_util::StreamExt;
 use nautilus_common::testing::wait_until_async;
-use nautilus_hyperliquid::websocket::client::HyperliquidWebSocketClient;
+use nautilus_hyperliquid::{
+    common::HyperliquidProductType, websocket::client::HyperliquidWebSocketClient,
+};
 use nautilus_model::identifiers::{AccountId, InstrumentId};
 use rstest::rstest;
 use serde_json::{Value, json};
@@ -308,7 +310,12 @@ async fn start_ws_server(state: Arc<TestServerState>) -> SocketAddr {
 }
 
 async fn connect_client(ws_url: &str, account_id: Option<AccountId>) -> HyperliquidWebSocketClient {
-    let mut client = HyperliquidWebSocketClient::new(Some(ws_url.to_string()), false, account_id);
+    let mut client = HyperliquidWebSocketClient::new(
+        Some(ws_url.to_string()),
+        false,
+        HyperliquidProductType::Perp,
+        account_id,
+    );
     cache_test_instruments(&mut client);
     client
 }

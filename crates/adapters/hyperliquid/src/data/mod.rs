@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use crate::{
-    common::{consts::HYPERLIQUID_VENUE, parse::bar_type_to_interval},
+    common::{HyperliquidProductType, consts::HYPERLIQUID_VENUE, parse::bar_type_to_interval},
     config::HyperliquidDataClientConfig,
     http::{client::HyperliquidHttpClient, models::HyperliquidCandle},
     websocket::{
@@ -114,7 +114,14 @@ impl HyperliquidDataClient {
             )?
         };
 
-        let ws_client = HyperliquidWebSocketClient::new(None, config.is_testnet, None);
+        // Note: Rust data client is not the primary interface; Python adapter is used instead.
+        // Defaulting to Perp for basic functionality.
+        let ws_client = HyperliquidWebSocketClient::new(
+            None,
+            config.is_testnet,
+            HyperliquidProductType::Perp,
+            None,
+        );
 
         Ok(Self {
             client_id,

@@ -7367,6 +7367,13 @@ class CancelBroadcaster:
 
 # Hyperliquid
 
+class HyperliquidProductType(Enum):
+    PERP = "PERP"
+    SPOT = "SPOT"
+
+    @classmethod
+    def from_str(cls, value: str) -> HyperliquidProductType: ...
+
 class HyperliquidHttpClient:
     def __init__(
         self,
@@ -7451,6 +7458,8 @@ class HyperliquidWebSocketClient:
         self,
         url: str | None = None,
         testnet: bool = False,
+        product_type: str = "PERP",
+        account_id: str | None = None,
     ) -> None: ...
     @property
     def url(self) -> str: ...
@@ -7482,6 +7491,8 @@ class HyperliquidWebSocketClient:
     async def unsubscribe_book_deltas(self, instrument_id: InstrumentId) -> None: ...
     async def unsubscribe_quotes(self, instrument_id: InstrumentId) -> None: ...
     async def unsubscribe_bars(self, bar_type: BarType) -> None: ...
+
+def hyperliquid_product_type_from_symbol(symbol: str) -> HyperliquidProductType: ...
 
 # Greeks
 

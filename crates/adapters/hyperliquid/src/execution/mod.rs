@@ -45,6 +45,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     common::{
+        HyperliquidProductType,
         consts::HYPERLIQUID_VENUE,
         credential::Secrets,
         parse::{
@@ -171,8 +172,14 @@ impl HyperliquidExecutionClient {
         .context("failed to create Hyperliquid HTTP client")?;
 
         // Create WebSocket client (will connect when needed)
-        let ws_client =
-            HyperliquidWebSocketClient::new(None, config.is_testnet, Some(core.account_id));
+        // Note: For execution WebSocket (private account messages), product type is less critical
+        // since messages are account-scoped. Defaulting to Perp.
+        let ws_client = HyperliquidWebSocketClient::new(
+            None,
+            config.is_testnet,
+            HyperliquidProductType::Perp,
+            Some(core.account_id),
+        );
 
         Ok(Self {
             core,

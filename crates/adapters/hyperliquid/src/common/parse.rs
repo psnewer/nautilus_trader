@@ -100,6 +100,7 @@
 use std::str::FromStr;
 
 use anyhow::Context;
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::bar::BarType,
     enums::{AggregationSource, BarAggregation, OrderSide, OrderStatus, OrderType, TimeInForce},
@@ -139,7 +140,7 @@ where
     Decimal::from_str(&s).map_err(serde::de::Error::custom)
 }
 
-/// Serialize optional decimal as string
+/// Serialize optional decimal as string.
 pub fn serialize_optional_decimal_as_str<S>(
     decimal: &Option<Decimal>,
     serializer: S,
@@ -153,7 +154,7 @@ where
     }
 }
 
-/// Deserialize optional decimal from string
+/// Deserialize optional decimal from string.
 pub fn deserialize_optional_decimal_from_str<'de, D>(
     deserializer: D,
 ) -> Result<Option<Decimal>, D::Error>
@@ -170,7 +171,7 @@ where
     }
 }
 
-/// Serialize vector of decimals as strings
+/// Serialize vector of decimals as strings.
 pub fn serialize_vec_decimal_as_str<S>(
     decimals: &Vec<Decimal>,
     serializer: S,
@@ -186,7 +187,7 @@ where
     seq.end()
 }
 
-/// Deserialize vector of decimals from strings
+/// Deserialize vector of decimals from strings.
 pub fn deserialize_vec_decimal_from_str<'de, D>(deserializer: D) -> Result<Vec<Decimal>, D::Error>
 where
     D: Deserializer<'de>,
@@ -198,11 +199,7 @@ where
         .collect()
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Normalization and Validation Functions
-////////////////////////////////////////////////////////////////////////////////
-
-/// Round price down to the nearest valid tick size
+/// Round price down to the nearest valid tick size.
 #[inline]
 pub fn round_down_to_tick(price: Decimal, tick_size: Decimal) -> Decimal {
     if tick_size.is_zero() {
@@ -211,7 +208,7 @@ pub fn round_down_to_tick(price: Decimal, tick_size: Decimal) -> Decimal {
     (price / tick_size).floor() * tick_size
 }
 
-/// Round quantity down to the nearest valid step size
+/// Round quantity down to the nearest valid step size.
 #[inline]
 pub fn round_down_to_step(qty: Decimal, step_size: Decimal) -> Decimal {
     if step_size.is_zero() {
@@ -220,7 +217,7 @@ pub fn round_down_to_step(qty: Decimal, step_size: Decimal) -> Decimal {
     (qty / step_size).floor() * step_size
 }
 
-/// Ensure the notional value meets minimum requirements
+/// Ensure the notional value meets minimum requirements.
 #[inline]
 pub fn ensure_min_notional(
     price: Decimal,
@@ -238,13 +235,13 @@ pub fn ensure_min_notional(
     }
 }
 
-/// Normalize price to the specified number of decimal places
+/// Normalize price to the specified number of decimal places.
 pub fn normalize_price(price: Decimal, decimals: u8) -> Decimal {
     let scale = Decimal::from(10_u64.pow(decimals as u32));
     (price * scale).floor() / scale
 }
 
-/// Normalize quantity to the specified number of decimal places
+/// Normalize quantity to the specified number of decimal places.
 pub fn normalize_quantity(qty: Decimal, decimals: u8) -> Decimal {
     let scale = Decimal::from(10_u64.pow(decimals as u32));
     (qty * scale).floor() / scale
@@ -274,9 +271,10 @@ pub fn normalize_order(
     Ok((final_price, final_qty))
 }
 
-// ================================================================================================
-// Order Conversion Functions
-// ================================================================================================
+/// Helper to parse millisecond timestamp to UnixNanos.
+pub fn parse_millis_to_nanos(millis: u64) -> UnixNanos {
+    UnixNanos::from(millis * 1_000_000)
+}
 
 /// Converts a Nautilus `TimeInForce` to Hyperliquid TIF.
 ///

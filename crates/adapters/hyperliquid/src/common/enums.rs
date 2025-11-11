@@ -772,6 +772,51 @@ impl HyperliquidInfoRequestType {
     }
 }
 
+/// Hyperliquid product type.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Display,
+    PartialEq,
+    Eq,
+    Hash,
+    AsRefStr,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.hyperliquid")
+)]
+#[serde(rename_all = "UPPERCASE")]
+#[strum(serialize_all = "UPPERCASE")]
+pub enum HyperliquidProductType {
+    /// Perpetual futures.
+    Perp,
+    /// Spot markets.
+    Spot,
+}
+
+impl HyperliquidProductType {
+    /// Extract product type from an instrument symbol.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if symbol doesn't match expected format.
+    pub fn from_symbol(symbol: &str) -> anyhow::Result<Self> {
+        if symbol.ends_with("-PERP") {
+            Ok(Self::Perp)
+        } else if symbol.ends_with("-SPOT") {
+            Ok(Self::Spot)
+        } else {
+            anyhow::bail!("Invalid Hyperliquid symbol format: {symbol}")
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////

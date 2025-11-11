@@ -24,18 +24,35 @@ use nautilus_model::{
 };
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
-use crate::websocket::{
-    HyperliquidWebSocketClient,
-    messages::{ExecutionReport, NautilusWsMessage},
+use crate::{
+    common::HyperliquidProductType,
+    websocket::{
+        HyperliquidWebSocketClient,
+        messages::{ExecutionReport, NautilusWsMessage},
+    },
 };
 
 #[pymethods]
 impl HyperliquidWebSocketClient {
     #[new]
-    #[pyo3(signature = (url=None, testnet=false, account_id=None))]
-    fn py_new(url: Option<String>, testnet: bool, account_id: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (url=None, testnet=false, product_type="PERP", account_id=None))]
+    fn py_new(
+        url: Option<String>,
+        testnet: bool,
+        product_type: &str,
+        account_id: Option<String>,
+    ) -> PyResult<Self> {
+        let product_type = match product_type {
+            "PERP" => HyperliquidProductType::Perp,
+            "SPOT" => HyperliquidProductType::Spot,
+            _ => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "Invalid product type: {product_type}. Must be 'PERP' or 'SPOT'"
+                )));
+            }
+        };
         let account_id = account_id.map(|s| AccountId::from(s.as_str()));
-        Ok(Self::new(url, testnet, account_id))
+        Ok(Self::new(url, testnet, product_type, account_id))
     }
 
     #[getter]
