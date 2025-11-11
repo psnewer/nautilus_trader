@@ -619,7 +619,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         # Note: py_clob_client.get_trades() handles pagination internally
         retry_manager = await self._retry_manager_pool.acquire()
         try:
-            response: JSON | None = await retry_manager.run(
+            response: list[JSON] | None = await retry_manager.run(
                 "generate_fill_reports",
                 details,
                 asyncio.to_thread,
@@ -631,43 +631,12 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 # self._log.info(f"Processing {len(response)} trades", LogColor.MAGENTA)
                 trade_ids: set[TradeId] = set()
                 for json_obj in response:
-                    raw = msgspec.json.encode(json_obj)
-                    polymarket_trade = self._decoder_trade_report.decode(raw)
-
-                    instrument_id = get_polymarket_instrument_id(
-                        polymarket_trade.market,
-                        polymarket_trade.asset_id,
+                    self._parse_trades_response_object(
+                        command=command,
+                        json_obj=json_obj,
+                        parsed_trade_ids=trade_ids,
+                        reports=reports,
                     )
-                    instrument = self._cache.instrument(instrument_id)
-                    if instrument is None:
-                        self._log.warning(
-                            f"Cannot handle trade report: instrument {instrument_id} not found "
-                            f"(market={polymarket_trade.market}, asset_id={polymarket_trade.asset_id})",
-                        )
-                        continue
-
-                    venue_order_id = polymarket_trade.venue_order_id(self._wallet_address)
-
-                    if (
-                        command.venue_order_id is not None
-                        and venue_order_id != command.venue_order_id
-                    ):
-                        continue
-
-                    client_order_id = self._cache.client_order_id(venue_order_id)
-                    if client_order_id is None:
-                        client_order_id = ClientOrderId(str(UUID4()))
-
-                    report = polymarket_trade.parse_to_fill_report(
-                        account_id=self.account_id,
-                        instrument=instrument,
-                        client_order_id=client_order_id,
-                        maker_address=self._wallet_address,
-                        ts_init=self._clock.timestamp_ns(),
-                    )
-                    assert report.trade_id not in trade_ids, "trade IDs should be unique"
-                    trade_ids.add(report.trade_id)
-                    reports.append(report)
         finally:
             await self._retry_manager_pool.release(retry_manager)
 
@@ -718,6 +687,51 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._log.info(f"Received {len(reports)} PositionReport{plural}")
 
         return reports
+
+    def _parse_trades_response_object(
+        self, command: GenerateFillReports, json_obj: JSON, parsed_trade_ids: set[TradeId], reports: list[FillReport],
+    ):
+        raw = msgspec.json.encode(json_obj)
+        polymarket_trade = self._decoder_trade_report.decode(raw)
+
+        instrument_id = get_polymarket_instrument_id(
+            polymarket_trade.market,
+            polymarket_trade.asset_id,
+        )
+        instrument = self._cache.instrument(instrument_id)
+        if instrument is None:
+            self._log.warning(
+                f"Cannot handle trade report: instrument {instrument_id} not found "
+                f"(market={polymarket_trade.market}, asset_id={polymarket_trade.asset_id})",
+            )
+            return
+
+        filled_user_order_ids = polymarket_trade.get_filled_user_order_ids(
+            self._wallet_address, self._api_key,
+        )
+        for order_id in filled_user_order_ids:
+            venue_order_id = polymarket_trade.venue_order_id(order_id)
+
+            if (
+                command.venue_order_id is not None
+                and venue_order_id != command.venue_order_id
+            ):
+                continue
+
+            client_order_id = self._cache.client_order_id(venue_order_id)
+            if client_order_id is None:
+                client_order_id = ClientOrderId(str(UUID4()))
+
+            report = polymarket_trade.parse_to_fill_report(
+                account_id=self.account_id,
+                instrument=instrument,
+                client_order_id=client_order_id,
+                ts_init=self._clock.timestamp_ns(),
+                filled_user_order_id=order_id,
+            )
+            assert report.trade_id not in parsed_trade_ids, "trade IDs should be unique"
+            parsed_trade_ids.add(report.trade_id)
+            reports.append(report)
 
     async def _fetch_quantities_from_gamma_api(
         self,
@@ -1319,14 +1333,26 @@ class PolymarketExecutionClient(LiveExecutionClient):
             case _:
                 self._log.info(log_msg, LogColor.BLUE)
 
-        venue_order_id = msg.venue_order_id(self._wallet_address)
-        instrument_id = get_polymarket_instrument_id(msg.market, msg.asset_id)
+        if trade_id in self._processed_trades:
+            self._log.debug(f"Trade {trade_id} already processed - skipping")
+            return
+
+        filled_user_order_ids = msg.get_filled_user_order_ids(self._wallet_address, self._api_key)
+        for order_id in filled_user_order_ids:
+            self._handle_user_trade_in_ws_trade_msg(msg, trade_id, wait_for_ack, order_id)
+
+    def _handle_user_trade_in_ws_trade_msg(
+        self, msg: PolymarketUserTrade, trade_id: TradeId, wait_for_ack: bool, order_id: str,
+    ):
+        venue_order_id = msg.venue_order_id(order_id)
+        asset_id = msg.get_asset_id(order_id)
+        instrument_id = get_polymarket_instrument_id(msg.market, asset_id)
         instrument = self._cache.instrument(instrument_id)
 
         if instrument is None:
             self._log.warning(
                 f"Received trade message for unknown instrument {instrument_id} "
-                f"(market={msg.market}, asset_id={msg.asset_id}). "
+                f"(market={msg.market}, asset_id={asset_id}). "
                 f"This may indicate the instrument is not subscribed or cached, skipping trade processing",
             )
             return
@@ -1347,8 +1373,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 account_id=self.account_id,
                 instrument=instrument,
                 client_order_id=client_order_id,
-                maker_address=self._wallet_address,
                 ts_init=self._clock.timestamp_ns(),
+                filled_user_order_id=order_id,
             )
             self._send_fill_report(report)
             self._processed_trades.append(trade_id)
@@ -1360,19 +1386,17 @@ class PolymarketExecutionClient(LiveExecutionClient):
             self._log.error(f"Cannot process trade: {client_order_id!r} not found in cache")
             return
 
-        if trade_id in order.trade_ids or trade_id in self._processed_trades:
-            self._log.debug(f"{trade_str} already processed - skipping")
+        if trade_id in order.trade_ids:
+            self._log.debug(f"Trade {trade_id} already processed for {order.client_order_id} - skipping")
             return
 
         if order.is_closed:
             self._log.warning(f"Order already closed - skipping trade processing: {order}")
             return  # Already closed (only status update)
 
-        last_qty = instrument.make_qty(msg.last_qty(self._wallet_address))
-        last_px = instrument.make_price(msg.last_px(self._wallet_address))
-        commission = float(last_qty * last_px) * basis_points_as_percentage(
-            float(msg.get_fee_rate_bps(self._wallet_address)),
-        )
+        last_qty = instrument.make_qty(msg.last_qty(order_id))
+        last_px = instrument.make_price(msg.last_px(order_id))
+        commission = float(last_qty * last_px) * basis_points_as_percentage(float(msg.get_fee_rate_bps(order_id)))
         ts_event = millis_to_nanos(int(msg.match_time))
 
         self.generate_order_filled(
