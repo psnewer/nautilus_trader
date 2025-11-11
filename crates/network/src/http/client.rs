@@ -136,6 +136,35 @@ impl HttpClient {
             .await
     }
 
+    /// Sends an HTTP request with serializable query parameters.
+    ///
+    /// This method accepts any type implementing `Serialize` for query parameters,
+    /// which will be automatically encoded into the URL query string using reqwest's
+    /// `.query()` method, avoiding unnecessary HashMap allocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unable to send request or times out.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_with_params<P: serde::Serialize>(
+        &self,
+        method: Method,
+        url: String,
+        params: Option<&P>,
+        headers: Option<HashMap<String, String>>,
+        body: Option<Vec<u8>>,
+        timeout_secs: Option<u64>,
+        keys: Option<Vec<String>>,
+    ) -> Result<HttpResponse, HttpClientError> {
+        let keys = keys.map(into_ustr_vec);
+        let rate_limiter = self.rate_limiter.clone();
+        rate_limiter.await_keys_ready(keys).await;
+
+        self.client
+            .send_request_with_query(method, url, params, headers, body, timeout_secs)
+            .await
+    }
+
     /// Sends an HTTP request using pre-interned rate limiter keys.
     ///
     /// # Errors
@@ -277,8 +306,47 @@ impl InnerHttpClient {
         timeout_secs: Option<u64>,
     ) -> Result<HttpResponse, HttpClientError> {
         let full_url = encode_url_params(&url, params)?;
+        self.send_request_internal(method, full_url, None::<&()>, headers, body, timeout_secs)
+            .await
+    }
+
+    /// Sends an HTTP request with query parameters using reqwest's `.query()` method.
+    ///
+    /// This method accepts any type implementing `Serialize` for query parameters,
+    /// avoiding HashMap conversion overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unable to send request or times out.
+    pub async fn send_request_with_query<Q: serde::Serialize>(
+        &self,
+        method: Method,
+        url: String,
+        query: Option<&Q>,
+        headers: Option<HashMap<String, String>>,
+        body: Option<Vec<u8>>,
+        timeout_secs: Option<u64>,
+    ) -> Result<HttpResponse, HttpClientError> {
+        self.send_request_internal(method, url, query, headers, body, timeout_secs)
+            .await
+    }
+
+    /// Internal implementation for sending HTTP requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if unable to send request or times out.
+    async fn send_request_internal<Q: serde::Serialize>(
+        &self,
+        method: Method,
+        url: String,
+        query: Option<&Q>,
+        headers: Option<HashMap<String, String>>,
+        body: Option<Vec<u8>>,
+        timeout_secs: Option<u64>,
+    ) -> Result<HttpResponse, HttpClientError> {
         let headers = headers.unwrap_or_default();
-        let reqwest_url = Url::parse(full_url.as_str())
+        let reqwest_url = Url::parse(url.as_str())
             .map_err(|e| HttpClientError::from(format!("URL parse error: {e}")))?;
 
         let mut header_map = HeaderMap::new();
@@ -296,6 +364,10 @@ impl InnerHttpClient {
         }
 
         let mut request_builder = self.client.request(method, reqwest_url).headers(header_map);
+
+        if let Some(q) = query {
+            request_builder = request_builder.query(q);
+        }
 
         if let Some(timeout_secs) = timeout_secs {
             request_builder = request_builder.timeout(Duration::new(timeout_secs, 0));
