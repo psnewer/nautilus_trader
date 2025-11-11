@@ -21,19 +21,18 @@ use anyhow::Context;
 use nautilus_core::{nanos::UnixNanos, uuid::UUID4};
 use nautilus_model::{
     data::{Bar, BarType, BookOrder, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick},
-    enums::{AggressorSide, BookAction, LiquiditySide, OrderSide, OrderType, TimeInForce},
+    enums::{
+        AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce,
+    },
     identifiers::{AccountId, ClientOrderId, TradeId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport},
     types::{Currency, Money, Price, Quantity, price::PriceRaw, quantity::QuantityRaw},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 use super::messages::{CandleData, WsBboData, WsBookData, WsFillData, WsOrderData, WsTradeData};
-use crate::common::{
-    enums::hyperliquid_status_to_order_status,
-    parse::{is_conditional_order_data, parse_trigger_order_type},
-};
+use crate::common::parse::{is_conditional_order_data, parse_trigger_order_type};
 
 /// Helper to parse a price string with instrument precision.
 fn parse_price(
@@ -44,9 +43,15 @@ fn parse_price(
     let decimal = Decimal::from_str(price_str)
         .with_context(|| format!("Failed to parse price from '{price_str}' for {field_name}"))?;
 
-    let raw = decimal.mantissa() as PriceRaw;
+    let value = decimal.to_f64().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to convert price '{}' to f64 for {} (out of range or too much precision)",
+            price_str,
+            field_name
+        )
+    })?;
 
-    Ok(Price::from_raw(raw, instrument.price_precision()))
+    Ok(Price::new(value, instrument.price_precision()))
 }
 
 /// Helper to parse a quantity string with instrument precision.
@@ -59,9 +64,15 @@ fn parse_quantity(
         format!("Failed to parse quantity from '{quantity_str}' for {field_name}")
     })?;
 
-    let raw = decimal.mantissa().unsigned_abs() as QuantityRaw;
+    let value = decimal.abs().to_f64().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to convert quantity '{}' to f64 for {} (out of range or too much precision)",
+            quantity_str,
+            field_name
+        )
+    })?;
 
-    Ok(Quantity::from_raw(raw, instrument.size_precision()))
+    Ok(Quantity::new(value, instrument.size_precision()))
 }
 
 /// Helper to parse millisecond timestamp to UnixNanos.
@@ -78,13 +89,8 @@ pub fn parse_ws_trade_tick(
     let price = parse_price(&trade.px, instrument, "trade.px")?;
     let size = parse_quantity(&trade.sz, instrument, "trade.sz")?;
 
-    // Determine aggressor side from the 'side' field
-    // In Hyperliquid: "A" = Ask (sell), "B" = Bid (buy)
-    let aggressor = match trade.side.as_str() {
-        "A" => AggressorSide::Seller, // Sell side was aggressor
-        "B" => AggressorSide::Buyer,  // Buy side was aggressor
-        _ => AggressorSide::NoAggressor,
-    };
+    // Convert HyperliquidSide to AggressorSide
+    let aggressor = AggressorSide::from(trade.side);
 
     let trade_id = TradeId::new_checked(trade.tid.to_string())
         .context("invalid trade identifier in Hyperliquid trade message")?;
@@ -260,20 +266,15 @@ pub fn parse_ws_order_status_report(
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(order.order.oid.to_string());
 
-    // Parse order side
-    let order_side: OrderSide = match order.order.side.as_str() {
-        "B" => OrderSide::Buy,
-        "A" => OrderSide::Sell,
-        _ => anyhow::bail!("Unknown order side: {}", order.order.side),
-    };
+    // Convert HyperliquidSide to OrderSide
+    let order_side = OrderSide::from(order.order.side);
 
     // Determine order type based on trigger info
     let order_type = if is_conditional_order_data(
         order.order.trigger_px.as_deref(),
-        order.order.tpsl.as_deref(),
+        order.order.tpsl.as_ref(),
     ) {
-        if let (Some(is_market), Some(tpsl)) = (order.order.is_market, order.order.tpsl.as_deref())
-        {
+        if let (Some(is_market), Some(tpsl)) = (order.order.is_market, order.order.tpsl.as_ref()) {
             parse_trigger_order_type(is_market, tpsl)
         } else {
             OrderType::Limit // fallback
@@ -286,7 +287,7 @@ pub fn parse_ws_order_status_report(
     let time_in_force = TimeInForce::Gtc;
 
     // Parse order status
-    let order_status = hyperliquid_status_to_order_status(&order.status);
+    let order_status = OrderStatus::from(order.status);
 
     // Parse quantity
     let quantity = parse_quantity(&order.order.sz, instrument, "order.sz")?;
@@ -354,12 +355,8 @@ pub fn parse_ws_fill_report(
     let trade_id = TradeId::new_checked(fill.tid.to_string())
         .context("invalid trade identifier in Hyperliquid fill message")?;
 
-    // Parse order side
-    let order_side: OrderSide = match fill.side.as_str() {
-        "B" => OrderSide::Buy,
-        "A" => OrderSide::Sell,
-        _ => anyhow::bail!("Unknown fill side: {}", fill.side),
-    };
+    // Convert HyperliquidSide to OrderSide
+    let order_side = OrderSide::from(fill.side);
 
     // Parse quantities and prices
     let last_qty = parse_quantity(&fill.sz, instrument, "fill.sz")?;
@@ -428,6 +425,10 @@ mod tests {
     use ustr::Ustr;
 
     use super::*;
+    use crate::common::enums::{
+        HyperliquidFillDirection, HyperliquidOrderStatus as HyperliquidOrderStatusEnum,
+        HyperliquidSide,
+    };
 
     fn create_test_instrument() -> InstrumentAny {
         let instrument_id = InstrumentId::new(Symbol::new("BTC-PERP"), Venue::new("HYPERLIQUID"));
@@ -469,7 +470,7 @@ mod tests {
         let order_data = WsOrderData {
             order: super::super::messages::WsBasicOrderData {
                 coin: Ustr::from("BTC"),
-                side: "B".to_string(),
+                side: HyperliquidSide::Buy,
                 limit_px: "50000.0".to_string(),
                 sz: "0.5".to_string(),
                 oid: 12345,
@@ -482,7 +483,7 @@ mod tests {
                 trigger_activated: None,
                 trailing_stop: None,
             },
-            status: "open".to_string(),
+            status: HyperliquidOrderStatusEnum::Open,
             status_timestamp: 1704470400000,
         };
 
@@ -508,10 +509,10 @@ mod tests {
             coin: Ustr::from("BTC"),
             px: "50000.0".to_string(),
             sz: "0.1".to_string(),
-            side: "B".to_string(),
+            side: HyperliquidSide::Buy,
             time: 1704470400000,
             start_position: "0.0".to_string(),
-            dir: "Open Long".to_string(),
+            dir: HyperliquidFillDirection::OpenLong,
             closed_pnl: "0.0".to_string(),
             hash: "0xabc123".to_string(),
             oid: 12345,

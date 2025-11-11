@@ -1084,9 +1084,11 @@ impl HyperliquidExecutionClient {
                             NautilusWsMessage::Error(e) => {
                                 tracing::error!("WebSocket error: {e}");
                             }
-                            NautilusWsMessage::Data(_) => {
-                                // Market data messages are handled by data client, ignore
-                            }
+                            // Handled by data client
+                            NautilusWsMessage::Trades(_)
+                            | NautilusWsMessage::Quote(_)
+                            | NautilusWsMessage::Deltas(_)
+                            | NautilusWsMessage::Candle(_) => {}
                         }
                     }
                     None => {

@@ -112,13 +112,14 @@ use serde::{Deserialize, Deserializer, Serializer};
 use serde_json::Value;
 
 use crate::{
-    common::enums::HyperliquidBarInterval,
+    common::enums::{HyperliquidBarInterval, HyperliquidTpSl},
     http::models::{
         AssetId, Cloid, CrossMarginSummary, HyperliquidExchangeResponse,
         HyperliquidExecCancelByCloidRequest, HyperliquidExecLimitParams, HyperliquidExecOrderKind,
         HyperliquidExecPlaceOrderRequest, HyperliquidExecTif, HyperliquidExecTpSl,
         HyperliquidExecTriggerParams,
     },
+    websocket::messages::TrailingOffsetType,
 };
 
 /// Serializes decimal as string (lossless, no scientific notation).
@@ -727,44 +728,28 @@ pub fn extract_error_message(response: &HyperliquidExchangeResponse) -> String {
 
 /// Determines if an order is a conditional/trigger order based on order data.
 ///
-/// # Arguments
-///
-/// * `trigger_px` - Optional trigger price
-/// * `tpsl` - Optional TP/SL indicator
-///
 /// # Returns
 ///
 /// `true` if the order is a conditional order, `false` otherwise.
-pub fn is_conditional_order_data(trigger_px: Option<&str>, tpsl: Option<&str>) -> bool {
+pub fn is_conditional_order_data(trigger_px: Option<&str>, tpsl: Option<&HyperliquidTpSl>) -> bool {
     trigger_px.is_some() && tpsl.is_some()
 }
 
 /// Parses trigger order type from Hyperliquid order data.
 ///
-/// # Arguments
-///
-/// * `is_market` - Whether this is a market trigger order
-/// * `tpsl` - TP/SL indicator ("tp" or "sl")
-///
 /// # Returns
 ///
 /// The corresponding Nautilus `OrderType`.
-pub fn parse_trigger_order_type(is_market: bool, tpsl: &str) -> OrderType {
+pub fn parse_trigger_order_type(is_market: bool, tpsl: &HyperliquidTpSl) -> OrderType {
     match (is_market, tpsl) {
-        (true, "sl") => OrderType::StopMarket,
-        (false, "sl") => OrderType::StopLimit,
-        (true, "tp") => OrderType::MarketIfTouched,
-        (false, "tp") => OrderType::LimitIfTouched,
-        _ => OrderType::StopMarket, // Default fallback
+        (true, HyperliquidTpSl::Sl) => OrderType::StopMarket,
+        (false, HyperliquidTpSl::Sl) => OrderType::StopLimit,
+        (true, HyperliquidTpSl::Tp) => OrderType::MarketIfTouched,
+        (false, HyperliquidTpSl::Tp) => OrderType::LimitIfTouched,
     }
 }
 
 /// Extracts order status from WebSocket order data.
-///
-/// # Arguments
-///
-/// * `status` - Status string from WebSocket
-/// * `trigger_activated` - Whether trigger has been activated (for conditional orders)
 ///
 /// # Returns
 ///
@@ -791,27 +776,12 @@ pub fn parse_order_status_with_trigger(
 }
 
 /// Converts WebSocket trailing stop data to description string.
-///
-/// # Arguments
-///
-/// * `offset` - Trailing offset value
-/// * `offset_type` - Type of offset ("price", "percentage", "basisPoints")
-/// * `callback_price` - Current callback price
-///
-/// # Returns
-///
-/// Human-readable description of trailing stop parameters.
 pub fn format_trailing_stop_info(
     offset: &str,
-    offset_type: &str,
+    offset_type: TrailingOffsetType,
     callback_price: Option<&str>,
 ) -> String {
-    let offset_desc = match offset_type {
-        "percentage" => format!("{}%", offset),
-        "basisPoints" => format!("{} bps", offset),
-        "price" => offset.to_string(),
-        _ => offset.to_string(),
-    };
+    let offset_desc = offset_type.format_offset(offset);
 
     if let Some(callback) = callback_price {
         format!(
@@ -825,12 +795,6 @@ pub fn format_trailing_stop_info(
 
 /// Validates conditional order parameters from WebSocket data.
 ///
-/// # Arguments
-///
-/// * `trigger_px` - Trigger price
-/// * `tpsl` - TP/SL indicator
-/// * `is_market` - Market or limit flag
-///
 /// # Returns
 ///
 /// `Ok(())` if parameters are valid, `Err` with description otherwise.
@@ -840,7 +804,7 @@ pub fn format_trailing_stop_info(
 /// This function does not panic - it returns errors instead of panicking.
 pub fn validate_conditional_order_params(
     trigger_px: Option<&str>,
-    tpsl: Option<&str>,
+    tpsl: Option<&HyperliquidTpSl>,
     is_market: Option<bool>,
 ) -> anyhow::Result<()> {
     if trigger_px.is_none() {
@@ -851,10 +815,7 @@ pub fn validate_conditional_order_params(
         anyhow::bail!("Conditional order missing tpsl indicator");
     }
 
-    let tpsl_value = tpsl.expect("tpsl should be Some at this point");
-    if tpsl_value != "tp" && tpsl_value != "sl" {
-        anyhow::bail!("Invalid tpsl value: {}", tpsl_value);
-    }
+    // No need to validate tpsl value - the enum type guarantees it's either Tp or Sl
 
     if is_market.is_none() {
         anyhow::bail!("Conditional order missing is_market flag");
@@ -864,10 +825,6 @@ pub fn validate_conditional_order_params(
 }
 
 /// Parses trigger price from string to Decimal.
-///
-/// # Arguments
-///
-/// * `trigger_px` - Trigger price as string
 ///
 /// # Returns
 ///
@@ -1156,13 +1113,16 @@ mod tests {
     #[rstest]
     fn test_is_conditional_order_data() {
         // Test with trigger price and tpsl (conditional)
-        assert!(is_conditional_order_data(Some("50000.0"), Some("sl")));
+        assert!(is_conditional_order_data(
+            Some("50000.0"),
+            Some(&HyperliquidTpSl::Sl)
+        ));
 
         // Test with only trigger price (not conditional - needs both)
         assert!(!is_conditional_order_data(Some("50000.0"), None));
 
         // Test with only tpsl (not conditional - needs both)
-        assert!(!is_conditional_order_data(None, Some("tp")));
+        assert!(!is_conditional_order_data(None, Some(&HyperliquidTpSl::Tp)));
 
         // Test with no conditional fields
         assert!(!is_conditional_order_data(None, None));
@@ -1171,20 +1131,26 @@ mod tests {
     #[rstest]
     fn test_parse_trigger_order_type() {
         // Stop Market
-        assert_eq!(parse_trigger_order_type(true, "sl"), OrderType::StopMarket);
+        assert_eq!(
+            parse_trigger_order_type(true, &HyperliquidTpSl::Sl),
+            OrderType::StopMarket
+        );
 
         // Stop Limit
-        assert_eq!(parse_trigger_order_type(false, "sl"), OrderType::StopLimit);
+        assert_eq!(
+            parse_trigger_order_type(false, &HyperliquidTpSl::Sl),
+            OrderType::StopLimit
+        );
 
         // Take Profit Market
         assert_eq!(
-            parse_trigger_order_type(true, "tp"),
+            parse_trigger_order_type(true, &HyperliquidTpSl::Tp),
             OrderType::MarketIfTouched
         );
 
         // Take Profit Limit
         assert_eq!(
-            parse_trigger_order_type(false, "tp"),
+            parse_trigger_order_type(false, &HyperliquidTpSl::Tp),
             OrderType::LimitIfTouched
         );
     }
@@ -1210,17 +1176,18 @@ mod tests {
     #[rstest]
     fn test_format_trailing_stop_info() {
         // Price offset
-        let info = format_trailing_stop_info("100.0", "price", Some("50000.0"));
+        let info = format_trailing_stop_info("100.0", TrailingOffsetType::Price, Some("50000.0"));
         assert!(info.contains("100.0"));
         assert!(info.contains("callback at 50000.0"));
 
         // Percentage offset
-        let info = format_trailing_stop_info("5.0", "percentage", None);
+        let info = format_trailing_stop_info("5.0", TrailingOffsetType::Percentage, None);
         assert!(info.contains("5.0%"));
         assert!(info.contains("Trailing stop"));
 
         // Basis points offset
-        let info = format_trailing_stop_info("250", "basisPoints", Some("49000.0"));
+        let info =
+            format_trailing_stop_info("250", TrailingOffsetType::BasisPoints, Some("49000.0"));
         assert!(info.contains("250 bps"));
         assert!(info.contains("49000.0"));
     }
