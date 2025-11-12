@@ -15,42 +15,82 @@
 
 //! WebSocket client for the Kraken v2 streaming API.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use nautilus_network::websocket::{WebSocketClient, WebSocketConfig, channel_message_handler};
+use nautilus_common::runtime::get_runtime;
+use nautilus_model::{data::BarType, identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_network::{
+    mode::ConnectionMode,
+    websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
+};
 use tokio::sync::RwLock;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use super::{
     enums::{KrakenWsChannel, KrakenWsMethod},
     error::KrakenWsError,
-    messages::{KrakenWsParams, KrakenWsRequest},
+    handler::{FeedHandler, HandlerCommand},
+    messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
 use crate::config::KrakenDataClientConfig;
 
+#[derive(Debug)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+)]
 pub struct KrakenWebSocketClient {
     url: String,
     config: KrakenDataClientConfig,
-    ws_client: Option<Arc<WebSocketClient>>,
-    raw_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Message>>,
+    signal: Arc<AtomicBool>,
+    connection_mode: Arc<ArcSwap<AtomicU8>>,
+    cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
+    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
+    task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
     #[allow(dead_code)]
     cancellation_token: CancellationToken,
     req_id_counter: Arc<RwLock<u64>>,
 }
 
+impl Clone for KrakenWebSocketClient {
+    fn clone(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            config: self.config.clone(),
+            signal: Arc::clone(&self.signal),
+            connection_mode: Arc::clone(&self.connection_mode),
+            cmd_tx: Arc::clone(&self.cmd_tx),
+            out_rx: self.out_rx.clone(), // Clone the Arc reference
+            task_handle: self.task_handle.clone(), // Clone the Arc reference
+            subscriptions: self.subscriptions.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+            req_id_counter: self.req_id_counter.clone(),
+        }
+    }
+}
+
 impl KrakenWebSocketClient {
     pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
         let url = config.ws_public_url();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        let initial_mode = AtomicU8::new(ConnectionMode::Closed.as_u8());
+        let connection_mode = Arc::new(ArcSwap::from_pointee(initial_mode));
 
         Self {
             url,
             config,
-            ws_client: None,
-            raw_rx: None,
+            signal: Arc::new(AtomicBool::new(false)),
+            connection_mode,
+            cmd_tx: Arc::new(tokio::sync::RwLock::new(cmd_tx)),
+            out_rx: None,
+            task_handle: None,
             subscriptions: Arc::new(DashMap::new()),
             cancellation_token,
             req_id_counter: Arc::new(RwLock::new(0)),
@@ -65,6 +105,8 @@ impl KrakenWebSocketClient {
 
     pub async fn connect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Connecting to {}", self.url);
+
+        self.signal.store(false, Ordering::Relaxed);
 
         let (raw_handler, raw_rx) = channel_message_handler();
 
@@ -91,8 +133,50 @@ impl KrakenWebSocketClient {
         .await
         .map_err(|e| KrakenWsError::ConnectionError(e.to_string()))?;
 
-        self.ws_client = Some(Arc::new(ws_client));
-        self.raw_rx = Some(raw_rx);
+        // Share connection state across clones via ArcSwap
+        self.connection_mode
+            .store(ws_client.connection_mode_atomic());
+
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
+        self.out_rx = Some(Arc::new(out_rx));
+
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        *self.cmd_tx.write().await = cmd_tx.clone();
+
+        if let Err(e) = cmd_tx.send(HandlerCommand::SetClient(ws_client)) {
+            return Err(KrakenWsError::ConnectionError(format!(
+                "Failed to send WebSocketClient to handler: {e}"
+            )));
+        }
+
+        let signal = self.signal.clone();
+
+        let stream_handle = get_runtime().spawn(async move {
+            let mut handler = FeedHandler::new(signal.clone(), cmd_rx, raw_rx);
+
+            loop {
+                match handler.next().await {
+                    Some(msg) => {
+                        if out_tx.send(msg).is_err() {
+                            tracing::error!("Failed to send message (receiver dropped)");
+                            break;
+                        }
+                    }
+                    None => {
+                        if handler.is_stopped() {
+                            tracing::debug!("Stop signal received, ending message processing");
+                            break;
+                        }
+                        tracing::warn!("WebSocket stream ended unexpectedly");
+                        break;
+                    }
+                }
+            }
+
+            tracing::debug!("Handler task exiting");
+        });
+
+        self.task_handle = Some(Arc::new(stream_handle));
 
         tracing::debug!("WebSocket connected successfully");
         Ok(())
@@ -101,8 +185,37 @@ impl KrakenWebSocketClient {
     pub async fn disconnect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Disconnecting WebSocket");
 
-        if let Some(ws_client) = self.ws_client.take() {
-            ws_client.disconnect().await;
+        self.signal.store(true, Ordering::Relaxed);
+
+        if let Err(e) = self.cmd_tx.read().await.send(HandlerCommand::Disconnect) {
+            tracing::debug!(
+                "Failed to send disconnect command (handler may already be shut down): {e}"
+            );
+        }
+
+        if let Some(task_handle) = self.task_handle.take() {
+            match Arc::try_unwrap(task_handle) {
+                Ok(handle) => {
+                    tracing::debug!("Waiting for task handle to complete");
+                    match tokio::time::timeout(tokio::time::Duration::from_secs(2), handle).await {
+                        Ok(Ok(())) => tracing::debug!("Task handle completed successfully"),
+                        Ok(Err(e)) => tracing::error!("Task handle encountered an error: {e:?}"),
+                        Err(_) => {
+                            tracing::warn!(
+                                "Timeout waiting for task handle, task may still be running"
+                            );
+                        }
+                    }
+                }
+                Err(arc_handle) => {
+                    tracing::debug!(
+                        "Cannot take ownership of task handle - other references exist, aborting task"
+                    );
+                    arc_handle.abort();
+                }
+            }
+        } else {
+            tracing::debug!("No task handle to await");
         }
 
         self.subscriptions.clear();
@@ -110,10 +223,51 @@ impl KrakenWebSocketClient {
         Ok(())
     }
 
+    pub async fn close(&mut self) -> Result<(), KrakenWsError> {
+        self.disconnect().await
+    }
+
+    pub async fn wait_until_active(&self, timeout_secs: f64) -> Result<(), KrakenWsError> {
+        let timeout = tokio::time::Duration::from_secs_f64(timeout_secs);
+
+        tokio::time::timeout(timeout, async {
+            while !self.is_active() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            KrakenWsError::ConnectionError(format!(
+                "WebSocket connection timeout after {timeout_secs} seconds"
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
+        // Before connect() the handler isn't running; this send will fail and that's expected
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(HandlerCommand::InitializeInstruments(instruments))
+        {
+            tracing::debug!("Failed to send instruments to handler: {e}");
+        }
+    }
+
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        // Before connect() the handler isn't running; this send will fail and that's expected
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(HandlerCommand::UpdateInstrument(instrument))
+        {
+            tracing::debug!("Failed to send instrument update to handler: {e}");
+        }
+    }
+
     pub async fn subscribe(
         &self,
         channel: KrakenWsChannel,
         symbols: Vec<Ustr>,
+        depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
         let req_id = self.get_next_req_id().await;
 
@@ -123,7 +277,7 @@ impl KrakenWebSocketClient {
                 channel,
                 symbol: Some(symbols.clone()),
                 snapshot: None,
-                depth: None,
+                depth,
                 token: None,
             }),
             req_id: Some(req_id),
@@ -131,7 +285,6 @@ impl KrakenWebSocketClient {
 
         self.send_request(&request).await?;
 
-        // Track subscriptions
         for symbol in symbols {
             let key = format!("{:?}:{}", channel, symbol);
             self.subscriptions.insert(key, channel);
@@ -161,7 +314,6 @@ impl KrakenWebSocketClient {
 
         self.send_request(&request).await?;
 
-        // Remove from subscriptions
         for symbol in symbols {
             let key = format!("{:?}:{}", channel, symbol);
             self.subscriptions.remove(&key);
@@ -183,26 +335,39 @@ impl KrakenWebSocketClient {
     }
 
     async fn send_request(&self, request: &KrakenWsRequest) -> Result<(), KrakenWsError> {
-        let message =
+        let payload =
             serde_json::to_string(request).map_err(|e| KrakenWsError::JsonError(e.to_string()))?;
 
-        if let Some(ws_client) = &self.ws_client {
-            tracing::trace!("Sending message: {message}");
-            ws_client
-                .send_text(message, None)
-                .await
-                .map_err(|e| KrakenWsError::ConnectionError(e.to_string()))?;
-        } else {
-            return Err(KrakenWsError::Disconnected(
-                "WebSocket not connected".into(),
-            ));
-        }
+        tracing::trace!("Sending message: {payload}");
+
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SendText { payload })
+            .map_err(|e| KrakenWsError::ConnectionError(format!("Failed to send request: {e}")))?;
 
         Ok(())
     }
 
     pub fn is_connected(&self) -> bool {
-        self.ws_client.is_some()
+        let connection_mode_arc = self.connection_mode.load();
+        !ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
+    }
+
+    pub fn is_active(&self) -> bool {
+        let connection_mode_arc = self.connection_mode.load();
+        ConnectionMode::from_atomic(&connection_mode_arc).is_active()
+            && !self.signal.load(Ordering::Relaxed)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        let connection_mode_arc = self.connection_mode.load();
+        ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
+            || self.signal.load(Ordering::Relaxed)
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
     }
 
     pub fn get_subscriptions(&self) -> Vec<String> {
@@ -212,34 +377,72 @@ impl KrakenWebSocketClient {
             .collect()
     }
 
-    pub fn stream(&mut self) -> impl futures_util::Stream<Item = String> + use<> {
-        let mut rx = self
-            .raw_rx
+    pub fn stream(&mut self) -> impl futures_util::Stream<Item = NautilusWsMessage> + use<> {
+        let rx = self
+            .out_rx
             .take()
             .expect("Stream receiver already taken or client not connected");
-
+        let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");
         async_stream::stream! {
             while let Some(msg) = rx.recv().await {
-                match msg {
-                    Message::Text(text) => yield text.to_string(),
-                    Message::Binary(data) => {
-                        if let Ok(text) = String::from_utf8(data.to_vec()) {
-                            yield text;
-                        }
-                    }
-                    Message::Ping(_) | Message::Pong(_) => {
-                        tracing::trace!("Received ping/pong");
-                    }
-                    Message::Close(_) => {
-                        tracing::info!("WebSocket connection closed");
-                        break;
-                    }
-                    Message::Frame(_) => {
-                        tracing::trace!("Received raw frame");
-                    }
-                }
+                yield msg;
             }
         }
+    }
+
+    pub async fn subscribe_book(
+        &self,
+        instrument_id: InstrumentId,
+        depth: Option<u32>,
+    ) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.subscribe(KrakenWsChannel::Book, vec![symbol], depth)
+            .await
+    }
+
+    pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.subscribe(KrakenWsChannel::Ticker, vec![symbol], None)
+            .await
+    }
+
+    pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.subscribe(KrakenWsChannel::Trade, vec![symbol], None)
+            .await
+    }
+
+    pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
+        self.subscribe(KrakenWsChannel::Ohlc, vec![symbol], None)
+            .await
+    }
+
+    pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
+    }
+
+    pub async fn unsubscribe_quotes(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.unsubscribe(KrakenWsChannel::Ticker, vec![symbol])
+            .await
+    }
+
+    pub async fn unsubscribe_trades(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        self.unsubscribe(KrakenWsChannel::Trade, vec![symbol]).await
+    }
+
+    pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
+        let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
+        self.unsubscribe(KrakenWsChannel::Ohlc, vec![symbol]).await
     }
 }
 

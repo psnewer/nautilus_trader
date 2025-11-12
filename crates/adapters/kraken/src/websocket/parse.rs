@@ -47,13 +47,19 @@ pub fn parse_quote_tick(
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
-    let bid_price = parse_price_with_precision(&ticker.bid, price_precision, "ticker.bid")?;
-    let bid_size =
-        parse_quantity_with_precision(&ticker.bid_qty, size_precision, "ticker.bid_qty")?;
+    let bid_price = Price::new_checked(ticker.bid, price_precision).with_context(|| {
+        format!("Failed to construct bid Price with precision {price_precision}")
+    })?;
+    let bid_size = Quantity::new_checked(ticker.bid_qty, size_precision).with_context(|| {
+        format!("Failed to construct bid Quantity with precision {size_precision}")
+    })?;
 
-    let ask_price = parse_price_with_precision(&ticker.ask, price_precision, "ticker.ask")?;
-    let ask_size =
-        parse_quantity_with_precision(&ticker.ask_qty, size_precision, "ticker.ask_qty")?;
+    let ask_price = Price::new_checked(ticker.ask, price_precision).with_context(|| {
+        format!("Failed to construct ask Price with precision {price_precision}")
+    })?;
+    let ask_size = Quantity::new_checked(ticker.ask_qty, size_precision).with_context(|| {
+        format!("Failed to construct ask Quantity with precision {size_precision}")
+    })?;
 
     // Kraken ticker doesn't include timestamp
     let ts_event = ts_init;
@@ -85,8 +91,10 @@ pub fn parse_trade_tick(
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
-    let price = parse_price_with_precision(&trade.price, price_precision, "trade.price")?;
-    let size = parse_quantity_with_precision(&trade.qty, size_precision, "trade.qty")?;
+    let price = Price::new_checked(trade.price, price_precision)
+        .with_context(|| format!("Failed to construct Price with precision {price_precision}"))?;
+    let size = Quantity::new_checked(trade.qty, size_precision)
+        .with_context(|| format!("Failed to construct Quantity with precision {size_precision}"))?;
 
     let aggressor = match trade.side {
         KrakenOrderSide::Buy => AggressorSide::Buyer,
@@ -187,8 +195,10 @@ fn parse_book_level(
     ts_event: UnixNanos,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderBookDelta> {
-    let price = parse_price_with_precision(&level.price, price_precision, "level.price")?;
-    let size = parse_quantity_with_precision(&level.qty, size_precision, "level.qty")?;
+    let price = Price::new_checked(level.price, price_precision)
+        .with_context(|| format!("Failed to construct Price with precision {price_precision}"))?;
+    let size = Quantity::new_checked(level.qty, size_precision)
+        .with_context(|| format!("Failed to construct Quantity with precision {size_precision}"))?;
 
     // Determine action based on quantity
     let action = if size.raw == 0 {
@@ -210,28 +220,6 @@ fn parse_book_level(
         ts_event,
         ts_init,
     ))
-}
-
-fn parse_price_with_precision(value: &str, precision: u8, field: &str) -> anyhow::Result<Price> {
-    let parsed = value
-        .parse::<f64>()
-        .with_context(|| format!("Failed to parse {field}='{value}' as f64"))?;
-    Price::new_checked(parsed, precision).with_context(|| {
-        format!("Failed to construct Price for {field} with precision {precision}")
-    })
-}
-
-fn parse_quantity_with_precision(
-    value: &str,
-    precision: u8,
-    field: &str,
-) -> anyhow::Result<Quantity> {
-    let parsed = value
-        .parse::<f64>()
-        .with_context(|| format!("Failed to parse {field}='{value}' as f64"))?;
-    Quantity::new_checked(parsed, precision).with_context(|| {
-        format!("Failed to construct Quantity for {field} with precision {precision}")
-    })
 }
 
 fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos> {

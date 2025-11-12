@@ -5,7 +5,7 @@
     {
       "symbol": "BTC/USD",
       "bids": [
-        {"price": "105944.20", "qty": "0.250"}
+        {"price": 105944.20, "qty": 0.250}
       ],
       "asks": [],
       "checksum": 2114181697,

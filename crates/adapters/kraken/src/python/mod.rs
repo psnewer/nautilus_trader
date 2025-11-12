@@ -23,11 +23,17 @@ use crate::{
         KrakenPairStatus, KrakenPositionSide, KrakenProductType, KrakenSystemStatus,
         KrakenTimeInForce,
     },
-    websocket::enums::{KrakenWsChannel, KrakenWsEventType, KrakenWsMethod},
+    http::client::KrakenHttpClient,
+    websocket::{
+        client::KrakenWebSocketClient,
+        enums::{KrakenWsChannel, KrakenWsEventType, KrakenWsMethod},
+    },
 };
 
 pub mod enums;
+pub mod http;
 pub mod urls;
+pub mod websocket;
 
 #[pymodule]
 pub fn kraken(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -44,6 +50,9 @@ pub fn kraken(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<KrakenWsMethod>()?;
     m.add_class::<KrakenWsChannel>()?;
     m.add_class::<KrakenWsEventType>()?;
+
+    m.add_class::<KrakenHttpClient>()?;
+    m.add_class::<KrakenWebSocketClient>()?;
 
     m.add_function(wrap_pyfunction!(urls::py_get_http_base_url, m)?)?;
     m.add_function(wrap_pyfunction!(urls::py_get_ws_public_url, m)?)?;

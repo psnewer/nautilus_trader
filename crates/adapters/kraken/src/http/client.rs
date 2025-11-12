@@ -26,8 +26,14 @@ use std::{
 };
 
 use dashmap::DashMap;
-use nautilus_core::consts::NAUTILUS_USER_AGENT;
-use nautilus_model::instruments::{Instrument, InstrumentAny};
+use nautilus_core::{
+    consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+};
+use nautilus_model::{
+    data::{Bar, BarType, TradeTick},
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_network::{
     http::HttpClient,
     ratelimiter::quota::Quota,
@@ -42,6 +48,7 @@ use super::{error::KrakenHttpError, models::*};
 use crate::common::{
     credential::KrakenCredential,
     enums::{KrakenEnvironment, KrakenProductType},
+    parse::{parse_bar, parse_spot_instrument, parse_trade_tick_from_array},
     urls::get_http_base_url,
 };
 
@@ -82,6 +89,14 @@ impl Debug for KrakenRawHttpClient {
 }
 
 impl KrakenRawHttpClient {
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn credential(&self) -> Option<&KrakenCredential> {
+        self.credential.as_ref()
+    }
+
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
@@ -320,6 +335,10 @@ impl KrakenRawHttpClient {
             .await
     }
 
+    fn generate_ts_init(&self) -> UnixNanos {
+        get_atomic_clock_realtime().get_time_ns()
+    }
+
     pub async fn get_server_time(&self) -> anyhow::Result<ServerTime, KrakenHttpError> {
         let response: KrakenResponse<ServerTime> = self
             .send_request(Method::GET, "/0/public/Time", None, false)
@@ -437,8 +456,35 @@ impl KrakenRawHttpClient {
             KrakenHttpError::ParseError("Missing result in trades response".to_string())
         })
     }
+
+    pub async fn request_instruments(
+        &self,
+        pairs: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
+        let ts_init = self.generate_ts_init();
+        let asset_pairs = self.get_asset_pairs(pairs).await?;
+
+        let instruments: Vec<InstrumentAny> = asset_pairs
+            .iter()
+            .filter_map(|(pair_name, definition)| {
+                match parse_spot_instrument(pair_name, definition, ts_init, ts_init) {
+                    Ok(instrument) => Some(instrument),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse instrument {pair_name}: {e}");
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        Ok(instruments)
+    }
 }
 
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+)]
 pub struct KrakenHttpClient {
     pub(crate) inner: Arc<KrakenRawHttpClient>,
     pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
@@ -547,6 +593,156 @@ impl KrakenHttpClient {
         self.instruments_cache
             .get(symbol)
             .map(|entry| entry.value().clone())
+    }
+
+    pub async fn request_instruments(
+        &self,
+        pairs: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
+        self.inner.request_instruments(pairs).await
+    }
+
+    pub async fn request_trades(
+        &self,
+        instrument_id: InstrumentId,
+        start: Option<u64>,
+        end: Option<u64>,
+        limit: Option<u64>,
+    ) -> anyhow::Result<Vec<TradeTick>, KrakenHttpError> {
+        let instrument = self
+            .get_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| {
+                KrakenHttpError::ParseError(format!(
+                    "Instrument not found in cache: {}",
+                    instrument_id
+                ))
+            })?;
+
+        let raw_symbol = instrument.raw_symbol().to_string();
+        let since = start.map(|s| s.to_string());
+
+        let ts_init = self.inner.generate_ts_init();
+        let response = self.inner.get_trades(&raw_symbol, since).await?;
+
+        let mut trades = Vec::new();
+
+        // Get the first (and typically only) pair's trade data
+        for (_pair_name, trade_arrays) in &response.data {
+            for trade_array in trade_arrays {
+                match parse_trade_tick_from_array(trade_array, &instrument, ts_init) {
+                    Ok(trade_tick) => {
+                        // Filter by end time if specified
+                        if let Some(end_ns) = end
+                            && trade_tick.ts_event.as_u64() > end_ns
+                        {
+                            continue;
+                        }
+                        trades.push(trade_tick);
+
+                        // Check limit
+                        if let Some(limit_count) = limit
+                            && trades.len() >= limit_count as usize
+                        {
+                            return Ok(trades);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse trade tick: {e}");
+                    }
+                }
+            }
+        }
+
+        Ok(trades)
+    }
+
+    pub async fn request_bars(
+        &self,
+        bar_type: BarType,
+        start: Option<u64>,
+        end: Option<u64>,
+        limit: Option<u64>,
+    ) -> anyhow::Result<Vec<Bar>, KrakenHttpError> {
+        let instrument_id = bar_type.instrument_id();
+        let instrument = self
+            .get_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| {
+                KrakenHttpError::ParseError(format!(
+                    "Instrument not found in cache: {}",
+                    instrument_id
+                ))
+            })?;
+
+        let raw_symbol = instrument.raw_symbol().to_string();
+
+        // Convert bar aggregation to Kraken interval, respecting the bar step/compression
+        let step = bar_type.spec().step.get() as u32;
+        let base_interval = match bar_type.spec().aggregation {
+            nautilus_model::enums::BarAggregation::Minute => 1,
+            nautilus_model::enums::BarAggregation::Hour => 60,
+            nautilus_model::enums::BarAggregation::Day => 1440,
+            _ => {
+                return Err(KrakenHttpError::ParseError(format!(
+                    "Unsupported bar aggregation: {:?}",
+                    bar_type.spec().aggregation
+                )));
+            }
+        };
+        let interval = Some(base_interval * step);
+
+        // Convert start time from nanoseconds to seconds
+        let since = start.map(|s| (s / 1_000_000_000) as i64);
+
+        let ts_init = self.inner.generate_ts_init();
+        let response = self.inner.get_ohlc(&raw_symbol, interval, since).await?;
+
+        let mut bars = Vec::new();
+
+        // Get the first (and typically only) pair's OHLC data
+        for (_pair_name, ohlc_arrays) in &response.data {
+            for ohlc_array in ohlc_arrays {
+                // Convert array to OhlcData
+                if ohlc_array.len() < 8 {
+                    tracing::warn!("OHLC array too short: {}", ohlc_array.len());
+                    continue;
+                }
+
+                let ohlc = OhlcData {
+                    time: ohlc_array[0].as_i64().unwrap_or(0),
+                    open: ohlc_array[1].as_str().unwrap_or("0").to_string(),
+                    high: ohlc_array[2].as_str().unwrap_or("0").to_string(),
+                    low: ohlc_array[3].as_str().unwrap_or("0").to_string(),
+                    close: ohlc_array[4].as_str().unwrap_or("0").to_string(),
+                    vwap: ohlc_array[5].as_str().unwrap_or("0").to_string(),
+                    volume: ohlc_array[6].as_str().unwrap_or("0").to_string(),
+                    count: ohlc_array[7].as_i64().unwrap_or(0),
+                };
+
+                match parse_bar(&ohlc, &instrument, bar_type, ts_init) {
+                    Ok(bar) => {
+                        // Filter by end time if specified
+                        if let Some(end_ns) = end
+                            && bar.ts_event.as_u64() > end_ns
+                        {
+                            continue;
+                        }
+                        bars.push(bar);
+
+                        // Check limit
+                        if let Some(limit_count) = limit
+                            && bars.len() >= limit_count as usize
+                        {
+                            return Ok(bars);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse bar: {e}");
+                    }
+                }
+            }
+        }
+
+        Ok(bars)
     }
 }
 

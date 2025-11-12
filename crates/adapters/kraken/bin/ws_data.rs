@@ -42,11 +42,11 @@ async fn main() -> anyhow::Result<()> {
     client.connect().await?;
 
     client
-        .subscribe(KrakenWsChannel::Ticker, vec![Ustr::from("BTC/USD")])
+        .subscribe(KrakenWsChannel::Ticker, vec![Ustr::from("BTC/USD")], None)
         .await?;
 
     client
-        .subscribe(KrakenWsChannel::Trade, vec![Ustr::from("BTC/USD")])
+        .subscribe(KrakenWsChannel::Trade, vec![Ustr::from("BTC/USD")], None)
         .await?;
 
     let stream = client.stream();
@@ -58,8 +58,8 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         tokio::select! {
-            Some(text) = stream.next() => {
-                tracing::info!("Received: {}", text);
+            Some(msg) = stream.next() => {
+                tracing::info!("Received: {:#?}", msg);
             }
             _ = &mut shutdown => {
                 tracing::info!("Received Ctrl+C, closing connection");

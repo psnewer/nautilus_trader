@@ -15,12 +15,20 @@
 
 //! Data models for Kraken WebSocket v2 API messages.
 
+use nautilus_model::data::{Data, OrderBookDeltas};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ustr::Ustr;
 
 use super::enums::{KrakenWsChannel, KrakenWsEventType, KrakenWsMethod};
 use crate::common::enums::{KrakenOrderSide, KrakenOrderType};
+
+/// Nautilus WebSocket message types for Kraken adapter.
+#[derive(Clone, Debug)]
+pub enum NautilusWsMessage {
+    Data(Vec<Data>),
+    Deltas(OrderBookDeltas),
+}
 
 // Request messages
 
@@ -111,17 +119,17 @@ pub struct KrakenWsMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KrakenWsTickerData {
     pub symbol: Ustr,
-    pub bid: String,
-    pub bid_qty: String,
-    pub ask: String,
-    pub ask_qty: String,
-    pub last: String,
-    pub volume: String,
-    pub vwap: String,
-    pub low: String,
-    pub high: String,
-    pub change: String,
-    pub change_pct: String,
+    pub bid: f64,
+    pub bid_qty: f64,
+    pub ask: f64,
+    pub ask_qty: f64,
+    pub last: f64,
+    pub volume: f64,
+    pub vwap: f64,
+    pub low: f64,
+    pub high: f64,
+    pub change: f64,
+    pub change_pct: f64,
 }
 
 // Trade data
@@ -130,8 +138,8 @@ pub struct KrakenWsTickerData {
 pub struct KrakenWsTradeData {
     pub symbol: Ustr,
     pub side: KrakenOrderSide,
-    pub price: String,
-    pub qty: String,
+    pub price: f64,
+    pub qty: f64,
     pub ord_type: KrakenOrderType,
     pub trade_id: i64,
     pub timestamp: String,
@@ -152,8 +160,8 @@ pub struct KrakenWsBookData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KrakenWsBookLevel {
-    pub price: String,
-    pub qty: String,
+    pub price: f64,
+    pub qty: f64,
 }
 
 // OHLC data
@@ -163,12 +171,12 @@ pub struct KrakenWsOhlcData {
     pub symbol: Ustr,
     pub interval: u32,
     pub timestamp: String,
-    pub open: String,
-    pub high: String,
-    pub low: String,
-    pub close: String,
-    pub volume: String,
-    pub vwap: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    pub vwap: f64,
     pub trades: i64,
 }
 
@@ -228,9 +236,9 @@ mod tests {
         let ticker: KrakenWsTickerData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse ticker data");
         assert_eq!(ticker.symbol.as_str(), "BTC/USD");
-        assert!(!ticker.bid.is_empty());
-        assert!(!ticker.ask.is_empty());
-        assert!(!ticker.last.is_empty());
+        assert!(ticker.bid.is_finite() && ticker.bid > 0.0);
+        assert!(ticker.ask.is_finite() && ticker.ask > 0.0);
+        assert!(ticker.last.is_finite() && ticker.last > 0.0);
     }
 
     #[rstest]
@@ -246,8 +254,8 @@ mod tests {
         let trade: KrakenWsTradeData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse trade data");
         assert_eq!(trade.symbol.as_str(), "BTC/USD");
-        assert!(!trade.price.is_empty());
-        assert!(!trade.qty.is_empty());
+        assert!(trade.price.is_finite() && trade.price > 0.0);
+        assert!(trade.qty.is_finite() && trade.qty > 0.0);
         assert!(trade.trade_id > 0);
     }
 
@@ -269,8 +277,8 @@ mod tests {
 
         let bids = book.bids.unwrap();
         assert_eq!(bids.len(), 3);
-        assert!(!bids[0].price.is_empty());
-        assert!(!bids[0].qty.is_empty());
+        assert!(bids[0].price.is_finite() && bids[0].price > 0.0);
+        assert!(bids[0].qty.is_finite() && bids[0].qty > 0.0);
     }
 
     #[rstest]
@@ -300,10 +308,10 @@ mod tests {
         let ohlc: KrakenWsOhlcData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse OHLC data");
         assert_eq!(ohlc.symbol.as_str(), "BTC/USD");
-        assert!(!ohlc.open.is_empty());
-        assert!(!ohlc.high.is_empty());
-        assert!(!ohlc.low.is_empty());
-        assert!(!ohlc.close.is_empty());
+        assert!(ohlc.open.is_finite() && ohlc.open > 0.0);
+        assert!(ohlc.high.is_finite() && ohlc.high > 0.0);
+        assert!(ohlc.low.is_finite() && ohlc.low > 0.0);
+        assert!(ohlc.close.is_finite() && ohlc.close > 0.0);
         assert_eq!(ohlc.interval, 1);
         assert!(ohlc.trades > 0);
     }
