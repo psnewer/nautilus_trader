@@ -1043,7 +1043,7 @@ class TestBacktestNodeWithBacktestDataIterator:
                 assert ask > 0, f"Ask price should be positive: {ask}"
                 assert ask >= bid, f"Ask ({ask}) should be >= bid ({bid})"
             except (ValueError, IndexError) as e:
-                assert False, f"Invalid quote format: {quote_part}, error: {e}"
+                raise AssertionError(f"Invalid quote format: {quote_part}, error: {e}")
 
 
 def run_backtest(test_callback=None, with_data=True, log_path=None):
