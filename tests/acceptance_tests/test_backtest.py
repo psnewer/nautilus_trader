@@ -893,6 +893,7 @@ class TestBacktestAcceptanceTestsMarketMaking:
         assert account.balance_total(GBP) == Money(-19_351.96, GBP)
 
 
+@pytest.mark.xdist_group(name="databento_catalog")
 class TestBacktestNodeWithBacktestDataIterator:
     def test_backtest_same_with_and_without_data_configs(self) -> None:
         # Arrange
@@ -2045,6 +2046,7 @@ class TestBacktestPnLAlignmentAcceptance:
         # We don't assert equality here since portfolio calculation has different behavior
 
 
+@pytest.mark.xdist_group(name="databento_catalog")
 @pytest.mark.skipif(sys.platform == "win32", reason="Failing on windows")
 class TestBarsWithFillsVisualization:
     """
