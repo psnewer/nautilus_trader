@@ -32,14 +32,20 @@ from nautilus_trader.data.messages import RequestInstruments
 from nautilus_trader.data.messages import RequestQuoteTicks
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
+from nautilus_trader.data.messages import SubscribeFundingRates
+from nautilus_trader.data.messages import SubscribeIndexPrices
 from nautilus_trader.data.messages import SubscribeInstrument
 from nautilus_trader.data.messages import SubscribeInstruments
+from nautilus_trader.data.messages import SubscribeMarkPrices
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
+from nautilus_trader.data.messages import UnsubscribeFundingRates
+from nautilus_trader.data.messages import UnsubscribeIndexPrices
 from nautilus_trader.data.messages import UnsubscribeInstrument
 from nautilus_trader.data.messages import UnsubscribeInstruments
+from nautilus_trader.data.messages import UnsubscribeMarkPrices
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
@@ -47,6 +53,7 @@ from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOU
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
@@ -125,7 +132,7 @@ class HyperliquidDataClient(LiveMarketDataClient):
             ws_client = nautilus_pyo3.HyperliquidWebSocketClient(
                 url=config.base_url_ws,
                 testnet=config.testnet,
-                product_type=product_type_str,
+                product_type=product_type,
             )
             self._ws_clients[product_type] = ws_client
             self._log.info(f"Initialized WebSocket client for {product_type_str}", LogColor.BLUE)
@@ -210,6 +217,9 @@ class HyperliquidDataClient(LiveMarketDataClient):
                 # to `Data` is still owned and managed by Rust.
                 data = capsule_to_data(msg)
                 self._handle_data(data)
+            elif isinstance(msg, nautilus_pyo3.FundingRateUpdate):
+                data = FundingRateUpdate.from_pyo3(msg)
+                self._handle_data(data)
             else:
                 self._log.warning(f"Cannot handle message {msg}: not implemented")
         except Exception as e:
@@ -266,6 +276,24 @@ class HyperliquidDataClient(LiveMarketDataClient):
         pyo3_instrument_id = pyo3_bar_type.instrument_id
         await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_bars(pyo3_bar_type)
 
+    async def _subscribe_mark_prices(self, command: SubscribeMarkPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_mark_prices(
+            pyo3_instrument_id,
+        )
+
+    async def _subscribe_index_prices(self, command: SubscribeIndexPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_index_prices(
+            pyo3_instrument_id,
+        )
+
+    async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_funding_rates(
+            pyo3_instrument_id,
+        )
+
     async def _unsubscribe_instrument(self, command: UnsubscribeInstrument) -> None:
         self._log.info(f"Unsubscribed from instrument updates for {command.instrument_id}")
 
@@ -306,6 +334,24 @@ class HyperliquidDataClient(LiveMarketDataClient):
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         pyo3_instrument_id = pyo3_bar_type.instrument_id
         await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_bars(pyo3_bar_type)
+
+    async def _unsubscribe_mark_prices(self, command: UnsubscribeMarkPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_mark_prices(
+            pyo3_instrument_id,
+        )
+
+    async def _unsubscribe_index_prices(self, command: UnsubscribeIndexPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_index_prices(
+            pyo3_instrument_id,
+        )
+
+    async def _unsubscribe_funding_rates(self, command: UnsubscribeFundingRates) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_funding_rates(
+            pyo3_instrument_id,
+        )
 
     # -- REQUESTS -----------------------------------------------------------------------------------
 

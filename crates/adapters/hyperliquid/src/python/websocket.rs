@@ -22,7 +22,7 @@ use nautilus_model::{
     instruments::Instrument,
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
-use pyo3::{exceptions::PyRuntimeError, prelude::*};
+use pyo3::{conversion::IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
 
 use crate::{
     common::HyperliquidProductType,
@@ -35,22 +35,13 @@ use crate::{
 #[pymethods]
 impl HyperliquidWebSocketClient {
     #[new]
-    #[pyo3(signature = (url=None, testnet=false, product_type="PERP", account_id=None))]
+    #[pyo3(signature = (url=None, testnet=false, product_type=HyperliquidProductType::Perp, account_id=None))]
     fn py_new(
         url: Option<String>,
         testnet: bool,
-        product_type: &str,
+        product_type: HyperliquidProductType,
         account_id: Option<String>,
     ) -> PyResult<Self> {
-        let product_type = match product_type {
-            "PERP" => HyperliquidProductType::Perp,
-            "SPOT" => HyperliquidProductType::Spot,
-            _ => {
-                return Err(PyRuntimeError::new_err(format!(
-                    "Invalid product type: {product_type}. Must be 'PERP' or 'SPOT'"
-                )));
-            }
-        };
         let account_id = account_id.map(|s| AccountId::from(s.as_str()));
         Ok(Self::new(url, testnet, product_type, account_id))
     }
@@ -138,6 +129,37 @@ impl HyperliquidWebSocketClient {
                                     Python::attach(|py| {
                                         let py_obj = data_to_pycapsule(py, Data::Bar(bar));
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {}", e);
+                                        }
+                                    });
+                                }
+                                NautilusWsMessage::MarkPrice(mark_price) => {
+                                    Python::attach(|py| {
+                                        let py_obj = data_to_pycapsule(
+                                            py,
+                                            Data::MarkPriceUpdate(mark_price),
+                                        );
+                                        if let Err(e) = callback.bind(py).call1((py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {}", e);
+                                        }
+                                    });
+                                }
+                                NautilusWsMessage::IndexPrice(index_price) => {
+                                    Python::attach(|py| {
+                                        let py_obj = data_to_pycapsule(
+                                            py,
+                                            Data::IndexPriceUpdate(index_price),
+                                        );
+                                        if let Err(e) = callback.bind(py).call1((py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {}", e);
+                                        }
+                                    });
+                                }
+                                NautilusWsMessage::FundingRate(funding_rate) => {
+                                    Python::attach(|py| {
+                                        if let Ok(py_obj) = funding_rate.into_py_any(py)
+                                            && let Err(e) = callback.bind(py).call1((py_obj,))
+                                        {
                                             tracing::error!("Error calling Python callback: {}", e);
                                         }
                                     });
@@ -477,6 +499,108 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .subscribe_user_events(&user)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_mark_prices")]
+    fn py_subscribe_mark_prices<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_mark_prices(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_mark_prices")]
+    fn py_unsubscribe_mark_prices<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_mark_prices(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_index_prices")]
+    fn py_subscribe_index_prices<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_index_prices(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_index_prices")]
+    fn py_unsubscribe_index_prices<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_index_prices(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_funding_rates")]
+    fn py_subscribe_funding_rates<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_funding_rates(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_funding_rates")]
+    fn py_unsubscribe_funding_rates<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_funding_rates(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

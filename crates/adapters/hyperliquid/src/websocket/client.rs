@@ -13,9 +13,12 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
 };
 
 use arc_swap::ArcSwap;
@@ -41,9 +44,19 @@ use crate::{
     },
 };
 
+const HYPERLIQUID_HEARTBEAT_MSG: &str = r#"{"method":"ping"}"#;
+
+/// Represents the different data types available from asset context subscriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum AssetContextDataType {
+    MarkPrice,
+    IndexPrice,
+    FundingRate,
+}
+
 /// Hyperliquid WebSocket client following the BitMEX pattern.
 ///
-/// Orchestrates WebSocket connection and subscriptions using a command-based architecture
+/// Orchestrates WebSocket connection and subscriptions using a command-based architecture,
 /// where the inner FeedHandler owns the WebSocketClient and handles all I/O.
 #[derive(Debug)]
 #[cfg_attr(
@@ -59,6 +72,7 @@ pub struct HyperliquidWebSocketClient {
     subscriptions: SubscriptionState,
     instruments: Arc<DashMap<Ustr, InstrumentAny>>,
     bar_types: Arc<DashMap<String, BarType>>,
+    asset_context_subs: Arc<DashMap<Ustr, HashSet<AssetContextDataType>>>,
     cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
     out_rx: Option<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
@@ -76,6 +90,7 @@ impl Clone for HyperliquidWebSocketClient {
             subscriptions: self.subscriptions.clone(),
             instruments: Arc::clone(&self.instruments),
             bar_types: Arc::clone(&self.bar_types),
+            asset_context_subs: Arc::clone(&self.asset_context_subs),
             cmd_tx: Arc::clone(&self.cmd_tx),
             out_rx: None,
             task_handle: None,
@@ -118,6 +133,7 @@ impl HyperliquidWebSocketClient {
             subscriptions: SubscriptionState::new(':'),
             instruments: Arc::new(DashMap::new()),
             bar_types: Arc::new(DashMap::new()),
+            asset_context_subs: Arc::new(DashMap::new()),
             cmd_tx: Arc::new(tokio::sync::RwLock::new(cmd_tx)),
             out_rx: None,
             task_handle: None,
@@ -136,8 +152,8 @@ impl HyperliquidWebSocketClient {
             url: self.url.clone(),
             headers: vec![],
             message_handler: Some(message_handler),
-            heartbeat: Some(20),
-            heartbeat_msg: None,
+            heartbeat: Some(30),
+            heartbeat_msg: Some(HYPERLIQUID_HEARTBEAT_MSG.to_string()),
             ping_handler: None,
             reconnect_timeout_ms: Some(15_000),
             reconnect_delay_initial_ms: Some(250),
@@ -543,6 +559,188 @@ impl HyperliquidWebSocketClient {
                 subscriptions: vec![subscription],
             })
             .map_err(|e| anyhow::anyhow!("Failed to send unsubscribe command: {e}"))?;
+        Ok(())
+    }
+
+    /// Subscribe to mark price updates for an instrument.
+    pub async fn subscribe_mark_prices(&self, instrument_id: InstrumentId) -> anyhow::Result<()> {
+        self.subscribe_asset_context_data(instrument_id, AssetContextDataType::MarkPrice)
+            .await
+    }
+
+    /// Unsubscribe from mark price updates for an instrument.
+    pub async fn unsubscribe_mark_prices(&self, instrument_id: InstrumentId) -> anyhow::Result<()> {
+        self.unsubscribe_asset_context_data(instrument_id, AssetContextDataType::MarkPrice)
+            .await
+    }
+
+    /// Subscribe to index/oracle price updates for an instrument.
+    pub async fn subscribe_index_prices(&self, instrument_id: InstrumentId) -> anyhow::Result<()> {
+        self.subscribe_asset_context_data(instrument_id, AssetContextDataType::IndexPrice)
+            .await
+    }
+
+    /// Unsubscribe from index/oracle price updates for an instrument.
+    pub async fn unsubscribe_index_prices(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> anyhow::Result<()> {
+        self.unsubscribe_asset_context_data(instrument_id, AssetContextDataType::IndexPrice)
+            .await
+    }
+
+    /// Subscribe to funding rate updates for an instrument.
+    pub async fn subscribe_funding_rates(&self, instrument_id: InstrumentId) -> anyhow::Result<()> {
+        self.subscribe_asset_context_data(instrument_id, AssetContextDataType::FundingRate)
+            .await
+    }
+
+    /// Unsubscribe from funding rate updates for an instrument.
+    pub async fn unsubscribe_funding_rates(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> anyhow::Result<()> {
+        self.unsubscribe_asset_context_data(instrument_id, AssetContextDataType::FundingRate)
+            .await
+    }
+
+    async fn subscribe_asset_context_data(
+        &self,
+        instrument_id: InstrumentId,
+        data_type: AssetContextDataType,
+    ) -> anyhow::Result<()> {
+        let instrument = self
+            .get_instrument(&instrument_id)
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
+        let coin = instrument.raw_symbol().inner();
+
+        let mut entry = self.asset_context_subs.entry(coin).or_default();
+        let is_first_subscription = entry.is_empty();
+        entry.insert(data_type);
+        let data_types = entry.clone();
+        drop(entry);
+
+        let cmd_tx = self.cmd_tx.read().await;
+
+        cmd_tx
+            .send(HandlerCommand::UpdateAssetContextSubs { coin, data_types })
+            .map_err(|e| anyhow::anyhow!("Failed to send UpdateAssetContextSubs command: {e}"))?;
+
+        if is_first_subscription {
+            let subscription = match self.product_type {
+                HyperliquidProductType::Perp => {
+                    tracing::debug!(
+                        "First asset context subscription for coin '{}', subscribing to ActiveAssetCtx",
+                        coin
+                    );
+                    SubscriptionRequest::ActiveAssetCtx { coin }
+                }
+                HyperliquidProductType::Spot => {
+                    tracing::debug!(
+                        "First asset context subscription for coin '{}', subscribing to ActiveSpotAssetCtx",
+                        coin
+                    );
+                    SubscriptionRequest::ActiveSpotAssetCtx { coin }
+                }
+            };
+
+            cmd_tx
+                .send(HandlerCommand::UpdateInstrument(instrument.clone()))
+                .map_err(|e| anyhow::anyhow!("Failed to send UpdateInstrument command: {e}"))?;
+
+            cmd_tx
+                .send(HandlerCommand::Subscribe {
+                    subscriptions: vec![subscription],
+                })
+                .map_err(|e| anyhow::anyhow!("Failed to send subscribe command: {e}"))?;
+        } else {
+            let channel_name = match self.product_type {
+                HyperliquidProductType::Perp => "ActiveAssetCtx",
+                HyperliquidProductType::Spot => "ActiveSpotAssetCtx",
+            };
+            tracing::debug!(
+                "Already subscribed to {} for coin '{}', adding {:?} to tracked types",
+                channel_name,
+                coin,
+                data_type
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn unsubscribe_asset_context_data(
+        &self,
+        instrument_id: InstrumentId,
+        data_type: AssetContextDataType,
+    ) -> anyhow::Result<()> {
+        let instrument = self
+            .get_instrument(&instrument_id)
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
+        let coin = instrument.raw_symbol().inner();
+
+        if let Some(mut entry) = self.asset_context_subs.get_mut(&coin) {
+            entry.remove(&data_type);
+            let should_unsubscribe = entry.is_empty();
+            let data_types = entry.clone();
+            drop(entry);
+
+            let cmd_tx = self.cmd_tx.read().await;
+
+            if should_unsubscribe {
+                self.asset_context_subs.remove(&coin);
+
+                let subscription = match self.product_type {
+                    HyperliquidProductType::Perp => {
+                        tracing::debug!(
+                            "Last asset context subscription removed for coin '{}', unsubscribing from ActiveAssetCtx",
+                            coin
+                        );
+                        SubscriptionRequest::ActiveAssetCtx { coin }
+                    }
+                    HyperliquidProductType::Spot => {
+                        tracing::debug!(
+                            "Last asset context subscription removed for coin '{}', unsubscribing from ActiveSpotAssetCtx",
+                            coin
+                        );
+                        SubscriptionRequest::ActiveSpotAssetCtx { coin }
+                    }
+                };
+
+                cmd_tx
+                    .send(HandlerCommand::UpdateAssetContextSubs {
+                        coin,
+                        data_types: HashSet::new(),
+                    })
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to send UpdateAssetContextSubs command: {e}")
+                    })?;
+
+                cmd_tx
+                    .send(HandlerCommand::Unsubscribe {
+                        subscriptions: vec![subscription],
+                    })
+                    .map_err(|e| anyhow::anyhow!("Failed to send unsubscribe command: {e}"))?;
+            } else {
+                let channel_name = match self.product_type {
+                    HyperliquidProductType::Perp => "ActiveAssetCtx",
+                    HyperliquidProductType::Spot => "ActiveSpotAssetCtx",
+                };
+                tracing::debug!(
+                    "Removed {:?} from tracked types for coin '{}', but keeping {} subscription",
+                    data_type,
+                    coin,
+                    channel_name
+                );
+
+                cmd_tx
+                    .send(HandlerCommand::UpdateAssetContextSubs { coin, data_types })
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to send UpdateAssetContextSubs command: {e}")
+                    })?;
+            }
+        }
+
         Ok(())
     }
 

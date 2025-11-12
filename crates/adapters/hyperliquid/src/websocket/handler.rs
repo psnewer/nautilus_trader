@@ -15,9 +15,12 @@
 
 //! WebSocket message handler for Hyperliquid.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ahash::AHashMap;
@@ -36,13 +39,14 @@ use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
 use super::{
+    client::AssetContextDataType,
     error::HyperliquidWsError,
     messages::{
         ExecutionReport, HyperliquidWsMessage, HyperliquidWsRequest, NautilusWsMessage,
-        SubscriptionRequest, WsUserEventData,
+        SubscriptionRequest, WsActiveAssetCtxData, WsUserEventData,
     },
     parse::{
-        parse_ws_candle, parse_ws_fill_report, parse_ws_order_book_deltas,
+        parse_ws_asset_context, parse_ws_candle, parse_ws_fill_report, parse_ws_order_book_deltas,
         parse_ws_order_status_report, parse_ws_quote_tick, parse_ws_trade_tick,
     },
 };
@@ -53,6 +57,7 @@ use super::{
     clippy::large_enum_variant,
     reason = "Commands are ephemeral and immediately consumed"
 )]
+#[allow(private_interfaces)]
 pub enum HandlerCommand {
     /// Set the WebSocketClient for the handler to use.
     SetClient(WebSocketClient),
@@ -74,6 +79,11 @@ pub enum HandlerCommand {
     AddBarType { key: String, bar_type: BarType },
     /// Remove a bar type mapping.
     RemoveBarType { key: String },
+    /// Update asset context subscriptions for a coin.
+    UpdateAssetContextSubs {
+        coin: Ustr,
+        data_types: HashSet<AssetContextDataType>,
+    },
 }
 
 pub(super) struct FeedHandler {
@@ -89,6 +99,10 @@ pub(super) struct FeedHandler {
     bar_types_cache: AHashMap<String, BarType>,
     account_id: Option<AccountId>,
     message_buffer: Vec<NautilusWsMessage>,
+    asset_context_subs: AHashMap<Ustr, HashSet<AssetContextDataType>>,
+    mark_price_cache: AHashMap<Ustr, String>,
+    index_price_cache: AHashMap<Ustr, String>,
+    funding_rate_cache: AHashMap<Ustr, String>,
 }
 
 impl FeedHandler {
@@ -115,6 +129,10 @@ impl FeedHandler {
             bar_types_cache: AHashMap::new(),
             account_id,
             message_buffer: Vec::new(),
+            asset_context_subs: AHashMap::new(),
+            mark_price_cache: AHashMap::new(),
+            index_price_cache: AHashMap::new(),
+            funding_rate_cache: AHashMap::new(),
         }
     }
 
@@ -219,31 +237,18 @@ impl FeedHandler {
                         }
                         HandlerCommand::InitializeInstruments(instruments) => {
                             for inst in instruments {
-                                // Store by full symbol only (primary key - guarantees uniqueness)
-                                self.instruments_cache.insert(inst.symbol().inner(), inst);
+                                let full_symbol = inst.symbol().inner();
+                                let coin = inst.raw_symbol().inner();
+
+                                self.instruments_cache.insert(full_symbol, inst.clone());
+                                self.instruments_cache.insert(coin, inst);
                             }
                         }
                         HandlerCommand::UpdateInstrument(inst) => {
                             let full_symbol = inst.symbol().inner();
                             let coin = inst.raw_symbol().inner();
 
-                            // Store by full symbol (primary key)
                             self.instruments_cache.insert(full_symbol, inst.clone());
-
-                            // Also store by coin for WebSocket message lookups
-                            // Check for collision (different instrument already mapped to this coin)
-                            if let Some(existing) = self.instruments_cache.get(&coin)
-                                && existing.id() != inst.id()
-                            {
-                                tracing::warn!(
-                                    "Coin '{}' mapping changed from {} to {} - Hyperliquid WebSocket messages \
-                                    only include coin identifiers, so subscribing to both spot and perp for the \
-                                    same coin is not supported. Last subscription wins.",
-                                    coin,
-                                    existing.id(),
-                                    inst.id()
-                                );
-                            }
                             self.instruments_cache.insert(coin, inst);
                         }
                         HandlerCommand::AddBarType { key, bar_type } => {
@@ -251,6 +256,13 @@ impl FeedHandler {
                         }
                         HandlerCommand::RemoveBarType { key } => {
                             self.bar_types_cache.remove(&key);
+                        }
+                        HandlerCommand::UpdateAssetContextSubs { coin, data_types } => {
+                            if data_types.is_empty() {
+                                self.asset_context_subs.remove(&coin);
+                            } else {
+                                self.asset_context_subs.insert(coin, data_types);
+                            }
                         }
                     }
                     continue;
@@ -273,6 +285,10 @@ impl FeedHandler {
                                         &self.bar_types_cache,
                                         self.account_id,
                                         ts_init,
+                                        &self.asset_context_subs,
+                                        &mut self.mark_price_cache,
+                                        &mut self.index_price_cache,
+                                        &mut self.funding_rate_cache,
                                     );
 
                                     if !nautilus_messages.is_empty() {
@@ -309,12 +325,17 @@ impl FeedHandler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parse_to_nautilus_messages(
         msg: HyperliquidWsMessage,
         instruments: &AHashMap<Ustr, InstrumentAny>,
         bar_types: &AHashMap<String, BarType>,
         account_id: Option<AccountId>,
         ts_init: UnixNanos,
+        asset_context_subs: &AHashMap<Ustr, HashSet<AssetContextDataType>>,
+        mark_price_cache: &mut AHashMap<Ustr, String>,
+        index_price_cache: &mut AHashMap<Ustr, String>,
+        funding_rate_cache: &mut AHashMap<Ustr, String>,
     ) -> Vec<NautilusWsMessage> {
         let mut result = Vec::new();
 
@@ -442,6 +463,144 @@ impl FeedHandler {
                     tracing::warn!("No bar type found for key: {}", key);
                 }
             }
+            HyperliquidWsMessage::ActiveAssetCtx { data } => {
+                let coin = match &data {
+                    WsActiveAssetCtxData::Perp { coin, .. } => coin,
+                    WsActiveAssetCtxData::Spot { coin, .. } => coin,
+                };
+
+                if let Some(instrument) = instruments.get(coin) {
+                    let (mark_px, oracle_px, funding) = match &data {
+                        WsActiveAssetCtxData::Perp { ctx, .. } => (
+                            &ctx.shared.mark_px,
+                            Some(&ctx.oracle_px),
+                            Some(&ctx.funding),
+                        ),
+                        WsActiveAssetCtxData::Spot { ctx, .. } => (&ctx.shared.mark_px, None, None),
+                    };
+
+                    let mark_changed = mark_price_cache.get(coin) != Some(mark_px);
+                    let index_changed =
+                        oracle_px.is_some_and(|px| index_price_cache.get(coin) != Some(px));
+                    let funding_changed =
+                        funding.is_some_and(|rate| funding_rate_cache.get(coin) != Some(rate));
+
+                    let subscribed_types = asset_context_subs.get(coin);
+
+                    if mark_changed || index_changed || funding_changed {
+                        match parse_ws_asset_context(data, instrument, ts_init) {
+                            Ok((mark_price, index_price, funding_rate)) => {
+                                if mark_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::MarkPrice)
+                                    })
+                                {
+                                    mark_price_cache.insert(*coin, mark_px.clone());
+                                    result.push(NautilusWsMessage::MarkPrice(mark_price));
+                                }
+                                if index_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::IndexPrice)
+                                    })
+                                {
+                                    if let Some(px) = oracle_px {
+                                        index_price_cache.insert(*coin, px.clone());
+                                    }
+                                    if let Some(index) = index_price {
+                                        result.push(NautilusWsMessage::IndexPrice(index));
+                                    }
+                                }
+                                if funding_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::FundingRate)
+                                    })
+                                {
+                                    if let Some(rate) = funding {
+                                        funding_rate_cache.insert(*coin, rate.clone());
+                                    }
+                                    if let Some(funding) = funding_rate {
+                                        result.push(NautilusWsMessage::FundingRate(funding));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Error parsing active asset context: {e}");
+                            }
+                        }
+                    }
+                } else {
+                    tracing::warn!("No instrument found for coin: {}", coin);
+                }
+            }
+            HyperliquidWsMessage::ActiveSpotAssetCtx { data } => {
+                let coin = match &data {
+                    WsActiveAssetCtxData::Perp { coin, .. } => coin,
+                    WsActiveAssetCtxData::Spot { coin, .. } => coin,
+                };
+
+                if let Some(instrument) = instruments.get(coin) {
+                    let (mark_px, oracle_px, funding) = match &data {
+                        WsActiveAssetCtxData::Perp { ctx, .. } => (
+                            &ctx.shared.mark_px,
+                            Some(&ctx.oracle_px),
+                            Some(&ctx.funding),
+                        ),
+                        WsActiveAssetCtxData::Spot { ctx, .. } => (&ctx.shared.mark_px, None, None),
+                    };
+
+                    let mark_changed = mark_price_cache.get(coin) != Some(mark_px);
+                    let index_changed =
+                        oracle_px.is_some_and(|px| index_price_cache.get(coin) != Some(px));
+                    let funding_changed =
+                        funding.is_some_and(|rate| funding_rate_cache.get(coin) != Some(rate));
+
+                    let subscribed_types = asset_context_subs.get(coin);
+
+                    if mark_changed || index_changed || funding_changed {
+                        match parse_ws_asset_context(data, instrument, ts_init) {
+                            Ok((mark_price, index_price, funding_rate)) => {
+                                if mark_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::MarkPrice)
+                                    })
+                                {
+                                    mark_price_cache.insert(*coin, mark_px.clone());
+                                    result.push(NautilusWsMessage::MarkPrice(mark_price));
+                                }
+                                if index_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::IndexPrice)
+                                    })
+                                {
+                                    if let Some(px) = oracle_px {
+                                        index_price_cache.insert(*coin, px.clone());
+                                    }
+                                    if let Some(index) = index_price {
+                                        result.push(NautilusWsMessage::IndexPrice(index));
+                                    }
+                                }
+                                if funding_changed
+                                    && subscribed_types.is_some_and(|s| {
+                                        s.contains(&AssetContextDataType::FundingRate)
+                                    })
+                                {
+                                    if let Some(rate) = funding {
+                                        funding_rate_cache.insert(*coin, rate.clone());
+                                    }
+                                    if let Some(funding) = funding_rate {
+                                        result.push(NautilusWsMessage::FundingRate(funding));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Error parsing active spot asset context: {e}");
+                            }
+                        }
+                    }
+                } else {
+                    tracing::warn!("No instrument found for coin: {}", coin);
+                }
+            }
             HyperliquidWsMessage::Error { data } => {
                 tracing::warn!("Received error from Hyperliquid WebSocket: {}", data);
             }
@@ -476,6 +635,7 @@ fn subscription_to_key(sub: &SubscriptionRequest) -> String {
             format!("userNonFundingLedgerUpdates:{user}")
         }
         SubscriptionRequest::ActiveAssetCtx { coin } => format!("activeAssetCtx:{coin}"),
+        SubscriptionRequest::ActiveSpotAssetCtx { coin } => format!("activeSpotAssetCtx:{coin}"),
         SubscriptionRequest::ActiveAssetData { user, coin } => {
             format!("activeAssetData:{user}:{coin}")
         }
