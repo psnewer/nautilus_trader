@@ -51,6 +51,7 @@ TBD
 - Fixed parse_dates parameter in CSV loaders (#3132), thanks @maomao9-0
 - Fixed `GreeksCalculator` handling of missing price data (#3116), thanks for reporting @q351941406
 - Fixed active liquidity calculation Pool profiler simulation (#3165), thanks @filipmacek
+- Fixed Betfair datetime encoding error in order status reports
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
