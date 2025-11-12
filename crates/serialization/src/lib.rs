@@ -58,6 +58,9 @@
 
 pub mod arrow;
 
+/// Re-export MsgPack serialization helpers for consumers expecting to configure codecs via this crate.
+pub use nautilus_core::serialization::msgpack;
+
 #[cfg(feature = "capnp")]
 pub mod capnp;
 
