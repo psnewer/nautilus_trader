@@ -77,6 +77,7 @@ TBD
 - Refactored Polymarket instrument provider to use async HttpClient
 - Improved Databento live connection stability and reconnects
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
+- Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou

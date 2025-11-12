@@ -15,11 +15,17 @@
 
 //! Python bindings for the dYdX WebSocket client.
 
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
+
 use nautilus_core::python::to_pyvalue_err;
 use nautilus_model::{
     identifiers::{AccountId, InstrumentId},
     python::instruments::pyobject_to_instrument_any,
 };
+use nautilus_network::mode::ConnectionMode;
 use pyo3::prelude::*;
 
 use crate::{
@@ -52,7 +58,7 @@ impl DydxWebSocketClient {
         heartbeat: Option<u64>,
     ) -> PyResult<Self> {
         let credential = DydxCredential::from_mnemonic(&mnemonic, account_index, authenticator_ids)
-            .map_err(to_pyvalue_err_anyhow)?;
+            .map_err(to_pyvalue_err)?;
         Ok(Self::new_private(url, credential, account_id, heartbeat))
     }
 
@@ -125,8 +131,10 @@ impl DydxWebSocketClient {
                             }
                             crate::websocket::messages::NautilusWsMessage::Deltas(deltas) => {
                                 Python::attach(|py| {
-                                    use nautilus_model::data::{Data, OrderBookDeltas_API};
-                                    use nautilus_model::python::data::data_to_pycapsule;
+                                    use nautilus_model::{
+                                        data::{Data, OrderBookDeltas_API},
+                                        python::data::data_to_pycapsule,
+                                    };
                                     let data = Data::Deltas(OrderBookDeltas_API::new(*deltas));
                                     let py_obj = data_to_pycapsule(py, data);
                                     if let Err(e) = callback.call1(py, (py_obj,)) {
@@ -170,12 +178,10 @@ impl DydxWebSocketClient {
         timeout_secs: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let connection_mode = self.connection_mode_atomic();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            use nautilus_network::mode::ConnectionMode;
-            use std::sync::atomic::Ordering;
 
-            let timeout = std::time::Duration::from_secs_f64(timeout_secs);
-            let start = std::time::Instant::now();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let timeout = Duration::from_secs_f64(timeout_secs);
+            let start = Instant::now();
 
             loop {
                 let mode = connection_mode.load();
@@ -419,8 +425,4 @@ impl DydxWebSocketClient {
             Ok(())
         })
     }
-}
-
-fn to_pyvalue_err_anyhow(e: anyhow::Error) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
 }

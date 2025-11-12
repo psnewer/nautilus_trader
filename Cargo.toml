@@ -116,7 +116,7 @@ arrow = { version = "56.2.0", default-features = false, features = [
 ] }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
-aws-lc-rs = { version = "1.14.1", default-features = false, features = [
+aws-lc-rs = { version = "1.15.0", default-features = false, features = [
   "non-fips",
 ] }
 base64 = "0.22.1"
