@@ -249,50 +249,44 @@ class HyperliquidDataClient(LiveMarketDataClient):
 
     async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_book(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_book(pyo3_instrument_id)
 
     async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_book(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_book(pyo3_instrument_id)
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_quotes(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_quotes(pyo3_instrument_id)
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_trades(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         pyo3_instrument_id = pyo3_bar_type.instrument_id
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_bars(pyo3_bar_type)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_bars(pyo3_bar_type)
 
     async def _subscribe_mark_prices(self, command: SubscribeMarkPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_mark_prices(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_mark_prices(pyo3_instrument_id)
 
     async def _subscribe_index_prices(self, command: SubscribeIndexPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_index_prices(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_index_prices(pyo3_instrument_id)
 
     async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).subscribe_funding_rates(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.subscribe_funding_rates(pyo3_instrument_id)
 
     async def _unsubscribe_instrument(self, command: UnsubscribeInstrument) -> None:
         self._log.info(f"Unsubscribed from instrument updates for {command.instrument_id}")
@@ -302,56 +296,49 @@ class HyperliquidDataClient(LiveMarketDataClient):
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_book(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_book(pyo3_instrument_id)
 
     async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_book(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_book(pyo3_instrument_id)
 
     async def _unsubscribe_order_book(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_book(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_book(pyo3_instrument_id)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_quotes(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_quotes(pyo3_instrument_id)
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_trades(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_trades(pyo3_instrument_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         pyo3_instrument_id = pyo3_bar_type.instrument_id
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_bars(pyo3_bar_type)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_bars(pyo3_bar_type)
 
     async def _unsubscribe_mark_prices(self, command: UnsubscribeMarkPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_mark_prices(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_mark_prices(pyo3_instrument_id)
 
     async def _unsubscribe_index_prices(self, command: UnsubscribeIndexPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_index_prices(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_index_prices(pyo3_instrument_id)
 
     async def _unsubscribe_funding_rates(self, command: UnsubscribeFundingRates) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._get_ws_client_for_instrument(pyo3_instrument_id).unsubscribe_funding_rates(
-            pyo3_instrument_id,
-        )
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+        await ws_client.unsubscribe_funding_rates(pyo3_instrument_id)
 
     # -- REQUESTS -----------------------------------------------------------------------------------
 

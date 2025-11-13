@@ -19,7 +19,6 @@ use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
     identifiers::{AccountId, InstrumentId},
-    instruments::Instrument,
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{conversion::IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
@@ -70,14 +69,10 @@ impl HyperliquidWebSocketClient {
         instruments: Vec<Py<PyAny>>,
         callback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let count = instruments.len();
-        tracing::info!("py_connect called with {} instruments", count);
         for inst in instruments {
             let inst_any = pyobject_to_instrument_any(py, inst)?;
-            tracing::debug!("Caching instrument: {}", inst_any.id());
             self.cache_instrument(inst_any);
         }
-        tracing::info!("Finished caching {} instruments in WebSocket client", count);
 
         let mut client = self.clone();
 
@@ -90,7 +85,7 @@ impl HyperliquidWebSocketClient {
 
                     match event {
                         Some(msg) => {
-                            tracing::trace!("Received WebSocket message: {:?}", msg);
+                            tracing::trace!("Received WebSocket message: {msg:?}");
 
                             match msg {
                                 NautilusWsMessage::Trades(trade_ticks) => {

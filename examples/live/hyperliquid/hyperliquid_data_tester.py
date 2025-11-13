@@ -36,7 +36,8 @@ from nautilus_trader.test_kit.strategies.tester_data import DataTesterConfig
 
 instrument_ids = [
     InstrumentId.from_str("BTC-USD-PERP.HYPERLIQUID"),
-    # InstrumentId.from_str("ETH-USD-PERP.HYPERLIQUID"),
+    InstrumentId.from_str("ETH-USD-PERP.HYPERLIQUID"),
+    InstrumentId.from_str("HYPE-USDC-SPOT.HYPERLIQUID"),
 ]
 
 if __name__ == "__main__":
@@ -75,9 +76,9 @@ if __name__ == "__main__":
         subscribe_quotes=True,
         subscribe_trades=True,
         subscribe_bars=True,
-        # subscribe_mark_prices=True,
-        # subscribe_index_prices=True,
-        # subscribe_funding_rates=True,
+        subscribe_mark_prices=True,
+        subscribe_index_prices=True,
+        subscribe_funding_rates=True,
     )
     # Instantiate your strategy
     strategy = DataTester(config=config_strat)
