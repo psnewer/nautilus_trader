@@ -577,7 +577,7 @@ impl LiveExecutionClient for OKXExecutionClient {
 
         for inst_type in self.instrument_types() {
             tracing::info!(
-                "Subscribing to orders channel for instrument type: {:?}",
+                "Subscribing to channels for instrument type: {:?}",
                 inst_type
             );
             self.ws_private.subscribe_orders(inst_type).await?;
@@ -855,6 +855,7 @@ impl OKXExecutionClient {
 fn dispatch_ws_message(message: NautilusWsMessage) {
     match message {
         NautilusWsMessage::AccountUpdate(state) => dispatch_account_state(state),
+        NautilusWsMessage::PositionUpdate(report) => dispatch_position_status_report(report),
         NautilusWsMessage::ExecutionReports(reports) => {
             for report in reports {
                 dispatch_execution_report(report);
@@ -898,6 +899,14 @@ fn dispatch_account_state(state: AccountState) {
         "Portfolio.update_account".into(),
         &state as &dyn std::any::Any,
     );
+}
+
+fn dispatch_position_status_report(report: PositionStatusReport) {
+    let sender = get_exec_event_sender();
+    let exec_report = nautilus_common::messages::ExecutionReport::Position(Box::new(report));
+    if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
+        tracing::warn!("Failed to send position status report: {e}");
+    }
 }
 
 fn dispatch_execution_report(report: ExecutionReport) {
