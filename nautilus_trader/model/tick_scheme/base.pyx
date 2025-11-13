@@ -95,9 +95,24 @@ cdef class TickScheme:
         raise NotImplementedError()  # pragma: no cover
 
 
-# Epsilon tolerance for tick boundary detection
-# This absolute tolerance works well for typical FX/crypto price ranges
-cdef double INCLUSIVE_EPS = 1e-10
+cdef double RELATIVE_TOLERANCE = 1e-12
+cdef double ABSOLUTE_TOLERANCE = 1e-14
+cdef double MAX_TICK_DELTA = 0.001
+
+
+cdef bint is_close(double a, double b):
+    """
+    Check if two floating point values are approximately equal.
+
+    Uses relative tolerance scaled with magnitude but capped to prevent
+    treating values multiple ticks away as "on boundary".
+    """
+    cdef double diff = abs(a - b)
+    cdef double largest = max(abs(a), abs(b))
+    cdef double rel_tol = RELATIVE_TOLERANCE * largest
+    cdef double tolerance = min(rel_tol, MAX_TICK_DELTA)
+    tolerance = max(tolerance, ABSOLUTE_TOLERANCE)
+    return diff <= tolerance
 
 
 cpdef double round_down(double value, double base):
@@ -106,11 +121,14 @@ cpdef double round_down(double value, double base):
 
     If value is already on the boundary, returns the same value (price-inclusive).
     """
+    if base <= 0:
+        raise ValueError(f"base must be positive, was {base}")
+
     cdef double base_multiple = value / base
     cdef double rounded_multiple = cround(base_multiple)
 
     # Check if we're already on a tick boundary (within floating point precision)
-    if abs(base_multiple - rounded_multiple) < INCLUSIVE_EPS:
+    if is_close(base_multiple, rounded_multiple):
         return value
     else:
         # Round down to previous boundary using floor
@@ -123,11 +141,14 @@ cpdef double round_up(double value, double base):
 
     If value is already on the boundary, returns the same value (price-inclusive).
     """
+    if base <= 0:
+        raise ValueError(f"base must be positive, was {base}")
+
     cdef double base_multiple = value / base
     cdef double rounded_multiple = cround(base_multiple)
 
     # Check if we're already on a tick boundary (within floating point precision)
-    if abs(base_multiple - rounded_multiple) < INCLUSIVE_EPS:
+    if is_close(base_multiple, rounded_multiple):
         return value
     else:
         # Round up to next boundary using ceil
