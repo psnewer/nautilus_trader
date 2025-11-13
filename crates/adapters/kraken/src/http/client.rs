@@ -208,19 +208,19 @@ impl KrakenRawHttpClient {
         path: &str,
         nonce: u64,
         params: &HashMap<String, String>,
-    ) -> anyhow::Result<HashMap<String, String>> {
+    ) -> anyhow::Result<(HashMap<String, String>, String)> {
         let credential = self
             .credential
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing credentials"))?;
 
-        let signature = credential.sign_request(path, nonce, params)?;
+        let (signature, post_data) = credential.sign_request(path, nonce, params)?;
 
         let mut headers = HashMap::new();
         headers.insert("API-Key".to_string(), credential.api_key().to_string());
         headers.insert("API-Sign".to_string(), signature);
 
-        Ok(headers)
+        Ok((headers, post_data))
     }
 
     async fn send_request<T: DeserializeOwned>(
@@ -244,13 +244,13 @@ impl KrakenRawHttpClient {
             async move {
                 let mut headers = Self::default_headers();
 
-                if authenticate {
+                let final_body = if authenticate {
                     let nonce = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("Time went backwards")
                         .as_millis() as u64;
 
-                    let params = if let Some(ref body_bytes) = body {
+                    let params: HashMap<String, String> = if let Some(ref body_bytes) = body {
                         let body_str = std::str::from_utf8(body_bytes).map_err(|e| {
                             KrakenHttpError::ParseError(format!(
                                 "Invalid UTF-8 in request body: {e}"
@@ -265,11 +265,16 @@ impl KrakenRawHttpClient {
                         HashMap::new()
                     };
 
-                    let auth_headers = self
+                    let (auth_headers, post_data) = self
                         .sign_request(&endpoint, nonce, &params)
                         .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
                     headers.extend(auth_headers);
-                }
+
+                    // Use the exact post_data that was signed
+                    Some(post_data.into_bytes())
+                } else {
+                    body
+                };
 
                 if method == Method::POST {
                     headers.insert(
@@ -287,7 +292,7 @@ impl KrakenRawHttpClient {
                         url,
                         None,
                         Some(headers),
-                        body,
+                        final_body,
                         None,
                         Some(rate_limit_keys),
                     )
@@ -464,23 +469,8 @@ impl KrakenRawHttpClient {
             ));
         }
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as u64;
-
-        let params = [("nonce", nonce.to_string())];
-        let body = serde_urlencoded::to_string(&params)
-            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?
-            .into_bytes();
-
         let response: KrakenResponse<WebSocketToken> = self
-            .send_request(
-                Method::POST,
-                "/0/private/GetWebSocketsToken",
-                Some(body),
-                true,
-            )
+            .send_request(Method::POST, "/0/private/GetWebSocketsToken", None, true)
             .await?;
 
         response.result.ok_or_else(|| {

@@ -50,7 +50,7 @@ impl KrakenCredential {
         path: &str,
         nonce: u64,
         params: &HashMap<String, String>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, String)> {
         // Decode the secret from base64
         let secret = STANDARD
             .decode(&self.api_secret)
@@ -76,8 +76,8 @@ impl KrakenCredential {
         let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
         let signature = hmac::sign(&key, &message);
 
-        // Encode signature as base64
-        Ok(STANDARD.encode(signature.as_ref()))
+        // Encode signature as base64 and return with post_data
+        Ok((STANDARD.encode(signature.as_ref()), post_data))
     }
 }
 
