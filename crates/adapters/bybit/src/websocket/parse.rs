@@ -808,21 +808,38 @@ pub fn parse_ws_account_state(
 
         let total_amount = wallet_balance_amount - spot_borrow_amount;
 
-        let free_amount = if coin_data.available_to_withdraw.is_empty() {
-            0.0
-        } else {
-            coin_data
-                .available_to_withdraw
-                .parse::<f64>()
-                .with_context(|| {
-                    format!(
-                        "Failed to parse availableToWithdraw='{}' as f64",
-                        coin_data.available_to_withdraw
-                    )
+        // Calculate locked amount from explicit margin fields provided by Bybit
+        // totalOrderIM: margin locked for active orders
+        // totalPositionIM: margin locked for open positions
+        let order_im = if let Some(ref total_order_im) = coin_data.total_order_im {
+            if total_order_im.is_empty() || total_order_im == "0" {
+                0.0
+            } else {
+                total_order_im.parse::<f64>().with_context(|| {
+                    format!("Failed to parse totalOrderIM='{}' as f64", total_order_im)
                 })?
+            }
+        } else {
+            0.0
         };
 
-        let locked_amount = total_amount - free_amount;
+        let position_im = if let Some(ref total_position_im) = coin_data.total_position_im {
+            if total_position_im.is_empty() || total_position_im == "0" {
+                0.0
+            } else {
+                total_position_im.parse::<f64>().with_context(|| {
+                    format!(
+                        "Failed to parse totalPositionIM='{}' as f64",
+                        total_position_im
+                    )
+                })?
+            }
+        } else {
+            0.0
+        };
+
+        let locked_amount = order_im + position_im;
+        let free_amount = (total_amount - locked_amount).max(0.0);
 
         let total = Money::new(total_amount, currency);
         let locked = Money::new(locked_amount, currency);
@@ -1251,6 +1268,40 @@ mod tests {
 
         assert_eq!(state.ts_event, ts_event);
         assert_eq!(state.ts_init, TS);
+    }
+
+    #[rstest]
+    fn parse_ws_wallet_with_small_order_calculates_free_correctly() {
+        // Regression test for issue where availableToWithdraw=0 caused all funds to appear locked
+        // When a small order is placed, Bybit may report availableToWithdraw=0 due to margin calculations,
+        // but totalOrderIM correctly shows only the margin locked for the order
+        let json = load_test_json("ws_account_wallet_small_order.json");
+        let msg: crate::websocket::messages::BybitWsAccountWalletMsg =
+            serde_json::from_str(&json).unwrap();
+        let wallet = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-UNIFIED");
+        let ts_event = UnixNanos::new(1_762_960_669_000_000_000);
+
+        let state = parse_ws_account_state(wallet, account_id, ts_event, TS).unwrap();
+
+        assert_eq!(state.account_id, account_id);
+        assert_eq!(state.balances.len(), 1);
+
+        // Check USDT balance
+        let usdt_balance = &state.balances[0];
+        assert_eq!(usdt_balance.currency.code.as_str(), "USDT");
+
+        // Wallet has 51,333.82 USDT total
+        assert!((usdt_balance.total.as_f64() - 51333.82543837).abs() < 1e-6);
+
+        // Only 50.028 USDT should be locked (for the order), not all funds
+        assert!((usdt_balance.locked.as_f64() - 50.028).abs() < 1e-6);
+
+        // Free should be total - locked = 51,333.82 - 50.028 = 51,283.79
+        assert!((usdt_balance.free.as_f64() - 51283.79743837).abs() < 1e-6);
+
+        // The bug would have calculated: locked = total - availableToWithdraw = 51,333.82 - 0 = 51,333.82 (all locked!)
+        // This test verifies that we now correctly use totalOrderIM instead of deriving from availableToWithdraw
     }
 
     #[rstest]
