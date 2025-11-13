@@ -22,6 +22,7 @@ pub enum KrakenHttpError {
     NetworkError(String),
     ApiError(Vec<String>),
     ParseError(String),
+    AuthenticationError(String),
     MissingCredentials,
 }
 
@@ -31,6 +32,7 @@ impl fmt::Display for KrakenHttpError {
             Self::NetworkError(msg) => write!(f, "Network error: {msg}"),
             Self::ApiError(errors) => write!(f, "API error: {}", errors.join(", ")),
             Self::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            Self::AuthenticationError(msg) => write!(f, "Authentication error: {msg}"),
             Self::MissingCredentials => write!(f, "Missing credentials"),
         }
     }

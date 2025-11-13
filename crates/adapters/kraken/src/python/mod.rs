@@ -26,7 +26,7 @@ use crate::{
     http::client::KrakenHttpClient,
     websocket::{
         client::KrakenWebSocketClient,
-        enums::{KrakenWsChannel, KrakenWsEventType, KrakenWsMethod},
+        enums::{KrakenWsChannel, KrakenWsMessageType, KrakenWsMethod},
     },
 };
 
@@ -49,7 +49,7 @@ pub fn kraken(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<KrakenAssetClass>()?;
     m.add_class::<KrakenWsMethod>()?;
     m.add_class::<KrakenWsChannel>()?;
-    m.add_class::<KrakenWsEventType>()?;
+    m.add_class::<KrakenWsMessageType>()?;
 
     m.add_class::<KrakenHttpClient>()?;
     m.add_class::<KrakenWebSocketClient>()?;

@@ -103,6 +103,11 @@ impl KrakenWebSocketClient {
         Ok(())
     }
 
+    #[pyo3(name = "cancel_all_requests")]
+    fn py_cancel_all_requests(&self) {
+        self.cancel_all_requests();
+    }
+
     #[pyo3(name = "connect")]
     fn py_connect<'py>(
         &mut self,
@@ -169,6 +174,16 @@ impl KrakenWebSocketClient {
                 .wait_until_active(timeout_secs)
                 .await
                 .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "authenticate")]
+    fn py_authenticate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client.authenticate().await.map_err(to_pyruntime_err)?;
             Ok(())
         })
     }

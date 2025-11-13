@@ -161,6 +161,14 @@ pub struct ServerTime {
     pub rfc1123: String,
 }
 
+// WebSocket Token Models
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSocketToken {
+    pub token: String,
+    pub expires: i32,
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

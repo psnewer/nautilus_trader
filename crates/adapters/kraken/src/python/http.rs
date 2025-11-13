@@ -358,6 +358,9 @@ impl From<KrakenHttpError> for PyErr {
             KrakenHttpError::MissingCredentials => {
                 to_pyvalue_err("Missing credentials for authenticated request")
             }
+            KrakenHttpError::AuthenticationError(msg) => {
+                to_pyvalue_err(format!("Authentication error: {msg}"))
+            }
             KrakenHttpError::ParseError(msg) => to_pyvalue_err(format!("Parse error: {msg}")),
         }
     }

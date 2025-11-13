@@ -457,6 +457,37 @@ impl KrakenRawHttpClient {
         })
     }
 
+    pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for GetWebSocketsToken".to_string(),
+            ));
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as u64;
+
+        let params = [("nonce", nonce.to_string())];
+        let body = serde_urlencoded::to_string(&params)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?
+            .into_bytes();
+
+        let response: KrakenResponse<WebSocketToken> = self
+            .send_request(
+                Method::POST,
+                "/0/private/GetWebSocketsToken",
+                Some(body),
+                true,
+            )
+            .await?;
+
+        response.result.ok_or_else(|| {
+            KrakenHttpError::ParseError("Missing result in websockets token response".to_string())
+        })
+    }
+
     pub async fn request_instruments(
         &self,
         pairs: Option<Vec<String>>,
@@ -600,6 +631,10 @@ impl KrakenHttpClient {
         pairs: Option<Vec<String>>,
     ) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
         self.inner.request_instruments(pairs).await
+    }
+
+    pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
+        self.inner.get_websockets_token().await
     }
 
     pub async fn request_trades(

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ustr::Ustr;
 
-use super::enums::{KrakenWsChannel, KrakenWsEventType, KrakenWsMethod};
+use super::enums::{KrakenWsChannel, KrakenWsMessageType, KrakenWsMethod};
 use crate::common::enums::{KrakenOrderSide, KrakenOrderType};
 
 /// Nautilus WebSocket message types for Kraken adapter.
@@ -108,7 +108,7 @@ pub struct KrakenWsSubscriptionResult {
 pub struct KrakenWsMessage {
     pub channel: KrakenWsChannel,
     #[serde(rename = "type")]
-    pub event_type: KrakenWsEventType,
+    pub event_type: KrakenWsMessageType,
     pub data: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<Ustr>,
@@ -230,7 +230,7 @@ mod tests {
             serde_json::from_str(&data).expect("Failed to parse ticker snapshot");
 
         assert_eq!(message.channel, KrakenWsChannel::Ticker);
-        assert_eq!(message.event_type, KrakenWsEventType::Snapshot);
+        assert_eq!(message.event_type, KrakenWsMessageType::Snapshot);
         assert!(!message.data.is_empty());
 
         let ticker: KrakenWsTickerData =
@@ -248,7 +248,7 @@ mod tests {
             serde_json::from_str(&data).expect("Failed to parse trade update");
 
         assert_eq!(message.channel, KrakenWsChannel::Trade);
-        assert_eq!(message.event_type, KrakenWsEventType::Update);
+        assert_eq!(message.event_type, KrakenWsMessageType::Update);
         assert_eq!(message.data.len(), 2);
 
         let trade: KrakenWsTradeData =
@@ -266,7 +266,7 @@ mod tests {
             serde_json::from_str(&data).expect("Failed to parse book snapshot");
 
         assert_eq!(message.channel, KrakenWsChannel::Book);
-        assert_eq!(message.event_type, KrakenWsEventType::Snapshot);
+        assert_eq!(message.event_type, KrakenWsMessageType::Snapshot);
 
         let book: KrakenWsBookData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse book data");
@@ -288,7 +288,7 @@ mod tests {
             serde_json::from_str(&data).expect("Failed to parse book update");
 
         assert_eq!(message.channel, KrakenWsChannel::Book);
-        assert_eq!(message.event_type, KrakenWsEventType::Update);
+        assert_eq!(message.event_type, KrakenWsMessageType::Update);
 
         let book: KrakenWsBookData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse book data");
@@ -303,7 +303,7 @@ mod tests {
             serde_json::from_str(&data).expect("Failed to parse OHLC update");
 
         assert_eq!(message.channel, KrakenWsChannel::Ohlc);
-        assert_eq!(message.event_type, KrakenWsEventType::Update);
+        assert_eq!(message.event_type, KrakenWsMessageType::Update);
 
         let ohlc: KrakenWsOhlcData =
             serde_json::from_value(message.data[0].clone()).expect("Failed to parse OHLC data");

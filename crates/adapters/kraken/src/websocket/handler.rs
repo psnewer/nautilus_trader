@@ -21,7 +21,7 @@ use std::sync::{
 };
 
 use ahash::AHashMap;
-use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime};
+use nautilus_core::{AtomicTime, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::Data,
     instruments::{Instrument, InstrumentAny},
@@ -33,7 +33,10 @@ use ustr::Ustr;
 
 use super::{
     enums::KrakenWsChannel,
-    messages::{KrakenWsMessage, KrakenWsTickerData, KrakenWsTradeData, NautilusWsMessage},
+    messages::{
+        KrakenWsBookData, KrakenWsMessage, KrakenWsResponse, KrakenWsTickerData, KrakenWsTradeData,
+        NautilusWsMessage,
+    },
     parse::{parse_book_deltas, parse_quote_tick, parse_trade_tick},
 };
 
@@ -58,6 +61,7 @@ pub enum HandlerCommand {
 
 /// WebSocket message handler for Kraken.
 pub(super) struct FeedHandler {
+    clock: &'static AtomicTime,
     signal: Arc<AtomicBool>,
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
@@ -74,6 +78,7 @@ impl FeedHandler {
         raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
     ) -> Self {
         Self {
+            clock: get_atomic_clock_realtime(),
             signal,
             client: None,
             cmd_rx,
@@ -126,14 +131,6 @@ impl FeedHandler {
                     continue;
                 }
 
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    if self.signal.load(Ordering::Relaxed) {
-                        tracing::debug!("Stop signal received during idle period");
-                        return None;
-                    }
-                    continue;
-                }
-
                 msg = self.raw_rx.recv() => {
                     let msg = match msg {
                         Some(msg) => msg,
@@ -143,7 +140,6 @@ impl FeedHandler {
                         }
                     };
 
-                    // Handle ping frames directly for minimal latency
                     if let Message::Ping(data) = &msg {
                         tracing::trace!("Received ping frame with {} bytes", data.len());
                         if let Some(client) = &self.client
@@ -185,7 +181,9 @@ impl FeedHandler {
                         _ => continue,
                     };
 
-                    if let Some(nautilus_msg) = self.parse_message(&text) {
+                    let ts_init = self.clock.get_time_ns();
+
+                    if let Some(nautilus_msg) = self.parse_message(&text, ts_init) {
                         return Some(nautilus_msg);
                     }
 
@@ -195,10 +193,7 @@ impl FeedHandler {
         }
     }
 
-    fn parse_message(&mut self, text: &str) -> Option<NautilusWsMessage> {
-        let clock = get_atomic_clock_realtime();
-        let ts_init = clock.get_time_ns();
-
+    fn parse_message(&mut self, text: &str, ts_init: UnixNanos) -> Option<NautilusWsMessage> {
         // Try to parse as a data message first
         if let Ok(msg) = serde_json::from_str::<KrakenWsMessage>(text) {
             return self.handle_data_message(msg, ts_init);
@@ -217,7 +212,48 @@ impl FeedHandler {
             }
 
             if value.get("method").is_some() {
-                tracing::debug!("Received subscription response");
+                if let Ok(response) = serde_json::from_value::<KrakenWsResponse>(value) {
+                    match response {
+                        KrakenWsResponse::Subscribe(sub) => {
+                            if sub.success {
+                                if let Some(result) = &sub.result {
+                                    tracing::debug!(
+                                        channel = ?result.channel,
+                                        req_id = ?sub.req_id,
+                                        "Subscription confirmed"
+                                    );
+                                } else {
+                                    tracing::debug!(req_id = ?sub.req_id, "Subscription confirmed");
+                                }
+                            } else {
+                                tracing::warn!(
+                                    error = ?sub.error,
+                                    req_id = ?sub.req_id,
+                                    "Subscription failed"
+                                );
+                            }
+                        }
+                        KrakenWsResponse::Unsubscribe(unsub) => {
+                            if unsub.success {
+                                tracing::debug!(req_id = ?unsub.req_id, "Unsubscription confirmed");
+                            } else {
+                                tracing::warn!(
+                                    error = ?unsub.error,
+                                    req_id = ?unsub.req_id,
+                                    "Unsubscription failed"
+                                );
+                            }
+                        }
+                        KrakenWsResponse::Pong(pong) => {
+                            tracing::trace!(req_id = ?pong.req_id, "Received pong");
+                        }
+                        KrakenWsResponse::Other => {
+                            tracing::debug!("Received unknown subscription response");
+                        }
+                    }
+                } else {
+                    tracing::debug!("Received subscription response (failed to parse details)");
+                }
                 return None;
             }
         }
@@ -232,14 +268,53 @@ impl FeedHandler {
         ts_init: UnixNanos,
     ) -> Option<NautilusWsMessage> {
         match msg.channel {
+            KrakenWsChannel::Book => self.handle_book_message(msg, ts_init),
             KrakenWsChannel::Ticker => self.handle_ticker_message(msg, ts_init),
             KrakenWsChannel::Trade => self.handle_trade_message(msg, ts_init),
-            KrakenWsChannel::Book => self.handle_book_message(msg, ts_init),
             KrakenWsChannel::Ohlc => self.handle_ohlc_message(msg, ts_init),
             _ => {
                 tracing::warn!("Unhandled channel: {:?}", msg.channel);
                 None
             }
+        }
+    }
+
+    fn handle_book_message(
+        &mut self,
+        msg: KrakenWsMessage,
+        ts_init: UnixNanos,
+    ) -> Option<NautilusWsMessage> {
+        let mut all_deltas = Vec::new();
+        let mut instrument_id = None;
+
+        for data in msg.data {
+            match serde_json::from_value::<KrakenWsBookData>(data) {
+                Ok(book_data) => {
+                    let instrument = self.get_instrument(&book_data.symbol)?;
+                    instrument_id = Some(instrument.id());
+
+                    match parse_book_deltas(&book_data, &instrument, self.book_sequence, ts_init) {
+                        Ok(mut deltas) => {
+                            self.book_sequence += deltas.len() as u64;
+                            all_deltas.append(&mut deltas);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to parse book deltas: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to deserialize book data: {e}");
+                }
+            }
+        }
+
+        if all_deltas.is_empty() {
+            None
+        } else {
+            use nautilus_model::data::OrderBookDeltas;
+            let deltas = OrderBookDeltas::new(instrument_id?, all_deltas);
+            Some(NautilusWsMessage::Deltas(deltas))
         }
     }
 
@@ -250,10 +325,11 @@ impl FeedHandler {
     ) -> Option<NautilusWsMessage> {
         let mut quotes = Vec::new();
 
-        for data_value in msg.data {
-            match serde_json::from_value::<KrakenWsTickerData>(data_value) {
+        for data in msg.data {
+            match serde_json::from_value::<KrakenWsTickerData>(data) {
                 Ok(ticker_data) => {
                     let instrument = self.get_instrument(&ticker_data.symbol)?;
+
                     match parse_quote_tick(&ticker_data, &instrument, ts_init) {
                         Ok(quote) => quotes.push(Data::Quote(quote)),
                         Err(e) => {
@@ -281,10 +357,11 @@ impl FeedHandler {
     ) -> Option<NautilusWsMessage> {
         let mut trades = Vec::new();
 
-        for data_value in msg.data {
-            match serde_json::from_value::<KrakenWsTradeData>(data_value) {
+        for data in msg.data {
+            match serde_json::from_value::<KrakenWsTradeData>(data) {
                 Ok(trade_data) => {
                     let instrument = self.get_instrument(&trade_data.symbol)?;
+
                     match parse_trade_tick(&trade_data, &instrument, ts_init) {
                         Ok(trade) => trades.push(Data::Trade(trade)),
                         Err(e) => {
@@ -302,44 +379,6 @@ impl FeedHandler {
             None
         } else {
             Some(NautilusWsMessage::Data(trades))
-        }
-    }
-
-    fn handle_book_message(
-        &mut self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        let mut all_deltas = Vec::new();
-        let mut instrument_id = None;
-
-        for data_value in msg.data {
-            match serde_json::from_value::<super::messages::KrakenWsBookData>(data_value) {
-                Ok(book_data) => {
-                    let instrument = self.get_instrument(&book_data.symbol)?;
-                    instrument_id = Some(instrument.id());
-                    match parse_book_deltas(&book_data, &instrument, self.book_sequence, ts_init) {
-                        Ok(mut deltas) => {
-                            self.book_sequence += deltas.len() as u64;
-                            all_deltas.append(&mut deltas);
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to parse book deltas: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize book data: {e}");
-                }
-            }
-        }
-
-        if all_deltas.is_empty() {
-            None
-        } else {
-            use nautilus_model::data::OrderBookDeltas;
-            let deltas = OrderBookDeltas::new(instrument_id?, all_deltas);
-            Some(NautilusWsMessage::Deltas(deltas))
         }
     }
 

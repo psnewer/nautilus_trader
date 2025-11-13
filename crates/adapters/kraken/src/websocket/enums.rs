@@ -108,7 +108,7 @@ pub enum KrakenWsChannel {
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
-pub enum KrakenWsEventType {
+pub enum KrakenWsMessageType {
     Heartbeat,
     Status,
     Subscribe,

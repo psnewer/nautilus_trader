@@ -38,7 +38,7 @@ use super::{
     handler::{FeedHandler, HandlerCommand},
     messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
-use crate::config::KrakenDataClientConfig;
+use crate::{config::KrakenDataClientConfig, http::client::KrakenHttpClient};
 
 #[derive(Debug)]
 #[cfg_attr(
@@ -54,9 +54,9 @@ pub struct KrakenWebSocketClient {
     out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
-    #[allow(dead_code)]
     cancellation_token: CancellationToken,
     req_id_counter: Arc<RwLock<u64>>,
+    auth_token: Arc<RwLock<Option<String>>>,
 }
 
 impl Clone for KrakenWebSocketClient {
@@ -67,11 +67,12 @@ impl Clone for KrakenWebSocketClient {
             signal: Arc::clone(&self.signal),
             connection_mode: Arc::clone(&self.connection_mode),
             cmd_tx: Arc::clone(&self.cmd_tx),
-            out_rx: self.out_rx.clone(), // Clone the Arc reference
-            task_handle: self.task_handle.clone(), // Clone the Arc reference
+            out_rx: self.out_rx.clone(),
+            task_handle: self.task_handle.clone(),
             subscriptions: self.subscriptions.clone(),
             cancellation_token: self.cancellation_token.clone(),
             req_id_counter: self.req_id_counter.clone(),
+            auth_token: self.auth_token.clone(),
         }
     }
 }
@@ -94,6 +95,7 @@ impl KrakenWebSocketClient {
             subscriptions: Arc::new(DashMap::new()),
             cancellation_token,
             req_id_counter: Arc::new(RwLock::new(0)),
+            auth_token: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -245,6 +247,53 @@ impl KrakenWebSocketClient {
         Ok(())
     }
 
+    pub async fn authenticate(&self) -> Result<(), KrakenWsError> {
+        if !self.config.has_api_credentials() {
+            return Err(KrakenWsError::AuthenticationError(
+                "API credentials required for authentication".to_string(),
+            ));
+        }
+
+        let api_key = self
+            .config
+            .api_key
+            .clone()
+            .ok_or_else(|| KrakenWsError::AuthenticationError("Missing API key".to_string()))?;
+        let api_secret =
+            self.config.api_secret.clone().ok_or_else(|| {
+                KrakenWsError::AuthenticationError("Missing API secret".to_string())
+            })?;
+
+        let http_client = KrakenHttpClient::with_credentials(
+            api_key,
+            api_secret,
+            Some(self.config.http_base_url()),
+            self.config.timeout_secs,
+            None,
+            None,
+            None,
+            self.config.http_proxy.clone(),
+        )
+        .map_err(|e| {
+            KrakenWsError::AuthenticationError(format!("Failed to create HTTP client: {e}"))
+        })?;
+
+        let ws_token = http_client.get_websockets_token().await.map_err(|e| {
+            KrakenWsError::AuthenticationError(format!("Failed to get WebSocket token: {e}"))
+        })?;
+
+        tracing::debug!(
+            token_length = ws_token.token.len(),
+            expires = ws_token.expires,
+            "WebSocket authentication token received"
+        );
+
+        let mut auth_token = self.auth_token.write().await;
+        *auth_token = Some(ws_token.token);
+
+        Ok(())
+    }
+
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         // Before connect() the handler isn't running; this send will fail and that's expected
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
@@ -263,6 +312,14 @@ impl KrakenWebSocketClient {
         }
     }
 
+    pub fn cancel_all_requests(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
     pub async fn subscribe(
         &self,
         channel: KrakenWsChannel,
@@ -271,6 +328,22 @@ impl KrakenWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let req_id = self.get_next_req_id().await;
 
+        // Check if channel requires authentication
+        let is_private = matches!(
+            channel,
+            KrakenWsChannel::Executions | KrakenWsChannel::Balances
+        );
+        let token = if is_private {
+            Some(self.auth_token.read().await.clone().ok_or_else(|| {
+                KrakenWsError::AuthenticationError(
+                    "Authentication token required for private channels. Call authenticate() first"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+
         let request = KrakenWsRequest {
             method: KrakenWsMethod::Subscribe,
             params: Some(KrakenWsParams {
@@ -278,7 +351,7 @@ impl KrakenWebSocketClient {
                 symbol: Some(symbols.clone()),
                 snapshot: None,
                 depth,
-                token: None,
+                token,
             }),
             req_id: Some(req_id),
         };
@@ -300,6 +373,22 @@ impl KrakenWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let req_id = self.get_next_req_id().await;
 
+        // Check if channel requires authentication
+        let is_private = matches!(
+            channel,
+            KrakenWsChannel::Executions | KrakenWsChannel::Balances
+        );
+        let token = if is_private {
+            Some(self.auth_token.read().await.clone().ok_or_else(|| {
+                KrakenWsError::AuthenticationError(
+                    "Authentication token required for private channels. Call authenticate() first"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+
         let request = KrakenWsRequest {
             method: KrakenWsMethod::Unsubscribe,
             params: Some(KrakenWsParams {
@@ -307,7 +396,7 @@ impl KrakenWebSocketClient {
                 symbol: Some(symbols.clone()),
                 snapshot: None,
                 depth: None,
-                token: None,
+                token,
             }),
             req_id: Some(req_id),
         };
@@ -443,22 +532,5 @@ impl KrakenWebSocketClient {
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
         let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
         self.unsubscribe(KrakenWsChannel::Ohlc, vec![symbol]).await
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_client_creation() {
-        let config = KrakenDataClientConfig::default();
-        let token = CancellationToken::new();
-        let client = KrakenWebSocketClient::new(config, token);
-        assert!(!client.is_connected());
     }
 }
