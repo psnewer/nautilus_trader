@@ -603,22 +603,10 @@ impl HyperliquidWebSocketClient {
             .map_err(|e| anyhow::anyhow!("Failed to send UpdateAssetContextSubs command: {e}"))?;
 
         if is_first_subscription {
-            let subscription = match self.product_type {
-                HyperliquidProductType::Perp => {
-                    tracing::debug!(
-                        "First asset context subscription for coin '{}', subscribing to ActiveAssetCtx",
-                        coin
-                    );
-                    SubscriptionRequest::ActiveAssetCtx { coin }
-                }
-                HyperliquidProductType::Spot => {
-                    tracing::debug!(
-                        "First asset context subscription for coin '{}', subscribing to ActiveSpotAssetCtx",
-                        coin
-                    );
-                    SubscriptionRequest::ActiveSpotAssetCtx { coin }
-                }
-            };
+            tracing::debug!(
+                "First asset context subscription for coin '{coin}', subscribing to ActiveAssetCtx"
+            );
+            let subscription = SubscriptionRequest::ActiveAssetCtx { coin };
 
             cmd_tx
                 .send(HandlerCommand::UpdateInstrument(instrument.clone()))
@@ -630,15 +618,8 @@ impl HyperliquidWebSocketClient {
                 })
                 .map_err(|e| anyhow::anyhow!("Failed to send subscribe command: {e}"))?;
         } else {
-            let channel_name = match self.product_type {
-                HyperliquidProductType::Perp => "ActiveAssetCtx",
-                HyperliquidProductType::Spot => "ActiveSpotAssetCtx",
-            };
             tracing::debug!(
-                "Already subscribed to {} for coin '{}', adding {:?} to tracked types",
-                channel_name,
-                coin,
-                data_type
+                "Already subscribed to ActiveAssetCtx for coin '{coin}', adding {data_type:?} to tracked types"
             );
         }
 
@@ -666,22 +647,10 @@ impl HyperliquidWebSocketClient {
             if should_unsubscribe {
                 self.asset_context_subs.remove(&coin);
 
-                let subscription = match self.product_type {
-                    HyperliquidProductType::Perp => {
-                        tracing::debug!(
-                            "Last asset context subscription removed for coin '{}', unsubscribing from ActiveAssetCtx",
-                            coin
-                        );
-                        SubscriptionRequest::ActiveAssetCtx { coin }
-                    }
-                    HyperliquidProductType::Spot => {
-                        tracing::debug!(
-                            "Last asset context subscription removed for coin '{}', unsubscribing from ActiveSpotAssetCtx",
-                            coin
-                        );
-                        SubscriptionRequest::ActiveSpotAssetCtx { coin }
-                    }
-                };
+                tracing::debug!(
+                    "Last asset context subscription removed for coin '{coin}', unsubscribing from ActiveAssetCtx"
+                );
+                let subscription = SubscriptionRequest::ActiveAssetCtx { coin };
 
                 cmd_tx
                     .send(HandlerCommand::UpdateAssetContextSubs {
@@ -698,15 +667,8 @@ impl HyperliquidWebSocketClient {
                     })
                     .map_err(|e| anyhow::anyhow!("Failed to send unsubscribe command: {e}"))?;
             } else {
-                let channel_name = match self.product_type {
-                    HyperliquidProductType::Perp => "ActiveAssetCtx",
-                    HyperliquidProductType::Spot => "ActiveSpotAssetCtx",
-                };
                 tracing::debug!(
-                    "Removed {:?} from tracked types for coin '{}', but keeping {} subscription",
-                    data_type,
-                    coin,
-                    channel_name
+                    "Removed {data_type:?} from tracked types for coin '{coin}', but keeping ActiveAssetCtx subscription"
                 );
 
                 cmd_tx

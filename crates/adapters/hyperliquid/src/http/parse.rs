@@ -678,7 +678,7 @@ mod tests {
     where
         T: serde::de::DeserializeOwned,
     {
-        let path = format!("test_data/{}", filename);
+        let path = format!("test_data/{filename}");
         let content = std::fs::read_to_string(path).expect("Failed to read test data");
         serde_json::from_str(&content).expect("Failed to parse test data")
     }

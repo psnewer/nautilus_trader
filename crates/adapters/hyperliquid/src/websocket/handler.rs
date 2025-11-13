@@ -203,7 +203,7 @@ impl FeedHandler {
                                 let request = HyperliquidWsRequest::Subscribe { subscription };
                                 match serde_json::to_string(&request) {
                                     Ok(payload) => {
-                                        tracing::debug!("Sending subscribe payload: {}", payload);
+                                        tracing::debug!("Sending subscribe payload: {payload}");
                                         if let Err(e) = self.send_with_retry(payload).await {
                                             tracing::error!("Error subscribing to {key}: {e}");
                                             self.subscriptions.mark_failure(&key);
@@ -224,7 +224,7 @@ impl FeedHandler {
                                 let request = HyperliquidWsRequest::Unsubscribe { subscription };
                                 match serde_json::to_string(&request) {
                                     Ok(payload) => {
-                                        tracing::debug!("Sending unsubscribe payload: {}", payload);
+                                        tracing::debug!("Sending unsubscribe payload: {payload}");
                                         if let Err(e) = self.send_with_retry(payload).await {
                                             tracing::error!("Error unsubscribing from {key}: {e}");
                                         }

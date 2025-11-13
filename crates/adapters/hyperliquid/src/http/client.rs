@@ -266,17 +266,19 @@ impl HyperliquidHttpClient {
         let full_symbol = instrument.symbol().inner();
         let coin = instrument.raw_symbol().inner();
 
-        // Store by full symbol (primary key - guarantees uniqueness)
         {
             let mut instruments = self
                 .instruments
                 .write()
                 .expect("Failed to acquire write lock");
+
             instruments.insert(full_symbol, instrument.clone());
+
+            // HTTP responses only include coins, external code may lookup by coin
+            instruments.insert(coin, instrument.clone());
         }
 
-        // Store by composite key (coin, product_type) for HTTP response lookups
-        // HTTP responses only include coin strings, so we need to differentiate by product type
+        // Composite key allows disambiguating same coin across PERP and SPOT
         if let Ok(product_type) = HyperliquidProductType::from_symbol(full_symbol.as_str()) {
             let mut instruments_by_coin = self
                 .instruments_by_coin
@@ -311,7 +313,6 @@ impl HyperliquidHttpClient {
         coin: &Ustr,
         product_type: Option<HyperliquidProductType>,
     ) -> Option<InstrumentAny> {
-        // Try composite key lookup first if product type is provided
         if let Some(pt) = product_type {
             let instruments_by_coin = self
                 .instruments_by_coin
@@ -323,14 +324,13 @@ impl HyperliquidHttpClient {
             }
         }
 
-        // Fallback: try to find any instrument with this coin (for HTTP responses without product type)
+        // HTTP responses lack product type context, try PERP then SPOT
         if product_type.is_none() {
             let instruments_by_coin = self
                 .instruments_by_coin
                 .read()
                 .expect("Failed to acquire read lock");
 
-            // Try to find any instrument with this coin (PERP first, then SPOT)
             if let Some(instrument) =
                 instruments_by_coin.get(&(*coin, HyperliquidProductType::Perp))
             {
@@ -343,15 +343,15 @@ impl HyperliquidHttpClient {
             }
         }
 
-        // If not found and it's a vault token, create a synthetic instrument
+        // Vault tokens aren't in standard API, create synthetic instruments
         if coin.as_str().starts_with("vntls:") {
-            tracing::info!("Creating synthetic instrument for vault token: {}", coin);
+            tracing::info!("Creating synthetic instrument for vault token: {coin}");
 
             let clock = nautilus_core::time::get_atomic_clock_realtime();
             let ts_event = clock.get_time_ns();
 
             // Create synthetic vault token instrument
-            let symbol_str = format!("{}-USDC-SPOT", coin);
+            let symbol_str = format!("{coin}-USDC-SPOT");
             let symbol = nautilus_model::identifiers::Symbol::new(&symbol_str);
             let venue = *HYPERLIQUID_VENUE;
             let instrument_id = nautilus_model::identifiers::InstrumentId::new(symbol, venue);
@@ -407,7 +407,7 @@ impl HyperliquidHttpClient {
             Some(instrument)
         } else {
             // For non-vault tokens, log warning and return None
-            tracing::warn!("Instrument not found in cache: {}", coin);
+            tracing::warn!("Instrument not found in cache: {coin}");
             None
         }
     }
@@ -715,10 +715,10 @@ impl HyperliquidHttpClient {
                 sig,
                 vault.to_string(),
             )
-            .map_err(|e| Error::bad_request(format!("Failed to create request: {}", e)))?
+            .map_err(|e| Error::bad_request(format!("Failed to create request: {e}")))?
         } else {
             HyperliquidExchangeRequest::new(action.clone(), nonce_u64, sig)
-                .map_err(|e| Error::bad_request(format!("Failed to create request: {}", e)))?
+                .map_err(|e| Error::bad_request(format!("Failed to create request: {e}")))?
         };
 
         let response = self.http_roundtrip_exchange(&request).await?;
@@ -736,12 +736,12 @@ impl HyperliquidHttpClient {
                     let error_msg = response_data
                         .as_str()
                         .map_or_else(|| response_data.to_string(), |s| s.to_string());
-                    tracing::error!("Hyperliquid API returned error: {}", error_msg);
-                    Err(Error::bad_request(format!("API error: {}", error_msg)))
+                    tracing::error!("Hyperliquid API returned error: {error_msg}");
+                    Err(Error::bad_request(format!("API error: {error_msg}")))
                 }
                 HyperliquidExchangeResponse::Error { error } => {
-                    tracing::error!("Hyperliquid API returned error: {}", error);
-                    Err(Error::bad_request(format!("API error: {}", error)))
+                    tracing::error!("Hyperliquid API returned error: {error}");
+                    Err(Error::bad_request(format!("API error: {error}")))
                 }
                 _ => Ok(parsed_response),
             }
@@ -820,10 +820,10 @@ impl HyperliquidHttpClient {
                 sig,
                 vault.to_string(),
             )
-            .map_err(|e| Error::bad_request(format!("Failed to create request: {}", e)))?
+            .map_err(|e| Error::bad_request(format!("Failed to create request: {e}")))?
         } else {
             HyperliquidExchangeRequest::new(action.clone(), time_nonce.as_millis() as u64, sig)
-                .map_err(|e| Error::bad_request(format!("Failed to create request: {}", e)))?
+                .map_err(|e| Error::bad_request(format!("Failed to create request: {e}")))?
         };
 
         let response = self.http_roundtrip_exchange(&request).await?;
@@ -841,12 +841,12 @@ impl HyperliquidHttpClient {
                     let error_msg = response_data
                         .as_str()
                         .map_or_else(|| response_data.to_string(), |s| s.to_string());
-                    tracing::error!("Hyperliquid API returned error: {}", error_msg);
-                    Err(Error::bad_request(format!("API error: {}", error_msg)))
+                    tracing::error!("Hyperliquid API returned error: {error_msg}");
+                    Err(Error::bad_request(format!("API error: {error_msg}")))
                 }
                 HyperliquidExchangeResponse::Error { error } => {
-                    tracing::error!("Hyperliquid API returned error: {}", error);
-                    Err(Error::bad_request(format!("API error: {}", error)))
+                    tracing::error!("Hyperliquid API returned error: {error}");
+                    Err(Error::bad_request(format!("API error: {error}")))
                 }
                 _ => Ok(parsed_response),
             }
@@ -1455,7 +1455,7 @@ impl HyperliquidHttpClient {
                 match serde_json::from_value(order_value.clone()) {
                     Ok(o) => o,
                     Err(e) => {
-                        tracing::warn!("Failed to parse order: {}", e);
+                        tracing::warn!("Failed to parse order: {e}");
                         continue;
                     }
                 };
@@ -1727,6 +1727,14 @@ mod tests {
             "Instrument should be accessible by full symbol"
         );
         assert_eq!(by_full_symbol.unwrap().id(), instrument.id());
+
+        // Verify it can be looked up by raw_symbol (coin) - backward compatibility
+        let by_raw_symbol = instruments.get(&Ustr::from("vntls:vCURSOR"));
+        assert!(
+            by_raw_symbol.is_some(),
+            "Instrument should be accessible by raw_symbol (Hyperliquid coin identifier)"
+        );
+        assert_eq!(by_raw_symbol.unwrap().id(), instrument.id());
         drop(instruments);
 
         // Verify it can be looked up by composite key (coin, product_type)
