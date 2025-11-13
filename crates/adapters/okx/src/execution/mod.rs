@@ -771,6 +771,7 @@ impl LiveExecutionClient for OKXExecutionClient {
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
         let mut reports = Vec::new();
 
+        // Query derivative positions (SWAP/FUTURES/OPTION) from /api/v5/account/positions
         if let Some(instrument_id) = cmd.instrument_id {
             let mut fetched = self
                 .http_client
@@ -786,6 +787,20 @@ impl LiveExecutionClient for OKXExecutionClient {
                 reports.append(&mut fetched);
             }
         }
+
+        // Query spot margin positions from /api/v5/account/balance
+        // Spot margin positions appear as balance sheet items (liab/spotInUseAmt fields)
+        let mut margin_reports = self
+            .http_client
+            .request_spot_margin_position_reports(self.core.account_id)
+            .await?;
+
+        // Filter margin reports by instrument_id if specified
+        if let Some(instrument_id) = cmd.instrument_id {
+            margin_reports.retain(|report| report.instrument_id == instrument_id);
+        }
+
+        reports.append(&mut margin_reports);
 
         let _ = nanos_to_datetime(cmd.start);
         let _ = nanos_to_datetime(cmd.end);
