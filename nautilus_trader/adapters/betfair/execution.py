@@ -60,6 +60,7 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.datetime import millis_to_nanos
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.uuid import UUID4
@@ -370,7 +371,10 @@ class BetfairExecutionClient(LiveExecutionClient):
             order_projection=(
                 OrderProjection.EXECUTABLE if command.open_only else OrderProjection.ALL
             ),
-            date_range=TimeRange(from_=command.start, to=command.end),
+            date_range=TimeRange(
+                from_=ensure_pydatetime_utc(command.start),
+                to=ensure_pydatetime_utc(command.end),
+            ),
             market_ids=self._market_ids_filter(),
         )
 
@@ -404,7 +408,10 @@ class BetfairExecutionClient(LiveExecutionClient):
     ) -> list[FillReport]:
         cleared_orders: list[CurrentOrderSummary] = await self._client.list_current_orders(
             order_projection=OrderProjection.ALL,
-            date_range=TimeRange(from_=command.start, to=command.end),
+            date_range=TimeRange(
+                from_=ensure_pydatetime_utc(command.start),
+                to=ensure_pydatetime_utc(command.end),
+            ),
             market_ids=self._market_ids_filter(),
         )
 
