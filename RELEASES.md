@@ -96,7 +96,7 @@ TBD
 - Repaired Bybit conditional order trigger semantics and type
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
-- Upgraded Cython to v3.2.0
+- Upgraded Cython to v3.2.1
 - Upgraded `pyo3` crate to v0.27.0
 - Upgraded `pyo3-async-runtimes` crate to v0.27.0
 
