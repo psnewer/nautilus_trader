@@ -961,9 +961,9 @@ fn extract_strike_from_symbol(symbol: &str) -> anyhow::Result<Price> {
 pub fn parse_order_status_report(
     order: &crate::http::models::BybitOrder,
     instrument: &InstrumentAny,
-    account_id: nautilus_model::identifiers::AccountId,
+    account_id: AccountId,
     ts_init: UnixNanos,
-) -> anyhow::Result<nautilus_model::reports::OrderStatusReport> {
+) -> anyhow::Result<OrderStatusReport> {
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(order.order_id);
 
