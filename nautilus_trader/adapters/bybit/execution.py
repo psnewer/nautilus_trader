@@ -1094,15 +1094,15 @@ class BybitExecutionClient(LiveExecutionClient):
         )
 
     def _handle_order_rejected_pyo3(self, msg: nautilus_pyo3.OrderRejected) -> None:
-        event = OrderRejected.from_pyo3(msg)
+        event = OrderRejected.from_dict(msg.to_dict())
         self._send_order_event(event)
 
     def _handle_order_cancel_rejected_pyo3(self, msg: nautilus_pyo3.OrderCancelRejected) -> None:
-        event = OrderCancelRejected.from_pyo3(msg)
+        event = OrderCancelRejected.from_dict(msg.to_dict())
         self._send_order_event(event)
 
     def _handle_order_modify_rejected_pyo3(self, msg: nautilus_pyo3.OrderModifyRejected) -> None:
-        event = OrderModifyRejected.from_pyo3(msg)
+        event = OrderModifyRejected.from_dict(msg.to_dict())
         self._send_order_event(event)
 
     def _handle_order_status_report_pyo3(  # noqa: C901 (too complex)
