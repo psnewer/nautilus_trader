@@ -95,26 +95,6 @@ cdef class TickScheme:
         raise NotImplementedError()  # pragma: no cover
 
 
-cdef double RELATIVE_TOLERANCE = 1e-12
-cdef double ABSOLUTE_TOLERANCE = 1e-14
-cdef double MAX_TICK_DELTA = 0.001
-
-
-cdef bint is_close(double a, double b):
-    """
-    Check if two floating point values are approximately equal.
-
-    Uses relative tolerance scaled with magnitude but capped to prevent
-    treating values multiple ticks away as "on boundary".
-    """
-    cdef double diff = abs(a - b)
-    cdef double largest = max(abs(a), abs(b))
-    cdef double rel_tol = RELATIVE_TOLERANCE * largest
-    cdef double tolerance = min(rel_tol, MAX_TICK_DELTA)
-    tolerance = max(tolerance, ABSOLUTE_TOLERANCE)
-    return diff <= tolerance
-
-
 cpdef double round_down(double value, double base):
     """
     Returns a value rounded down to a specific number of decimal places.

@@ -18,6 +18,7 @@ from nautilus_trader.core.rust.model cimport PRICE_RAW_MAX
 from nautilus_trader.core.rust.model cimport PRICE_RAW_MIN
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.tick_scheme.base cimport TickScheme
+from nautilus_trader.model.tick_scheme.base cimport is_close
 from nautilus_trader.model.tick_scheme.base cimport register_tick_scheme
 from nautilus_trader.model.tick_scheme.base cimport round_down
 from nautilus_trader.model.tick_scheme.base cimport round_up
@@ -94,7 +95,8 @@ cdef class FixedTickScheme(TickScheme):
 
         cdef double rounded = round_up(value=value, base=self._increment) + (n * self._increment)
 
-        if rounded < self._min_price or rounded > self._max_price:
+        if (rounded < self._min_price and not is_close(rounded, self._min_price)) or \
+           (rounded > self._max_price and not is_close(rounded, self._max_price)):
             return None
 
         return Price(rounded, precision=self.price_precision)
@@ -125,7 +127,8 @@ cdef class FixedTickScheme(TickScheme):
 
         cdef double rounded = round_down(value=value, base=self._increment) - (n * self._increment)
 
-        if rounded < self._min_price or rounded > self._max_price:
+        if (rounded < self._min_price and not is_close(rounded, self._min_price)) or \
+           (rounded > self._max_price and not is_close(rounded, self._max_price)):
             return None
 
         return Price(rounded, precision=self.price_precision)
