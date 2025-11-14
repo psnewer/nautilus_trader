@@ -136,7 +136,7 @@ impl<'a> FromCapnp<'a> for nautilus_core::UUID4 {
             )
         })?;
         let uuid = Uuid::from_bytes(bytes_array);
-        Ok(nautilus_core::UUID4::from(uuid))
+        Ok(Self::from(uuid))
     }
 }
 
@@ -205,7 +205,7 @@ impl<'a> FromCapnp<'a> for TraderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(TraderId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -222,7 +222,7 @@ impl<'a> FromCapnp<'a> for StrategyId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(StrategyId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -239,7 +239,7 @@ impl<'a> FromCapnp<'a> for ActorId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(ActorId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -256,7 +256,7 @@ impl<'a> FromCapnp<'a> for AccountId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(AccountId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -273,7 +273,7 @@ impl<'a> FromCapnp<'a> for ClientId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(ClientId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -290,7 +290,7 @@ impl<'a> FromCapnp<'a> for ClientOrderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(ClientOrderId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -307,7 +307,7 @@ impl<'a> FromCapnp<'a> for VenueOrderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(VenueOrderId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -324,7 +324,7 @@ impl<'a> FromCapnp<'a> for TradeId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(TradeId::new(value))
+        Ok(Self::new(value))
     }
 }
 
@@ -341,7 +341,7 @@ impl<'a> FromCapnp<'a> for PositionId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(PositionId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -358,7 +358,7 @@ impl<'a> FromCapnp<'a> for ExecAlgorithmId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(ExecAlgorithmId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -375,7 +375,7 @@ impl<'a> FromCapnp<'a> for ComponentId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(ComponentId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -392,7 +392,7 @@ impl<'a> FromCapnp<'a> for OrderListId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(OrderListId::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -409,7 +409,7 @@ impl<'a> FromCapnp<'a> for Symbol {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Symbol::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -426,7 +426,7 @@ impl<'a> FromCapnp<'a> for Venue {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Venue::from(value))
+        Ok(Self::from(value))
     }
 }
 
@@ -445,7 +445,7 @@ impl<'a> FromCapnp<'a> for InstrumentId {
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let symbol = Symbol::from_capnp(reader.get_symbol()?)?;
         let venue = Venue::from_capnp(reader.get_venue()?)?;
-        Ok(InstrumentId::new(symbol, venue))
+        Ok(Self::new(symbol, venue))
     }
 }
 
@@ -504,7 +504,7 @@ impl<'a> FromCapnp<'a> for Price {
 
         #[cfg(feature = "high-precision")]
         {
-            Ok(Price::from_raw(raw_i128, precision))
+            Ok(Self::from_raw(raw_i128, precision))
         }
     }
 }
@@ -562,7 +562,7 @@ impl<'a> FromCapnp<'a> for Quantity {
 
         #[cfg(feature = "high-precision")]
         {
-            Ok(Quantity::from_raw(raw_u128, precision))
+            Ok(Self::from_raw(raw_u128, precision))
         }
     }
 }
@@ -1855,8 +1855,7 @@ impl<'a> FromCapnp<'a> for BarSpecification {
         use std::num::NonZero;
 
         let step = reader.get_step();
-        let step =
-            NonZero::new(step as usize).ok_or_else(|| "BarSpecification step must be non-zero")?;
+        let step = NonZero::new(step as usize).ok_or("BarSpecification step must be non-zero")?;
 
         let aggregation = bar_aggregation_from_capnp(reader.get_aggregation()?);
         let price_type = price_type_from_capnp(reader.get_price_type()?);
