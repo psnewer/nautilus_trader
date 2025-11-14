@@ -128,15 +128,15 @@ wheels = [
 
 [[package]]
 name = "betfair-parser"
-version = "0.17.2"
+version = "0.17.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251113", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251114", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ae/7d/43298c788796e98cf852ec50777e6586163ac653d192d3c748a22f0b150a/betfair_parser-0.17.2.tar.gz", hash = "sha256:86a1f2205a80ffcd1d1fa45db22bdc7be82da84d208ff07a33ffdfa8a6c4b8d1", size = 55758, upload-time = "2025-10-26T12:47:50.465Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/ed/399b3605bf030b15038b4edc90ee2ea81ce81b743d6fd7faa05421b9e417/betfair_parser-0.17.4.tar.gz", hash = "sha256:a979b4152129afa80b4fad5eb2d71b22f9aeef1519cb58d0348685d04ad27ec3", size = 55923, upload-time = "2025-11-04T07:25:53.234Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/08/00d05ed07c5980b2f0280b664052a5fbf5d78df4f9416a735a6b6406a810/betfair_parser-0.17.2-py3-none-any.whl", hash = "sha256:356043d0ea1379bcbb385da8602c957b6061cf390a4b098e65882523a7b29262", size = 67505, upload-time = "2025-10-26T12:47:49.513Z" },
+    { url = "https://files.pythonhosted.org/packages/38/18/4785a2d12476f05ce76a9b1c96723e71e32f93a40ad58ce72ac3a3d5a71a/betfair_parser-0.17.4-py3-none-any.whl", hash = "sha256:05cc3c2e6b02f1ba785ab66661fbf9c6b98ea9350975a1e04ffa03c0074070bb", size = 67671, upload-time = "2025-11-04T07:25:51.909Z" },
 ]
 
 [[package]]
@@ -1248,7 +1248,7 @@ wheels = [
 
 [[package]]
 name = "msgspec"
-version = "0.19.1.dev22+g0c764a6ed.d20251113"
+version = "0.19.1.dev22+g0c764a6ed.d20251114"
 source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
@@ -1437,7 +1437,7 @@ dependencies = [
     { name = "click" },
     { name = "fsspec" },
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251113", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251114", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "portion" },
@@ -1509,7 +1509,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bech32", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = ">=1.2.0,<2.0.0" },
-    { name = "betfair-parser", marker = "extra == 'betfair'", specifier = "==0.17.2" },
+    { name = "betfair-parser", marker = "extra == 'betfair'", specifier = "==0.17.4" },
     { name = "bip-utils", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = ">=2.10.0,<3.0.0" },
     { name = "click", specifier = ">=8.0.0,<9.0.0" },
     { name = "defusedxml", marker = "python_full_version < '3.14' and extra == 'ib'", specifier = ">=0.7.1,<1.0.0" },
