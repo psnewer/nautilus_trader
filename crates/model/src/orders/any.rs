@@ -328,6 +328,7 @@ impl PartialEq for StopOrderAny {
 mod tests {
     use rstest::rstest;
     use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
     use super::*;
     use crate::{
@@ -529,7 +530,7 @@ mod tests {
         assert_eq!(order_any.order_type(), OrderType::TrailingStopMarket);
         assert_eq!(order_any.quantity(), Quantity::from(10));
         assert_eq!(order_any.trigger_price(), Some(Price::new(100.0, 2)));
-        assert_eq!(order_any.trailing_offset(), Some(Decimal::new(5, 1)));
+        assert_eq!(order_any.trailing_offset(), Some(dec!(0.5)));
         assert_eq!(
             order_any.trailing_offset_type(),
             Some(TrailingOffsetType::NoTrailingOffset)
@@ -563,7 +564,7 @@ mod tests {
         assert_eq!(order_any.quantity(), Quantity::from(10));
         assert_eq!(order_any.price(), Some(Price::new(99.0, 2)));
         assert_eq!(order_any.trigger_price(), Some(Price::new(100.0, 2)));
-        assert_eq!(order_any.trailing_offset(), Some(Decimal::new(5, 1)));
+        assert_eq!(order_any.trailing_offset(), Some(dec!(0.5)));
     }
 
     #[rstest]

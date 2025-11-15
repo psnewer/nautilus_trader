@@ -67,6 +67,7 @@ mod tests {
     use alloy_primitives::U256;
     use rstest::rstest;
     use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
     use super::*;
     use crate::enums::CurrencyType;
@@ -78,7 +79,7 @@ mod tests {
         let money = Money::from_wei(one_eth_wei, eth);
 
         // Use decimal comparison for high precision values
-        assert_eq!(money.as_decimal(), Decimal::from(1));
+        assert_eq!(money.as_decimal(), dec!(1));
         assert_eq!(money.currency.precision, 18);
     }
 
@@ -89,7 +90,7 @@ mod tests {
         let money = Money::from_wei(small_wei, eth);
 
         // Use decimal comparison for high precision values
-        assert_eq!(money.as_decimal(), Decimal::new(1, 6)); // 0.000001
+        assert_eq!(money.as_decimal(), dec!(0.000001)); // 0.000001
     }
 
     #[rstest]
@@ -169,11 +170,11 @@ mod tests {
         let money2 = Money::from_wei(U256::from(500_000_000_000_000_000_u64), eth); // 0.5 ETH
 
         let sum = money1 + money2;
-        assert_eq!(sum.as_decimal(), Decimal::new(15, 1)); // 1.5
+        assert_eq!(sum.as_decimal(), dec!(1.5)); // 1.5
         assert_eq!(sum.to_wei(), U256::from(1_500_000_000_000_000_000_u64));
 
         let diff = money1 - money2;
-        assert_eq!(diff.as_decimal(), Decimal::new(5, 1)); // 0.5
+        assert_eq!(diff.as_decimal(), dec!(0.5)); // 0.5
         assert_eq!(diff.to_wei(), U256::from(500_000_000_000_000_000_u64));
     }
 

@@ -1436,6 +1436,7 @@ mod tests {
     };
     use rstest::rstest;
     use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
     use ustr::Ustr;
 
     use super::*;
@@ -1718,7 +1719,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(funding_rate.instrument_id, instrument_id);
-        assert_eq!(funding_rate.rate, Decimal::new(1, 4));
+        assert_eq!(funding_rate.rate, dec!(0.0001));
         assert_eq!(
             funding_rate.next_funding_ns,
             Some(UnixNanos::from(1744590349506000000))
@@ -3459,8 +3460,8 @@ mod tests {
 
         // Verify fees were applied
         if let InstrumentAny::CurrencyPair(ref pair) = parsed_initial {
-            assert_eq!(pair.maker_fee, Decimal::new(8, 4));
-            assert_eq!(pair.taker_fee, Decimal::new(10, 4));
+            assert_eq!(pair.maker_fee, dec!(0.0008));
+            assert_eq!(pair.taker_fee, dec!(0.0010));
         } else {
             panic!("Expected CurrencyPair instrument");
         }
