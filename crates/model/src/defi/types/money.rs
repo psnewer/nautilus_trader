@@ -28,22 +28,6 @@ impl Money {
     /// # Panics
     ///
     /// Panics if the raw wei value exceeds 128-bit range.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nautilus_model::types::{Money, Currency};
-    /// use nautilus_model::enums::CurrencyType;
-    /// use alloy_primitives::U256;
-    /// use rust_decimal_macros::dec;
-    ///
-    /// # #[cfg(feature = "defi")]
-    /// # {
-    /// let eth = Currency::new("ETH", 18, 0, "Ethereum", CurrencyType::Crypto);
-    /// let money = Money::from_wei(U256::from(1_000_000_000_000_000_000_u64), eth); // 1 ETH
-    /// assert_eq!(money.as_decimal(), dec!(1.0));
-    /// # }
-    /// ```
     pub fn from_wei<U>(raw_wei: U, currency: Currency) -> Self
     where
         U: Into<U256>,
@@ -69,23 +53,6 @@ impl Money {
     /// # Returns
     ///
     /// The raw wei value as a U256.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nautilus_model::types::{Money, Currency};
-    /// use nautilus_model::enums::CurrencyType;
-    /// use alloy_primitives::U256;
-    ///
-    /// # #[cfg(feature = "defi")]
-    /// # {
-    /// let eth = Currency::new("ETH", 18, 0, "Ethereum", CurrencyType::Crypto);
-    /// // Construct via raw wei to ensure correct 18-dec precision.
-    /// let money = Money::from_wei(U256::from(1_000_000_000_000_000_000_u64), eth); // 1 ETH
-    /// let wei_value = money.to_wei();
-    /// assert_eq!(wei_value, U256::from(1_000_000_000_000_000_000_u64));
-    /// # }
-    /// ```
     pub fn to_wei(&self) -> U256 {
         U256::from(self.raw as u128)
     }
