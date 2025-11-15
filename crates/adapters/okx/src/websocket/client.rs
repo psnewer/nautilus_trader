@@ -2667,14 +2667,14 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
     fn test_feed_handler_reconnection_detection() {
         let msg = Message::Text(RECONNECTED.to_string().into());
         let result = OKXWsFeedHandler::parse_raw_message(msg);
         assert!(matches!(result, Some(OKXWsMessage::Reconnected)));
     }
 
-    #[test]
+    #[rstest]
     fn test_feed_handler_normal_message_processing() {
         // Test ping message
         let ping_msg = Message::Text(TEXT_PING.to_string().into());
@@ -2699,19 +2699,19 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[rstest]
     fn test_feed_handler_close_message() {
         // Close messages return None (filtered out)
         let result = OKXWsFeedHandler::parse_raw_message(Message::Close(None));
         assert!(result.is_none());
     }
 
-    #[test]
+    #[rstest]
     fn test_reconnection_message_constant() {
         assert_eq!(RECONNECTED, "__RECONNECTED__");
     }
 
-    #[test]
+    #[rstest]
     fn test_multiple_reconnection_signals() {
         // Test that multiple reconnection messages are properly parsed
         for _ in 0..3 {

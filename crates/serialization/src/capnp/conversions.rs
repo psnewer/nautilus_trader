@@ -4567,7 +4567,7 @@ mod tests {
 
     macro_rules! capnp_simple_roundtrip_test {
         ($name:ident, $value:expr, $builder:path, $reader:path, $ty:ty) => {
-            #[test]
+            #[rstest]
             fn $name() {
                 assert_capnp_roundtrip!($value, $builder, $reader, $ty);
             }
@@ -4583,7 +4583,7 @@ mod tests {
         };
     }
 
-    #[test]
+    #[rstest]
     fn test_instrument_id_roundtrip() {
         let instrument_id = InstrumentId::from("AAPL.NASDAQ");
         let bytes = serialize_instrument_id(&instrument_id).unwrap();
@@ -4591,7 +4591,7 @@ mod tests {
         assert_eq!(instrument_id, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_price_roundtrip() {
         let price = Price::from("123.45");
         let bytes = serialize_price(&price).unwrap();
@@ -4599,7 +4599,7 @@ mod tests {
         assert_eq!(price, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_quantity_roundtrip() {
         let qty = Quantity::from("100.5");
         let bytes = serialize_quantity(&qty).unwrap();
@@ -4607,7 +4607,7 @@ mod tests {
         assert_eq!(qty, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_currency_roundtrip() {
         let currency = Currency::USD();
         let bytes = serialize_currency(&currency).unwrap();
@@ -4615,7 +4615,7 @@ mod tests {
         assert_eq!(currency, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_currency_crypto_roundtrip() {
         let currency = Currency::BTC();
         let bytes = serialize_currency(&currency).unwrap();
@@ -4623,7 +4623,7 @@ mod tests {
         assert_eq!(currency, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_money_roundtrip() {
         let money = Money::from_raw(100_000_000, Currency::USD());
         let bytes = serialize_money(&money).unwrap();
@@ -4631,7 +4631,7 @@ mod tests {
         assert_eq!(money, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_money_negative() {
         let money = Money::from_raw(-50_000_000, Currency::USD());
         let bytes = serialize_money(&money).unwrap();
@@ -4639,7 +4639,7 @@ mod tests {
         assert_eq!(money, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_money_zero() {
         let money = Money::from_raw(0, Currency::USD());
         let bytes = serialize_money(&money).unwrap();
@@ -4647,7 +4647,7 @@ mod tests {
         assert_eq!(money, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_decimal_serialization_layout() {
         let decimal = Decimal::from_parts(
             0x89ab_cdef,
@@ -4675,7 +4675,7 @@ mod tests {
         assert_eq!(reader.get_hi(), 0x0fed_cba9);
     }
 
-    #[test]
+    #[rstest]
     fn test_decimal_roundtrip_preserves_scale_and_sign() {
         let decimal = Decimal::from_parts(0xffff_ffff, 0x7fff_ffff, 0x0000_00ff, false, 9);
 
@@ -4692,7 +4692,7 @@ mod tests {
         assert_eq!(decimal, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_account_balance_roundtrip() {
         let total = Money::from_raw(1000_00, Currency::USD());
         let locked = Money::from_raw(100_00, Currency::USD());
@@ -4703,7 +4703,7 @@ mod tests {
         assert_eq!(balance, decoded);
     }
 
-    #[test]
+    #[rstest]
     fn test_margin_balance_roundtrip() {
         let initial = Money::from_raw(5000_00, Currency::USD());
         let maintenance = Money::from_raw(2500_00, Currency::USD());
@@ -5027,7 +5027,7 @@ mod tests {
         order_capnp::order_expired::Builder,
         order_capnp::order_expired::Reader
     );
-    #[test]
+    #[rstest]
     fn order_canceled_capnp_roundtrip() {
         assert_capnp_roundtrip!(
             sample_order_canceled(),
@@ -5038,7 +5038,7 @@ mod tests {
     }
 
     // Position event coverage
-    #[test]
+    #[rstest]
     fn position_opened_capnp_roundtrip() {
         assert_capnp_roundtrip!(
             sample_position_opened(),
@@ -5048,7 +5048,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn position_changed_capnp_roundtrip() {
         assert_capnp_roundtrip!(
             sample_position_changed(),
@@ -5058,7 +5058,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn position_closed_capnp_roundtrip() {
         assert_capnp_roundtrip!(
             sample_position_closed(),
@@ -5068,7 +5068,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn position_adjusted_capnp_roundtrip() {
         assert_capnp_roundtrip!(
             sample_position_adjusted(),

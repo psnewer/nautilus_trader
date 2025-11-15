@@ -1009,9 +1009,11 @@ pub(crate) fn create_bitmex_timeout_error(msg: String) -> BitmexWsError {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
+    #[rstest]
     fn test_is_heartbeat_message_detection() {
         assert!(FeedHandler::is_heartbeat_message("{\"op\":\"ping\"}"));
         assert!(FeedHandler::is_heartbeat_message("{\"op\":\"pong\"}"));

@@ -71,7 +71,9 @@ pub trait FromCapnp<'a> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    use rstest::rstest;
+
+    #[rstest]
     fn test_capnp_feature_enabled() {
         // This test ensures the capnp feature is properly configured
         assert!(cfg!(feature = "capnp"));
