@@ -251,7 +251,7 @@ serde_json = { version = "1.0.145", default-features = false, features = [
 ] }
 serde_repr = "0.1.20"
 serde_urlencoded = "0.7.1"
-serde_with = "3.15.1"
+serde_with = "3.16.0"
 simple_logger = "5.1.0"
 static_assertions = "1.1.0"
 sqlx = { version = "0.8.6", default-features = false, features = [
@@ -326,7 +326,7 @@ zeroize = { version = "1.8.2", features = ["alloc", "zeroize_derive"] }
 # -----------------------------------------------------------------------------
 # Dev dependencies
 # -----------------------------------------------------------------------------
-axum = { version = "0.8.6", default-features = false, features = [
+axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "http1",
   "json",
