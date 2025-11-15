@@ -199,6 +199,7 @@ impl HyperliquidWebSocketClient {
         let auth_tracker = self.auth_tracker.clone();
         let subscriptions = self.subscriptions.clone();
         let cmd_tx_for_reconnect = cmd_tx.clone();
+
         let stream_handle = tokio::spawn(async move {
             let mut handler = FeedHandler::new(
                 signal,
