@@ -39,7 +39,7 @@ or as part of a Rust only build.
 - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 - `extension-module`: Builds as a Python extension module (used with `python`).
 - `high-precision`: Enables [high-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation#precision-mode) to use 128-bit value types.
-- `capnp`: Enables Cap'n Proto serialization support. Requires the Cap'n Proto compiler (`capnp`) to be installed and available on your PATH during build.
+- `capnp`: Enables [Cap'n Proto](https://capnproto.org/) serialization support.
 
 ### Building with Cap'n Proto support
 

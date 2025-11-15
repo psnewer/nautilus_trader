@@ -75,6 +75,22 @@ impl OrderAny {
             }
         }
     }
+
+    /// Returns a reference to the [`OrderInitialized`] event.
+    ///
+    /// This is always the first event in the order's event list (invariant).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the first event is not `OrderInitialized` (violates invariant).
+    #[must_use]
+    pub fn init_event(&self) -> &crate::events::OrderInitialized {
+        // SAFETY: Unwrap safe as Order specification guarantees at least one event (OrderInitialized)
+        match self.events().first().unwrap() {
+            OrderEventAny::Initialized(init) => init,
+            _ => panic!("First event must be OrderInitialized"),
+        }
+    }
 }
 
 impl PartialEq for OrderAny {
