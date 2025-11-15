@@ -170,7 +170,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Pause job on develop and nightly branches for now
     # - develop: takes ~1-1.5 hrs
-    # - nightly: build issue pending investigation
+    # - nightly: TODO: build issue pending investigation
     if: >
       !( (github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name == 'nightly'))
       || (github.event_name == 'pull_request' && (github.base_ref == 'develop' || github.base_ref == 'nightly')) )
@@ -437,7 +437,7 @@ jobs:
       attestations: write # Required for attestations
     needs:
       - build-linux-x86
-      - build-linux-arm
+      # - build-linux-arm  # TODO: Build issue pending investigation
       - build-macos
       - build-windows
     if: >
