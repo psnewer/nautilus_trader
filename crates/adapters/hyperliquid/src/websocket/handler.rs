@@ -643,7 +643,9 @@ fn subscription_to_key(sub: &SubscriptionRequest) -> String {
         }
         SubscriptionRequest::Notification { user } => format!("notification:{user}"),
         SubscriptionRequest::WebData2 { user } => format!("webData2:{user}"),
-        SubscriptionRequest::Candle { coin, interval } => format!("candle:{coin}:{interval:?}"),
+        SubscriptionRequest::Candle { coin, interval } => {
+            format!("candle:{coin}:{}", interval.as_str())
+        }
         SubscriptionRequest::L2Book { coin, .. } => format!("l2Book:{coin}"),
         SubscriptionRequest::Trades { coin } => format!("trades:{coin}"),
         SubscriptionRequest::OrderUpdates { user } => format!("orderUpdates:{user}"),
