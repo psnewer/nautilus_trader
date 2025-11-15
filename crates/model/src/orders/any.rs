@@ -76,7 +76,7 @@ impl OrderAny {
         }
     }
 
-    /// Returns a reference to the [`OrderInitialized`] event.
+    /// Returns a reference to the [`crate::events::OrderInitialized`] event.
     ///
     /// This is always the first event in the order's event list (invariant).
     ///

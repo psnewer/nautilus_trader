@@ -117,10 +117,7 @@ impl<'a> ToCapnp<'a> for nautilus_core::UUID4 {
     type Builder = base_capnp::u_u_i_d4::Builder<'a>;
 
     fn to_capnp(&self, mut builder: Self::Builder) {
-        // Convert UUID4 to uuid::Uuid to get bytes
-        let uuid_str = self.to_string();
-        let uuid = Uuid::parse_str(&uuid_str).expect("Valid UUID4");
-        builder.set_value(uuid.as_bytes());
+        builder.set_value(&self.as_bytes());
     }
 }
 
@@ -205,7 +202,7 @@ impl<'a> FromCapnp<'a> for TraderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -222,7 +219,7 @@ impl<'a> FromCapnp<'a> for StrategyId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -239,7 +236,7 @@ impl<'a> FromCapnp<'a> for ActorId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -256,7 +253,7 @@ impl<'a> FromCapnp<'a> for AccountId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -273,7 +270,7 @@ impl<'a> FromCapnp<'a> for ClientId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -290,7 +287,7 @@ impl<'a> FromCapnp<'a> for ClientOrderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -307,7 +304,7 @@ impl<'a> FromCapnp<'a> for VenueOrderId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -324,7 +321,7 @@ impl<'a> FromCapnp<'a> for TradeId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::new(value))
+        Ok(value.into())
     }
 }
 
@@ -341,7 +338,7 @@ impl<'a> FromCapnp<'a> for PositionId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -358,7 +355,7 @@ impl<'a> FromCapnp<'a> for ExecAlgorithmId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -375,7 +372,7 @@ impl<'a> FromCapnp<'a> for ComponentId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -392,7 +389,7 @@ impl<'a> FromCapnp<'a> for OrderListId {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -409,7 +406,7 @@ impl<'a> FromCapnp<'a> for Symbol {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -426,7 +423,7 @@ impl<'a> FromCapnp<'a> for Venue {
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
         let value = reader.get_value()?.to_str()?;
-        Ok(Self::from(value))
+        Ok(value.into())
     }
 }
 
@@ -499,7 +496,7 @@ impl<'a> FromCapnp<'a> for Price {
             let raw = i64::try_from(raw_i128).map_err(|_| -> Box<dyn Error> {
                 "Price value overflows i64 in standard precision mode".into()
             })?;
-            Ok(Price::from_raw(raw, precision))
+            Ok(Price::from_raw(raw.into(), precision))
         }
 
         #[cfg(feature = "high-precision")]
@@ -557,7 +554,7 @@ impl<'a> FromCapnp<'a> for Quantity {
             let raw = u64::try_from(raw_u128).map_err(|_| -> Box<dyn Error> {
                 "Quantity value overflows u64 in standard precision mode".into()
             })?;
-            Ok(Quantity::from_raw(raw, precision))
+            Ok(Quantity::from_raw(raw.into(), precision))
         }
 
         #[cfg(feature = "high-precision")]
@@ -1260,7 +1257,7 @@ impl<'a> FromCapnp<'a> for Money {
             let raw = i64::try_from(raw_i128).map_err(|_| -> Box<dyn Error> {
                 "Money value overflows i64 in standard precision mode".into()
             })?;
-            Ok(Self::from_raw(raw, currency))
+            Ok(Self::from_raw(raw.into(), currency))
         }
 
         #[cfg(feature = "high-precision")]
@@ -1672,7 +1669,8 @@ impl<'a> ToCapnp<'a> for FundingRateUpdate {
         let instrument_id_builder = builder.reborrow().init_instrument_id();
         self.instrument_id.to_capnp(instrument_id_builder);
 
-        builder.set_rate(&self.rate.to_string());
+        let rate_builder = builder.reborrow().init_rate();
+        self.rate.to_capnp(rate_builder);
 
         let mut next_funding_time_builder = builder.reborrow().init_next_funding_time();
         next_funding_time_builder.set_value(self.next_funding_ns.map_or(0, |ns| *ns));
@@ -1689,13 +1687,11 @@ impl<'a> FromCapnp<'a> for FundingRateUpdate {
     type Reader = market_capnp::funding_rate_update::Reader<'a>;
 
     fn from_capnp(reader: Self::Reader) -> Result<Self, Box<dyn Error>> {
-        use std::str::FromStr;
-
         let instrument_id_reader = reader.get_instrument_id()?;
         let instrument_id = InstrumentId::from_capnp(instrument_id_reader)?;
 
-        let rate_str = reader.get_rate()?.to_str()?;
-        let rate = rust_decimal::Decimal::from_str(rate_str)?;
+        let rate_reader = reader.get_rate()?;
+        let rate = Decimal::from_capnp(rate_reader)?;
 
         let next_funding_time_reader = reader.get_next_funding_time()?;
         let next_funding_time_value = next_funding_time_reader.get_value();
