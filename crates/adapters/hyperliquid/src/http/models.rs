@@ -372,7 +372,7 @@ impl HyperliquidSignature {
 
         if sig_hex.len() != 130 {
             return Err(format!(
-                "Invalid signature length: expected 130 hex chars, got {}",
+                "Invalid signature length: expected 130 hex chars, was {}",
                 sig_hex.len()
             ));
         }

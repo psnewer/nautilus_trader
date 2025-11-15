@@ -1393,7 +1393,7 @@ mod tests {
         assert_eq!(
             state.len(),
             expected_len,
-            "{label}: len() mismatch. Expected {expected_len}, got {}",
+            "{label}: len() mismatch. Expected {expected_len}, was {}",
             state.len()
         );
 
@@ -1413,7 +1413,7 @@ mod tests {
             let count = entry.value().get();
             assert!(
                 count > 0,
-                "{label}: Reference count should be NonZeroUsize (> 0), got {count} for {:?}",
+                "{label}: Reference count should be NonZeroUsize (> 0), was {count} for {:?}",
                 entry.key()
             );
         }

@@ -249,7 +249,7 @@ impl SwapQuote {
         let actual_out = self.get_output_amount();
         if actual_out < amount_out_requested {
             anyhow::bail!(
-                "Insufficient liquidity: requested {}, got {}",
+                "Insufficient liquidity: requested {}, available {}",
                 amount_out_requested,
                 actual_out
             );

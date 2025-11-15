@@ -520,7 +520,7 @@ impl<'de> Deserialize<'de> for UnixNanos {
             {
                 if !value.is_finite() {
                     return Err(E::custom(format!(
-                        "Unix timestamp must be finite, got {value}"
+                        "Unix timestamp must be finite, was {value}"
                     )));
                 }
                 if value < 0.0 {

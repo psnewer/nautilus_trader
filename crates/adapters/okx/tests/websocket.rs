@@ -1661,7 +1661,7 @@ async fn test_rapid_consecutive_reconnections() {
     let final_login_count = *state.login_count.lock().await;
     assert!(
         final_login_count >= 4,
-        "Should have at least 4 total logins (1 initial + 3 reconnects), got {final_login_count}"
+        "Should have at least 4 total logins (1 initial + 3 reconnects), was {final_login_count}"
     );
 
     client.close().await.expect("close failed");

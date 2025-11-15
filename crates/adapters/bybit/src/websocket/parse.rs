@@ -76,7 +76,7 @@ pub fn parse_kline_topic(topic: &str) -> anyhow::Result<(&str, &str)> {
     let parts = parse_topic(topic)?;
     if parts.len() != 3 || parts[0] != "kline" {
         anyhow::bail!(
-            "Invalid kline topic format: expected 'kline.{{interval}}.{{symbol}}', got '{topic}'"
+            "Invalid kline topic format: expected 'kline.{{interval}}.{{symbol}}', was '{topic}'"
         );
     }
     Ok((parts[1], parts[2]))

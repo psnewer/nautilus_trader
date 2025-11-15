@@ -1833,7 +1833,7 @@ fn test_execute_subscribe_pool_swaps(
                 assert_eq!(request.client_id, Some(client_id));
             }
             _ => panic!(
-                "Expected second command to be RequestPoolSnapshot, got: {:?}",
+                "Expected second command to be RequestPoolSnapshot, was: {:?}",
                 recorded[1]
             ),
         }
@@ -2057,7 +2057,7 @@ fn test_execute_subscribe_pool_liquidity_updates(
                 assert_eq!(request.client_id, Some(client_id));
             }
             _ => panic!(
-                "Expected second command to be RequestPoolSnapshot, got: {:?}",
+                "Expected second command to be RequestPoolSnapshot, was: {:?}",
                 recorded[1]
             ),
         }
@@ -2144,7 +2144,7 @@ fn test_execute_subscribe_pool_fee_collects(
                 assert_eq!(request.client_id, Some(client_id));
             }
             _ => panic!(
-                "Expected second command to be RequestPoolSnapshot, got: {:?}",
+                "Expected second command to be RequestPoolSnapshot, was: {:?}",
                 recorded[1]
             ),
         }
@@ -2227,7 +2227,7 @@ fn test_execute_subscribe_pool_flash_events(
                 assert_eq!(request.client_id, Some(client_id));
             }
             _ => panic!(
-                "Expected second command to be RequestPoolSnapshot, got: {:?}",
+                "Expected second command to be RequestPoolSnapshot, was: {:?}",
                 recorded[1]
             ),
         }
@@ -2652,7 +2652,7 @@ fn test_pool_updater_processes_swap_updates_profiler(
         .liquidity;
     assert!(
         active_liquidity > 0,
-        "Active liquidity should be > 0 after mint, got: {}",
+        "Active liquidity should be > 0 after mint, was: {}",
         active_liquidity
     );
 
@@ -3312,7 +3312,7 @@ fn test_setup_pool_updater_requests_snapshot(
             assert_eq!(request.client_id, Some(client_id));
         }
         _ => panic!(
-            "Expected second command to be RequestPoolSnapshot, got: {:?}",
+            "Expected second command to be RequestPoolSnapshot, was: {:?}",
             recorded[1]
         ),
     }

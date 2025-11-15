@@ -1831,7 +1831,7 @@ fn test_swap_crossing_tick_down_activates_position(mut uni_pool_profiler: PoolPr
     let new_tick = uni_pool_profiler.state.current_tick;
     assert!(
         new_tick <= upper_tick,
-        "Price should have crossed to or below tick {}, got {}",
+        "Price should have crossed to or below tick {}, was {}",
         upper_tick,
         new_tick
     );
@@ -1899,7 +1899,7 @@ fn test_swap_crossing_tick_up_activates_position(mut uni_pool_profiler: PoolProf
     let new_tick = uni_pool_profiler.state.current_tick;
     assert!(
         new_tick >= lower_tick,
-        "Price should have crossed above or at tick {}, got {}",
+        "Price should have crossed above or at tick {}, was {}",
         lower_tick,
         new_tick
     );
