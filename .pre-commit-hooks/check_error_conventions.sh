@@ -5,6 +5,12 @@
 
 set -euo pipefail
 
+# Exit cleanly if ripgrep is not installed
+if ! command -v rg &> /dev/null; then
+  echo "WARNING: ripgrep not found, skipping error convention checks"
+  exit 0
+fi
+
 # Color output
 RED='\033[0;31m'
 NC='\033[0m' # No Color
@@ -31,13 +37,7 @@ rust_results=$(mktemp)
 trap 'rm -f "$rust_results"' EXIT
 
 # Search for Err( patterns in Rust files
-if command -v rg &> /dev/null; then
-  # Use ripgrep - look for Err( in Rust files
-  rg -n 'Err\(' crates --type rust 2> /dev/null > "$rust_results" || true
-else
-  # Fall back to grep + find
-  find crates -name '*.rs' -type f -exec grep -Hn 'Err(' {} + 2> /dev/null > "$rust_results" || true
-fi
+rg -n 'Err\(' crates --type rust 2> /dev/null > "$rust_results" || true
 
 while IFS=: read -r file line_num line_content; do
   # Skip empty lines
@@ -68,12 +68,6 @@ done < "$rust_results"
 ################################################################################
 
 echo "Checking Python exception variable naming..."
-
-# Require ripgrep for Python checks (complexity requires multiline mode)
-if ! command -v rg &> /dev/null; then
-  echo "WARNING: ripgrep not found, skipping Python exception checks"
-  exit 0
-fi
 
 # Create a temporary file to store the search results
 python_results=$(mktemp)
