@@ -547,7 +547,7 @@ impl FeedHandler {
                 None
             }
         } else {
-            tracing::warn!("No bar type found for key: {key}");
+            tracing::debug!("No bar type found for key: {key}");
             None
         }
     }
