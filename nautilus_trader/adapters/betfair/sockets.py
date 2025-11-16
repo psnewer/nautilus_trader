@@ -318,7 +318,13 @@ class BetfairMarketStreamClient(BetfairStreamClient):
             country_codes,
             race_types,
         )
-        assert any(filters), "Must pass at least one filter"
+        # Betfair supports subscribing without filters (using only application credentials)
+        # but log a warning as it may be inefficient or unintended
+        if not any(filters):
+            self._log.warning(
+                "Subscribing to Betfair market stream without any filters - "
+                "this will receive updates for all available markets",
+            )
         assert any(
             (subscribe_book_updates, subscribe_trade_updates),
         ), "Must subscribe to either book updates or trades"

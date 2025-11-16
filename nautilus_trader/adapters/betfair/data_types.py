@@ -83,6 +83,30 @@ class BSPOrderBookDelta(OrderBookDelta):
 
     @staticmethod
     def to_batch(obj: BSPOrderBookDelta) -> pa.RecordBatch:
+        # Handle CLEAR action where order is None
+        if obj.order is None:
+            metadata = {
+                b"instrument_id": obj.instrument_id.value.encode(),
+                b"price_precision": b"0",
+                b"size_precision": b"0",
+            }
+            schema = BSPOrderBookDelta.schema().with_metadata(metadata)
+            return pa.RecordBatch.from_pylist(
+                [
+                    {
+                        "action": obj.action,
+                        "side": 0,  # Default value for CLEAR
+                        "price": 0,
+                        "size": 0,
+                        "order_id": 0,
+                        "flags": obj.flags,
+                        "ts_event": obj.ts_event,
+                        "ts_init": obj.ts_init,
+                    },
+                ],
+                schema=schema,
+            )
+
         metadata = {
             b"instrument_id": obj.instrument_id.value.encode(),
             b"price_precision": str(obj.order.price.precision).encode(),
