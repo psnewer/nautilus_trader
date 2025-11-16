@@ -282,10 +282,7 @@ class BetfairExecutionClient(LiveExecutionClient):
                     account_state = await self.request_account_state()
                     self._send_account_state(account_state)
                 except BetfairError as e:
-                    self._log.warning(str(e))
-                    if "INVALID_SESSION_INFORMATION" in str(e):
-                        self._log.warning("Invalid session error, reconnecting...")
-                        await self._reconnect()
+                    await self.on_api_exception(error=e)
         except asyncio.CancelledError:
             self._log.debug("Canceled task 'update_account_state'")
         except Exception as e:
