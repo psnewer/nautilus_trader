@@ -1350,3 +1350,205 @@ class TestPolymarketExecutionClient:
                 update_mock.assert_called_once()
             else:
                 update_mock.assert_not_called()
+
+    def test_confirmed_trades_kept_in_cache_for_deduplication(self):
+        """
+        Test that confirmed trades remain in the cache for deduplication.
+
+        Websocket can deliver trades multiple times (reconnects, replays), so confirmed
+        trades must stay in the cache to prevent reprocessing duplicate events.
+
+        """
+        # Arrange
+        confirmed_trade_id = TradeId("confirmed_trade")
+
+        # Act
+        self.exec_client._record_processed_trade(
+            confirmed_trade_id,
+            PolymarketTradeStatus.CONFIRMED,
+        )
+
+        # Assert
+        assert confirmed_trade_id in self.exec_client._finalized_trades
+        assert confirmed_trade_id not in self.exec_client._processed_trades
+
+    def test_processed_trades_limit_enforced(self, monkeypatch):
+        """
+        Test that the processed trades cache is limited to PROCESSED_TRADES_LIMIT.
+
+        The cache should maintain only the most recent PROCESSED_TRADES_LIMIT trades,
+        removing older entries when the limit is exceeded.
+
+        """
+        # Arrange
+        test_limit = 100
+        monkeypatch.setattr(PolymarketExecutionClient, "PROCESSED_TRADES_LIMIT", test_limit)
+
+        # Act
+        for i in range(test_limit):
+            trade_id = TradeId(f"trade_{i}")
+            self.exec_client._record_processed_trade(trade_id, PolymarketTradeStatus.MATCHED)
+
+        overflow_trade_id = TradeId(f"trade_{test_limit}")
+        self.exec_client._record_processed_trade(overflow_trade_id, PolymarketTradeStatus.MATCHED)
+
+        # Assert
+        assert len(self.exec_client._processed_trades) == test_limit
+        assert TradeId("trade_0") not in self.exec_client._processed_trades
+        assert overflow_trade_id in self.exec_client._processed_trades
+        assert TradeId("trade_1") in self.exec_client._processed_trades
+
+    def test_finalized_trades_limit_enforced(self, monkeypatch):
+        """
+        Test that the finalized trades cache is limited to PROCESSED_TRADES_LIMIT.
+
+        The cache should maintain only the most recent PROCESSED_TRADES_LIMIT finalized
+        trades, removing older entries when the limit is exceeded.
+
+        """
+        # Arrange
+        test_limit = 100
+        monkeypatch.setattr(PolymarketExecutionClient, "PROCESSED_TRADES_LIMIT", test_limit)
+
+        # Act
+        for i in range(test_limit):
+            trade_id = TradeId(f"trade_{i}")
+            self.exec_client._record_processed_trade(trade_id, PolymarketTradeStatus.CONFIRMED)
+
+        overflow_trade_id = TradeId(f"trade_{test_limit}")
+        self.exec_client._record_processed_trade(overflow_trade_id, PolymarketTradeStatus.CONFIRMED)
+
+        # Assert
+        assert len(self.exec_client._finalized_trades) == test_limit
+        assert TradeId("trade_0") not in self.exec_client._finalized_trades
+        assert overflow_trade_id in self.exec_client._finalized_trades
+        assert TradeId("trade_1") in self.exec_client._finalized_trades
+
+    def test_trade_status_transition_deduplication(self):
+        """
+        Test MATCHED → MINED → CONFIRMED transition with proper deduplication.
+
+        Verifies that when a trade transitions from MATCHED to MINED/CONFIRMED:
+        - The initial MATCHED trade creates a fill
+        - The MINED update triggers account refresh but no duplicate fill
+        - The CONFIRMED update is skipped (no duplicate fill or account refresh)
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade1.json",
+        )
+
+        msg_data = msgspec.json.decode(raw_message)
+        trade_id = TradeId(msg_data["id"])
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
+            price=Price.from_str("0.518"),
+        )
+
+        # Act - Send MATCHED status
+        msg_data["status"] = "MATCHED"
+        matched_message = msgspec.json.encode(msg_data)
+        msg = self.exec_client._decoder_user_msg.decode(matched_message)
+
+        with patch.object(
+            self.exec_client,
+            "_update_account_state",
+            new_callable=AsyncMock,
+        ) as update_mock:
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert - MATCHED creates fill, stored in _processed_trades, no account update
+            assert trade_id in self.exec_client._processed_trades
+            assert self.exec_client._processed_trades[trade_id] == PolymarketTradeStatus.MATCHED
+            assert trade_id not in self.exec_client._finalized_trades
+            update_mock.assert_not_called()
+
+            order = self.cache.order(client_order_id)
+            initial_fill_count = len(order.events)
+
+            # Act - Send MINED status (same trade ID)
+            msg_data["status"] = "MINED"
+            mined_message = msgspec.json.encode(msg_data)
+            msg = self.exec_client._decoder_user_msg.decode(mined_message)
+
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert - MINED triggers account update, moves to _finalized_trades, no duplicate fill
+            assert trade_id in self.exec_client._finalized_trades
+            assert trade_id not in self.exec_client._processed_trades
+            update_mock.assert_called_once()
+
+            order = self.cache.order(client_order_id)
+            assert len(order.events) == initial_fill_count, "No duplicate fill should be created"
+
+            update_mock.reset_mock()
+
+            # Act - Send CONFIRMED status (same trade ID)
+            msg_data["status"] = "CONFIRMED"
+            confirmed_message = msgspec.json.encode(msg_data)
+            msg = self.exec_client._decoder_user_msg.decode(confirmed_message)
+
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert - CONFIRMED is skipped (already in _finalized_trades)
+            assert trade_id in self.exec_client._finalized_trades
+            update_mock.assert_not_called()
+
+            order = self.cache.order(client_order_id)
+            assert len(order.events) == initial_fill_count, "No duplicate fill from replayed CONFIRMED"
+
+    def test_replayed_finalized_trade_is_ignored(self):
+        """
+        Test that replayed MINED/CONFIRMED messages are properly deduplicated.
+
+        Verifies that once a trade reaches finalized status (MINED/CONFIRMED), duplicate
+        messages with the same trade ID are ignored completely.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade1.json",
+        )
+
+        msg_data = msgspec.json.decode(raw_message)
+        msg_data["status"] = "CONFIRMED"
+        trade_id = TradeId(msg_data["id"])
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
+            price=Price.from_str("0.518"),
+        )
+
+        confirmed_message = msgspec.json.encode(msg_data)
+        msg = self.exec_client._decoder_user_msg.decode(confirmed_message)
+
+        # Act - Process initial CONFIRMED message
+        with patch.object(
+            self.exec_client,
+            "_update_account_state",
+            new_callable=AsyncMock,
+        ) as update_mock:
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert - Initial message processed
+            assert trade_id in self.exec_client._finalized_trades
+            update_mock.assert_called_once()
+
+            order = self.cache.order(client_order_id)
+            initial_event_count = len(order.events)
+
+            update_mock.reset_mock()
+
+            # Act - Send duplicate CONFIRMED message (websocket replay)
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert - Duplicate is ignored completely
+            assert trade_id in self.exec_client._finalized_trades
+            update_mock.assert_not_called()
+
+            order = self.cache.order(client_order_id)
+            assert len(order.events) == initial_event_count, "No duplicate events from replayed message"
