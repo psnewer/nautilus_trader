@@ -79,7 +79,7 @@ use crate::{
             OKXTargetCurrency, OKXTradeMode,
         },
         parse::{
-            okx_instrument_type, parse_account_state, parse_client_order_id,
+            determine_order_type, okx_instrument_type, parse_account_state, parse_client_order_id,
             parse_millisecond_timestamp, parse_position_status_report, parse_price, parse_quantity,
         },
     },
@@ -961,6 +961,11 @@ impl OKXWsFeedHandler {
                 {
                     match params {
                         PendingOrderParams::Regular(order_params) => {
+                            let order_type = determine_order_type(
+                                order_params.ord_type,
+                                order_params.px.as_deref().unwrap_or(""),
+                            );
+
                             let is_explicit_quote_sized = order_params
                                 .tgt_ccy
                                 .is_some_and(|tgt| tgt == OKXTargetCurrency::QuoteCcy);
@@ -968,7 +973,7 @@ impl OKXWsFeedHandler {
                             // SPOT market BUY in cash mode with no tgt_ccy defaults to quote-sizing
                             let is_implicit_quote_sized = order_params.tgt_ccy.is_none()
                                 && order_params.side == OKXSide::Buy
-                                && matches!(order_params.ord_type, OKXOrderType::Market)
+                                && order_type == OrderType::Market
                                 && order_params.td_mode == OKXTradeMode::Cash
                                 && instrument.instrument_class().as_ref() == "SPOT";
 
@@ -989,7 +994,6 @@ impl OKXWsFeedHandler {
                             }
 
                             let order_side = order_params.side.into();
-                            let order_type = order_params.ord_type.into();
                             let time_in_force = match order_params.ord_type {
                                 OKXOrderType::Fok => TimeInForce::Fok,
                                 OKXOrderType::Ioc | OKXOrderType::OptimalLimitIoc => {

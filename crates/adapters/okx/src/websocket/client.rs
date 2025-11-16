@@ -1989,8 +1989,22 @@ impl OKXWebSocketClient {
             builder.pos_side(pos_side);
         };
 
+        // OKX implements FOK/IOC as order types rather than separate time-in-force
+        // Market + FOK is unsupported (FOK requires a limit price)
         let (okx_ord_type, price) = if post_only.unwrap_or(false) {
             (OKXOrderType::PostOnly, price)
+        } else if let Some(tif) = time_in_force {
+            match (order_type, tif) {
+                (OrderType::Market, TimeInForce::Fok) => {
+                    return Err(OKXWsError::ClientError(
+                        "Market orders with FOK time-in-force are not supported by OKX. Use Limit order with FOK instead.".to_string()
+                    ));
+                }
+                (OrderType::Market, TimeInForce::Ioc) => (OKXOrderType::OptimalLimitIoc, price),
+                (OrderType::Limit, TimeInForce::Fok) => (OKXOrderType::Fok, price),
+                (OrderType::Limit, TimeInForce::Ioc) => (OKXOrderType::Ioc, price),
+                _ => (OKXOrderType::from(order_type), price),
+            }
         } else {
             (OKXOrderType::from(order_type), price)
         };
