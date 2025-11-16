@@ -33,7 +33,7 @@ repos:
     rev: v3.12.0-2
     hooks:
       - id: shfmt
-        args: ["-i", "2", "-ci", "-sr", "-w"]
+        args: ["-i", "2", "-ci", "-sr", "-ln", "bash", "-w"]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
@@ -183,6 +183,14 @@ repos:
         name: check logging macro usage
         description: Enforces logging macro conventions
         entry: .pre-commit-hooks/check_logging_macro_usage.sh
+        language: script
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: check-pyo3-conventions
+        name: check pyo3 conventions
+        description: Enforces PyO3 naming conventions
+        entry: .pre-commit-hooks/check_pyo3_conventions.sh
         language: script
         files: '\.rs$'
         pass_filenames: false
