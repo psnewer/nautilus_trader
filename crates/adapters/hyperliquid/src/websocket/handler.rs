@@ -419,7 +419,7 @@ impl FeedHandler {
                     }
                 }
             } else {
-                tracing::warn!("No instrument found for coin: {}", order_update.order.coin);
+                tracing::debug!("No instrument found for coin: {}", order_update.order.coin);
             }
         }
 
@@ -449,7 +449,7 @@ impl FeedHandler {
                     }
                 }
             } else {
-                tracing::warn!("No instrument found for coin: {}", fill.coin);
+                tracing::debug!("No instrument found for coin: {}", fill.coin);
             }
         }
 
@@ -476,7 +476,7 @@ impl FeedHandler {
                     }
                 }
             } else {
-                tracing::warn!("No instrument found for coin: {}", trade.coin);
+                tracing::debug!("No instrument found for coin: {}", trade.coin);
             }
         }
 
@@ -501,7 +501,7 @@ impl FeedHandler {
                 }
             }
         } else {
-            tracing::warn!("No instrument found for coin: {}", data.coin);
+            tracing::debug!("No instrument found for coin: {}", data.coin);
             None
         }
     }
@@ -520,7 +520,7 @@ impl FeedHandler {
                 }
             }
         } else {
-            tracing::warn!("No instrument found for coin: {}", data.coin);
+            tracing::debug!("No instrument found for coin: {}", data.coin);
             None
         }
     }
@@ -543,7 +543,7 @@ impl FeedHandler {
                     }
                 }
             } else {
-                tracing::warn!("No instrument found for coin: {}", data.s);
+                tracing::debug!("No instrument found for coin: {}", data.s);
                 None
             }
         } else {
@@ -624,7 +624,7 @@ impl FeedHandler {
                 }
             }
         } else {
-            tracing::warn!("No instrument found for coin: {coin}");
+            tracing::debug!("No instrument found for coin: {coin}");
         }
 
         result
