@@ -18,6 +18,7 @@ import pkgutil
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 
 import msgspec
 import pytest
@@ -26,6 +27,7 @@ from py_clob_client.client import ClobClient
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
@@ -675,8 +677,14 @@ class TestPolymarketExecutionClient:
         ws_data = msgspec.json.decode(raw_ws_message)
 
         # Convert WS format to REST format
-        rest_data = {k: v for k, v in ws_data.items() if k not in ["event_type", "type", "timestamp", "trade_owner"]}
-        rest_data["transaction_hash"] = "0x16527181ac3c2dfb8ab81457aadc40cd9671a2b5f54f511a35b3d60736fb32e3"
+        rest_data = {
+            k: v
+            for k, v in ws_data.items()
+            if k not in ["event_type", "type", "timestamp", "trade_owner"]
+        }
+        rest_data["transaction_hash"] = (
+            "0x16527181ac3c2dfb8ab81457aadc40cd9671a2b5f54f511a35b3d60736fb32e3"
+        )
 
         first_client_order_id, first_venue_order_id = self._setup_test_order_with_venue_id(
             "0x67b598cab933c71389176573822be763192a35a8c37e49999a11d611a5882e7d",
@@ -1289,3 +1297,56 @@ class TestPolymarketExecutionClient:
         assert call_kwargs["client_order_id"] == client_order_id
         assert call_kwargs["venue_order_id"] == venue_order_id
         assert call_kwargs["liquidity_side"] == LiquiditySide.MAKER
+
+    @pytest.mark.parametrize(
+        ("status", "should_update_account"),
+        [
+            (PolymarketTradeStatus.MATCHED, False),
+            (PolymarketTradeStatus.MINED, True),
+            (PolymarketTradeStatus.CONFIRMED, True),
+        ],
+    )
+    def test_account_state_update_only_on_mined_or_confirmed(
+        self,
+        status: PolymarketTradeStatus,
+        should_update_account: bool,
+    ):
+        """
+        Test that account state is only updated when trade status is MINED or CONFIRMED.
+
+        When a trade is MATCHED, it has been sent to the executor service but not yet
+        mined on-chain, so the blockchain balance hasn't changed yet. Only when the
+        trade is MINED or CONFIRMED should we update the account state from the chain.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade1.json",
+        )
+
+        assert raw_message is not None
+        msg_data = msgspec.json.decode(raw_message)
+        msg_data["status"] = status.value
+        modified_message = msgspec.json.encode(msg_data)
+        assert modified_message is not None
+        msg = self.exec_client._decoder_user_msg.decode(modified_message)
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
+            price=Price.from_str("0.518"),
+        )
+
+        with patch.object(
+            self.exec_client,
+            "_update_account_state",
+            new_callable=AsyncMock,
+        ) as update_mock:
+            # Act
+            self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+            # Assert
+            if should_update_account:
+                update_mock.assert_called_once()
+            else:
+                update_mock.assert_not_called()

@@ -1424,4 +1424,6 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         self._processed_trades.append(trade_id)
 
-        self.create_task(self._update_account_state())
+        # Only update account balance after trade is mined on-chain
+        if msg.status in (PolymarketTradeStatus.MINED, PolymarketTradeStatus.CONFIRMED):
+            self.create_task(self._update_account_state())

@@ -64,6 +64,7 @@ TBD
 - Fixed Polymarket instrument provider market filtering (#3133), thanks @MisterMM23
 - Fixed Polymarket websocket client cancellation on concurrent subscriptions (#3169), thanks @DeirhX
 - Fixed Polymarket maker fills parsing for cross-asset matching and multiple concurrent fills (#3172), thanks @petioptrv
+- Fixed Polymarket account balance update timing issue (#3161), thanks for reporting @santivazq
 
 ### Internal Improvements
 - Added BitMEX submit broadcaster
