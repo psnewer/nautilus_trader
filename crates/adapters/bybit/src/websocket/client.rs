@@ -1236,7 +1236,10 @@ impl BybitWebSocketClient {
                             order.symbol
                         ))
                     })?;
-                batch_order_data.push((client_order_id, (trader_id, strategy_id, instrument_id)));
+                batch_order_data.push((
+                    client_order_id,
+                    (client_order_id, trader_id, strategy_id, instrument_id),
+                ));
             }
         }
 
@@ -1711,10 +1714,16 @@ impl BybitWebSocketClient {
 
             params_vec.push(params);
 
-            if let Some(coid) = client_order_id {
+            if let Some(client_order_id) = client_order_id {
                 batch_cancel_data.push((
-                    coid,
-                    (trader_id, strategy_id, instrument_id, venue_order_id),
+                    client_order_id,
+                    (
+                        client_order_id,
+                        trader_id,
+                        strategy_id,
+                        instrument_id,
+                        venue_order_id,
+                    ),
                 ));
             }
         }
