@@ -71,6 +71,7 @@ from nautilus_trader.model.functions import time_in_force_to_pyo3
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import Order
 
 
@@ -347,7 +348,8 @@ class BybitExecutionClient(LiveExecutionClient):
 
     async def _apply_margin_mode_setting(self) -> None:
         try:
-            await self._http_client.set_margin_mode(self._margin_mode)  # type: ignore[attr-defined]
+            assert self._margin_mode is not None  # type checking
+            await self._http_client.set_margin_mode(self._margin_mode)
             self._log.info(f"Set account margin mode to {self._margin_mode}")
         except Exception as e:
             error_msg = str(e).lower()
@@ -623,7 +625,7 @@ class BybitExecutionClient(LiveExecutionClient):
             raw_symbol = nautilus_pyo3.bybit_extract_raw_symbol(symbol)
             product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol)
 
-            await self._http_client.set_leverage(  # type: ignore[attr-defined]
+            await self._http_client.set_leverage(
                 product_type=product_type,
                 symbol=raw_symbol,
                 buy_leverage=str(leverage),
@@ -659,7 +661,7 @@ class BybitExecutionClient(LiveExecutionClient):
             raw_symbol = nautilus_pyo3.bybit_extract_raw_symbol(symbol)
             product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol)
 
-            await self._http_client.switch_mode(  # type: ignore[attr-defined]
+            await self._http_client.switch_mode(
                 product_type=product_type,
                 mode=mode,
                 symbol=raw_symbol,
@@ -1263,7 +1265,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 if product_type == BybitProductType.SPOT:
                     base_currency = instrument.base_currency.code
                     self.create_task(
-                        self._repay_spot_borrow_if_needed(base_currency),
+                        self._repay_spot_borrow_if_needed(base_currency, report.last_qty),
                     )
             except Exception as e:
                 self._log.warning(f"Failed to check for spot borrow repayment: {e}")
@@ -1274,25 +1276,42 @@ class BybitExecutionClient(LiveExecutionClient):
         # Do not send position reports from WebSocket stream - we use HTTP endpoint for reconciliation
         # to avoid noise from position updates every time a fill occurs
 
-    async def _repay_spot_borrow_if_needed(self, coin: str) -> None:
+    async def _repay_spot_borrow_if_needed(self, coin: str, bought_qty: Quantity) -> None:
         # Repay outstanding spot borrows for a specific coin, this method is called after
         # BUY orders fill on SPOT instruments to automatically repay any outstanding borrows,
-        # preventing interest accrual.
+        # preventing interest accrual. Only repays up to the amount that was just bought.
         try:
             if self._is_repay_blackout_window():
                 self._log.warning(
                     f"Skipping borrow repayment for {coin} due to Bybit blackout window "
-                    f"(04:00-05:30 UTC daily). Will need manual repayment.",
+                    f"(04:00-05:30 UTC daily), will need manual repayment",
                     LogColor.YELLOW,
                 )
                 return
 
-            self._log.info(f"Attempting to repay spot borrow for {coin}", LogColor.BLUE)
+            # Check if there's an outstanding borrow first
+            borrow_amount = await self._http_client.get_spot_borrow_amount(coin)
 
-            await self._http_client.repay_spot_borrow(coin)
+            if borrow_amount == 0:
+                self._log.info(f"No outstanding borrow for {coin}", LogColor.BLUE)
+                return
+
+            # Only repay up to the amount we just bought
+            bought_amount = bought_qty.as_decimal()
+            repay_amount = min(borrow_amount, bought_amount)
 
             self._log.info(
-                f"Successfully repaid spot borrow for {coin}",
+                f"Attempting to repay spot borrow for {coin} "
+                f"(outstanding: {borrow_amount}, bought: {bought_amount}, repaying: {repay_amount})",
+                LogColor.BLUE,
+            )
+
+            repay_qty = nautilus_pyo3.Quantity(float(repay_amount), bought_qty.precision)
+
+            await self._http_client.repay_spot_borrow(coin, repay_qty)
+
+            self._log.info(
+                f"Successfully repaid {repay_amount} {coin} spot borrow",
                 LogColor.GREEN,
             )
         except Exception as e:

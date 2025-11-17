@@ -1672,3 +1672,53 @@ async fn test_repay_spot_borrow_requires_credentials() {
     let result = client.repay_spot_borrow("ETH", Some(amount)).await;
     assert!(result.is_err(), "Should fail without credentials");
 }
+
+#[rstest]
+#[tokio::test]
+async fn test_get_spot_borrow_amount_returns_zero_when_no_borrow() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let borrow_amount = client.get_spot_borrow_amount("BTC").await.unwrap();
+
+    // BTC should have zero borrow in the test data
+    assert_eq!(borrow_amount, rust_decimal::Decimal::ZERO);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let borrow_amount = client.get_spot_borrow_amount("UNKNOWN").await.unwrap();
+
+    // Should return zero when coin not found
+    assert_eq!(borrow_amount, rust_decimal::Decimal::ZERO);
+}

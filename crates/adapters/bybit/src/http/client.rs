@@ -1462,9 +1462,46 @@ impl BybitHttpClient {
         self.inner.set_trading_stop(params).await
     }
 
+    /// Get the outstanding spot borrow amount for a specific coin.
+    ///
+    /// Returns zero if no borrow exists.
+    ///
+    /// # Parameters
+    ///
+    /// - `coin`: The coin to check (e.g., "BTC", "ETH")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The coin is not found in the wallet.
+    pub async fn get_spot_borrow_amount(&self, coin: &str) -> anyhow::Result<Decimal> {
+        let params = BybitWalletBalanceParams {
+            account_type: BybitAccountType::Unified,
+            coin: Some(coin.to_string()),
+        };
+
+        let response = self.inner.get_wallet_balance(&params).await?;
+
+        let borrow_amount = response
+            .result
+            .list
+            .first()
+            .and_then(|wallet| wallet.coin.iter().find(|c| c.coin.as_str() == coin))
+            .map_or(Decimal::ZERO, |balance| balance.spot_borrow);
+
+        Ok(borrow_amount)
+    }
+
     /// Borrows coins for spot margin trading.
     ///
     /// This should be called before opening short spot positions.
+    ///
+    /// # Parameters
+    ///
+    /// - `coin`: The coin to repay (e.g., "BTC", "ETH")
+    /// - `amount`: Optional amount to borrow. If None, repays all outstanding borrows.
     ///
     /// # Errors
     ///
@@ -1488,6 +1525,11 @@ impl BybitHttpClient {
     ///
     /// This should be called after closing short spot positions to avoid accruing interest.
     ///
+    /// # Parameters
+    ///
+    /// - `coin`: The coin to repay (e.g., "BTC", "ETH")
+    /// - `amount`: Optional amount to repay. If None, repays all outstanding borrows.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -1495,11 +1537,6 @@ impl BybitHttpClient {
     /// - The request fails.
     /// - Called between 04:00-05:30 UTC (interest calculation window).
     /// - Insufficient spot balance for repayment.
-    ///
-    /// # Parameters
-    ///
-    /// - `coin`: The coin to repay (e.g., "BTC", "ETH")
-    /// - `amount`: Optional amount to repay. If None, repays all outstanding borrows.
     pub async fn repay_spot_borrow(
         &self,
         coin: &str,
@@ -1509,7 +1546,7 @@ impl BybitHttpClient {
         self.inner
             .no_convert_repay(coin, amount_str.as_deref())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to repay spot borrow for {}: {}", coin, e))
+            .map_err(|e| anyhow::anyhow!("Failed to repay spot borrow for {coin}: {e}"))
     }
 
     /// Generate SPOT position reports from wallet balances.

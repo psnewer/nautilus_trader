@@ -5808,6 +5808,38 @@ class BybitHttpClient:
     def masked_api_key(self) -> str | None: ...
     def cache_instrument(self, instrument: Instrument) -> None: ...
     def cancel_all_requests(self) -> None: ...
+    async def set_margin_mode(
+        self,
+        margin_mode: BybitMarginMode,
+    ) -> None: ...
+    async def set_leverage(
+        self,
+        product_type: BybitProductType,
+        symbol: str,
+        buy_leverage: str,
+        sell_leverage: str,
+    ) -> None: ...
+    async def switch_mode(
+        self,
+        product_type: BybitProductType,
+        mode: BybitPositionMode,
+        symbol: str | None = None,
+        coin: str | None = None,
+    ) -> None: ...
+    async def get_spot_borrow_amount(
+        self,
+        coin: str,
+    ) -> Decimal: ...
+    async def borrow_spot(
+        self,
+        coin: str,
+        amount: Quantity,
+    ) -> Any: ...
+    async def repay_spot_borrow(
+        self,
+        coin: str,
+        amount: Quantity | None = None,
+    ) -> Any: ...
     async def request_instruments(
         self,
         product_type: BybitProductType,
@@ -5917,16 +5949,6 @@ class BybitHttpClient:
         client_order_ids: list[ClientOrderId | None],
         venue_order_ids: list[VenueOrderId | None],
     ) -> list[OrderStatusReport]: ...
-    async def borrow_spot(
-        self,
-        coin: str,
-        amount: Quantity,
-    ) -> Any: ...
-    async def repay_spot_borrow(
-        self,
-        coin: str,
-        amount: Quantity | None = None,
-    ) -> Any: ...
 
 class BybitWebSocketClient:
     @staticmethod

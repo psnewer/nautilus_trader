@@ -42,8 +42,6 @@ from betfair_parser.spec.betting.type_definitions import MarketOnCloseOrder
 from betfair_parser.spec.betting.type_definitions import PlaceInstruction
 from betfair_parser.spec.betting.type_definitions import ReplaceInstruction
 from betfair_parser.spec.common import OrderType
-from betfair_parser.spec.common import Response
-from betfair_parser.spec.common.messages import RPCError
 from betfair_parser.spec.identity import Login
 from betfair_parser.spec.identity import _LoginParams
 from betfair_parser.spec.navigation import Menu
@@ -95,13 +93,12 @@ async def test_exception_handling(betfair_client):
         await betfair_client.get_account_funds(wallet="not a real walltet")
 
     result = e.value.response
-    expected = Response(
-        jsonrpc="2.0",
-        id=1,
-        result=None,
-        error=RPCError(code=-32602, message="DSC-0018", data=None),
-    )
-    assert result == expected
+    # Check the important fields (error code and message), not the auto-incrementing id
+    assert result.jsonrpc == "2.0"
+    assert result.result is None
+    assert result.error.code == -32602
+    assert result.error.message == "DSC-0018"
+    assert result.error.data is None
 
 
 @pytest.mark.asyncio

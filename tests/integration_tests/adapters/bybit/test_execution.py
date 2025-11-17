@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from decimal import Decimal
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
@@ -30,6 +31,8 @@ from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.model.currencies import BTC
+from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import TriggerType
@@ -37,6 +40,8 @@ from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import LimitOrder
@@ -826,13 +831,6 @@ async def test_submit_order_denied_reduce_only_spot(
     msgbus,
 ):
     # Arrange - Use SPOT instrument
-    from decimal import Decimal
-
-    from nautilus_trader.model.currencies import BTC
-    from nautilus_trader.model.currencies import USDT
-    from nautilus_trader.model.instruments import CryptoPerpetual
-    from nautilus_trader.model.objects import Money
-
     spot_instrument = CryptoPerpetual(
         instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
         raw_symbol=Symbol("BTCUSDT"),
@@ -907,13 +905,6 @@ async def test_submit_order_with_is_leverage(
     monkeypatch,
 ):
     # Arrange - Use SPOT instrument
-    from decimal import Decimal
-
-    from nautilus_trader.model.currencies import BTC
-    from nautilus_trader.model.currencies import USDT
-    from nautilus_trader.model.instruments import CryptoPerpetual
-    from nautilus_trader.model.objects import Money
-
     spot_instrument = CryptoPerpetual(
         instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
         raw_symbol=Symbol("BTCUSDT"),
@@ -991,13 +982,6 @@ async def test_submit_order_with_is_quote_quantity(
     monkeypatch,
 ):
     # Arrange - Use SPOT instrument
-    from decimal import Decimal
-
-    from nautilus_trader.model.currencies import BTC
-    from nautilus_trader.model.currencies import USDT
-    from nautilus_trader.model.instruments import CryptoPerpetual
-    from nautilus_trader.model.objects import Money
-
     spot_instrument = CryptoPerpetual(
         instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
         raw_symbol=Symbol("BTCUSDT"),
@@ -1185,14 +1169,94 @@ async def test_repay_spot_borrow_handles_api_errors_gracefully(
 ):
     # Arrange
     client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=100.0)
     http_client.repay_spot_borrow = AsyncMock(side_effect=Exception("API Error"))
+    bought_qty = nautilus_pyo3.Quantity(50.0, 2)
 
     try:
         # Act - Should not raise, just log error
-        await client._repay_spot_borrow_if_needed("BTC")
+        await client._repay_spot_borrow_if_needed("BTC", bought_qty)
 
         # Assert - Method was called despite error
-        http_client.repay_spot_borrow.assert_called_once_with("BTC")
+        http_client.get_spot_borrow_amount.assert_called_once_with("BTC")
+        # Should repay min(100, 50) = 50
+        assert http_client.repay_spot_borrow.call_count == 1
+        call_args = http_client.repay_spot_borrow.call_args
+        assert call_args[0][0] == "BTC"
+        assert float(call_args[0][1]) == 50.0
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_repay_spot_borrow_skips_when_no_borrow(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=0.0)
+    http_client.repay_spot_borrow = AsyncMock()
+    bought_qty = nautilus_pyo3.Quantity(10.0, 2)
+
+    try:
+        # Act
+        await client._repay_spot_borrow_if_needed("ETH", bought_qty)
+
+        # Assert - Should check borrow amount but not call repay
+        http_client.get_spot_borrow_amount.assert_called_once_with("ETH")
+        http_client.repay_spot_borrow.assert_not_called()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_repay_spot_borrow_calls_repay_when_borrow_exists(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=250.5)
+    http_client.repay_spot_borrow = AsyncMock()
+    bought_qty = nautilus_pyo3.Quantity(100.0, 2)
+
+    try:
+        # Act
+        await client._repay_spot_borrow_if_needed("BTC", bought_qty)
+
+        # Assert - Should check borrow amount and call repay
+        http_client.get_spot_borrow_amount.assert_called_once_with("BTC")
+        # Should repay min(250.5, 100) = 100
+        assert http_client.repay_spot_borrow.call_count == 1
+        call_args = http_client.repay_spot_borrow.call_args
+        assert call_args[0][0] == "BTC"
+        assert float(call_args[0][1]) == 100.0
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_repay_spot_borrow_repays_partial_when_bought_less_than_borrowed(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=500.0)
+    http_client.repay_spot_borrow = AsyncMock()
+    bought_qty = nautilus_pyo3.Quantity(150.0, 2)
+
+    try:
+        # Act - Bought 150, but borrowed 500
+        await client._repay_spot_borrow_if_needed("ETH", bought_qty)
+
+        # Assert - Should only repay what we bought (150), not full borrow (500)
+        http_client.get_spot_borrow_amount.assert_called_once_with("ETH")
+        assert http_client.repay_spot_borrow.call_count == 1
+        call_args = http_client.repay_spot_borrow.call_args
+        assert call_args[0][0] == "ETH"
+        assert float(call_args[0][1]) == 150.0
     finally:
         await client._disconnect()
 
@@ -1272,6 +1336,7 @@ async def test_auto_repayment_skipped_during_blackout_window(
         config_kwargs={"auto_repay_spot_borrows": True},
     )
     http_client.repay_spot_borrow = AsyncMock()
+    bought_qty = nautilus_pyo3.Quantity(1.0, 2)
 
     # Mock blackout window time (04:30 UTC)
     mock_time = pd.Timestamp("2025-01-15 04:30:00", tz="UTC")
@@ -1282,7 +1347,7 @@ async def test_auto_repayment_skipped_during_blackout_window(
 
     try:
         # Act
-        await client._repay_spot_borrow_if_needed("BTC")
+        await client._repay_spot_borrow_if_needed("BTC", bought_qty)
 
         # Assert - Repayment was NOT called during blackout window
         http_client.repay_spot_borrow.assert_not_called()

@@ -151,12 +151,12 @@ Individual orders can be customized using the `params` dictionary when submittin
 
 | Parameter     | Type   | Description                                                                    |
 |---------------|--------|--------------------------------------------------------------------------------|
-| `is_leverage` | `bool` | For SPOT products only. If `True`, enables margin trading (borrowing) for the order. Default: `False`. See [Bybit's isLeverage documentation](https://bybit-exchange.github.io/docs/v5/order/create-order#request-parameters). |
+| `is_leverage` | `bool` | For Spot products only. If `True`, enables margin trading (borrowing) for the order. Default: `False`. See [Bybit's isLeverage documentation](https://bybit-exchange.github.io/docs/v5/order/create-order#request-parameters). |
 
-#### Example: SPOT margin trading
+#### Example: Spot margin trading
 
 ```python
-# Submit a SPOT order with margin enabled
+# Submit a Spot order with margin enabled
 order = strategy.order_factory.market(
     instrument_id=InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
     order_side=OrderSide.BUY,
@@ -167,7 +167,7 @@ strategy.submit_order(order)
 ```
 
 :::note
-Without `is_leverage=True` in the params, SPOT orders will only use your available balance
+Without `is_leverage=True` in the params, Spot orders will only use your available balance
 and won't borrow funds, even if you have auto-borrow enabled on your Bybit account.
 :::
 
@@ -180,18 +180,18 @@ NautilusTrader provides automated spot margin borrow repayment functionality to 
 
 ### Background
 
-When trading SPOT with margin enabled (`is_leverage=True`), Bybit automatically borrows coins when you execute short positions.
+When trading Spot with margin enabled (`is_leverage=True`), Bybit automatically borrows coins when you execute short positions.
 However, after you close the short position (BUY order fills), the borrowed coins are **NOT automatically repaid** - they continue accruing hourly interest charges until manually repaid.
 This can result in significant interest costs if left unattended.
 
 ### Automatic repayment (recommended)
 
-NautilusTrader automatically repays spot margin borrows immediately after BUY orders fill on SPOT instruments.
+NautilusTrader automatically repays spot margin borrows immediately after BUY orders fill on Spot instruments.
 This feature is **enabled by default** via the `auto_repay_spot_borrows` configuration flag.
 
 **How it works:**
 
-1. When a SPOT BUY order fills, the execution client automatically attempts to repay any outstanding borrows for that coin.
+1. When a Spot BUY order fills, the execution client automatically attempts to repay any outstanding borrows for that coin.
 2. The repayment uses Bybit's `no-convert-repay` endpoint, which repays the full outstanding borrow amount.
 3. If the repayment fails (e.g., API error), it logs the error but does not crash the execution client.
 4. Repayments are automatically skipped during Bybit's UTC blackout window (see below).
@@ -229,15 +229,15 @@ Skipping borrow repayment for BTC due to Bybit blackout window (04:00-05:30 UTC 
 
 ### Important notes
 
-- Auto-repayment only triggers on **SPOT BUY orders**, not derivatives.
+- Auto-repayment only triggers on **Spot BUY orders**, not derivatives.
 - Repayment uses the `no-convert-repay` endpoint which repays the full outstanding borrow by default.
 - The feature gracefully handles API errors and logs failures without crashing.
 - Bybit is planning to release an auto-repay mode at the venue level (end of month), which may make this feature redundant in the future.
 - Manual borrowing is still required before opening short positions unless auto-borrow is enabled on your Bybit account.
 
-### SPOT trading limitations
+### Spot trading limitations
 
-The following limitations apply to SPOT products, as positions are not tracked on the venue side:
+The following limitations apply to Spot products, as positions are not tracked on the venue side:
 
 - `reduce_only` orders are *not supported*.
 - Trailing stop orders are *not supported*.
@@ -284,35 +284,35 @@ If no product types are specified then all product types will be loaded and avai
 
 The adapter automatically determines the account type based on configured product types:
 
-- **SPOT only**: Uses `CASH` account type with borrowing support enabled
+- **Spot only**: Uses `CASH` account type with borrowing support enabled
 - **Derivatives or mixed products**: Uses `MARGIN` account type (UTA - Unified Trading Account)
 
-This allows you to trade SPOT alongside derivatives in a single Unified Trading Account, which is the standard account type for most Bybit users.
+This allows you to trade Spot alongside derivatives in a single Unified Trading Account, which is the standard account type for most Bybit users.
 
 :::info
-**Unified Trading Accounts (UTA) and SPOT margin trading**
+**Unified Trading Accounts (UTA) and Spot margin trading**
 
 Most Bybit users now have Unified Trading Accounts (UTA) as Bybit steers new users to this account type.
 Classic accounts are considered legacy.
 
-For SPOT margin trading on UTA accounts:
+For Spot margin trading on UTA accounts:
 
 - Borrowing is **NOT automatically enabled** - it requires explicit API configuration
-- To use SPOT margin via API, you must submit orders with `is_leverage=True` in the parameters (see [Bybit docs](https://bybit-exchange.github.io/docs/v5/order/create-order#request-parameters))
+- To use Spot margin via API, you must submit orders with `is_leverage=True` in the parameters (see [Bybit docs](https://bybit-exchange.github.io/docs/v5/order/create-order#request-parameters))
 - If auto-borrow/auto-repay is enabled on your Bybit account, the venue will automatically borrow/repay funds for those margin orders
 - Without auto-borrow enabled, you'll need to manually manage borrowing through Bybit's interface
 
-**Important**: The Nautilus Bybit adapter defaults to `is_leverage=False` for SPOT orders,
+**Important**: The Nautilus Bybit adapter defaults to `is_leverage=False` for Spot orders,
 meaning they won't use margin unless you explicitly enable it.
 :::
 
 ## Fee currency logic
 
-Understanding how Bybit determines the currency for trading fees is important for accurate accounting and position tracking. The fee currency rules vary between SPOT and derivatives products.
+Understanding how Bybit determines the currency for trading fees is important for accurate accounting and position tracking. The fee currency rules vary between Spot and derivatives products.
 
-### SPOT trading fees
+### Spot trading fees
 
-For SPOT trading, the fee currency depends on the order side and whether the fee is a rebate (negative fee for maker orders):
+For Spot trading, the fee currency depends on the order side and whether the fee is a rebate (negative fee for maker orders):
 
 #### Normal fees (positive)
 
@@ -330,7 +330,7 @@ When maker fees are negative (rebates), the currency logic is **inverted**:
 **Taker orders never have inverted logic**, even if the maker fee rate is negative. Taker fees always follow the normal fee currency rules.
 :::
 
-#### Example: BTCUSDT SPOT
+#### Example: BTCUSDT Spot
 
 - **Buy 1 BTC as taker (0.1% fee)**: Pay 0.001 BTC in fees
 - **Sell 1 BTC as taker (0.1% fee)**: Pay equivalent USDT in fees
@@ -351,7 +351,7 @@ For all derivatives products (LINEAR, INVERSE, OPTION), fees are always charged 
 
 When the WebSocket execution message doesn't provide the exact fee amount (`execFee`), the adapter calculates fees as follows:
 
-#### SPOT products
+#### Spot products
 
 - **BUY orders**: `fee = base_quantity × fee_rate`
 - **SELL orders**: `fee = notional_value × fee_rate` (where `notional_value = quantity × price`)
@@ -396,7 +396,7 @@ The product types for each client must be specified in the configurations.
 |----------------------------------|---------|-------------|
 | `api_key`                        | `None`  | API key; loaded from `BYBIT_API_KEY`/`BYBIT_TESTNET_API_KEY` when omitted. |
 | `api_secret`                     | `None`  | API secret; loaded from `BYBIT_API_SECRET`/`BYBIT_TESTNET_API_SECRET` when omitted. |
-| `product_types`                  | `None`  | Sequence of `BybitProductType` values to enable (SPOT cannot be mixed with derivatives for execution). |
+| `product_types`                  | `None`  | Sequence of `BybitProductType` values to enable (Spot cannot be mixed with derivatives for execution). |
 | `base_url_http`                  | `None`  | Override for the REST base URL. |
 | `base_url_ws_private`            | `None`  | Override for the private WebSocket base URL. |
 | `base_url_ws_trade`              | `None`  | Override for the trade WebSocket base URL. |
@@ -407,7 +407,7 @@ The product types for each client must be specified in the configurations.
 | `use_gtd`                        | `False` | Remap GTD orders to GTC when `True` (Bybit lacks native GTD support). |
 | `use_ws_execution_fast`          | `False` | Subscribe to the low-latency execution stream. |
 | `use_http_batch_api`             | `False` | Use Bybit's HTTP batch trading API (deprecated). |
-| `use_spot_position_reports`      | `False` | Report SPOT wallet balances as positions when `True`. |
+| `use_spot_position_reports`      | `False` | Report Spot wallet balances as positions when `True`. |
 | `ignore_uncached_instrument_executions` | `False` | Ignore execution messages for instruments not yet cached. |
 | `max_retries`                    | `None` | Maximum retry attempts for order submission/cancel/modify calls. |
 | `retry_delay_initial_ms`         | `None` | Initial delay (milliseconds) between retries. |

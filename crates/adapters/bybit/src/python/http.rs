@@ -128,6 +128,126 @@ impl BybitHttpClient {
         self.set_use_spot_position_reports(use_spot_position_reports);
     }
 
+    #[pyo3(name = "set_margin_mode")]
+    fn py_set_margin_mode<'py>(
+        &self,
+        py: Python<'py>,
+        margin_mode: BybitMarginMode,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .set_margin_mode(margin_mode)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
+    #[pyo3(name = "set_leverage")]
+    #[pyo3(signature = (product_type, symbol, buy_leverage, sell_leverage))]
+    fn py_set_leverage<'py>(
+        &self,
+        py: Python<'py>,
+        product_type: BybitProductType,
+        symbol: String,
+        buy_leverage: String,
+        sell_leverage: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .set_leverage(product_type, &symbol, &buy_leverage, &sell_leverage)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
+    #[pyo3(name = "switch_mode")]
+    #[pyo3(signature = (product_type, mode, symbol=None, coin=None))]
+    fn py_switch_mode<'py>(
+        &self,
+        py: Python<'py>,
+        product_type: BybitProductType,
+        mode: BybitPositionMode,
+        symbol: Option<String>,
+        coin: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .switch_mode(product_type, mode, symbol, coin)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
+    #[pyo3(name = "get_spot_borrow_amount")]
+    fn py_get_spot_borrow_amount<'py>(
+        &self,
+        py: Python<'py>,
+        coin: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let borrow_amount = client
+                .get_spot_borrow_amount(&coin)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Ok(borrow_amount)
+        })
+    }
+
+    #[pyo3(name = "borrow_spot")]
+    #[pyo3(signature = (coin, amount))]
+    fn py_borrow_spot<'py>(
+        &self,
+        py: Python<'py>,
+        coin: String,
+        amount: Quantity,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .borrow_spot(&coin, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
+    #[pyo3(name = "repay_spot_borrow")]
+    #[pyo3(signature = (coin, amount=None))]
+    fn py_repay_spot_borrow<'py>(
+        &self,
+        py: Python<'py>,
+        coin: String,
+        amount: Option<Quantity>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .repay_spot_borrow(&coin, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
     #[pyo3(name = "request_instruments")]
     #[pyo3(signature = (product_type, symbol=None))]
     fn py_request_instruments<'py>(
@@ -546,113 +666,6 @@ impl BybitHttpClient {
                 let pylist = PyList::new(py, py_reports?).unwrap().into_any().unbind();
                 Ok(pylist)
             })
-        })
-    }
-
-    #[pyo3(name = "set_margin_mode")]
-    fn py_set_margin_mode<'py>(
-        &self,
-        py: Python<'py>,
-        margin_mode: BybitMarginMode,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client
-                .set_margin_mode(margin_mode)
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| Ok(py.None()))
-        })
-    }
-
-    #[pyo3(name = "set_leverage")]
-    #[pyo3(signature = (product_type, symbol, buy_leverage, sell_leverage))]
-    fn py_set_leverage<'py>(
-        &self,
-        py: Python<'py>,
-        product_type: BybitProductType,
-        symbol: &str,
-        buy_leverage: &str,
-        sell_leverage: &str,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-        let symbol = symbol.to_string();
-        let buy_leverage = buy_leverage.to_string();
-        let sell_leverage = sell_leverage.to_string();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client
-                .set_leverage(product_type, &symbol, &buy_leverage, &sell_leverage)
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| Ok(py.None()))
-        })
-    }
-
-    #[pyo3(name = "switch_mode")]
-    #[pyo3(signature = (product_type, mode, symbol=None, coin=None))]
-    fn py_switch_mode<'py>(
-        &self,
-        py: Python<'py>,
-        product_type: BybitProductType,
-        mode: BybitPositionMode,
-        symbol: Option<String>,
-        coin: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client
-                .switch_mode(product_type, mode, symbol, coin)
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| Ok(py.None()))
-        })
-    }
-
-    #[pyo3(name = "borrow_spot")]
-    #[pyo3(signature = (coin, amount))]
-    fn py_borrow_spot<'py>(
-        &self,
-        py: Python<'py>,
-        coin: &str,
-        amount: Quantity,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-        let coin = coin.to_string();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client
-                .borrow_spot(&coin, amount)
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| Ok(py.None()))
-        })
-    }
-
-    #[pyo3(name = "repay_spot_borrow")]
-    #[pyo3(signature = (coin, amount=None))]
-    fn py_repay_spot_borrow<'py>(
-        &self,
-        py: Python<'py>,
-        coin: &str,
-        amount: Option<Quantity>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-        let coin = coin.to_string();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client
-                .repay_spot_borrow(&coin, amount)
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| Ok(py.None()))
         })
     }
 }
