@@ -22,7 +22,7 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
 };
 use nautilus_bybit::{
     common::enums::{BybitAccountType, BybitProductType},
@@ -34,7 +34,7 @@ use nautilus_bybit::{
         },
     },
 };
-use nautilus_model::identifiers::AccountId;
+use nautilus_model::{identifiers::AccountId, types::Quantity};
 use rstest::rstest;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -404,6 +404,72 @@ async fn handle_get_fee_rate(headers: axum::http::HeaderMap) -> Response {
 }
 
 #[allow(dead_code)]
+async fn handle_no_convert_repay(
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    // Check for authentication headers
+    if !headers.contains_key("X-BAPI-API-KEY")
+        || !headers.contains_key("X-BAPI-SIGN")
+        || !headers.contains_key("X-BAPI-TIMESTAMP")
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "retCode": 10003,
+                "retMsg": "Invalid API key",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    // Parse JSON body
+    let Ok(repay_req): Result<Value, _> = serde_json::from_slice(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "retCode": 10001,
+                "retMsg": "Invalid JSON body",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    };
+
+    // Validate required fields
+    if repay_req.get("coin").is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "retCode": 10001,
+                "retMsg": "Missing required parameter: coin",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    // Return successful repay response
+    Json(json!({
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "resultStatus": "SU"
+        },
+        "retExtInfo": {},
+        "time": 1704470400123i64
+    }))
+    .into_response()
+}
+
+#[allow(dead_code)]
 async fn handle_get_orders_realtime(
     query: Query<HashMap<String, String>>,
     State(state): State<TestServerState>,
@@ -618,11 +684,15 @@ fn create_test_router(state: TestServerState) -> Router {
         .route("/v5/market/recent-trade", get(handle_get_trades))
         .route("/v5/order/history", get(handle_get_orders))
         .route("/v5/order/realtime", get(handle_get_orders))
-        .route("/v5/order/create", axum::routing::post(handle_post_order))
-        .route("/v5/order/cancel", axum::routing::post(handle_cancel_order))
+        .route("/v5/order/create", post(handle_post_order))
+        .route("/v5/order/cancel", post(handle_cancel_order))
         .route("/v5/account/wallet-balance", get(handle_get_wallet_balance))
         .route("/v5/position/list", get(handle_get_positions))
         .route("/v5/account/fee-rate", get(handle_get_fee_rate))
+        .route(
+            "/v5/account/no-convert-repay",
+            post(handle_no_convert_repay),
+        )
         .with_state(state)
 }
 
@@ -1533,4 +1603,72 @@ async fn test_request_order_status_reports_combines_orders_from_each_settle_coin
         order_ids.contains(&"open-order-2-USDC".to_string()),
         "Should contain open-order-2-USDC from USDC settle coin"
     );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_repay_spot_borrow_with_amount() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        Some(60),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let amount = Quantity::new_checked(0.5, 8).unwrap();
+    let response = client.repay_spot_borrow("ETH", Some(amount)).await.unwrap();
+
+    assert_eq!(response.ret_code, 0);
+    assert_eq!(response.ret_msg, "OK");
+    assert_eq!(response.result.result_status, "SU");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_repay_spot_borrow_without_amount() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        Some(60),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Test repaying all outstanding borrows by passing None for amount
+    let response = client.repay_spot_borrow("ETH", None).await.unwrap();
+
+    assert_eq!(response.ret_code, 0);
+    assert_eq!(response.ret_msg, "OK");
+    assert_eq!(response.result.result_status, "SU");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_repay_spot_borrow_requires_credentials() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client =
+        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+
+    let amount = Quantity::new_checked(0.5, 8).unwrap();
+    let result = client.repay_spot_borrow("ETH", Some(amount)).await;
+    assert!(result.is_err(), "Should fail without credentials");
 }

@@ -307,7 +307,7 @@ pub struct BybitBorrowParams {
 pub struct BybitNoConvertRepayParams {
     pub coin: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[builder(setter(strip_option))]
+    #[builder(setter(strip_option), default)]
     pub amount: Option<String>,
 }
 
