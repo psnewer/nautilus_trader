@@ -113,6 +113,7 @@ impl SocketClientInner {
             reconnect_delay_max_ms,
             reconnect_backoff_factor,
             reconnect_jitter_ms,
+            connection_max_retries,
             certs_dir,
         } = &config.clone();
         let connector = if let Some(dir) = certs_dir {
@@ -123,9 +124,8 @@ impl SocketClientInner {
         };
 
         // Retry initial connection with exponential backoff to handle transient DNS/network issues
-        // TODO: Eventually expose client config options for this
-        const MAX_RETRIES: u32 = 5;
         const CONNECTION_TIMEOUT_SECS: u64 = 10;
+        let max_retries = connection_max_retries.unwrap_or(5);
 
         let mut backoff = ExponentialBackoff::new(
             Duration::from_millis(500),
@@ -157,7 +157,7 @@ impl SocketClientInner {
                     last_error = e.to_string();
                     tracing::warn!(
                         attempt,
-                        max_retries = MAX_RETRIES,
+                        max_retries,
                         url = %url,
                         error = %last_error,
                         "Socket connection attempt failed"
@@ -169,18 +169,19 @@ impl SocketClientInner {
                     );
                     tracing::warn!(
                         attempt,
-                        max_retries = MAX_RETRIES,
+                        max_retries,
                         url = %url,
                         "Socket connection attempt timed out"
                     );
                 }
             }
 
-            if attempt >= MAX_RETRIES {
+            if attempt >= max_retries {
                 anyhow::bail!(
-                    "Failed to connect to {} after {MAX_RETRIES} attempts: {}. \
+                    "Failed to connect to {} after {} attempts: {}. \
                     If this is a DNS error, check your network configuration and DNS settings.",
                     url,
+                    max_retries,
                     if last_error.is_empty() {
                         "unknown error"
                     } else {
@@ -191,8 +192,9 @@ impl SocketClientInner {
 
             let delay = backoff.next_duration();
             tracing::debug!(
-                "Retrying in {delay:?} (attempt {}/{MAX_RETRIES})",
-                attempt + 1
+                "Retrying in {delay:?} (attempt {}/{})",
+                attempt + 1,
+                max_retries
             );
             tokio::time::sleep(delay).await;
         };
@@ -355,6 +357,7 @@ impl SocketClientInner {
                 reconnect_backoff_factor: _,
                 reconnect_delay_max_ms: _,
                 reconnect_jitter_ms: _,
+                connection_max_retries: _,
                 certs_dir: _,
             } = &self.config;
             // Create a fresh connection
@@ -1038,6 +1041,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            connection_max_retries: None,
             certs_dir: None,
         };
 
@@ -1080,11 +1084,12 @@ mod tests {
             suffix: b"\r\n".to_vec(),
             message_handler: None,
             heartbeat: None,
-            reconnect_timeout_ms: None,
-            reconnect_delay_initial_ms: None,
-            reconnect_backoff_factor: None,
-            reconnect_delay_max_ms: None,
-            reconnect_jitter_ms: None,
+            reconnect_timeout_ms: Some(100),
+            reconnect_delay_initial_ms: Some(50),
+            reconnect_backoff_factor: Some(1.0),
+            reconnect_delay_max_ms: Some(50),
+            reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1121,6 +1126,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            connection_max_retries: None,
             certs_dir: None,
         };
 
@@ -1176,6 +1182,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            connection_max_retries: None,
             certs_dir: None,
         };
 
@@ -1238,6 +1245,7 @@ mod tests {
             reconnect_delay_max_ms: Some(5_000),
             reconnect_backoff_factor: Some(2.0),
             reconnect_jitter_ms: Some(50),
+            connection_max_retries: None,
             certs_dir: None,
         };
 
@@ -1304,6 +1312,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(100),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1351,6 +1360,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(100),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1472,6 +1482,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(100),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1513,6 +1524,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(100),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1579,6 +1591,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(100),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1638,6 +1651,7 @@ mod rust_tests {
             reconnect_delay_max_ms: Some(200),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 
@@ -1695,10 +1709,11 @@ mod rust_tests {
             message_handler: None,
             heartbeat: None,
             reconnect_timeout_ms: Some(1_000), // 1s timeout for faster test
-            reconnect_delay_initial_ms: Some(5_000), // Long backoff to keep client in RECONNECT
-            reconnect_delay_max_ms: Some(5_000),
+            reconnect_delay_initial_ms: Some(200), // Short backoff (but > timeout) to keep client in RECONNECT
+            reconnect_delay_max_ms: Some(200),
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
+            connection_max_retries: Some(1),
             certs_dir: None,
         };
 

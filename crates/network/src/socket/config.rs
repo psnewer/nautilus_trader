@@ -47,6 +47,8 @@ pub struct SocketConfig {
     pub reconnect_backoff_factor: Option<f64>,
     /// The maximum jitter (milliseconds) added to reconnection delays.
     pub reconnect_jitter_ms: Option<u64>,
+    /// The maximum number of initial connection attempts (default: 5).
+    pub connection_max_retries: Option<u32>,
     /// The path to the certificates directory.
     pub certs_dir: Option<String>,
 }
@@ -70,6 +72,7 @@ impl Debug for SocketConfig {
             .field("reconnect_delay_max_ms", &self.reconnect_delay_max_ms)
             .field("reconnect_backoff_factor", &self.reconnect_backoff_factor)
             .field("reconnect_jitter_ms", &self.reconnect_jitter_ms)
+            .field("connection_max_retries", &self.connection_max_retries)
             .field("certs_dir", &self.certs_dir)
             .finish()
     }
@@ -88,6 +91,7 @@ impl Clone for SocketConfig {
             reconnect_delay_max_ms: self.reconnect_delay_max_ms,
             reconnect_backoff_factor: self.reconnect_backoff_factor,
             reconnect_jitter_ms: self.reconnect_jitter_ms,
+            connection_max_retries: self.connection_max_retries,
             certs_dir: self.certs_dir.clone(),
         }
     }
