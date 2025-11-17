@@ -63,6 +63,8 @@ from nautilus_trader.live.reconciliation import create_order_filled_event
 from nautilus_trader.live.reconciliation import create_order_rejected_event
 from nautilus_trader.live.reconciliation import create_order_triggered_event
 from nautilus_trader.live.reconciliation import create_order_updated_event
+from nautilus_trader.live.reconciliation import get_existing_fill_for_trade_id
+from nautilus_trader.live.reconciliation import is_within_single_unit_tolerance
 from nautilus_trader.model.book import py_should_handle_own_book_order
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
@@ -509,15 +511,12 @@ class LiveExecutionEngine(ExecutionEngine):
         self._enqueue_sentinel()
 
     def _enqueue_sentinel(self) -> None:
-        """
-        Place sentinel messages on command and event queues to signal queue processing
-        to stop.
-        """
+        # Signal queue processing to stop
         self._loop.call_soon_threadsafe(self._cmd_queue.put_nowait, self._sentinel)
         self._loop.call_soon_threadsafe(self._evt_queue.put_nowait, self._sentinel)
         self._log.debug("Sentinel messages placed on queues")
 
-    # -- COMMANDS -------------------------------------------------------------------------------------
+    # -- COMMANDS ----------------------------------------------------------------------------------
 
     def kill(self) -> None:
         """
@@ -572,10 +571,6 @@ class LiveExecutionEngine(ExecutionEngine):
     # -- QUEUE PROCESSING --------------------------------------------------------------------------
 
     async def _run_cmd_queue(self) -> None:
-        """
-        Process command messages from the command queue, executing commands and handling
-        exceptions.
-        """
         self._log.debug(
             f"Command message queue processing starting (qsize={self.cmd_qsize()})",
         )
@@ -601,10 +596,6 @@ class LiveExecutionEngine(ExecutionEngine):
                 self._log.debug(stopped_msg)
 
     async def _run_evt_queue(self) -> None:
-        """
-        Process order events from the event queue, applying events with tracking and
-        handling exceptions.
-        """
         self._log.debug(
             f"Event message queue processing starting (qsize={self.evt_qsize()})",
         )
@@ -630,10 +621,6 @@ class LiveExecutionEngine(ExecutionEngine):
                 self._log.debug(stopped_msg)
 
     def _handle_queue_exception(self, e: Exception, queue_name: str) -> None:
-        """
-        Handle unexpected exceptions in queue processing, initiating graceful shutdown
-        or immediate termination based on configuration.
-        """
         self._log.exception(
             f"Unexpected exception in {queue_name} queue processing: {e!r}",
             e,
@@ -1071,7 +1058,7 @@ class LiveExecutionEngine(ExecutionEngine):
             if cached_qty != 0:
                 instrument = self._cache.instrument(instrument_id)
                 if instrument is not None:
-                    if self._is_within_single_unit_tolerance(
+                    if is_within_single_unit_tolerance(
                         cached_qty,
                         Decimal(0),
                         instrument.size_precision,
@@ -1099,7 +1086,7 @@ class LiveExecutionEngine(ExecutionEngine):
 
         instrument = self._cache.instrument(instrument_id)
         if instrument is not None:
-            if self._is_within_single_unit_tolerance(
+            if is_within_single_unit_tolerance(
                 cached_qty,
                 venue_qty,
                 instrument.size_precision,
@@ -1255,9 +1242,6 @@ class LiveExecutionEngine(ExecutionEngine):
                 )
 
     def _prune_recent_fills_cache(self, ttl_secs: float = 60.0) -> None:
-        """
-        Remove expired fills from recent fills cache based on time-to-live.
-        """
         # Remove expired fills from cache (default TTL: 60 seconds)
         ts_now = self._clock.timestamp_ns()
         ttl_ns = secs_to_nanos(ttl_secs)
@@ -1328,9 +1312,6 @@ class LiveExecutionEngine(ExecutionEngine):
             self._log.exception("Error in check_order_consistency", e)
 
     def _validate_open_orders_consistency(self) -> None:
-        """
-        Perform sanity check on all open orders to detect internal inconsistencies.
-        """
         for order in self._cache.orders_open():
             computed_filled = sum(e.last_qty for e in order.events if isinstance(e, OrderFilled))
             if computed_filled != order.filled_qty:
@@ -1806,9 +1787,6 @@ class LiveExecutionEngine(ExecutionEngine):
             self._startup_reconciliation_event.set()
 
     def _log_reconciliation_result(self, value: ClientId | InstrumentId, result: bool) -> None:
-        """
-        Log reconciliation result for a client or instrument with appropriate log level.
-        """
         if result:
             self._log.info(f"Reconciliation for {value} succeeded", LogColor.GREEN)
         else:
@@ -1851,7 +1829,7 @@ class LiveExecutionEngine(ExecutionEngine):
 
     def reconcile_execution_mass_status(self, report: ExecutionMassStatus) -> None:
         """
-        Public wrapper for mass status reconciliation.
+        Public entry point for mass status reconciliation.
         """
         self._reconcile_execution_mass_status(report)
 
@@ -1964,9 +1942,7 @@ class LiveExecutionEngine(ExecutionEngine):
         return all(results)
 
     def _adjust_mass_status_fills(self, mass_status: ExecutionMassStatus) -> None:
-        """
-        Adjust fills for instruments with incomplete first lifecycles in mass status.
-        """
+        # Adjust fills for instruments with incomplete first lifecycles
         # Start with original orders and fills
         final_orders = dict(mass_status._order_reports)
         final_fills = dict(mass_status._fill_reports)
@@ -2032,10 +2008,7 @@ class LiveExecutionEngine(ExecutionEngine):
         )
 
     def _deduplicate_mass_status_orders(self, mass_status: ExecutionMassStatus) -> None:
-        """
-        Deduplicate orders in mass status by checking for duplicates within the report
-        and against cached orders.
-        """
+        # Remove duplicate orders within mass status report
         seen_client_order_ids: dict[ClientOrderId, VenueOrderId] = {}
         duplicate_venue_order_ids: list[VenueOrderId] = []
         orders_to_skip: list[VenueOrderId] = []
@@ -2127,10 +2100,7 @@ class LiveExecutionEngine(ExecutionEngine):
         self,
         mass_status: ExecutionMassStatus,
     ) -> None:
-        """
-        Validate reconciliation state for consistency, checking for duplicate
-        venue_order_ids and indexing consistency.
-        """
+        # Check for duplicate venue_order_ids and indexing consistency in mass status
         venue_order_ids_seen: set[VenueOrderId] = set()
         issues: list[str] = []
 
@@ -2270,9 +2240,7 @@ class LiveExecutionEngine(ExecutionEngine):
         client_order_id: ClientOrderId,
         audit_entry: tuple[TradeId, str, int],
     ) -> None:
-        """
-        Roll back a fill audit entry when fill application fails.
-        """
+        # Remove audit entry when fill application fails
         if audit_entry in self._fill_application_audit.get(client_order_id, []):
             self._fill_application_audit[client_order_id].remove(audit_entry)
 
@@ -2288,10 +2256,7 @@ class LiveExecutionEngine(ExecutionEngine):
         avg_px: Decimal | None,
         ts_now: int,
     ) -> OrderStatusReport:
-        """
-        Create an OrderStatusReport reusing attributes from a cached order to prevent
-        duplicate order creation during reconciliation.
-        """
+        # Reuse cached order IDs to prevent duplicate synthetic orders
         return OrderStatusReport(
             instrument_id=instrument_id,
             account_id=account_id,
@@ -2311,7 +2276,7 @@ class LiveExecutionEngine(ExecutionEngine):
             client_order_id=cached_order.client_order_id,
         )
 
-    # -- POSITION RECONCILIATION --------------------------------------------------------------------
+    # -- POSITION RECONCILIATION -------------------------------------------------------------------
 
     def _reconcile_position_report(self, report: PositionStatusReport) -> bool:
         """
@@ -2967,10 +2932,7 @@ class LiveExecutionEngine(ExecutionEngine):
         venue_order_id: VenueOrderId,
         log_context: str = "",
     ) -> None:
-        """
-        Ensure venue_order_id is indexed in cache for lookups, handling existing
-        mappings gracefully.
-        """
+        # Index venue_order_id in cache for lookups
         try:
             self._cache.add_venue_order_id(
                 client_order_id,
@@ -3025,7 +2987,7 @@ class LiveExecutionEngine(ExecutionEngine):
             if order.is_closed:
                 # Use the higher precision for tolerance check
                 precision = max(report.filled_qty.precision, order.filled_qty.precision)
-                if self._is_within_single_unit_tolerance(
+                if is_within_single_unit_tolerance(
                     report.filled_qty.as_decimal(),
                     order.filled_qty.as_decimal(),
                     precision,
@@ -3064,25 +3026,6 @@ class LiveExecutionEngine(ExecutionEngine):
                 )
 
         return True  # Reconciled
-
-    def _is_within_single_unit_tolerance(
-        self,
-        value1: Decimal,
-        value2: Decimal,
-        precision: int,
-    ) -> bool:
-        """
-        Check if two decimal values are within single unit tolerance based on precision,
-        handling rounding discrepancies from venues.
-        """
-        # Handles rounding discrepancies from venues (e.g., OKX fillSz vs accFillSz)
-        # Only apply tolerance for fractional quantities (precision > 0)
-        if precision == 0:
-            return value1 == value2  # Integer quantities require exact match
-
-        tolerance = Decimal(10) ** -precision
-
-        return abs(value1 - value2) <= tolerance
 
     def _handle_order_status_transitions(
         self,
@@ -3266,7 +3209,7 @@ class LiveExecutionEngine(ExecutionEngine):
 
         # Check for duplicate fill by trade_id - check both trade_ids collection and events
         # This handles cases where order is loaded from cache and trade_ids might not be fully populated
-        existing_fill = self._get_existing_fill_for_trade_id(order, report.trade_id)
+        existing_fill = get_existing_fill_for_trade_id(order, report.trade_id)
         is_duplicate = report.trade_id in order.trade_ids or existing_fill is not None
         if is_duplicate:
             # Fill already applied; check if data is consistent.
@@ -3331,20 +3274,6 @@ class LiveExecutionEngine(ExecutionEngine):
             return True  # Fill already applied, continue with existing data
 
         return None  # Not a duplicate, proceed with fill
-
-    def _get_existing_fill_for_trade_id(
-        self,
-        order: Order,
-        trade_id: TradeId,
-    ) -> OrderFilled | None:
-        """
-        Find an existing fill event for a trade ID in the order's event history.
-        """
-        for event in order.events:
-            if isinstance(event, OrderFilled) and event.trade_id == trade_id:
-                return event
-
-        return None
 
     def _generate_inferred_fill(
         self,
@@ -3476,9 +3405,6 @@ class LiveExecutionEngine(ExecutionEngine):
         return order
 
     def _generate_order_rejected(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderRejected event for reconciliation.
-        """
         rejected = create_order_rejected_event(
             order=order,
             ts_now=self._clock.timestamp_ns(),
@@ -3488,10 +3414,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self._handle_event_with_tracking(rejected)
 
     def _generate_order_accepted(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderAccepted event for reconciliation, clearing retry
-        counts.
-        """
         # Clear any retry counts when order transitions to ACCEPTED
         self._clear_recon_tracking(order.client_order_id)
 
@@ -3511,9 +3433,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self._handle_event_with_tracking(accepted)
 
     def _generate_order_triggered(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderTriggered event for reconciliation.
-        """
         triggered = create_order_triggered_event(
             trader_id=self.trader_id,
             order=order,
@@ -3524,9 +3443,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self._handle_event_with_tracking(triggered)
 
     def _generate_order_updated(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderUpdated event for reconciliation.
-        """
         updated = create_order_updated_event(
             trader_id=self.trader_id,
             order=order,
@@ -3537,9 +3453,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self._handle_event_with_tracking(updated)
 
     def _generate_order_canceled(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderCanceled event for reconciliation.
-        """
         canceled = create_order_canceled_event(
             order=order,
             ts_now=self._clock.timestamp_ns(),
@@ -3549,9 +3462,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self._handle_event_with_tracking(canceled)
 
     def _generate_order_expired(self, order: Order, report: OrderStatusReport) -> None:
-        """
-        Generate and apply an OrderExpired event for reconciliation.
-        """
         expired = create_order_expired_event(
             order=order,
             ts_now=self._clock.timestamp_ns(),
@@ -3566,9 +3476,6 @@ class LiveExecutionEngine(ExecutionEngine):
         report: FillReport,
         instrument: Instrument,
     ) -> None:
-        """
-        Generate and apply an OrderFilled event from a fill report for reconciliation.
-        """
         filled = create_order_filled_event(
             order=order,
             ts_now=self._clock.timestamp_ns(),
@@ -3578,7 +3485,7 @@ class LiveExecutionEngine(ExecutionEngine):
         self._log.debug(f"Generated {filled}")
         self._handle_event_with_tracking(filled)
 
-    # -- UTILITY METHODS ---------------------------------------------------------------------------
+    # -- INTERNAL ----------------------------------------------------------------------------------
 
     def _clear_recon_tracking(
         self,
@@ -3586,20 +3493,14 @@ class LiveExecutionEngine(ExecutionEngine):
         *,
         drop_last_query: bool = True,
     ) -> None:
-        """
-        Clear reconciliation tracking data for an order, including retry counts and last
-        query timestamps.
-        """
         self._recon_check_retries.pop(client_order_id, None)
 
         if drop_last_query:
             self._ts_last_query.pop(client_order_id, None)
 
     def _handle_event_with_tracking(self, event: OrderEvent) -> None:
-        """
-        Handle an order event with activity tracking, recording fills in cache and
-        cleaning up tracking data for closed orders.
-        """
+        # Handle an order event with activity tracking, recording fills in cache and
+        # cleaning up tracking data for closed orders.
         self._record_local_activity(event)
 
         if isinstance(event, OrderFilled):
@@ -3625,9 +3526,6 @@ class LiveExecutionEngine(ExecutionEngine):
             self._fill_application_audit.pop(order.client_order_id, None)
 
     def _record_local_activity(self, event: OrderEvent | None) -> None:
-        """
-        Record local activity timestamp for an order event to track recent activity.
-        """
         if event is None:
             return
 
@@ -3649,10 +3547,7 @@ class LiveExecutionEngine(ExecutionEngine):
         price: Price | None,
         avg_px: Decimal | None,
     ) -> Order | None:
-        """
-        Find a cached order matching reconciliation parameters to prevent duplicate
-        synthetic order creation.
-        """
+        # Search cache for existing order matching reconciliation parameters
         cached_orders = self._cache.orders(
             instrument_id=instrument_id,
             venue=None,
@@ -3689,10 +3584,7 @@ class LiveExecutionEngine(ExecutionEngine):
         instrument_id: InstrumentId,
         order_side: OrderSide | None = None,
     ) -> Order | None:
-        """
-        Find a cached order by venue_order_id when index might not be built, searching
-        all cached orders.
-        """
+        # Fallback search when venue_order_id index not built
         cached_orders = self._cache.orders(
             venue=instrument_id.venue,
             instrument_id=instrument_id,

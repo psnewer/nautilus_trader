@@ -79,6 +79,7 @@ TBD
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
 - Refactored processing of historical data (#3038), thanks @faysou
+- Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
 - Improved Betfair execution error handling and edge cases
 - Improved Databento live connection stability and reconnects

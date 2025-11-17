@@ -34,6 +34,7 @@ from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.data_engine import LiveDataEngine
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
+from nautilus_trader.live.reconciliation import is_within_single_unit_tolerance
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
@@ -942,47 +943,41 @@ class TestLiveExecutionEngine:
         """
         Test tolerance check for integer precision requires exact match.
         """
-        # Arrange
-        engine = self.exec_engine
-
         # Act & Assert
-        assert engine._is_within_single_unit_tolerance(Decimal("10"), Decimal("10"), 0)
-        assert not engine._is_within_single_unit_tolerance(Decimal("10"), Decimal("11"), 0)
-        assert not engine._is_within_single_unit_tolerance(Decimal("100"), Decimal("101"), 0)
+        assert is_within_single_unit_tolerance(Decimal("10"), Decimal("10"), 0)
+        assert not is_within_single_unit_tolerance(Decimal("10"), Decimal("11"), 0)
+        assert not is_within_single_unit_tolerance(Decimal("100"), Decimal("101"), 0)
 
     def test_is_within_single_unit_tolerance_fractional_precision(self):
         """
         Test tolerance check for fractional precision accepts 1-unit difference.
         """
-        # Arrange
-        engine = self.exec_engine
-
         # Act & Assert
-        assert engine._is_within_single_unit_tolerance(
+        assert is_within_single_unit_tolerance(
             Decimal("0.000525"),
             Decimal("0.000524"),
             6,
         )
-        assert engine._is_within_single_unit_tolerance(
+        assert is_within_single_unit_tolerance(
             Decimal("0.000525"),
             Decimal("0.000526"),
             6,
         )
-        assert not engine._is_within_single_unit_tolerance(
+        assert not is_within_single_unit_tolerance(
             Decimal("0.000525"),
             Decimal("0.000523"),
             6,
         )
 
-        assert engine._is_within_single_unit_tolerance(Decimal("1.00"), Decimal("1.01"), 2)
-        assert not engine._is_within_single_unit_tolerance(Decimal("1.00"), Decimal("1.02"), 2)
+        assert is_within_single_unit_tolerance(Decimal("1.00"), Decimal("1.01"), 2)
+        assert not is_within_single_unit_tolerance(Decimal("1.00"), Decimal("1.02"), 2)
 
-        assert engine._is_within_single_unit_tolerance(
+        assert is_within_single_unit_tolerance(
             Decimal("0.12345678"),
             Decimal("0.12345679"),
             8,
         )
-        assert not engine._is_within_single_unit_tolerance(
+        assert not is_within_single_unit_tolerance(
             Decimal("0.12345678"),
             Decimal("0.12345680"),
             8,
@@ -993,16 +988,15 @@ class TestLiveExecutionEngine:
         Test tolerance check works with different precisions by using max precision.
         """
         # Arrange
-        engine = self.exec_engine
         precision = max(6, 2)
 
         # Act & Assert
-        assert engine._is_within_single_unit_tolerance(
+        assert is_within_single_unit_tolerance(
             Decimal("0.000525"),
             Decimal("0.000524"),
             precision,
         )
-        assert not engine._is_within_single_unit_tolerance(
+        assert not is_within_single_unit_tolerance(
             Decimal("0.000525"),
             Decimal("0.000523"),
             precision,

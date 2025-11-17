@@ -31,6 +31,8 @@ from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.config import LiveExecEngineConfig
 from nautilus_trader.live.data_engine import LiveDataEngine
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
+from nautilus_trader.live.reconciliation import get_existing_fill_for_trade_id
+from nautilus_trader.live.reconciliation import is_within_single_unit_tolerance
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
@@ -4212,6 +4214,10 @@ async def test_handle_fill_quantity_mismatch_generates_inferred_fill(live_exec_e
         ts_init=current_ns,
     )
 
+    # Verify initial state before mismatch handling
+    assert order.filled_qty == Quantity.from_int(50)
+    initial_recent_fills = len(live_exec_engine._recent_fills_cache)
+
     # Act
     result = live_exec_engine._handle_fill_quantity_mismatch(
         order,
@@ -4221,25 +4227,39 @@ async def test_handle_fill_quantity_mismatch_generates_inferred_fill(live_exec_e
     )
 
     # Assert
-    assert result is True
-    # The inferred fill should have been generated and queued via _handle_event_with_tracking.
-    # Process events to ensure the fill is applied.
-    await asyncio.sleep(0.01)  # Give time for event processing
-    # Verify the order was updated (the event is queued and processed asynchronously).
-    # The key assertion is that the method returned True, indicating it handled the mismatch.
+    assert result is True  # Method successfully generated inferred fill
+
+    # Verify inferred fill was tracked (prevents duplicate historical fills)
+    assert order.client_order_id in live_exec_engine._inferred_fill_ts, (
+        "Client order ID should be tracked in inferred_fill_ts to prevent duplicates"
+    )
+
+    # Verify the timestamp is reasonable (after test start)
+    inferred_ts = live_exec_engine._inferred_fill_ts[order.client_order_id]
+    assert inferred_ts > 0, "Inferred fill timestamp should be positive"
+
+    # Verify inferred fill was generated in the recent fills cache
+    assert len(live_exec_engine._recent_fills_cache) == initial_recent_fills + 1, (
+        "Exactly one fill should be added to recent_fills_cache"
+    )
 
 
 @pytest.mark.asyncio()
 async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_exec_engine, cache, account_id):
     """
     Test _handle_fill_quantity_mismatch handles closed orders within tolerance.
+
+    Tests the tolerance logic where venue reports filled_qty that differs from cache by
+    exactly one unit at the instrument's precision (handles venue rounding). Uses
+    BTCUSDT with size_precision=6 to test fractional tolerance.
+
     """
     # Arrange
-    # Ensure cache has the instrument
-    if AUDUSD_SIM.id not in [i.id for i in cache.instruments()]:
-        cache.add_instrument(AUDUSD_SIM)
+    # Use crypto instrument with fractional precision to test tolerance boundary
+    btcusdt = TestInstrumentProvider.btcusdt_binance()
+    cache.add_instrument(btcusdt)
 
-    order = TestExecStubs.limit_order(instrument=AUDUSD_SIM)
+    order = TestExecStubs.limit_order(instrument=btcusdt)
     cache.add_order(order)
 
     submitted = TestEventStubs.order_submitted(order, account_id=account_id)
@@ -4252,18 +4272,31 @@ async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_
 
     filled = TestEventStubs.order_filled(
         order,
-        instrument=AUDUSD_SIM,
+        instrument=btcusdt,
         last_qty=order.quantity,  # Fully filled
     )
     order.apply(filled)
     live_exec_engine.process(filled)
     cache.update_order(order)
 
-    # Report shows slightly different filled_qty (within tolerance for fractional)
+    # Report shows filled_qty that differs by exactly one unit at precision
+    # BTCUSDT has size_precision=6, so tolerance is 0.000001
+    # Cache: 100.000000, Report: 100.000001 (within tolerance)
+    cache_filled = order.filled_qty
+    precision = btcusdt.size_precision
+    assert precision == 6  # Verify test assumption
+
+    # Add exactly one unit at the precision level (within tolerance boundary)
+    report_filled = Quantity.from_raw(cache_filled.raw + 1, precision)
+
+    # Capture initial state before tolerance check
+    initial_recent_fills = len(live_exec_engine._recent_fills_cache)
+    initial_fill_count = len([e for e in order.events if isinstance(e, OrderFilled)])
+
     current_ns = live_exec_engine._clock.timestamp_ns()
     report = OrderStatusReport(
         account_id=account_id,
-        instrument_id=AUDUSD_SIM.id,
+        instrument_id=btcusdt.id,
         client_order_id=order.client_order_id,
         venue_order_id=VenueOrderId("V-1"),
         order_side=order.side,
@@ -4272,8 +4305,8 @@ async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_
         order_status=OrderStatus.FILLED,
         price=order.price,
         quantity=order.quantity,
-        filled_qty=order.quantity,  # Same as cache
-        avg_px=Decimal("1.00000"),
+        filled_qty=report_filled,  # Within tolerance: cache + 0.000001
+        avg_px=Decimal("50000.00"),
         report_id=UUID4(),
         ts_accepted=current_ns,
         ts_last=current_ns,
@@ -4284,9 +4317,192 @@ async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_
     result = live_exec_engine._handle_fill_quantity_mismatch(
         order,
         report,
-        AUDUSD_SIM,
+        btcusdt,
         order.client_order_id,
     )
 
     # Assert
-    assert result is True  # Should succeed for closed order with matching qty
+    assert result is True  # Should succeed for closed order within tolerance
+    # Verify the tolerance was actually tested (not exact match)
+    assert report_filled != cache_filled
+
+    # Verify NO inferred fill was created (within tolerance = no action needed)
+    assert order.client_order_id not in live_exec_engine._inferred_fill_ts, (
+        "No inferred fill should be tracked for differences within tolerance"
+    )
+    assert len(live_exec_engine._recent_fills_cache) == initial_recent_fills, (
+        "No fill should be added to recent_fills_cache for within-tolerance difference"
+    )
+    assert order.filled_qty == cache_filled, (
+        "Order filled_qty should remain unchanged for within-tolerance difference"
+    )
+    assert len([e for e in order.events if isinstance(e, OrderFilled)]) == initial_fill_count, (
+        "No new fill events should be added for within-tolerance difference"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value1", "value2", "precision", "expected"),
+    [
+        # Integer precision (precision=0) - requires exact match
+        (Decimal("100"), Decimal("100"), 0, True),
+        (Decimal("100"), Decimal("101"), 0, False),
+        # Single decimal precision (precision=1)
+        (Decimal("1.0"), Decimal("1.0"), 1, True),
+        (Decimal("1.0"), Decimal("1.1"), 1, True),  # Within 0.1 tolerance
+        (Decimal("1.0"), Decimal("1.2"), 1, False),  # Exceeds 0.1 tolerance
+        # Two decimal precision (precision=2)
+        (Decimal("1.00"), Decimal("1.01"), 2, True),  # Within 0.01 tolerance
+        (Decimal("1.00"), Decimal("1.02"), 2, False),  # Exceeds 0.01 tolerance
+        # Three decimal precision (precision=3)
+        (Decimal("1.000"), Decimal("1.001"), 3, True),  # Within 0.001 tolerance
+        (Decimal("1.000"), Decimal("1.002"), 3, False),  # Exceeds 0.001 tolerance
+        # Eight decimal precision (common for crypto)
+        (Decimal("0.00000001"), Decimal("0.00000002"), 8, True),
+        (Decimal("0.00000001"), Decimal("0.00000003"), 8, False),
+        # Edge case: exactly at tolerance boundary
+        (Decimal("1.0"), Decimal("1.1"), 1, True),  # Exactly 0.1 diff
+        (Decimal("1.0"), Decimal("0.9"), 1, True),  # Exactly -0.1 diff
+        # Negative values
+        (Decimal("-1.0"), Decimal("-1.1"), 1, True),
+        (Decimal("-1.0"), Decimal("-1.2"), 1, False),
+    ],
+)
+def test_is_within_single_unit_tolerance_boundaries(
+    value1: Decimal,
+    value2: Decimal,
+    precision: int,
+    expected: bool,
+) -> None:
+    # Act
+    result = is_within_single_unit_tolerance(value1, value2, precision)
+
+    # Assert
+    assert result is expected
+
+
+def test_is_within_single_unit_tolerance_zero_values() -> None:
+    # Act & Assert
+    assert is_within_single_unit_tolerance(Decimal("0"), Decimal("0"), 0) is True
+    assert is_within_single_unit_tolerance(Decimal("0"), Decimal("0"), 2) is True
+    assert is_within_single_unit_tolerance(Decimal("0.00"), Decimal("0.01"), 2) is True
+    assert is_within_single_unit_tolerance(Decimal("0.00"), Decimal("0.02"), 2) is False
+
+
+def test_is_within_single_unit_tolerance_symmetric() -> None:
+    # Tolerance should work in both directions
+    assert is_within_single_unit_tolerance(
+        Decimal("1.0"),
+        Decimal("1.1"),
+        1,
+    ) is is_within_single_unit_tolerance(Decimal("1.1"), Decimal("1.0"), 1)
+
+
+def test_get_existing_fill_for_trade_id_returns_none_when_no_fills_exist() -> None:
+    # Arrange
+    order = TestExecStubs.limit_order()
+    trade_id = TradeId("TRADE-001")
+
+    # Act
+    result = get_existing_fill_for_trade_id(order, trade_id)
+
+    # Assert
+    assert result is None
+
+
+def test_get_existing_fill_for_trade_id_returns_none_when_trade_id_not_found() -> None:
+    # Arrange
+    order = TestExecStubs.limit_order()
+    submitted = TestEventStubs.order_submitted(order)
+    accepted = TestEventStubs.order_accepted(order)
+    filled = TestEventStubs.order_filled(
+        order,
+        instrument=AUDUSD_SIM,
+        trade_id=TradeId("TRADE-001"),
+    )
+
+    order.apply(submitted)
+    order.apply(accepted)
+    order.apply(filled)
+
+    # Act
+    result = get_existing_fill_for_trade_id(order, TradeId("TRADE-002"))
+
+    # Assert
+    assert result is None
+
+
+def test_get_existing_fill_for_trade_id_returns_fill_when_trade_id_found() -> None:
+    # Arrange
+    order = TestExecStubs.limit_order()
+    submitted = TestEventStubs.order_submitted(order)
+    accepted = TestEventStubs.order_accepted(order)
+    filled = TestEventStubs.order_filled(
+        order,
+        instrument=AUDUSD_SIM,
+        trade_id=TradeId("TRADE-001"),
+    )
+
+    order.apply(submitted)
+    order.apply(accepted)
+    order.apply(filled)
+
+    # Act
+    result = get_existing_fill_for_trade_id(order, TradeId("TRADE-001"))
+
+    # Assert
+    assert result is not None
+    assert result.trade_id == TradeId("TRADE-001")
+    assert result == filled
+
+
+def test_get_existing_fill_for_trade_id_returns_correct_fill_when_multiple_fills_exist() -> None:
+    # Arrange
+    order = TestExecStubs.limit_order()
+    submitted = TestEventStubs.order_submitted(order)
+    accepted = TestEventStubs.order_accepted(order)
+
+    fill1 = TestEventStubs.order_filled(
+        order,
+        instrument=AUDUSD_SIM,
+        last_qty=Quantity.from_int(50),
+        trade_id=TradeId("TRADE-001"),
+    )
+    fill2 = TestEventStubs.order_filled(
+        order,
+        instrument=AUDUSD_SIM,
+        last_qty=Quantity.from_int(50),
+        trade_id=TradeId("TRADE-002"),
+    )
+
+    order.apply(submitted)
+    order.apply(accepted)
+    order.apply(fill1)
+    order.apply(fill2)
+
+    # Act
+    result1 = get_existing_fill_for_trade_id(order, TradeId("TRADE-001"))
+    result2 = get_existing_fill_for_trade_id(order, TradeId("TRADE-002"))
+
+    # Assert
+    assert result1 == fill1
+    assert result2 == fill2
+    assert result1 != result2
+
+
+def test_get_existing_fill_for_trade_id_ignores_non_fill_events() -> None:
+    # Arrange
+    order = TestExecStubs.limit_order()
+    submitted = TestEventStubs.order_submitted(order)
+    accepted = TestEventStubs.order_accepted(order)
+    updated = TestEventStubs.order_updated(order)
+
+    order.apply(submitted)
+    order.apply(accepted)
+    order.apply(updated)
+
+    # Act
+    result = get_existing_fill_for_trade_id(order, TradeId("ANY-TRADE"))
+
+    # Assert
+    assert result is None
