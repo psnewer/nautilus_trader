@@ -196,7 +196,6 @@ impl HyperliquidWebSocketClient {
         // Spawn handler task
         let signal = Arc::clone(&self.signal);
         let account_id = self.account_id;
-        let auth_tracker = self.auth_tracker.clone();
         let subscriptions = self.subscriptions.clone();
         let cmd_tx_for_reconnect = cmd_tx.clone();
 
@@ -207,7 +206,6 @@ impl HyperliquidWebSocketClient {
                 raw_rx,
                 out_tx,
                 account_id,
-                auth_tracker,
                 subscriptions.clone(),
             );
 
