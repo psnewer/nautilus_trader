@@ -46,7 +46,7 @@ from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 from tests.integration_tests.adapters.bybit.conftest import _create_ws_mock
 
 
-@pytest.fixture()
+@pytest.fixture
 def exec_client_builder(
     event_loop,
     mock_http_client,
@@ -850,8 +850,8 @@ async def test_submit_order_denied_reduce_only_spot(
         min_notional=Money(1.00, USDT),
         max_price=Price.from_str("1000000.00"),
         min_price=Price.from_str("0.01"),
-        margin_init=Decimal("0"),
-        margin_maint=Decimal("0"),
+        margin_init=Decimal(0),
+        margin_maint=Decimal(0),
         maker_fee=Decimal("0.0001"),
         taker_fee=Decimal("0.0006"),
         ts_event=0,
@@ -931,8 +931,8 @@ async def test_submit_order_with_is_leverage(
         min_notional=Money(1.00, USDT),
         max_price=Price.from_str("1000000.00"),
         min_price=Price.from_str("0.01"),
-        margin_init=Decimal("0"),
-        margin_maint=Decimal("0"),
+        margin_init=Decimal(0),
+        margin_maint=Decimal(0),
         maker_fee=Decimal("0.0001"),
         taker_fee=Decimal("0.0006"),
         ts_event=0,
@@ -1015,8 +1015,8 @@ async def test_submit_order_with_is_quote_quantity(
         min_notional=Money(1.00, USDT),
         max_price=Price.from_str("1000000.00"),
         min_price=Price.from_str("0.01"),
-        margin_init=Decimal("0"),
-        margin_maint=Decimal("0"),
+        margin_init=Decimal(0),
+        margin_maint=Decimal(0),
         maker_fee=Decimal("0.0001"),
         taker_fee=Decimal("0.0006"),
         ts_event=0,
@@ -1178,7 +1178,7 @@ async def test_handle_order_modify_rejected_pyo3_conversion(
         await client._disconnect()
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_repay_spot_borrow_handles_api_errors_gracefully(
     monkeypatch,
     exec_client_builder,
@@ -1261,7 +1261,7 @@ def test_is_repay_blackout_window_outside_blackout(monkeypatch):
     assert result is False
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_auto_repayment_skipped_during_blackout_window(
     monkeypatch,
     exec_client_builder,

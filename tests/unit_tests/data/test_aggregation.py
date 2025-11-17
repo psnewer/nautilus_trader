@@ -3103,7 +3103,7 @@ class TestTimeBarAggregator:
         )  # <-- bar close
 
     @pytest.mark.parametrize(
-        "timestamp_on_close, interval_type, ts_event1, ts_event2",
+        ("timestamp_on_close", "interval_type", "ts_event1", "ts_event2"),
         [
             (False, "left-open", 0, 60_000_000_000),
             (False, "right-open", 0, 60_000_000_000),

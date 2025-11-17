@@ -141,7 +141,7 @@ class TestLiveExecutionReconciliation:
         # Prepare components
         self.cache.add_instrument(AUDUSD_SIM)
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_rejected_order(self):
         # Arrange
         report = OrderStatusReport(
@@ -174,7 +174,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.REJECTED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_accepted_order(self):
         # Arrange
         report = OrderStatusReport(
@@ -207,7 +207,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders_open()) == 1
         assert self.cache.orders()[0].status == OrderStatus.ACCEPTED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_canceled_order(self):
         # Arrange
         report = OrderStatusReport(
@@ -240,7 +240,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.CANCELED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_expired_order(self):
         # Arrange
         report = OrderStatusReport(
@@ -276,7 +276,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.EXPIRED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_triggered_order(self):
         # Arrange
         report = OrderStatusReport(
@@ -313,7 +313,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders_open()) == 1
         assert self.cache.orders()[0].status == OrderStatus.TRIGGERED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_filled_order_and_no_trades(self):
         # Arrange
         report = OrderStatusReport(
@@ -347,7 +347,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_filled_order_and_trade(self):
         # Arrange
         venue_order_id = VenueOrderId("1")
@@ -400,7 +400,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_partially_filled_order_and_trade(self):
         # Arrange
         venue_order_id = VenueOrderId("1")
@@ -453,7 +453,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.PARTIALLY_FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_partially_filled_order_and_no_trade(self):
         # Arrange
         venue_order_id = VenueOrderId("1")
@@ -488,7 +488,7 @@ class TestLiveExecutionReconciliation:
         assert len(self.cache.orders()) == 1
         assert self.cache.orders()[0].status == OrderStatus.PARTIALLY_FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_no_cached_with_partially_filled_order_and_canceled(self):
         # Arrange
         venue_order_id = VenueOrderId("1")
@@ -545,7 +545,7 @@ class TestLiveExecutionReconciliation:
         assert order.quantity == Quantity.from_int(10_000)
         assert order.filled_qty == Quantity.from_int(5_000)
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_state_with_cached_order_and_different_fill_data(self):
         # Arrange: Create a cached order with a fill
         venue_order_id = VenueOrderId("1")
@@ -661,7 +661,7 @@ class TestReconciliationEdgeCases:
     Test edge cases and robustness in live execution reconciliation.
     """
 
-    @pytest.fixture()
+    @pytest.fixture
     def live_exec_engine(self, event_loop):
         loop = event_loop
 
@@ -693,14 +693,14 @@ class TestReconciliationEdgeCases:
         exec_engine.register_client(client)
         return exec_engine
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_mass_status_failure_preserves_position_results(self, live_exec_engine):
         """
         Test that mass status failure is not overwritten by position reconciliation.
         """
         # Complex mocking required
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_with_small_differences(self, live_exec_engine):
         """
         Test that small decimal differences are handled via instrument precision.
@@ -719,7 +719,7 @@ class TestReconciliationEdgeCases:
         # Assert
         assert report.signed_decimal_qty is not None
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_zero_quantity_difference_handling(self, live_exec_engine):
         """
         Test that zero quantity differences after rounding are handled properly.
@@ -738,7 +738,7 @@ class TestReconciliationEdgeCases:
         # Assert
         assert report.quantity > 0
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_fill_report_before_order_status_report(self, live_exec_engine):
         """
         Test graceful handling when FillReport arrives before OrderStatusReport.
@@ -765,7 +765,7 @@ class TestReconciliationEdgeCases:
         # Assert
         assert result is False
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_netting_venue_position_id_generation(self, live_exec_engine):
         """
         Test that position IDs are correctly generated for netting venues.
@@ -808,7 +808,7 @@ class TestReconciliationEdgeCases:
         fill_events = [event for event in generated_events if isinstance(event, OrderFilled)]
         assert len(fill_events) == 1
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_long_position_reconciliation_quantity_mismatch(self, live_exec_engine):
         """
         Test reconciliation when internal long position quantity differs from external
@@ -866,7 +866,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(50)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_short_position_reconciliation_quantity_mismatch(self, live_exec_engine):
         """
         Test reconciliation when internal short position quantity differs from external
@@ -924,7 +924,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(50)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_long_position_reconciliation_external_smaller(self, live_exec_engine):
         """
         Test reconciliation when external long position is smaller than internal
@@ -982,7 +982,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(50)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_short_position_reconciliation_external_smaller(self, live_exec_engine):
         """
         Test reconciliation when external short position is smaller than internal
@@ -1040,7 +1040,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(50)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_long_position_reconciliation_external_flat(self, live_exec_engine):
         """
         Test reconciliation when internal long position exists but external position is
@@ -1102,7 +1102,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(100)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_short_position_reconciliation_external_flat(self, live_exec_engine):
         """
         Test reconciliation when internal short position exists but external position is
@@ -1164,7 +1164,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(100)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_flat_position_report_generates_closing_order(self, live_exec_engine):
         """
         Test that a FLAT PositionStatusReport generates a closing order.
@@ -1223,7 +1223,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(100)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_mixed_reconciliation_long_and_flat_instruments(self, live_exec_engine):
         """
         Test mixed reconciliation with both LONG and FLAT instruments.
@@ -1321,7 +1321,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(50)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_stale_short_reconciled_by_flat_after_fills(self, live_exec_engine):
         """
         Test stale internal short reconciled by flat report after fills.
@@ -1389,7 +1389,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(100)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_flat_report_processes_successfully(self, live_exec_engine):
         """
         Test FLAT report processing completes successfully.
@@ -1445,7 +1445,7 @@ class TestReconciliationEdgeCases:
         assert order_report.quantity == Quantity.from_int(100)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_recon_flat_report_clears_cache_ib(self, live_exec_engine):
         """
         Test IB-style FLAT report generates closing order.
@@ -1514,7 +1514,7 @@ class TestReconciliationEdgeCases:
         # order flow (submit → accepted → filled → position updated). Integration tests
         # would verify the full end-to-end flow including cache state changes.
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_recon_flat_report_with_fills_ib(self, live_exec_engine):
         """
         Test IB-style FLAT report reconciliation with historical fills.
@@ -1590,7 +1590,7 @@ class TestReconciliationEdgeCases:
         assert order_report.filled_qty == Quantity.from_int(10)
         assert order_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_flat_report_generates_closing_order_with_correct_quantity(
         self,
         live_exec_engine,
@@ -1666,7 +1666,7 @@ class TestReconciliationEdgeCases:
         # This unit test verifies reconciliation generates the correct closing order.
         # Integration tests would verify the full end-to-end flow including cache updates.
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_cross_side_long_to_short(self, live_exec_engine):
         """
         Test reconciliation when internal long position conflicts with external short
@@ -1735,7 +1735,7 @@ class TestReconciliationEdgeCases:
         assert open_report.filled_qty == Quantity.from_int(50)
         assert open_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_cross_side_short_to_long(self, live_exec_engine):
         """
         Test reconciliation when internal short position conflicts with external long
@@ -1803,7 +1803,7 @@ class TestReconciliationEdgeCases:
         assert open_report.filled_qty == Quantity.from_int(75)
         assert open_report.order_status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_zero_difference_after_rounding(self, live_exec_engine):
         """
         Test that zero differences after rounding are handled correctly.
@@ -1854,7 +1854,7 @@ class TestReconciliationEdgeCases:
         assert result is True
         assert len(reconcile_calls) == 0  # No order should be generated due to rounding
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_inferred_fill_with_positive_quantity_difference(self, live_exec_engine):
         """
         Test that inferred fill generation works correctly with normal positive quantity
@@ -1906,7 +1906,7 @@ class TestReconciliationEdgeCases:
         assert inferred_fill.last_px == Price.from_str("1.0")
         assert inferred_fill.client_order_id == order.client_order_id
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_order_report_fails_when_report_filled_qty_less_than_order(
         self,
         live_exec_engine,
@@ -1960,7 +1960,7 @@ class TestReconciliationEdgeCases:
         assert result is False  # Reconciliation should fail
         assert order.filled_qty == Quantity.from_int(100)  # No inferred fill
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_order_report_with_missing_instrument_defers(
         self,
         live_exec_engine,
@@ -1999,7 +1999,7 @@ class TestReconciliationEdgeCases:
         assert result is True  # Deferred, not failed
         assert len(self.cache.orders()) == 0  # No order created
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_fill_report_preventing_overfill(
         self,
         live_exec_engine,
@@ -2054,7 +2054,7 @@ class TestReconciliationEdgeCases:
         assert result is False
         assert order.filled_qty == Quantity.from_int(80)  # Fill not applied
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_existing_order_with_missing_instrument_defers(
         self,
         live_exec_engine,
@@ -2104,7 +2104,7 @@ class TestReconciliationEdgeCases:
         assert result is True  # Deferred, not failed
         assert order.status == OrderStatus.ACCEPTED  # Status unchanged
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconcile_position_report_with_missing_instrument_defers(
         self,
         live_exec_engine,
@@ -2131,7 +2131,7 @@ class TestReconciliationEdgeCases:
         assert result is True  # Deferred, not failed
         assert len(self.cache.positions()) == 0  # No position created
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_internal_diff_order_not_filtered_when_filter_unclaimed_external_orders_enabled(
         self,
         live_exec_engine,
@@ -2203,7 +2203,7 @@ class TestReconciliationEdgeCases:
         assert generated_order.quantity == Quantity.from_int(50)
         assert generated_order.status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_external_order_filtered_when_filter_unclaimed_external_orders_enabled(
         self,
         live_exec_engine,
@@ -2257,7 +2257,7 @@ class TestReconciliationEdgeCases:
         orders_after = self.cache.orders()
         assert len(orders_after) == orders_before  # No new orders added due to filtering
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_multiple_reconciliation_cycles_update_same_external_position(
         self,
         live_exec_engine,
@@ -2353,7 +2353,7 @@ class TestReconciliationEdgeCases:
             assert order.strategy_id.value == "EXTERNAL"
             assert order.tags == ["RECONCILIATION"]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_with_existing_position_uses_external_strategy_id(
         self,
         live_exec_engine,
@@ -2430,7 +2430,7 @@ class TestReconciliationEdgeCases:
         assert generated_order.strategy_id.value == "EXTERNAL"
         assert generated_order.tags == ["RECONCILIATION"]
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_fallback_to_market_order_when_no_price_available(
         self,
         live_exec_engine,
@@ -2509,7 +2509,7 @@ class TestReconciliationEdgeCases:
         # Order might be ACCEPTED or FILLED depending on how reconciliation processes events
         assert generated_order.status in (OrderStatus.ACCEPTED, OrderStatus.FILLED)
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_uses_limit_order_when_price_available(
         self,
         live_exec_engine,
@@ -2588,7 +2588,7 @@ class TestReconciliationEdgeCases:
         assert generated_order.price == Price.from_str("1.0001")  # Ask price for BUY order
         assert generated_order.status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_position_reconciliation_crosses_zero_splits_into_two_fills(
         self,
         live_exec_engine,
@@ -2661,7 +2661,7 @@ class TestReconciliationEdgeCases:
         assert open_report.order_status == OrderStatus.FILLED
         assert open_report.avg_px == Decimal("1.05")
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_duplicate_fill_detection_prevents_historical_fills_after_inferred_fill(
         self,
         live_exec_engine,
@@ -2765,7 +2765,7 @@ class TestReconciliationFiltering:
         exec_engine.register_client(client)
         return exec_engine, cache
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_instrument_ids_empty_processes_all(self):
         """
         Test that if `reconciliation_instrument_ids` is empty, all reports are
@@ -2830,7 +2830,7 @@ class TestReconciliationFiltering:
         assert cache.order(ClientOrderId("order-1")) is not None
         assert cache.order(ClientOrderId("order-2")) is not None
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_instrument_ids_filters_reports(self):
         """
         Test that reports are filtered based on `reconciliation_instrument_ids`.
@@ -2894,7 +2894,7 @@ class TestReconciliationFiltering:
         assert cache.order(ClientOrderId("included-order")) is not None
         assert cache.order(ClientOrderId("filtered-order")) is None
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_filtered_client_order_ids_filters_reports(self):
         """
         Test that reports are filtered based on `filtered_client_order_ids`.
@@ -2965,7 +2965,7 @@ class TestLiveExecutionReconciliationEdgeCases:
     Tests for edge cases in reconciliation event signaling to prevent deadlocks.
     """
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_disabled_does_not_block_continuous_loop(self):
         """
         Test that when reconciliation is disabled, continuous loop doesn't hang waiting
@@ -3017,7 +3017,7 @@ class TestLiveExecutionReconciliationEdgeCases:
         # Cleanup
         exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_with_no_clients_sets_event(self):
         """
         Test that reconciliation with no clients sets event so continuous loop doesn't
@@ -3050,7 +3050,7 @@ class TestLiveExecutionReconciliationEdgeCases:
         assert result is True
         assert exec_engine._startup_reconciliation_event.is_set()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_on_start_clears_reconciliation_event(self):
         """
         Test that _on_start() clears the reconciliation event to prevent race
@@ -3108,7 +3108,7 @@ class TestLiveExecutionReconciliationEdgeCases:
         # Cleanup
         exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_flat_report_processed_during_startup_reconciliation(self):
         """
         Test that FLAT position reports are processed during startup reconciliation.
@@ -3189,7 +3189,7 @@ class TestLiveExecutionReconciliationEdgeCases:
 # =============================================================================
 
 
-@pytest.fixture()
+@pytest.fixture
 def live_exec_engine(event_loop, cache):
     """
     Create a live execution engine for standalone tests.
@@ -3209,7 +3209,7 @@ def live_exec_engine(event_loop, cache):
     return exec_engine
 
 
-@pytest.fixture()
+@pytest.fixture
 def exec_client(event_loop, cache):
     """
     Create a mock execution client for standalone tests.
@@ -3233,7 +3233,7 @@ def exec_client(event_loop, cache):
     return client
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_id():
     """
     Create an account ID for standalone tests.
@@ -3241,7 +3241,7 @@ def account_id():
     return TestIdStubs.account_id()
 
 
-@pytest.fixture()
+@pytest.fixture
 def cache():
     """
     Create a cache for standalone tests.
@@ -3257,7 +3257,7 @@ def cache():
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_position_status_reports_success(live_exec_engine, exec_client, account_id):
     """
     Test _query_position_status_reports successfully queries and returns reports.
@@ -3286,7 +3286,7 @@ async def test_query_position_status_reports_success(live_exec_engine, exec_clie
     assert venue_positions[AUDUSD_SIM.id].quantity == Quantity.from_int(1000)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_position_status_reports_handles_exceptions(live_exec_engine, exec_client):
     """
     Test _query_position_status_reports handles client exceptions gracefully.
@@ -3307,7 +3307,7 @@ async def test_query_position_status_reports_handles_exceptions(live_exec_engine
     assert len(venue_positions) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_position_status_reports_multiple_instruments(live_exec_engine, exec_client, account_id):
     """
     Test _query_position_status_reports handles multiple instruments.
@@ -3351,7 +3351,7 @@ async def test_query_position_status_reports_multiple_instruments(live_exec_engi
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_and_find_missing_fills_finds_missing(live_exec_engine, exec_client, cache, account_id):
     """
     Test _query_and_find_missing_fills identifies fills not in cache.
@@ -3433,7 +3433,7 @@ async def test_query_and_find_missing_fills_finds_missing(live_exec_engine, exec
     assert missing_fills[0].trade_id == TradeId("T-2")
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_and_find_missing_fills_handles_exceptions(live_exec_engine, exec_client):
     """
     Test _query_and_find_missing_fills handles client exceptions gracefully.
@@ -3457,7 +3457,7 @@ async def test_query_and_find_missing_fills_handles_exceptions(live_exec_engine,
     assert len(missing_fills) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_and_find_missing_fills_no_missing(live_exec_engine, exec_client, cache, account_id):
     """
     Test _query_and_find_missing_fills returns empty when all fills are cached.
@@ -3527,7 +3527,7 @@ async def test_query_and_find_missing_fills_no_missing(live_exec_engine, exec_cl
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_missing_fills_empty_list(live_exec_engine):
     """
     Test _reconcile_missing_fills handles empty list gracefully.
@@ -3538,7 +3538,7 @@ async def test_reconcile_missing_fills_empty_list(live_exec_engine):
     # Assert - should not raise
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_missing_fills_reconciles_successfully(
     live_exec_engine,
     cache,
@@ -3594,7 +3594,7 @@ async def test_reconcile_missing_fills_reconciles_successfully(
     assert AUDUSD_SIM.id in live_exec_engine._position_local_activity_ns
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_missing_fills_handles_failure(live_exec_engine, cache, account_id):
     """
     Test _reconcile_missing_fills handles reconciliation failures gracefully.
@@ -3634,7 +3634,7 @@ async def test_reconcile_missing_fills_handles_failure(live_exec_engine, cache, 
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_process_cached_position_discrepancies_no_discrepancy(live_exec_engine, cache):
     """
     Test _process_cached_position_discrepancies skips when no discrepancy.
@@ -3684,7 +3684,7 @@ async def test_process_cached_position_discrepancies_no_discrepancy(live_exec_en
     assert not query_called  # Should not query when no discrepancy
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_process_cached_position_discrepancies_with_discrepancy(
     live_exec_engine,
     exec_client,
@@ -3747,7 +3747,7 @@ async def test_process_cached_position_discrepancies_with_discrepancy(
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_process_venue_reported_positions_no_discrepancy(live_exec_engine, cache):
     """
     Test _process_venue_reported_positions skips when positions match.
@@ -3797,7 +3797,7 @@ async def test_process_venue_reported_positions_no_discrepancy(live_exec_engine,
     assert not query_called  # Should not query when positions match
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_process_venue_reported_positions_venue_has_position(
     live_exec_engine,
     exec_client,
@@ -3852,7 +3852,7 @@ async def test_process_venue_reported_positions_venue_has_position(
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_order_status_transitions_rejected(live_exec_engine, cache, account_id):
     """
     Test _handle_order_status_transitions generates OrderRejected event.
@@ -3913,7 +3913,7 @@ async def test_handle_order_status_transitions_rejected(live_exec_engine, cache,
     assert event_generated
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_order_status_transitions_accepted(live_exec_engine, cache, account_id):
     """
     Test _handle_order_status_transitions generates OrderAccepted event.
@@ -3973,7 +3973,7 @@ async def test_handle_order_status_transitions_accepted(live_exec_engine, cache,
     assert event_generated
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_order_status_transitions_canceled(live_exec_engine, cache, account_id):
     """
     Test _handle_order_status_transitions generates OrderCanceled event.
@@ -4037,7 +4037,7 @@ async def test_handle_order_status_transitions_canceled(live_exec_engine, cache,
     assert event_generated
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_order_status_transitions_returns_none_for_fill_reconciliation(
     live_exec_engine,
     cache,
@@ -4101,7 +4101,7 @@ async def test_handle_order_status_transitions_returns_none_for_fill_reconciliat
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_fill_quantity_mismatch_report_less_than_cache(live_exec_engine, cache, account_id):
     """
     Test _handle_fill_quantity_mismatch logs error when report.filled_qty <
@@ -4164,7 +4164,7 @@ async def test_handle_fill_quantity_mismatch_report_less_than_cache(live_exec_en
     assert result is False  # Should fail when report < cache
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_fill_quantity_mismatch_generates_inferred_fill(live_exec_engine, cache, account_id):
     """
     Test _handle_fill_quantity_mismatch generates inferred fill when report > cache.
@@ -4244,7 +4244,7 @@ async def test_handle_fill_quantity_mismatch_generates_inferred_fill(live_exec_e
     )
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_exec_engine, cache, account_id):
     """
     Test _handle_fill_quantity_mismatch handles closed orders within tolerance.
@@ -4345,8 +4345,8 @@ async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_
     ("value1", "value2", "precision", "expected"),
     [
         # Integer precision (precision=0) - requires exact match
-        (Decimal("100"), Decimal("100"), 0, True),
-        (Decimal("100"), Decimal("101"), 0, False),
+        (Decimal(100), Decimal(100), 0, True),
+        (Decimal(100), Decimal(101), 0, False),
         # Single decimal precision (precision=1)
         (Decimal("1.0"), Decimal("1.0"), 1, True),
         (Decimal("1.0"), Decimal("1.1"), 1, True),  # Within 0.1 tolerance
@@ -4383,8 +4383,8 @@ def test_is_within_single_unit_tolerance_boundaries(
 
 def test_is_within_single_unit_tolerance_zero_values() -> None:
     # Act & Assert
-    assert is_within_single_unit_tolerance(Decimal("0"), Decimal("0"), 0) is True
-    assert is_within_single_unit_tolerance(Decimal("0"), Decimal("0"), 2) is True
+    assert is_within_single_unit_tolerance(Decimal(0), Decimal(0), 0) is True
+    assert is_within_single_unit_tolerance(Decimal(0), Decimal(0), 2) is True
     assert is_within_single_unit_tolerance(Decimal("0.00"), Decimal("0.01"), 2) is True
     assert is_within_single_unit_tolerance(Decimal("0.00"), Decimal("0.02"), 2) is False
 

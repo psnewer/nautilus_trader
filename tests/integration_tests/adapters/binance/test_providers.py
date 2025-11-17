@@ -33,7 +33,7 @@ class TestBinanceInstrumentProvider:
         # Fixture Setup
         self.clock = LiveClock()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_load_all_async_for_futures_markets(
         self,
         binance_http_client,
@@ -108,7 +108,7 @@ class TestBinanceInstrumentProvider:
         assert "ETH" in self.provider.currencies()
         assert "USDT" in self.provider.currencies()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_futures_instrument_info_dict_is_json_serializable(
         self,
         binance_http_client,

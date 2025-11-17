@@ -36,7 +36,7 @@ def instrument_setup(exec_client, cache, instrument=None, contract_details=None)
     cache.add_instrument(instrument)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_generate_position_status_reports_with_zero_quantity(exec_client, cache):
     """
     Test that zero-quantity positions generate FLAT PositionStatusReport.
@@ -52,7 +52,7 @@ async def test_generate_position_status_reports_with_zero_quantity(exec_client, 
     zero_position = IBPosition(
         account_id="DU123456",
         contract=IBTestContractStubs.aapl_equity_ib_contract(),
-        quantity=Decimal("0"),
+        quantity=Decimal(0),
         avg_cost=100.0,
     )
 
@@ -72,11 +72,11 @@ async def test_generate_position_status_reports_with_zero_quantity(exec_client, 
     # Assert
     assert len(reports) == 1
     assert reports[0].position_side == PositionSide.FLAT
-    assert reports[0].quantity.as_decimal() == Decimal("0")
+    assert reports[0].quantity.as_decimal() == Decimal(0)
     assert reports[0].instrument_id == instrument.id
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_generate_position_status_reports_flat_when_no_positions(exec_client, cache):
     """
     Test that FLAT report is generated when specific instrument has no positions.
@@ -105,5 +105,5 @@ async def test_generate_position_status_reports_flat_when_no_positions(exec_clie
     # Assert
     assert len(reports) == 1
     assert reports[0].position_side == PositionSide.FLAT
-    assert reports[0].quantity.as_decimal() == Decimal("0")
+    assert reports[0].quantity.as_decimal() == Decimal(0)
     assert reports[0].instrument_id == instrument.id

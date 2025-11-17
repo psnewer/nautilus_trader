@@ -1028,7 +1028,7 @@ class TestCache:
         result = self.cache.get_xrate(SIM, AUD, AUD)
 
         # Assert
-        assert result == Decimal("1")
+        assert result == Decimal(1)
 
     def test_get_xrate_with_conversion(self):
         # Arrange

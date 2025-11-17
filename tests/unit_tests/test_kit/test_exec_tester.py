@@ -154,7 +154,7 @@ def create_tester_factory(trader_id, portfolio, msgbus, cache, clock, setup_envi
         testers.append(tester)
         return tester
 
-    yield _create_tester
+    return _create_tester
 
 
 def test_on_start_initializes_instrument(
@@ -688,7 +688,7 @@ def test_use_quote_quantity(
     # Arrange
     config = ExecTesterConfig(
         instrument_id=instrument_id,
-        order_qty=Decimal("100"),  # Quote currency amount
+        order_qty=Decimal(100),  # Quote currency amount
         enable_buys=True,
         enable_sells=False,
         use_quote_quantity=True,
@@ -1364,7 +1364,7 @@ def test_invalid_emulation_trigger_raises_key_error(
 
 
 @pytest.mark.parametrize(
-    "trigger_type,expected_trigger",
+    ("trigger_type", "expected_trigger"),
     [
         ("NO_TRIGGER", TriggerType.NO_TRIGGER),
         ("DEFAULT", TriggerType.DEFAULT),
@@ -1418,7 +1418,7 @@ def test_emulation_trigger_types_parametrized(
 
 
 @pytest.mark.parametrize(
-    "enable_buys,enable_sells,expected_orders",
+    ("enable_buys", "enable_sells", "expected_orders"),
     [
         (True, False, ("buy_order",)),
         (False, True, ("sell_order",)),
@@ -1664,7 +1664,7 @@ def test_subscription_parameters_passed_correctly(
 
 
 @pytest.mark.parametrize(
-    "subscribe_quotes,subscribe_trades,subscribe_book",
+    ("subscribe_quotes", "subscribe_trades", "subscribe_book"),
     [
         (True, True, False),
         (True, False, True),
@@ -2856,10 +2856,10 @@ def test_both_regular_and_stop_orders_together(
 
 
 @pytest.mark.parametrize(
-    "order_display_qty,expected_display",
+    ("order_display_qty", "expected_display"),
     [
         (Decimal("0.25"), 0.25),  # Partial display (iceberg)
-        (Decimal("0"), 0),  # Hidden order (zero display)
+        (Decimal(0), 0),  # Hidden order (zero display)
         (None, None),  # No display qty specified
     ],
 )

@@ -435,7 +435,7 @@ class TestBetfairParsing:
         assert result == expected
         assert msgspec.json.decode(msgspec.json.encode(result), type=CancelOrders) == expected
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_account_statement(self, betfair_client):
         mock_betfair_request(betfair_client, BetfairResponses.account_details())
         detail = await self.client.get_account_details()
@@ -469,7 +469,7 @@ class TestBetfairParsing:
         )
         assert result == expected
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_merge_order_book_deltas(self):
         raw = msgspec.json.encode(
             {

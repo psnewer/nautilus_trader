@@ -191,7 +191,7 @@ class TestLiveExecutionEngine:
             if hasattr(engine, "stop") and not engine.is_stopped:
                 engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_start_when_loop_not_running_logs(self):
         # Arrange, Act
         self.exec_engine.start()
@@ -200,7 +200,7 @@ class TestLiveExecutionEngine:
         assert True  # No exceptions raised
         self.exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_message_qsize_at_max_blocks_on_put_command(self):
         # Arrange
         # Deregister test fixture ExecutionEngine from msgbus)
@@ -266,7 +266,7 @@ class TestLiveExecutionEngine:
         await eventually(lambda: self.exec_engine.cmd_qsize() == 2)
         assert self.exec_engine.command_count == 0
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_message_qsize_at_max_blocks_on_put_event(self):
         # Arrange
         # Deregister test fixture ExecutionEngine from msgbus)
@@ -334,7 +334,7 @@ class TestLiveExecutionEngine:
         await eventually(lambda: self.exec_engine.cmd_qsize() == 1)
         assert self.exec_engine.command_count == 0
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_start(self):
         # Arrange, Act
         self.exec_engine.start()
@@ -345,7 +345,7 @@ class TestLiveExecutionEngine:
         # Tear Down
         self.exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_kill_when_running_and_no_messages_on_queues(self):
         # Arrange, Act
         self.exec_engine.kill()
@@ -353,7 +353,7 @@ class TestLiveExecutionEngine:
         # Assert
         assert self.exec_engine.is_stopped
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_kill_when_not_running_with_messages_on_queue(self):
         # Arrange, Act
         self.exec_engine.stop()
@@ -363,7 +363,7 @@ class TestLiveExecutionEngine:
         # Assert
         assert self.exec_engine.is_stopped
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_execute_command_places_command_on_queue(self):
         # Arrange
         self.exec_engine.start()
@@ -809,7 +809,7 @@ class TestLiveExecutionEngine:
             engine.stop()
             await eventually(lambda: engine.evt_qsize() == 0)
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reconciliation_with_none_mass_status_returns_false(self):
         """
         Test that reconciliation returns False when mass_status is None.
@@ -831,7 +831,7 @@ class TestLiveExecutionEngine:
         # Cleanup
         self.exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_filled_qty_mismatch_with_zero_report(self):
         """
         Test that filled_qty mismatch is detected when report.filled_qty is less than
@@ -878,7 +878,7 @@ class TestLiveExecutionEngine:
         # Assert - should correctly detect and fail on backwards fill quantity
         assert result is False
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_inflight_timeout_resolves_order(self):
         """
         Test that inflight orders are resolved after exceeding max retries.
@@ -920,7 +920,7 @@ class TestLiveExecutionEngine:
         # Cleanup
         self.exec_engine.stop()
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_shutdown_flag_suppresses_reconciliation(self):
         """
         Test that _is_shutting_down flag prevents reconciliation from issuing HTTP
@@ -944,9 +944,9 @@ class TestLiveExecutionEngine:
         Test tolerance check for integer precision requires exact match.
         """
         # Act & Assert
-        assert is_within_single_unit_tolerance(Decimal("10"), Decimal("10"), 0)
-        assert not is_within_single_unit_tolerance(Decimal("10"), Decimal("11"), 0)
-        assert not is_within_single_unit_tolerance(Decimal("100"), Decimal("101"), 0)
+        assert is_within_single_unit_tolerance(Decimal(10), Decimal(10), 0)
+        assert not is_within_single_unit_tolerance(Decimal(10), Decimal(11), 0)
+        assert not is_within_single_unit_tolerance(Decimal(100), Decimal(101), 0)
 
     def test_is_within_single_unit_tolerance_fractional_precision(self):
         """
@@ -1039,7 +1039,7 @@ class TestLiveExecutionEngine:
         )
 
         position = Mock()
-        position.signed_decimal_qty.return_value = Decimal("1000")
+        position.signed_decimal_qty.return_value = Decimal(1000)
 
         # Act
         has_discrepancy = engine._check_position_discrepancy(
@@ -1158,7 +1158,7 @@ class TestLiveExecutionEngine:
         )
 
         position = Mock()
-        position.signed_decimal_qty.return_value = Decimal("10")
+        position.signed_decimal_qty.return_value = Decimal(10)
 
         # Act
         has_discrepancy = engine._check_position_discrepancy(
@@ -1179,7 +1179,7 @@ class TestLiveExecutionEngine:
         self.cache.add_instrument(AUDUSD_SIM)
 
         position = Mock()
-        position.signed_decimal_qty.return_value = Decimal("1000")
+        position.signed_decimal_qty.return_value = Decimal(1000)
 
         # Act
         has_discrepancy = engine._check_position_discrepancy(
@@ -1210,7 +1210,7 @@ class TestLiveExecutionEngine:
         )
 
         position = Mock()
-        position.signed_decimal_qty.return_value = Decimal("0")
+        position.signed_decimal_qty.return_value = Decimal(0)
 
         # Act
         has_discrepancy = engine._check_position_discrepancy(

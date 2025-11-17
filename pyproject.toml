@@ -178,7 +178,7 @@ select = [
   "T10",
   "ICN",
   "PIE",
-  # "PT",
+  "PT",
   "PYI",
   "Q",
   # "I",  # Disabled - using isort instead
@@ -186,12 +186,13 @@ select = [
   "TID",
   "SIM", # flake8-simplify
   "B", # flake8-bugbear
-  "PERF102", # - When using only dict values use the values() method
-  "FURB122", # - Use writelines instead of write in a loop
-  "FURB166", # - int() on sliced str
-  "FURB188", # - Use removeprefix/removesuffix instead of slicing
-  # "ARG",
-  # "ERA",
+  "PERF", # Perflint
+  "FURB", # refurb
+  "ISC", # flake8-implicit-str-concat
+  "FLY", # flynt
+  # "ARG",  # unused-arguments - 301 violations
+  # "ERA",  # eradicate - 165 violations
+  # "ASYNC",  # flake8-async - 15 violations (5 ASYNC110 busy-wait, 10 ASYNC109 timeout params)
   "PD",
   "PGH",
   # "PLW",
@@ -218,6 +219,13 @@ ignore = [
   "E501", # Line too long (will lint separately)
   "E741", # Ambiguous variable name (single char)
   "FURB166", # int() on sliced str (explicit base is clearer than auto-detection)
+  "PERF401", # manual-list-comprehension (16 violations - fix incrementally)
+  "PERF402", # manual-list-copy (3 violations - fix incrementally)
+  "PT007", # pytest-parametrize-values-wrong-type (1621 violations - deferred)
+  "PT011", # Exception type too broad (needs to be fixed case-by-case)
+  "PT014", # Use list comprehensions (not always readable or appropriate)
+  "PT017", # pytest-assert-in-except (1 violation - fix later)
+  "PT028", # pytest-parameter-with-default-argument (4 violations - fix later)
   "PYI021", # Docstrings should not be included in stubs (OK as this is the natural place for them)
   "PGH003", # Blanket type-ignore (TODO: make these specific incrementally)
   "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`

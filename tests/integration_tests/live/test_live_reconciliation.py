@@ -219,7 +219,7 @@ def fixture_order_factory(trader_id, strategy, clock):
     )
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_missed_fill_reconciliation_scenario(
     exec_engine,
     exec_client,
@@ -317,7 +317,7 @@ async def test_missed_fill_reconciliation_scenario(
     assert order.avg_px == Decimal("1.00000")
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_order_state_discrepancy_reconciliation(
     exec_engine,
     exec_client,
@@ -386,7 +386,7 @@ async def test_order_state_discrepancy_reconciliation(
     assert order.status == OrderStatus.REJECTED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_external_order_reconciliation(
     exec_engine,
     exec_client,
@@ -437,7 +437,7 @@ async def test_external_order_reconciliation(
     assert external_order.venue_order_id == VenueOrderId("V-EXT-001")
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_inflight_order_timeout_reconciliation(
     exec_engine,
     exec_client,
@@ -494,7 +494,7 @@ async def test_inflight_order_timeout_reconciliation(
     assert order.status == OrderStatus.REJECTED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_multiple_fills_reconciliation(
     exec_engine,
     exec_client,
@@ -638,7 +638,7 @@ async def test_multiple_fills_reconciliation(
     assert order.filled_qty == Quantity.from_int(100_000)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_concurrent_order_reconciliation(
     exec_engine,
     exec_client,
@@ -739,7 +739,7 @@ async def test_concurrent_order_reconciliation(
     assert orders[4].status == OrderStatus.CANCELED  # Venue reported CANCELED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_targeted_query_limiting(
     msgbus,
     cache,
@@ -832,7 +832,7 @@ async def test_targeted_query_limiting(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_targeted_query_limiting_with_retry_accumulation(
     msgbus,
     cache,
@@ -942,7 +942,7 @@ async def test_targeted_query_limiting_with_retry_accumulation(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_cross_zero_reconciliation_with_missing_avg_px_uses_close_price_fallback(
     msgbus,
     cache,
@@ -1028,7 +1028,7 @@ async def test_cross_zero_reconciliation_with_missing_avg_px_uses_close_price_fa
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_discrepancy_queries_missing_fills(
     msgbus,
     cache,
@@ -1202,7 +1202,7 @@ async def test_position_discrepancy_queries_missing_fills(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_reconciliation_venue_has_position_we_think_flat(
     msgbus,
     cache,
@@ -1368,7 +1368,7 @@ async def test_position_reconciliation_venue_has_position_we_think_flat(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_reconciliation_respects_threshold(
     msgbus,
     cache,
@@ -1550,7 +1550,7 @@ async def test_position_reconciliation_respects_threshold(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_reconciliation_respects_instrument_filter(
     msgbus,
     cache,
@@ -1674,7 +1674,7 @@ async def test_position_reconciliation_respects_instrument_filter(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_recent_fills_cache_prevents_duplicate_reconciliation(
     msgbus,
     cache,
@@ -1818,7 +1818,7 @@ async def test_recent_fills_cache_prevents_duplicate_reconciliation(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_reconciliation_fill_without_cached_order(
     msgbus,
     cache,
@@ -1932,7 +1932,7 @@ async def test_position_reconciliation_fill_without_cached_order(
     await eventually(lambda: exec_engine.is_stopped)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_position_reconciliation_handles_generate_fill_reports_exception(
     msgbus,
     cache,

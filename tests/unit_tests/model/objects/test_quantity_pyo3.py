@@ -86,7 +86,7 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value", "precision", "expected"),
         [
-            [Quantity(2.15, precision=2), 0, Decimal("2")],
+            [Quantity(2.15, precision=2), 0, Decimal(2)],
             [Quantity(2.15, precision=2), 1, Decimal("2.2")],
             [Quantity(2.255, precision=3), 2, Decimal("2.26")],
         ],
@@ -101,9 +101,9 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Quantity(-0, precision=0), Decimal("0")],
-            [Quantity(0, precision=0), Decimal("0")],
-            [Quantity(1, precision=0), Decimal("1")],
+            [Quantity(-0, precision=0), Decimal(0)],
+            [Quantity(0, precision=0), Decimal(0)],
+            [Quantity(1, precision=0), Decimal(1)],
         ],
     )
     def test_abs_with_various_values_returns_expected_decimal(self, value, expected):
@@ -116,8 +116,8 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Quantity(1, precision=0), Decimal("-1")],
-            [Quantity(0, precision=0), Decimal("0")],
+            [Quantity(1, precision=0), Decimal(-1)],
+            [Quantity(0, precision=0), Decimal(0)],
         ],
     )
     def test_neg_with_various_values_returns_expected_decimal(self, value, expected):

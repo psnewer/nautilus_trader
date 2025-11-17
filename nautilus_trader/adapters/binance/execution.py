@@ -968,7 +968,7 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             if order.trailing_offset_type != TrailingOffsetType.BASIS_POINTS:
                 return f"INVALID_TRAILING_OFFSET_TYPE: {trailing_offset_type_to_str(order.trailing_offset_type)}"
 
-            callback_rate = Decimal(order.trailing_offset) / Decimal("100")
+            callback_rate = Decimal(order.trailing_offset) / Decimal(100)
             callback_rate = callback_rate.quantize(Decimal("0.1"))
 
             if (
@@ -1152,7 +1152,7 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         # Convert basis points to percentage, preserving precision
         # Binance supports up to 1 decimal place precision for callback rates
-        callback_rate = Decimal(order.trailing_offset) / Decimal("100")
+        callback_rate = Decimal(order.trailing_offset) / Decimal(100)
         # Round to 1 decimal place only if necessary to meet Binance requirements
         callback_rate = callback_rate.quantize(Decimal("0.1"))
 

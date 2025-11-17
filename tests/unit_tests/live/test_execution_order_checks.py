@@ -270,7 +270,7 @@ def fixture_exec_engine_open_check_custom_threshold(event_loop, msgbus, cache, c
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_with_no_open_orders(exec_engine_open_check, exec_client):
     """
     Test _check_open_orders when there are no open orders in cache.
@@ -284,7 +284,7 @@ async def test_check_open_orders_with_no_open_orders(exec_engine_open_check, exe
     assert len(exec_client._order_status_reports) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_with_open_orders_matching_venue(
     exec_engine_open_check,
     exec_client,
@@ -340,7 +340,7 @@ async def test_check_open_orders_with_open_orders_matching_venue(
     assert order.status == OrderStatus.ACCEPTED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_reconciles_status_not_fills(
     exec_engine_open_check,
     exec_client,
@@ -400,7 +400,7 @@ async def test_check_open_orders_reconciles_status_not_fills(
     assert order.filled_qty == Quantity.from_int(50)  # Reconciled to venue's filled qty
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_reconciles_closed_order(
     exec_engine_open_check,
     exec_client,
@@ -458,7 +458,7 @@ async def test_check_open_orders_reconciles_closed_order(
     assert order.filled_qty == order.quantity  # Fully filled
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_open_only_mode(
     exec_engine_open_check,
     exec_client,
@@ -506,7 +506,7 @@ async def test_check_open_orders_open_only_mode(
     assert order.status == OrderStatus.ACCEPTED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_open_orders_handles_client_exception(
     exec_engine_open_check,
     cache,
@@ -543,7 +543,7 @@ async def test_check_open_orders_handles_client_exception(
     assert order.status == OrderStatus.ACCEPTED
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_open_check_periodic_execution(exec_engine_open_check):
     """
     Test that open check executes periodically via reconciliation loop.
@@ -582,7 +582,7 @@ async def test_open_check_periodic_execution(exec_engine_open_check):
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_queries_old_orders(
     exec_engine_inflight_check,
     cache,
@@ -629,7 +629,7 @@ async def test_check_inflight_orders_queries_old_orders(
     assert executed_commands[0].client_order_id == order.client_order_id
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_skips_when_recent_query_pending(
     exec_engine_inflight_check,
     cache,
@@ -674,7 +674,7 @@ async def test_check_inflight_orders_skips_when_recent_query_pending(
     assert exec_engine._recon_check_retries.get(order.client_order_id, 0) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_respects_retry_limit(
     exec_engine_inflight_check,
     cache,
@@ -710,7 +710,7 @@ async def test_check_inflight_orders_respects_retry_limit(
     assert order.client_order_id not in exec_engine._recon_check_retries
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_increments_retry_count(
     exec_engine_inflight_check,
     cache,
@@ -747,7 +747,7 @@ async def test_check_inflight_orders_increments_retry_count(
     assert exec_engine._recon_check_retries[order.client_order_id] == 2
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_skips_recent_orders(
     exec_engine_inflight_check,
     cache,
@@ -790,7 +790,7 @@ async def test_check_inflight_orders_skips_recent_orders(
     assert len(executed_commands) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_resolve_inflight_order_skips_when_status_updated(
     exec_engine_inflight_check,
     cache,
@@ -831,7 +831,7 @@ async def test_resolve_inflight_order_skips_when_status_updated(
     assert order.client_order_id not in exec_engine._ts_last_query
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_inflight_check_periodic_execution(exec_engine_inflight_check):
     """
     Test that inflight check executes periodically via reconciliation loop.
@@ -863,7 +863,7 @@ async def test_inflight_check_periodic_execution(exec_engine_inflight_check):
     assert check_count >= 2
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_inflight_check_handles_exceptions(exec_engine_inflight_check):
     """
     Test that reconciliation loop continues after exceptions.
@@ -901,7 +901,7 @@ async def test_inflight_check_handles_exceptions(exec_engine_inflight_check):
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_with_price_update(
     exec_engine_continuous,
     cache,
@@ -958,7 +958,7 @@ async def test_reconcile_order_with_price_update(
     assert order.price == Price.from_str("1.00000")
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_with_quantity_update(
     exec_engine_continuous,
     cache,
@@ -1015,7 +1015,7 @@ async def test_reconcile_order_with_quantity_update(
     assert order.quantity == Quantity.from_int(100)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_without_client_order_id(
     exec_engine_continuous,
     cache,
@@ -1109,7 +1109,7 @@ def fixture_exec_engine_continuous(event_loop, msgbus, cache, clock, exec_client
     ensure_all_tasks_completed()
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconciliation_mode_enabled(exec_engine_continuous):
     """
     Test that reconciliation is enabled when checks are configured.
@@ -1120,7 +1120,7 @@ async def test_reconciliation_mode_enabled(exec_engine_continuous):
     assert exec_engine.open_check_interval_secs is not None
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconciliation_task_created(exec_engine_continuous):
     """
     Test that reconciliation task is created.
@@ -1134,7 +1134,7 @@ async def test_reconciliation_task_created(exec_engine_continuous):
     assert exec_engine.get_reconciliation_task() is not None
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_inflight_orders_detects_inflight(
     exec_engine_continuous,
     cache,
@@ -1181,7 +1181,7 @@ async def test_check_inflight_orders_detects_inflight(
     assert executed_commands[0].client_order_id == order.client_order_id
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_check_orders_consistency_reconciles_discrepancies(
     exec_engine_continuous,
     exec_client,
@@ -1242,7 +1242,7 @@ async def test_check_orders_consistency_reconciles_discrepancies(
     assert order.client_order_id not in exec_engine._recon_check_retries
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconciliation_loop_runs_both_checks(
     exec_engine,
     exec_client,
@@ -1288,7 +1288,7 @@ async def test_reconciliation_loop_runs_both_checks(
     assert consistency_check_count >= 2
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconciliation_clears_retry_counts_on_success(
     exec_engine,
     exec_client,
@@ -1354,7 +1354,7 @@ async def test_reconciliation_clears_retry_counts_on_success(
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_inflight_and_open_order_combined_scenario(
     exec_engine,
     exec_client,
@@ -1459,7 +1459,7 @@ async def test_inflight_and_open_order_combined_scenario(
     assert open_order.filled_qty == Quantity.from_int(0)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_order_transitions_from_inflight_to_open(
     exec_engine,
     exec_client,
@@ -2456,7 +2456,7 @@ async def test_continuous_reconciliation_handles_zero_fills_from_venue(
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_order_status_reports_success(exec_engine_open_check, exec_client, account_id):
     """
     Test _query_order_status_reports successfully queries and returns reports.
@@ -2491,7 +2491,7 @@ async def test_query_order_status_reports_success(exec_engine_open_check, exec_c
     assert ClientOrderId("O-123") in venue_reported_ids
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_order_status_reports_handles_exceptions(exec_engine_open_check, exec_client):
     """
     Test _query_order_status_reports handles client exceptions gracefully.
@@ -2510,7 +2510,7 @@ async def test_query_order_status_reports_handles_exceptions(exec_engine_open_ch
     assert len(venue_reported_ids) == 0
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_order_status_reports_multiple_clients(exec_engine_open_check, exec_client, account_id):
     """
     Test _query_order_status_reports handles multiple clients.
@@ -2578,7 +2578,7 @@ async def test_query_order_status_reports_multiple_clients(exec_engine_open_chec
     assert ClientOrderId("O-2") in venue_reported_ids
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_query_order_status_reports_no_clients(exec_engine_open_check, trader_id, clock):
     """
     Test _query_order_status_reports handles no clients gracefully.
@@ -2609,7 +2609,7 @@ async def test_query_order_status_reports_no_clients(exec_engine_open_check, tra
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_reports_matches_cache(exec_engine_open_check, cache, account_id):
     """
     Test _reconcile_order_reports skips reconciliation when cache matches venue.
@@ -2667,7 +2667,7 @@ async def test_reconcile_order_reports_matches_cache(exec_engine_open_check, cac
     assert reconciled_count == 0  # Should not reconcile when matches
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_reports_filled_qty_mismatch(exec_engine_open_check, cache, account_id):
     """
     Test _reconcile_order_reports reconciles when filled_qty differs.
@@ -2726,7 +2726,7 @@ async def test_reconcile_order_reports_filled_qty_mismatch(exec_engine_open_chec
     assert reconciled_count == 1  # Should reconcile due to filled_qty mismatch
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_reports_status_mismatch(exec_engine_open_check, cache, account_id):
     """
     Test _reconcile_order_reports reconciles when order status differs.
@@ -2777,7 +2777,7 @@ async def test_reconcile_order_reports_status_mismatch(exec_engine_open_check, c
     assert reconciled_count == 1  # Should reconcile due to status mismatch
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_reconcile_order_reports_clears_retry_counts(exec_engine_open_check, cache, account_id):
     """
     Test _reconcile_order_reports clears retry counts for successfully queried orders.
@@ -2833,7 +2833,7 @@ async def test_reconcile_order_reports_clears_retry_counts(exec_engine_open_chec
 # =============================================================================
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_missing_orders_at_venue_queries_single_order(
     exec_engine_open_check,
     cache,
@@ -2885,7 +2885,7 @@ async def test_handle_missing_orders_at_venue_queries_single_order(
     assert query_called
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_missing_orders_at_venue_skips_recent_orders(
     exec_engine_open_check,
     cache,
@@ -2934,7 +2934,7 @@ async def test_handle_missing_orders_at_venue_skips_recent_orders(
     assert not query_called  # Should skip recent orders
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_handle_missing_orders_at_venue_respects_retry_limit(
     exec_engine_open_check,
     cache,

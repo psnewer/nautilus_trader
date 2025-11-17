@@ -69,7 +69,7 @@ from tests.integration_tests.adapters.betfair.test_kit import betting_instrument
 from tests.integration_tests.adapters.betfair.test_kit import mock_betfair_request
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_connect(betfair_client):
     # Arrange
     betfair_client.reset_headers()
@@ -88,22 +88,23 @@ async def test_connect(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_exception_handling(betfair_client):
     mock_betfair_request(betfair_client, response=BetfairResponses.account_funds_error())
     with pytest.raises(AccountAPINGException) as e:
         await betfair_client.get_account_funds(wallet="not a real walltet")
-        result = e.value.response
-        expected = Response(
-            jsonrpc="2.0",
-            id=1,
-            result=None,
-            error=RPCError(code=-32602, message="DSC-0018", data=None),
-        )
-        assert result == expected
+
+    result = e.value.response
+    expected = Response(
+        jsonrpc="2.0",
+        id=1,
+        result=None,
+        error=RPCError(code=-32602, message="DSC-0018", data=None),
+    )
+    assert result == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_list_navigation(betfair_client):
     mock_betfair_request(betfair_client, BetfairResponses.navigation_list_navigation())
     nav = await betfair_client.list_navigation()
@@ -113,7 +114,7 @@ async def test_list_navigation(betfair_client):
     assert request == Menu(jsonrpc="2.0", id=0, params=None)
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_list_market_catalogue(betfair_client):
     market_filter = {
         "eventTypeIds": ["7"],
@@ -136,7 +137,7 @@ async def test_list_market_catalogue(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_get_account_details(betfair_client):
     account = await betfair_client.get_account_details()
 
@@ -146,7 +147,7 @@ async def test_get_account_details(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_get_account_funds(betfair_client):
     mock_betfair_request(betfair_client, BetfairResponses.account_funds_no_exposure())
     response = await betfair_client.get_account_funds()
@@ -166,7 +167,7 @@ async def test_get_account_funds(betfair_client):
     )
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_place_orders(betfair_client):
     instrument = betting_instrument()
     limit_order = TestExecStubs.limit_order(
@@ -211,7 +212,7 @@ async def test_place_orders(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_place_orders_handicap(betfair_client):
     instrument = betting_instrument_handicap()
     limit_order = TestExecStubs.limit_order(
@@ -256,7 +257,7 @@ async def test_place_orders_handicap(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_place_orders_market_on_close(betfair_client):
     instrument = betting_instrument()
     market_on_close_order = TestExecStubs.market_order(
@@ -307,7 +308,7 @@ async def test_place_orders_market_on_close(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_replace_orders_single(betfair_client):
     instrument = betting_instrument()
     update_order_command = TestCommandStubs.modify_order_command(
@@ -339,7 +340,7 @@ async def test_replace_orders_single(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_cancel_orders(betfair_client):
     instrument = betting_instrument()
     cancel_command = TestCommandStubs.cancel_order_command(
@@ -366,7 +367,7 @@ async def test_cancel_orders(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_list_current_orders(betfair_client):
     mock_betfair_request(betfair_client, response=BetfairResponses.list_current_orders_executable())
     current_orders = await betfair_client.list_current_orders()
@@ -392,7 +393,7 @@ async def test_list_current_orders(betfair_client):
     assert request == expected
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_list_cleared_orders(betfair_client):
     mock_betfair_request(betfair_client, response=BetfairResponses.list_cleared_orders())
     cleared_orders = await betfair_client.list_cleared_orders(bet_status=BetStatus.SETTLED)

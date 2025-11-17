@@ -101,7 +101,7 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value", "precision", "expected"),
         [
-            [Price(2.15, precision=2), 0, Decimal("2")],
+            [Price(2.15, precision=2), 0, Decimal(2)],
             [Price(2.15, precision=2), 1, Decimal("2.2")],
             [Price(2.255, precision=3), 2, Decimal("2.26")],
         ],
@@ -116,10 +116,10 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Price(-0, precision=0), Decimal("0")],
-            [Price(0, precision=0), Decimal("0")],
-            [Price(1, precision=0), Decimal("1")],
-            [Price(-1, precision=0), Decimal("1")],
+            [Price(-0, precision=0), Decimal(0)],
+            [Price(0, precision=0), Decimal(0)],
+            [Price(1, precision=0), Decimal(1)],
+            [Price(-1, precision=0), Decimal(1)],
             [Price(-1.1, precision=1), Decimal("1.1")],
         ],
     )
@@ -135,9 +135,9 @@ class TestPrice:
         [
             [
                 Price(-1, precision=0),
-                Decimal("-1"),
+                Decimal(-1),
             ],  # Matches built-in decimal.Decimal behavior
-            [Price(0, 0), Decimal("0")],
+            [Price(0, 0), Decimal(0)],
         ],
     )
     def test_pos_with_various_values_returns_expected_decimal(self, value, expected):
@@ -150,8 +150,8 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Price(1, precision=0), Decimal("-1")],
-            [Price(0, precision=0), Decimal("0")],
+            [Price(1, precision=0), Decimal(-1)],
+            [Price(0, precision=0), Decimal(0)],
         ],
     )
     def test_neg_with_various_values_returns_expected_decimal(self, value, expected):

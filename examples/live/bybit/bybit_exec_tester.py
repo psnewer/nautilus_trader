@@ -55,7 +55,7 @@ elif product_type == BybitProductType.LINEAR:
     use_spot_position_reports = False
 elif product_type == BybitProductType.INVERSE:
     symbol = f"XRPUSD-{product_type.value.upper()}"
-    order_qty = Decimal("50")
+    order_qty = Decimal(50)
     enable_sells = True
     use_spot_position_reports = False
 else:

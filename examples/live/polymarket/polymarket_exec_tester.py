@@ -62,7 +62,7 @@ load_ids = [str(instrument_id)]
 instrument_provider_config = InstrumentProviderConfig(load_ids=frozenset(load_ids))
 
 # Order configuration
-order_qty = Decimal("10")  # Number of shares for limit orders, or notional value for market BUY
+order_qty = Decimal(10)  # Number of shares for limit orders, or notional value for market BUY
 
 # Configure the trading node
 config_node = TradingNodeConfig(

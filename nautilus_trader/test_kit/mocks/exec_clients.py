@@ -301,9 +301,7 @@ class MockLiveExecutionClient(LiveExecutionClient):
         if current_frame:
             self.calls.append(current_frame.f_code.co_name)
 
-        reports = []
-        for report in self._order_status_reports.values():
-            reports.append(report)
+        reports = list(self._order_status_reports.values())
 
         if command.instrument_id is not None:
             reports = [r for r in reports if r.instrument_id == command.instrument_id]

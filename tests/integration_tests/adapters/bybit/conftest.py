@@ -54,17 +54,17 @@ def live_logger():
     return Logger("TEST_LOGGER")
 
 
-@pytest.fixture()
+@pytest.fixture
 def venue() -> Venue:
     return BYBIT_VENUE
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_id(venue) -> AccountId:
     return AccountId(f"{venue.value}-123")
 
 
-@pytest.fixture()
+@pytest.fixture
 def instrument() -> CurrencyPair:
     return CurrencyPair(
         instrument_id=InstrumentId(Symbol("BTCUSDT-SPOT"), BYBIT_VENUE),
@@ -82,7 +82,7 @@ def instrument() -> CurrencyPair:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_state(account_id) -> AccountState:
     return AccountState(
         account_id=account_id,
@@ -104,7 +104,7 @@ def account_state(account_id) -> AccountState:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_http_client():
     mock = MagicMock(spec=nautilus_pyo3.BybitHttpClient)
     mock.api_key = "test_api_key"
@@ -179,12 +179,12 @@ def _create_ws_mock() -> MagicMock:
     return mock
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_ws_clients():
     return _create_ws_mock(), _create_ws_mock()
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_instrument_provider(instrument):
     provider = MagicMock(spec=BybitInstrumentProvider)
     provider.initialize = AsyncMock()
@@ -197,12 +197,12 @@ def mock_instrument_provider(instrument):
     return provider
 
 
-@pytest.fixture()
+@pytest.fixture
 def data_client():
     pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def exec_client():
     pass
 
