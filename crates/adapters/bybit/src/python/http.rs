@@ -613,6 +613,48 @@ impl BybitHttpClient {
             Python::attach(|py| Ok(py.None()))
         })
     }
+
+    #[pyo3(name = "borrow_spot")]
+    #[pyo3(signature = (coin, amount))]
+    fn py_borrow_spot<'py>(
+        &self,
+        py: Python<'py>,
+        coin: &str,
+        amount: Quantity,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+        let coin = coin.to_string();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .borrow_spot(&coin, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
+
+    #[pyo3(name = "repay_spot_borrow")]
+    #[pyo3(signature = (coin, amount=None))]
+    fn py_repay_spot_borrow<'py>(
+        &self,
+        py: Python<'py>,
+        coin: &str,
+        amount: Option<Quantity>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+        let coin = coin.to_string();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .repay_spot_borrow(&coin, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| Ok(py.None()))
+        })
+    }
 }
 
 impl From<BybitHttpError> for PyErr {

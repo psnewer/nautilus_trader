@@ -24,6 +24,8 @@ WebSocket clients exposed via PyO3 for performance.
 import asyncio
 from typing import Any
 
+import pandas as pd
+
 from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
@@ -447,7 +449,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 f"About to call query_order: product_type={product_type}, "
                 f"instrument_id={pyo3_instrument_id}, "
                 f"client_order_id={pyo3_client_order_id}",
-                LogColor.CYAN,
+                LogColor.MAGENTA,
             )
 
             pyo3_report = await self._http_client.query_order(
@@ -458,7 +460,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 venue_order_id=pyo3_venue_order_id,
             )
 
-            self._log.debug(f"query_order returned: {pyo3_report}", LogColor.CYAN)
+            self._log.debug(f"query_order returned: {pyo3_report}", LogColor.MAGENTA)
 
             if pyo3_report is None:
                 self._log.warning(f"No order status report found for {command.client_order_id!r}")
@@ -1253,11 +1255,61 @@ class BybitExecutionClient(LiveExecutionClient):
             ts_event=report.ts_event,
         )
 
+        if self._config.auto_repay_spot_borrows and order.side == OrderSide.BUY:
+            try:
+                product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+                    order.instrument_id.symbol.value,
+                )
+                if product_type == BybitProductType.SPOT:
+                    base_currency = instrument.base_currency.code
+                    self.create_task(
+                        self._repay_spot_borrow_if_needed(base_currency),
+                    )
+            except Exception as e:
+                self._log.warning(f"Failed to check for spot borrow repayment: {e}")
+
     def _handle_position_status_report_pyo3(self, msg: nautilus_pyo3.PositionStatusReport) -> None:
         report = PositionStatusReport.from_pyo3(msg)
         self._log.debug(f"Received {report}", LogColor.MAGENTA)
         # Do not send position reports from WebSocket stream - we use HTTP endpoint for reconciliation
         # to avoid noise from position updates every time a fill occurs
+
+    async def _repay_spot_borrow_if_needed(self, coin: str) -> None:
+        # Repay outstanding spot borrows for a specific coin, this method is called after
+        # BUY orders fill on SPOT instruments to automatically repay any outstanding borrows,
+        # preventing interest accrual.
+        try:
+            if self._is_repay_blackout_window():
+                self._log.warning(
+                    f"Skipping borrow repayment for {coin} due to Bybit blackout window "
+                    f"(04:00-05:30 UTC daily). Will need manual repayment.",
+                    LogColor.YELLOW,
+                )
+                return
+
+            self._log.info(f"Attempting to repay spot borrow for {coin}", LogColor.BLUE)
+
+            await self._http_client.repay_spot_borrow(coin)
+
+            self._log.info(
+                f"Successfully repaid spot borrow for {coin}",
+                LogColor.GREEN,
+            )
+        except Exception as e:
+            self._log.error(
+                f"Failed to repay spot borrow for {coin}: {e}",
+                LogColor.RED,
+            )
+
+    @staticmethod
+    def _is_repay_blackout_window() -> bool:
+        # Check if current UTC time is within Bybit's repayment blackout window (04:00-05:30 UTC daily).
+        # During this window, Bybit blocks no-convert repayment operations for interest calculation.
+        now_utc = pd.Timestamp.utcnow()
+        hour = now_utc.hour
+        minute = now_utc.minute
+
+        return hour == 4 or (hour == 5 and minute < 30)
 
     def _is_external_order(self, client_order_id: ClientOrderId) -> bool:
         return not client_order_id or not self._cache.strategy_id_for_order(client_order_id)

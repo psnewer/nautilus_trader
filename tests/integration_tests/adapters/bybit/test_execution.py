@@ -16,6 +16,7 @@
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 
 from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
@@ -1173,5 +1174,117 @@ async def test_handle_order_modify_rejected_pyo3_conversion(
 
         # Assert - Event should be converted and sent
         assert msgbus.sent_count > 0
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio()
+async def test_repay_spot_borrow_handles_api_errors_gracefully(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    http_client.repay_spot_borrow = AsyncMock(side_effect=Exception("API Error"))
+
+    try:
+        # Act - Should not raise, just log error
+        await client._repay_spot_borrow_if_needed("BTC")
+
+        # Assert - Method was called despite error
+        http_client.repay_spot_borrow.assert_called_once_with("BTC")
+    finally:
+        await client._disconnect()
+
+
+def test_is_repay_blackout_window_during_hour_4(monkeypatch):
+    # Arrange
+    mock_time = pd.Timestamp("2025-01-15 04:15:00", tz="UTC")
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
+        lambda: mock_time,
+    )
+
+    # Act
+    result = BybitExecutionClient._is_repay_blackout_window()
+
+    # Assert - 04:15 UTC is in blackout window
+    assert result is True
+
+
+def test_is_repay_blackout_window_during_hour_5_before_30min(monkeypatch):
+    # Arrange
+    mock_time = pd.Timestamp("2025-01-15 05:29:00", tz="UTC")
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
+        lambda: mock_time,
+    )
+
+    # Act
+    result = BybitExecutionClient._is_repay_blackout_window()
+
+    # Assert - 05:29 UTC is in blackout window
+    assert result is True
+
+
+def test_is_repay_blackout_window_after_blackout(monkeypatch):
+    # Arrange
+    mock_time = pd.Timestamp("2025-01-15 05:30:00", tz="UTC")
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
+        lambda: mock_time,
+    )
+
+    # Act
+    result = BybitExecutionClient._is_repay_blackout_window()
+
+    # Assert - 05:30 UTC is AFTER blackout window
+    assert result is False
+
+
+def test_is_repay_blackout_window_outside_blackout(monkeypatch):
+    # Arrange
+    mock_time = pd.Timestamp("2025-01-15 10:00:00", tz="UTC")
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
+        lambda: mock_time,
+    )
+
+    # Act
+    result = BybitExecutionClient._is_repay_blackout_window()
+
+    # Assert - 10:00 UTC is outside blackout window
+    assert result is False
+
+
+@pytest.mark.asyncio()
+async def test_auto_repayment_skipped_during_blackout_window(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+    )
+    http_client.repay_spot_borrow = AsyncMock()
+
+    # Mock blackout window time (04:30 UTC)
+    mock_time = pd.Timestamp("2025-01-15 04:30:00", tz="UTC")
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
+        lambda: mock_time,
+    )
+
+    try:
+        # Act
+        await client._repay_spot_borrow_if_needed("BTC")
+
+        # Assert - Repayment was NOT called during blackout window
+        http_client.repay_spot_borrow.assert_not_called()
     finally:
         await client._disconnect()

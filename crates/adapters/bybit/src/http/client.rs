@@ -55,20 +55,21 @@ use ustr::Ustr;
 use super::{
     error::BybitHttpError,
     models::{
-        BybitFeeRate, BybitFeeRateResponse, BybitInstrumentInverseResponse,
+        BybitBorrowResponse, BybitFeeRate, BybitFeeRateResponse, BybitInstrumentInverseResponse,
         BybitInstrumentLinearResponse, BybitInstrumentOptionResponse, BybitInstrumentSpotResponse,
-        BybitKlinesResponse, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
-        BybitPlaceOrderResponse, BybitPositionListResponse, BybitServerTimeResponse,
-        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSetTradingStopResponse,
-        BybitSwitchModeResponse, BybitTradeHistoryResponse, BybitTradesResponse,
-        BybitWalletBalanceResponse,
+        BybitKlinesResponse, BybitNoConvertRepayResponse, BybitOpenOrdersResponse,
+        BybitOrderHistoryResponse, BybitPlaceOrderResponse, BybitPositionListResponse,
+        BybitServerTimeResponse, BybitSetLeverageResponse, BybitSetMarginModeResponse,
+        BybitSetTradingStopResponse, BybitSwitchModeResponse, BybitTradeHistoryResponse,
+        BybitTradesResponse, BybitWalletBalanceResponse,
     },
     query::{
         BybitAmendOrderParamsBuilder, BybitBatchAmendOrderEntryBuilder,
         BybitBatchCancelOrderEntryBuilder, BybitBatchCancelOrderParamsBuilder,
-        BybitBatchPlaceOrderEntryBuilder, BybitCancelAllOrdersParamsBuilder,
-        BybitCancelOrderParamsBuilder, BybitFeeRateParams, BybitInstrumentsInfoParams,
-        BybitKlinesParams, BybitKlinesParamsBuilder, BybitOpenOrdersParamsBuilder,
+        BybitBatchPlaceOrderEntryBuilder, BybitBorrowParamsBuilder,
+        BybitCancelAllOrdersParamsBuilder, BybitCancelOrderParamsBuilder, BybitFeeRateParams,
+        BybitInstrumentsInfoParams, BybitKlinesParams, BybitKlinesParamsBuilder,
+        BybitNoConvertRepayParamsBuilder, BybitOpenOrdersParamsBuilder,
         BybitOrderHistoryParamsBuilder, BybitPlaceOrderParamsBuilder, BybitPositionListParams,
         BybitSetLeverageParamsBuilder, BybitSetMarginModeParamsBuilder, BybitSetTradingStopParams,
         BybitSwitchModeParamsBuilder, BybitTickersParams, BybitTradeHistoryParams,
@@ -820,6 +821,82 @@ impl BybitRawHttpClient {
         .await
     }
 
+    /// Manually borrows coins for margin trading.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Insufficient collateral for the borrow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parameter builder fails (should never happen with valid inputs).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/account/borrow>
+    pub async fn borrow(
+        &self,
+        coin: &str,
+        amount: &str,
+    ) -> Result<BybitBorrowResponse, BybitHttpError> {
+        let params = BybitBorrowParamsBuilder::default()
+            .coin(coin.to_string())
+            .amount(amount.to_string())
+            .build()
+            .expect("Failed to build BybitBorrowParams");
+
+        let body = serde_json::to_vec(&params)?;
+        self.send_request::<_, ()>(Method::POST, "/v5/account/borrow", None, Some(body), true)
+            .await
+    }
+
+    /// Manually repays borrowed coins without asset conversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Called between 04:00-05:30 UTC (interest calculation window).
+    /// - Insufficient spot balance for repayment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parameter builder fails (should never happen with valid inputs).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/account/no-convert-repay>
+    pub async fn no_convert_repay(
+        &self,
+        coin: &str,
+        amount: Option<&str>,
+    ) -> Result<BybitNoConvertRepayResponse, BybitHttpError> {
+        let mut builder = BybitNoConvertRepayParamsBuilder::default();
+        builder.coin(coin.to_string());
+
+        if let Some(amt) = amount {
+            builder.amount(amt.to_string());
+        }
+
+        let params = builder
+            .build()
+            .expect("Failed to build BybitNoConvertRepayParams");
+
+        let body = serde_json::to_vec(&params)?;
+        self.send_request::<_, ()>(
+            Method::POST,
+            "/v5/account/no-convert-repay",
+            None,
+            Some(body),
+            true,
+        )
+        .await
+    }
+
     /// Fetches tickers for market data.
     ///
     /// # Errors
@@ -1383,6 +1460,56 @@ impl BybitHttpClient {
         params: &BybitSetTradingStopParams,
     ) -> Result<BybitSetTradingStopResponse, BybitHttpError> {
         self.inner.set_trading_stop(params).await
+    }
+
+    /// Borrows coins for spot margin trading.
+    ///
+    /// This should be called before opening short spot positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Insufficient collateral for the borrow.
+    pub async fn borrow_spot(
+        &self,
+        coin: &str,
+        amount: Quantity,
+    ) -> anyhow::Result<BybitBorrowResponse> {
+        let amount_str = amount.to_string();
+        self.inner
+            .borrow(coin, &amount_str)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to borrow {} {}: {}", amount, coin, e))
+    }
+
+    /// Repays spot borrows for a specific coin.
+    ///
+    /// This should be called after closing short spot positions to avoid accruing interest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Called between 04:00-05:30 UTC (interest calculation window).
+    /// - Insufficient spot balance for repayment.
+    ///
+    /// # Parameters
+    ///
+    /// - `coin`: The coin to repay (e.g., "BTC", "ETH")
+    /// - `amount`: Optional amount to repay. If None, repays all outstanding borrows.
+    pub async fn repay_spot_borrow(
+        &self,
+        coin: &str,
+        amount: Option<Quantity>,
+    ) -> anyhow::Result<BybitNoConvertRepayResponse> {
+        let amount_str = amount.as_ref().map(|q| q.to_string());
+        self.inner
+            .no_convert_repay(coin, amount_str.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to repay spot borrow for {}: {}", coin, e))
     }
 
     /// Generate SPOT position reports from wallet balances.

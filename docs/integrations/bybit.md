@@ -112,8 +112,8 @@ All the order types listed below can be used as *either* entries or exits, excep
 
 ### Batch operations
 
-| Operation          | Spot | Linear | Inverse | Notes                                  |
-|--------------------|------|--------|---------|----------------------------------------|
+| Operation          | Spot | Linear | Inverse | Notes                                     |
+|--------------------|------|--------|---------|-------------------------------------------|
 | Batch Submit       | ✓    | ✓      | ✓       | Submit multiple orders in single request. |
 | Batch Modify       | ✓    | ✓      | ✓       | Modify multiple orders in single request. |
 | Batch Cancel       | ✓    | ✓      | ✓       | Cancel multiple orders in single request. |
@@ -173,6 +173,67 @@ and won't borrow funds, even if you have auto-borrow enabled on your Bybit accou
 
 For a complete example of using order parameters including `is_leverage`, see the
 [bybit_exec_tester.py](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/bybit_exec_tester.py) example.
+
+## Spot margin borrowing and repayment
+
+NautilusTrader provides automated spot margin borrow repayment functionality to prevent interest accrual after closing short positions on Bybit.
+
+### Background
+
+When trading SPOT with margin enabled (`is_leverage=True`), Bybit automatically borrows coins when you execute short positions.
+However, after you close the short position (BUY order fills), the borrowed coins are **NOT automatically repaid** - they continue accruing hourly interest charges until manually repaid.
+This can result in significant interest costs if left unattended.
+
+### Automatic repayment (recommended)
+
+NautilusTrader automatically repays spot margin borrows immediately after BUY orders fill on SPOT instruments.
+This feature is **enabled by default** via the `auto_repay_spot_borrows` configuration flag.
+
+**How it works:**
+
+1. When a SPOT BUY order fills, the execution client automatically attempts to repay any outstanding borrows for that coin.
+2. The repayment uses Bybit's `no-convert-repay` endpoint, which repays the full outstanding borrow amount.
+3. If the repayment fails (e.g., API error), it logs the error but does not crash the execution client.
+4. Repayments are automatically skipped during Bybit's UTC blackout window (see below).
+
+**Example:**
+
+```python
+from nautilus_trader.adapters.bybit import BybitExecClientConfig
+
+config = BybitExecClientConfig(
+    api_key="YOUR_API_KEY",
+    api_secret="YOUR_API_SECRET",
+    product_types=[BybitProductType.SPOT],
+    auto_repay_spot_borrows=True,  # Default is True
+)
+```
+
+### UTC blackout window
+
+Bybit blocks `no-convert-repay` operations daily during **04:00-05:30 UTC** for interest calculation processing. NautilusTrader automatically detects this window and skips repayment attempts, logging a warning instead.
+
+During the blackout window, any BUY order fills will trigger a warning like:
+
+```
+Skipping borrow repayment for BTC due to Bybit blackout window (04:00-05:30 UTC daily). Will need manual repayment.
+```
+
+**Important:** If your BUY orders fill during the blackout window, you'll need to manually repay the borrows after 05:30 UTC to stop interest accrual, or wait for the next BUY order fill outside the blackout window.
+
+### Configuration options
+
+| Option                    | Type   | Default | Description                                                                 |
+|---------------------------|--------|---------|-----------------------------------------------------------------------------|
+| `auto_repay_spot_borrows` | `bool` | `True`  | If `True`, automatically repay spot margin borrows after BUY orders fill. Prevents interest accrual on borrowed coins. Repayment is skipped during blackout window. |
+
+### Important notes
+
+- Auto-repayment only triggers on **SPOT BUY orders**, not derivatives.
+- Repayment uses the `no-convert-repay` endpoint which repays the full outstanding borrow by default.
+- The feature gracefully handles API errors and logs failures without crashing.
+- Bybit is planning to release an auto-repay mode at the venue level (end of month), which may make this feature redundant in the future.
+- Manual borrowing is still required before opening short positions unless auto-borrow is enabled on your Bybit account.
 
 ### SPOT trading limitations
 

@@ -810,6 +810,35 @@ pub struct BybitSetTradingStopResult {}
 /// - <https://bybit-exchange.github.io/docs/v5/position/trading-stop>
 pub type BybitSetTradingStopResponse = BybitResponse<BybitSetTradingStopResult>;
 
+/// Result from manual borrow operation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitBorrowResult {
+    pub coin: String,
+    pub amount: String,
+}
+
+/// Response alias for manual borrow requests.
+///
+/// # References
+///
+/// - <https://bybit-exchange.github.io/docs/v5/account/borrow>
+pub type BybitBorrowResponse = BybitResponse<BybitBorrowResult>;
+
+/// Result from no-convert repay operation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitNoConvertRepayResult {
+    pub result_status: String,
+}
+
+/// Response alias for no-convert repay requests.
+///
+/// # References
+///
+/// - <https://bybit-exchange.github.io/docs/v5/account/no-convert-repay>
+pub type BybitNoConvertRepayResponse = BybitResponse<BybitNoConvertRepayResult>;
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
@@ -966,5 +995,45 @@ mod tests {
 
         let balance = &account_id.balances[0];
         assert_eq!(balance.total.as_f64(), 1000.0);
+    }
+
+    #[rstest]
+    fn deserialize_borrow_response() {
+        let json = r#"{
+            "retCode": 0,
+            "retMsg": "success",
+            "result": {
+                "coin": "BTC",
+                "amount": "0.01"
+            },
+            "retExtInfo": {},
+            "time": 1756197991955
+        }"#;
+
+        let response: BybitBorrowResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.ret_code, 0);
+        assert_eq!(response.ret_msg, "success");
+        assert_eq!(response.result.coin, "BTC");
+        assert_eq!(response.result.amount, "0.01");
+    }
+
+    #[rstest]
+    fn deserialize_no_convert_repay_response() {
+        let json = r#"{
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "resultStatus": "SU"
+            },
+            "retExtInfo": {},
+            "time": 1234567890
+        }"#;
+
+        let response: BybitNoConvertRepayResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(response.ret_code, 0);
+        assert_eq!(response.ret_msg, "OK");
+        assert_eq!(response.result.result_status, "SU");
     }
 }

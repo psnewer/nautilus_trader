@@ -5917,6 +5917,16 @@ class BybitHttpClient:
         client_order_ids: list[ClientOrderId | None],
         venue_order_ids: list[VenueOrderId | None],
     ) -> list[OrderStatusReport]: ...
+    async def borrow_spot(
+        self,
+        coin: str,
+        amount: Quantity,
+    ) -> Any: ...
+    async def repay_spot_borrow(
+        self,
+        coin: str,
+        amount: Quantity | None = None,
+    ) -> Any: ...
 
 class BybitWebSocketClient:
     @staticmethod

@@ -285,6 +285,32 @@ pub struct BybitSetTradingStopParams {
     pub sl_order_type: Option<BybitOrderType>,
 }
 
+/// Body parameters for `POST /v5/account/borrow`.
+///
+/// # References
+///
+/// - <https://bybit-exchange.github.io/docs/v5/account/borrow>
+#[derive(Clone, Debug, Deserialize, Serialize, Builder)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitBorrowParams {
+    pub coin: String,
+    pub amount: String,
+}
+
+/// Body parameters for `POST /v5/account/no-convert-repay`.
+///
+/// # References
+///
+/// - <https://bybit-exchange.github.io/docs/v5/account/no-convert-repay>
+#[derive(Clone, Debug, Deserialize, Serialize, Builder)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitNoConvertRepayParams {
+    pub coin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(setter(strip_option))]
+    pub amount: Option<String>,
+}
+
 /// Order entry payload for `POST /v5/order/create-batch`.
 ///
 /// # References
