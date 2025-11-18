@@ -2198,7 +2198,6 @@ impl DydxDataClient {
 mod tests {
     use std::{collections::HashMap, net::SocketAddr};
 
-    use crate::http::models::{Candle, CandlesResponse};
     use axum::{
         Router,
         extract::{Path, Query, State},
@@ -2231,6 +2230,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::http::models::{Candle, CandlesResponse};
 
     fn setup_test_env() {
         // Initialize data event sender for tests

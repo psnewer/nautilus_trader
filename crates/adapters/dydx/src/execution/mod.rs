@@ -566,8 +566,10 @@ impl ExecutionClient for DydxExecutionClient {
                 // TODO: Implement proper client_order_id to u32 mapping
                 let client_id_u32 = client_order_id.as_str().parse::<u32>().unwrap_or_else(|_| {
                     // Fallback: use hash of client_order_id
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
+                    use std::{
+                        collections::hash_map::DefaultHasher,
+                        hash::{Hash, Hasher},
+                    };
                     let mut hasher = DefaultHasher::new();
                     client_order_id.as_str().hash(&mut hasher);
                     (hasher.finish() % (MAX_CLIENT_ID as u64)) as u32
@@ -717,8 +719,10 @@ impl ExecutionClient for DydxExecutionClient {
             // Convert client_order_id to u32 (same logic as submit_order)
             let client_id_u32 = client_order_id.as_str().parse::<u32>().unwrap_or_else(|_| {
                 // Fallback: use hash of client_order_id
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
+                use std::{
+                    collections::hash_map::DefaultHasher,
+                    hash::{Hash, Hasher},
+                };
                 let mut hasher = DefaultHasher::new();
                 client_order_id.as_str().hash(&mut hasher);
                 (hasher.finish() % (MAX_CLIENT_ID as u64)) as u32
@@ -1698,9 +1702,6 @@ impl LiveExecutionClientExt for DydxExecutionClient {
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
-
-    use super::*;
     use nautilus_model::{
         enums::{OrderSide, OrderType, TimeInForce},
         events::order::initialized::OrderInitializedBuilder,
@@ -1708,6 +1709,9 @@ mod tests {
         orders::OrderAny,
         types::{Price, Quantity},
     };
+    use rstest::rstest;
+
+    use super::*;
 
     /// Test that client order ID parsing to u32 works for numeric strings
     #[rstest]
@@ -1721,8 +1725,10 @@ mod tests {
     /// Test that client order ID hashing works for non-numeric strings
     #[rstest]
     fn test_client_order_id_hash_fallback() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
 
         let client_id = "O-20241112-ABC123-001";
         let parse_result: Result<u32, _> = client_id.parse();
@@ -1821,8 +1827,10 @@ mod tests {
     /// Test that client order ID conversion is consistent for cancel operations
     #[rstest]
     fn test_cancel_order_id_consistency() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
 
         let client_id_str = "O-20241112-CANCEL-001";
 

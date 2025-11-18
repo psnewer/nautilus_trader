@@ -969,12 +969,13 @@ pub fn parse_account_state(
     ts_event: UnixNanos,
     ts_init: UnixNanos,
 ) -> anyhow::Result<nautilus_model::events::AccountState> {
+    use std::collections::HashMap;
+
     use nautilus_model::{
         enums::AccountType,
         events::AccountState,
         types::{AccountBalance, MarginBalance},
     };
-    use std::collections::HashMap;
 
     let mut balances = Vec::new();
 

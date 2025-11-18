@@ -19,6 +19,8 @@
 //! by transforming them into HTTP-equivalent structures and delegating to
 //! the HTTP parser for consistency.
 
+use std::str::FromStr;
+
 use anyhow::Context;
 use chrono::Utc;
 use dashmap::DashMap;
@@ -30,7 +32,6 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
 };
 use rust_decimal::Decimal;
-use std::str::FromStr;
 
 use crate::{http::models::Order, schemas::ws::DydxWsOrderSubaccountMessageContents};
 
@@ -443,8 +444,6 @@ fn convert_ws_position_to_http(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::common::enums::{DydxOrderStatus, DydxOrderType, DydxTimeInForce};
     use nautilus_model::{
         enums::{LiquiditySide, OrderSide, OrderType, PositionSideSpecified},
         identifiers::{AccountId, InstrumentId, Symbol, Venue},
@@ -452,6 +451,9 @@ mod tests {
         types::{Currency, Price, Quantity},
     };
     use rstest::rstest;
+
+    use super::*;
+    use crate::common::enums::{DydxOrderStatus, DydxOrderType, DydxTimeInForce};
 
     fn create_test_instrument() -> InstrumentAny {
         let instrument_id = InstrumentId::new(Symbol::new("BTC-USD-PERP"), Venue::new("DYDX"));
@@ -749,8 +751,9 @@ mod tests {
 
     #[rstest]
     fn test_convert_ws_position_to_http() {
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
         use nautilus_model::enums::PositionSide;
+
+        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
 
         let ws_position = DydxPerpetualPosition {
             market: "BTC-USD".into(),
@@ -795,8 +798,9 @@ mod tests {
 
     #[rstest]
     fn test_parse_ws_position_report_success() {
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
         use nautilus_model::enums::PositionSide;
+
+        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
@@ -837,8 +841,9 @@ mod tests {
 
     #[rstest]
     fn test_parse_ws_position_report_short() {
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
         use nautilus_model::enums::PositionSide;
+
+        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
@@ -877,8 +882,9 @@ mod tests {
 
     #[rstest]
     fn test_parse_ws_position_report_missing_instrument() {
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
         use nautilus_model::enums::PositionSide;
+
+        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
 
         let instruments = DashMap::new(); // Empty - no instruments cached
 
@@ -1140,8 +1146,9 @@ mod tests {
 
     #[rstest]
     fn test_parse_ws_position_closed() {
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
         use nautilus_model::enums::PositionSide;
+
+        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
