@@ -257,9 +257,9 @@ outdated: check-edit-installed  #-- Check for outdated dependencies
 	done; \
 	[ $$outdated_count -eq 0 ] && printf "$(GREEN)  All tools up to date ✓$(RESET)\n"
 
-.PHONY: update cargo-update
+.PHONY: update
 update: cargo-update  #-- Update all dependencies (cargo and uv)
-	uv lock --upgrade
+	uv self update && uv lock --upgrade
 
 .PHONY: install-tools
 install-tools:  #-- Install required development tools (Rust tools from Cargo.toml, uv from uv-version)
@@ -268,19 +268,18 @@ install-tools:  #-- Install required development tools (Rust tools from Cargo.to
 	&& cargo install cargo-llvm-cov --version $(CARGO_LLVM_COV_VERSION) --locked \
 	&& cargo install cargo-audit --version $(CARGO_AUDIT_VERSION) --locked \
 	&& cargo install lychee --version $(LYCHEE_VERSION) --locked \
-	&& uv self update $(UV_VERSION)
+	&& uv self update $(UV_VERSION) \
+	&& uv tool install osv-scanner
 
 #== Security
 
 .PHONY: security-audit
-security-audit: check-audit-installed  #-- Run security audit for Rust and Python dependencies
+security-audit: check-audit-installed check-osv-installed  #-- Run security audit for Rust and Python dependencies
 	$(info $(M) Running security audit for Rust dependencies...)
 	@printf "$(CYAN)Checking Rust dependencies for known vulnerabilities...$(RESET)\n"
 	cargo audit --color never || true
-	@printf "\n$(CYAN)Installed Python packages:$(RESET)\n"
-	@pip list --format=freeze 2>/dev/null | grep -E "^(aiohttp|requests|urllib3|cryptography|pyyaml|jinja2)" || echo "  (key security-relevant packages not found in pip list)"
-	@printf "\n$(YELLOW)Note: For comprehensive Python vulnerability scanning, install and run:$(RESET)\n"
-	@printf "  pip install pip-audit && pip-audit\n"
+	@printf "\n$(CYAN)Checking Python lockfile (uv.lock) with osv-scanner...$(RESET)\n"
+	osv-scanner --config=osv-scanner.toml --lockfile=uv.lock
 
 .PHONY: cargo-deny
 cargo-deny: check-deny-installed  #-- Run cargo-deny checks (advisories, sources, bans, licenses)
@@ -340,6 +339,13 @@ cargo-check:  #-- Check Rust code without building
 check-audit-installed:  #-- Verify cargo-audit is installed
 	@if ! cargo audit --version >/dev/null 2>&1; then \
 		echo "cargo-audit is not installed. You can install it using 'cargo install cargo-audit'"; \
+		exit 1; \
+	fi
+
+.PHONY: check-osv-installed
+check-osv-installed:  #-- Verify osv-scanner is installed
+	@if ! osv-scanner --version >/dev/null 2>&1; then \
+		echo "osv-scanner is not installed. You can install it using 'uv tool install osv-scanner'"; \
 		exit 1; \
 	fi
 
