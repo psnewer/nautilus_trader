@@ -2039,6 +2039,19 @@ class LiveExecutionEngine(ExecutionEngine):
             if order_report.client_order_id is not None:
                 cached_order = self._cache.order(order_report.client_order_id)
                 if cached_order is not None:
+                    # Skip closed reconciliation orders to prevent duplicate inferred fills on restart
+                    if (
+                        cached_order.is_closed
+                        and cached_order.tags is not None
+                        and "RECONCILIATION" in cached_order.tags
+                    ):
+                        orders_to_skip.append(venue_order_id)
+                        self._log.debug(
+                            f"Skipping closed reconciliation order {order_report.client_order_id}: "
+                            f"synthetic position adjustment from previous session",
+                        )
+                        continue
+
                     # Order exists in cache - check if it's an exact duplicate
                     # Only skip if it's an exact match (prevents duplicate creation)
                     # But still reconcile if there are any discrepancies

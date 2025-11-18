@@ -4341,6 +4341,98 @@ async def test_handle_fill_quantity_mismatch_closed_order_within_tolerance(live_
     )
 
 
+@pytest.mark.asyncio
+async def test_reconciliation_orders_not_reprocessed_on_restart(live_exec_engine, cache):
+    """
+    Test that closed reconciliation orders from previous sessions are not reprocessed on
+    restart, preventing duplicate inferred fills.
+
+    This test reproduces the issue where reconciliation market orders created in a first
+    session get reloaded from the venue on restart and generate duplicate inferred
+    fills, causing position discrepancies.
+
+    """
+    # Arrange
+    instrument = AUDUSD_SIM
+    cache.add_instrument(instrument)
+
+    clock = LiveClock()
+    trader_id = TestIdStubs.trader_id()
+    account_id = TestIdStubs.account_id()
+    order_factory = OrderFactory(
+        trader_id=trader_id,
+        strategy_id=StrategyId("S-001"),
+        clock=clock,
+    )
+
+    recon_order = order_factory.market(
+        instrument_id=instrument.id,
+        order_side=OrderSide.SELL,
+        quantity=Quantity.from_str("0.00501"),
+        tags=["RECONCILIATION"],
+    )
+
+    submitted = TestEventStubs.order_submitted(recon_order)
+    accepted = TestEventStubs.order_accepted(recon_order)
+    filled = TestEventStubs.order_filled(
+        recon_order,
+        instrument=instrument,
+        last_qty=Quantity.from_str("0.00501"),
+        last_px=Price.from_str("0.0"),
+    )
+
+    recon_order.apply(submitted)
+    recon_order.apply(accepted)
+    recon_order.apply(filled)
+    cache.add_order(recon_order)
+
+    assert recon_order.is_closed
+    assert recon_order.tags == ["RECONCILIATION"]
+    order_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=instrument.id,
+        client_order_id=recon_order.client_order_id,
+        venue_order_id=VenueOrderId("RECON-1"),
+        order_side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.IOC,
+        order_status=OrderStatus.FILLED,
+        quantity=Quantity.from_str("0.00501"),
+        filled_qty=Quantity.from_str("0.00501"),
+        avg_px=Decimal("0.0"),
+        report_id=UUID4(),
+        ts_accepted=0,
+        ts_last=0,
+        ts_init=0,
+    )
+
+    mass_status = ExecutionMassStatus(
+        client_id=ClientId(SIM.value),
+        venue=SIM,
+        account_id=account_id,
+        report_id=UUID4(),
+        ts_init=0,
+    )
+    mass_status._order_reports[order_report.venue_order_id] = order_report
+
+    initial_order_count = len(cache.orders())
+    initial_position_count = len(cache.positions())
+
+    # Act
+    live_exec_engine._reconcile_execution_mass_status(mass_status)
+
+    # Assert
+    assert len(cache.orders()) == initial_order_count, (
+        "Reconciliation order should be skipped, not create duplicate order"
+    )
+    assert len(cache.positions()) == initial_position_count, (
+        "No new positions should be created from reprocessing reconciliation order"
+    )
+    assert len([e for e in recon_order.events if isinstance(e, OrderFilled)]) == 1, (
+        "Reconciliation order should still have only its original fill"
+    )
+
+
 @pytest.mark.parametrize(
     ("value1", "value2", "precision", "expected"),
     [
