@@ -1002,6 +1002,41 @@ cdef class Price:
 
         return Price.from_int_c(value)
 
+    @staticmethod
+    def from_decimal(value: decimal.Decimal) -> Price:
+        """
+        Return a price from the given Decimal value.
+
+        Handles up to 16 decimals of precision (in high-precision mode).
+
+        Parameters
+        ----------
+        value : Decimal
+            The Decimal value for the price.
+
+        Returns
+        -------
+        Price
+
+        Raises
+        ------
+        ValueError
+            If inferred precision is greater than 16.
+        ValueError
+            If raw value is outside the valid representable range [`PRICE_RAW_MIN`, `PRICE_RAW_MAX`].
+        OverflowError
+            If inferred precision is negative (< 0).
+
+        Warnings
+        --------
+        The decimal precision will be inferred from the number of digits
+        following the '.' point (if no point then precision zero).
+
+        """
+        Condition.not_none(value, "value")
+
+        return Price.from_str_c(str(value))
+
     cpdef str to_formatted_str(self):
         """
         Return the formatted string representation of the price.
@@ -1362,6 +1397,44 @@ cdef class Money:
             raise ValueError(f"The `Money` string value was malformed, was {value}")
 
         return Money.from_str_c(value)
+
+    @staticmethod
+    def from_decimal(amount: decimal.Decimal, Currency currency not None) -> Money:
+        """
+        Return money from the given Decimal amount and currency.
+
+        Handles up to 16 decimals of precision (in high-precision mode).
+
+        Parameters
+        ----------
+        amount : Decimal
+            The Decimal amount for the money.
+        currency : Currency
+            The currency of the money.
+
+        Returns
+        -------
+        Money
+
+        Raises
+        ------
+        ValueError
+            If inferred currency precision is greater than 16.
+        ValueError
+            If raw value is outside the valid representable range [`MONEY_RAW_MIN`, `MONEY_RAW_MAX`].
+        OverflowError
+            If inferred currency precision is negative (< 0).
+
+        Warnings
+        --------
+        The decimal precision will be inferred from the number of digits
+        following the '.' point (if no point then precision zero).
+
+        """
+        Condition.not_none(amount, "amount")
+        Condition.not_none(currency, "currency")
+
+        return Money.from_str_c(f"{amount} {currency.code}")
 
     cpdef str to_formatted_str(self):
         """

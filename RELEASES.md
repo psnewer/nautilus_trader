@@ -13,6 +13,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added initial backtest visualization tearsheets with plotly
 - Added price protection support for market orders (#3065), thanks @Antifrajz
 - Added `Quantity.from_decimal` constructor (#3189), thanks @faysou
+- Added `Price.from_decimal` constructor
+- Added `Money.from_decimal` constructor
 - Added `create_bars_with_fills` to Tearsheet (#3137), thanks @faysou
 - Added `proxy_url` support for HTTP clients
 - Added `CAGR` portfolio statistic
