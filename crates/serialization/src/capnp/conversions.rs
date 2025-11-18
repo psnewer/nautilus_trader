@@ -1192,10 +1192,10 @@ impl<'a> ToCapnp<'a> for Currency {
     type Builder = types_capnp::currency::Builder<'a>;
 
     fn to_capnp(&self, mut builder: Self::Builder) {
-        builder.set_code(&self.code);
+        builder.set_code(self.code);
         builder.set_precision(self.precision);
         builder.set_iso4217(self.iso4217);
-        builder.set_name(&self.name);
+        builder.set_name(self.name);
         builder.set_currency_type(currency_type_to_capnp(self.currency_type));
     }
 }

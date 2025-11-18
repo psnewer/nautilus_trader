@@ -12,6 +12,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
 - Added initial backtest visualization tearsheets with plotly
 - Added price protection support for market orders (#3065), thanks @Antifrajz
+- Added `Quantity.from_decimal` constructor (#3189), thanks @faysou
 - Added `create_bars_with_fills` to Tearsheet (#3137), thanks @faysou
 - Added `proxy_url` support for HTTP clients
 - Added `CAGR` portfolio statistic
@@ -71,11 +72,13 @@ TBD
 ### Internal Improvements
 - Added BitMEX submit broadcaster
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
-- Added initial dYdX v4 crate (#3138), thanks @nicolad
-- Added initial dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
-- Added initial dYdX v4 DataClient in Rust (#3162), thanks @nicolad
-- Added initial dYdX v4 ExecutionClient in Rust (#3163), thanks @nicolad
+- Added dYdX v4 crate (#3138), thanks @nicolad
+- Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
+- Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
+- Added dYdX v4 ExecutionClient in Rust (#3163), thanks @nicolad
+- Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
+- Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
@@ -89,6 +92,7 @@ TBD
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou
+- Refined `HistoricInteractiveBrokersClient` (#3187), thanks @faysou
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei

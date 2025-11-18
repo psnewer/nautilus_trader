@@ -782,7 +782,7 @@ class TestQuantity:
 
     def test_from_decimal_with_integer_value(self):
         # Arrange, Act
-        qty = Quantity.from_decimal(Decimal("1"))
+        qty = Quantity.from_decimal(Decimal(1))
 
         # Assert
         assert qty == Quantity(1, precision=0)
@@ -801,7 +801,7 @@ class TestQuantity:
     def test_from_decimal_equivalent_to_from_str(self):
         # Test that from_decimal produces the same result as from_str
         test_values = [
-            Decimal("1"),
+            Decimal(1),
             Decimal("0.5"),
             Decimal("100.25"),
             Decimal("0.001"),
@@ -823,8 +823,8 @@ class TestQuantity:
 
     def test_from_decimal_precision_preservation(self):
         # Whole numbers should have precision 0
-        assert Quantity.from_decimal(Decimal("100")).precision == 0
-        assert Quantity.from_decimal(Decimal("1000000")).precision == 0
+        assert Quantity.from_decimal(Decimal(100)).precision == 0
+        assert Quantity.from_decimal(Decimal(1000000)).precision == 0
 
         # Decimal places should determine precision
         assert Quantity.from_decimal(Decimal("100.0")).precision == 1
@@ -833,7 +833,7 @@ class TestQuantity:
 
     def test_from_decimal_with_zero(self):
         # Arrange, Act
-        qty = Quantity.from_decimal(Decimal("0"))
+        qty = Quantity.from_decimal(Decimal(0))
 
         # Assert
         assert qty.as_double() == 0
