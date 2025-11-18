@@ -87,6 +87,7 @@ TBD
 - Refactored processing of historical data (#3038), thanks @faysou
 - Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
+- Improved `None` handling in equality and comparison methods
 - Improved Betfair execution error handling and edge cases
 - Improved Databento live connection stability and reconnects
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX

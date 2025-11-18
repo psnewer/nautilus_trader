@@ -1221,3 +1221,29 @@ class TestLiveExecutionEngine:
 
         # Assert
         assert has_discrepancy
+
+    def test_find_order_by_venue_order_id_with_none_venue_order_id_does_not_crash(self):
+        # Arrange
+        # Create an order that hasn't been accepted yet (venue_order_id is None)
+        order = self.order_factory.market(
+            instrument_id=AUDUSD_SIM.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_int(100_000),
+        )
+
+        # Add order to cache (venue_order_id stays None since order not accepted)
+        self.cache.add_order(order, position_id=None)
+
+        # Create a venue order ID to search for
+        venue_order_id = VenueOrderId("VENUE-123")
+
+        # Act - verifies None comparisons work correctly during reconciliation
+        result = self.exec_engine._find_order_by_venue_order_id(
+            venue_order_id=venue_order_id,
+            instrument_id=AUDUSD_SIM.id,
+            order_side=OrderSide.BUY,
+        )
+
+        # Assert
+        assert result is None  # Order not found (correct behavior)
+        assert order.venue_order_id is None  # Order still has no venue_order_id

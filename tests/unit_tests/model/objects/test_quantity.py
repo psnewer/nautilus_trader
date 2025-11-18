@@ -877,3 +877,13 @@ class TestQuantity:
 
         # Assert
         assert pickle.loads(pickled) == quantity  # noqa: S301 (testing pickle)
+
+    def test_quantity_equality_with_none_returns_false(self):
+        # Arrange
+        quantity = Quantity(100.0, 2)
+
+        # Act, Assert
+        assert (quantity == None) is False  # noqa: E711
+        assert (quantity != None) is True  # noqa: E711
+        assert (quantity == None) is False  # noqa: E711
+        assert (quantity != None) is True  # noqa: E711

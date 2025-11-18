@@ -475,6 +475,30 @@ class TestMoney:
         with pytest.raises(ValueError, match=r"currency USD != other\.currency AUD"):
             _ = money_usd == money_aud
 
+    def test_money_equality_with_none_returns_false(self):
+        # Arrange
+        money = Money(100.0, USD)
+
+        # Act, Assert
+        assert (money == None) is False  # noqa: E711
+        assert (money != None) is True  # noqa: E711
+        assert (money == None) is False  # noqa: E711
+        assert (money != None) is True  # noqa: E711
+
+    def test_money_ordering_comparison_with_none_raises_type_error(self):
+        # Arrange
+        money = Money(100.0, USD)
+
+        # Act, Assert
+        with pytest.raises(TypeError):
+            _ = money < None
+        with pytest.raises(TypeError):
+            _ = money <= None
+        with pytest.raises(TypeError):
+            _ = money > None
+        with pytest.raises(TypeError):
+            _ = money >= None
+
 
 class TestAccountBalance:
     def test_equality(self):

@@ -152,6 +152,8 @@ cdef class Quantity:
         self._mem = quantity_from_raw(state[0], state[1])
 
     def __eq__(self, other) -> bool:
+        if other is None:
+            return False
         return Quantity._compare(self, other, Py_EQ)
 
     def __lt__(self, other) -> bool:
@@ -668,6 +670,8 @@ cdef class Price:
         self._mem = price_from_raw(state[0], state[1])
 
     def __eq__(self, other) -> bool:
+        if other is None:
+            return False
         return Price._compare(self, other, Py_EQ)
 
     def __lt__(self, other) -> bool:
@@ -1120,28 +1124,33 @@ cdef class Money:
         self._mem = money_from_raw(state[0], currency._mem)
 
     def __eq__(self, Money other) -> bool:
-        Condition.not_none(other, "other")
+        if other is None:
+            return False
         if self._mem.currency.code != other._mem.currency.code:
             Condition.is_true(self._mem.currency.code == other._mem.currency.code, f"currency {self.currency.code} != other.currency {other.currency.code}")
         return self._mem.raw == other._mem.raw
 
     def __lt__(self, Money other) -> bool:
-        Condition.not_none(other, "other")
+        if other is None:
+            return NotImplemented
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw < other._mem.raw
 
     def __le__(self, Money other) -> bool:
-        Condition.not_none(other, "other")
+        if other is None:
+            return NotImplemented
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw <= other._mem.raw
 
     def __gt__(self, Money other) -> bool:
-        Condition.not_none(other, "other")
+        if other is None:
+            return NotImplemented
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw > other._mem.raw
 
     def __ge__(self, Money other) -> bool:
-        Condition.not_none(other, "other")
+        if other is None:
+            return NotImplemented
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw >= other._mem.raw
 
@@ -1546,7 +1555,7 @@ cdef class Currency:
 
     def __eq__(self, Currency other) -> bool:
         if other is None:
-            raise RuntimeError("other was None in __eq__")
+            return False
         return strcmp(self._mem.code, other._mem.code) == 0
 
     def __hash__(self) -> int:
@@ -1820,6 +1829,8 @@ cdef class AccountBalance:
         self.currency = total.currency
 
     def __eq__(self, AccountBalance other) -> bool:
+        if other is None:
+            return False
         return (
             self.total == other.total
             and self.locked == other.locked
@@ -1936,6 +1947,8 @@ cdef class MarginBalance:
         self.instrument_id = instrument_id
 
     def __eq__(self, MarginBalance other) -> bool:
+        if other is None:
+            return False
         return (
             self.initial == other.initial
             and self.maintenance == other.maintenance

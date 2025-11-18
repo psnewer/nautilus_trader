@@ -959,3 +959,13 @@ class TestPrice:
 
         # Assert
         assert pickle.loads(pickled) == price  # noqa: S301 (testing pickle)
+
+    def test_price_equality_with_none_returns_false(self):
+        # Arrange
+        price = Price(100.0, 2)
+
+        # Act, Assert
+        assert (price == None) is False  # noqa: E711
+        assert (price != None) is True  # noqa: E711
+        assert (price == None) is False  # noqa: E711
+        assert (price != None) is True  # noqa: E711
