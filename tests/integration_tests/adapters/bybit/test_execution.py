@@ -23,6 +23,7 @@ import pytest
 from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
 from nautilus_trader.adapters.bybit.execution import BybitExecutionClient
+from nautilus_trader.common.component import TestClock
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
@@ -60,7 +61,7 @@ def exec_client_builder(
     live_clock,
     mock_instrument_provider,
 ):
-    def builder(monkeypatch, *, config_kwargs: dict | None = None):
+    def builder(monkeypatch, *, config_kwargs: dict | None = None, clock=None):
         ws_private_client = _create_ws_mock()
         ws_trade_client = _create_ws_mock()
         ws_iter = iter([ws_private_client, ws_trade_client])
@@ -98,7 +99,7 @@ def exec_client_builder(
             client=mock_http_client,
             msgbus=msgbus,
             cache=cache,
-            clock=live_clock,
+            clock=clock or live_clock,
             instrument_provider=mock_instrument_provider,
             config=config,
             name=None,
@@ -1168,7 +1169,14 @@ async def test_repay_spot_borrow_handles_api_errors_gracefully(
     exec_client_builder,
 ):
     # Arrange
-    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    # Use TestClock with time outside blackout window (04:00-05:30 UTC) so repayment logic runs
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
     http_client.get_spot_borrow_amount = AsyncMock(return_value=100.0)
     http_client.repay_spot_borrow = AsyncMock(side_effect=Exception("API Error"))
     bought_qty = nautilus_pyo3.Quantity(50.0, 2)
@@ -1194,7 +1202,14 @@ async def test_repay_spot_borrow_skips_when_no_borrow(
     exec_client_builder,
 ):
     # Arrange
-    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    # Use TestClock with time outside blackout window (04:00-05:30 UTC) so repayment logic runs
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
     http_client.get_spot_borrow_amount = AsyncMock(return_value=0.0)
     http_client.repay_spot_borrow = AsyncMock()
     bought_qty = nautilus_pyo3.Quantity(10.0, 2)
@@ -1216,7 +1231,14 @@ async def test_repay_spot_borrow_calls_repay_when_borrow_exists(
     exec_client_builder,
 ):
     # Arrange
-    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    # Use TestClock with time outside blackout window (04:00-05:30 UTC) so repayment logic runs
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
     http_client.get_spot_borrow_amount = AsyncMock(return_value=250.5)
     http_client.repay_spot_borrow = AsyncMock()
     bought_qty = nautilus_pyo3.Quantity(100.0, 2)
@@ -1242,7 +1264,14 @@ async def test_repay_spot_borrow_repays_partial_when_bought_less_than_borrowed(
     exec_client_builder,
 ):
     # Arrange
-    client, _, http_client, _ = exec_client_builder(monkeypatch, config_kwargs={"auto_repay_spot_borrows": True})
+    # Use TestClock with time outside blackout window (04:00-05:30 UTC) so repayment logic runs
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
     http_client.get_spot_borrow_amount = AsyncMock(return_value=500.0)
     http_client.repay_spot_borrow = AsyncMock()
     bought_qty = nautilus_pyo3.Quantity(150.0, 2)
@@ -1261,65 +1290,53 @@ async def test_repay_spot_borrow_repays_partial_when_bought_less_than_borrowed(
         await client._disconnect()
 
 
-def test_is_repay_blackout_window_during_hour_4(monkeypatch):
+def test_is_repay_blackout_window_during_hour_4(monkeypatch, exec_client_builder):
     # Arrange
-    mock_time = pd.Timestamp("2025-01-15 04:15:00", tz="UTC")
-
-    monkeypatch.setattr(
-        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
-        lambda: mock_time,
-    )
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 04:15:00", tz="UTC").value)
+    client, _, _, _ = exec_client_builder(monkeypatch, clock=test_clock)
 
     # Act
-    result = BybitExecutionClient._is_repay_blackout_window()
+    result = client._is_repay_blackout_window()
 
     # Assert - 04:15 UTC is in blackout window
     assert result is True
 
 
-def test_is_repay_blackout_window_during_hour_5_before_30min(monkeypatch):
+def test_is_repay_blackout_window_during_hour_5_before_30min(monkeypatch, exec_client_builder):
     # Arrange
-    mock_time = pd.Timestamp("2025-01-15 05:29:00", tz="UTC")
-
-    monkeypatch.setattr(
-        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
-        lambda: mock_time,
-    )
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 05:29:00", tz="UTC").value)
+    client, _, _, _ = exec_client_builder(monkeypatch, clock=test_clock)
 
     # Act
-    result = BybitExecutionClient._is_repay_blackout_window()
+    result = client._is_repay_blackout_window()
 
     # Assert - 05:29 UTC is in blackout window
     assert result is True
 
 
-def test_is_repay_blackout_window_after_blackout(monkeypatch):
+def test_is_repay_blackout_window_after_blackout(monkeypatch, exec_client_builder):
     # Arrange
-    mock_time = pd.Timestamp("2025-01-15 05:30:00", tz="UTC")
-
-    monkeypatch.setattr(
-        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
-        lambda: mock_time,
-    )
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 05:30:00", tz="UTC").value)
+    client, _, _, _ = exec_client_builder(monkeypatch, clock=test_clock)
 
     # Act
-    result = BybitExecutionClient._is_repay_blackout_window()
+    result = client._is_repay_blackout_window()
 
     # Assert - 05:30 UTC is AFTER blackout window
     assert result is False
 
 
-def test_is_repay_blackout_window_outside_blackout(monkeypatch):
+def test_is_repay_blackout_window_outside_blackout(monkeypatch, exec_client_builder):
     # Arrange
-    mock_time = pd.Timestamp("2025-01-15 10:00:00", tz="UTC")
-
-    monkeypatch.setattr(
-        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
-        lambda: mock_time,
-    )
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, _, _ = exec_client_builder(monkeypatch, clock=test_clock)
 
     # Act
-    result = BybitExecutionClient._is_repay_blackout_window()
+    result = client._is_repay_blackout_window()
 
     # Assert - 10:00 UTC is outside blackout window
     assert result is False
@@ -1331,19 +1348,16 @@ async def test_auto_repayment_skipped_during_blackout_window(
     exec_client_builder,
 ):
     # Arrange
+    # Use TestClock with time during blackout window (04:30 UTC)
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 04:30:00", tz="UTC").value)
     client, _, http_client, _ = exec_client_builder(
         monkeypatch,
         config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
     )
     http_client.repay_spot_borrow = AsyncMock()
     bought_qty = nautilus_pyo3.Quantity(1.0, 2)
-
-    # Mock blackout window time (04:30 UTC)
-    mock_time = pd.Timestamp("2025-01-15 04:30:00", tz="UTC")
-    monkeypatch.setattr(
-        "nautilus_trader.adapters.bybit.execution.pd.Timestamp.utcnow",
-        lambda: mock_time,
-    )
 
     try:
         # Act

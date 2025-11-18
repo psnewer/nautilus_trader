@@ -24,8 +24,6 @@ WebSocket clients exposed via PyO3 for performance.
 import asyncio
 from typing import Any
 
-import pandas as pd
-
 from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
@@ -1320,11 +1318,10 @@ class BybitExecutionClient(LiveExecutionClient):
                 LogColor.RED,
             )
 
-    @staticmethod
-    def _is_repay_blackout_window() -> bool:
+    def _is_repay_blackout_window(self) -> bool:
         # Check if current UTC time is within Bybit's repayment blackout window (04:00-05:30 UTC daily).
         # During this window, Bybit blocks no-convert repayment operations for interest calculation.
-        now_utc = pd.Timestamp.utcnow()
+        now_utc = self._clock.utc_now()
         hour = now_utc.hour
         minute = now_utc.minute
 
