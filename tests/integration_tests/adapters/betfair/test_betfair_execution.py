@@ -19,11 +19,14 @@ import asyncio
 import logging
 from functools import partial
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import msgspec
 import pytest
+from betfair_parser.spec.betting.enums import ExecutionReportErrorCode
+from betfair_parser.spec.betting.enums import ExecutionReportStatus
 from betfair_parser.spec.streaming import OCM
 from betfair_parser.spec.streaming import MatchedOrder
 from betfair_parser.spec.streaming import Order as BFOrder
@@ -265,8 +268,9 @@ async def test_submit_order_error(
     _, submitted, rejected = test_order.events
     assert isinstance(submitted, OrderSubmitted)
     assert isinstance(rejected, OrderRejected)
-    expecter_error = "PERMISSION_DENIED (Business rules do not allow order to be placed. You are either attempting to place the order using a Delayed Application Key or from a restricted jurisdiction (i.e. USA))"
-    assert rejected.reason == expecter_error
+    # Should use per-instruction error code, not overall result error code
+    expected_error = "ERROR_IN_ORDER (The action failed because the parent order failed)"
+    assert rejected.reason == expected_error
 
 
 @pytest.mark.asyncio
@@ -1446,3 +1450,34 @@ async def test_generate_order_status_report_handles_multiple_orders_after_replac
     assert report.venue_order_id.value == "228059754999"  # New active order
     assert report.price.as_double() == 6.0  # New price
     assert report.order_status == OrderStatus.ACCEPTED  # EXECUTABLE maps to ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_submit_order_result_level_failure_no_instruction_reports(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    test_order,
+):
+    # Arrange
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.FAILURE,
+        error_code=ExecutionReportErrorCode.INSUFFICIENT_FUNDS,
+        instruction_reports=None,
+    )
+
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        strategy.submit_order(test_order)
+        await asyncio.sleep(0)
+
+        # Assert
+        assert len(test_order.events) >= 2
+        rejected_events = [e for e in test_order.events if e.__class__.__name__ == "OrderRejected"]
+        assert len(rejected_events) == 1
+        expected_error = "INSUFFICIENT_FUNDS (Account has exceeded its exposure limit or available to bet limit)"
+        assert rejected_events[0].reason == expected_error

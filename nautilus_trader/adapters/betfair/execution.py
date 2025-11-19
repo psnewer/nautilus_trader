@@ -615,10 +615,27 @@ class BetfairExecutionClient(LiveExecutionClient):
 
         self._log.debug(f"{result=}")
 
-        for report in result.instruction_reports or []:
+        # Handle result-level failures when no instruction reports are present
+        if not result.instruction_reports:
             if result.status == ExecutionReportStatus.FAILURE:
-                reason = f"{result.error_code.name} ({result.error_code.__doc__})"
+                reason = self._format_error_reason(result.error_code)
+                self._log.warning(f"Submit failed (result-level): {reason}")
+
+                self.generate_order_rejected(
+                    command.strategy_id,
+                    command.instrument_id,
+                    client_order_id,
+                    reason,
+                    self._clock.timestamp_ns(),
+                )
+                self._log.debug("Generated _generate_order_rejected")
+            return
+
+        for report in result.instruction_reports:
+            if report.status in {ExecutionReportStatus.FAILURE, InstructionReportStatus.FAILURE}:
+                reason = self._format_error_reason(report.error_code, result.error_code)
                 self._log.warning(f"Submit failed: {reason}")
+
                 self.generate_order_rejected(
                     command.strategy_id,
                     command.instrument_id,
@@ -743,13 +760,10 @@ class BetfairExecutionClient(LiveExecutionClient):
             if report.status in {ExecutionReportStatus.FAILURE, InstructionReportStatus.FAILURE}:
                 # Ensure we remove pending key on API-level failure
                 self._pending_update_order_client_ids.discard(pending_key)
-                # Use per-instruction error code, not the overall result error code
-                error_code = report.error_code if report.error_code else result.error_code
-                if error_code:
-                    reason = f"{error_code.name} ({error_code.__doc__})"
-                else:
-                    reason = "UNKNOWN_ERROR"
+
+                reason = self._format_error_reason(report.error_code, result.error_code)
                 self._log.warning(f"Replace failed: {reason}")
+
                 # Use modify_rejected, not order_rejected (original order is still accepted)
                 self.generate_order_modify_rejected(
                     command.strategy_id,
@@ -827,13 +841,9 @@ class BetfairExecutionClient(LiveExecutionClient):
 
         for report in result.instruction_reports or []:
             if report.status in {ExecutionReportStatus.FAILURE, InstructionReportStatus.FAILURE}:
-                # Use per-instruction error code, not the overall result error code
-                error_code = report.error_code if report.error_code else result.error_code
-                if error_code:
-                    reason = f"{error_code.name} ({error_code.__doc__})"
-                else:
-                    reason = "UNKNOWN_ERROR"
+                reason = self._format_error_reason(report.error_code, result.error_code)
                 self._log.warning(f"Size reduction failed: {reason}")
+
                 # Use modify_rejected, not order_rejected (original order is still accepted)
                 self.generate_order_modify_rejected(
                     command.strategy_id,
@@ -1157,9 +1167,6 @@ class BetfairExecutionClient(LiveExecutionClient):
         self,
         unmatched_order: UnmatchedOrder,
     ) -> None:
-        """
-        Handle 'EC' (execution complete) order updates.
-        """
         venue_order_id = VenueOrderId(str(unmatched_order.id))
         client_order_id = self._cache.client_order_id(venue_order_id=venue_order_id)
         if client_order_id is None:
@@ -1281,9 +1288,8 @@ class BetfairExecutionClient(LiveExecutionClient):
                     ts_event=canceled_ts,
                 )
 
-        # Market order will not be in self.published_executions
-        # This execution is complete - no need to track this anymore
-        self._published_executions.pop(client_order_id, None)
+        # Do not clear _published_executions here to prevent duplicate fills from
+        # late 'EC' messages or after reconnects. Cache persists for client lifetime.
 
     def _handle_status_message(self, update: Status) -> None:
         if update.is_error:
@@ -1363,6 +1369,12 @@ class BetfairExecutionClient(LiveExecutionClient):
 
     def _get_cancel_quantity(self, unmatched_order: UnmatchedOrder) -> float:
         return (unmatched_order.sc or 0) + (unmatched_order.sl or 0) + (unmatched_order.sv or 0)
+
+    def _format_error_reason(self, error_code, fallback_error_code=None) -> str:
+        code = error_code if error_code else fallback_error_code
+        if code:
+            return f"{code.name} ({code.__doc__})"
+        return "UNKNOWN_ERROR"
 
 
 def _to_utc_datetime(timestamp: datetime | pd.Timestamp | None) -> datetime | None:

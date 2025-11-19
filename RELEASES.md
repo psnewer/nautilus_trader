@@ -89,6 +89,7 @@ TBD
 - Refactored Polymarket instrument provider to use async HttpClient
 - Improved `None` handling in equality and comparison methods
 - Improved Betfair execution error handling and edge cases
+- Improved Betfair order rejection and duplicate fills handling
 - Improved Databento live connection stability and reconnects
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
