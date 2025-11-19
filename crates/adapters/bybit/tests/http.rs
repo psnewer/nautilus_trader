@@ -34,7 +34,12 @@ use nautilus_bybit::{
         },
     },
 };
-use nautilus_model::{identifiers::AccountId, types::Quantity};
+use nautilus_model::{
+    enums::PositionSideSpecified,
+    identifiers::AccountId,
+    instruments::{CurrencyPair, InstrumentAny},
+    types::{Currency, Price, Quantity},
+};
 use rstest::rstest;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -1726,12 +1731,6 @@ async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
 #[rstest]
 #[tokio::test]
 async fn test_spot_position_report_short_from_borrowed_balance() {
-    use nautilus_model::{
-        enums::PositionSideSpecified,
-        instruments::{CurrencyPair, InstrumentAny},
-        types::{Currency, Price},
-    };
-
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{}", addr);
 

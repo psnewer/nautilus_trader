@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -33,6 +34,7 @@ from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.model.currencies import BTC
+from nautilus_trader.model.currencies import ETH
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
@@ -42,6 +44,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -1365,5 +1368,201 @@ async def test_auto_repayment_skipped_during_blackout_window(
 
         # Assert - Repayment was NOT called during blackout window
         http_client.repay_spot_borrow.assert_not_called()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_repay_accepts_decimal_type_from_fill_accumulation(
+    monkeypatch,
+    exec_client_builder,
+):
+    # Arrange
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=Decimal("100.0"))
+    http_client.repay_spot_borrow = AsyncMock()
+
+    bought_qty = nautilus_pyo3.Quantity(0.08, 5)
+
+    try:
+        # Act
+        await client._repay_spot_borrow_if_needed("ETH", bought_qty)
+
+        # Assert - Should handle Decimal type correctly
+        http_client.get_spot_borrow_amount.assert_called_once_with("ETH")
+        assert http_client.repay_spot_borrow.call_count == 1
+        call_args = http_client.repay_spot_borrow.call_args
+        assert call_args[0][0] == "ETH"
+        assert isinstance(call_args[0][1], nautilus_pyo3.Quantity)
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_handle_fill_report_tracks_partial_fills_for_spot_buy(
+    monkeypatch,
+    exec_client_builder,
+    cache,
+):
+    # Arrange
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
+
+    spot_instrument = CurrencyPair(
+        instrument_id=InstrumentId.from_str("ETHUSDT-SPOT.BYBIT"),
+        raw_symbol=Symbol("ETHUSDT"),
+        base_currency=ETH,
+        quote_currency=USDT,
+        price_precision=2,
+        size_precision=5,
+        price_increment=Price.from_str("0.01"),
+        size_increment=Quantity.from_str("0.00001"),
+        ts_event=0,
+        ts_init=0,
+        maker_fee=Decimal("0.0001"),
+        taker_fee=Decimal("0.0006"),
+    )
+    cache.add_instrument(spot_instrument)
+
+    # Create a BUY order for SPOT
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=spot_instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("3000.00"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+
+    http_client.get_spot_borrow_amount = AsyncMock(return_value=Decimal(0))
+    http_client.repay_spot_borrow = AsyncMock()
+
+    # Create partial fill report (50% of order)
+    fill_report = nautilus_pyo3.FillReport(
+        account_id=nautilus_pyo3.AccountId("BYBIT-UNIFIED"),
+        instrument_id=nautilus_pyo3.InstrumentId.from_str(spot_instrument.id.value),
+        venue_order_id=nautilus_pyo3.VenueOrderId("BYBIT-789"),
+        trade_id=nautilus_pyo3.TradeId("T-001"),
+        order_side=nautilus_pyo3.OrderSide.BUY,
+        last_qty=nautilus_pyo3.Quantity(0.050, 5),
+        last_px=nautilus_pyo3.Price(3000.00, 2),
+        commission=nautilus_pyo3.Money.from_str("0.01 USDT"),
+        liquidity_side=nautilus_pyo3.LiquiditySide.TAKER,
+        ts_event=0,
+        client_order_id=nautilus_pyo3.ClientOrderId("O-123456"),
+        report_id=nautilus_pyo3.UUID4(),
+        ts_init=0,
+    )
+
+    try:
+        # Act - Process first partial fill
+        client._handle_fill_report_pyo3(fill_report)
+
+        # Assert - Fill should be tracked, but not trigger repayment yet
+        assert order.client_order_id in client._order_filled_qty
+        assert client._order_filled_qty[order.client_order_id] == Decimal("0.050")
+        http_client.repay_spot_borrow.assert_not_called()
+
+        # Act - Process second partial fill (completes the order)
+        fill_report2 = nautilus_pyo3.FillReport(
+            account_id=nautilus_pyo3.AccountId("BYBIT-UNIFIED"),
+            instrument_id=nautilus_pyo3.InstrumentId.from_str(spot_instrument.id.value),
+            venue_order_id=nautilus_pyo3.VenueOrderId("BYBIT-789"),
+            trade_id=nautilus_pyo3.TradeId("T-002"),
+            order_side=nautilus_pyo3.OrderSide.BUY,
+            last_qty=nautilus_pyo3.Quantity(0.050, 5),
+            last_px=nautilus_pyo3.Price(3000.00, 2),
+            commission=nautilus_pyo3.Money.from_str("0.01 USDT"),
+            liquidity_side=nautilus_pyo3.LiquiditySide.TAKER,
+            ts_event=0,
+            client_order_id=nautilus_pyo3.ClientOrderId("O-123456"),
+            report_id=nautilus_pyo3.UUID4(),
+            ts_init=0,
+        )
+        client._handle_fill_report_pyo3(fill_report2)
+
+        # Give async task time to execute
+        await asyncio.sleep(0.1)
+
+        # Assert - Order should be removed from tracking after full fill
+        assert order.client_order_id not in client._order_filled_qty
+        # Repayment check should have been called (even though borrow is 0)
+        http_client.get_spot_borrow_amount.assert_called_once_with("ETH")
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_handle_fill_report_ignores_non_spot_orders(
+    monkeypatch,
+    exec_client_builder,
+    cache,
+    instrument,
+):
+    # Arrange
+    test_clock = TestClock()
+    test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
+    client, _, http_client, _ = exec_client_builder(
+        monkeypatch,
+        config_kwargs={"auto_repay_spot_borrows": True},
+        clock=test_clock,
+    )
+
+    # Create a BUY order for LINEAR (not SPOT)
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,  # LINEAR instrument
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.00"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+    cache.add_instrument(instrument)
+
+    http_client.get_spot_borrow_amount = AsyncMock()
+    http_client.repay_spot_borrow = AsyncMock()
+
+    fill_report = nautilus_pyo3.FillReport(
+        account_id=nautilus_pyo3.AccountId("BYBIT-UNIFIED"),
+        instrument_id=nautilus_pyo3.InstrumentId.from_str(instrument.id.value),
+        venue_order_id=nautilus_pyo3.VenueOrderId("BYBIT-789"),
+        trade_id=nautilus_pyo3.TradeId("T-001"),
+        order_side=nautilus_pyo3.OrderSide.BUY,
+        last_qty=nautilus_pyo3.Quantity.from_str("0.100"),
+        last_px=nautilus_pyo3.Price.from_str("50000.00"),
+        commission=nautilus_pyo3.Money.from_str("0.01 USDT"),
+        liquidity_side=nautilus_pyo3.LiquiditySide.TAKER,
+        ts_event=0,
+        client_order_id=nautilus_pyo3.ClientOrderId("O-123456"),
+        report_id=nautilus_pyo3.UUID4(),
+        ts_init=0,
+    )
+
+    try:
+        # Act - Process fill for LINEAR order
+        client._handle_fill_report_pyo3(fill_report)
+
+        # Assert - Should NOT track or trigger repayment for LINEAR
+        assert order.client_order_id not in client._order_filled_qty
+        http_client.get_spot_borrow_amount.assert_not_called()
     finally:
         await client._disconnect()

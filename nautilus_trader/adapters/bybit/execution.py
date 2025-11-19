@@ -1279,7 +1279,7 @@ class BybitExecutionClient(LiveExecutionClient):
                     self._order_filled_qty.pop(order.client_order_id, None)
                     base_currency = instrument.base_currency.code
                     self.create_task(
-                        self._repay_spot_borrow_if_needed(base_currency, filled_new),
+                        self._repay_spot_borrow_if_needed(base_currency, order.quantity),
                     )
                 else:
                     # Partial fill: update tracking
