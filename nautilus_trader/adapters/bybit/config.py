@@ -137,9 +137,10 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         WARNING: This may lead to unintended liquidation of wallet assets if strategies
         are not designed to handle spot positions appropriately.
     auto_repay_spot_borrows : bool, default True
-        If True, automatically repay spot margin borrows after BUY orders fill.
+        If True, automatically repay spot margin borrows after BUY orders fully fill.
         This prevents interest accrual on borrowed coins after closing short positions.
-        Repayment is skipped during Bybit's blackout window (04:00-05:30 UTC every hour).
+        Repayment is skipped during Bybit's blackout window (04:00-05:30 UTC daily).
+        Only triggers on fully filled orders to avoid excessive API calls.
     ignore_uncached_instrument_executions : bool, default False
         If True, execution message for instruments not contained in the cache are ignored instead of raising an error.
     max_retries : PositiveInt, optional

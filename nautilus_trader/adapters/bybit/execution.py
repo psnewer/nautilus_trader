@@ -206,8 +206,10 @@ class BybitExecutionClient(LiveExecutionClient):
                 heartbeat=20,
             )
         )
-
         self._ws_client_futures: set[asyncio.Future] = set()
+
+        # Hot cache for accumulating spot borrow fills (only)
+        self._order_filled_qty: dict[ClientOrderId, Quantity] = {}
 
     @property
     def bybit_instrument_provider(self) -> BybitInstrumentProvider:
@@ -1135,6 +1137,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 reason=report.cancel_reason or "Order rejected by exchange",
                 ts_event=report.ts_last,
             )
+            self._order_filled_qty.pop(report.client_order_id, None)
         elif report.order_status == OrderStatus.ACCEPTED:
             if is_order_updated(order, report):
                 self.generate_order_updated(
@@ -1191,6 +1194,7 @@ class BybitExecutionClient(LiveExecutionClient):
                     venue_order_id=report.venue_order_id,
                     ts_event=report.ts_last,
                 )
+            self._order_filled_qty.pop(report.client_order_id, None)
         elif report.order_status == OrderStatus.EXPIRED:
             self.generate_order_expired(
                 strategy_id=order.strategy_id,
@@ -1199,6 +1203,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 venue_order_id=report.venue_order_id,
                 ts_event=report.ts_last,
             )
+            self._order_filled_qty.pop(report.client_order_id, None)
         elif report.order_status == OrderStatus.TRIGGERED:
             self.generate_order_triggered(
                 strategy_id=order.strategy_id,
@@ -1260,11 +1265,25 @@ class BybitExecutionClient(LiveExecutionClient):
                 product_type = nautilus_pyo3.bybit_product_type_from_symbol(
                     order.instrument_id.symbol.value,
                 )
-                if product_type == BybitProductType.SPOT:
+                if product_type != BybitProductType.SPOT:
+                    return
+
+                filled_current = self._order_filled_qty.get(order.client_order_id, order.filled_qty)
+                if filled_current >= order.quantity:
+                    return  # Already triggered repayment
+
+                filled_new = filled_current + report.last_qty
+
+                if filled_new >= order.quantity:
+                    # Order is now fully filled: clean up and trigger repayment
+                    self._order_filled_qty.pop(order.client_order_id, None)
                     base_currency = instrument.base_currency.code
                     self.create_task(
-                        self._repay_spot_borrow_if_needed(base_currency, report.last_qty),
+                        self._repay_spot_borrow_if_needed(base_currency, filled_new),
                     )
+                else:
+                    # Partial fill: update tracking
+                    self._order_filled_qty[order.client_order_id] = filled_new
             except Exception as e:
                 self._log.warning(f"Failed to check for spot borrow repayment: {e}")
 
@@ -1275,9 +1294,9 @@ class BybitExecutionClient(LiveExecutionClient):
         # to avoid noise from position updates every time a fill occurs
 
     async def _repay_spot_borrow_if_needed(self, coin: str, bought_qty: Quantity) -> None:
-        # Repay outstanding spot borrows for a specific coin, this method is called after
-        # BUY orders fill on SPOT instruments to automatically repay any outstanding borrows,
-        # preventing interest accrual. Only repays up to the amount that was just bought.
+        # Repay outstanding spot borrows for a specific coin, this method is called when
+        # BUY orders are fully filled on SPOT instruments to automatically repay any outstanding
+        # borrows, preventing interest accrual.
         try:
             if self._is_repay_blackout_window():
                 self._log.warning(
@@ -1304,8 +1323,7 @@ class BybitExecutionClient(LiveExecutionClient):
                 LogColor.BLUE,
             )
 
-            repay_qty = nautilus_pyo3.Quantity(float(repay_amount), bought_qty.precision)
-
+            repay_qty = nautilus_pyo3.Quantity.from_decimal_dp(repay_amount, bought_qty.precision)
             await self._http_client.repay_spot_borrow(coin, repay_qty)
 
             self._log.info(

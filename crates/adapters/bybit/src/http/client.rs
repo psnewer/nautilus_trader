@@ -107,7 +107,15 @@ pub static BYBIT_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
     Quota::per_second(NonZeroU32::new(10).expect("Should be a valid non-zero u32"))
 });
 
+/// Bybit repay endpoint rate limit.
+///
+/// Conservative limit to avoid hitting API restrictions when repaying small borrows.
+pub static BYBIT_REPAY_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
+    Quota::per_second(NonZeroU32::new(1).expect("Should be a valid non-zero u32"))
+});
+
 const BYBIT_GLOBAL_RATE_KEY: &str = "bybit:global";
+const BYBIT_REPAY_ROUTE_KEY: &str = "bybit:/v5/account/no-convert-repay";
 
 /// Raw HTTP client for low-level Bybit API operations.
 ///
@@ -258,7 +266,10 @@ impl BybitRawHttpClient {
     }
 
     fn rate_limiter_quotas() -> Vec<(String, Quota)> {
-        vec![(BYBIT_GLOBAL_RATE_KEY.to_string(), *BYBIT_REST_QUOTA)]
+        vec![
+            (BYBIT_GLOBAL_RATE_KEY.to_string(), *BYBIT_REST_QUOTA),
+            (BYBIT_REPAY_ROUTE_KEY.to_string(), *BYBIT_REPAY_QUOTA),
+        ]
     }
 
     fn rate_limit_keys(endpoint: &str) -> Vec<String> {
@@ -886,15 +897,30 @@ impl BybitRawHttpClient {
             .build()
             .expect("Failed to build BybitNoConvertRepayParams");
 
+        // TODO: Logging for visibility during development
+        if let Ok(params_json) = serde_json::to_string(&params) {
+            tracing::debug!("Repay request params: {params_json}");
+        }
+
         let body = serde_json::to_vec(&params)?;
-        self.send_request::<_, ()>(
-            Method::POST,
-            "/v5/account/no-convert-repay",
-            None,
-            Some(body),
-            true,
-        )
-        .await
+        let result = self
+            .send_request::<_, ()>(
+                Method::POST,
+                "/v5/account/no-convert-repay",
+                None,
+                Some(body),
+                true,
+            )
+            .await;
+
+        // TODO: Logging for visibility during development
+        if let Err(ref e) = result
+            && let Ok(params_json) = serde_json::to_string(&params)
+        {
+            tracing::error!("Repay request failed with params {params_json}: {e}");
+        }
+
+        result
     }
 
     /// Fetches tickers for market data.
