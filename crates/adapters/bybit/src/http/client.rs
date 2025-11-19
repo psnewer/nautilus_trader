@@ -1599,7 +1599,7 @@ impl BybitHttpClient {
 
         for wallet in &response.result.list {
             for coin_balance in &wallet.coin {
-                let balance = coin_balance.wallet_balance;
+                let balance = coin_balance.wallet_balance - coin_balance.spot_borrow;
                 *wallet_by_coin
                     .entry(coin_balance.coin)
                     .or_insert(Decimal::ZERO) += balance;
@@ -1616,17 +1616,16 @@ impl BybitHttpClient {
                 let coin = base_currency.code;
                 let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(Decimal::ZERO);
 
-                // Handle negative balances (borrowed assets) by using absolute value
-                let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
-                let quantity = Quantity::new(balance_f64.abs(), instrument.size_precision());
-
-                let side = if balance_f64 > 0.0 {
+                let side = if wallet_balance > Decimal::ZERO {
                     PositionSideSpecified::Long
-                } else if balance_f64 < 0.0 {
+                } else if wallet_balance < Decimal::ZERO {
                     PositionSideSpecified::Short
                 } else {
                     PositionSideSpecified::Flat
                 };
+
+                let abs_balance = wallet_balance.abs();
+                let quantity = Quantity::from_decimal_dp(abs_balance, instrument.size_precision())?;
 
                 let report = PositionStatusReport::new(
                     account_id,
@@ -1664,21 +1663,20 @@ impl BybitHttpClient {
                     continue;
                 }
 
-                // Handle negative balances (borrowed assets) by using absolute value
-                let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
-                let quantity = Quantity::new(balance_f64.abs(), instrument.size_precision());
-
-                if quantity.raw == 0 {
-                    continue;
-                }
-
-                let side = if balance_f64 > 0.0 {
+                let side = if wallet_balance > Decimal::ZERO {
                     PositionSideSpecified::Long
-                } else if balance_f64 < 0.0 {
+                } else if wallet_balance < Decimal::ZERO {
                     PositionSideSpecified::Short
                 } else {
                     PositionSideSpecified::Flat
                 };
+
+                let abs_balance = wallet_balance.abs();
+                let quantity = Quantity::from_decimal_dp(abs_balance, instrument.size_precision())?;
+
+                if quantity.is_zero() {
+                    continue;
+                }
 
                 let report = PositionStatusReport::new(
                     account_id,

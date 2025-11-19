@@ -998,6 +998,37 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_wallet_balance_spot_short() {
+        let json = include_str!("../../test_data/http_get_wallet_balance_spot_short.json");
+        let response: BybitWalletBalanceResponse = serde_json::from_str(json)
+            .expect("Failed to parse wallet balance with SHORT SPOT position");
+
+        let wallet = &response.result.list[0];
+        let eth = &wallet.coin[0];
+
+        assert_eq!(eth.coin.as_str(), "ETH");
+        assert_eq!(eth.wallet_balance, dec!(0));
+        assert_eq!(eth.spot_borrow, dec!(0.06142));
+        assert_eq!(eth.borrow_amount, "0.06142");
+
+        let account_state = crate::common::parse::parse_account_state(
+            wallet,
+            AccountId::new("BYBIT-001"),
+            UnixNanos::default(),
+        )
+        .expect("Failed to parse account state");
+
+        let eth_balance = account_state
+            .balances
+            .iter()
+            .find(|b| b.currency.code.as_str() == "ETH")
+            .expect("ETH balance not found");
+
+        // Negative balance represents SHORT position (borrowed ETH)
+        assert_eq!(eth_balance.total.as_f64(), -0.06142);
+    }
+
+    #[rstest]
     fn deserialize_borrow_response() {
         let json = r#"{
             "retCode": 0,

@@ -1722,3 +1722,73 @@ async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
     // Should return zero when coin not found
     assert_eq!(borrow_amount, rust_decimal::Decimal::ZERO);
 }
+
+#[rstest]
+#[tokio::test]
+async fn test_spot_position_report_short_from_borrowed_balance() {
+    use nautilus_model::{
+        enums::PositionSideSpecified,
+        instruments::{CurrencyPair, InstrumentAny},
+        types::{Currency, Price},
+    };
+
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    client.set_use_spot_position_reports(true);
+
+    let eth = Currency::from("ETH");
+    let usdt = Currency::from("USDT");
+    let ethusdt = CurrencyPair::new(
+        "ETHUSDT-SPOT.BYBIT".into(),
+        "ETHUSDT".into(),
+        eth,
+        usdt,
+        2,
+        5,
+        Price::from("0.01"),
+        Quantity::from("0.00001"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.into(),
+        0.into(),
+    );
+    client.cache_instrument(InstrumentAny::CurrencyPair(ethusdt));
+
+    let account_id = AccountId::new("BYBIT-UNIFIED");
+    let reports = client
+        .request_position_status_reports(account_id, BybitProductType::Spot, None)
+        .await
+        .unwrap();
+
+    let eth_report = reports
+        .iter()
+        .find(|r| r.instrument_id.symbol.as_str() == "ETHUSDT-SPOT")
+        .expect("ETH SPOT position report not found");
+
+    assert_eq!(eth_report.position_side, PositionSideSpecified::Short);
+    assert_eq!(eth_report.quantity, Quantity::new(0.06142, 5));
+}
