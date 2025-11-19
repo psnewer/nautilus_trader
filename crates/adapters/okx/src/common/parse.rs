@@ -346,7 +346,7 @@ pub fn parse_rfc3339_timestamp(timestamp: &str) -> anyhow::Result<UnixNanos> {
 /// of decimal places exceeds `precision`.
 pub fn parse_price(value: &str, precision: u8) -> anyhow::Result<Price> {
     let decimal = Decimal::from_str(value)?;
-    Price::from_decimal(decimal, precision)
+    Price::from_decimal_dp(decimal, precision)
 }
 
 /// Converts a textual quantity to a [`Quantity`].
@@ -357,7 +357,7 @@ pub fn parse_price(value: &str, precision: u8) -> anyhow::Result<Price> {
 /// precision.
 pub fn parse_quantity(value: &str, precision: u8) -> anyhow::Result<Quantity> {
     let decimal = Decimal::from_str(value)?;
-    Quantity::from_decimal(decimal, precision)
+    Quantity::from_decimal_dp(decimal, precision)
 }
 
 /// Converts a textual fee amount into a [`Money`] value.
@@ -614,7 +614,7 @@ pub fn parse_order_status_report(
         let quantity_base = if let (Some(sz), Some(price)) = (sz_quote_dec, conversion_price_dec) {
             if !price.is_zero() {
                 let quantity_dec = sz / price;
-                Quantity::from_decimal(quantity_dec, size_precision).map_err(|e| {
+                Quantity::from_decimal_dp(quantity_dec, size_precision).map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to convert quote-to-base quantity for ord_id={}, sz={sz}, price={price}, quantity_dec={quantity_dec}: {e}",
                         order.ord_id.as_str()
@@ -761,7 +761,7 @@ pub fn parse_order_status_report(
     // Optional fields
     if !order.px.is_empty()
         && let Ok(decimal) = Decimal::from_str(&order.px)
-        && let Ok(price) = Price::from_decimal(decimal, price_precision)
+        && let Ok(price) = Price::from_decimal_dp(decimal, price_precision)
     {
         report = report.with_price(price);
     }
@@ -846,7 +846,7 @@ pub fn parse_spot_margin_position_from_balance(
         (PositionSide::Long, spot_in_use_dec)
     };
 
-    let quantity = Quantity::from_decimal(quantity_dec, size_precision)
+    let quantity = Quantity::from_decimal_dp(quantity_dec, size_precision)
         .map_err(|e| anyhow::anyhow!("Failed to create quantity from {quantity_dec}: {e}"))?;
 
     let ts_last = parse_millisecond_timestamp(balance.u_time);
@@ -979,7 +979,7 @@ pub fn parse_position_status_report(
     let position_side = position_side.as_specified();
 
     // Convert to absolute quantity (positions are always positive in Nautilus)
-    let quantity = Quantity::from_decimal(quantity_dec, size_precision)?;
+    let quantity = Quantity::from_decimal_dp(quantity_dec, size_precision)?;
 
     // Generate venue position ID only for Long/Short mode (hedging)
     // In Net mode, venue_position_id must be None to signal NETTING OMS behavior

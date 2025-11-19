@@ -885,5 +885,3 @@ class TestQuantity:
         # Act, Assert
         assert (quantity == None) is False  # noqa: E711
         assert (quantity != None) is True  # noqa: E711
-        assert (quantity == None) is False  # noqa: E711
-        assert (quantity != None) is True  # noqa: E711

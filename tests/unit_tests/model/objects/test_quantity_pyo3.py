@@ -899,3 +899,73 @@ class TestQuantity:
 
         # Assert
         assert pickle.loads(pickled) == quantity  # noqa: S301 (testing pickle)
+
+    def test_from_decimal_infers_precision(self):
+        # Arrange, Act
+        qty = Quantity.from_decimal(Decimal("123.456"))
+
+        # Assert
+        assert qty.precision == 3
+        assert str(qty) == "123.456"
+        assert qty == Quantity(123.456, 3)
+
+    def test_from_decimal_with_integer_decimal(self):
+        # Arrange, Act
+        qty = Quantity.from_decimal(Decimal(100))
+
+        # Assert
+        assert qty.precision == 0
+        assert str(qty) == "100"
+        assert qty == Quantity(100, 0)
+
+    def test_from_decimal_with_high_precision(self):
+        # Arrange, Act
+        qty = Quantity.from_decimal(Decimal("1.23456789"))
+
+        # Assert
+        assert qty.precision == 8
+        assert str(qty) == "1.23456789"
+
+    def test_from_decimal_with_negative_value_errors(self):
+        # Arrange, Act, Assert - Quantity must be non-negative
+        with pytest.raises(ValueError):
+            Quantity.from_decimal(Decimal("-99.95"))
+
+    def test_from_decimal_trailing_zeros(self):
+        # Arrange, Act
+        qty = Quantity.from_decimal(Decimal("5.670"))
+
+        # Assert - Decimal preserves trailing zeros in scale
+        assert qty.precision == 3
+        assert str(qty) == "5.670"
+
+    def test_from_decimal_dp_with_explicit_precision(self):
+        # Arrange, Act
+        qty = Quantity.from_decimal_dp(Decimal("123.456789"), 2)
+
+        # Assert
+        assert qty.precision == 2
+        assert str(qty) == "123.46"
+
+    def test_from_decimal_dp_rounds_correctly(self):
+        # Arrange, Act - Banker's rounding (round half to even)
+        qty1 = Quantity.from_decimal_dp(Decimal("1.005"), 2)
+        qty2 = Quantity.from_decimal_dp(Decimal("1.015"), 2)
+
+        # Assert
+        assert str(qty1) == "1.00"
+        assert str(qty2) == "1.02"
+
+    def test_from_decimal_dp_negative_value_errors(self):
+        # Arrange, Act, Assert - Quantity must be non-negative
+        with pytest.raises(ValueError):
+            Quantity.from_decimal_dp(Decimal("-123.45"), 2)
+
+    def test_from_decimal_dp_precision_limits(self):
+        # Arrange, Act, Assert - At FIXED_PRECISION should succeed
+        qty = Quantity.from_decimal_dp(Decimal("1.0"), FIXED_PRECISION)
+        assert qty.precision == FIXED_PRECISION
+
+        # Exceeding FIXED_PRECISION should error
+        with pytest.raises(ValueError):
+            Quantity.from_decimal_dp(Decimal("1.0"), FIXED_PRECISION + 1)

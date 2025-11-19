@@ -270,5 +270,3 @@ class TestCurrency:
         # Act, Assert
         assert (currency == None) is False  # noqa: E711
         assert (currency != None) is True  # noqa: E711
-        assert (currency == None) is False  # noqa: E711
-        assert (currency != None) is True  # noqa: E711

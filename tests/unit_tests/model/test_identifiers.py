@@ -488,8 +488,6 @@ def test_identifier_equality_with_none_returns_false(identifier) -> None:
     # Act, Assert
     assert (identifier == None) is False  # noqa: E711
     assert (identifier != None) is True  # noqa: E711
-    assert (identifier == None) is False  # noqa: E711
-    assert (identifier != None) is True  # noqa: E711
 
 
 @pytest.mark.parametrize(

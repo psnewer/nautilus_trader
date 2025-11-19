@@ -386,10 +386,10 @@ impl FeedHandler {
 
             let tick = TradeTick::new(
                 instrument_id,
-                Price::from_decimal(price, instrument.price_precision()).map_err(|e| {
+                Price::from_decimal_dp(price, instrument.price_precision()).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Price from decimal: {e}"))
                 })?,
-                Quantity::from_decimal(size, instrument.size_precision()).map_err(|e| {
+                Quantity::from_decimal_dp(size, instrument.size_precision()).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Quantity from decimal: {e}"))
                 })?,
                 aggressor_side,
@@ -522,10 +522,10 @@ impl FeedHandler {
 
             let order = BookOrder::new(
                 OrderSide::Buy,
-                Price::from_decimal(price, price_precision).map_err(|e| {
+                Price::from_decimal_dp(price, price_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Price from decimal: {e}"))
                 })?,
-                Quantity::from_decimal(size, size_precision).map_err(|e| {
+                Quantity::from_decimal_dp(size, size_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Quantity from decimal: {e}"))
                 })?,
                 0,
@@ -554,10 +554,10 @@ impl FeedHandler {
 
             let order = BookOrder::new(
                 OrderSide::Sell,
-                Price::from_decimal(price, price_precision).map_err(|e| {
+                Price::from_decimal_dp(price, price_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Price from decimal: {e}"))
                 })?,
-                Quantity::from_decimal(size, size_precision).map_err(|e| {
+                Quantity::from_decimal_dp(size, size_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Quantity from decimal: {e}"))
                 })?,
                 0,
@@ -624,7 +624,7 @@ impl FeedHandler {
             let size = Decimal::from_str(size_str)
                 .map_err(|e| DydxWsError::Parse(format!("Failed to parse bid size: {e}")))?;
 
-            let qty = Quantity::from_decimal(size, size_precision).map_err(|e| {
+            let qty = Quantity::from_decimal_dp(size, size_precision).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create Quantity from decimal: {e}"))
             })?;
             let action = if qty.is_zero() {
@@ -635,7 +635,7 @@ impl FeedHandler {
 
             let order = BookOrder::new(
                 OrderSide::Buy,
-                Price::from_decimal(price, price_precision).map_err(|e| {
+                Price::from_decimal_dp(price, price_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Price from decimal: {e}"))
                 })?,
                 qty,
@@ -663,7 +663,7 @@ impl FeedHandler {
             let size = Decimal::from_str(size_str)
                 .map_err(|e| DydxWsError::Parse(format!("Failed to parse ask size: {e}")))?;
 
-            let qty = Quantity::from_decimal(size, size_precision).map_err(|e| {
+            let qty = Quantity::from_decimal_dp(size, size_precision).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create Quantity from decimal: {e}"))
             })?;
             let action = if qty.is_zero() {
@@ -674,7 +674,7 @@ impl FeedHandler {
 
             let order = BookOrder::new(
                 OrderSide::Sell,
-                Price::from_decimal(price, price_precision).map_err(|e| {
+                Price::from_decimal_dp(price, price_precision).map_err(|e| {
                     DydxWsError::Parse(format!("Failed to create Price from decimal: {e}"))
                 })?,
                 qty,
@@ -739,19 +739,19 @@ impl FeedHandler {
 
         let bar = Bar::new(
             *bar_type,
-            Price::from_decimal(open, instrument.price_precision()).map_err(|e| {
+            Price::from_decimal_dp(open, instrument.price_precision()).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create open Price from decimal: {e}"))
             })?,
-            Price::from_decimal(high, instrument.price_precision()).map_err(|e| {
+            Price::from_decimal_dp(high, instrument.price_precision()).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create high Price from decimal: {e}"))
             })?,
-            Price::from_decimal(low, instrument.price_precision()).map_err(|e| {
+            Price::from_decimal_dp(low, instrument.price_precision()).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create low Price from decimal: {e}"))
             })?,
-            Price::from_decimal(close, instrument.price_precision()).map_err(|e| {
+            Price::from_decimal_dp(close, instrument.price_precision()).map_err(|e| {
                 DydxWsError::Parse(format!("Failed to create close Price from decimal: {e}"))
             })?,
-            Quantity::from_decimal(volume, instrument.size_precision()).map_err(|e| {
+            Quantity::from_decimal_dp(volume, instrument.size_precision()).map_err(|e| {
                 DydxWsError::Parse(format!(
                     "Failed to create volume Quantity from decimal: {e}"
                 ))

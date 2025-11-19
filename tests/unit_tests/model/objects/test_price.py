@@ -967,5 +967,3 @@ class TestPrice:
         # Act, Assert
         assert (price == None) is False  # noqa: E711
         assert (price != None) is True  # noqa: E711
-        assert (price == None) is False  # noqa: E711
-        assert (price != None) is True  # noqa: E711

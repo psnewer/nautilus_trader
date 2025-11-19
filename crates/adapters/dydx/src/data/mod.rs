@@ -948,7 +948,7 @@ impl DataClient for DydxDataClient {
                             _ => continue, // Skip unsupported side
                         };
 
-                        let price = match Price::from_decimal(trade.price, price_precision) {
+                        let price = match Price::from_decimal_dp(trade.price, price_precision) {
                             Ok(p) => p,
                             Err(e) => {
                                 tracing::warn!(
@@ -959,7 +959,7 @@ impl DataClient for DydxDataClient {
                             }
                         };
 
-                        let size = match Quantity::from_decimal(trade.size, size_precision) {
+                        let size = match Quantity::from_decimal_dp(trade.size, size_precision) {
                             Ok(q) => q,
                             Err(e) => {
                                 tracing::warn!(
@@ -1613,9 +1613,9 @@ impl DydxDataClient {
             let is_last = idx == bids_len - 1 && asks_len == 0;
             let flags = if is_last { RecordFlag::F_LAST as u8 } else { 0 };
 
-            let price = Price::from_decimal(bid.price, price_precision)
+            let price = Price::from_decimal_dp(bid.price, price_precision)
                 .context("failed to parse bid price")?;
-            let size = Quantity::from_decimal(bid.size, size_precision)
+            let size = Quantity::from_decimal_dp(bid.size, size_precision)
                 .context("failed to parse bid size")?;
 
             let order = BookOrder::new(OrderSide::Buy, price, size, 0);
@@ -1635,9 +1635,9 @@ impl DydxDataClient {
             let is_last = idx == asks_len - 1;
             let flags = if is_last { RecordFlag::F_LAST as u8 } else { 0 };
 
-            let price = Price::from_decimal(ask.price, price_precision)
+            let price = Price::from_decimal_dp(ask.price, price_precision)
                 .context("failed to parse ask price")?;
-            let size = Quantity::from_decimal(ask.size, size_precision)
+            let size = Quantity::from_decimal_dp(ask.size, size_precision)
                 .context("failed to parse ask size")?;
 
             let order = BookOrder::new(OrderSide::Sell, price, size, 0);
@@ -1706,17 +1706,17 @@ impl DydxDataClient {
             .saturating_add((bar_secs as u64).saturating_mul(1_000_000_000));
         let ts_event = UnixNanos::from(ts_event_ns);
 
-        let open = Price::from_decimal(candle.open, price_precision)
+        let open = Price::from_decimal_dp(candle.open, price_precision)
             .context("failed to parse candle open price")?;
-        let high = Price::from_decimal(candle.high, price_precision)
+        let high = Price::from_decimal_dp(candle.high, price_precision)
             .context("failed to parse candle high price")?;
-        let low = Price::from_decimal(candle.low, price_precision)
+        let low = Price::from_decimal_dp(candle.low, price_precision)
             .context("failed to parse candle low price")?;
-        let close = Price::from_decimal(candle.close, price_precision)
+        let close = Price::from_decimal_dp(candle.close, price_precision)
             .context("failed to parse candle close price")?;
 
         // Use base token volume as bar volume.
-        let volume = Quantity::from_decimal(candle.base_token_volume, size_precision)
+        let volume = Quantity::from_decimal_dp(candle.base_token_volume, size_precision)
             .context("failed to parse candle base_token_volume")?;
 
         Ok(Bar::new(

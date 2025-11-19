@@ -482,8 +482,6 @@ class TestMoney:
         # Act, Assert
         assert (money == None) is False  # noqa: E711
         assert (money != None) is True  # noqa: E711
-        assert (money == None) is False  # noqa: E711
-        assert (money != None) is True  # noqa: E711
 
     def test_money_ordering_comparison_with_none_raises_type_error(self):
         # Arrange
