@@ -309,6 +309,10 @@ fn test_set_position_id_counts_updates_correctly(mut execution_engine: Execution
     );
 }
 
+// =================================================================================================
+// Engine Initialization & Configuration Tests
+// =================================================================================================
+
 #[rstest]
 fn test_execution_engine_with_config_initializes_correctly(
     execution_engine_with_config: ExecutionEngine,
@@ -334,6 +338,10 @@ fn test_execution_engine_default_config_initializes_correctly(execution_engine: 
         "Execution engine with default config should initialize correctly"
     );
 }
+
+// =================================================================================================
+// Command Execution Tests
+// =================================================================================================
 
 #[rstest]
 fn test_execute_query_order_command_succeeds(execution_engine: ExecutionEngine) {
@@ -961,6 +969,10 @@ fn test_submit_order_with_cleared_cache_logs_error(mut execution_engine: Executi
         "Order should remain absent from cache"
     );
 }
+
+// =================================================================================================
+// Event Handling Tests
+// =================================================================================================
 
 #[rstest]
 fn test_when_applying_event_to_order_with_invalid_state_trigger_logs(
@@ -2048,6 +2060,10 @@ fn test_handle_duplicate_order_events_logs_error_and_does_not_apply(
         "Order should have correct event count"
     );
 }
+
+// =================================================================================================
+// Fill Events & Position Management Tests
+// =================================================================================================
 
 #[rstest]
 fn test_handle_order_fill_event_with_no_position_id_correctly_handles_fill(
@@ -4503,6 +4519,10 @@ fn test_handle_updated_order_event(mut execution_engine: ExecutionEngine) {
     );
 }
 
+// =================================================================================================
+// Quote Quantity Conversion Tests
+// =================================================================================================
+
 #[rstest]
 fn test_submit_order_with_quote_quantity_and_no_prices_denies(
     mut execution_engine: ExecutionEngine,
@@ -5349,6 +5369,10 @@ fn test_submit_bracket_order_with_quote_quantity_and_ticks_converts_expected(
     assert_eq!(final_stop_loss_order.quantity(), expected_base_quantity);
     assert_eq!(final_take_profit_order.quantity(), expected_base_quantity);
 }
+
+// =================================================================================================
+// Own Order Book Tests
+// =================================================================================================
 
 #[rstest]
 fn test_submit_market_should_not_add_to_own_book() {
@@ -8285,5 +8309,271 @@ fn test_own_book_status_integrity_during_transitions() {
             0,
             "FILLED orders should not appear in the own book"
         );
+    }
+
+    // =================================================================================================
+    // External Order Claims Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_get_external_client_ids_when_none_configured(execution_engine: ExecutionEngine) {
+        let external_ids = execution_engine.get_external_client_ids();
+        assert!(external_ids.is_empty());
+    }
+
+    #[rstest]
+    fn test_get_external_client_ids_returns_configured_ids() {
+        let clock = Rc::new(RefCell::new(TestClock::new()));
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        let config = ExecutionEngineConfig {
+            external_clients: Some(vec![
+                ClientId::from("EXTERNAL-1"),
+                ClientId::from("EXTERNAL-2"),
+            ]),
+            ..Default::default()
+        };
+        let engine = ExecutionEngine::new(clock, cache, Some(config));
+
+        let external_ids = engine.get_external_client_ids();
+        assert_eq!(external_ids.len(), 2);
+        assert!(external_ids.contains(&ClientId::from("EXTERNAL-1")));
+        assert!(external_ids.contains(&ClientId::from("EXTERNAL-2")));
+    }
+
+    #[rstest]
+    fn test_get_external_order_claim_when_none_registered(execution_engine: ExecutionEngine) {
+        let instrument_id = InstrumentId::from("EUR/USD.SIM");
+        let claim = execution_engine.get_external_order_claim(&instrument_id);
+        assert!(claim.is_none());
+    }
+
+    #[rstest]
+    fn test_register_and_get_external_order_claim(mut execution_engine: ExecutionEngine) {
+        let strategy_id = StrategyId::from("TEST-001");
+        let instrument_id = InstrumentId::from("EUR/USD.SIM");
+        let mut claims = HashSet::new();
+        claims.insert(instrument_id);
+
+        execution_engine
+            .register_external_order_claims(strategy_id, claims)
+            .unwrap();
+
+        let claim = execution_engine.get_external_order_claim(&instrument_id);
+        assert_eq!(claim, Some(strategy_id));
+    }
+
+    #[rstest]
+    fn test_register_external_order_claims_duplicate_fails(mut execution_engine: ExecutionEngine) {
+        let strategy_id_1 = StrategyId::from("TEST-001");
+        let strategy_id_2 = StrategyId::from("TEST-002");
+        let instrument_id = InstrumentId::from("EUR/USD.SIM");
+
+        let mut claims = HashSet::new();
+        claims.insert(instrument_id);
+
+        execution_engine
+            .register_external_order_claims(strategy_id_1, claims.clone())
+            .unwrap();
+
+        let result = execution_engine.register_external_order_claims(strategy_id_2, claims);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("already exists for")
+        );
+    }
+
+    #[rstest]
+    fn test_register_external_order_claims_is_atomic(mut execution_engine: ExecutionEngine) {
+        let strategy_id_1 = StrategyId::from("TEST-001");
+        let strategy_id_2 = StrategyId::from("TEST-002");
+        let instrument_id_1 = InstrumentId::from("EUR/USD.SIM");
+        let instrument_id_2 = InstrumentId::from("GBP/USD.SIM");
+        let instrument_id_3 = InstrumentId::from("AUD/USD.SIM");
+
+        // Register a single claim
+        let mut initial_claims = HashSet::new();
+        initial_claims.insert(instrument_id_2);
+        execution_engine
+            .register_external_order_claims(strategy_id_1, initial_claims)
+            .unwrap();
+
+        // Try to register multiple claims where one conflicts
+        let mut conflicting_claims = HashSet::new();
+        conflicting_claims.insert(instrument_id_1);
+        conflicting_claims.insert(instrument_id_2); // Already claimed
+        conflicting_claims.insert(instrument_id_3);
+
+        let result =
+            execution_engine.register_external_order_claims(strategy_id_2, conflicting_claims);
+        assert!(result.is_err());
+
+        // Verify atomicity: none of the new claims should be registered
+        assert_eq!(
+            execution_engine.get_external_order_claim(&instrument_id_1),
+            None
+        );
+        assert_eq!(
+            execution_engine.get_external_order_claim(&instrument_id_2),
+            Some(strategy_id_1)
+        );
+        assert_eq!(
+            execution_engine.get_external_order_claim(&instrument_id_3),
+            None
+        );
+    }
+
+    #[rstest]
+    fn test_get_external_order_claims_instruments(mut execution_engine: ExecutionEngine) {
+        let strategy_id = StrategyId::from("TEST-001");
+        let instrument_id_1 = InstrumentId::from("EUR/USD.SIM");
+        let instrument_id_2 = InstrumentId::from("GBP/USD.SIM");
+
+        let mut claims = HashSet::new();
+        claims.insert(instrument_id_1);
+        claims.insert(instrument_id_2);
+
+        execution_engine
+            .register_external_order_claims(strategy_id, claims)
+            .unwrap();
+
+        let instruments = execution_engine.get_external_order_claims_instruments();
+        assert_eq!(instruments.len(), 2);
+        assert!(instruments.contains(&instrument_id_1));
+        assert!(instruments.contains(&instrument_id_2));
+    }
+
+    // =================================================================================================
+    // OMS Type Registration Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_register_oms_type_for_strategy(mut execution_engine: ExecutionEngine) {
+        let strategy_id = StrategyId::from("TEST-001");
+
+        execution_engine.register_oms_type(strategy_id, OmsType::Hedging);
+    }
+
+    #[rstest]
+    fn test_register_oms_type_allows_override(mut execution_engine: ExecutionEngine) {
+        let strategy_id = StrategyId::from("TEST-001");
+
+        execution_engine.register_oms_type(strategy_id, OmsType::Hedging);
+        execution_engine.register_oms_type(strategy_id, OmsType::Netting);
+    }
+
+    // =================================================================================================
+    // Client Utilities Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_get_clients_for_orders_empty_list(execution_engine: ExecutionEngine) {
+        let orders: Vec<nautilus_model::orders::OrderAny> = vec![];
+        let clients = execution_engine.get_clients_for_orders(&orders);
+        assert!(clients.is_empty());
+    }
+
+    #[rstest]
+    fn test_get_clients_for_orders_with_default_client(
+        mut execution_engine: ExecutionEngine,
+        stub_client: StubExecutionClient,
+    ) {
+        let client_rc = Rc::new(stub_client);
+
+        execution_engine.register_default_client(client_rc.clone());
+
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(instrument.id())
+            .side(nautilus_model::enums::OrderSide::Buy)
+            .quantity(Quantity::from("100"))
+            .build();
+
+        let clients = execution_engine.get_clients_for_orders(&[order]);
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].client_id(), client_rc.client_id());
+    }
+
+    // =================================================================================================
+    // Configuration Toggles Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_set_manage_own_order_books(mut execution_engine: ExecutionEngine) {
+        assert!(!execution_engine.config.manage_own_order_books);
+
+        execution_engine.set_manage_own_order_books(true);
+        assert!(execution_engine.config.manage_own_order_books);
+
+        execution_engine.set_manage_own_order_books(false);
+        assert!(!execution_engine.config.manage_own_order_books);
+    }
+
+    #[rstest]
+    fn test_set_convert_quote_qty_to_base(mut execution_engine: ExecutionEngine) {
+        assert!(execution_engine.config.convert_quote_qty_to_base);
+
+        execution_engine.set_convert_quote_qty_to_base(false);
+        assert!(!execution_engine.config.convert_quote_qty_to_base);
+
+        execution_engine.set_convert_quote_qty_to_base(true);
+        assert!(execution_engine.config.convert_quote_qty_to_base);
+    }
+
+    // =================================================================================================
+    // Connection Management Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_connect_logs_message(execution_engine: ExecutionEngine) {
+        execution_engine.connect();
+    }
+
+    #[rstest]
+    fn test_disconnect_logs_message(execution_engine: ExecutionEngine) {
+        execution_engine.disconnect();
+    }
+
+    // =================================================================================================
+    // Position Snapshots Tests
+    // =================================================================================================
+
+    #[rstest]
+    fn test_start_snapshot_timer_with_no_interval(mut execution_engine: ExecutionEngine) {
+        execution_engine.start_snapshot_timer();
+    }
+
+    #[rstest]
+    fn test_start_snapshot_timer_with_interval() {
+        let clock = Rc::new(RefCell::new(TestClock::new()));
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        let config = ExecutionEngineConfig {
+            snapshot_positions_interval_secs: Some(60.0),
+            ..Default::default()
+        };
+        let mut engine = ExecutionEngine::new(clock, cache, Some(config));
+
+        engine.start_snapshot_timer();
+    }
+
+    #[rstest]
+    fn test_stop_snapshot_timer() {
+        let clock = Rc::new(RefCell::new(TestClock::new()));
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        let config = ExecutionEngineConfig {
+            snapshot_positions_interval_secs: Some(60.0),
+            ..Default::default()
+        };
+        let mut engine = ExecutionEngine::new(clock, cache, Some(config));
+
+        engine.start_snapshot_timer();
+        engine.stop_snapshot_timer();
+    }
+
+    #[rstest]
+    fn test_snapshot_open_position_states_with_no_positions(execution_engine: ExecutionEngine) {
+        execution_engine.snapshot_open_position_states();
     }
 }

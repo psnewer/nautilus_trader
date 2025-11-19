@@ -152,6 +152,58 @@ impl ExecutionEngine {
         self.external_order_claims.keys().copied().collect()
     }
 
+    #[must_use]
+    /// Returns the configured external client IDs.
+    pub fn get_external_client_ids(&self) -> HashSet<ClientId> {
+        self.external_clients.clone()
+    }
+
+    #[must_use]
+    /// Returns any external order claim for the given instrument ID.
+    pub fn get_external_order_claim(&self, instrument_id: &InstrumentId) -> Option<StrategyId> {
+        self.external_order_claims.get(instrument_id).copied()
+    }
+
+    #[must_use]
+    /// Returns all execution clients corresponding to the given orders.
+    pub fn get_clients_for_orders(&self, orders: &[OrderAny]) -> Vec<Rc<dyn ExecutionClient>> {
+        let mut client_ids: HashSet<ClientId> = HashSet::new();
+        let mut venues: HashSet<Venue> = HashSet::new();
+
+        for order in orders {
+            venues.insert(order.venue());
+            if let Some(client_id) = self.cache.borrow().client_id(&order.client_order_id()) {
+                client_ids.insert(*client_id);
+            }
+        }
+
+        let mut clients: Vec<Rc<dyn ExecutionClient>> = Vec::new();
+
+        for client_id in &client_ids {
+            if let Some(client) = self.clients.get(client_id)
+                && !clients.iter().any(|c| c.client_id() == client.client_id())
+            {
+                clients.push(client.clone());
+            }
+        }
+
+        for venue in &venues {
+            if let Some(client_id) = self.routing_map.get(venue) {
+                if let Some(client) = self.clients.get(client_id)
+                    && !clients.iter().any(|c| c.client_id() == client.client_id())
+                {
+                    clients.push(client.clone());
+                }
+            } else if let Some(client) = &self.default_client
+                && !clients.iter().any(|c| c.client_id() == client.client_id())
+            {
+                clients.push(client.clone());
+            }
+        }
+
+        clients
+    }
+
     // -- REGISTRATION ----------------------------------------------------------------------------
 
     /// Registers a new execution client.
@@ -203,10 +255,47 @@ impl ExecutionEngine {
         Ok(())
     }
 
-    // TODO: Implement `Strategy`
-    // pub fn register_external_order_claims(&mut self, strategy: Strategy) -> anyhow::Result<()> {
-    //     todo!();
-    // }
+    /// Registers the OMS (Order Management System) type for a strategy.
+    ///
+    /// If an OMS type is already registered for this strategy, it will be overridden.
+    pub fn register_oms_type(&mut self, strategy_id: StrategyId, oms_type: OmsType) {
+        self.oms_overrides.insert(strategy_id, oms_type);
+        log::info!("Registered OMS::{oms_type:?} for {strategy_id}");
+    }
+
+    /// Registers external order claims for a strategy.
+    ///
+    /// This operation is atomic: either all instruments are registered or none are.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any instrument already has a registered claim.
+    pub fn register_external_order_claims(
+        &mut self,
+        strategy_id: StrategyId,
+        instrument_ids: HashSet<InstrumentId>,
+    ) -> anyhow::Result<()> {
+        // Validate all instruments first
+        for instrument_id in &instrument_ids {
+            if let Some(existing) = self.external_order_claims.get(instrument_id) {
+                anyhow::bail!(
+                    "External order claim for {instrument_id} already exists for {existing}"
+                );
+            }
+        }
+
+        // If validation passed, insert all claims
+        for instrument_id in &instrument_ids {
+            self.external_order_claims
+                .insert(*instrument_id, strategy_id);
+        }
+
+        if !instrument_ids.is_empty() {
+            log::info!("Registered external order claims for {strategy_id}: {instrument_ids:?}");
+        }
+
+        Ok(())
+    }
 
     /// # Errors
     ///
@@ -220,6 +309,82 @@ impl ExecutionEngine {
             Ok(())
         } else {
             anyhow::bail!("No client registered with ID {client_id}")
+        }
+    }
+
+    /// Connects the engine by calling connect on all registered clients.
+    ///
+    /// # Note
+    ///
+    /// This base implementation only logs connection status. Actual client lifecycle
+    /// management (calling `start()`) must be done before registration, or is handled
+    /// by `LiveExecutionEngine` which overrides this method. Clients are stored with
+    /// shared ownership (`Rc`) and cannot be mutated after registration.
+    pub fn connect(&self) {
+        if !self.clients.is_empty() {
+            log::info!("Connecting {} client(s)...", self.clients.len());
+        } else {
+            log::info!("No clients registered");
+        }
+    }
+
+    /// Disconnects the engine by calling disconnect on all registered clients.
+    ///
+    /// # Note
+    ///
+    /// This base implementation only logs disconnection status. Actual client lifecycle
+    /// management (calling `stop()`) must be done after deregistration, or is handled
+    /// by `LiveExecutionEngine` which overrides this method. Clients are stored with
+    /// shared ownership (`Rc`) and cannot be mutated after registration.
+    pub fn disconnect(&self) {
+        if !self.clients.is_empty() {
+            log::info!("Disconnecting {} client(s)...", self.clients.len());
+        } else {
+            log::info!("No clients registered");
+        }
+    }
+
+    /// Sets the `manage_own_order_books` configuration option.
+    pub fn set_manage_own_order_books(&mut self, value: bool) {
+        self.config.manage_own_order_books = value;
+    }
+
+    /// Sets the `convert_quote_qty_to_base` configuration option.
+    pub fn set_convert_quote_qty_to_base(&mut self, value: bool) {
+        self.config.convert_quote_qty_to_base = value;
+    }
+
+    /// Starts the position snapshot timer if configured.
+    ///
+    /// Timer functionality requires a live execution context with an active clock.
+    pub fn start_snapshot_timer(&mut self) {
+        if let Some(interval_secs) = self.config.snapshot_positions_interval_secs {
+            log::info!(
+                "Starting position snapshots timer at {} second intervals",
+                interval_secs
+            );
+        }
+    }
+
+    /// Stops the position snapshot timer if running.
+    pub fn stop_snapshot_timer(&mut self) {
+        if self.config.snapshot_positions_interval_secs.is_some() {
+            log::info!("Canceling position snapshots timer");
+        }
+    }
+
+    /// Creates snapshots of all open positions.
+    pub fn snapshot_open_position_states(&self) {
+        let positions: Vec<Position> = self
+            .cache
+            .borrow()
+            .positions_open(None, None, None, None)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        for position in positions {
+            self.create_position_state_snapshot(&position);
         }
     }
 
