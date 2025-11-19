@@ -74,7 +74,7 @@ repos:
         types_or: [rust, python, cython, toml, yaml, rst, markdown]
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.29.0
+    rev: v8.29.1
     hooks:
       - id: gitleaks
         name: gitleaks (secrets scan)
@@ -82,7 +82,7 @@ repos:
         args: ["--staged", "--redact"]
 
   - repo: https://github.com/google/osv-scanner
-    rev: v2.2.4
+    rev: v2.3.0
     hooks:
       - id: osv-scanner
         name: osv-scanner (dependency vulnerabilities)
@@ -250,7 +250,7 @@ repos:
   #  Python/Cython formatting and linting
   ##############################################################################
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.21.1
+    rev: v3.21.2
     hooks:
       - id: pyupgrade
         args: ["--py312-plus"]

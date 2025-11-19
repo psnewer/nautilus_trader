@@ -268,18 +268,16 @@ install-tools:  #-- Install required development tools (Rust tools from Cargo.to
 	&& cargo install cargo-llvm-cov --version $(CARGO_LLVM_COV_VERSION) --locked \
 	&& cargo install cargo-audit --version $(CARGO_AUDIT_VERSION) --locked \
 	&& cargo install lychee --version $(LYCHEE_VERSION) --locked \
-	&& uv self update $(UV_VERSION) \
-	&& uv tool install osv-scanner
+	&& uv self update $(UV_VERSION)
 
 #== Security
 
 .PHONY: security-audit
-security-audit: check-audit-installed check-osv-installed  #-- Run security audit for Rust and Python dependencies
+security-audit: check-audit-installed  #-- Run security audit for Rust dependencies (osv-scanner runs via pre-commit)
 	$(info $(M) Running security audit for Rust dependencies...)
 	@printf "$(CYAN)Checking Rust dependencies for known vulnerabilities...$(RESET)\n"
 	cargo audit --color never || true
-	@printf "\n$(CYAN)Checking Python lockfile (uv.lock) with osv-scanner...$(RESET)\n"
-	osv-scanner --config=osv-scanner.toml --lockfile=uv.lock
+	@printf "\n$(CYAN)Note: Python dependency scanning (osv-scanner) runs via pre-commit hooks$(RESET)\n"
 
 .PHONY: cargo-deny
 cargo-deny: check-deny-installed  #-- Run cargo-deny checks (advisories, sources, bans, licenses)
@@ -342,12 +340,6 @@ check-audit-installed:  #-- Verify cargo-audit is installed
 		exit 1; \
 	fi
 
-.PHONY: check-osv-installed
-check-osv-installed:  #-- Verify osv-scanner is installed
-	@if ! osv-scanner --version >/dev/null 2>&1; then \
-		echo "osv-scanner is not installed. You can install it using 'uv tool install osv-scanner'"; \
-		exit 1; \
-	fi
 
 .PHONY: check-deny-installed
 check-deny-installed:  #-- Verify cargo-deny is installed

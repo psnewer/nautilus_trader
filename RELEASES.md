@@ -93,6 +93,8 @@ TBD
 - Improved Databento live connection stability and reconnects
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
+- Standardized dYdX client integration tests (#3193), thanks @nicolad
+- Changed Interactive Brokers default quote tick subscription to batch quotes (#3196), thanks @faysou
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou
@@ -321,8 +323,8 @@ This will be the final release with support for Python 3.11.
 - Optimized rate limiter quota keys with string interning to avoid repeated allocations
 - Upgraded Rust (MSRV) to 1.90.0
 - Upgraded Cython to v3.1.6
-- Upgraded `databento` crate to v0.35.0
-- Upgraded `datafusion` crate to v50.3.0
+- Upgraded `databento` crate to v0.36.0
+- Upgraded `datafusion` crate to v51.0.0
 - Upgraded `pyo3` and `pyo3-async-runtimes` crates to v0.26.0
 - Upgraded `redis` crate to v0.32.7
 - Upgraded `tokio` crate to v1.48.0

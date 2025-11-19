@@ -109,7 +109,7 @@ anyhow = "1.0.100"
 arc-swap = "1.7.1"
 arraydeque = "0.5.1"
 # Keep arrow major version in line with datafusion
-arrow = { version = "56.2.0", default-features = false, features = [
+arrow = { version = "57.0.0", default-features = false, features = [
   "csv",
   "json",
   "ipc",
@@ -130,19 +130,20 @@ chrono = { version = "0.4.42", default-features = false, features = [
   "clock",
 ] }
 chrono-tz = "0.10.4"
-clap = { version = "4.5.52", features = ["derive", "env"] }
+clap = { version = "4.5.53", features = ["derive", "env"] }
 compare = "0.1.0"
 cosmrs = { version = "0.22.0", default-features = false, features = ["bip32"] }
 csv = "1.4.0"
 dashmap = "6.1.0"
-databento = { version = "0.35.0", default-features = false, features = [
+databento = { version = "0.36.0", default-features = false, features = [
   "historical",
   "live",
 ] }
-datafusion = { version = "50.3.0", default-features = false, features = [
+datafusion = { version = "51.0.0", default-features = false, features = [
   "parquet",
   "regex_expressions",
   "unicode_expressions",
+  "sql",
 ] }
 deranged = "0.5.5"
 derive_builder = { version = "0.20.2", default-features = false, features = [
@@ -185,7 +186,7 @@ object_store = { version = "0.12.4", default-features = false, features = [
   "http",
 ] }
 # Keep parquet major version in line with datafusion
-parquet = { version = "56.2.0", default-features = false, features = [
+parquet = { version = "57.0.0", default-features = false, features = [
   "arrow",
   "async",
 ] }
@@ -357,7 +358,7 @@ walkdir = "2.5.0"
 cargo-audit = "0.22.0"
 cargo-deny = "0.18.5"
 cargo-llvm-cov = "0.6.21"
-cargo-nextest = "0.9.113"
+cargo-nextest = "0.9.114"
 lychee = "0.21.0"
 
 # -----------------------------------------------------------------------------
