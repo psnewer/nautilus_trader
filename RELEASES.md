@@ -73,6 +73,7 @@ TBD
 
 ### Internal Improvements
 - Added BitMEX submit broadcaster
+- Added Bybit start/end time filtering for order status reports (#3209), thanks @sunlei
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
@@ -91,6 +92,7 @@ TBD
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
 - Improved Databento live connection stability and reconnects
+- Improved dYdX adapter test coverage (#3212), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
@@ -109,9 +111,13 @@ TBD
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
 - Repaired Bybit `AccountPosition` message parsing (#3147), thanks @sunlei
 - Repaired Bybit conditional order trigger semantics and type
+- Repaired Bybit instruments pagination handling (#3210), thanks @sunlei
+- Repaired Bybit batch place orders (#3211), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
 - Upgraded Cython to v3.2.1
+- Upgraded `databento` crate to v0.36.0
+- Upgraded `datafusion` crate to v51.0.0
 - Upgraded `pyo3` crate to v0.27.0
 - Upgraded `pyo3-async-runtimes` crate to v0.27.0
 
@@ -323,8 +329,8 @@ This will be the final release with support for Python 3.11.
 - Optimized rate limiter quota keys with string interning to avoid repeated allocations
 - Upgraded Rust (MSRV) to 1.90.0
 - Upgraded Cython to v3.1.6
-- Upgraded `databento` crate to v0.36.0
-- Upgraded `datafusion` crate to v51.0.0
+- Upgraded `databento` crate to v0.35.0
+- Upgraded `datafusion` crate to v50.3.0
 - Upgraded `pyo3` and `pyo3-async-runtimes` crates to v0.26.0
 - Upgraded `redis` crate to v0.32.7
 - Upgraded `tokio` crate to v1.48.0
