@@ -524,7 +524,6 @@ fn test_submit_order_for_random_venue_logs(mut execution_engine: ExecutionEngine
 }
 
 #[rstest]
-#[should_panic(expected = "assertion `left == right` failed")]
 fn test_order_filled_with_unrecognized_strategy_id(mut execution_engine: ExecutionEngine) {
     // Arrange
     let trader_id = TraderId::from("TEST-TRADER");
@@ -604,11 +603,20 @@ fn test_order_filled_with_unrecognized_strategy_id(mut execution_engine: Executi
         Some(Money::from("2 USD")),
     );
 
-    // This will panic due to strategy ID mismatch assertion in OrderCore::apply()
-    // The #[should_panic] annotation makes this the expected behavior for this test
+    // Act - Process order filled event with mismatched strategy ID
+    // This should now log an error instead of panicking
     execution_engine.process(&nautilus_model::events::OrderEventAny::Filled(
         order_filled_event,
     ));
+
+    // Assert - Order should remain in SUBMITTED state (event not applied due to error)
+    let cache = execution_engine.cache.borrow();
+    let updated_order = cache.order(&order.client_order_id()).unwrap();
+    assert_eq!(
+        updated_order.status(),
+        OrderStatus::Submitted,
+        "Order should remain SUBMITTED when filled event has mismatched strategy_id"
+    );
 }
 
 #[rstest]

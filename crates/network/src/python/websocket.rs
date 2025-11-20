@@ -369,6 +369,7 @@ mod tests {
     }
 
     impl Callback for TestCallback {
+        #[allow(clippy::panic_in_result_fn)]
         fn on_request(
             self,
             request: &server::Request,

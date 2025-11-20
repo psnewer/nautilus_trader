@@ -190,6 +190,7 @@ select = [
   "FURB", # refurb
   "ISC", # flake8-implicit-str-concat
   "FLY", # flynt
+  "LOG", # flake8-logging
   # "ARG",  # unused-arguments - 301 violations
   # "ERA",  # eradicate - 165 violations
   # "ASYNC",  # flake8-async - 15 violations (5 ASYNC110 busy-wait, 10 ASYNC109 timeout params)

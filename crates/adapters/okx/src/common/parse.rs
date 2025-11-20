@@ -882,10 +882,6 @@ pub fn parse_spot_margin_position_from_balance(
 /// # Errors
 ///
 /// Returns an error if any numeric fields cannot be parsed into their target types.
-///
-/// # Panics
-///
-/// Panics if position quantity is invalid and cannot be parsed.
 #[allow(clippy::too_many_lines)]
 pub fn parse_position_status_report(
     position: OKXPosition,
@@ -894,12 +890,13 @@ pub fn parse_position_status_report(
     size_precision: u8,
     ts_init: UnixNanos,
 ) -> anyhow::Result<PositionStatusReport> {
-    let pos_dec = Decimal::from_str(&position.pos).unwrap_or_else(|e| {
-        panic!(
+    let pos_dec = Decimal::from_str(&position.pos).map_err(|e| {
+        anyhow::anyhow!(
             "Failed to parse position quantity '{}' for instrument {}: {e:?}",
-            position.pos, instrument_id
+            position.pos,
+            instrument_id
         )
-    });
+    })?;
 
     // For SPOT/MARGIN: determine position side and quantity based on pos_ccy
     // - If pos_ccy = base currency: LONG position, pos is in base currency

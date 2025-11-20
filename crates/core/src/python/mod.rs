@@ -145,7 +145,10 @@ pub fn to_pyruntime_err(e: impl Display) -> PyErr {
 /// bool
 #[gen_stub_pyfunction(module = "nautilus_trader.core")]
 #[pyfunction(name = "is_pycapsule")]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Python FFI requires owned types"
+)]
 #[allow(unsafe_code)]
 fn py_is_pycapsule(obj: Py<PyAny>) -> bool {
     unsafe {

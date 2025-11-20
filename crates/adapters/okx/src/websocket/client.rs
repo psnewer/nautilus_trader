@@ -904,7 +904,7 @@ impl OKXWebSocketClient {
             .map_err(|e| OKXWsError::ClientError(format!("Failed to send subscribe command: {e}")))
     }
 
-    #[allow(clippy::collapsible_if, reason = "Clearer uncollapsed")]
+    #[allow(clippy::collapsible_if)]
     async fn unsubscribe(&self, args: Vec<OKXSubscriptionArg>) -> Result<(), OKXWsError> {
         for arg in &args {
             let topic = topic_from_subscription_arg(arg);

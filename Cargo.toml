@@ -472,3 +472,13 @@ filter_map_next = "warn"
 flat_map_option = "warn"
 map_unwrap_or = "warn"
 implicit_clone = "warn"
+
+# Security and robustness
+suspicious_doc_comments = "warn"
+large_stack_arrays = "warn"
+panic_in_result_fn = "warn"
+
+# TODO: Enable these incrementally (widespread usage in codebase)
+# unwrap_used = "warn"        # Forces explicit error handling instead of panics
+# expect_used = "warn"        # Forces explicit error handling instead of panics
+# indexing_slicing = "warn"   # Prevents panics from out-of-bounds access
