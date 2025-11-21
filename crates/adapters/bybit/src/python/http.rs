@@ -146,6 +146,20 @@ impl BybitHttpClient {
         })
     }
 
+    #[pyo3(name = "get_account_details")]
+    fn py_get_account_details<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client.get_account_details().await.map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let account_details = Py::new(py, response.result)?;
+                Ok(account_details.into_any())
+            })
+        })
+    }
+
     #[pyo3(name = "set_leverage")]
     #[pyo3(signature = (product_type, symbol, buy_leverage, sell_leverage))]
     fn py_set_leverage<'py>(

@@ -24,6 +24,7 @@ use axum::{
     response::{IntoResponse, Json, Response},
     routing::{get, post},
 };
+use chrono::Utc;
 use nautilus_bybit::{
     common::enums::{BybitAccountType, BybitProductType},
     http::{
@@ -1828,4 +1829,59 @@ async fn test_spot_position_report_short_from_borrowed_balance() {
 
     assert_eq!(eth_report.position_side, PositionSideSpecified::Short);
     assert_eq!(eth_report.quantity, Quantity::new(0.06142, 5));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_request_order_status_reports_with_time_filtering() {
+    let (addr, state) = start_reconciliation_test_server().await.unwrap();
+    let base_url = format!("http://{}", addr);
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        Some(60),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let start_time = Utc::now() - chrono::Duration::days(7);
+    let end_time = Utc::now();
+
+    let _reports = client
+        .request_order_status_reports(
+            account_id,
+            BybitProductType::Linear,
+            None,
+            false, // Query history
+            Some(start_time),
+            Some(end_time),
+            Some(10),
+        )
+        .await
+        .unwrap();
+
+    // The history endpoint should have been called with startTime and endTime
+    let queries = state.settle_coin_queries.lock().await;
+
+    // Should have called history endpoint for each settle coin (USDT, USDC)
+    assert!(
+        queries.len() >= 2,
+        "Should have called history endpoint at least twice (one per settle coin)"
+    );
 }

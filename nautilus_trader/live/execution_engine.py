@@ -2489,7 +2489,7 @@ class LiveExecutionEngine(ExecutionEngine):
                     self._log.info(
                         f"Position avg_px verified for {report.instrument_id}: "
                         f"internal={current_avg_px}, venue={report.avg_px_open}",
-                        LogColor.GREEN,
+                        LogColor.BLUE,
                     )
 
         return True  # Reconciled
@@ -3372,7 +3372,7 @@ class LiveExecutionEngine(ExecutionEngine):
             self._log.info(
                 f"External order {report.client_order_id} for {report.instrument_id} "
                 f"claimed by strategy {strategy_id}",
-                LogColor.GREEN,
+                LogColor.BLUE,
             )
 
         # Filter unclaimed external orders (but not reconciliation fills)

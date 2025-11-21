@@ -177,6 +177,11 @@ impl BybitWebSocketClient {
         self.set_account_id(account_id);
     }
 
+    #[pyo3(name = "set_mm_level")]
+    fn py_set_mm_level(&self, mm_level: u8) {
+        self.set_mm_level(mm_level);
+    }
+
     #[pyo3(name = "connect")]
     fn py_connect<'py>(
         &mut self,

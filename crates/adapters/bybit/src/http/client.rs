@@ -55,13 +55,14 @@ use ustr::Ustr;
 use super::{
     error::BybitHttpError,
     models::{
-        BybitBorrowResponse, BybitFeeRate, BybitFeeRateResponse, BybitInstrumentInverseResponse,
-        BybitInstrumentLinearResponse, BybitInstrumentOptionResponse, BybitInstrumentSpotResponse,
-        BybitKlinesResponse, BybitNoConvertRepayResponse, BybitOpenOrdersResponse,
-        BybitOrderHistoryResponse, BybitPlaceOrderResponse, BybitPositionListResponse,
-        BybitServerTimeResponse, BybitSetLeverageResponse, BybitSetMarginModeResponse,
-        BybitSetTradingStopResponse, BybitSwitchModeResponse, BybitTradeHistoryResponse,
-        BybitTradesResponse, BybitWalletBalanceResponse,
+        BybitAccountDetailsResponse, BybitBorrowResponse, BybitFeeRate, BybitFeeRateResponse,
+        BybitInstrumentInverseResponse, BybitInstrumentLinearResponse,
+        BybitInstrumentOptionResponse, BybitInstrumentSpotResponse, BybitKlinesResponse,
+        BybitNoConvertRepayResponse, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
+        BybitPlaceOrderResponse, BybitPositionListResponse, BybitServerTimeResponse,
+        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSetTradingStopResponse,
+        BybitSwitchModeResponse, BybitTradeHistoryResponse, BybitTradesResponse,
+        BybitWalletBalanceResponse,
     },
     query::{
         BybitAmendOrderParamsBuilder, BybitBatchAmendOrderEntryBuilder,
@@ -653,6 +654,20 @@ impl BybitRawHttpClient {
             true,
         )
         .await
+    }
+
+    /// Fetches account details (requires authentication).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/user/apikey-info>
+    pub async fn get_account_details(&self) -> Result<BybitAccountDetailsResponse, BybitHttpError> {
+        self.send_request::<_, ()>(Method::GET, "/v5/user/query-api", None, None, true)
+            .await
     }
 
     /// Fetches trading fee rates for symbols.
@@ -1362,6 +1377,21 @@ impl BybitHttpClient {
         params: &BybitWalletBalanceParams,
     ) -> Result<BybitWalletBalanceResponse, BybitHttpError> {
         self.inner.get_wallet_balance(params).await
+    }
+
+    /// Fetches API key information including account details (requires authentication).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The request fails.
+    /// - The response cannot be parsed.
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/user/apikey-info>
+    pub async fn get_account_details(&self) -> Result<BybitAccountDetailsResponse, BybitHttpError> {
+        self.inner.get_account_details().await
     }
 
     /// Fetches position information (requires authentication).

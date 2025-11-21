@@ -408,6 +408,7 @@ The product types for each client must be specified in the configurations.
 | `use_ws_execution_fast`          | `False` | Subscribe to the low-latency execution stream. |
 | `use_http_batch_api`             | `False` | Use Bybit's HTTP batch trading API (deprecated). |
 | `use_spot_position_reports`      | `False` | Report Spot wallet balances as positions when `True`. |
+| `auto_repay_spot_borrows`        | `True`  | Automatically repay Spot margin borrows after BUY orders fully fill (Spot only). |
 | `ignore_uncached_instrument_executions` | `False` | Ignore execution messages for instruments not yet cached. |
 | `max_retries`                    | `None` | Maximum retry attempts for order submission/cancel/modify calls. |
 | `retry_delay_initial_ms`         | `None` | Initial delay (milliseconds) between retries. |

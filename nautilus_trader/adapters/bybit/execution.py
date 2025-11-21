@@ -221,6 +221,12 @@ class BybitExecutionClient(LiveExecutionClient):
         await self._update_account_state()
         await self._await_account_registered()
 
+        try:
+            details = await self._http_client.get_account_details()
+            self._ws_trade_client.set_mm_level(details.mkt_maker_level)
+        except Exception as e:
+            self._log.warning(f"Error requesting account details for MM level: {e}")
+
         # Set account_id on WebSocket clients so they can parse account messages
         self._ws_private_client.set_account_id(self.pyo3_account_id)
         self._ws_trade_client.set_account_id(self.pyo3_account_id)

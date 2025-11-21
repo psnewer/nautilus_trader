@@ -148,6 +148,10 @@ def mock_http_client():
     mock.cancel_order = AsyncMock()
     mock.cancel_all_orders = AsyncMock(return_value=[])
 
+    mock_account_details = MagicMock()
+    mock_account_details.mkt_maker_level = 0
+    mock.get_account_details = AsyncMock(return_value=mock_account_details)
+
     return mock
 
 
@@ -176,6 +180,8 @@ def _create_ws_mock() -> MagicMock:
     mock.unsubscribe_executions = AsyncMock()
     mock.unsubscribe_positions = AsyncMock()
     mock.unsubscribe_wallet = AsyncMock()
+    mock.set_account_id = MagicMock()
+    mock.set_mm_level = MagicMock()
     return mock
 
 
