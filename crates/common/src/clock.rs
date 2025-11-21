@@ -292,6 +292,111 @@ impl CallbackRegistry {
     }
 }
 
+/// Validates and prepares parameters for setting a time alert.
+///
+/// Handles name validation, default value unwrapping, and past timestamp adjustment.
+///
+/// # Errors
+///
+/// Returns an error if the name is invalid or if the alert time is in the past when not allowed.
+fn validate_and_prepare_time_alert(
+    name: &str,
+    mut alert_time_ns: UnixNanos,
+    allow_past: Option<bool>,
+    ts_now: UnixNanos,
+) -> anyhow::Result<(Ustr, UnixNanos)> {
+    check_valid_string_utf8(name, stringify!(name))?;
+
+    let name = Ustr::from(name);
+    let allow_past = allow_past.unwrap_or(true);
+
+    if alert_time_ns < ts_now {
+        if allow_past {
+            alert_time_ns = ts_now;
+            log::warn!(
+                "Timer '{name}' alert time {} was in the past, adjusted to current time for immediate firing",
+                alert_time_ns.to_rfc3339(),
+            );
+        } else {
+            anyhow::bail!(
+                "Timer '{name}' alert time {} was in the past (current time is {ts_now})",
+                alert_time_ns.to_rfc3339(),
+            );
+        }
+    }
+
+    Ok((name, alert_time_ns))
+}
+
+/// Validates and prepares parameters for setting a timer.
+///
+/// Handles name and interval validation, default value unwrapping, start time normalization,
+/// and stop time validation.
+///
+/// # Errors
+///
+/// Returns an error if name is invalid, interval is not positive, or stop time validation fails.
+fn validate_and_prepare_timer(
+    name: &str,
+    interval_ns: u64,
+    start_time_ns: Option<UnixNanos>,
+    stop_time_ns: Option<UnixNanos>,
+    allow_past: Option<bool>,
+    fire_immediately: Option<bool>,
+    ts_now: UnixNanos,
+) -> anyhow::Result<(Ustr, UnixNanos, Option<UnixNanos>, bool, bool)> {
+    check_valid_string_utf8(name, stringify!(name))?;
+    check_positive_u64(interval_ns, stringify!(interval_ns))?;
+
+    let name = Ustr::from(name);
+    let allow_past = allow_past.unwrap_or(true);
+    let fire_immediately = fire_immediately.unwrap_or(false);
+
+    let mut start_time_ns = start_time_ns.unwrap_or_default();
+
+    if start_time_ns == 0 {
+        // Zero start time indicates no explicit start; we use the current time
+        start_time_ns = ts_now;
+    } else if !allow_past {
+        let next_event_time = if fire_immediately {
+            start_time_ns
+        } else {
+            start_time_ns + interval_ns
+        };
+
+        if next_event_time < ts_now {
+            anyhow::bail!(
+                "Timer '{name}' next event time {} would be in the past (current time is {ts_now})",
+                next_event_time.to_rfc3339(),
+            );
+        }
+    }
+
+    if let Some(stop_time) = stop_time_ns {
+        if stop_time <= start_time_ns {
+            anyhow::bail!(
+                "Timer '{name}' stop time {} must be after start time {}",
+                stop_time.to_rfc3339(),
+                start_time_ns.to_rfc3339(),
+            );
+        }
+        if !allow_past && stop_time <= ts_now {
+            anyhow::bail!(
+                "Timer '{name}' stop time {} is in the past (current time is {ts_now})",
+                stop_time.to_rfc3339(),
+            );
+        }
+    }
+
+    Ok((
+        name,
+        start_time_ns,
+        stop_time_ns,
+        allow_past,
+        fire_immediately,
+    ))
+}
+
 /// A static test clock.
 ///
 /// Stores the current timestamp internally which can be advanced.
@@ -442,6 +547,13 @@ impl TestClock {
             .map(|event| self.callbacks.get_handler(event))
             .collect()
     }
+
+    fn replace_existing_timer_if_needed(&mut self, name: &Ustr) {
+        if self.timer_exists(name) {
+            self.cancel_timer(name.as_str());
+            log::warn!("Timer '{name}' replaced");
+        }
+    }
 }
 
 impl Iterator for TestClock {
@@ -521,19 +633,15 @@ impl Clock for TestClock {
     fn set_time_alert_ns(
         &mut self,
         name: &str,
-        mut alert_time_ns: UnixNanos, // mut allows adjustment based on allow_past
+        alert_time_ns: UnixNanos,
         callback: Option<TimeEventCallback>,
         allow_past: Option<bool>,
     ) -> anyhow::Result<()> {
-        check_valid_string_utf8(name, stringify!(name))?;
+        let ts_now = self.get_time_ns();
+        let (name, alert_time_ns) =
+            validate_and_prepare_time_alert(name, alert_time_ns, allow_past, ts_now)?;
 
-        let name = Ustr::from(name);
-        let allow_past = allow_past.unwrap_or(true);
-
-        if self.timer_exists(&name) {
-            self.cancel_timer(name.as_str());
-            log::warn!("Timer '{name}' replaced");
-        }
+        self.replace_existing_timer_if_needed(&name);
 
         check_predicate_true(
             callback.is_some() | self.callbacks.has_any_callback(&name),
@@ -544,27 +652,8 @@ impl Clock for TestClock {
             self.callbacks.register_callback(name, callback);
         }
 
-        let ts_now = self.get_time_ns();
-
-        if alert_time_ns < ts_now {
-            if allow_past {
-                alert_time_ns = ts_now;
-                log::warn!(
-                    "Timer '{name}' alert time {} was in the past, adjusted to current time for immediate firing",
-                    alert_time_ns.to_rfc3339(),
-                );
-            } else {
-                anyhow::bail!(
-                    "Timer '{name}' alert time {} was in the past (current time is {})",
-                    alert_time_ns.to_rfc3339(),
-                    ts_now.to_rfc3339(),
-                );
-            }
-        }
-
         // Safe to calculate interval now that we've ensured alert_time_ns >= ts_now
         let interval_ns = create_valid_interval((alert_time_ns - ts_now).into());
-        // When alert time equals current time, fire immediately
         let fire_immediately = alert_time_ns == ts_now;
 
         let timer = TestTimer::new(
@@ -589,65 +678,27 @@ impl Clock for TestClock {
         allow_past: Option<bool>,
         fire_immediately: Option<bool>,
     ) -> anyhow::Result<()> {
-        check_valid_string_utf8(name, stringify!(name))?;
-        check_positive_u64(interval_ns, stringify!(interval_ns))?;
+        let ts_now = self.get_time_ns();
+        let (name, start_time_ns, stop_time_ns, _allow_past, fire_immediately) =
+            validate_and_prepare_timer(
+                name,
+                interval_ns,
+                start_time_ns,
+                stop_time_ns,
+                allow_past,
+                fire_immediately,
+                ts_now,
+            )?;
+
         check_predicate_true(
-            callback.is_some() | self.callbacks.has_any_callback(&Ustr::from(name)),
+            callback.is_some() | self.callbacks.has_any_callback(&name),
             "No callbacks provided",
         )?;
 
-        let name = Ustr::from(name);
-        let allow_past = allow_past.unwrap_or(true);
-        let fire_immediately = fire_immediately.unwrap_or(false);
-
-        if self.timer_exists(&name) {
-            self.cancel_timer(name.as_str());
-            log::warn!("Timer '{name}' replaced");
-        }
+        self.replace_existing_timer_if_needed(&name);
 
         if let Some(callback) = callback {
             self.callbacks.register_callback(name, callback);
-        }
-
-        let mut start_time_ns = start_time_ns.unwrap_or_default();
-        let ts_now = self.get_time_ns();
-
-        if start_time_ns == 0 {
-            // Zero start time indicates no explicit start; we use the current time
-            start_time_ns = self.timestamp_ns();
-        } else if !allow_past {
-            // Calculate the next event time based on fire_immediately flag
-            let next_event_time = if fire_immediately {
-                start_time_ns
-            } else {
-                start_time_ns + interval_ns
-            };
-
-            // Check if the next event would be in the past
-            if next_event_time < ts_now {
-                anyhow::bail!(
-                    "Timer '{name}' next event time {} would be in the past (current time is {})",
-                    next_event_time.to_rfc3339(),
-                    ts_now.to_rfc3339(),
-                );
-            }
-        }
-
-        if let Some(stop_time) = stop_time_ns {
-            if stop_time <= start_time_ns {
-                anyhow::bail!(
-                    "Timer '{name}' stop time {} must be after start time {}",
-                    stop_time.to_rfc3339(),
-                    start_time_ns.to_rfc3339(),
-                );
-            }
-            if !allow_past && stop_time <= ts_now {
-                anyhow::bail!(
-                    "Timer '{name}' stop time {} is in the past (current time is {})",
-                    stop_time.to_rfc3339(),
-                    ts_now.to_rfc3339(),
-                );
-            }
         }
 
         let interval_ns = create_valid_interval(interval_ns);
@@ -725,9 +776,15 @@ impl LiveClock {
         &self.timers
     }
 
-    // Clean up expired timers. Retain only live ones
     fn clear_expired_timers(&mut self) {
         self.timers.retain(|_, timer| !timer.is_expired());
+    }
+
+    fn replace_existing_timer_if_needed(&mut self, name: &Ustr) {
+        if self.timer_exists(name) {
+            self.cancel_timer(name.as_str());
+            log::warn!("Timer '{name}' replaced");
+        }
     }
 }
 
@@ -798,19 +855,15 @@ impl Clock for LiveClock {
     fn set_time_alert_ns(
         &mut self,
         name: &str,
-        mut alert_time_ns: UnixNanos, // mut allows adjustment based on allow_past
+        alert_time_ns: UnixNanos,
         callback: Option<TimeEventCallback>,
         allow_past: Option<bool>,
     ) -> anyhow::Result<()> {
-        check_valid_string_utf8(name, stringify!(name))?;
+        let ts_now = self.get_time_ns();
+        let (name, alert_time_ns) =
+            validate_and_prepare_time_alert(name, alert_time_ns, allow_past, ts_now)?;
 
-        let name = Ustr::from(name);
-        let allow_past = allow_past.unwrap_or(true);
-
-        if self.timer_exists(&name) {
-            self.cancel_timer(name.as_str());
-            log::warn!("Timer '{name}' replaced");
-        }
+        self.replace_existing_timer_if_needed(&name);
 
         check_predicate_true(
             callback.is_some() | self.callbacks.has_any_callback(&name),
@@ -825,25 +878,6 @@ impl Clock for LiveClock {
                 .get_callback(&name)
                 .expect("Callback should exist")
         };
-
-        let ts_now = self.get_time_ns();
-
-        // Handle past timestamps based on flag
-        if alert_time_ns < ts_now {
-            if allow_past {
-                alert_time_ns = ts_now;
-                log::warn!(
-                    "Timer '{name}' alert time {} was in the past, adjusted to current time for immediate firing",
-                    alert_time_ns.to_rfc3339(),
-                );
-            } else {
-                anyhow::bail!(
-                    "Timer '{name}' alert time {} was in the past (current time is {})",
-                    alert_time_ns.to_rfc3339(),
-                    ts_now.to_rfc3339(),
-                );
-            }
-        }
 
         // Safe to calculate interval now that we've ensured alert_time_ns >= ts_now
         let interval_ns = create_valid_interval((alert_time_ns - ts_now).into());
@@ -876,21 +910,24 @@ impl Clock for LiveClock {
         allow_past: Option<bool>,
         fire_immediately: Option<bool>,
     ) -> anyhow::Result<()> {
-        check_valid_string_utf8(name, stringify!(name))?;
-        check_positive_u64(interval_ns, stringify!(interval_ns))?;
+        let ts_now = self.get_time_ns();
+        let (name, start_time_ns, stop_time_ns, _allow_past, fire_immediately) =
+            validate_and_prepare_timer(
+                name,
+                interval_ns,
+                start_time_ns,
+                stop_time_ns,
+                allow_past,
+                fire_immediately,
+                ts_now,
+            )?;
+
         check_predicate_true(
-            callback.is_some() | self.callbacks.has_any_callback(&Ustr::from(name)),
+            callback.is_some() | self.callbacks.has_any_callback(&name),
             "No callbacks provided",
         )?;
 
-        let name = Ustr::from(name);
-        let allow_past = allow_past.unwrap_or(true);
-        let fire_immediately = fire_immediately.unwrap_or(false);
-
-        if self.timer_exists(&name) {
-            self.cancel_timer(name.as_str());
-            log::warn!("Timer '{name}' replaced");
-        }
+        self.replace_existing_timer_if_needed(&name);
 
         let callback = if let Some(callback) = callback {
             self.callbacks.register_callback(name, callback.clone());
@@ -900,37 +937,6 @@ impl Clock for LiveClock {
                 .get_callback(&name)
                 .expect("Callback should exist")
         };
-
-        let mut start_time_ns = start_time_ns.unwrap_or_default();
-        let ts_now = self.get_time_ns();
-
-        if start_time_ns == 0 {
-            // Zero start time indicates no explicit start; we use the current time
-            start_time_ns = self.timestamp_ns();
-        } else if start_time_ns < ts_now && !allow_past {
-            anyhow::bail!(
-                "Timer '{name}' start time {} was in the past (current time is {})",
-                start_time_ns.to_rfc3339(),
-                ts_now.to_rfc3339(),
-            );
-        }
-
-        if let Some(stop_time) = stop_time_ns {
-            if stop_time <= start_time_ns {
-                anyhow::bail!(
-                    "Timer '{name}' stop time {} must be after start time {}",
-                    stop_time.to_rfc3339(),
-                    start_time_ns.to_rfc3339(),
-                );
-            }
-            if !allow_past && stop_time <= ts_now {
-                anyhow::bail!(
-                    "Timer '{name}' stop time {} is in the past (current time is {})",
-                    stop_time.to_rfc3339(),
-                    ts_now.to_rfc3339(),
-                );
-            }
-        }
 
         let interval_ns = create_valid_interval(interval_ns);
 
