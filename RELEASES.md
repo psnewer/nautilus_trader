@@ -22,6 +22,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `MaxDrawdown` portfolio statistic
 - Added `quote_quantity` parameter for `close_position(...)` and `close_all_positions(...)` strategy methods
 - Added `PolymarketDataLoader` for loading historical data with docs and example
+- Added Binance accurate commission rates per symbol (#3208), thanks @delusionpig
+- Added `BinanceInstrumentProviderConfig` to support the `query_commission_rates` config option
 - Added Bybit spot margin auto-borrow and auto-repay with `auto_repay_spot_borrows` config option
 - Added Polymarket Gamma API support for instrument loading (#3141), thanks @DeirhX
 - Added OKX historical trades requests

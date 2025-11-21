@@ -20,10 +20,10 @@ from nautilus_trader.adapters.binance import BINANCE
 from nautilus_trader.adapters.binance import BinanceAccountType
 from nautilus_trader.adapters.binance import BinanceDataClientConfig
 from nautilus_trader.adapters.binance import BinanceExecClientConfig
+from nautilus_trader.adapters.binance import BinanceInstrumentProviderConfig
 from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
 from nautilus_trader.config import CacheConfig
-from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveDataEngineConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -98,7 +98,10 @@ config_node = TradingNodeConfig(
             base_url_ws=None,  # Override with custom endpoint
             us=False,  # If client is for Binance US
             testnet=True,  # If client uses the testnet
-            instrument_provider=InstrumentProviderConfig(load_all=True),
+            instrument_provider=BinanceInstrumentProviderConfig(
+                load_ids=frozenset([instrument_id]),
+                query_commission_rates=True,
+            ),
         ),
     },
     exec_clients={
@@ -110,7 +113,10 @@ config_node = TradingNodeConfig(
             base_url_ws=None,  # Override with custom endpoint
             us=False,  # If client is for Binance US
             testnet=True,  # If client uses the testnet
-            instrument_provider=InstrumentProviderConfig(load_all=True),
+            instrument_provider=BinanceInstrumentProviderConfig(
+                load_ids=frozenset([instrument_id]),
+                query_commission_rates=True,
+            ),
             max_retries=3,
             log_rejected_due_post_only_as_warning=False,
         ),
