@@ -32,6 +32,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Dropped support for Python 3.11
 - Removed `use_ws_trade_api` config option from Bybit execution client (using WebSocket trade API only)
 - Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
+- Renamed `ExecTesterConfig.enable_buys` to `enable_limit_buys`
+- Renamed `ExecTesterConfig.enable_sells` to `enable_limit_sells`
 - **Standardized data catalog directory naming**: Order book data directory names now use plural forms to align with the Rust catalog and Tardis Machine conventions. This ensures data written by the Python `StreamingFeatherWriter` can be read by the Rust catalog.
   - `order_book_delta/` → `order_book_deltas/`
   - `order_book_depth10/` → `order_book_depths/`
