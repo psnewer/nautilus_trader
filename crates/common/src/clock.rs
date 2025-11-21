@@ -17,7 +17,7 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, BinaryHeap, HashMap},
+    collections::{BTreeMap, BinaryHeap},
     fmt::Debug,
     ops::Deref,
     pin::Pin,
@@ -26,6 +26,7 @@ use std::{
     time::Duration,
 };
 
+use ahash::AHashMap;
 use chrono::{DateTime, Utc};
 use futures::Stream;
 use nautilus_core::{
@@ -241,6 +242,56 @@ impl dyn Clock {
     }
 }
 
+/// Registry for timer event callbacks.
+///
+/// Provides shared callback registration and retrieval logic used by both
+/// `TestClock` and `LiveClock`.
+#[derive(Debug, Default)]
+struct CallbackRegistry {
+    default_callback: Option<TimeEventCallback>,
+    callbacks: AHashMap<Ustr, TimeEventCallback>,
+}
+
+impl CallbackRegistry {
+    fn new() -> Self {
+        Self {
+            default_callback: None,
+            callbacks: AHashMap::new(),
+        }
+    }
+
+    fn register_default_handler(&mut self, callback: TimeEventCallback) {
+        self.default_callback = Some(callback);
+    }
+
+    fn register_callback(&mut self, name: Ustr, callback: TimeEventCallback) {
+        self.callbacks.insert(name, callback);
+    }
+
+    fn has_any_callback(&self, name: &Ustr) -> bool {
+        self.callbacks.contains_key(name) || self.default_callback.is_some()
+    }
+
+    fn get_callback(&self, name: &Ustr) -> Option<TimeEventCallback> {
+        self.callbacks
+            .get(name)
+            .cloned()
+            .or_else(|| self.default_callback.clone())
+    }
+
+    fn get_handler(&self, event: TimeEvent) -> TimeEventHandlerV2 {
+        let callback = self
+            .get_callback(&event.name)
+            .unwrap_or_else(|| panic!("Event '{}' should have associated handler", event.name));
+
+        TimeEventHandlerV2::new(event, callback)
+    }
+
+    fn clear(&mut self) {
+        self.callbacks.clear();
+    }
+}
+
 /// A static test clock.
 ///
 /// Stores the current timestamp internally which can be advanced.
@@ -253,8 +304,7 @@ pub struct TestClock {
     time: AtomicTime,
     // Use btree map to ensure stable ordering when scanning for timers in `advance_time`
     timers: BTreeMap<Ustr, TestTimer>,
-    default_callback: Option<TimeEventCallback>,
-    callbacks: HashMap<Ustr, TimeEventCallback>,
+    callbacks: CallbackRegistry,
     heap: BinaryHeap<ScheduledTimeEvent>, // TODO: Deprecated - move to global time event heap
 }
 
@@ -265,8 +315,7 @@ impl TestClock {
         Self {
             time: AtomicTime::new(false, UnixNanos::default()),
             timers: BTreeMap::new(),
-            default_callback: None,
-            callbacks: HashMap::new(),
+            callbacks: CallbackRegistry::new(),
             heap: BinaryHeap::new(),
         }
     }
@@ -390,16 +439,7 @@ impl TestClock {
     pub fn match_handlers(&self, events: Vec<TimeEvent>) -> Vec<TimeEventHandlerV2> {
         events
             .into_iter()
-            .map(|event| {
-                let callback = self.callbacks.get(&event.name).cloned().unwrap_or_else(|| {
-                    // If callback_py is None, use the default_callback_py
-                    // TODO: clone for now
-                    self.default_callback
-                        .clone()
-                        .expect("Default callback should exist")
-                });
-                TimeEventHandlerV2::new(event, callback)
-            })
+            .map(|event| self.callbacks.get_handler(event))
             .collect()
     }
 }
@@ -466,7 +506,7 @@ impl Clock for TestClock {
     }
 
     fn register_default_handler(&mut self, callback: TimeEventCallback) {
-        self.default_callback = Some(callback);
+        self.callbacks.register_default_handler(callback);
     }
 
     /// Returns the handler for the given `TimeEvent`.
@@ -475,15 +515,7 @@ impl Clock for TestClock {
     ///
     /// Panics if no event-specific or default callback has been registered for the event.
     fn get_handler(&self, event: TimeEvent) -> TimeEventHandlerV2 {
-        // Get the callback from either the event-specific callbacks or default callback
-        let callback = self
-            .callbacks
-            .get(&event.name)
-            .cloned()
-            .or_else(|| self.default_callback.clone())
-            .unwrap_or_else(|| panic!("Event '{}' should have associated handler", event.name));
-
-        TimeEventHandlerV2::new(event, callback)
+        self.callbacks.get_handler(event)
     }
 
     fn set_time_alert_ns(
@@ -504,16 +536,13 @@ impl Clock for TestClock {
         }
 
         check_predicate_true(
-            callback.is_some()
-                | self.callbacks.contains_key(&name)
-                | self.default_callback.is_some(),
+            callback.is_some() | self.callbacks.has_any_callback(&name),
             "No callbacks provided",
         )?;
 
-        match callback {
-            Some(callback_py) => self.callbacks.insert(name, callback_py),
-            None => None,
-        };
+        if let Some(callback) = callback {
+            self.callbacks.register_callback(name, callback);
+        }
 
         let ts_now = self.get_time_ns();
 
@@ -563,7 +592,7 @@ impl Clock for TestClock {
         check_valid_string_utf8(name, stringify!(name))?;
         check_positive_u64(interval_ns, stringify!(interval_ns))?;
         check_predicate_true(
-            callback.is_some() | self.default_callback.is_some(),
+            callback.is_some() | self.callbacks.has_any_callback(&Ustr::from(name)),
             "No callbacks provided",
         )?;
 
@@ -576,10 +605,9 @@ impl Clock for TestClock {
             log::warn!("Timer '{name}' replaced");
         }
 
-        match callback {
-            Some(callback_py) => self.callbacks.insert(name, callback_py),
-            None => None,
-        };
+        if let Some(callback) = callback {
+            self.callbacks.register_callback(name, callback);
+        }
 
         let mut start_time_ns = start_time_ns.unwrap_or_default();
         let ts_now = self.get_time_ns();
@@ -661,7 +689,7 @@ impl Clock for TestClock {
         self.time = AtomicTime::new(false, UnixNanos::default());
         self.timers = BTreeMap::new();
         self.heap = BinaryHeap::new();
-        self.callbacks = HashMap::new();
+        self.callbacks.clear();
     }
 }
 
@@ -675,9 +703,8 @@ impl Clock for TestClock {
 #[derive(Debug)]
 pub struct LiveClock {
     time: &'static AtomicTime,
-    timers: HashMap<Ustr, LiveTimer>,
-    default_callback: Option<TimeEventCallback>,
-    callbacks: HashMap<Ustr, TimeEventCallback>,
+    timers: AHashMap<Ustr, LiveTimer>,
+    callbacks: CallbackRegistry,
     sender: Option<Arc<dyn TimeEventSender>>,
 }
 
@@ -687,15 +714,14 @@ impl LiveClock {
     pub fn new(sender: Option<Arc<dyn TimeEventSender>>) -> Self {
         Self {
             time: get_atomic_clock_realtime(),
-            timers: HashMap::new(),
-            default_callback: None,
-            callbacks: HashMap::new(),
+            timers: AHashMap::new(),
+            callbacks: CallbackRegistry::new(),
             sender,
         }
     }
 
     #[must_use]
-    pub const fn get_timers(&self) -> &HashMap<Ustr, LiveTimer> {
+    pub const fn get_timers(&self) -> &AHashMap<Ustr, LiveTimer> {
         &self.timers
     }
 
@@ -757,7 +783,7 @@ impl Clock for LiveClock {
     }
 
     fn register_default_handler(&mut self, handler: TimeEventCallback) {
-        self.default_callback = Some(handler);
+        self.callbacks.register_default_handler(handler);
     }
 
     /// # Panics
@@ -766,15 +792,7 @@ impl Clock for LiveClock {
     /// - The event does not have an associated handler (see trait documentation).
     #[allow(unused_variables)]
     fn get_handler(&self, event: TimeEvent) -> TimeEventHandlerV2 {
-        // Get the callback from either the event-specific callbacks or default callback
-        let callback = self
-            .callbacks
-            .get(&event.name)
-            .cloned()
-            .or_else(|| self.default_callback.clone())
-            .unwrap_or_else(|| panic!("Event '{}' should have associated handler", event.name));
-
-        TimeEventHandlerV2::new(event, callback)
+        self.callbacks.get_handler(event)
     }
 
     fn set_time_alert_ns(
@@ -795,24 +813,17 @@ impl Clock for LiveClock {
         }
 
         check_predicate_true(
-            callback.is_some()
-                | self.callbacks.contains_key(&name)
-                | self.default_callback.is_some(),
+            callback.is_some() | self.callbacks.has_any_callback(&name),
             "No callbacks provided",
         )?;
 
         let callback = if let Some(callback) = callback {
-            self.callbacks.insert(name, callback.clone());
+            self.callbacks.register_callback(name, callback.clone());
             callback
-        } else if let Some(existing) = self.callbacks.get(&name) {
-            existing.clone()
         } else {
-            let default = self
-                .default_callback
-                .clone()
-                .expect("Default callback should exist");
-            self.callbacks.insert(name, default.clone());
-            default
+            self.callbacks
+                .get_callback(&name)
+                .expect("Callback should exist")
         };
 
         let ts_now = self.get_time_ns();
@@ -868,7 +879,7 @@ impl Clock for LiveClock {
         check_valid_string_utf8(name, stringify!(name))?;
         check_positive_u64(interval_ns, stringify!(interval_ns))?;
         check_predicate_true(
-            callback.is_some() | self.default_callback.is_some(),
+            callback.is_some() | self.callbacks.has_any_callback(&Ustr::from(name)),
             "No callbacks provided",
         )?;
 
@@ -881,12 +892,14 @@ impl Clock for LiveClock {
             log::warn!("Timer '{name}' replaced");
         }
 
-        let callback = match callback {
-            Some(callback) => callback,
-            None => self.default_callback.clone().unwrap(),
+        let callback = if let Some(callback) = callback {
+            self.callbacks.register_callback(name, callback.clone());
+            callback
+        } else {
+            self.callbacks
+                .get_callback(&name)
+                .expect("Callback should exist")
         };
-
-        self.callbacks.insert(name, callback.clone());
 
         let mut start_time_ns = start_time_ns.unwrap_or_default();
         let ts_now = self.get_time_ns();
@@ -1576,7 +1589,11 @@ mod tests {
             .set_time_alert_ns("alert-callback", alert_time, None, None)
             .unwrap();
 
-        assert!(clock.callbacks.contains_key(&Ustr::from("alert-callback")));
+        assert!(
+            clock
+                .callbacks
+                .has_any_callback(&Ustr::from("alert-callback"))
+        );
 
         clock.cancel_timers();
     }
