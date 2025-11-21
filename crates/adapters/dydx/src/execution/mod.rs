@@ -15,16 +15,12 @@
 
 //! Live execution client implementation for the dYdX adapter.
 
-use std::{
-    cell::Ref,
-    sync::{Arc, Mutex, atomic::AtomicU64},
-};
+use std::sync::{Arc, Mutex, atomic::AtomicU64};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nautilus_common::{
-    clock::Clock,
     messages::{
         ExecutionEvent,
         execution::{
@@ -39,7 +35,6 @@ use nautilus_common::{
 };
 use nautilus_core::{MUTEX_POISONED, UUID4, UnixNanos};
 use nautilus_execution::client::{ExecutionClient, LiveExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::LiveExecutionClientExt;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderSide, OrderType, TimeInForce},
@@ -1687,16 +1682,6 @@ impl LiveExecutionClient for DydxExecutionClient {
         mass_status.add_fill_reports(fill_reports);
 
         Ok(Some(mass_status))
-    }
-}
-
-impl LiveExecutionClientExt for DydxExecutionClient {
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> Ref<'_, dyn Clock> {
-        self.core.clock().borrow()
     }
 }
 

@@ -15,14 +15,13 @@
 
 //! Live execution client implementation for the OKX adapter.
 
-use std::{cell::Ref, future::Future, sync::Mutex};
+use std::{future::Future, sync::Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
-    clock::Clock,
     messages::{
         ExecutionEvent,
         execution::{
@@ -36,7 +35,6 @@ use nautilus_common::{
 };
 use nautilus_core::{MUTEX_POISONED, UnixNanos};
 use nautilus_execution::client::{ExecutionClient, LiveExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::LiveExecutionClientExt;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{AccountType, OmsType, OrderType},
@@ -816,16 +814,6 @@ impl LiveExecutionClient for OKXExecutionClient {
             "generate_mass_status not yet implemented (lookback_mins={lookback_mins:?})"
         );
         Ok(None)
-    }
-}
-
-impl LiveExecutionClientExt for OKXExecutionClient {
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> Ref<'_, dyn Clock> {
-        self.core.clock().borrow()
     }
 }
 

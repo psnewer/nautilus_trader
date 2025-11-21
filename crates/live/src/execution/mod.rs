@@ -13,5 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-pub mod calculations;
+//! Execution state management for live trading.
+
 pub mod manager;
+pub mod reconciliation;

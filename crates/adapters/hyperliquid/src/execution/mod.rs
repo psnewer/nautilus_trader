@@ -15,11 +15,10 @@
 
 //! Live execution client implementation for the Hyperliquid adapter.
 
-use std::{cell::Ref, str::FromStr, sync::Mutex};
+use std::{str::FromStr, sync::Mutex};
 
 use anyhow::Context;
 use nautilus_common::{
-    clock::Clock,
     messages::{
         ExecutionEvent, ExecutionReport as NautilusExecutionReport,
         execution::{
@@ -32,7 +31,6 @@ use nautilus_common::{
 };
 use nautilus_core::{MUTEX_POISONED, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::LiveExecutionClientExt;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderType},
@@ -1014,16 +1012,6 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
         // 3. Query all positions
         // 4. Combine into ExecutionMassStatus
         Ok(None)
-    }
-}
-
-impl LiveExecutionClientExt for HyperliquidExecutionClient {
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> Ref<'_, dyn Clock> {
-        self.core.clock().borrow()
     }
 }
 

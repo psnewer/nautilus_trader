@@ -18,13 +18,12 @@
 pub mod canceller;
 pub mod submitter;
 
-use std::{any::Any, cell::Ref, future::Future, sync::Mutex};
+use std::{any::Any, future::Future, sync::Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
-    clock::Clock,
     messages::{
         ExecutionEvent,
         execution::{
@@ -39,7 +38,6 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, LiveExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::LiveExecutionClientExt;
 use nautilus_model::{
     events::{AccountState, OrderEventAny, OrderRejected},
     identifiers::{AccountId, VenueOrderId},
@@ -792,15 +790,5 @@ fn dispatch_order_event(event: OrderEventAny) {
     let sender = get_exec_event_sender();
     if let Err(e) = sender.send(ExecutionEvent::Order(event)) {
         tracing::warn!("Failed to send order event: {e}");
-    }
-}
-
-impl LiveExecutionClientExt for BitmexExecutionClient {
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> Ref<'_, dyn Clock> {
-        self.core.clock().borrow()
     }
 }
