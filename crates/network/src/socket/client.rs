@@ -1169,6 +1169,7 @@ mod tests {
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
             connection_max_retries: None,
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1255,6 +1256,7 @@ mod tests {
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
             connection_max_retries: None,
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1311,6 +1313,7 @@ mod tests {
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
             connection_max_retries: None,
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1374,6 +1377,7 @@ mod tests {
             reconnect_backoff_factor: Some(2.0),
             reconnect_jitter_ms: Some(50),
             connection_max_retries: None,
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 

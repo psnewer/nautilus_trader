@@ -1444,6 +1444,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            reconnect_max_attempts: None,
         };
         WebSocketClient::connect(config, None, vec![], None)
             .await
@@ -1488,6 +1489,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            reconnect_max_attempts: None,
         };
         let res = WebSocketClient::connect(config, None, vec![], None).await;
         assert!(res.is_err(), "Should fail quickly with no server");
@@ -1532,6 +1534,7 @@ mod tests {
             reconnect_backoff_factor: None,
             reconnect_delay_max_ms: None,
             reconnect_jitter_ms: None,
+            reconnect_max_attempts: None,
         };
 
         let client = WebSocketClient::connect(config, None, vec![("default".into(), quota)], None)

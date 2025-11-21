@@ -594,6 +594,7 @@ counter = Counter()
             None,
             None,
             None,
+            None,
         );
         let client = WebSocketClient::connect(config, None, Vec::new(), None)
             .await
