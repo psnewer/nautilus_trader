@@ -304,6 +304,7 @@ impl BybitWebSocketClient {
             reconnect_delay_max_ms: Some(5_000),
             reconnect_backoff_factor: Some(1.5),
             reconnect_jitter_ms: Some(250),
+            reconnect_max_attempts: None,
         };
 
         // Retry initial connection with exponential backoff to handle transient DNS/network issues

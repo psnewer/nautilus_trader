@@ -1874,10 +1874,7 @@ async fn test_multiple_partial_subscription_failures() {
         let position_failed = events.iter().any(|(topic, ok)| topic == "position" && !*ok);
         let order_failed = events.iter().any(|(topic, ok)| topic == "order" && !*ok);
 
-        // Also check that successful ones succeeded
-        let instrument_ok = events
-            .iter()
-            .any(|(topic, ok)| topic == "instrument" && *ok);
+        // Check that successful ones succeeded (only the ones we explicitly subscribed to)
         let trade_eth_ok = events
             .iter()
             .any(|(topic, ok)| topic == "trade:ETHUSD" && *ok);
@@ -1885,12 +1882,7 @@ async fn test_multiple_partial_subscription_failures() {
             .iter()
             .any(|(topic, ok)| topic == "orderBookL2:XBTUSD" && *ok);
 
-        trade_xbt_failed
-            && position_failed
-            && order_failed
-            && instrument_ok
-            && trade_eth_ok
-            && book_ok
+        trade_xbt_failed && position_failed && order_failed && trade_eth_ok && book_ok
     })
     .await;
 

@@ -29,6 +29,7 @@
 //! - Controller task manages lifecycle.
 
 use std::{
+    collections::VecDeque,
     fmt::Debug,
     path::Path,
     sync::{
@@ -38,6 +39,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use nautilus_core::CleanDrop;
 use nautilus_cryptography::providers::install_cryptographic_provider;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -91,6 +93,8 @@ struct SocketClientInner {
     reconnect_timeout: Duration,
     backoff: ExponentialBackoff,
     handler: Option<TcpMessageHandler>,
+    reconnect_max_attempts: Option<u32>,
+    reconnect_attempt_count: u32,
 }
 
 impl SocketClientInner {
@@ -114,6 +118,7 @@ impl SocketClientInner {
             reconnect_backoff_factor,
             reconnect_jitter_ms,
             connection_max_retries,
+            reconnect_max_attempts,
             certs_dir,
         } = &config.clone();
         let connector = if let Some(dir) = certs_dir {
@@ -244,6 +249,8 @@ impl SocketClientInner {
             reconnect_timeout,
             backoff,
             handler: message_handler.clone(),
+            reconnect_max_attempts: *reconnect_max_attempts,
+            reconnect_attempt_count: 0,
         })
     }
 
@@ -358,6 +365,7 @@ impl SocketClientInner {
                 reconnect_delay_max_ms: _,
                 reconnect_jitter_ms: _,
                 connection_max_retries: _,
+                reconnect_max_attempts: _,
                 certs_dir: _,
             } = &self.config;
             // Create a fresh connection
@@ -371,8 +379,35 @@ impl SocketClientInner {
             }
             tracing::debug!("Connected");
 
-            if let Err(e) = self.writer_tx.send(WriterCommand::Update(new_writer)) {
+            // Use a oneshot channel to synchronize with the writer task.
+            // We must verify that the buffer was successfully drained before transitioning to ACTIVE
+            // to prevent silent message loss if the new connection drops immediately.
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if let Err(e) = self.writer_tx.send(WriterCommand::Update(new_writer, tx)) {
                 tracing::error!("{e}");
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    format!("Failed to send update command: {e}"),
+                )));
+            }
+
+            // Wait for writer to confirm it has drained the buffer
+            match rx.await {
+                Ok(true) => tracing::debug!("Writer confirmed buffer drain success"),
+                Ok(false) => {
+                    tracing::warn!("Writer failed to drain buffer, aborting reconnect");
+                    // Return error to trigger retry logic in controller
+                    return Err(Error::Io(std::io::Error::other(
+                        "Failed to drain reconnection buffer",
+                    )));
+                }
+                Err(e) => {
+                    tracing::error!("Writer dropped update channel: {e}");
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "Writer task dropped response channel",
+                    )));
+                }
             }
 
             // Delay before closing connection
@@ -508,6 +543,59 @@ impl SocketClientInner {
         })
     }
 
+    /// Drains buffered messages after reconnection completes.
+    ///
+    /// Attempts to send all buffered messages that were queued during reconnection.
+    /// Uses a peek-and-pop pattern to preserve messages if sending fails midway through the buffer.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if a send error occurred (buffer may still contain unsent messages),
+    /// `false` if all messages were sent successfully (buffer is empty).
+    async fn drain_reconnect_buffer(
+        buffer: &mut VecDeque<Bytes>,
+        writer: &mut TcpWriter,
+        suffix: &[u8],
+    ) -> bool {
+        if buffer.is_empty() {
+            return false;
+        }
+
+        let initial_buffer_len = buffer.len();
+        tracing::info!(
+            "Sending {} buffered messages after reconnection",
+            initial_buffer_len
+        );
+
+        let mut send_error_occurred = false;
+
+        while let Some(buffered_msg) = buffer.front() {
+            let mut combined_msg = Vec::with_capacity(buffered_msg.len() + suffix.len());
+            combined_msg.extend_from_slice(buffered_msg);
+            combined_msg.extend_from_slice(suffix);
+
+            if let Err(e) = writer.write_all(&combined_msg).await {
+                tracing::error!(
+                    "Failed to send buffered message with suffix after reconnection: {e}, {} messages remain in buffer",
+                    buffer.len()
+                );
+                send_error_occurred = true;
+                break;
+            }
+
+            buffer.pop_front();
+        }
+
+        if buffer.is_empty() {
+            tracing::info!(
+                "Successfully sent all {} buffered messages",
+                initial_buffer_len
+            );
+        }
+
+        send_error_occurred
+    }
+
     fn spawn_write_task(
         connection_state: Arc<AtomicU8>,
         writer: TcpWriter,
@@ -521,6 +609,7 @@ impl SocketClientInner {
 
         tokio::task::spawn(async move {
             let mut active_writer = writer;
+            let mut reconnect_buffer: VecDeque<Bytes> = VecDeque::new();
 
             loop {
                 if matches!(
@@ -539,7 +628,7 @@ impl SocketClientInner {
                         }
 
                         match msg {
-                            WriterCommand::Update(new_writer) => {
+                            WriterCommand::Update(new_writer, tx) => {
                                 tracing::debug!("Received new writer");
 
                                 // Delay before closing connection
@@ -555,24 +644,44 @@ impl SocketClientInner {
 
                                 active_writer = new_writer;
                                 tracing::debug!("Updated writer");
+
+                                let send_error = Self::drain_reconnect_buffer(
+                                    &mut reconnect_buffer,
+                                    &mut active_writer,
+                                    &suffix,
+                                )
+                                .await;
+
+                                if let Err(e) = tx.send(!send_error) {
+                                    tracing::error!(
+                                        "Failed to report drain status to controller: {e:?}"
+                                    );
+                                }
                             }
                             _ if mode.is_reconnect() => {
-                                tracing::warn!("Skipping message while reconnecting, {msg:?}");
+                                if let WriterCommand::Send(data) = msg {
+                                    tracing::debug!(
+                                        "Buffering message while reconnecting ({} bytes)",
+                                        data.len()
+                                    );
+                                    reconnect_buffer.push_back(data);
+                                }
                                 continue;
                             }
                             WriterCommand::Send(msg) => {
                                 if let Err(e) = active_writer.write_all(&msg).await {
                                     tracing::error!("Failed to send message: {e}");
-                                    // Mode is active so trigger reconnection
                                     tracing::warn!("Writer triggering reconnect");
+                                    reconnect_buffer.push_back(msg);
                                     connection_state
                                         .store(ConnectionMode::Reconnect.as_u8(), Ordering::SeqCst);
                                     continue;
                                 }
                                 if let Err(e) = active_writer.write_all(&suffix).await {
                                     tracing::error!("Failed to send suffix: {e}");
-                                    // Mode is active so trigger reconnection
                                     tracing::warn!("Writer triggering reconnect");
+                                    // Buffer this message before triggering reconnect since suffix failed
+                                    reconnect_buffer.push_back(msg);
                                     connection_state
                                         .store(ConnectionMode::Reconnect.as_u8(), Ordering::SeqCst);
                                     continue;
@@ -812,7 +921,8 @@ impl SocketClient {
     ///
     /// Returns an error if sending fails.
     pub async fn send_bytes(&self, data: Vec<u8>) -> Result<(), SendError> {
-        if self.is_closed() {
+        // Check connection state to fail fast
+        if self.is_closed() || self.is_disconnecting() {
             return Err(SendError::Closed);
         }
 
@@ -913,10 +1023,24 @@ impl SocketClient {
                 }
 
                 if mode.is_reconnect() {
+                    // Check max reconnection attempts before attempting reconnect
+                    if let Some(max_attempts) = inner.reconnect_max_attempts
+                        && inner.reconnect_attempt_count >= max_attempts
+                    {
+                        tracing::error!(
+                            "Max reconnection attempts ({}) exceeded, transitioning to CLOSED",
+                            max_attempts
+                        );
+                        connection_mode.store(ConnectionMode::Closed.as_u8(), Ordering::SeqCst);
+                        break;
+                    }
+
+                    inner.reconnect_attempt_count += 1;
                     match inner.reconnect().await {
                         Ok(()) => {
                             tracing::debug!("Reconnected successfully");
                             inner.backoff.reset();
+                            inner.reconnect_attempt_count = 0; // Reset counter on success
                             // Only invoke reconnect handler if still active
                             if ConnectionMode::from_atomic(&connection_mode).is_active() {
                                 if let Some(ref handler) = post_reconnection {
@@ -931,7 +1055,10 @@ impl SocketClient {
                         }
                         Err(e) => {
                             let duration = inner.backoff.next_duration();
-                            tracing::warn!("Reconnect attempt failed: {e}");
+                            tracing::warn!(
+                                "Reconnect attempt {} failed: {e}",
+                                inner.reconnect_attempt_count
+                            );
                             if !duration.is_zero() {
                                 tracing::warn!("Backing off for {}s...", duration.as_secs_f64());
                             }
@@ -1090,6 +1217,7 @@ mod tests {
             reconnect_delay_max_ms: Some(50),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1313,6 +1441,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1361,6 +1490,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1483,6 +1613,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1525,6 +1656,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1592,6 +1724,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1652,6 +1785,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 
@@ -1714,6 +1848,7 @@ mod rust_tests {
             reconnect_backoff_factor: Some(1.0),
             reconnect_jitter_ms: Some(0),
             connection_max_retries: Some(1),
+            reconnect_max_attempts: None,
             certs_dir: None,
         };
 

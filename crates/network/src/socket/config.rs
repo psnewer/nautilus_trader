@@ -14,6 +14,16 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Socket configuration.
+//!
+//! # Reconnection Strategy
+//!
+//! The default configuration uses unlimited reconnection attempts (`reconnect_max_attempts: None`).
+//! This is intentional for trading systems because:
+//! - Venues may be down for extended periods but eventually recover.
+//! - Exponential backoff already prevents resource waste.
+//! - Automatic recovery can be useful when manual intervention is not desirable.
+//!
+//! Use `Some(n)` primarily for testing, development, or non-critical connections.
 
 use std::fmt::Debug;
 
@@ -49,6 +59,10 @@ pub struct SocketConfig {
     pub reconnect_jitter_ms: Option<u64>,
     /// The maximum number of initial connection attempts (default: 5).
     pub connection_max_retries: Option<u32>,
+    /// The maximum number of reconnection attempts before giving up.
+    /// - `None`: Unlimited reconnection attempts (default, recommended for production).
+    /// - `Some(n)`: After n failed attempts, transition to CLOSED state.
+    pub reconnect_max_attempts: Option<u32>,
     /// The path to the certificates directory.
     pub certs_dir: Option<String>,
 }
@@ -73,6 +87,7 @@ impl Debug for SocketConfig {
             .field("reconnect_backoff_factor", &self.reconnect_backoff_factor)
             .field("reconnect_jitter_ms", &self.reconnect_jitter_ms)
             .field("connection_max_retries", &self.connection_max_retries)
+            .field("reconnect_max_attempts", &self.reconnect_max_attempts)
             .field("certs_dir", &self.certs_dir)
             .finish()
     }
@@ -92,6 +107,7 @@ impl Clone for SocketConfig {
             reconnect_backoff_factor: self.reconnect_backoff_factor,
             reconnect_jitter_ms: self.reconnect_jitter_ms,
             connection_max_retries: self.connection_max_retries,
+            reconnect_max_attempts: self.reconnect_max_attempts,
             certs_dir: self.certs_dir.clone(),
         }
     }
