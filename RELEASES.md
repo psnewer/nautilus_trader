@@ -91,6 +91,7 @@ TBD
 - Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
 - Improved `None` handling in equality and comparison methods
+- Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
 - Improved Databento live connection stability and reconnects
@@ -102,6 +103,7 @@ TBD
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou
+- Refined adding files to catalog session (#3215), thanks @faysou
 - Refined `HistoricInteractiveBrokersClient` (#3187), thanks @faysou
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
