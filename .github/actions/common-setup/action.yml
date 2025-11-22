@@ -160,7 +160,7 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key:
+        key: >-
           sccache-${{ runner.os }}-${{ github.workflow }}-${{ github.job }}-${{
           hashFiles('**/Cargo.toml', '**/Cargo.lock', '**/uv.lock') }}
         restore-keys: |
