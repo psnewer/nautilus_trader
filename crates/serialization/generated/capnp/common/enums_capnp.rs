@@ -36,13 +36,14 @@ impl ::capnp::traits::HasTypeId for AccountType {
   const TYPE_ID: u64 = 0xdf1e_8bc7_c054_f256u64;
 }
 mod account_type {
-pub static ENCODED_NODE: [::capnp::Word; 30] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 31] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(86, 242, 84, 192, 199, 139, 30, 223),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(67, 0, 0, 0, 131, 0, 0, 0),
   ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -106,13 +107,14 @@ impl ::capnp::traits::HasTypeId for AggressorSide {
   const TYPE_ID: u64 = 0xf201_19f9_54ad_2ae8u64;
 }
 mod aggressor_side {
-pub static ENCODED_NODE: [::capnp::Word; 32] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 33] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(232, 42, 173, 84, 249, 25, 1, 242),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(133, 0, 0, 0, 204, 0, 0, 0),
   ::capnp::word(21, 0, 0, 0, 10, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -186,13 +188,14 @@ impl ::capnp::traits::HasTypeId for AssetClass {
   const TYPE_ID: u64 = 0xebdb_0309_2fcb_7e04u64;
 }
 mod asset_class {
-pub static ENCODED_NODE: [::capnp::Word; 49] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 50] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(4, 126, 203, 47, 9, 3, 219, 235),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(206, 0, 0, 0, 83, 1, 0, 0),
   ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -293,13 +296,14 @@ impl ::capnp::traits::HasTypeId for InstrumentClass {
   const TYPE_ID: u64 = 0xe86e_440b_d7a7_b3f8u64;
 }
 mod instrument_class {
-pub static ENCODED_NODE: [::capnp::Word; 71] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 72] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(248, 179, 167, 215, 11, 68, 110, 232),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(85, 1, 0, 0, 81, 2, 0, 0),
   ::capnp::word(21, 0, 0, 0, 26, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -402,13 +406,14 @@ impl ::capnp::traits::HasTypeId for OptionKind {
   const TYPE_ID: u64 = 0xe888_3060_916e_0843u64;
 }
 mod option_kind {
-pub static ENCODED_NODE: [::capnp::Word; 26] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 27] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(67, 8, 110, 145, 96, 48, 136, 232),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(83, 2, 0, 0, 127, 2, 0, 0),
   ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -468,13 +473,14 @@ impl ::capnp::traits::HasTypeId for OrderSide {
   const TYPE_ID: u64 = 0x8ce6_6de3_c879_66dau64;
 }
 mod order_side {
-pub static ENCODED_NODE: [::capnp::Word; 31] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 32] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(218, 102, 121, 200, 227, 109, 230, 140),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(129, 2, 0, 0, 192, 2, 0, 0),
   ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -551,13 +557,14 @@ impl ::capnp::traits::HasTypeId for OrderType {
   const TYPE_ID: u64 = 0xb0a4_8d4c_59d9_56b2u64;
 }
 mod order_type {
-pub static ENCODED_NODE: [::capnp::Word; 63] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 64] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(178, 86, 217, 89, 76, 141, 164, 176),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(194, 2, 0, 0, 144, 3, 0, 0),
   ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -676,13 +683,14 @@ impl ::capnp::traits::HasTypeId for OrderStatus {
   const TYPE_ID: u64 = 0xf704_cd7d_31c2_8cd0u64;
 }
 mod order_status {
-pub static ENCODED_NODE: [::capnp::Word; 85] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 86] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(208, 140, 194, 49, 125, 205, 4, 247),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(146, 3, 0, 0, 169, 4, 0, 0),
   ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -809,13 +817,14 @@ impl ::capnp::traits::HasTypeId for TimeInForce {
   const TYPE_ID: u64 = 0xa76d_7dff_8889_19d9u64;
 }
 mod time_in_force {
-pub static ENCODED_NODE: [::capnp::Word; 48] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 49] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(217, 25, 137, 136, 255, 125, 109, 167),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(171, 4, 0, 0, 116, 5, 0, 0),
   ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -911,13 +920,14 @@ impl ::capnp::traits::HasTypeId for TriggerType {
   const TYPE_ID: u64 = 0xf5f1_1c17_3032_6a40u64;
 }
 mod trigger_type {
-pub static ENCODED_NODE: [::capnp::Word; 66] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 67] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(64, 106, 50, 48, 23, 28, 241, 245),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(118, 5, 0, 0, 64, 6, 0, 0),
   ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1019,13 +1029,14 @@ impl ::capnp::traits::HasTypeId for ContingencyType {
   const TYPE_ID: u64 = 0xf38d_d3fd_792a_cfceu64;
 }
 mod contingency_type {
-pub static ENCODED_NODE: [::capnp::Word; 36] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 37] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(206, 207, 42, 121, 253, 211, 141, 243),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(66, 6, 0, 0, 224, 6, 0, 0),
   ::capnp::word(21, 0, 0, 0, 26, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1097,13 +1108,14 @@ impl ::capnp::traits::HasTypeId for PositionSide {
   const TYPE_ID: u64 = 0xf2e8_8dda_5506_c715u64;
 }
 mod position_side {
-pub static ENCODED_NODE: [::capnp::Word; 35] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 36] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(21, 199, 6, 85, 218, 141, 232, 242),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(226, 6, 0, 0, 54, 7, 0, 0),
   ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1172,13 +1184,14 @@ impl ::capnp::traits::HasTypeId for LiquiditySide {
   const TYPE_ID: u64 = 0xc45b_5bbf_a763_18c4u64;
 }
 mod liquidity_side {
-pub static ENCODED_NODE: [::capnp::Word; 32] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 33] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(196, 24, 99, 167, 191, 91, 91, 196),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(56, 7, 0, 0, 130, 7, 0, 0),
   ::capnp::word(21, 0, 0, 0, 10, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1246,13 +1259,14 @@ impl ::capnp::traits::HasTypeId for BookAction {
   const TYPE_ID: u64 = 0x8ba2_aa32_63d7_b234u64;
 }
 mod book_action {
-pub static ENCODED_NODE: [::capnp::Word; 34] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 35] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(52, 178, 215, 99, 50, 170, 162, 139),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(132, 7, 0, 0, 207, 7, 0, 0),
   ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1320,13 +1334,14 @@ impl ::capnp::traits::HasTypeId for BookType {
   const TYPE_ID: u64 = 0x8a33_0d53_857f_2062u64;
 }
 mod book_type {
-pub static ENCODED_NODE: [::capnp::Word; 34] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 35] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(98, 32, 127, 133, 83, 13, 51, 138),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(209, 7, 0, 0, 141, 8, 0, 0),
   ::capnp::word(21, 0, 0, 0, 226, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1396,13 +1411,14 @@ impl ::capnp::traits::HasTypeId for OrderBookDeltaType {
   const TYPE_ID: u64 = 0xfe6c_e40c_109f_fbdcu64;
 }
 mod order_book_delta_type {
-pub static ENCODED_NODE: [::capnp::Word; 35] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 36] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(220, 251, 159, 16, 12, 228, 108, 254),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(143, 8, 0, 0, 226, 8, 0, 0),
   ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1477,13 +1493,14 @@ impl ::capnp::traits::HasTypeId for RecordFlag {
   const TYPE_ID: u64 = 0xcd55_3a95_d2e3_1571u64;
 }
 mod record_flag {
-pub static ENCODED_NODE: [::capnp::Word; 45] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 46] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(113, 21, 227, 210, 149, 58, 85, 205),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(228, 8, 0, 0, 92, 10, 0, 0),
   ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1560,13 +1577,14 @@ impl ::capnp::traits::HasTypeId for AggregationSource {
   const TYPE_ID: u64 = 0x946f_a419_8403_c015u64;
 }
 mod aggregation_source {
-pub static ENCODED_NODE: [::capnp::Word; 29] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 30] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(21, 192, 3, 132, 25, 164, 111, 148),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(94, 10, 0, 0, 154, 10, 0, 0),
   ::capnp::word(21, 0, 0, 0, 42, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1633,13 +1651,14 @@ impl ::capnp::traits::HasTypeId for PriceType {
   const TYPE_ID: u64 = 0xec7c_ed40_7682_a0ccu64;
 }
 mod price_type {
-pub static ENCODED_NODE: [::capnp::Word; 38] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 39] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(204, 160, 130, 118, 64, 237, 124, 236),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(156, 10, 0, 0, 236, 10, 0, 0),
   ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1741,13 +1760,14 @@ impl ::capnp::traits::HasTypeId for BarAggregation {
   const TYPE_ID: u64 = 0xe9c7_bb7d_5a7f_09b2u64;
 }
 mod bar_aggregation {
-pub static ENCODED_NODE: [::capnp::Word; 98] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 99] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(178, 9, 127, 90, 125, 187, 199, 233),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(238, 10, 0, 0, 51, 12, 0, 0),
   ::capnp::word(21, 0, 0, 0, 18, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1883,13 +1903,14 @@ impl ::capnp::traits::HasTypeId for TrailingOffsetType {
   const TYPE_ID: u64 = 0xa371_3806_ebb6_9f8eu64;
 }
 mod trailing_offset_type {
-pub static ENCODED_NODE: [::capnp::Word; 43] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 44] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(142, 159, 182, 235, 6, 56, 113, 163),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(53, 12, 0, 0, 171, 12, 0, 0),
   ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1966,13 +1987,14 @@ impl ::capnp::traits::HasTypeId for OmsType {
   const TYPE_ID: u64 = 0xbb27_63d9_0807_97c5u64;
 }
 mod oms_type {
-pub static ENCODED_NODE: [::capnp::Word; 31] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 32] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(197, 151, 7, 8, 217, 99, 39, 187),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(173, 12, 0, 0, 241, 12, 0, 0),
   ::capnp::word(21, 0, 0, 0, 218, 0, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2037,13 +2059,14 @@ impl ::capnp::traits::HasTypeId for CurrencyType {
   const TYPE_ID: u64 = 0x83d2_f362_aae3_98b7u64;
 }
 mod currency_type {
-pub static ENCODED_NODE: [::capnp::Word; 31] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 32] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(183, 152, 227, 170, 98, 243, 210, 131),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(243, 12, 0, 0, 60, 13, 0, 0),
   ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
   ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2106,13 +2129,14 @@ impl ::capnp::traits::HasTypeId for InstrumentCloseType {
   const TYPE_ID: u64 = 0xbfe2_c25f_cb93_74afu64;
 }
 mod instrument_close_type {
-pub static ENCODED_NODE: [::capnp::Word; 29] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 30] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(175, 116, 147, 203, 95, 194, 226, 191),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(62, 13, 0, 0, 135, 13, 0, 0),
   ::capnp::word(21, 0, 0, 0, 58, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2201,13 +2225,14 @@ impl ::capnp::traits::HasTypeId for MarketStatusAction {
   const TYPE_ID: u64 = 0xa006_30ff_1b89_b376u64;
 }
 mod market_status_action {
-pub static ENCODED_NODE: [::capnp::Word; 94] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 95] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(118, 179, 137, 27, 255, 48, 6, 160),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(137, 13, 0, 0, 208, 14, 0, 0),
   ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
   ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2333,13 +2358,14 @@ impl ::capnp::traits::HasTypeId for PositionAdjustmentType {
   const TYPE_ID: u64 = 0xe4d7_b45b_7075_debeu64;
 }
 mod position_adjustment_type {
-pub static ENCODED_NODE: [::capnp::Word; 29] = [
-  ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
+pub static ENCODED_NODE: [::capnp::Word; 30] = [
+  ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
   ::capnp::word(190, 222, 117, 112, 91, 180, 215, 228),
   ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
   ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+  ::capnp::word(210, 14, 0, 0, 20, 15, 0, 0),
   ::capnp::word(21, 0, 0, 0, 82, 1, 0, 0),
   ::capnp::word(41, 0, 0, 0, 7, 0, 0, 0),
   ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),

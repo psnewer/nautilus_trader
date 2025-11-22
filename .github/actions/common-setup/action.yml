@@ -50,19 +50,38 @@ runs:
         sudo apt-get update -o Acquire::Retries=5
         sudo apt-get install -y curl clang git make pkg-config ripgrep -o Acquire::Retries=5
         sudo apt-get install -y python3-dev libpython3-dev -o Acquire::Retries=5
-        sudo apt-get install -y capnproto libcapnp-dev -o Acquire::Retries=5
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
 
-    - name: Install capnproto (macOS)
+    - name: Install ripgrep (macOS)
       if: runner.os == 'macOS'
       shell: bash
       run: |
         brew update || { sleep 5; brew update; }
-        brew install capnp ripgrep || { sleep 5; brew install capnp ripgrep; }
+        brew install ripgrep || { sleep 5; brew install ripgrep; }
         brew cleanup
 
-    - name: Install capnproto (Windows)
+    - name: Set Cap'n Proto install prefix (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo "CAPNP_PREFIX=${{ github.workspace }}/.cache/capnp" >> $GITHUB_ENV
+        echo "${{ github.workspace }}/.cache/capnp/bin" >> $GITHUB_PATH
+
+    - name: Cache Cap'n Proto (Linux)
+      if: runner.os == 'Linux'
+      id: cache-capnp
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ github.workspace }}/.cache/capnp
+        key: capnp-linux-1.2.0-${{ runner.arch }}
+
+    - name: Install capnp
+      if: runner.os != 'Windows'
+      shell: bash
+      run: bash scripts/install-capnp.sh
+
+    - name: Install capnp (Windows)
       if: runner.os == 'Windows'
       shell: bash
       run: |

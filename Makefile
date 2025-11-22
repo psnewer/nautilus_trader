@@ -384,7 +384,8 @@ check-features: check-hack-installed
 check-capnp-schemas:
 	$(info $(M) Checking if Cap'n Proto schemas are up-to-date...)
 	@bash scripts/regen_capnp.sh > /dev/null 2>&1 || true
-	@if ! git diff --quiet crates/serialization/generated/capnp; then \
+	@DIFF_OUTPUT="$$(git diff -I\"ENCODED_NODE\" -- crates/serialization/generated/capnp)"; \
+	if [ -n "$$DIFF_OUTPUT" ]; then \
 		echo "$(RED)Error: Cap'n Proto generated files are out of date$(RESET)"; \
 		echo "Please run: ./scripts/regen_capnp.sh"; \
 		echo "Or: make regen-capnp"; \
