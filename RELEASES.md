@@ -64,6 +64,7 @@ TBD
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Binance ADL orders with TRADE execution type
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
+- Fixed Databento Arrow serialization for `PRICE_UNDEF` (#3183), thanks for reporting @marloncalvo
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
 - Fixed Interactive Brokers serialization of `IBContractDetails` (#3181), thanks @faysou
 - Fixed OKX pre-open instrument parsing and standardize enum usage (#3134), thanks for reporting @3wtz
