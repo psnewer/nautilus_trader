@@ -53,6 +53,7 @@ from nautilus_trader.adapters.interactive_brokers.providers import InteractiveBr
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.rust.common import LogColor
 from nautilus_trader.core.uuid import UUID4
@@ -573,9 +574,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
                     )
                     continue
 
-            len_reports = len(reports)
-            plural = "" if len_reports == 1 else "s"
-            self._log.info(f"Generated {len_reports} FillReport{plural}")
+            self._log_report_receipt(len(reports), "FillReport", LogLevel.INFO, "Generated")
 
         except Exception as e:
             self._log.error(f"Failed to generate fill reports: {e}")

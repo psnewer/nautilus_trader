@@ -420,14 +420,11 @@ class BybitExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate OrderStatusReports", e)
 
-        len_reports = len(reports)
-        plural = "" if len_reports == 1 else "s"
-        receipt_log = f"Received {len(reports)} OrderStatusReport{plural}"
-
-        if command.log_receipt_level == LogLevel.INFO:
-            self._log.info(receipt_log)
-        else:
-            self._log.debug(receipt_log)
+        self._log_report_receipt(
+            len(reports),
+            "OrderStatusReport",
+            command.log_receipt_level,
+        )
 
         return reports
 
@@ -554,9 +551,7 @@ class BybitExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate FillReports", e)
 
-        len_reports = len(reports)
-        plural = "" if len_reports == 1 else "s"
-        self._log.info(f"Received {len(reports)} FillReport{plural}")
+        self._log_report_receipt(len(reports), "FillReport", LogLevel.INFO)
 
         return reports
 
@@ -607,9 +602,11 @@ class BybitExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate PositionStatusReports", e)
 
-        len_reports = len(reports)
-        plural = "" if len_reports == 1 else "s"
-        self._log.info(f"Received {len(reports)} PositionStatusReport{plural}")
+        self._log_report_receipt(
+            len(reports),
+            "PositionStatusReport",
+            command.log_receipt_level,
+        )
 
         return reports
 

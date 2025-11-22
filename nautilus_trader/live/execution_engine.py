@@ -944,10 +944,6 @@ class LiveExecutionEngine(ExecutionEngine):
         )
 
     async def _query_position_status_reports(self) -> dict[InstrumentId, PositionStatusReport]:
-        """
-        Query position status reports from all execution clients and build venue
-        positions mapping.
-        """
         clients = self._clients.values()
 
         tasks = [
@@ -958,6 +954,7 @@ class LiveExecutionEngine(ExecutionEngine):
                     end=None,
                     command_id=UUID4(),
                     ts_init=self._clock.timestamp_ns(),
+                    log_receipt_level=LogLevel.DEBUG,
                 ),
             )
             for c in clients
@@ -1158,9 +1155,6 @@ class LiveExecutionEngine(ExecutionEngine):
         instrument_id: InstrumentId,
         clients: Iterable[ExecutionClient],
     ) -> list[FillReport]:
-        """
-        Query fill reports for an instrument and find missing fills not in cache.
-        """
         fill_lookback_start = self._clock.utc_now() - pd.Timedelta(
             minutes=self.position_check_lookback_mins,
         )
@@ -1516,10 +1510,6 @@ class LiveExecutionEngine(ExecutionEngine):
     async def _query_order_status_reports(
         self,
     ) -> tuple[list[OrderStatusReport], set[ClientOrderId]]:
-        """
-        Query order status reports from all execution clients and build venue reported
-        IDs set.
-        """
         order_status_start = self._clock.utc_now() - pd.Timedelta(
             minutes=self.open_check_lookback_mins,
         )
