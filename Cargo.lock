@@ -5583,6 +5583,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "derive_builder",
+ "dotenvy",
  "futures-util",
  "iai",
  "indexmap 2.12.1",
@@ -5594,6 +5595,7 @@ dependencies = [
  "nautilus-live",
  "nautilus-model",
  "nautilus-network",
+ "nautilus-system",
  "nautilus-testkit",
  "pyo3",
  "pyo3-async-runtimes",
@@ -5813,10 +5815,12 @@ dependencies = [
 name = "nautilus-testkit"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "aws-lc-rs",
  "axum",
  "hex",
+ "log",
  "nautilus-common",
  "nautilus-core",
  "nautilus-model",
@@ -5825,6 +5829,7 @@ dependencies = [
  "rand 0.9.2",
  "reqwest",
  "rstest",
+ "rust_decimal",
  "serde_json",
  "tempfile",
  "tokio",
