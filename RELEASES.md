@@ -62,6 +62,7 @@ TBD
 - Fixed Betfair datetime encoding error in order status reports
 - Fixed Betfair login race condition during concurrent connections
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
+- Fixed Binance ADL orders with TRADE execution type
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
 - Fixed Interactive Brokers serialization of `IBContractDetails` (#3181), thanks @faysou
