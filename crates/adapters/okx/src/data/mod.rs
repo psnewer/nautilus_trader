@@ -607,7 +607,7 @@ impl DataClient for OKXDataClient {
         self.maybe_spawn_instrument_refresh()?;
 
         self.is_connected.store(true, Ordering::Relaxed);
-        tracing::info!("OKX data client connected");
+        tracing::info!(client_id = %self.client_id, "Connected");
         Ok(())
     }
 
@@ -652,7 +652,8 @@ impl DataClient for OKXDataClient {
             .expect("book channel cache lock poisoned")
             .clear();
         self.instrument_refresh_active = false;
-        tracing::info!("OKX data client disconnected");
+
+        tracing::info!(client_id = %self.client_id, "Disconnected");
         Ok(())
     }
 

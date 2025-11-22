@@ -890,10 +890,7 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
             tracing::warn!("Failed to start WebSocket stream: {e}");
         }
 
-        tracing::info!(
-            "Hyperliquid execution client {} connected",
-            self.core.client_id
-        );
+        tracing::info!(client_id = %self.core.client_id, "Connected");
         Ok(())
     }
 
@@ -913,10 +910,7 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
         self.connected = false;
         self.core.set_connected(false);
 
-        tracing::info!(
-            "Hyperliquid execution client {} disconnected",
-            self.core.client_id
-        );
+        tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
 

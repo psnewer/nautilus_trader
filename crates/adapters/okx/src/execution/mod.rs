@@ -611,7 +611,7 @@ impl LiveExecutionClient for OKXExecutionClient {
         self.refresh_account_state().await?;
 
         self.connected = true;
-        tracing::info!("OKX execution client {} connected", self.core.client_id);
+        tracing::info!(client_id = %self.core.client_id, "Connected");
 
         Ok(())
     }
@@ -641,7 +641,7 @@ impl LiveExecutionClient for OKXExecutionClient {
         self.abort_pending_tasks();
 
         self.connected = false;
-        tracing::info!("OKX execution client {} disconnected", self.core.client_id);
+        tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
 

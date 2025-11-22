@@ -622,7 +622,7 @@ impl LiveExecutionClient for BitmexExecutionClient {
 
         self.connected = true;
         self.core.set_connected(true);
-        tracing::info!("BitMEX execution client {} connected", self.core.client_id);
+        tracing::info!(client_id = %self.core.client_id, "Connected");
         Ok(())
     }
 
@@ -646,10 +646,7 @@ impl LiveExecutionClient for BitmexExecutionClient {
         self.abort_pending_tasks();
         self.connected = false;
         self.core.set_connected(false);
-        tracing::info!(
-            "BitMEX execution client {} disconnected",
-            self.core.client_id
-        );
+        tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
 

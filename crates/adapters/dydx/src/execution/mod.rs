@@ -1223,7 +1223,7 @@ impl LiveExecutionClient for DydxExecutionClient {
             }
         }
         self.connected = true;
-        tracing::info!("dYdX execution client connected");
+        tracing::info!(client_id = %self.core.client_id, "Connected");
         Ok(())
     }
 
@@ -1271,7 +1271,7 @@ impl LiveExecutionClient for DydxExecutionClient {
         self.abort_pending_tasks();
 
         self.connected = false;
-        tracing::info!("dYdX execution client disconnected");
+        tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
 
