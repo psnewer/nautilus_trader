@@ -34,7 +34,8 @@ use nautilus_common::{
     runtime::get_runtime,
 };
 use nautilus_core::{MUTEX_POISONED, UUID4, UnixNanos};
-use nautilus_execution::client::{ExecutionClient, LiveExecutionClient, base::ExecutionClientCore};
+use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
+use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderSide, OrderType, TimeInForce},
@@ -887,6 +888,14 @@ fn dispatch_execution_report(report: ExecutionReport) {
 
 #[async_trait(?Send)]
 impl LiveExecutionClient for DydxExecutionClient {
+    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
+        get_exec_event_sender()
+    }
+
+    fn get_clock(&self) -> std::cell::Ref<'_, dyn nautilus_common::clock::Clock> {
+        self.core.clock().borrow()
+    }
+
     async fn connect(&mut self) -> anyhow::Result<()> {
         if self.connected {
             tracing::warn!("dYdX execution client already connected");

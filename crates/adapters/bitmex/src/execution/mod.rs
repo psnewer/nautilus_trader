@@ -37,7 +37,8 @@ use nautilus_common::{
     runtime::get_runtime,
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_execution::client::{ExecutionClient, LiveExecutionClient, base::ExecutionClientCore};
+use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
+use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::{
     events::{AccountState, OrderEventAny, OrderRejected},
     identifiers::{AccountId, VenueOrderId},
@@ -650,6 +651,14 @@ impl LiveExecutionClient for BitmexExecutionClient {
             self.core.client_id
         );
         Ok(())
+    }
+
+    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
+        get_exec_event_sender()
+    }
+
+    fn get_clock(&self) -> std::cell::Ref<'_, dyn nautilus_common::clock::Clock> {
+        self.core.clock().borrow()
     }
 
     async fn generate_order_status_report(

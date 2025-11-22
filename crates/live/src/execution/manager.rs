@@ -27,7 +27,6 @@ use nautilus_common::{
     messages::execution::report::{GenerateOrderStatusReport, GeneratePositionReports},
 };
 use nautilus_core::{UUID4, UnixNanos};
-use nautilus_execution::client::LiveExecutionClient;
 use nautilus_model::{
     enums::OrderStatus,
     events::{
@@ -44,7 +43,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
-use crate::config::LiveExecEngineConfig;
+use crate::{config::LiveExecEngineConfig, execution::client::LiveExecutionClient};
 
 /// Configuration for execution manager.
 #[derive(Debug, Clone)]

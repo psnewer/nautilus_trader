@@ -840,13 +840,23 @@ use async_trait::async_trait;
 use nautilus_common::messages::execution::{
     GenerateFillReports, GenerateOrderStatusReport, GeneratePositionReports,
 };
-use nautilus_execution::client::LiveExecutionClient;
+use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::reports::{
     ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport,
 };
 
 #[async_trait(?Send)]
 impl LiveExecutionClient for HyperliquidExecutionClient {
+    fn get_message_channel(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedSender<nautilus_common::messages::ExecutionEvent> {
+        get_exec_event_sender()
+    }
+
+    fn get_clock(&self) -> std::cell::Ref<'_, dyn nautilus_common::clock::Clock> {
+        self.core.clock().borrow()
+    }
+
     async fn connect(&mut self) -> anyhow::Result<()> {
         if self.connected {
             return Ok(());

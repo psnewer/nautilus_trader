@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::OnceLock};
 
 use ahash::AHashMap;
 use nautilus_model::{
@@ -25,6 +25,16 @@ use super::core::{Endpoint, MStr, Topic};
 use crate::msgbus::get_message_bus;
 
 pub const CLOSE_TOPIC: &str = "CLOSE";
+
+static DATA_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_RESPONSE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_RECONCILE_REPORT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_RECONCILE_MASS_STATUS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 
 #[must_use]
 pub fn get_custom_topic(data_type: &DataType) -> MStr<Topic> {
@@ -237,34 +247,60 @@ impl Default for MessagingSwitchboard {
 }
 
 impl MessagingSwitchboard {
+    #[inline]
     #[must_use]
     pub fn data_engine_queue_execute() -> MStr<Endpoint> {
-        "DataEngine.queue_execute".into()
+        *DATA_QUEUE_EXECUTE_ENDPOINT.get_or_init(|| "DataEngine.queue_execute".into())
     }
 
+    #[inline]
     #[must_use]
     pub fn data_engine_execute() -> MStr<Endpoint> {
-        "DataEngine.execute".into()
+        *DATA_EXECUTE_ENDPOINT.get_or_init(|| "DataEngine.execute".into())
     }
 
+    #[inline]
     #[must_use]
     pub fn data_engine_process() -> MStr<Endpoint> {
-        "DataEngine.process".into()
+        *DATA_PROCESS_ENDPOINT.get_or_init(|| "DataEngine.process".into())
     }
 
+    #[inline]
     #[must_use]
     pub fn data_engine_response() -> MStr<Endpoint> {
-        "DataEngine.response".into()
+        *DATA_RESPONSE_ENDPOINT.get_or_init(|| "DataEngine.response".into())
     }
 
+    #[inline]
     #[must_use]
     pub fn exec_engine_execute() -> MStr<Endpoint> {
-        "ExecEngine.execute".into()
+        *EXEC_EXECUTE_ENDPOINT.get_or_init(|| "ExecEngine.execute".into())
     }
 
+    #[inline]
     #[must_use]
     pub fn exec_engine_process() -> MStr<Endpoint> {
-        "ExecEngine.process".into()
+        *EXEC_PROCESS_ENDPOINT.get_or_init(|| "ExecEngine.process".into())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn exec_engine_reconcile_execution_report() -> MStr<Endpoint> {
+        *EXEC_RECONCILE_REPORT_ENDPOINT
+            .get_or_init(|| "ExecEngine.reconcile_execution_report".into())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn exec_engine_reconcile_execution_mass_status() -> MStr<Endpoint> {
+        *EXEC_RECONCILE_MASS_STATUS_ENDPOINT
+            .get_or_init(|| "ExecEngine.reconcile_execution_mass_status".into())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn portfolio_update_account() -> MStr<Endpoint> {
+        *PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT.get_or_init(|| "Portfolio.update_account".into())
     }
 
     #[must_use]

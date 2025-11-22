@@ -13,8 +13,28 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Execution state management for live trading.
+use std::cell::Ref;
 
-pub mod client;
-pub mod manager;
-pub mod reconciliation;
+use nautilus_common::{clock::Clock, messages::DataEvent};
+use nautilus_data::client::DataClient;
+
+#[async_trait::async_trait]
+pub trait LiveDataClient: DataClient {
+    /// Establishes a connection for live data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection fails.
+    async fn connect(&mut self) -> anyhow::Result<()>;
+
+    /// Disconnects the live data client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if disconnection fails.
+    async fn disconnect(&mut self) -> anyhow::Result<()>;
+
+    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<DataEvent>;
+
+    fn get_clock(&self) -> Ref<'_, dyn Clock>;
+}
