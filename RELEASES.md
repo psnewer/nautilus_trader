@@ -21,6 +21,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `CalmarRatio` portfolio statistic
 - Added `MaxDrawdown` portfolio statistic
 - Added `quote_quantity` parameter for `close_position(...)` and `close_all_positions(...)` strategy methods
+- Added remaining bar aggregation methods: `TICK_IMBALANCE`, `TICK_RUNS`, `VOLUME_IMBALANCE`, `VOLUME_RUNS`, `VALUE_IMBALANCE`, `VALUE_RUNS` (#3217), thanks @nicolad
 - Added `PolymarketDataLoader` for loading historical data with docs and example
 - Added Binance accurate commission rates per symbol (#3208), thanks @delusionpig
 - Added `BinanceInstrumentProviderConfig` to support the `query_commission_rates` config option
@@ -89,6 +90,7 @@ TBD
 - Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
+- Scaffolded blockchain execution client with native balance fetch (#3214), thanks @filipmacek
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
@@ -122,6 +124,7 @@ TBD
 - Repaired Bybit conditional order trigger semantics and type
 - Repaired Bybit instruments pagination handling (#3210), thanks @sunlei
 - Repaired Bybit batch place orders (#3211), thanks @sunlei
+- Repaired Bybit `get_account_details` (#3219), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
 - Upgraded Cython to v3.2.1

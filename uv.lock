@@ -132,7 +132,7 @@ version = "0.17.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251121", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251123", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f2/ed/399b3605bf030b15038b4edc90ee2ea81ce81b743d6fd7faa05421b9e417/betfair_parser-0.17.4.tar.gz", hash = "sha256:a979b4152129afa80b4fad5eb2d71b22f9aeef1519cb58d0348685d04ad27ec3", size = 55923, upload-time = "2025-11-04T07:25:53.234Z" }
 wheels = [
@@ -1248,7 +1248,7 @@ wheels = [
 
 [[package]]
 name = "msgspec"
-version = "0.19.1.dev22+g0c764a6ed.d20251121"
+version = "0.19.1.dev22+g0c764a6ed.d20251123"
 source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
@@ -1437,7 +1437,7 @@ dependencies = [
     { name = "click" },
     { name = "fsspec" },
     { name = "msgspec", version = "0.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform == 'win32'" },
-    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251121", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
+    { name = "msgspec", version = "0.19.1.dev22+g0c764a6ed.d20251123", source = { git = "https://github.com/jcrist/msgspec.git?rev=0c764a6ed7c641918e66963b9a41367d288a8abe#0c764a6ed7c641918e66963b9a41367d288a8abe" }, marker = "python_full_version >= '3.14' and sys_platform != 'win32'" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "portion" },
@@ -1541,7 +1541,7 @@ dev = [
     { name = "cython", specifier = "==3.2.1" },
     { name = "mypy", specifier = "==1.18.2,<2.0.0" },
     { name = "pandas-stubs", specifier = ">=2.3.2,<3.0.0" },
-    { name = "pre-commit", specifier = ">=4.4.0,<5.0.0" },
+    { name = "pre-commit", specifier = ">=4.5.0,<5.0.0" },
     { name = "ruff", specifier = "==0.14.6" },
     { name = "setuptools", specifier = ">=75" },
     { name = "types-pytz", specifier = ">=2025.2,<2026.0" },
@@ -1801,7 +1801,7 @@ wheels = [
 
 [[package]]
 name = "pre-commit"
-version = "4.4.0"
+version = "4.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cfgv" },
@@ -1810,9 +1810,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "virtualenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/49/7845c2d7bf6474efd8e27905b51b11e6ce411708c91e829b93f324de9929/pre_commit-4.4.0.tar.gz", hash = "sha256:f0233ebab440e9f17cabbb558706eb173d19ace965c68cdce2c081042b4fab15", size = 197501, upload-time = "2025-11-08T21:12:11.607Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/9b/6a4ffb4ed980519da959e1cf3122fc6cb41211daa58dbae1c73c0e519a37/pre_commit-4.5.0.tar.gz", hash = "sha256:dc5a065e932b19fc1d4c653c6939068fe54325af8e741e74e88db4d28a4dd66b", size = 198428, upload-time = "2025-11-22T21:02:42.304Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/11/574fe7d13acf30bfd0a8dd7fa1647040f2b8064f13f43e8c963b1e65093b/pre_commit-4.4.0-py2.py3-none-any.whl", hash = "sha256:b35ea52957cbf83dcc5d8ee636cbead8624e3a15fbfa61a370e42158ac8a5813", size = 226049, upload-time = "2025-11-08T21:12:10.228Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/c4/b2d28e9d2edf4f1713eb3c29307f1a63f3d67cf09bdda29715a36a68921a/pre_commit-4.5.0-py2.py3-none-any.whl", hash = "sha256:25e2ce09595174d9c97860a95609f9f852c0614ba602de3561e267547f2335e1", size = 226429, upload-time = "2025-11-22T21:02:40.836Z" },
 ]
 
 [[package]]
