@@ -13,19 +13,13 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common functions to support Databento adapter operations.
+//! Tardis API credential storage.
 
 use std::fmt::{Debug, Formatter};
 
-use databento::historical::DateTimeRange;
-use nautilus_core::UnixNanos;
-use time::OffsetDateTime;
 use zeroize::ZeroizeOnDrop;
 
-pub const DATABENTO: &str = "DATABENTO";
-pub const ALL_SYMBOLS: &str = "ALL_SYMBOLS";
-
-/// API credentials required for Databento API requests.
+/// API credentials required for Tardis API requests.
 #[derive(Clone, ZeroizeOnDrop)]
 pub struct Credential {
     api_key: Box<[u8]>,
@@ -72,55 +66,30 @@ impl Credential {
     }
 }
 
-/// # Errors
-///
-/// Returns an error if converting `start` or `end` to `OffsetDateTime` fails.
-pub fn get_date_time_range(start: UnixNanos, end: UnixNanos) -> anyhow::Result<DateTimeRange> {
-    Ok(DateTimeRange::from((
-        OffsetDateTime::from_unix_timestamp_nanos(i128::from(start.as_u64()))?,
-        OffsetDateTime::from_unix_timestamp_nanos(i128::from(end.as_u64()))?,
-    )))
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
+
 #[cfg(test)]
 mod tests {
-    use rstest::*;
+    use rstest::rstest;
 
     use super::*;
 
     #[rstest]
-    #[case(
-        UnixNanos::default(),
-        UnixNanos::default(),
-        "DateTimeRange { start: 1970-01-01 0:00:00.0 +00:00:00, end: 1970-01-01 0:00:00.0 +00:00:00 }"
-    )]
-    #[case(UnixNanos::default(), 1_000_000_000.into(), "DateTimeRange { start: 1970-01-01 0:00:00.0 +00:00:00, end: 1970-01-01 0:00:01.0 +00:00:00 }")]
-    fn test_get_date_time_range(
-        #[case] start: UnixNanos,
-        #[case] end: UnixNanos,
-        #[case] range_str: &str,
-    ) {
-        let range = get_date_time_range(start, end).unwrap();
-        assert_eq!(format!("{range:?}"), range_str);
-    }
-
-    #[rstest]
-    fn test_credential_api_key_masked_short() {
+    fn test_api_key_masked_short() {
         let credential = Credential::new("short");
         assert_eq!(credential.api_key_masked(), "*****");
     }
 
     #[rstest]
-    fn test_credential_api_key_masked_long() {
+    fn test_api_key_masked_long() {
         let credential = Credential::new("abcdefghijklmnop");
         assert_eq!(credential.api_key_masked(), "abcd...mnop");
     }
 
     #[rstest]
-    fn test_credential_debug_redaction() {
+    fn test_debug_redaction() {
         let credential = Credential::new("test_api_key");
         let debug_str = format!("{credential:?}");
         assert!(debug_str.contains("<redacted>"));

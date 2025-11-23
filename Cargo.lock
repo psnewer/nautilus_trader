@@ -5225,6 +5225,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "ustr",
+ "zeroize",
 ]
 
 [[package]]
@@ -5809,6 +5810,7 @@ dependencies = [
  "urlencoding",
  "ustr",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

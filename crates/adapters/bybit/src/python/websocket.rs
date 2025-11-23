@@ -160,10 +160,11 @@ impl BybitWebSocketClient {
         self.subscription_count()
     }
 
-    #[pyo3(name = "masked_api_key")]
+    #[getter]
+    #[pyo3(name = "api_key_masked")]
     #[must_use]
-    pub fn py_masked_api_key(&self) -> Option<String> {
-        self.credential().map(|c| c.masked_api_key())
+    pub fn py_api_key_masked(&self) -> Option<String> {
+        self.credential().map(|c| c.api_key_masked())
     }
 
     #[pyo3(name = "cache_instrument")]

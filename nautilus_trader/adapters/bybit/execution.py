@@ -173,7 +173,7 @@ class BybitExecutionClient(LiveExecutionClient):
 
         # HTTP API
         self._http_client = client
-        masked_key = self._http_client.masked_api_key()
+        masked_key = self._http_client.api_key_masked
         self._log.info(f"REST API key {masked_key}", LogColor.BLUE)
 
         # Configure HTTP client settings

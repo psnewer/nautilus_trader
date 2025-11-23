@@ -140,6 +140,12 @@ impl CoinbaseIntxFixClient {
         self.api_key.as_str()
     }
 
+    /// Returns a masked version of the API key for logging purposes.
+    #[must_use]
+    pub fn api_key_masked(&self) -> String {
+        nautilus_core::string::mask_api_key(&self.api_key)
+    }
+
     /// Returns the Coinbase International portfolio ID being used by the client.
     #[must_use]
     pub const fn portfolio_id(&self) -> &str {

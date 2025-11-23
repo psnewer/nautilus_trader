@@ -32,6 +32,8 @@ pub mod datetime;
 pub mod enums;
 pub mod parsing;
 pub mod serialization;
+/// String manipulation utilities for Python.
+pub mod string;
 pub mod uuid;
 pub mod version;
 
@@ -174,6 +176,7 @@ pub fn core(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<UUID4>()?;
     m.add_function(wrap_pyfunction!(py_is_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(casing::py_convert_to_snake_case, m)?)?;
+    m.add_function(wrap_pyfunction!(string::py_mask_api_key, m)?)?;
     m.add_function(wrap_pyfunction!(datetime::py_secs_to_nanos, m)?)?;
     m.add_function(wrap_pyfunction!(datetime::py_secs_to_millis, m)?)?;
     m.add_function(wrap_pyfunction!(datetime::py_millis_to_nanos, m)?)?;

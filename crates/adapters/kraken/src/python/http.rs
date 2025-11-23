@@ -84,15 +84,15 @@ impl KrakenHttpClient {
     #[getter]
     #[pyo3(name = "api_key")]
     #[must_use]
-    pub fn py_api_key(&self) -> Option<String> {
-        self.inner.credential().map(|c| {
-            let key = c.api_key();
-            if key.len() > 8 {
-                format!("{}...{}", &key[..4], &key[key.len() - 4..])
-            } else {
-                "***".to_string()
-            }
-        })
+    pub fn py_api_key(&self) -> Option<&str> {
+        self.inner.credential().map(|c| c.api_key())
+    }
+
+    #[getter]
+    #[pyo3(name = "api_key_masked")]
+    #[must_use]
+    pub fn py_api_key_masked(&self) -> Option<String> {
+        self.inner.credential().map(|c| c.api_key_masked())
     }
 
     #[pyo3(name = "cache_instrument")]

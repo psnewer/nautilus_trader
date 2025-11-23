@@ -137,6 +137,12 @@ impl CoinbaseIntxWebSocketClient {
         self.credential.api_key.as_str()
     }
 
+    /// Returns a masked version of the API key for logging purposes.
+    #[must_use]
+    pub fn api_key_masked(&self) -> String {
+        self.credential.api_key_masked()
+    }
+
     /// Returns a value indicating whether the client is active.
     #[must_use]
     pub fn is_active(&self) -> bool {
