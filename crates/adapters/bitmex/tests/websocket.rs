@@ -1555,15 +1555,15 @@ async fn test_reconnection_waits_for_delayed_auth_ack() {
     .await;
 
     let baseline_auth_calls = *state.auth_calls.lock().await;
-    state.set_auth_response_delay_ms(Some(600)).await;
+    state.set_auth_response_delay_ms(Some(3000)).await;
 
     state.drop_connections.store(true, Ordering::Relaxed);
     wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
     state.drop_connections.store(false, Ordering::Relaxed);
 
-    client.wait_until_active(10.0).await.unwrap();
     wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
 
+    // Wait for auth request to be sent (but not acknowledged due to delay)
     let state_for_auth = state.clone();
     let expected_calls = baseline_auth_calls + 1;
     wait_until_async(
@@ -1571,10 +1571,12 @@ async fn test_reconnection_waits_for_delayed_auth_ack() {
             let state = state_for_auth.clone();
             async move { *state.auth_calls.lock().await >= expected_calls }
         },
-        Duration::from_secs(8),
+        Duration::from_secs(10),
     )
     .await;
 
+    // Auth request sent but response delayed - subscriptions should be waiting
+    tokio::time::sleep(Duration::from_millis(100)).await;
     {
         let events = state.subscription_events().await;
         assert!(
