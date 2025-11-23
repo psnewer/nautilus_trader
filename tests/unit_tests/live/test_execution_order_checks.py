@@ -271,28 +271,28 @@ def fixture_exec_engine_open_check_custom_threshold(event_loop, msgbus, cache, c
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_with_no_open_orders(exec_engine_open_check, exec_client):
+async def test_check_orders_consistency_with_no_open_orders(exec_engine_open_check, exec_client):
     """
-    Test _check_open_orders when there are no open orders in cache.
+    Test _check_orders_consistency when there are no open orders in cache.
     """
     exec_engine = exec_engine_open_check
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert len(exec_client._order_status_reports) == 0
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_with_open_orders_matching_venue(
+async def test_check_orders_consistency_with_open_orders_matching_venue(
     exec_engine_open_check,
     exec_client,
     cache,
     account_id,
 ):
     """
-    Test _check_open_orders when cache and venue agree on open orders.
+    Test _check_orders_consistency when cache and venue agree on open orders.
     """
     # Arrange
     exec_engine = exec_engine_open_check
@@ -334,21 +334,21 @@ async def test_check_open_orders_with_open_orders_matching_venue(
     exec_client.add_order_status_report(venue_report)
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert order.status == OrderStatus.ACCEPTED
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_reconciles_status_not_fills(
+async def test_check_orders_consistency_reconciles_status_not_fills(
     exec_engine_open_check,
     exec_client,
     cache,
     account_id,
 ):
     """
-    Test _check_open_orders reconciles order status but not fills (fills handled
+    Test _check_orders_consistency reconciles order status but not fills (fills handled
     separately).
     """
     # Arrange
@@ -392,7 +392,7 @@ async def test_check_open_orders_reconciles_status_not_fills(
     exec_client.add_order_status_report(venue_report)
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     # Fills are now applied during reconciliation when venue reports them
@@ -401,14 +401,14 @@ async def test_check_open_orders_reconciles_status_not_fills(
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_reconciles_closed_order(
+async def test_check_orders_consistency_reconciles_closed_order(
     exec_engine_open_check,
     exec_client,
     cache,
     account_id,
 ):
     """
-    Test _check_open_orders reconciles when an order was closed on venue.
+    Test _check_orders_consistency reconciles when an order was closed on venue.
     """
     # Arrange
     exec_engine = exec_engine_open_check
@@ -451,7 +451,7 @@ async def test_check_open_orders_reconciles_closed_order(
     exec_client.add_order_status_report(venue_report)
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert order.status == OrderStatus.FILLED
@@ -459,14 +459,14 @@ async def test_check_open_orders_reconciles_closed_order(
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_open_only_mode(
+async def test_check_orders_consistency_open_only_mode(
     exec_engine_open_check,
     exec_client,
     cache,
     account_id,
 ):
     """
-    Test _check_open_orders in open_only mode queries venue regardless of cache.
+    Test _check_orders_consistency in open_only mode queries venue regardless of cache.
     """
     # Arrange
     exec_engine = exec_engine_open_check
@@ -497,7 +497,7 @@ async def test_check_open_orders_open_only_mode(
     exec_client.add_order_status_report(venue_report)
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert len(cache.orders()) == 1
@@ -507,13 +507,13 @@ async def test_check_open_orders_open_only_mode(
 
 
 @pytest.mark.asyncio
-async def test_check_open_orders_handles_client_exception(
+async def test_check_orders_consistency_handles_client_exception(
     exec_engine_open_check,
     cache,
     account_id,
 ):
     """
-    Test _check_open_orders handles exceptions from client gracefully.
+    Test _check_orders_consistency handles exceptions from client gracefully.
     """
     # Arrange
     exec_engine = exec_engine_open_check
@@ -537,7 +537,7 @@ async def test_check_open_orders_handles_client_exception(
         client.generate_order_status_reports = raise_error
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert order.status == OrderStatus.ACCEPTED
@@ -1517,7 +1517,7 @@ async def test_order_transitions_from_inflight_to_open(
     exec_client.add_order_status_report(venue_report)
 
     # Act
-    await exec_engine._check_open_orders()
+    await exec_engine._check_orders_consistency()
 
     # Assert
     assert order.client_order_id not in exec_engine._recon_check_retries

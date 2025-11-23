@@ -1247,13 +1247,6 @@ class LiveExecutionEngine(ExecutionEngine):
         for trade_id in expired_trade_ids:
             self._recent_fills_cache.pop(trade_id, None)
 
-    async def _check_open_orders(self) -> None:
-        """
-        Legacy method maintained for compatibility, delegates to order consistency
-        check.
-        """
-        await self._check_orders_consistency()
-
     async def _check_orders_consistency(self) -> None:
         """
         Validate open orders match venue state, comparing cache state with venue reports
