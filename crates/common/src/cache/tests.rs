@@ -2227,3 +2227,139 @@ fn test_update_own_order_book_reinserts_missing_levels(mut cache: Cache) {
     let own_book = cache.own_order_book(&instrument.id()).unwrap();
     assert!(own_book.bids().count() > 0);
 }
+
+#[rstest]
+fn test_position_flip_netting_mode_cleans_up_closed_index() {
+    // Regression test for NETTING position flip index corruption (issue #3081)
+    // Verifies that when a position ID is reused in NETTING mode,
+    // add_position removes the position from the closed index
+
+    let mut cache = Cache::default();
+    let audusd_sim = audusd_sim();
+    let audusd_sim = InstrumentAny::CurrencyPair(audusd_sim);
+
+    // Create initial buy order to open LONG position
+    let order1 = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(audusd_sim.id())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(100_000))
+        .build();
+
+    // Fill the buy order to open LONG position
+    let fill1 = TestOrderEventStubs::filled(
+        &order1,
+        &audusd_sim,
+        Some(TradeId::new("T-1")),            // trade_id
+        Some(PositionId::new("P-1")),         // position_id
+        Some(Price::from("1.00000")),         // last_px
+        None,                                 // last_qty
+        None,                                 // liquidity_side
+        None,                                 // commission
+        Some(UnixNanos::from(1_000_000_000)), // ts_filled_ns
+        None,                                 // account_id
+    );
+
+    let mut position = Position::new(&audusd_sim, fill1.into());
+    let position_id = position.id;
+
+    // Add position to cache
+    cache
+        .add_position(position.clone(), OmsType::Netting)
+        .unwrap();
+
+    // Verify position is LONG and in open index
+    assert!(position.is_long());
+    assert!(!position.is_closed());
+    assert!(cache.is_position_open(&position_id));
+    assert!(!cache.is_position_closed(&position_id));
+
+    // Create a SELL order that closes the position (makes it FLAT)
+    let order2 = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(audusd_sim.id())
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from(100_000))
+        .build();
+
+    // Fill the sell order to close position to FLAT
+    let fill2 = TestOrderEventStubs::filled(
+        &order2,
+        &audusd_sim,
+        Some(TradeId::new("T-2")),            // trade_id
+        Some(position_id),                    // position_id (same ID in NETTING)
+        Some(Price::from("1.00010")),         // last_px
+        None,                                 // last_qty
+        None,                                 // liquidity_side
+        None,                                 // commission
+        Some(UnixNanos::from(2_000_000_000)), // ts_filled_ns
+        None,                                 // account_id
+    );
+
+    position.apply(&fill2.into());
+    cache.update_position(&position).unwrap();
+
+    // Verify position is now FLAT (closed)
+    assert_eq!(position.side, PositionSide::Flat);
+    assert!(position.is_closed());
+    assert!(cache.is_position_closed(&position_id));
+    assert!(!cache.is_position_open(&position_id));
+
+    // Snapshot the closed position before reusing the ID (as execution engine does)
+    cache.snapshot_position(&position).unwrap();
+
+    // Create a new BUY order to reopen the position (NETTING mode reuses the ID)
+    let order3 = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(audusd_sim.id())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from(50_000))
+        .build();
+
+    // Fill to create a new LONG position with the same position ID
+    let fill3 = TestOrderEventStubs::filled(
+        &order3,
+        &audusd_sim,
+        Some(TradeId::new("T-3")),            // trade_id
+        Some(position_id),                    // position_id (reused in NETTING)
+        Some(Price::from("1.00020")),         // last_px
+        None,                                 // last_qty
+        None,                                 // liquidity_side
+        None,                                 // commission
+        Some(UnixNanos::from(3_000_000_000)), // ts_filled_ns
+        None,                                 // account_id
+    );
+
+    // Create new position object with the same ID (as execution engine does)
+    let position_reopened = Position::new(&audusd_sim, fill3.into());
+    assert_eq!(position_reopened.id, position_id); // Same ID reused
+
+    // Add the reopened position to cache
+    // THIS IS THE KEY TEST: add_position should remove from closed index
+    cache
+        .add_position(position_reopened.clone(), OmsType::Netting)
+        .unwrap();
+
+    // Assert: The reopened position should be in open index, NOT closed index
+    assert!(position_reopened.is_long());
+    assert!(!position_reopened.is_closed());
+    assert!(
+        cache.is_position_open(&position_id),
+        "Position should be in open index"
+    );
+    assert!(
+        !cache.is_position_closed(&position_id),
+        "Position should NOT be in closed index (bug fixed)"
+    );
+
+    // Verify position counts
+    assert_eq!(cache.positions_total_count(None, None, None, None), 1);
+    assert_eq!(cache.positions_open_count(None, None, None, None), 1);
+    assert_eq!(cache.positions_closed_count(None, None, None, None), 0);
+
+    // Verify the snapshot exists
+    assert!(cache.position_snapshots.contains_key(&position_id));
+
+    // Verify the active position is LONG with correct quantity
+    let cached_pos = cache.position(&position_id).unwrap();
+    assert_eq!(cached_pos.side, PositionSide::Long);
+    assert_eq!(cached_pos.quantity, Quantity::from(50_000));
+    assert_eq!(cached_pos.event_count(), 1); // Only the reopen fill event
+}

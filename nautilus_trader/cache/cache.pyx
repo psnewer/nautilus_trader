@@ -2050,11 +2050,9 @@ cdef class Cache(CacheFacade):
             self._index_order_client[order.client_order_id] = client_id
             self._log.debug(f"Indexed {client_id!r}")
 
-        if self._database is None:
-            return
-
         # Update database
-        self._database.add_order(order, position_id, client_id)
+        if self._database is not None:
+            self._database.add_order(order, position_id, client_id)
 
     cpdef void add_order_list(self, OrderList order_list):
         """
@@ -2162,6 +2160,7 @@ cdef class Cache(CacheFacade):
         self._positions[position.id] = position
         self._index_positions.add(position.id)
         self._index_positions_open.add(position.id)
+        self._index_positions_closed.discard(position.id)  # Cleanup for NETTING reopen
 
         self.add_position_id(
             position.id,
@@ -2190,11 +2189,9 @@ cdef class Cache(CacheFacade):
 
         self._log.debug(f"Added Position(id={position.id.to_str()}, strategy_id={position.strategy_id.to_str()})")
 
-        if self._database is None:
-            return
-
         # Update database
-        self._database.add_position(position)
+        if self._database is not None:
+            self._database.add_position(position)
 
     cpdef void add_greeks(self, object greeks):
         """
@@ -2424,11 +2421,9 @@ cdef class Cache(CacheFacade):
             if (own_book is not None and order.is_closed_c()) or should_handle_own_book_order(order):
                 self.update_own_order_book(order)
 
-        if self._database is None:
-            return
-
         # Update database
-        self._database.update_order(order)
+        if self._database is not None:
+            self._database.update_order(order)
 
     cpdef void update_order_pending_cancel_local(self, Order order):
         """
@@ -2508,11 +2503,9 @@ cdef class Cache(CacheFacade):
             self._index_positions_closed.add(position.id)
             self._index_positions_open.discard(position.id)
 
-        if self._database is None:
-            return
-
         # Update database
-        self._database.update_position(position)
+        if self._database is not None:
+            self._database.update_position(position)
 
     cpdef void update_actor(self, Actor actor):
         """

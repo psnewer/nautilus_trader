@@ -24,12 +24,18 @@ import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
+from nautilus_trader.accounting.factory import AccountFactory
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.cache.database import CacheDatabaseAdapter
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.config import CacheConfig
+from nautilus_trader.config import DatabaseConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import FillReport
@@ -39,6 +45,7 @@ from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import LiquiditySide
+from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderType
@@ -53,6 +60,7 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
+from nautilus_trader.serialization.serializer import MsgSpecSerializer
 from nautilus_trader.test_kit.functions import ensure_all_tasks_completed
 from nautilus_trader.test_kit.functions import eventually
 from nautilus_trader.test_kit.mocks.exec_clients import MockLiveExecutionClient
@@ -2059,3 +2067,250 @@ async def test_position_reconciliation_handles_generate_fill_reports_exception(
     # Cleanup
     exec_engine.stop()
     await eventually(lambda: exec_engine.is_stopped)
+
+
+@pytest.mark.asyncio
+@pytest.mark.xdist_group(name="redis_integration")
+async def test_position_flip_cache_reload_netting_mode(
+    event_loop,
+    msgbus,
+    cache,
+    clock,
+    order_factory,
+    exec_client,
+    account_id,
+    trader_id,
+):
+    """
+    Test that position flip in NETTING mode properly creates a new position.
+
+    Verifies issue #3081 fix where NETTING position flips properly snapshot the closed
+    position before reusing the same position ID for the flipped position.
+
+    """
+    database = CacheDatabaseAdapter(
+        trader_id=trader_id,
+        instance_id=UUID4(),
+        serializer=MsgSpecSerializer(encoding=msgspec.msgpack, timestamps_as_str=True),
+        config=CacheConfig(
+            database=DatabaseConfig(
+                type="redis",
+                host="localhost",
+                port=6379,
+            ),
+            buffer_interval_ms=0,
+        ),
+    )
+
+    cache = Cache(
+        database=database,
+        config=CacheConfig(
+            buffer_interval_ms=10,
+        ),
+    )
+    cache.add_instrument(AUDUSD_SIM)
+
+    account = AccountFactory.create(TestEventStubs.cash_account_state(account_id=account_id))
+    cache.add_account(account)
+
+    exec_engine = LiveExecutionEngine(
+        loop=event_loop,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        config=LiveExecEngineConfig(
+            reconciliation=True,
+            inflight_check_interval_ms=100,
+            inflight_check_threshold_ms=200,
+            inflight_check_retries=2,
+            open_check_interval_secs=0.5,
+            reconciliation_startup_delay_secs=0,
+            snapshot_positions=True,
+        ),
+    )
+
+    exec_client = MockLiveExecutionClient(
+        loop=event_loop,
+        client_id=ClientId(SIM.value),
+        venue=SIM,
+        account_type=AccountType.CASH,
+        base_currency=USD,
+        instrument_provider=InstrumentProvider(),
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        oms_type=OmsType.NETTING,
+    )
+
+    exec_engine.register_client(exec_client)
+    exec_engine.start()
+    exec_engine._startup_reconciliation_event.set()
+    await eventually(lambda: exec_engine.is_running)
+
+    try:
+        # ENTER - open LONG position
+        order_entry = order_factory.market(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+        )
+        cache.add_order(order_entry)
+        exec_engine.process(
+            TestEventStubs.order_submitted(
+                order_entry,
+                ts_event=clock.timestamp_ns(),
+            ),
+        )
+        exec_engine.process(
+            TestEventStubs.order_accepted(
+                order_entry,
+                ts_event=clock.timestamp_ns(),
+            ),
+        )
+        exec_engine.process(
+            TestEventStubs.order_filled(
+                order_entry,
+                instrument=AUDUSD_SIM,
+                account_id=account_id,
+                last_px=Price.from_str("1.00000"),
+                trade_id=TradeId("1"),
+                ts_event=clock.timestamp_ns(),
+            ),
+        )
+
+        # Wait for position to be opened
+        await eventually(lambda: len(cache.positions()) == 1)
+        await eventually(lambda: cache.positions()[0].is_open)
+
+        # Capture original position ID to verify persistence later
+        original_pos_id = cache.positions()[0].id
+
+        # FLIP - close LONG and open SHORT position
+        order_flip = order_factory.market(
+            AUDUSD_SIM.id,
+            OrderSide.SELL,
+            Quantity.from_int(150_000),
+        )
+        cache.add_order(order_flip)
+        exec_engine.process(
+            TestEventStubs.order_submitted(
+                order_flip,
+                ts_event=clock.timestamp_ns(),
+            ),
+        )
+        exec_engine.process(
+            TestEventStubs.order_accepted(
+                order_flip,
+                ts_event=clock.timestamp_ns(),
+            ),
+        )
+        exec_engine.process(
+            TestEventStubs.order_filled(
+                order_flip,
+                instrument=AUDUSD_SIM,
+                account_id=account_id,
+                last_qty=Quantity.from_int(150_000),
+                last_px=Price.from_str("1.00010"),
+                trade_id=TradeId("2"),
+            ),
+        )
+
+        # Wait for position to be flipped to SHORT
+        await eventually(lambda: len(cache.positions()) > 0 and cache.positions()[0].side == PositionSide.SHORT)
+
+        # Assert - verify position flip
+        positions = cache.positions()
+        assert len(positions) == 1, "Should only have 1 current position in memory after flip"
+
+        flipped_pos = positions[0]
+
+        # The active position ID in Netting mode often remains the same 'slot' ID,
+        # or is reused. The key is that it is a NEW OBJECT state.
+        # Note: If the system appends a UUID for the snapshot, the ACTIVE position usually keeps the clean ID.
+        assert flipped_pos.id == original_pos_id
+        assert flipped_pos.side == PositionSide.SHORT
+        assert flipped_pos.quantity == Quantity.from_int(50_000)
+        assert flipped_pos.event_count == 1, "Flipped position should have only 1 event (the flip fill)"
+
+        # Verify the OLD (Long) position was SNAPSHOTTED away
+        # We check if the original position ID is present in the cache's snapshot index
+        # This confirms the snapshot logic was executed
+        snapshot_ids = cache.position_snapshot_ids(AUDUSD_SIM.id)
+        assert original_pos_id in snapshot_ids, f"Snapshot for closed position {original_pos_id} should exist in cache"
+
+        # RE-ENTRY -> Close SHORT, then go LONG again
+        # This exercises _reopen_position explicitly when the position object exists but is closed.
+
+        # 1. Close the Short
+        order_close = order_factory.market(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(50_000),
+        )
+        cache.add_order(order_close)
+        exec_engine.process(
+            TestEventStubs.order_submitted(order_close, ts_event=clock.timestamp_ns()),
+        )
+        exec_engine.process(
+            TestEventStubs.order_accepted(order_close, ts_event=clock.timestamp_ns()),
+        )
+        exec_engine.process(
+            TestEventStubs.order_filled(
+                order_close,
+                instrument=AUDUSD_SIM,
+                account_id=account_id,
+                last_qty=Quantity.from_int(50_000),
+                last_px=Price.from_str("1.00000"),
+                trade_id=TradeId("3"),
+            ),
+        )
+
+        # Wait for close - fetch fresh object
+        await eventually(lambda: cache.positions()[0].is_closed)
+
+        # Capture intermediate Short position ID before we reopen
+        short_pos_id = cache.positions()[0].id
+
+        # 2. Re-Enter Long (triggers _reopen_position)
+        order_reopen = order_factory.market(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(10_000),
+        )
+        cache.add_order(order_reopen)
+        exec_engine.process(
+            TestEventStubs.order_submitted(order_reopen, ts_event=clock.timestamp_ns()),
+        )
+        exec_engine.process(
+            TestEventStubs.order_accepted(order_reopen, ts_event=clock.timestamp_ns()),
+        )
+        exec_engine.process(
+            TestEventStubs.order_filled(
+                order_reopen,
+                instrument=AUDUSD_SIM,
+                account_id=account_id,
+                last_qty=Quantity.from_int(10_000),
+                last_px=Price.from_str("1.00020"),
+                trade_id=TradeId("4"),
+            ),
+        )
+
+        # Wait for reopen - fetch fresh object
+        await eventually(lambda: cache.positions()[0].is_open)
+
+        final_pos = cache.positions()[0]
+
+        assert final_pos.is_open
+        assert final_pos.side == PositionSide.LONG
+        assert final_pos.event_count == 1, "Reopened position should be fresh"
+
+        # Verify the intermediate SHORT position was also snapshotted away
+        snapshot_ids = cache.position_snapshot_ids(AUDUSD_SIM.id)
+        assert short_pos_id in snapshot_ids, "The intermediate Short position should be present in cache snapshots"
+
+    finally:
+        # Cleanup - ensure Redis is flushed even if test fails
+        exec_engine.stop()
+        await eventually(lambda: exec_engine.is_stopped)
+        database.flush()
+        database.close()

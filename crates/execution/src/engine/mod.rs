@@ -1031,31 +1031,66 @@ impl ExecutionEngine {
         position: Option<&Position>,
         fill: OrderFilled,
         oms_type: OmsType,
-    ) -> anyhow::Result<Position> {
-        let position = if let Some(position) = position {
-            // Always snapshot opening positions to handle NETTING OMS
-            self.cache.borrow_mut().snapshot_position(position)?;
-            let mut position = position.clone();
-            position.apply(&fill);
-            self.cache.borrow_mut().update_position(&position)?;
-            position
-        } else {
-            let position = Position::new(&instrument, fill);
-            self.cache
-                .borrow_mut()
-                .add_position(position.clone(), oms_type)?;
-            if self.config.snapshot_positions {
-                self.create_position_state_snapshot(&position);
+    ) -> anyhow::Result<()> {
+        if let Some(position) = position {
+            if Self::is_duplicate_closed_fill(position, &fill) {
+                log::warn!(
+                    "Ignoring duplicate fill {} for closed position {}; no position reopened (side={:?}, qty={}, px={})",
+                    fill.trade_id,
+                    position.id,
+                    fill.order_side,
+                    fill.last_qty,
+                    fill.last_px
+                );
+                return Ok(());
             }
-            position
-        };
+            self.reopen_position(position, oms_type)?;
+        }
+
+        let position = Position::new(&instrument, fill);
+        self.cache
+            .borrow_mut()
+            .add_position(position.clone(), oms_type)?; // TODO: Remove clone (change method)
+
+        if self.config.snapshot_positions {
+            self.create_position_state_snapshot(&position);
+        }
 
         let ts_init = self.clock.borrow().timestamp_ns();
         let event = PositionOpened::create(&position, &fill, UUID4::new(), ts_init);
         let topic = switchboard::get_event_positions_topic(event.strategy_id);
         msgbus::publish(topic, &event);
 
-        Ok(position)
+        Ok(())
+    }
+
+    fn is_duplicate_closed_fill(position: &Position, fill: &OrderFilled) -> bool {
+        position.events.iter().any(|event| {
+            event.trade_id == fill.trade_id
+                && event.order_side == fill.order_side
+                && event.last_px == fill.last_px
+                && event.last_qty == fill.last_qty
+        })
+    }
+
+    fn reopen_position(&self, position: &Position, oms_type: OmsType) -> anyhow::Result<()> {
+        if oms_type == OmsType::Netting {
+            if position.is_open() {
+                anyhow::bail!(
+                    "Cannot reopen position {} (oms_type=NETTING): reopening is only valid for closed positions in NETTING mode",
+                    position.id
+                );
+            }
+            // Snapshot closed position if reopening (NETTING mode)
+            self.cache.borrow_mut().snapshot_position(position)?;
+        } else {
+            // HEDGING mode
+            log::warn!(
+                "Received fill for closed position {} in HEDGING mode; creating new position and ignoring previous state",
+                position.id
+            );
+        }
+        Ok(())
     }
 
     fn update_position(&self, position: &mut Position, fill: OrderFilled) {
@@ -1154,6 +1189,13 @@ impl ExecutionEngine {
             ));
 
             self.update_position(position, fill_split1.unwrap());
+
+            // Snapshot closed position before reusing ID (NETTING mode)
+            if oms_type == OmsType::Netting
+                && let Err(e) = self.cache.borrow_mut().snapshot_position(position)
+            {
+                log::error!("Failed to snapshot position during flip: {e:?}");
+            }
         }
 
         // Guard against flipping a position with a zero fill size
@@ -1204,6 +1246,7 @@ impl ExecutionEngine {
             log::warn!("Closing position {fill_split1:?}");
             log::warn!("Flipping position {fill_split2:?}");
         }
+
         // Open flipped position
         if let Err(e) = self.open_position(instrument, None, fill_split2, oms_type) {
             log::error!("Failed to open flipped position: {e:?}");
