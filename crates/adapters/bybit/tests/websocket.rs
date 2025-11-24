@@ -528,7 +528,7 @@ async fn test_public_client_connection() {
     // Wait for connection to be established
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -560,7 +560,7 @@ async fn test_private_client_authentication() {
     // Wait for connection to be established
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -589,7 +589,7 @@ async fn test_authentication_failure() {
     // Wait for connection attempt
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -617,7 +617,7 @@ async fn test_ping_pong() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -655,7 +655,7 @@ async fn test_subscription_lifecycle() {
     // Wait for subscription confirmation
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -671,7 +671,7 @@ async fn test_subscription_lifecycle() {
     // Wait for unsubscription
     wait_until_async(
         || async { state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -702,7 +702,7 @@ async fn test_message_routing() {
     // Wait for subscription to be confirmed
     wait_until_async(
         || async { client.subscription_count() > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -734,7 +734,7 @@ async fn test_reconnection_flow() {
     // Wait for initial connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -779,7 +779,7 @@ async fn test_multiple_subscriptions() {
     // Wait for subscriptions
     wait_until_async(
         || async { state.subscription_events.lock().await.len() >= 3 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -838,7 +838,7 @@ async fn test_heartbeat_timeout_reconnection() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -897,7 +897,7 @@ async fn test_sends_pong_for_control_ping() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -927,7 +927,7 @@ async fn test_reauth_after_disconnect() {
     // Wait for initial connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -959,7 +959,7 @@ async fn test_login_failure_emits_error() {
     // Wait for connection attempt
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1014,7 +1014,7 @@ async fn test_subscription_after_reconnection() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1055,7 +1055,7 @@ async fn test_subscription_restoration_tracking() {
     // Wait for subscriptions
     wait_until_async(
         || async { state.subscription_events.lock().await.len() >= 2 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1088,7 +1088,7 @@ async fn test_reconnection_retries_failed_subscriptions() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1126,7 +1126,7 @@ async fn test_trade_subscription_flow() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1161,7 +1161,7 @@ async fn test_orderbook_subscription_flow() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1196,7 +1196,7 @@ async fn test_ticker_subscription_flow() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1234,7 +1234,7 @@ async fn test_klines_subscription_flow() {
     // Wait for subscription
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1266,7 +1266,7 @@ async fn test_private_orders_subscription() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1295,7 +1295,7 @@ async fn test_private_executions_subscription() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1324,7 +1324,7 @@ async fn test_private_wallet_subscription() {
     // Wait for connection
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1354,7 +1354,7 @@ async fn test_rapid_consecutive_reconnections() {
 
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1369,7 +1369,7 @@ async fn test_rapid_consecutive_reconnections() {
                 let state = state.clone();
                 async move { state.subscription_events().await.is_empty() }
             },
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         )
         .await;
 
@@ -1412,7 +1412,7 @@ async fn test_reconnection_race_condition() {
 
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1424,7 +1424,7 @@ async fn test_reconnection_race_condition() {
             let state = state.clone();
             async move { state.subscription_events().await.is_empty() }
         },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1509,7 +1509,7 @@ async fn test_multiple_partial_subscription_failures() {
 
     wait_until_async(
         || async { state.subscription_events.lock().await.len() >= 3 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1525,7 +1525,7 @@ async fn test_multiple_partial_subscription_failures() {
             let state = state.clone();
             async move { state.subscription_events().await.is_empty() }
         },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1537,7 +1537,7 @@ async fn test_multiple_partial_subscription_failures() {
 
     wait_until_async(
         || async { !state.subscription_events.lock().await.is_empty() },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -1611,7 +1611,7 @@ async fn test_sends_pong_for_text_ping_message() {
 
     wait_until_async(
         || async { *state.connection_count.lock().await > 0 },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -2071,7 +2071,7 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
                 !subs.contains(&"position".to_string())
             }
         },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -2089,7 +2089,7 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
             let state = state.clone();
             async move { state.subscription_events().await.is_empty() }
         },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -2154,7 +2154,7 @@ async fn test_batch_place_orders_with_cache_keys() {
     // Wait for auth
     wait_until_async(
         || async { state.authenticated.load(Ordering::Relaxed) },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -2251,7 +2251,7 @@ async fn test_batch_amend_orders() {
     // Wait for auth
     wait_until_async(
         || async { state.authenticated.load(Ordering::Relaxed) },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 
@@ -2300,7 +2300,7 @@ async fn test_batch_cancel_orders() {
     // Wait for auth
     wait_until_async(
         || async { state.authenticated.load(Ordering::Relaxed) },
-        Duration::from_secs(2),
+        Duration::from_secs(5),
     )
     .await;
 

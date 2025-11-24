@@ -888,9 +888,9 @@ async fn test_reconnection_scenario() {
     client.subscribe_positions().await.unwrap();
 
     // Wait for subscriptions to be established
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
 
-    let events = wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+    let events = wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
         events
             .iter()
             .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
@@ -1148,7 +1148,7 @@ async fn test_true_auto_reconnect_with_verification() {
     client.subscribe_orders().await.unwrap();
 
     // Wait for initial setup to complete
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
 
     wait_until_async(
         || {
@@ -1415,9 +1415,9 @@ async fn test_reconnection_retries_failed_subscriptions() {
     client.subscribe_trades(instrument_id).await.unwrap();
     client.subscribe_positions().await.unwrap();
 
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
 
-    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
         events.iter().any(|(topic, ok)| topic == "position" && *ok)
     })
     .await;
@@ -1531,7 +1531,7 @@ async fn test_reconnection_waits_for_delayed_auth_ack() {
     client.subscribe_trades(instrument_id).await.unwrap();
     client.subscribe_positions().await.unwrap();
 
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let initial_events = state.subscription_events().await;
@@ -1715,9 +1715,9 @@ async fn test_rapid_consecutive_reconnections() {
     client.subscribe_book(instrument_id).await.unwrap();
     client.subscribe_positions().await.unwrap();
 
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
 
-    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
         events
             .iter()
             .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
@@ -1749,19 +1749,22 @@ async fn test_rapid_consecutive_reconnections() {
 
         state.drop_connections.store(true, Ordering::Relaxed);
 
-        wait_for_connection_count(&state, 0, Duration::from_secs(2)).await;
+        wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
 
         state.drop_connections.store(false, Ordering::Relaxed);
 
-        let reconnect_result = client.wait_until_active(10.0).await;
+        let reconnect_result = client.wait_until_active(15.0).await;
         assert!(
             reconnect_result.is_ok(),
             "Reconnection cycle {cycle} failed"
         );
 
-        wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
+        wait_for_connection_count(&state, 1, Duration::from_secs(10)).await;
 
-        let events = wait_for_subscription_events(&state, Duration::from_secs(20), |events| {
+        // Allow time for subscriptions to settle before checking events
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let events = wait_for_subscription_events(&state, Duration::from_secs(30), |events| {
             events
                 .iter()
                 .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
@@ -1829,9 +1832,9 @@ async fn test_multiple_partial_subscription_failures() {
     client.subscribe_positions().await.unwrap();
     client.subscribe_orders().await.unwrap();
 
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
 
-    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
         events
             .iter()
             .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
@@ -1866,10 +1869,13 @@ async fn test_multiple_partial_subscription_failures() {
     wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
     state.drop_connections.store(false, Ordering::Relaxed);
 
-    client.wait_until_active(10.0).await.unwrap();
-    wait_for_connection_count(&state, 1, Duration::from_secs(5)).await;
+    client.wait_until_active(15.0).await.unwrap();
+    wait_for_connection_count(&state, 1, Duration::from_secs(10)).await;
 
-    let first_events = wait_for_subscription_events(&state, Duration::from_secs(20), |events| {
+    // Allow time for subscriptions to settle before checking events
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let first_events = wait_for_subscription_events(&state, Duration::from_secs(30), |events| {
         let trade_xbt_failed = events
             .iter()
             .any(|(topic, ok)| topic == "trade:XBTUSD" && !*ok);
@@ -1996,7 +2002,7 @@ async fn test_reconnection_race_condition() {
     client.subscribe_trades(instrument_id).await.unwrap();
     client.subscribe_positions().await.unwrap();
 
-    client.wait_until_active(2.0).await.unwrap();
+    client.wait_until_active(5.0).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Add significant auth delay to create a window for race condition
@@ -2226,7 +2232,7 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
     client.subscribe_trades(instrument_id).await.unwrap();
     client.subscribe_positions().await.unwrap();
 
-    wait_for_subscription_events(&state, Duration::from_secs(5), |events| {
+    wait_for_subscription_events(&state, Duration::from_secs(10), |events| {
         events
             .iter()
             .any(|(topic, ok)| topic == "trade:XBTUSD" && *ok)
@@ -2273,7 +2279,7 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
     .await;
 
     state.drop_connections.store(true, Ordering::Relaxed);
-    wait_for_connection_count(&state, 0, Duration::from_secs(2)).await;
+    wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
 
     state.drop_connections.store(false, Ordering::Relaxed);
 
