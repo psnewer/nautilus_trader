@@ -3875,4 +3875,240 @@ mod tests {
         assert_eq!(bar3.low, Price::from("0.99990"));
         assert_eq!(bar3.close, Price::from("0.99990"));
     }
+
+    #[rstest]
+    fn test_tick_imbalance_bar_aggregator_mixed_trades_cancel_out(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(3, BarAggregation::TickImbalance, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = TickImbalanceBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let buy = TradeTick {
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+        let sell = TradeTick {
+            aggressor_side: AggressorSide::Seller,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(buy);
+        aggregator.handle_trade(sell);
+        aggregator.handle_trade(buy);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 0);
+    }
+
+    #[rstest]
+    fn test_tick_imbalance_bar_aggregator_no_aggressor_ignored(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(2, BarAggregation::TickImbalance, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = TickImbalanceBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let buy = TradeTick {
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+        let no_aggressor = TradeTick {
+            aggressor_side: AggressorSide::NoAggressor,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(buy);
+        aggregator.handle_trade(no_aggressor);
+        aggregator.handle_trade(buy);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 1);
+    }
+
+    #[rstest]
+    fn test_tick_runs_bar_aggregator_multiple_consecutive_runs(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(2, BarAggregation::TickRuns, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = TickRunsBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let buy = TradeTick {
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+        let sell = TradeTick {
+            aggressor_side: AggressorSide::Seller,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(buy);
+        aggregator.handle_trade(buy);
+        aggregator.handle_trade(sell);
+        aggregator.handle_trade(sell);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 2);
+    }
+
+    #[rstest]
+    fn test_volume_imbalance_bar_aggregator_large_trade_spans_bars(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(10, BarAggregation::VolumeImbalance, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = VolumeImbalanceBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let large_trade = TradeTick {
+            size: Quantity::from(25),
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(large_trade);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 2);
+    }
+
+    #[rstest]
+    fn test_volume_imbalance_bar_aggregator_no_aggressor_does_not_affect_imbalance(
+        equity_aapl: Equity,
+    ) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(10, BarAggregation::VolumeImbalance, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = VolumeImbalanceBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let buy = TradeTick {
+            size: Quantity::from(5),
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+        let no_aggressor = TradeTick {
+            size: Quantity::from(3),
+            aggressor_side: AggressorSide::NoAggressor,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(buy);
+        aggregator.handle_trade(no_aggressor);
+        aggregator.handle_trade(buy);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 1);
+    }
+
+    #[rstest]
+    fn test_volume_runs_bar_aggregator_large_trade_spans_bars(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(10, BarAggregation::VolumeRuns, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = VolumeRunsBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let large_trade = TradeTick {
+            size: Quantity::from(25),
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(large_trade);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 2);
+    }
+
+    #[rstest]
+    fn test_value_runs_bar_aggregator_large_trade_spans_bars(equity_aapl: Equity) {
+        let instrument = InstrumentAny::Equity(equity_aapl);
+        let bar_spec = BarSpecification::new(50, BarAggregation::ValueRuns, PriceType::Last);
+        let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::Internal);
+        let handler = Arc::new(Mutex::new(Vec::new()));
+        let handler_clone = Arc::clone(&handler);
+
+        let mut aggregator = ValueRunsBarAggregator::new(
+            bar_type,
+            instrument.price_precision(),
+            instrument.size_precision(),
+            move |bar: Bar| {
+                let mut handler_guard = handler_clone.lock().expect(MUTEX_POISONED);
+                handler_guard.push(bar);
+            },
+        );
+
+        let large_trade = TradeTick {
+            price: Price::from("5.00"),
+            size: Quantity::from(25),
+            aggressor_side: AggressorSide::Buyer,
+            ..TradeTick::default()
+        };
+
+        aggregator.handle_trade(large_trade);
+
+        let handler_guard = handler.lock().expect(MUTEX_POISONED);
+        assert_eq!(handler_guard.len(), 2);
+    }
 }
