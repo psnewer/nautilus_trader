@@ -4544,7 +4544,7 @@ impl<'a> FromCapnp<'a> for PositionAdjusted {
 mod tests {
     use capnp::message::Builder;
     use nautilus_core::UnixNanos;
-    use nautilus_model::{data::stubs::*, events::order::stubs::*, identifiers::stubs};
+    use nautilus_model::{data::stubs::*, events::order::stubs::*};
     use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
