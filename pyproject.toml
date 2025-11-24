@@ -26,9 +26,7 @@ requires-python = ">=3.12,<3.15"
 dependencies = [
   "click>=8.0.0,<9.0.0",
   "fsspec>=2025.2.0,<2026.0.0",
-  "msgspec>=0.19.0,<1.0.0; python_version < '3.14'",
-  "msgspec @ git+https://github.com/jcrist/msgspec.git@0c764a6ed7c641918e66963b9a41367d288a8abe ; python_version >= '3.14' and sys_platform != 'win32'", # Temporary: waiting for 0.19.1+ release with Python 3.14 support
-  "msgspec>=0.19.0,<1.0.0; python_version >= '3.14' and sys_platform == 'win32'", # Fallback for Windows 3.14 (untested, may not work - see README)
+  "msgspec>=0.20.0,<1.0.0",
   "numpy>=1.26.4",
   "pandas>=2.2.3,<3.0.0",
   "portion>=2.6.1",

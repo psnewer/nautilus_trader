@@ -3,7 +3,6 @@
 Released on TBD (UTC).
 
 This release adds support for Python 3.14 with the following limitations:
-- Windows platform: Python 3.14 not supported yet (available on Python 3.12-3.13)
 - dYdX adapter extras (`[dydx]`) unavailable due to upstream `coincurve` compatibility (available on Python 3.12-3.13)
 - Interactive Brokers adapter extras (`[ib]`) unavailable due to upstream `nautilus-ibapi` compatibility (available on Python 3.12-3.13)
 
@@ -130,6 +129,7 @@ TBD
 - Upgraded Cython to v3.2.1
 - Upgraded `databento` crate to v0.36.0
 - Upgraded `datafusion` crate to v51.0.0
+- Upgraded `msgspec` to 0.20.0
 - Upgraded `pyo3` crate to v0.27.0
 - Upgraded `pyo3-async-runtimes` crate to v0.27.0
 

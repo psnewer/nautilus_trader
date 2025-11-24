@@ -19,7 +19,7 @@
 | `Linux (x86_64)`   | 1.91.1 | 3.12-3.14 |
 | `Linux (ARM64)`    | 1.91.1 | 3.12-3.14 |
 | `macOS (ARM64)`    | 1.91.1 | 3.12-3.14 |
-| `Windows (x86_64)` | 1.91.1 | 3.12-3.13 |
+| `Windows (x86_64)` | 1.91.1 | 3.12-3.14 |
 
 - **Docs**: <https://nautilustrader.io/docs/>
 - **Website**: <https://nautilustrader.io>
