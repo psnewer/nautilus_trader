@@ -126,14 +126,14 @@ wheels = [
 
 [[package]]
 name = "betfair-parser"
-version = "0.17.4"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/ed/399b3605bf030b15038b4edc90ee2ea81ce81b743d6fd7faa05421b9e417/betfair_parser-0.17.4.tar.gz", hash = "sha256:a979b4152129afa80b4fad5eb2d71b22f9aeef1519cb58d0348685d04ad27ec3", size = 55923, upload-time = "2025-11-04T07:25:53.234Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/ff/79e27eb24ce5f9d2860773cde7b76ddf60c876a4a10534777da82d496578/betfair_parser-0.18.0.tar.gz", hash = "sha256:b7c9e8e9eed4087469e840b6a41aba985aa0531903b7f314db5ee7ce8e0cccda", size = 55949, upload-time = "2025-11-24T08:49:37.655Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/18/4785a2d12476f05ce76a9b1c96723e71e32f93a40ad58ce72ac3a3d5a71a/betfair_parser-0.17.4-py3-none-any.whl", hash = "sha256:05cc3c2e6b02f1ba785ab66661fbf9c6b98ea9350975a1e04ffa03c0074070bb", size = 67671, upload-time = "2025-11-04T07:25:51.909Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/85/6ae6e17ca3a6f37e3fc8fb844217801c38be80e5b8331e30a8261d4204cc/betfair_parser-0.18.0-py3-none-any.whl", hash = "sha256:f15bbc2bec6382a253ecf04b2658aa5c2bc9db7c6850537ee3b0cd8418c22950", size = 67676, upload-time = "2025-11-24T08:49:36.663Z" },
 ]
 
 [[package]]
@@ -1510,7 +1510,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "bech32", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = ">=1.2.0,<2.0.0" },
-    { name = "betfair-parser", marker = "extra == 'betfair'", specifier = "==0.17.4" },
+    { name = "betfair-parser", marker = "extra == 'betfair'", specifier = "==0.18.0" },
     { name = "bip-utils", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = ">=2.10.0,<3.0.0" },
     { name = "click", specifier = ">=8.0.0,<9.0.0" },
     { name = "defusedxml", marker = "python_full_version < '3.14' and extra == 'ib'", specifier = ">=0.7.1,<1.0.0" },

@@ -124,6 +124,7 @@ TBD
 - Repaired Bybit instruments pagination handling (#3210), thanks @sunlei
 - Repaired Bybit batch place orders (#3211), thanks @sunlei
 - Repaired Bybit `get_account_details` (#3219), thanks @sunlei
+- Repaired Bybit `set_position_mode` (#3220), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
 - Upgraded Cython to v3.2.1

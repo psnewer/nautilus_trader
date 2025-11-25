@@ -162,13 +162,12 @@ repos:
   ##############################################################################
   #  Rust formatting and linting
   ##############################################################################
-  # TODO: Re-enable cargo-deny once it supports CVSS 4.0 (RUSTSEC-2025-0125 crashes 0.18.5)
-  # - repo: https://github.com/EmbarkStudios/cargo-deny
-  #   rev: 0.18.5
-  #   hooks:
-  #     - id: cargo-deny
-  #       name: cargo deny (dependency vulnerabilities)
-  #       args: ["--all-features", "check"]
+  - repo: https://github.com/EmbarkStudios/cargo-deny
+    rev: 0.18.6
+    hooks:
+      - id: cargo-deny
+        name: cargo deny (dependency vulnerabilities)
+        args: ["--all-features", "check"]
 
   - repo: local
     hooks:
