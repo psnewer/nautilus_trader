@@ -1710,14 +1710,17 @@ cdef class Cache(CacheFacade):
             cached_ticks = deque(maxlen=self.tick_capacity)
             self._quote_ticks[instrument_id] = cached_ticks
 
-        cdef QuoteTick tick
+        cdef uint64_t ts_latest = cached_ticks[0].ts_event if cached_ticks else 0
 
+        cdef:
+            QuoteTick tick
         for tick in ticks:
-            if cached_ticks and tick.ts_event <= cached_ticks[0].ts_event:
+            if tick.ts_event < ts_latest:
                 # Only add more recent data to cache
                 continue
 
             cached_ticks.appendleft(tick)
+            ts_latest = tick.ts_event
 
     cpdef void add_trade_ticks(self, list ticks):
         """
@@ -1747,14 +1750,17 @@ cdef class Cache(CacheFacade):
             cached_ticks = deque(maxlen=self.tick_capacity)
             self._trade_ticks[instrument_id] = cached_ticks
 
-        cdef TradeTick tick
+        cdef uint64_t ts_latest = cached_ticks[0].ts_event if cached_ticks else 0
 
+        cdef:
+            TradeTick tick
         for tick in ticks:
-            if cached_ticks and tick.ts_event <= cached_ticks[0].ts_event:
+            if tick.ts_event < ts_latest:
                 # Only add more recent data to cache
                 continue
 
             cached_ticks.appendleft(tick)
+            ts_latest = tick.ts_event
 
     cpdef void add_bars(self, list bars):
         """
@@ -1784,14 +1790,17 @@ cdef class Cache(CacheFacade):
             cached_bars = deque(maxlen=self.bar_capacity)
             self._bars[bar_type] = cached_bars
 
-        cdef Bar bar
+        cdef uint64_t ts_latest = cached_bars[0].ts_event if cached_bars else 0
 
+        cdef:
+            Bar bar
         for bar in bars:
-            if cached_bars and bar.ts_event <= cached_bars[0].ts_event:
+            if bar.ts_event < ts_latest:
                 # Only add more recent data to cache
                 continue
 
             cached_bars.appendleft(bar)
+            ts_latest = bar.ts_event
 
         bar = bars[-1]
         cdef PriceType price_type = bar.bar_type.spec.price_type

@@ -24,8 +24,11 @@ use nautilus_core::UnixNanos;
 use nautilus_model::defi::{AmmType, Dex, DexType, Pool, PoolProfiler, Token, chain::chains};
 use nautilus_model::{
     accounts::AccountAny,
-    data::{Bar, FundingRateUpdate, MarkPriceUpdate, QuoteTick, TradeTick},
-    enums::{BookType, OmsType, OrderSide, OrderStatus, OrderType, PositionSide, PriceType},
+    data::{Bar, BarType, FundingRateUpdate, MarkPriceUpdate, QuoteTick, TradeTick},
+    enums::{
+        AggressorSide, BookType, OmsType, OrderSide, OrderStatus, OrderType, PositionSide,
+        PriceType,
+    },
     events::{OrderAccepted, OrderEventAny, OrderRejected, OrderSubmitted},
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId, Venue,
@@ -2362,4 +2365,154 @@ fn test_position_flip_netting_mode_cleans_up_closed_index() {
     assert_eq!(cached_pos.side, PositionSide::Long);
     assert_eq!(cached_pos.quantity, Quantity::from(50_000));
     assert_eq!(cached_pos.event_count(), 1); // Only the reopen fill event
+}
+
+#[rstest]
+fn test_add_trades_same_timestamp_adds_all(mut cache: Cache) {
+    // Arrange - multiple trades at same timestamp (e.g., large order sweeping levels)
+    let ts = UnixNanos::from(1000);
+    let instrument_id = InstrumentId::from("AUDUSD.SIM");
+
+    let trade1 = TradeTick::new(
+        instrument_id,
+        Price::from("1.00000"),
+        Quantity::from(100_000),
+        AggressorSide::Buyer,
+        TradeId::new("1"),
+        ts,
+        ts,
+    );
+
+    let trade2 = TradeTick::new(
+        instrument_id,
+        Price::from("1.00001"),
+        Quantity::from(100_000),
+        AggressorSide::Buyer,
+        TradeId::new("2"),
+        ts,
+        ts,
+    );
+
+    let trade3 = TradeTick::new(
+        instrument_id,
+        Price::from("1.00002"),
+        Quantity::from(100_000),
+        AggressorSide::Buyer,
+        TradeId::new("3"),
+        ts,
+        ts,
+    );
+
+    // Act
+    cache.add_trade(trade1).unwrap();
+    cache.add_trades(&[trade2, trade3]).unwrap();
+
+    // Assert - all three trades should be in cache
+    let result = cache.trades(&instrument_id).unwrap();
+    assert_eq!(
+        result.len(),
+        3,
+        "All trades with same timestamp should be added"
+    );
+}
+
+#[rstest]
+fn test_add_quotes_same_timestamp_adds_all(mut cache: Cache) {
+    // Arrange - multiple quotes at same timestamp
+    let ts = UnixNanos::from(1000);
+    let instrument_id = InstrumentId::from("AUDUSD.SIM");
+
+    let quote1 = QuoteTick::new(
+        instrument_id,
+        Price::from("1.00000"),
+        Price::from("1.00001"),
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    let quote2 = QuoteTick::new(
+        instrument_id,
+        Price::from("1.00002"),
+        Price::from("1.00003"),
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    let quote3 = QuoteTick::new(
+        instrument_id,
+        Price::from("1.00004"),
+        Price::from("1.00005"),
+        Quantity::from(100_000),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    // Act
+    cache.add_quote(quote1).unwrap();
+    cache.add_quotes(&[quote2, quote3]).unwrap();
+
+    // Assert - all three quotes should be in cache
+    let result = cache.quotes(&instrument_id).unwrap();
+    assert_eq!(
+        result.len(),
+        3,
+        "All quotes with same timestamp should be added"
+    );
+}
+
+#[rstest]
+fn test_add_bars_same_timestamp_adds_all(mut cache: Cache) {
+    // Arrange - multiple bars at same timestamp
+    let ts = UnixNanos::from(1000);
+    let bar_type = BarType::from("AUDUSD.SIM-1-MINUTE-BID-EXTERNAL");
+
+    let bar1 = Bar::new(
+        bar_type,
+        Price::from("1.00000"),
+        Price::from("1.00001"),
+        Price::from("0.99999"),
+        Price::from("1.00000"),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    let bar2 = Bar::new(
+        bar_type,
+        Price::from("1.00001"),
+        Price::from("1.00002"),
+        Price::from("1.00000"),
+        Price::from("1.00001"),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    let bar3 = Bar::new(
+        bar_type,
+        Price::from("1.00002"),
+        Price::from("1.00003"),
+        Price::from("1.00001"),
+        Price::from("1.00002"),
+        Quantity::from(100_000),
+        ts,
+        ts,
+    );
+
+    // Act
+    cache.add_bar(bar1).unwrap();
+    cache.add_bars(&[bar2, bar3]).unwrap();
+
+    // Assert - all three bars should be in cache
+    let result = cache.bars(&bar_type).unwrap();
+    assert_eq!(
+        result.len(),
+        3,
+        "All bars with same timestamp should be added"
+    );
 }

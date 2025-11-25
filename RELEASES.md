@@ -51,6 +51,7 @@ This release adds support for Python 3.14 with the following limitations:
 TBD
 
 ### Fixes
+- Fixed cache dropped same-timestamp market data on insert
 - Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
