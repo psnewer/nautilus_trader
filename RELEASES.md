@@ -136,6 +136,7 @@ TBD
 
 ### Documentation Updates
 - Added Polymarket historical data loading docs
+- Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
 
 ### Deprecations
 None

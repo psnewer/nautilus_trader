@@ -240,11 +240,17 @@ export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64
 
 # Set the Python executable path for PyO3
 export PYO3_PYTHON=$(pwd)/.venv/bin/python
+
+# Required for Rust tests when using uv-installed Python
+export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
 ```
 
 :::note
 Adjust the Python version and architecture in the `LD_LIBRARY_PATH` to match your system.
 Use `uv python list` to find the exact path for your Python installation.
+
+The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
+Without it, tests that depend on PyO3 may fail to locate the Python runtime.
 :::
 
 ## From GitHub release

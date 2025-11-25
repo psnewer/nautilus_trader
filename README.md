@@ -411,12 +411,18 @@ It's possible to install from source using pip if you first install the build de
 
     # Set the Python executable path for PyO3
     export PYO3_PYTHON=$(pwd)/.venv/bin/python
+
+    # Required for Rust tests when using uv-installed Python
+    export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
     ```
 
 > [!NOTE]
 >
 > Adjust the Python version and architecture in the `LD_LIBRARY_PATH` to match your system.
 > Use `uv python list` to find the exact path for your Python installation.
+>
+> The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
+> Without it, tests that depend on PyO3 may fail to locate the Python runtime.
 
 See the [Installation Guide](https://nautilustrader.io/docs/latest/getting_started/installation) for other options and further details.
 
