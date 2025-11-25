@@ -1370,10 +1370,14 @@ class BetfairExecutionClient(LiveExecutionClient):
     def _get_cancel_quantity(self, unmatched_order: UnmatchedOrder) -> float:
         return (unmatched_order.sc or 0) + (unmatched_order.sl or 0) + (unmatched_order.sv or 0)
 
-    def _format_error_reason(self, error_code, fallback_error_code=None) -> str:
-        code = error_code if error_code else fallback_error_code
-        if code:
-            return f"{code.name} ({code.__doc__})"
+    def _format_error_reason(self, error_code, result_error_code=None) -> str:
+        parts = []
+        if error_code is not None:
+            parts.append(f"{error_code.name} ({error_code.__doc__})")
+        if result_error_code is not None and result_error_code != error_code:
+            parts.append(f"result={result_error_code.name} ({result_error_code.__doc__})")
+        if parts:
+            return ", ".join(parts)
         return "UNKNOWN_ERROR"
 
 

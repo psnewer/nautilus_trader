@@ -27,18 +27,22 @@ import msgspec
 import pytest
 from betfair_parser.spec.betting.enums import ExecutionReportErrorCode
 from betfair_parser.spec.betting.enums import ExecutionReportStatus
+from betfair_parser.spec.betting.enums import InstructionReportErrorCode
+from betfair_parser.spec.betting.enums import InstructionReportStatus
 from betfair_parser.spec.streaming import OCM
 from betfair_parser.spec.streaming import MatchedOrder
 from betfair_parser.spec.streaming import Order as BFOrder
 from betfair_parser.spec.streaming import stream_decode
 
 from nautilus_trader.adapters.betfair.client import BetfairHttpClient
+from nautilus_trader.adapters.betfair.common import OrderSideParser
 from nautilus_trader.adapters.betfair.constants import BETFAIR_PRICE_PRECISION
 from nautilus_trader.adapters.betfair.constants import BETFAIR_QUANTITY_PRECISION
 from nautilus_trader.adapters.betfair.data import BetfairDataClient
 from nautilus_trader.adapters.betfair.execution import BetfairExecutionClient
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_price
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_quantity
+from nautilus_trader.adapters.betfair.parsing import requests as parsing_requests
 from nautilus_trader.adapters.betfair.parsing.common import betfair_instrument_id
 from nautilus_trader.core.rust.model import OrderSide
 from nautilus_trader.core.rust.model import OrderStatus
@@ -268,9 +272,9 @@ async def test_submit_order_error(
     _, submitted, rejected = test_order.events
     assert isinstance(submitted, OrderSubmitted)
     assert isinstance(rejected, OrderRejected)
-    # Should use per-instruction error code, not overall result error code
-    expected_error = "ERROR_IN_ORDER (The action failed because the parent order failed)"
-    assert rejected.reason == expected_error
+    # Shows both instruction-level and result-level error codes
+    assert "ERROR_IN_ORDER" in rejected.reason
+    assert "PERMISSION_DENIED" in rejected.reason
 
 
 @pytest.mark.asyncio
@@ -1165,11 +1169,6 @@ def test_invalid_price_is_skipped(
     generate_mock = MagicMock()
     monkeypatch.setattr(exec_client, "generate_order_filled", generate_mock)
 
-    # Import locally to avoid ruff E402 at module level
-    from nautilus_trader.adapters.betfair.common import OrderSideParser
-    from nautilus_trader.adapters.betfair.parsing import requests as parsing_requests
-    from nautilus_trader.model.enums import OrderSide
-
     # Monkey-patch helpers ONLY for this test to keep side-effects local
     monkeypatch.setattr(OrderSideParser, "to_nautilus", lambda _side: OrderSide.BUY)
     monkeypatch.setattr(parsing_requests, "order_to_trade_id", lambda _uo: TradeId("TRADE-TEST"))
@@ -1255,8 +1254,6 @@ async def test_modify_order_handles_none_error_code(
     await asyncio.sleep(0)
 
     # Mock replace_orders to return failure with None error_code
-    from betfair_parser.spec.betting.enums import InstructionReportStatus
-
     mock_report = SimpleNamespace(
         status=InstructionReportStatus.FAILURE,
         error_code=None,  # This was causing AttributeError
@@ -1306,8 +1303,6 @@ async def test_modify_quantity_uses_existing_venue_order_id(
     assert original_venue_order_id is not None
 
     # Mock successful size reduction response
-    from betfair_parser.spec.betting.enums import InstructionReportStatus
-
     mock_report = SimpleNamespace(
         status=InstructionReportStatus.SUCCESS,
         size_cancelled=2.0,
@@ -1345,8 +1340,6 @@ def test_get_matched_timestamp_fallback(exec_client):
     """
     Test that _get_matched_timestamp falls back to clock when md is None.
     """
-    from types import SimpleNamespace
-
     # Arrange - order with None matched timestamp
     unmatched_order = SimpleNamespace(md=None)
 
@@ -1375,11 +1368,6 @@ async def test_generate_order_status_report_handles_multiple_orders_after_replac
     Test that query handles multiple orders with same customer_order_ref (after
     replace).
     """
-    from nautilus_trader.core.uuid import UUID4
-    from nautilus_trader.execution.messages import GenerateOrderStatusReport
-    from nautilus_trader.model.identifiers import ClientOrderId
-    from nautilus_trader.model.identifiers import InstrumentId
-
     # Arrange - mock Betfair returning 2 orders: old cancelled + new active
     # This happens after a replace (price modification) operation
     response = {
@@ -1481,3 +1469,39 @@ async def test_submit_order_result_level_failure_no_instruction_reports(
         assert len(rejected_events) == 1
         expected_error = "INSUFFICIENT_FUNDS (Account has exceeded its exposure limit or available to bet limit)"
         assert rejected_events[0].reason == expected_error
+
+
+@pytest.mark.asyncio
+async def test_submit_order_instruction_level_failure_shows_both_error_codes(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    test_order,
+):
+    # Arrange - BET_ACTION_ERROR at result level, INVALID_RUNNER at instruction level
+    mock_report = SimpleNamespace(
+        status=InstructionReportStatus.FAILURE,
+        error_code=InstructionReportErrorCode.INVALID_RUNNER,
+        bet_id=None,
+    )
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.FAILURE,
+        error_code=ExecutionReportErrorCode.BET_ACTION_ERROR,
+        instruction_reports=[mock_report],
+    )
+
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        strategy.submit_order(test_order)
+        await asyncio.sleep(0)
+
+        # Assert - both error codes should be in the reason
+        rejected_events = [e for e in test_order.events if e.__class__.__name__ == "OrderRejected"]
+        assert len(rejected_events) == 1
+        reason = rejected_events[0].reason
+        assert "INVALID_RUNNER" in reason
+        assert "BET_ACTION_ERROR" in reason
