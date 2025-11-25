@@ -1500,9 +1500,9 @@ dependencies = [
 
 [[package]]
 name = "borsh"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
+checksum = "d1da5ab77c1437701eeff7c88d968729e7766172279eab0676857b3d63af7a6f"
 dependencies = [
  "borsh-derive",
  "cfg_aliases",
@@ -1510,9 +1510,9 @@ dependencies = [
 
 [[package]]
 name = "borsh-derive"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd1d3c0c2f5833f22386f252fe8ed005c7f59fdcddeef025c01b4c3b9fd9ac3"
+checksum = "0686c856aa6aac0c4498f936d7d6a02df690f614c03e4d906d1018062b5c5e2c"
 dependencies = [
  "once_cell",
  "proc-macro-crate",
@@ -4041,9 +4041,9 @@ dependencies = [
 
 [[package]]
 name = "hypersync-client"
-version = "0.21.0"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f84c20f4d9b9fba539cd5d4807597058aab2337af7108736b6440d94b204efd"
+checksum = "00db4b5ba169dbfd9a5844a3edb6da7921ae6b60568729a3af94786424bc64e8"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4096,9 +4096,9 @@ dependencies = [
 
 [[package]]
 name = "hypersync-net-types"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72adcf52e9ba566dd7c13fbd6d847229cfacccd2cd6214914bb620a141638e9d"
+checksum = "bf3a77982bb6fa64460854cd05630ecd4d987a486ea4e0fb82f89409884be7ea"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -4678,64 +4678,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
-]
-
-[[package]]
-name = "malachite"
-version = "0.4.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fbdf9cb251732db30a7200ebb6ae5d22fe8e11397364416617d2c2cf0c51cb5"
-dependencies = [
- "malachite-base",
- "malachite-nz",
- "malachite-q",
-]
-
-[[package]]
-name = "malachite-base"
-version = "0.4.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ea0ed76adf7defc1a92240b5c36d5368cfe9251640dcce5bd2d0b7c1fd87aeb"
-dependencies = [
- "hashbrown 0.14.5",
- "itertools 0.11.0",
- "libm",
- "ryu",
-]
-
-[[package]]
-name = "malachite-bigint"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d149aaa2965d70381709d9df4c7ee1fc0de1c614a4efc2ee356f5e43d68749f8"
-dependencies = [
- "derive_more 1.0.0",
- "malachite",
- "num-integer",
- "num-traits",
- "paste",
-]
-
-[[package]]
-name = "malachite-nz"
-version = "0.4.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34a79feebb2bc9aa7762047c8e5495269a367da6b5a90a99882a0aeeac1841f7"
-dependencies = [
- "itertools 0.11.0",
- "libm",
- "malachite-base",
-]
-
-[[package]]
-name = "malachite-q"
-version = "0.4.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50f235d5747b1256b47620f5640c2a17a88c7569eebdf27cd9cb130e1a619191"
-dependencies = [
- "itertools 0.11.0",
- "malachite-base",
- "malachite-nz",
 ]
 
 [[package]]
@@ -6998,9 +6940,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-stub-gen"
-version = "0.16.1"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fd02d1b1ba2f56b61fa818dd29fbd4963e9f250a71a88757b62b5fb16b2eb3e"
+checksum = "50df8acb60b50a06188d55ae6c2736d38cc4d353588ccfb764caf50baad48429"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7021,9 +6963,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-stub-gen-derive"
-version = "0.16.1"
+version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdabf0cc57d1790fed79eca57467d459374dc3dd7b1db1a4be138a981f96d192"
+checksum = "9744c6258016e82d2042b67376c58169ea9f68609df01b2b42e00777481fc05f"
 dependencies = [
  "heck",
  "indexmap 2.12.1",
@@ -7722,7 +7664,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cdaf8ee5c1473b993b398c174641d3aa9da847af36e8d5eb8291930b72f31a5"
 dependencies = [
  "is-macro",
- "malachite-bigint",
+ "num-bigint",
  "rustpython-parser-core",
  "static_assertions",
 ]
@@ -7738,7 +7680,7 @@ dependencies = [
  "itertools 0.11.0",
  "lalrpop-util",
  "log",
- "malachite-bigint",
+ "num-bigint",
  "num-traits",
  "phf 0.11.3",
  "phf_codegen",
