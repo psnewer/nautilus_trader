@@ -64,6 +64,7 @@ chrono = { workspace = true }
 cosmrs = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
+dydx-proto = { workspace = true }
 hex = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
