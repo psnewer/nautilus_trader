@@ -891,6 +891,15 @@ impl ExecutionEngine {
     }
 
     fn apply_fill_to_order(&self, order: &mut OrderAny, fill: OrderFilled) -> anyhow::Result<()> {
+        if order.is_duplicate_fill(&fill) {
+            log::warn!(
+                "Duplicate fill: {} trade_id={} already applied, skipping",
+                order.client_order_id(),
+                fill.trade_id
+            );
+            anyhow::bail!("Duplicate fill");
+        }
+
         self.check_overfill(order, &fill)?;
         let event = OrderEventAny::Filled(fill);
         self.apply_order_event(order, event)
@@ -912,9 +921,15 @@ impl ExecutionEngine {
                     // Log warning and continue with downstream processing (cache update, publishing, etc.)
                     log::warn!("InvalidStateTrigger: {e}, did not apply {event}");
                 }
+                OrderError::DuplicateFill(trade_id) => {
+                    // Duplicate fill detected at order level (secondary safety check)
+                    log::warn!(
+                        "Duplicate fill rejected at order level: trade_id={trade_id}, did not apply {event}"
+                    );
+                    anyhow::bail!("{e}");
+                }
                 _ => {
-                    // ValueError: Protection against invalid IDs
-                    // KeyError: Protection against duplicate fills
+                    // Protection against invalid IDs and other invariants
                     log::error!("Error applying event: {e}, did not apply {event}");
                     if should_handle_own_book_order(order) {
                         self.cache.borrow_mut().update_own_order_book(order);
