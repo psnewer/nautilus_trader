@@ -283,7 +283,7 @@ repos:
     rev: v1.7.7
     hooks:
       - id: docformatter
-        language_version: python3.13 # Pin to 3.13 due to untokenize incompatibility with 3.14
+        language_version: python3.13 # Pin to 3.13 due to incompatibility with 3.14
         additional_dependencies: [tomli]
         args: [
           "--wrap-summaries", "88",
@@ -299,6 +299,7 @@ repos:
     rev: v1.18.2
     hooks:
       - id: mypy
+        language_version: python3.13 # Pin to 3.13 due to incompatibility with 3.14
         exclude: (^python/|^nautilus_trader/.*\.pyi$)
         args: [
           "--config", "pyproject.toml",
