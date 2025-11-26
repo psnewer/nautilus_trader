@@ -86,6 +86,7 @@ TBD
 - Added BitMEX submit broadcaster
 - Added Bybit start/end time filtering for order status reports (#3209), thanks @sunlei
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
+- Added ERC20 token balance tracking to BlockchainExecutionClient (#3224), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -104,6 +105,7 @@ TBD
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
+- Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
 - Improved dYdX adapter test coverage (#3212), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
