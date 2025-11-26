@@ -20,6 +20,7 @@ WebSocket APIs for order management and execution. The client uses Rust-based HT
 WebSocket clients exposed via PyO3 for performance.
 
 """
+
 import asyncio
 import contextlib
 from asyncio import Queue
@@ -215,12 +216,14 @@ class BybitExecutionClient(LiveExecutionClient):
         self._order_filled_qty: dict[ClientOrderId, Quantity] = {}
 
         # Repayment queue system: one queue per base currency
-        self._repay_queues: dict[str, Queue] = {}
+        self._repay_queues: dict[str, Queue[Decimal]] = {}
         self._repay_enqueuers: dict[str, ThrottledEnqueuer[Decimal]] = {}
+        self._repay_queue_interval_secs = config.repay_queue_interval_secs
 
         # Start repayment processor coroutine
         self._repay_task = loop.create_task(
-            self._process_repayment_queues(), name="repay_processor",
+            self._process_repayment_queues(),
+            name="repay_processor",
         )
 
     @property
@@ -1334,14 +1337,13 @@ class BybitExecutionClient(LiveExecutionClient):
         self._log.debug("Repayment queue processor starting")
         try:
             while True:
-                # This delay must be increased maybe to 1s in real world, in tests, large delays fail
-                # A way to solve this would be to use different delays depending on scenarios (tests/production)
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(self._repay_queue_interval_secs)
 
                 for base_currency, queue in list(self._repay_queues.items()):
                     try:
                         # Accumulate all pending quantities for this currency
                         total_qty = Decimal(0)
+
                         while not queue.empty():
                             try:
                                 qty = queue.get_nowait()

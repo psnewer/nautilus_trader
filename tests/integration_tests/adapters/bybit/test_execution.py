@@ -13,7 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -51,6 +50,7 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import LimitOrder
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.model.orders import StopMarketOrder
+from nautilus_trader.test_kit.functions import eventually
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 from tests.integration_tests.adapters.bybit.conftest import _create_ws_mock
 
@@ -1305,7 +1305,7 @@ async def test_repay_spot_borrow_repays_partial_single(
     test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
     client, _, http_client, _ = exec_client_builder(
         monkeypatch,
-        config_kwargs={"auto_repay_spot_borrows": True},
+        config_kwargs={"auto_repay_spot_borrows": True, "repay_queue_interval_secs": 0.05},
         clock=test_clock,
     )
 
@@ -1371,8 +1371,8 @@ async def test_repay_spot_borrow_repays_partial_single(
         # Act - Process the fill report
         client._handle_fill_report_pyo3(fill_report)
 
-        # Give the repayment queue processor time to process the queue
-        await asyncio.sleep(0.2)
+        # Wait for repayment to be processed
+        await eventually(lambda: http_client.repay_spot_borrow.called)
 
         # Assert - Verify the complete flow executed correctly
         # 1. Borrow amount was checked
@@ -1403,7 +1403,7 @@ async def test_repay_spot_borrow_repays_partial_multiple(
     test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
     client, _, http_client, _ = exec_client_builder(
         monkeypatch,
-        config_kwargs={"auto_repay_spot_borrows": True},
+        config_kwargs={"auto_repay_spot_borrows": True, "repay_queue_interval_secs": 0.05},
         clock=test_clock,
     )
 
@@ -1495,11 +1495,12 @@ async def test_repay_spot_borrow_repays_partial_multiple(
             # Act - Process the fill report
             client._handle_fill_report_pyo3(fill_report)
 
-            # Give the repayment queue processor time to process
-            await asyncio.sleep(0.2)
-
             # Track expected repayment for this iteration
             expected_repayments.append(float(qty))
+
+            # Wait for repayment to be processed
+            expected_count = len(expected_repayments)
+            await eventually(lambda c=expected_count: http_client.repay_spot_borrow.call_count >= c)
 
         # 1. Borrow amount should be checked 4 times (once for each order)
         assert http_client.get_spot_borrow_amount.call_count == 4
@@ -1648,7 +1649,7 @@ async def test_handle_fill_report_tracks_partial_fills_for_spot_buy(
     test_clock.set_time(pd.Timestamp("2025-01-15 10:00:00", tz="UTC").value)
     client, _, http_client, _ = exec_client_builder(
         monkeypatch,
-        config_kwargs={"auto_repay_spot_borrows": True},
+        config_kwargs={"auto_repay_spot_borrows": True, "repay_queue_interval_secs": 0.05},
         clock=test_clock,
     )
 
@@ -1729,8 +1730,8 @@ async def test_handle_fill_report_tracks_partial_fills_for_spot_buy(
         )
         client._handle_fill_report_pyo3(fill_report2)
 
-        # Give async task time to execute
-        await asyncio.sleep(0.1)
+        # Wait for repayment check to be called
+        await eventually(lambda: http_client.get_spot_borrow_amount.called)
 
         # Assert - Order should be removed from tracking after full fill
         assert order.client_order_id not in client._order_filled_qty
