@@ -782,22 +782,23 @@ impl ExecutionEngine {
         };
 
         drop(cache);
+
         match event {
             OrderEventAny::Filled(fill) => {
                 let oms_type = self.determine_oms_type(fill);
                 let position_id = self.determine_position_id(*fill, oms_type, Some(&order));
 
-                // Create a new fill with the determined position ID
                 let mut fill = *fill;
                 if fill.position_id.is_none() {
                     fill.position_id = Some(position_id);
                 }
 
-                self.apply_event_to_order(&mut order, OrderEventAny::Filled(fill));
-                self.handle_order_fill(&order, fill, oms_type);
+                if self.apply_fill_to_order(&mut order, fill).is_ok() {
+                    self.handle_order_fill(&order, fill, oms_type);
+                }
             }
             _ => {
-                self.apply_event_to_order(&mut order, event.clone());
+                let _ = self.apply_event_to_order(&mut order, event.clone());
             }
         }
     }
@@ -889,19 +890,38 @@ impl ExecutionEngine {
         PositionId::new(format!("{}-{}", fill.instrument_id, fill.strategy_id))
     }
 
-    fn apply_event_to_order(&self, order: &mut OrderAny, event: OrderEventAny) {
+    fn apply_fill_to_order(&self, order: &mut OrderAny, fill: OrderFilled) -> anyhow::Result<()> {
+        self.check_overfill(order, &fill)?;
+        let event = OrderEventAny::Filled(fill);
+        self.apply_order_event(order, event)
+    }
+
+    fn apply_event_to_order(
+        &self,
+        order: &mut OrderAny,
+        event: OrderEventAny,
+    ) -> anyhow::Result<()> {
+        self.apply_order_event(order, event)
+    }
+
+    fn apply_order_event(&self, order: &mut OrderAny, event: OrderEventAny) -> anyhow::Result<()> {
         if let Err(e) = order.apply(event.clone()) {
-            if matches!(e, OrderError::InvalidStateTransition) {
-                log::warn!("InvalidStateTrigger: {e}, did not apply {event}");
-            } else {
-                // ValueError: Protection against invalid IDs
-                // KeyError: Protection against duplicate fills
-                log::error!("Error applying event: {e}, did not apply {event}");
-                if should_handle_own_book_order(order) {
-                    self.cache.borrow_mut().update_own_order_book(order);
+            match e {
+                OrderError::InvalidStateTransition => {
+                    // Event already applied to order (e.g., from reconciliation or duplicate processing)
+                    // Log warning and continue with downstream processing (cache update, publishing, etc.)
+                    log::warn!("InvalidStateTrigger: {e}, did not apply {event}");
+                }
+                _ => {
+                    // ValueError: Protection against invalid IDs
+                    // KeyError: Protection against duplicate fills
+                    log::error!("Error applying event: {e}, did not apply {event}");
+                    if should_handle_own_book_order(order) {
+                        self.cache.borrow_mut().update_own_order_book(order);
+                    }
+                    anyhow::bail!("{e}");
                 }
             }
-            return;
         }
 
         if let Err(e) = self.cache.borrow_mut().update_order(order) {
@@ -914,6 +934,38 @@ impl ExecutionEngine {
         if self.config.snapshot_orders {
             self.create_order_state_snapshot(order);
         }
+
+        Ok(())
+    }
+
+    fn check_overfill(&self, order: &OrderAny, fill: &OrderFilled) -> anyhow::Result<()> {
+        let potential_overfill = order.calculate_overfill(fill.last_qty);
+
+        if potential_overfill.is_positive() {
+            if self.config.allow_overfills {
+                log::warn!(
+                    "Order overfill detected: {} potential_overfill={}, current_filled={}, last_qty={}, quantity={}",
+                    order.client_order_id(),
+                    potential_overfill,
+                    order.filled_qty(),
+                    fill.last_qty,
+                    order.quantity()
+                );
+            } else {
+                let msg = format!(
+                    "Order overfill rejected: {} potential_overfill={}, current_filled={}, last_qty={}, quantity={}. \
+                Set `allow_overfills=true` in ExecutionEngineConfig to allow overfills.",
+                    order.client_order_id(),
+                    potential_overfill,
+                    order.filled_qty(),
+                    fill.last_qty,
+                    order.quantity()
+                );
+                anyhow::bail!("{msg}");
+            }
+        }
+
+        Ok(())
     }
 
     fn handle_order_fill(&mut self, order: &OrderAny, fill: OrderFilled, oms_type: OmsType) {

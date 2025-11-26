@@ -164,6 +164,7 @@ cdef class ExecutionEngine(Component):
 
         # Configuration
         self.debug: bool = config.debug
+        self.allow_overfills = config.allow_overfills
         self.convert_quote_qty_to_base = config.convert_quote_qty_to_base
         self.manage_own_order_books = config.manage_own_order_books
         self.snapshot_orders = config.snapshot_orders
@@ -171,10 +172,10 @@ cdef class ExecutionEngine(Component):
         self.snapshot_positions_interval_secs = config.snapshot_positions_interval_secs or 0
         self.snapshot_positions_timer_name = "ExecEngine_SNAPSHOT_POSITIONS"
 
-
         self._log.info(f"{config.snapshot_orders=}", LogColor.BLUE)
         self._log.info(f"{config.snapshot_positions=}", LogColor.BLUE)
         self._log.info(f"{config.snapshot_positions_interval_secs=}", LogColor.BLUE)
+        self._log.info(f"{config.allow_overfills=}", LogColor.BLUE)
 
         # Counters
         self.command_count: int = 0
@@ -1225,6 +1226,9 @@ cdef class ExecutionEngine(Component):
 
         cdef OmsType oms_type
         if isinstance(event, OrderFilled):
+            if not self._check_overfill(order, event):
+                return  # Reject overfill, skip all processing
+
             oms_type = self._determine_oms_type(event)
             self._determine_position_id(event, oms_type, order)
             self._apply_event_to_order(order, event)
@@ -1423,6 +1427,29 @@ cdef class ExecutionEngine(Component):
 
     cpdef PositionId _determine_netting_position_id(self, OrderFilled fill):
         return PositionId(f"{fill.instrument_id}-{fill.strategy_id}")
+
+    cdef bint _check_overfill(self, Order order, OrderFilled fill):
+        cdef Quantity potential_overfill = order.calculate_overfill_c(fill.last_qty)
+
+        if potential_overfill._mem.raw > 0:
+            if self.allow_overfills:
+                self._log.warning(
+                    f"Order overfill detected: {order.client_order_id!r} "
+                    f"potential_overfill={potential_overfill}, "
+                    f"current_filled={order.filled_qty}, last_qty={fill.last_qty}, quantity={order.quantity}",
+                    LogColor.YELLOW,
+                )
+                return True  # Allow overfill
+            else:
+                self._log.error(
+                    f"Order overfill rejected: {order.client_order_id!r} "
+                    f"potential_overfill={potential_overfill}, "
+                    f"current_filled={order.filled_qty}, last_qty={fill.last_qty}, quantity={order.quantity}. "
+                    f"Set `allow_overfills=True` in ExecEngineConfig to allow overfills.",
+                )
+                return False  # Reject overfill
+
+        return True  # No overfill
 
     cpdef void _apply_event_to_order(self, Order order, OrderEvent event):
         try:
