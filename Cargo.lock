@@ -5815,6 +5815,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "chrono-tz",
+ "indexmap 2.12.1",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -5825,6 +5826,8 @@ dependencies = [
  "nautilus-risk",
  "pyo3",
  "rstest",
+ "serde",
+ "serde_json",
  "strum",
  "ustr",
 ]
