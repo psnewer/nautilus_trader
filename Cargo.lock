@@ -5812,10 +5812,10 @@ version = "0.52.0"
 name = "nautilus-trading"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "chrono",
  "chrono-tz",
- "indexmap 2.12.1",
  "log",
  "nautilus-common",
  "nautilus-core",
