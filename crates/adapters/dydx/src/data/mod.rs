@@ -57,7 +57,9 @@ use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use crate::{
-    common::consts::DYDX_VENUE, config::DydxDataClientConfig, http::client::DydxHttpClient,
+    common::{consts::DYDX_VENUE, parse::extract_raw_symbol},
+    config::DydxDataClientConfig,
+    http::client::DydxHttpClient,
     websocket::client::DydxWebSocketClient,
 };
 
@@ -595,7 +597,7 @@ impl DataClient for DydxDataClient {
         self.spawn_ws(
             async move {
                 // Register bar type BEFORE subscribing to avoid race condition
-                let ticker = instrument_id.symbol.as_str().trim_end_matches(".DYDX");
+                let ticker = extract_raw_symbol(instrument_id.symbol.as_str());
                 let topic = format!("{ticker}/{resolution}");
                 if let Err(e) =
                     ws.send_command(crate::websocket::handler::HandlerCommand::RegisterBarType {
@@ -750,7 +752,8 @@ impl DataClient for DydxDataClient {
             .remove(&(instrument_id, resolution.to_string()));
 
         // Unregister bar type from handler
-        let ticker = instrument_id.symbol.as_str().trim_end_matches(".DYDX");
+        let symbol_str = instrument_id.symbol.to_string();
+        let ticker = extract_raw_symbol(&symbol_str);
         let topic = format!("{ticker}/{resolution}");
         if let Err(e) =
             ws.send_command(crate::websocket::handler::HandlerCommand::UnregisterBarType { topic })
@@ -1832,7 +1835,7 @@ impl DydxDataClient {
                         let ws_clone = ws.clone();
 
                         // Re-register bar type with handler
-                        let ticker = instrument_id.symbol.as_str().trim_end_matches(".DYDX");
+                        let ticker = extract_raw_symbol(instrument_id.symbol.as_str());
                         let topic = format!("{ticker}/{resolution}");
                         if let Err(e) = ws.send_command(
                             crate::websocket::handler::HandlerCommand::RegisterBarType {
@@ -7601,5 +7604,17 @@ mod tests {
 
         let result = client.request_trades(&request);
         assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_candle_topic_format() {
+        let instrument_id = InstrumentId::new(Symbol::from("BTC-USD-PERP"), Venue::from("DYDX"));
+        let ticker = extract_raw_symbol(instrument_id.symbol.as_str());
+        let resolution = "1MIN";
+        let topic = format!("{ticker}/{resolution}");
+
+        assert_eq!(topic, "BTC-USD/1MIN");
+        assert!(!topic.contains("-PERP"));
+        assert!(!topic.contains(".DYDX"));
     }
 }
