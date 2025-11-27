@@ -652,7 +652,7 @@ impl OrderBook {
                 self.sequence, sequence
             );
             debug_assert!(sequence >= self.sequence, "{}", msg);
-            log::warn!("{}", msg);
+            log::warn!("{msg}");
         }
 
         if ts_event < self.ts_last {
@@ -661,7 +661,7 @@ impl OrderBook {
                 self.ts_last, ts_event
             );
             debug_assert!(ts_event >= self.ts_last, "{}", msg);
-            log::warn!("{}", msg);
+            log::warn!("{msg}");
         }
 
         if self.update_count == u64::MAX {

@@ -408,8 +408,7 @@ impl OrderSubmitter {
             .get_market_params(&instrument_id)
             .ok_or_else(|| {
                 DydxError::Order(format!(
-                    "Market params for instrument '{}' not found in cache",
-                    instrument_id
+                    "Market params for instrument '{instrument_id}' not found in cache"
                 ))
             })?;
 

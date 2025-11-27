@@ -1626,8 +1626,7 @@ mod tests {
             let id = handler.generate_unique_request_id();
             assert!(
                 ids.insert(id.clone()),
-                "Generated duplicate request ID: {}",
-                id
+                "Generated duplicate request ID: {id}"
             );
         }
         assert_eq!(ids.len(), 100);

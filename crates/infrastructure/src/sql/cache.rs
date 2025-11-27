@@ -248,7 +248,7 @@ impl CacheDatabaseAdapter for PostgresCacheDatabase {
             self.load_orders(),
             self.load_positions()
         )
-        .map_err(|e| anyhow::anyhow!("Error loading cache data: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error loading cache data: {e}"))?;
 
         // For now, we don't load greeks and yield curves from the database
         // This will be implemented in the future

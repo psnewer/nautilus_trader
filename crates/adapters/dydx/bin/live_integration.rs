@@ -358,10 +358,7 @@ async fn test_orderbook_snapshot_refresh(
     if orderbook_updates >= 3 {
         tracing::info!("Received {} orderbook updates", orderbook_updates);
     } else {
-        anyhow::bail!(
-            "expected at least 3 orderbook updates, got {}",
-            orderbook_updates
-        );
+        anyhow::bail!("expected at least 3 orderbook updates, got {orderbook_updates}");
     }
 
     tracing::info!("");
@@ -563,7 +560,7 @@ async fn test_crossed_orderbook_detection(
         loop {
             match rx.try_recv() {
                 Ok(DataEvent::Data(data)) => {
-                    let data_type_str = format!("{:?}", data);
+                    let data_type_str = format!("{data:?}");
                     if data_type_str.contains("OrderBookDeltas") {
                         saw_orderbook_delta = true;
                     } else if data_type_str.contains("QuoteTick") {

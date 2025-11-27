@@ -383,10 +383,7 @@ impl ExecutionEngine {
     /// Timer functionality requires a live execution context with an active clock.
     pub fn start_snapshot_timer(&mut self) {
         if let Some(interval_secs) = self.config.snapshot_positions_interval_secs {
-            log::info!(
-                "Starting position snapshots timer at {} second intervals",
-                interval_secs
-            );
+            log::info!("Starting position snapshots timer at {interval_secs} second intervals");
         }
     }
 

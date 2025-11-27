@@ -1507,8 +1507,7 @@ impl HyperliquidHttpClient {
                         | TimeInForce::AtTheOpen
                         | TimeInForce::AtTheClose => {
                             return Err(Error::bad_request(format!(
-                                "Time in force {:?} not supported",
-                                time_in_force
+                                "Time in force {time_in_force:?} not supported"
                             )));
                         }
                     }
@@ -1556,8 +1555,7 @@ impl HyperliquidHttpClient {
             }
             _ => {
                 return Err(Error::bad_request(format!(
-                    "Order type {:?} not supported",
-                    order_type
+                    "Order type {order_type:?} not supported"
                 )));
             }
         };

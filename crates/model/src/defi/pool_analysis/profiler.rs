@@ -1339,21 +1339,19 @@ impl PoolProfiler {
     /// - Ticks are outside MIN_TICK/MAX_TICK bounds.
     fn validate_ticks(&self, tick_lower: i32, tick_upper: i32) -> anyhow::Result<()> {
         if tick_lower >= tick_upper {
-            anyhow::bail!("Invalid tick range: {} >= {}", tick_lower, tick_upper)
+            anyhow::bail!("Invalid tick range: {tick_lower} >= {tick_upper}")
         }
 
         if tick_lower % self.pool.tick_spacing.unwrap() as i32 != 0
             || tick_upper % self.pool.tick_spacing.unwrap() as i32 != 0
         {
             anyhow::bail!(
-                "Ticks {} and {} must be multiples of the tick spacing",
-                tick_lower,
-                tick_upper
+                "Ticks {tick_lower} and {tick_upper} must be multiples of the tick spacing"
             )
         }
 
         if tick_lower < PoolTick::MIN_TICK || tick_upper > PoolTick::MAX_TICK {
-            anyhow::bail!("Invalid tick bounds for {} and {}", tick_lower, tick_upper);
+            anyhow::bail!("Invalid tick bounds for {tick_lower} and {tick_upper}");
         }
         Ok(())
     }

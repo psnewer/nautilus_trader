@@ -107,7 +107,7 @@ impl Default for TestServerState {
 
 // Load test data from existing files
 fn load_test_data(filename: &str) -> String {
-    let path = format!("test_data/{}", filename);
+    let path = format!("test_data/{filename}");
     std::fs::read_to_string(path).expect("Failed to read test data")
 }
 
@@ -266,7 +266,7 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                                     let private_channels =
                                         ["order", "execution", "position", "margin", "wallet"];
                                     let requires_auth = private_channels.iter().any(|&ch| {
-                                        topic == ch || topic.starts_with(&format!("{}:", ch))
+                                        topic == ch || topic.starts_with(&format!("{ch}:"))
                                     });
 
                                     if requires_auth && !state.authenticated.load(Ordering::Relaxed)
@@ -645,7 +645,7 @@ async fn test_bitmex_websocket_client_creation() {
 #[tokio::test]
 async fn test_websocket_connection() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -682,7 +682,7 @@ async fn test_websocket_connection() {
 async fn test_client_replies_to_server_ping() {
     let (addr, state) = start_test_server().await.unwrap();
     state.send_initial_ping.store(true, Ordering::Relaxed);
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -716,7 +716,7 @@ async fn test_client_replies_to_server_ping() {
 #[tokio::test]
 async fn test_subscribe_to_public_data() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -762,7 +762,7 @@ async fn test_subscribe_to_public_data() {
 #[tokio::test]
 async fn test_subscribe_to_orderbook() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -810,7 +810,7 @@ async fn test_subscribe_to_orderbook() {
 #[tokio::test]
 async fn test_subscribe_to_private_data() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -868,7 +868,7 @@ async fn test_reconnection_scenario() {
     // This test simulates a reconnection scenario where the server drops
     // the connection and the client needs to reconnect and restore subscriptions
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -982,7 +982,7 @@ async fn test_reconnection_scenario() {
 #[tokio::test]
 async fn test_unsubscribe() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -1068,7 +1068,7 @@ async fn test_wait_until_active_timeout() {
 #[tokio::test]
 async fn test_multiple_symbols_subscription() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -1127,7 +1127,7 @@ async fn test_true_auto_reconnect_with_verification() {
     // 2. Auth calls increase (re-authentication happened)
     // 3. Subscriptions are restored
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1175,9 +1175,9 @@ async fn test_true_auto_reconnect_with_verification() {
     };
 
     println!("Initial state:");
-    println!("  Connection count: {}", initial_connection_count);
-    println!("  Auth calls: {}", initial_auth_calls);
-    println!("  Subscriptions: {:?}", initial_subs);
+    println!("  Connection count: {initial_connection_count}");
+    println!("  Auth calls: {initial_auth_calls}");
+    println!("  Subscriptions: {initial_subs:?}");
 
     // Should have at least 1 connection and 1 auth call
     assert_eq!(
@@ -1225,9 +1225,9 @@ async fn test_true_auto_reconnect_with_verification() {
         };
 
         println!("Final state:");
-        println!("  Connection count: {}", final_connection_count);
-        println!("  Auth calls: {}", final_auth_calls);
-        println!("  Subscriptions: {:?}", final_subs);
+        println!("  Connection count: {final_connection_count}");
+        println!("  Auth calls: {final_auth_calls}");
+        println!("  Subscriptions: {final_subs:?}");
 
         // These assertions will tell us if auto-reconnect truly happened
         if final_connection_count > initial_connection_count {
@@ -1242,9 +1242,7 @@ async fn test_true_auto_reconnect_with_verification() {
             // Allow for multiple reconnections in case of race conditions
             assert!(
                 final_auth_calls > initial_auth_calls,
-                "Should have at least one additional auth call, was {} (initial: {})",
-                final_auth_calls,
-                initial_auth_calls
+                "Should have at least one additional auth call, was {final_auth_calls} (initial: {initial_auth_calls})"
             );
         } else {
             println!("Re-authentication did NOT happen");
@@ -1260,7 +1258,7 @@ async fn test_true_auto_reconnect_with_verification() {
         println!("Subscriptions restored: {} topics", final_subs.len());
     } else {
         println!("Client never became active again - auto-reconnect failed");
-        println!("Wait result: {:?}", reconnect_result);
+        println!("Wait result: {reconnect_result:?}");
     }
 
     client.close().await.unwrap();
@@ -1271,7 +1269,7 @@ async fn test_true_auto_reconnect_with_verification() {
 async fn test_auth_and_subscription_restoration_order() {
     // Test that reconnection follows proper order: auth first, then subscriptions
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1316,7 +1314,7 @@ async fn test_auth_and_subscription_restoration_order() {
 async fn test_subscription_restoration_tracking() {
     // Test that subscription restoration only restores previously subscribed topics
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1398,7 +1396,7 @@ async fn test_subscription_restoration_tracking() {
 #[tokio::test]
 async fn test_reconnection_retries_failed_subscriptions() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1514,7 +1512,7 @@ async fn test_reconnection_retries_failed_subscriptions() {
 #[tokio::test]
 async fn test_reconnection_waits_for_delayed_auth_ack() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1624,7 +1622,7 @@ async fn test_reconnection_waits_for_delayed_auth_ack() {
 async fn test_unauthenticated_private_channel_rejection() {
     // Test that private channels are rejected without authentication
     let (addr, _state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1658,7 +1656,7 @@ async fn test_unauthenticated_private_channel_rejection() {
 async fn test_heartbeat_timeout_reconnection() {
     // Test reconnection triggered by heartbeat timeout
     let (addr, _state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1696,7 +1694,7 @@ async fn test_heartbeat_timeout_reconnection() {
 async fn test_rapid_consecutive_reconnections() {
     // Test that rapid consecutive disconnects/reconnects don't cause state corruption
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1809,7 +1807,7 @@ async fn test_rapid_consecutive_reconnections() {
 async fn test_multiple_partial_subscription_failures() {
     // Test handling of multiple simultaneous subscription failures during restore
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -1985,7 +1983,7 @@ async fn test_multiple_partial_subscription_failures() {
 async fn test_reconnection_race_condition() {
     // Test disconnect request during active reconnection
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),
@@ -2127,7 +2125,7 @@ async fn test_is_active_false_after_close() {
 #[tokio::test]
 async fn test_is_active_lifecycle() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -2171,7 +2169,7 @@ async fn test_is_active_false_during_reconnection() {
     // Guard the is_active() semantics during reconnection:
     // During reconnection, is_active() MUST return false so wait_until_active() waits
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url),
@@ -2215,7 +2213,7 @@ async fn test_is_active_false_during_reconnection() {
 #[tokio::test]
 async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
     let (addr, state) = start_test_server().await.unwrap();
-    let ws_url = format!("ws://{}/realtime", addr);
+    let ws_url = format!("ws://{addr}/realtime");
 
     let mut client = BitmexWebSocketClient::new(
         Some(ws_url.clone()),

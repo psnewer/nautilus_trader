@@ -512,7 +512,7 @@ impl ExecutionClient for DydxExecutionClient {
                 return Ok(());
             }
             order_type => {
-                let reason = format!("Order type {:?} not supported by dYdX", order_type);
+                let reason = format!("Order type {order_type:?} not supported by dYdX");
                 tracing::error!("{}", reason);
                 self.core.generate_order_rejected(
                     order.strategy_id(),
@@ -1184,8 +1184,7 @@ impl LiveExecutionClient for DydxExecutionClient {
                                         Ok(price) => {
                                             // Find instrument by symbol (oracle uses raw symbol like "BTC-USD")
                                             // Append "-PERP" to match instrument IDs
-                                            let symbol_with_perp =
-                                                format!("{}-PERP", market_symbol);
+                                            let symbol_with_perp = format!("{market_symbol}-PERP");
 
                                             // Find matching instrument
                                             if let Some(entry) = instruments.iter().find(|entry| {
@@ -1570,7 +1569,7 @@ impl LiveExecutionClient for DydxExecutionClient {
             "Generating mass execution status{}",
             lookback_mins.map_or_else(
                 || " (unbounded)".to_string(),
-                |mins| format!(" (lookback: {} minutes)", mins)
+                |mins| format!(" (lookback: {mins} minutes)")
             )
         );
 

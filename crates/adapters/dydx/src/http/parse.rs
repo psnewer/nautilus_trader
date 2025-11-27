@@ -59,16 +59,10 @@ use crate::common::{
 pub fn validate_ticker_format(ticker: &str) -> anyhow::Result<()> {
     let parts: Vec<&str> = ticker.split('-').collect();
     if parts.len() != 2 {
-        anyhow::bail!(
-            "Invalid ticker format '{}', expected 'BASE-QUOTE' (e.g., 'BTC-USD')",
-            ticker
-        );
+        anyhow::bail!("Invalid ticker format '{ticker}', expected 'BASE-QUOTE' (e.g., 'BTC-USD')");
     }
     if parts[0].is_empty() || parts[1].is_empty() {
-        anyhow::bail!(
-            "Invalid ticker format '{}', base and quote cannot be empty",
-            ticker
-        );
+        anyhow::bail!("Invalid ticker format '{ticker}', base and quote cannot be empty");
     }
     Ok(())
 }
@@ -93,9 +87,7 @@ pub fn parse_ticker_currencies(ticker: &str) -> anyhow::Result<(&str, &str)> {
 pub fn validate_market_active(ticker: &str, status: &DydxMarketStatus) -> anyhow::Result<()> {
     if *status != DydxMarketStatus::Active {
         anyhow::bail!(
-            "Market '{}' is not active (status: {:?}). Only active markets can be parsed.",
-            ticker,
-            status
+            "Market '{ticker}' is not active (status: {status:?}). Only active markets can be parsed."
         );
     }
     Ok(())
@@ -417,8 +409,7 @@ mod tests {
         assert!(
             error_msg.contains("Invalid ticker format")
                 || error_msg.contains("Failed to parse ticker"),
-            "Expected ticker format error, was: {}",
-            error_msg
+            "Expected ticker format error, was: {error_msg}"
         );
     }
 

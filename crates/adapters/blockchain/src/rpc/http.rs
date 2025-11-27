@@ -109,7 +109,7 @@ impl BlockchainHttpRpcClient {
                     if parsed.jsonrpc.is_none()
                         && let (Some(code), Some(message)) = (parsed.code, parsed.message)
                     {
-                        anyhow::bail!("RPC provider error {}: {}", code, message);
+                        anyhow::bail!("RPC provider error {code}: {message}");
                     }
 
                     if let Some(error) = parsed.error {
@@ -140,15 +140,12 @@ impl BlockchainHttpRpcClient {
                     };
 
                     Err(anyhow::anyhow!(
-                        "Failed to parse eth call response: {}\nRaw response: {}",
-                        e,
-                        preview
+                        "Failed to parse eth call response: {e}\nRaw response: {preview}"
                     ))
                 }
             },
             Err(e) => Err(anyhow::anyhow!(
-                "Failed to execute eth call RPC request: {}",
-                e
+                "Failed to execute eth call RPC request: {e}"
             )),
         }
     }
@@ -201,8 +198,7 @@ impl BlockchainHttpRpcClient {
         });
         let hex_string: String = self.execute_rpc_call(request).await?;
 
-        U256::from_str(&hex_string).map_err(|e| {
-            anyhow::anyhow!("Failed to parse balance hex string '{}': {}", hex_string, e)
-        })
+        U256::from_str(&hex_string)
+            .map_err(|e| anyhow::anyhow!("Failed to parse balance hex string '{hex_string}': {e}"))
     }
 }

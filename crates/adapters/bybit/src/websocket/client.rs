@@ -1256,8 +1256,7 @@ impl BybitWebSocketClient {
                     .map(|inst| inst.id())
                     .ok_or_else(|| {
                         BybitWsError::ClientError(format!(
-                            "Instrument {} not found in cache",
-                            cache_key
+                            "Instrument {cache_key} not found in cache"
                         ))
                     })?;
                 batch_order_data.push((

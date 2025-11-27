@@ -820,7 +820,7 @@ impl DataClient for HyperliquidDataClient {
         let instruments = self.instruments.read().unwrap();
         let instrument_id = subscription.bar_type.instrument_id();
         if !instruments.contains_key(&instrument_id) {
-            anyhow::bail!("Instrument {} not found", instrument_id);
+            anyhow::bail!("Instrument {instrument_id} not found");
         }
 
         drop(instruments);

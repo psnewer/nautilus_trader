@@ -71,7 +71,7 @@ impl Default for TestServerState {
 // Load test data from existing files
 #[allow(dead_code)]
 fn load_test_data(filename: &str) -> Value {
-    let path = format!("test_data/{}", filename);
+    let path = format!("test_data/{filename}");
     let content = std::fs::read_to_string(path).unwrap();
     serde_json::from_str(&content).unwrap()
 }
@@ -787,7 +787,7 @@ async fn test_custom_base_url() {
 #[tokio::test]
 async fn test_get_server_time() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -801,7 +801,7 @@ async fn test_get_server_time() {
 #[tokio::test]
 async fn test_get_instruments_linear() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -819,7 +819,7 @@ async fn test_get_instruments_linear() {
 #[tokio::test]
 async fn test_get_instruments_spot() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -837,7 +837,7 @@ async fn test_get_instruments_spot() {
 #[tokio::test]
 async fn test_get_instruments_inverse() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -855,7 +855,7 @@ async fn test_get_instruments_inverse() {
 #[tokio::test]
 async fn test_get_instruments_option() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -873,7 +873,7 @@ async fn test_get_instruments_option() {
 #[tokio::test]
 async fn test_place_order() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -907,7 +907,7 @@ async fn test_place_order() {
 #[tokio::test]
 async fn test_authenticated_endpoint_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     // Create client without credentials
     let client =
@@ -924,7 +924,7 @@ async fn test_authenticated_endpoint_requires_credentials() {
 #[tokio::test]
 async fn test_rate_limiting_returns_error() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -964,7 +964,7 @@ async fn test_rate_limiting_returns_error() {
 #[tokio::test]
 async fn test_get_open_orders_with_symbol() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -992,7 +992,7 @@ async fn test_get_open_orders_with_symbol() {
 #[tokio::test]
 async fn test_get_open_orders_without_symbol() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1019,7 +1019,7 @@ async fn test_get_open_orders_without_symbol() {
 #[tokio::test]
 async fn test_get_wallet_balance_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     // Create client without credentials
     let client =
@@ -1039,7 +1039,7 @@ async fn test_get_wallet_balance_requires_credentials() {
 #[tokio::test]
 async fn test_get_wallet_balance_with_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1073,7 +1073,7 @@ async fn test_get_wallet_balance_with_credentials() {
 #[tokio::test]
 async fn test_get_positions_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -1091,7 +1091,7 @@ async fn test_get_positions_requires_credentials() {
 #[tokio::test]
 async fn test_get_positions_with_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1120,7 +1120,7 @@ async fn test_get_positions_with_credentials() {
 #[tokio::test]
 async fn test_get_fee_rate_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -1139,7 +1139,7 @@ async fn test_get_fee_rate_requires_credentials() {
 #[tokio::test]
 async fn test_get_fee_rate_with_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1200,7 +1200,7 @@ async fn start_reconciliation_test_server()
 #[tokio::test]
 async fn test_request_order_status_reports_calls_both_endpoints() {
     let (addr, _state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1266,7 +1266,7 @@ async fn test_request_order_status_reports_calls_both_endpoints() {
 #[tokio::test]
 async fn test_request_order_status_reports_requires_settle_coin_for_linear() {
     let (addr, _state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1311,7 +1311,7 @@ async fn test_request_order_status_reports_requires_settle_coin_for_linear() {
 #[tokio::test]
 async fn test_order_deduplication_by_order_id() {
     let (addr, _state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1371,7 +1371,7 @@ async fn test_order_deduplication_by_order_id() {
 #[tokio::test]
 async fn test_request_order_status_reports_linear_queries_all_settle_coins() {
     let (addr, state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1435,7 +1435,7 @@ async fn test_request_order_status_reports_linear_queries_all_settle_coins() {
 #[tokio::test]
 async fn test_request_order_status_reports_respects_limit_across_settle_coins() {
     let (addr, state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1496,7 +1496,7 @@ async fn test_request_order_status_reports_respects_limit_across_settle_coins() 
 #[tokio::test]
 async fn test_request_order_status_reports_stops_before_next_coin() {
     let (addr, state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1561,7 +1561,7 @@ async fn test_request_order_status_reports_stops_before_next_coin() {
 #[tokio::test]
 async fn test_request_order_status_reports_combines_orders_from_each_settle_coin() {
     let (addr, state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1653,7 +1653,7 @@ async fn test_request_order_status_reports_combines_orders_from_each_settle_coin
 #[tokio::test]
 async fn test_repay_spot_borrow_with_amount() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1680,7 +1680,7 @@ async fn test_repay_spot_borrow_with_amount() {
 #[tokio::test]
 async fn test_repay_spot_borrow_without_amount() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1707,7 +1707,7 @@ async fn test_repay_spot_borrow_without_amount() {
 #[tokio::test]
 async fn test_repay_spot_borrow_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -1721,7 +1721,7 @@ async fn test_repay_spot_borrow_requires_credentials() {
 #[tokio::test]
 async fn test_get_spot_borrow_amount_returns_zero_when_no_borrow() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1746,7 +1746,7 @@ async fn test_get_spot_borrow_amount_returns_zero_when_no_borrow() {
 #[tokio::test]
 async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1771,7 +1771,7 @@ async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
 #[tokio::test]
 async fn test_spot_position_report_short_from_borrowed_balance() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),
@@ -1835,7 +1835,7 @@ async fn test_spot_position_report_short_from_borrowed_balance() {
 #[tokio::test]
 async fn test_request_order_status_reports_with_time_filtering() {
     let (addr, state) = start_reconciliation_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = BybitHttpClient::with_credentials(
         "test_api_key".to_string(),

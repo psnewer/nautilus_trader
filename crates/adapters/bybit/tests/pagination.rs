@@ -185,7 +185,7 @@ async fn init_instrument_cache(client: &BybitHttpClient) {
 #[tokio::test]
 async fn test_bars_chronological_order_single_page() {
     let addr = start_pagination_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -234,7 +234,7 @@ async fn test_bars_chronological_order_single_page() {
 #[tokio::test]
 async fn test_bars_chronological_order_multiple_pages() {
     let addr = start_pagination_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -286,7 +286,7 @@ async fn test_bars_chronological_order_multiple_pages() {
 #[tokio::test]
 async fn test_bars_limit_returns_most_recent() {
     let addr = start_pagination_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client =
         BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
@@ -328,8 +328,7 @@ async fn test_bars_limit_returns_most_recent() {
     let time_diff = (end - last_bar_time).num_minutes().abs();
     assert!(
         time_diff < 100,
-        "Last bar should be close to end time, but was {} minutes away",
-        time_diff
+        "Last bar should be close to end time, but was {time_diff} minutes away"
     );
 }
 

@@ -344,7 +344,7 @@ fn cache_test_instruments(client: &mut HyperliquidWebSocketClient) {
     let mut test_instruments = Vec::new();
     for (raw_symbol, symbol_str) in instruments {
         let raw_symbol = Symbol::new(raw_symbol);
-        let instrument_id = InstrumentId::from(format!("{}.HYPERLIQUID", symbol_str));
+        let instrument_id = InstrumentId::from(format!("{symbol_str}.HYPERLIQUID"));
 
         let instrument = InstrumentAny::CryptoPerpetual(CryptoPerpetual::new(
             instrument_id,

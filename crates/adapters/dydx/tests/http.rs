@@ -270,7 +270,7 @@ async fn test_custom_base_url() {
 #[tokio::test]
 async fn test_request_instruments_success() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
     let instruments = client.request_instruments(None, None, None).await.unwrap();
@@ -294,7 +294,7 @@ async fn test_request_instruments_success() {
 #[tokio::test]
 async fn test_instrument_caching() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
     let instruments = client.request_instruments(None, None, None).await.unwrap();
@@ -318,7 +318,7 @@ async fn test_instrument_caching() {
 #[tokio::test]
 async fn test_cache_single_instrument() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
     let instruments = client.request_instruments(None, None, None).await.unwrap();
@@ -338,7 +338,7 @@ async fn test_cache_single_instrument() {
 #[tokio::test]
 async fn test_request_trades() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
@@ -354,7 +354,7 @@ async fn test_request_trades() {
 #[tokio::test]
 async fn test_request_candles() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
@@ -375,7 +375,7 @@ async fn test_request_candles() {
 #[tokio::test]
 async fn test_candles_missing_resolution_returns_error() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url.clone()), Some(30), None, false, None).unwrap();
 
@@ -396,7 +396,7 @@ async fn test_candles_missing_resolution_returns_error() {
 #[tokio::test]
 async fn test_rate_limiting() {
     let (addr, state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url.clone()), Some(30), None, false, None).unwrap();
 
@@ -428,7 +428,7 @@ async fn test_network_error_handling() {
 #[tokio::test]
 async fn test_cancellation_token() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxRawHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
@@ -463,7 +463,7 @@ async fn test_server_error_500() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -485,7 +485,7 @@ async fn test_malformed_json_response() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -514,7 +514,7 @@ async fn test_empty_instruments_response() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let instruments = client.request_instruments(None, None, None).await.unwrap();
@@ -525,7 +525,7 @@ async fn test_empty_instruments_response() {
 #[tokio::test]
 async fn test_trades_chronological_order() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
@@ -546,7 +546,7 @@ async fn test_trades_chronological_order() {
 #[tokio::test]
 async fn test_candles_time_range() {
     let (addr, _state) = start_test_server().await.unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     let client = DydxHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
@@ -593,7 +593,7 @@ async fn test_server_error_503() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -622,7 +622,7 @@ async fn test_invalid_json_structure() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -660,7 +660,7 @@ async fn test_get_subaccount() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_subaccount("dydx1test", 0).await.unwrap();
@@ -704,7 +704,7 @@ async fn test_get_fills() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client
@@ -760,7 +760,7 @@ async fn test_get_orders() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client
@@ -811,7 +811,7 @@ async fn test_get_transfers() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_transfers("dydx1test", 0, None).await.unwrap();
@@ -841,7 +841,7 @@ async fn test_get_time() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_time().await.unwrap();
@@ -871,7 +871,7 @@ async fn test_get_height() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_height().await.unwrap();
@@ -905,7 +905,7 @@ async fn test_server_error_400() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -930,7 +930,7 @@ async fn test_server_error_404() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.request_instruments(None, None, None).await;
@@ -959,7 +959,7 @@ async fn test_fills_with_market_filter() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client
@@ -991,7 +991,7 @@ async fn test_orders_with_limit() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client
@@ -1032,7 +1032,7 @@ async fn test_http_401_unauthorized() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_subaccount("dydx1test", 0).await;
@@ -1066,7 +1066,7 @@ async fn test_http_403_forbidden() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_fills("dydx1test", 0, None, None).await;
@@ -1100,7 +1100,7 @@ async fn test_http_502_bad_gateway() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_height().await;
@@ -1122,7 +1122,7 @@ async fn test_empty_response_body() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_fills("dydx1test", 0, None, None).await;
@@ -1147,7 +1147,7 @@ async fn test_partial_json_response() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_markets().await;
@@ -1172,7 +1172,7 @@ async fn test_instruments_pagination_empty_markets() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_markets().await.unwrap();
@@ -1194,7 +1194,7 @@ async fn test_fills_empty_list() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_fills("dydx1test", 0, None, None).await.unwrap();
@@ -1216,7 +1216,7 @@ async fn test_orders_empty_list() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_orders("dydx1test", 0, None, None).await.unwrap();
@@ -1241,7 +1241,7 @@ async fn test_transfers_empty_list() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_transfers("dydx1test", 0, None).await.unwrap();
@@ -1275,7 +1275,7 @@ async fn test_invalid_address_format() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_subaccount("invalid", 0).await;
@@ -1312,7 +1312,7 @@ async fn test_connection_pool_reuse() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     for _ in 0..5 {
@@ -1383,7 +1383,7 @@ async fn test_concurrent_requests() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client =
         Arc::new(DydxRawHttpClient::new(Some(base_url), Some(10), None, false, None).unwrap());
 
@@ -1442,7 +1442,7 @@ async fn test_request_timeout_short() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(1), None, false, None).unwrap();
 
     let start = std::time::Instant::now();
@@ -1462,7 +1462,7 @@ async fn test_large_instruments_response() {
     let mut markets = serde_json::Map::new();
     for i in 0..100 {
         markets.insert(
-            format!("MARKET-{}", i),
+            format!("MARKET-{i}"),
             json!({
                 "ticker": format!("MARKET-{}", i),
                 "clobPairId": i.to_string(),
@@ -1502,7 +1502,7 @@ async fn test_large_instruments_response() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
 
     let result = client.get_markets().await.unwrap();
@@ -1543,7 +1543,7 @@ async fn test_retry_exhaustion() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
 
     let result = client.get_time().await;
@@ -1593,7 +1593,7 @@ async fn test_mixed_success_and_error_responses() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
     let client =
         Arc::new(DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap());
 

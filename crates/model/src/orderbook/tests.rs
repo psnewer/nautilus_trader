@@ -444,10 +444,9 @@ fn test_book_apply_depth_all_levels(stub_depth10: OrderBookDepth10) {
     for (i, level) in bid_levels.iter().enumerate() {
         assert_eq!(
             level.price.value, expected_bid_prices[i],
-            "Bid level {} price mismatch",
-            i
+            "Bid level {i} price mismatch"
         );
-        assert!(level.size() > 0.0, "Bid level {} has zero size", i);
+        assert!(level.size() > 0.0, "Bid level {i} has zero size");
     }
 
     // Verify ask prices in ascending order (100, 101, 102, ..., 109)
@@ -466,10 +465,9 @@ fn test_book_apply_depth_all_levels(stub_depth10: OrderBookDepth10) {
     for (i, level) in ask_levels.iter().enumerate() {
         assert_eq!(
             level.price.value, expected_ask_prices[i],
-            "Ask level {} price mismatch",
-            i
+            "Ask level {i} price mismatch"
         );
-        assert!(level.size() > 0.0, "Ask level {} has zero size", i);
+        assert!(level.size() > 0.0, "Ask level {i} has zero size");
     }
 
     // Verify sizes increase with each level (100, 200, 300, ..., 1000)
@@ -480,16 +478,14 @@ fn test_book_apply_depth_all_levels(stub_depth10: OrderBookDepth10) {
         assert_eq!(
             level.size(),
             expected_sizes[i],
-            "Bid level {} size mismatch",
-            i
+            "Bid level {i} size mismatch"
         );
     }
     for (i, level) in ask_levels.iter().enumerate() {
         assert_eq!(
             level.size(),
             expected_sizes[i],
-            "Ask level {} size mismatch",
-            i
+            "Ask level {i} size mismatch"
         );
     }
 }

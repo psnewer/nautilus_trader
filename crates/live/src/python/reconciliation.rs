@@ -345,7 +345,7 @@ fn create_synthetic_venue_order_id(ts_event: u64) -> VenueOrderId {
     // Use hex timestamp and first 8 chars of UUID for uniqueness while keeping it short
     let uuid_str = uuid.to_string();
     let uuid_suffix = &uuid_str[..8];
-    let venue_order_id_value = format!("S-{:x}-{}", ts_event, uuid_suffix);
+    let venue_order_id_value = format!("S-{ts_event:x}-{uuid_suffix}");
     VenueOrderId::new(&venue_order_id_value)
 }
 

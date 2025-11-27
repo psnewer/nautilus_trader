@@ -1332,7 +1332,7 @@ impl BlockchainDataClientCore {
                 Ok(event) => {
                     profiler.process(&event)?;
                 }
-                Err(e) => log::error!("Error processing event: {}", e),
+                Err(e) => log::error!("Error processing event: {e}"),
             }
         }
 

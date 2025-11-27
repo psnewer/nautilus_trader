@@ -2568,7 +2568,7 @@ mod tests {
             response: Arc::new(candles_response),
         };
         let addr = start_candles_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-BARS-MONTHS");
         let config = DydxDataClientConfig {
@@ -2897,7 +2897,7 @@ mod tests {
             response: Arc::new(candles_response),
         };
         let addr = start_candles_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-BARS-SKEW");
         let config = DydxDataClientConfig {
@@ -2989,7 +2989,7 @@ mod tests {
             snapshot: Arc::new(snapshot),
         };
         let addr = start_orderbook_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         // Configure the data client with a short refresh interval and mock HTTP base URL.
         let client_id = ClientId::from("DYDX-REFRESH");
@@ -4325,7 +4325,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state.clone()).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-SUCCESS");
         let config = DydxDataClientConfig {
@@ -4414,7 +4414,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state.clone()).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-EMPTY");
         let config = DydxDataClientConfig {
@@ -4516,7 +4516,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-FILTER");
         let config = DydxDataClientConfig {
@@ -4592,7 +4592,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-CORR");
         let config = DydxDataClientConfig {
@@ -4667,7 +4667,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-FORMAT");
         let config = DydxDataClientConfig {
@@ -4774,7 +4774,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state.clone()).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-TRADES-LIMIT");
         let config = DydxDataClientConfig {
@@ -5296,7 +5296,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-MALFORMED");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -5379,7 +5379,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-MISSING");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -5464,7 +5464,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-TYPES");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -5544,7 +5544,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-STRUCT");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -5619,7 +5619,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-EMPTY");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -5702,7 +5702,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-NULL");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -6178,7 +6178,7 @@ mod tests {
 
         let client_id = ClientId::from("DYDX-VENUE-TEST");
         let config = DydxDataClientConfig {
-            base_url_http: Some(format!("http://127.0.0.1:{}", port)),
+            base_url_http: Some(format!("http://127.0.0.1:{port}")),
             http_timeout_secs: Some(2),
             ..Default::default()
         };
@@ -6927,7 +6927,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-VEC-TEST");
         let config = DydxDataClientConfig {
@@ -7008,7 +7008,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-INSTID-TEST");
         let config = DydxDataClientConfig {
@@ -7114,7 +7114,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-ORDER-TEST");
         let config = DydxDataClientConfig {
@@ -7208,7 +7208,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-FIELDS-TEST");
         let config = DydxDataClientConfig {
@@ -7315,7 +7315,7 @@ mod tests {
         };
 
         let addr = start_trades_test_server(state).await;
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         let client_id = ClientId::from("DYDX-META-TEST");
         let config = DydxDataClientConfig {

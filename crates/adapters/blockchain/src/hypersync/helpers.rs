@@ -30,11 +30,9 @@ pub fn extract_address_from_topic(
             // Address is stored in the last 20 bytes of the 32-byte topic
             Ok(Address::from_slice(&topic.as_ref()[12..32]))
         }
-        None => anyhow::bail!(
-            "Missing {} address in topic{} when parsing event",
-            description,
-            topic_index
-        ),
+        None => {
+            anyhow::bail!("Missing {description} address in topic{topic_index} when parsing event")
+        }
     }
 }
 

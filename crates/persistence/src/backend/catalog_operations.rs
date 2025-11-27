@@ -704,7 +704,7 @@ impl ParquetDataCatalog {
                 )?;
             }
             _ => {
-                anyhow::bail!("Unknown data type for consolidation: {}", type_name);
+                anyhow::bail!("Unknown data type for consolidation: {type_name}");
             }
         }
 

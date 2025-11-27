@@ -692,7 +692,7 @@ fn parse_url_and_path(uri: &str) -> anyhow::Result<(url::Url, String)> {
 fn extract_host(url: &url::Url, error_msg: &str) -> anyhow::Result<String> {
     url.host_str()
         .map(ToString::to_string)
-        .ok_or_else(|| anyhow::anyhow!("{}", error_msg))
+        .ok_or_else(|| anyhow::anyhow!("{error_msg}"))
 }
 
 ////////////////////////////////////////////////////////////////////////////////

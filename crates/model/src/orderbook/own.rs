@@ -685,17 +685,13 @@ impl OwnBookLadder {
     /// Returns an error if the order is not found.
     pub fn remove(&mut self, client_order_id: &ClientOrderId) -> anyhow::Result<()> {
         let Some(price) = self.cache.get(client_order_id).copied() else {
-            log::error!(
-                "Own book remove failed - order {client_order_id} not in cache",
-                client_order_id = client_order_id
-            );
+            log::error!("Own book remove failed - order {client_order_id} not in cache");
             anyhow::bail!("Order {client_order_id} not found in own book (cache)");
         };
 
         let Some(level) = self.levels.get_mut(&price) else {
             log::error!(
-                "Own book remove failed - order {client_order_id} cached level {price:?} missing",
-                client_order_id = client_order_id
+                "Own book remove failed - order {client_order_id} cached level {price:?} missing"
             );
             anyhow::bail!("Order {client_order_id} not found in own book (level)");
         };

@@ -929,8 +929,7 @@ pub fn parse_position_status_report(
 
             if avg_px_dec.is_zero() {
                 anyhow::bail!(
-                    "Cannot convert SHORT position from quote to base: avg_px is zero for {}",
-                    instrument_id
+                    "Cannot convert SHORT position from quote to base: avg_px is zero for {instrument_id}"
                 );
             }
 
@@ -938,11 +937,7 @@ pub fn parse_position_status_report(
             (PositionSide::Short, quantity_dec)
         } else {
             anyhow::bail!(
-                "Unknown position currency '{}' for instrument {} (base={}, quote={})",
-                pos_ccy,
-                instrument_id,
-                base_ccy,
-                quote_ccy
+                "Unknown position currency '{pos_ccy}' for instrument {instrument_id} (base={base_ccy}, quote={quote_ccy})"
             );
         }
     } else {
@@ -1044,7 +1039,7 @@ pub fn parse_fill_report(
     let last_qty = parse_quantity(&detail.fill_sz, size_precision)?;
     let fee_dec = Decimal::from_str(detail.fee.as_deref().unwrap_or("0"))?;
     let fee_currency = parse_fee_currency(&detail.fee_ccy, fee_dec, || {
-        format!("fill report for instrument_id={}", instrument_id)
+        format!("fill report for instrument_id={instrument_id}")
     });
     let commission = Money::from_decimal(-fee_dec, fee_currency)?;
     let liquidity_side: LiquiditySide = detail.exec_type.into();
@@ -4460,8 +4455,7 @@ mod tests {
 
         assert_eq!(
             time_in_force, expected_tif,
-            "OKXOrderType::{:?} should map to TimeInForce::{:?}",
-            okx_ord_type, expected_tif
+            "OKXOrderType::{okx_ord_type:?} should map to TimeInForce::{expected_tif:?}"
         );
     }
 
@@ -4577,7 +4571,7 @@ mod tests {
             _ => OKXOrderType::from(order_type),
         };
 
-        assert_eq!(okx_ord_type, expected_okx_type, "{}", description);
+        assert_eq!(okx_ord_type, expected_okx_type, "{description}");
     }
 
     #[rstest]

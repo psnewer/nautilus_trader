@@ -1198,7 +1198,7 @@ mod tests {
                 .unwrap();
         });
 
-        let base_url = format!("http://{}", addr);
+        let base_url = format!("http://{addr}");
 
         // Configure a small operation timeout and no retries so the request
         // fails quickly even though the handler sleeps for 5 seconds.

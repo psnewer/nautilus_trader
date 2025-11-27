@@ -470,7 +470,7 @@ impl DydxGrpcClient {
         if let Some(tx) = response.tx {
             // Convert through bytes since the types are incompatible
             let tx_bytes = tx.encode_to_vec();
-            cosmrs::Tx::try_from(tx_bytes.as_slice()).map_err(|e| anyhow::anyhow!("{}", e))
+            cosmrs::Tx::try_from(tx_bytes.as_slice()).map_err(|e| anyhow::anyhow!("{e}"))
         } else {
             anyhow::bail!("Transaction not found")
         }

@@ -2652,8 +2652,7 @@ fn test_pool_updater_processes_swap_updates_profiler(
         .liquidity;
     assert!(
         active_liquidity > 0,
-        "Active liquidity should be > 0 after mint, was: {}",
-        active_liquidity
+        "Active liquidity should be > 0 after mint, was: {active_liquidity}"
     );
 
     // Capture initial profiler state (after mint)
@@ -2727,14 +2726,8 @@ fn test_pool_updater_processes_swap_updates_profiler(
 
     assert!(
         tick_changed || fees_increased,
-        "PoolUpdater should have updated PoolProfiler: tick_changed={}, fees_increased={}, \
-        initial_tick={:?}, final_tick={:?}, initial_fee_growth={}, final_fee_growth={}",
-        tick_changed,
-        fees_increased,
-        initial_tick,
-        final_tick,
-        initial_fee_growth_0,
-        final_fee_growth_0
+        "PoolUpdater should have updated PoolProfiler: tick_changed={tick_changed}, fees_increased={fees_increased}, \
+        initial_tick={initial_tick:?}, final_tick={final_tick:?}, initial_fee_growth={initial_fee_growth_0}, final_fee_growth={final_fee_growth_0}"
     );
 }
 

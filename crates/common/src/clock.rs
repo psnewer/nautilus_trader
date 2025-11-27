@@ -455,8 +455,7 @@ impl TestClock {
         // Time should be non-decreasing
         assert!(
             to_time_ns >= from_time_ns,
-            "`to_time_ns` {to_time_ns} was < `from_time_ns` {}",
-            from_time_ns
+            "`to_time_ns` {to_time_ns} was < `from_time_ns` {from_time_ns}"
         );
 
         if set_time {
@@ -508,8 +507,7 @@ impl TestClock {
         // Time should be non-decreasing
         assert!(
             to_time_ns >= from_time_ns,
-            "`to_time_ns` {to_time_ns} was < `from_time_ns` {}",
-            from_time_ns
+            "`to_time_ns` {to_time_ns} was < `from_time_ns` {from_time_ns}"
         );
 
         self.time.set_time(to_time_ns);
