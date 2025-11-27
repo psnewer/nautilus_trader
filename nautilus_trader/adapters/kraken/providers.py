@@ -31,8 +31,8 @@ class KrakenInstrumentProvider(InstrumentProvider):
 
     Parameters
     ----------
-    client : nautilus_pyo3.KrakenHttpClient
-        The Kraken HTTP client.
+    http_clients : dict[KrakenProductType, nautilus_pyo3.KrakenHttpClient]
+        The Kraken HTTP clients keyed by product type.
     product_types : list[KrakenProductType], optional
         The Kraken product types to load.
         If ``None`` then defaults to [KrakenProductType.SPOT].
@@ -43,12 +43,12 @@ class KrakenInstrumentProvider(InstrumentProvider):
 
     def __init__(
         self,
-        client: nautilus_pyo3.KrakenHttpClient,
+        http_clients: dict[KrakenProductType, nautilus_pyo3.KrakenHttpClient],
         product_types: list[KrakenProductType] | None = None,
         config: InstrumentProviderConfig | None = None,
     ) -> None:
         super().__init__(config=config)
-        self._client = client
+        self._http_clients = http_clients
         self._product_types = product_types or [KrakenProductType.SPOT]
         self._log_warnings = config.log_warnings if config else True
 
@@ -81,10 +81,21 @@ class KrakenInstrumentProvider(InstrumentProvider):
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.info(f"Loading all instruments{filters_str}")
 
-        pyo3_instruments = await self._client.request_instruments()
+        all_pyo3_instruments: list[nautilus_pyo3.Instrument] = []
 
-        self._instruments_pyo3 = pyo3_instruments
-        instruments = instruments_from_pyo3(pyo3_instruments)
+        for product_type in self._product_types:
+            client = self._http_clients.get(product_type)
+            if client is None:
+                self._log.warning(f"No HTTP client configured for {product_type}")
+                continue
+
+            self._log.info(f"Loading {product_type} instruments...")
+            pyo3_instruments = await client.request_instruments()
+            all_pyo3_instruments.extend(pyo3_instruments)
+            self._log.info(f"Loaded {len(pyo3_instruments)} {product_type} instruments")
+
+        self._instruments_pyo3 = all_pyo3_instruments
+        instruments = instruments_from_pyo3(all_pyo3_instruments)
         for instrument in instruments:
             self.add(instrument=instrument)
 

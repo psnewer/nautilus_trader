@@ -14,7 +14,6 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from functools import lru_cache
 
 from nautilus_trader.adapters.kraken.config import KrakenDataClientConfig
 from nautilus_trader.adapters.kraken.data import KrakenDataClient
@@ -29,8 +28,8 @@ from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.live.factories import LiveDataClientFactory
 
 
-@lru_cache(maxsize=1)
 def get_kraken_http_client(
+    product_type: KrakenProductType,
     api_key: str | None = None,
     api_secret: str | None = None,
     base_url: str | None = None,
@@ -42,7 +41,7 @@ def get_kraken_http_client(
     proxy_url: str | None = None,
 ) -> nautilus_pyo3.KrakenHttpClient:
     """
-    Cache and return a Kraken HTTP client with the given key and secret.
+    Return a Kraken HTTP client for the given product type.
 
     If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
     environment variables ``KRAKEN_API_KEY`` and ``KRAKEN_API_SECRET`` (or
@@ -50,6 +49,8 @@ def get_kraken_http_client(
 
     Parameters
     ----------
+    product_type : KrakenProductType
+        The Kraken product type (SPOT or FUTURES).
     api_key : str, optional
         The Kraken API key for the client.
     api_secret : str, optional
@@ -75,6 +76,7 @@ def get_kraken_http_client(
 
     """
     return nautilus_pyo3.KrakenHttpClient(
+        product_type=product_type,
         api_key=api_key,
         api_secret=api_secret,
         base_url=base_url,
@@ -87,20 +89,19 @@ def get_kraken_http_client(
     )
 
 
-@lru_cache(1)
 def get_kraken_instrument_provider(
-    client: nautilus_pyo3.KrakenHttpClient,
-    product_types: tuple[KrakenProductType, ...],
+    http_clients: dict[KrakenProductType, nautilus_pyo3.KrakenHttpClient],
+    product_types: list[KrakenProductType],
     config: InstrumentProviderConfig,
 ) -> KrakenInstrumentProvider:
     """
-    Cache and return a Kraken instrument provider.
+    Return a Kraken instrument provider.
 
     Parameters
     ----------
-    client : nautilus_pyo3.KrakenHttpClient
-        The Kraken HTTP client.
-    product_types : tuple[KrakenProductType, ...]
+    http_clients : dict[KrakenProductType, nautilus_pyo3.KrakenHttpClient]
+        The Kraken HTTP clients keyed by product type.
+    product_types : list[KrakenProductType]
         The product types to load.
     config : InstrumentProviderConfig
         The instrument provider configuration.
@@ -111,8 +112,8 @@ def get_kraken_instrument_provider(
 
     """
     return KrakenInstrumentProvider(
-        client=client,
-        product_types=list(product_types),
+        http_clients=http_clients,
+        product_types=product_types,
         config=config,
     )
 
@@ -155,37 +156,42 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
 
         """
         environment = config.environment or KrakenEnvironment.MAINNET
-        product_types_raw = config.product_types or (KrakenProductType.SPOT,)
-        primary_product_type = product_types_raw[0]
+        product_types = list(config.product_types or (KrakenProductType.SPOT,))
         is_testnet = environment == KrakenEnvironment.TESTNET
 
-        # Derive HTTP base URL from environment and product type if not explicitly set
-        base_url_http = config.base_url_http or nautilus_pyo3.get_kraken_http_base_url(
-            primary_product_type,
-            environment,
-        )
+        # Create HTTP clients for each product type
+        http_clients: dict[KrakenProductType, nautilus_pyo3.KrakenHttpClient] = {}
 
-        client = get_kraken_http_client(
-            api_key=config.api_key,
-            api_secret=config.api_secret,
-            base_url=base_url_http,
-            testnet=is_testnet,
-            timeout_secs=config.http_timeout_secs,
-            max_retries=config.max_retries,
-            retry_delay_ms=config.retry_delay_initial_ms,
-            retry_delay_max_ms=config.retry_delay_max_ms,
-            proxy_url=config.http_proxy_url,
-        )
+        for product_type in product_types:
+            # Honor config override, fall back to derived URL if not specified
+            base_url = config.base_url_http or nautilus_pyo3.get_kraken_http_base_url(
+                product_type,
+                environment,
+            )
+
+            client = get_kraken_http_client(
+                product_type=product_type,
+                api_key=config.api_key,
+                api_secret=config.api_secret,
+                base_url=base_url,
+                testnet=is_testnet,
+                timeout_secs=config.http_timeout_secs,
+                max_retries=config.max_retries,
+                retry_delay_ms=config.retry_delay_initial_ms,
+                retry_delay_max_ms=config.retry_delay_max_ms,
+                proxy_url=config.http_proxy_url,
+            )
+            http_clients[product_type] = client
 
         provider = get_kraken_instrument_provider(
-            client=client,
-            product_types=product_types_raw,
+            http_clients=http_clients,
+            product_types=product_types,
             config=config.instrument_provider,
         )
 
         return KrakenDataClient(
             loop=loop,
-            client=client,
+            http_clients=http_clients,
             msgbus=msgbus,
             cache=cache,
             clock=clock,

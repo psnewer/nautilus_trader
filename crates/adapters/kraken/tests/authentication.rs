@@ -17,7 +17,9 @@
 
 use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Response};
 use nautilus_kraken::{
-    config::KrakenDataClientConfig, http::client::KrakenHttpClient,
+    common::enums::{KrakenEnvironment, KrakenProductType},
+    config::KrakenDataClientConfig,
+    http::client::KrakenHttpClient,
     websocket::spot_v2::client::KrakenSpotWebSocketClient,
 };
 use rstest::rstest;
@@ -70,6 +72,8 @@ async fn test_http_client_get_websockets_token() {
     let client = KrakenHttpClient::with_credentials(
         "test_api_key".to_string(),
         "dGVzdF9hcGlfc2VjcmV0X2Jhc2U2NA==".to_string(), // Base64 encoded "test_api_secret_base64"
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,

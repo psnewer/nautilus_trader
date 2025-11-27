@@ -77,6 +77,7 @@ pub struct KrakenResponse<T> {
 
 pub struct KrakenRawHttpClient {
     base_url: String,
+    product_type: KrakenProductType,
     client: HttpClient,
     credential: Option<KrakenCredential>,
     retry_manager: RetryManager<KrakenHttpError>,
@@ -85,8 +86,17 @@ pub struct KrakenRawHttpClient {
 
 impl Default for KrakenRawHttpClient {
     fn default() -> Self {
-        Self::new(None, Some(60), None, None, None, None)
-            .expect("Failed to create default KrakenRawHttpClient")
+        Self::new(
+            KrakenProductType::Spot,
+            KrakenEnvironment::Mainnet,
+            None,
+            Some(60),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to create default KrakenRawHttpClient")
     }
 }
 
@@ -94,6 +104,7 @@ impl Debug for KrakenRawHttpClient {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KrakenRawHttpClient")
             .field("base_url", &self.base_url)
+            .field("product_type", &self.product_type)
             .field("has_credentials", &self.credential.is_some())
             .finish()
     }
@@ -102,7 +113,9 @@ impl Debug for KrakenRawHttpClient {
 impl KrakenRawHttpClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        base_url: Option<String>,
+        product_type: KrakenProductType,
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -121,12 +134,12 @@ impl KrakenRawHttpClient {
         };
 
         let retry_manager = RetryManager::new(retry_config);
+        let base_url = base_url_override
+            .unwrap_or_else(|| get_kraken_http_base_url(product_type, environment).to_string());
 
         Ok(Self {
-            base_url: base_url.unwrap_or_else(|| {
-                get_kraken_http_base_url(KrakenProductType::Spot, KrakenEnvironment::Mainnet)
-                    .to_string()
-            }),
+            base_url,
+            product_type,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
@@ -146,7 +159,9 @@ impl KrakenRawHttpClient {
     pub fn with_credentials(
         api_key: String,
         api_secret: String,
-        base_url: Option<String>,
+        product_type: KrakenProductType,
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -165,12 +180,12 @@ impl KrakenRawHttpClient {
         };
 
         let retry_manager = RetryManager::new(retry_config);
+        let base_url = base_url_override
+            .unwrap_or_else(|| get_kraken_http_base_url(product_type, environment).to_string());
 
         Ok(Self {
-            base_url: base_url.unwrap_or_else(|| {
-                get_kraken_http_base_url(KrakenProductType::Spot, KrakenEnvironment::Mainnet)
-                    .to_string()
-            }),
+            base_url,
+            product_type,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
@@ -188,6 +203,10 @@ impl KrakenRawHttpClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    pub fn product_type(&self) -> KrakenProductType {
+        self.product_type
     }
 
     pub fn credential(&self) -> Option<&KrakenCredential> {
@@ -1146,8 +1165,17 @@ impl Clone for KrakenHttpClient {
 
 impl Default for KrakenHttpClient {
     fn default() -> Self {
-        Self::new(None, Some(60), None, None, None, None)
-            .expect("Failed to create default KrakenHttpClient")
+        Self::new(
+            KrakenProductType::Spot,
+            KrakenEnvironment::Mainnet,
+            None,
+            Some(60),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("Failed to create default KrakenHttpClient")
     }
 }
 
@@ -1162,7 +1190,9 @@ impl Debug for KrakenHttpClient {
 impl KrakenHttpClient {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        base_url: Option<String>,
+        product_type: KrakenProductType,
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -1171,7 +1201,9 @@ impl KrakenHttpClient {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenRawHttpClient::new(
-                base_url,
+                product_type,
+                environment,
+                base_url_override,
                 timeout_secs,
                 max_retries,
                 retry_delay_ms,
@@ -1187,7 +1219,9 @@ impl KrakenHttpClient {
     pub fn with_credentials(
         api_key: String,
         api_secret: String,
-        base_url: Option<String>,
+        product_type: KrakenProductType,
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -1198,7 +1232,9 @@ impl KrakenHttpClient {
             inner: Arc::new(KrakenRawHttpClient::with_credentials(
                 api_key,
                 api_secret,
-                base_url,
+                product_type,
+                environment,
+                base_url_override,
                 timeout_secs,
                 max_retries,
                 retry_delay_ms,
@@ -1211,7 +1247,11 @@ impl KrakenHttpClient {
     }
 
     fn is_futures(&self) -> bool {
-        self.inner.base_url().contains("futures")
+        self.inner.product_type() == KrakenProductType::Futures
+    }
+
+    pub fn product_type(&self) -> KrakenProductType {
+        self.inner.product_type()
     }
 
     pub fn cancel_all_requests(&self) {
@@ -1239,6 +1279,14 @@ impl KrakenHttpClient {
     pub fn get_cached_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
         self.instruments_cache
             .get(symbol)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Find instrument by raw symbol (e.g., "XXBTZUSD" for spot, "PI_XBTUSD" for futures).
+    fn get_instrument_by_raw_symbol(&self, raw_symbol: &str) -> Option<InstrumentAny> {
+        self.instruments_cache
+            .iter()
+            .find(|entry| entry.value().raw_symbol().as_str() == raw_symbol)
             .map(|entry| entry.value().clone())
     }
 
@@ -1630,13 +1678,7 @@ impl KrakenHttpClient {
                 }
 
                 // Get instrument for this order
-                let matching_instrument = self
-                    .instruments_cache
-                    .iter()
-                    .find(|entry| entry.value().raw_symbol().as_str() == order.symbol)
-                    .map(|entry| entry.value().clone());
-
-                if let Some(instrument) = matching_instrument {
+                if let Some(instrument) = self.get_instrument_by_raw_symbol(&order.symbol) {
                     match parse_futures_order_status_report(
                         &order,
                         &instrument,
@@ -1673,13 +1715,7 @@ impl KrakenHttpClient {
                     }
 
                     // Get instrument for this event
-                    let matching_instrument = self
-                        .instruments_cache
-                        .iter()
-                        .find(|entry| entry.value().raw_symbol().as_str() == event.symbol)
-                        .map(|entry| entry.value().clone());
-
-                    if let Some(instrument) = matching_instrument {
+                    if let Some(instrument) = self.get_instrument_by_raw_symbol(&event.symbol) {
                         match parse_futures_order_event_status_report(
                             &event,
                             &instrument,
@@ -1716,14 +1752,7 @@ impl KrakenHttpClient {
             }
 
             // Get instrument for this order
-            let symbol_str = order.descr.pair.as_str();
-            let matching_instrument = self
-                .instruments_cache
-                .iter()
-                .find(|entry| entry.value().raw_symbol().as_str() == symbol_str)
-                .map(|entry| entry.value().clone());
-
-            if let Some(instrument) = matching_instrument {
+            if let Some(instrument) = self.get_instrument_by_raw_symbol(order.descr.pair.as_str()) {
                 match parse_order_status_report(order_id, order, &instrument, account_id, ts_init) {
                     Ok(report) => all_reports.push(report),
                     Err(e) => {
@@ -1763,14 +1792,9 @@ impl KrakenHttpClient {
                 }
 
                 // Get instrument for this order
-                let symbol_str = order.descr.pair.as_str();
-                let matching_instrument = self
-                    .instruments_cache
-                    .iter()
-                    .find(|entry| entry.value().raw_symbol().as_str() == symbol_str)
-                    .map(|entry| entry.value().clone());
-
-                if let Some(instrument) = matching_instrument {
+                if let Some(instrument) =
+                    self.get_instrument_by_raw_symbol(order.descr.pair.as_str())
+                {
                     match parse_order_status_report(
                         order_id,
                         order,
@@ -1840,13 +1864,7 @@ impl KrakenHttpClient {
                 }
 
                 // Get instrument for this fill
-                let matching_instrument = self
-                    .instruments_cache
-                    .iter()
-                    .find(|entry| entry.value().raw_symbol().as_str() == fill.symbol)
-                    .map(|entry| entry.value().clone());
-
-                if let Some(instrument) = matching_instrument {
+                if let Some(instrument) = self.get_instrument_by_raw_symbol(&fill.symbol) {
                     match parse_futures_fill_report(&fill, &instrument, account_id, ts_init) {
                         Ok(report) => all_reports.push(report),
                         Err(e) => {
@@ -1885,14 +1903,7 @@ impl KrakenHttpClient {
                 }
 
                 // Get instrument for this trade
-                let symbol_str = trade.pair.as_str();
-                let matching_instrument = self
-                    .instruments_cache
-                    .iter()
-                    .find(|entry| entry.value().raw_symbol().as_str() == symbol_str)
-                    .map(|entry| entry.value().clone());
-
-                if let Some(instrument) = matching_instrument {
+                if let Some(instrument) = self.get_instrument_by_raw_symbol(trade.pair.as_str()) {
                     match parse_fill_report(trade_id, trade, &instrument, account_id, ts_init) {
                         Ok(report) => all_reports.push(report),
                         Err(e) => {
@@ -1936,13 +1947,7 @@ impl KrakenHttpClient {
             }
 
             // Get instrument for this position
-            let matching_instrument = self
-                .instruments_cache
-                .iter()
-                .find(|entry| entry.value().raw_symbol().as_str() == position.symbol)
-                .map(|entry| entry.value().clone());
-
-            if let Some(instrument) = matching_instrument {
+            if let Some(instrument) = self.get_instrument_by_raw_symbol(&position.symbol) {
                 match parse_futures_position_status_report(
                     &position,
                     &instrument,
@@ -1982,6 +1987,8 @@ mod tests {
         let client = KrakenRawHttpClient::with_credentials(
             "test_key".to_string(),
             "test_secret".to_string(),
+            KrakenProductType::Spot,
+            KrakenEnvironment::Mainnet,
             None,
             None,
             None,
@@ -1991,12 +1998,31 @@ mod tests {
         )
         .unwrap();
         assert!(client.credential.is_some());
+        assert_eq!(client.product_type(), KrakenProductType::Spot);
+    }
+
+    #[rstest]
+    fn test_raw_client_futures() {
+        let client = KrakenRawHttpClient::new(
+            KrakenProductType::Futures,
+            KrakenEnvironment::Mainnet,
+            None,
+            Some(60),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(client.product_type(), KrakenProductType::Futures);
+        assert!(client.base_url().contains("futures"));
     }
 
     #[rstest]
     fn test_client_creation() {
         let client = KrakenHttpClient::default();
         assert!(client.instruments_cache.is_empty());
+        assert_eq!(client.product_type(), KrakenProductType::Spot);
     }
 
     #[rstest]
@@ -2004,6 +2030,8 @@ mod tests {
         let client = KrakenHttpClient::with_credentials(
             "test_key".to_string(),
             "test_secret".to_string(),
+            KrakenProductType::Spot,
+            KrakenEnvironment::Mainnet,
             None,
             None,
             None,
@@ -2013,5 +2041,22 @@ mod tests {
         )
         .unwrap();
         assert!(client.instruments_cache.is_empty());
+        assert_eq!(client.product_type(), KrakenProductType::Spot);
+    }
+
+    #[rstest]
+    fn test_client_futures() {
+        let client = KrakenHttpClient::new(
+            KrakenProductType::Futures,
+            KrakenEnvironment::Testnet,
+            None,
+            Some(60),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(client.product_type(), KrakenProductType::Futures);
     }
 }

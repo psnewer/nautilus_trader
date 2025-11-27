@@ -32,7 +32,7 @@ use axum::{
     response::Response,
 };
 use nautilus_kraken::{
-    common::enums::{KrakenApiResult, KrakenOrderStatus},
+    common::enums::{KrakenApiResult, KrakenEnvironment, KrakenOrderStatus, KrakenProductType},
     http::client::{KrakenHttpClient, KrakenRawHttpClient},
 };
 use nautilus_model::{
@@ -462,8 +462,17 @@ async fn test_http_get_server_time() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_server_time().await;
     assert!(result.is_ok(), "Failed to get server time: {result:?}");
@@ -488,8 +497,17 @@ async fn test_http_get_system_status() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_system_status().await;
     assert!(result.is_ok(), "Failed to get system status: {result:?}");
@@ -513,8 +531,17 @@ async fn test_http_get_asset_pairs() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_asset_pairs(None).await;
     assert!(result.is_ok(), "Failed to get asset pairs: {result:?}");
@@ -539,7 +566,17 @@ async fn test_http_request_instruments() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = KrakenHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.request_instruments(None).await;
     assert!(result.is_ok(), "Failed to request instruments: {result:?}");
@@ -563,8 +600,17 @@ async fn test_http_get_ticker() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_ticker(vec!["XBTUSDT".to_string()]).await;
     assert!(result.is_ok(), "Failed to get ticker: {result:?}");
@@ -588,8 +634,17 @@ async fn test_http_get_book_depth() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_book_depth("XBTUSDT", None).await;
     assert!(result.is_ok(), "Failed to get book depth: {result:?}");
@@ -613,8 +668,17 @@ async fn test_http_get_trades() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_trades("XBTUSDT", None).await;
     assert!(result.is_ok(), "Failed to get trades: {result:?}");
@@ -638,8 +702,17 @@ async fn test_http_get_ohlc() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_ohlc("XBTUSDT", Some(60), None).await;
     assert!(result.is_ok(), "Failed to get OHLC: {result:?}");
@@ -663,8 +736,17 @@ async fn test_http_get_trades_with_since() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let since = "1234567890".to_string();
     let result = client.get_trades("XBTUSDT", Some(since.clone())).await;
@@ -694,8 +776,17 @@ async fn test_http_get_ohlc_with_interval() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_ohlc("XBTUSDT", Some(60), None).await;
     assert!(
@@ -725,8 +816,17 @@ async fn test_http_get_websockets_token_requires_credentials() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Client without credentials
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_websockets_token().await;
     assert!(result.is_err());
@@ -755,6 +855,8 @@ async fn test_http_get_websockets_token_with_credentials() {
     let client = KrakenRawHttpClient::with_credentials(
         "test_api_key".to_string(),
         "dGVzdF9hcGlfc2VjcmV0X2Jhc2U2NA==".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -787,7 +889,17 @@ async fn test_http_request_trades_with_domain_client() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = KrakenHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // First load instruments to populate cache
     let instruments = client.request_instruments(None).await.unwrap();
@@ -818,7 +930,17 @@ async fn test_http_request_bars_with_domain_client() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client = KrakenHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // First load instruments to populate cache
     let instruments = client.request_instruments(None).await.unwrap();
@@ -849,8 +971,17 @@ async fn test_http_multiple_requests_increment_count() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let initial_count = state.request_count.load(Ordering::Relaxed);
 
@@ -877,8 +1008,17 @@ async fn test_http_get_instruments_futures() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_instruments_futures().await;
     assert!(
@@ -909,8 +1049,17 @@ async fn test_http_get_tickers_futures() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client.get_tickers_futures().await;
     assert!(result.is_ok(), "Failed to get futures tickers: {result:?}");
@@ -940,8 +1089,17 @@ async fn test_http_get_ohlc_futures_trade() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client
         .get_ohlc_futures("trade", "PI_XBTUSD", "1h", None, None)
@@ -976,8 +1134,17 @@ async fn test_http_get_ohlc_futures_mark() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client
         .get_ohlc_futures("mark", "PI_XBTUSD", "1h", None, None)
@@ -1011,8 +1178,17 @@ async fn test_http_get_ohlc_futures_spot() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client
         .get_ohlc_futures("spot", "PI_XBTUSD", "1h", None, None)
@@ -1047,7 +1223,17 @@ async fn test_http_request_mark_price_fails_on_spot_client() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Create spot client (no "futures" in URL)
-    let client = KrakenHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let instrument_id = InstrumentId::from("BTC/USD.KRAKEN");
     let result = client.request_mark_price(instrument_id).await;
@@ -1077,7 +1263,17 @@ async fn test_http_request_index_price_fails_on_spot_client() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Create spot client (no "futures" in URL)
-    let client = KrakenHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenHttpClient::new(
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let instrument_id = InstrumentId::from("BTC/USD.KRAKEN");
     let result = client.request_index_price(instrument_id).await;
@@ -1106,8 +1302,17 @@ async fn test_http_get_public_executions_futures() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let client =
-        KrakenRawHttpClient::new(Some(base_url), Some(10), None, None, None, None).unwrap();
+    let client = KrakenRawHttpClient::new(
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let result = client
         .get_public_executions_futures("PF_XBTUSD", None, None, None, None)
@@ -1148,6 +1353,8 @@ async fn test_http_get_open_orders_spot() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1189,6 +1396,8 @@ async fn test_http_get_closed_orders_spot() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1231,6 +1440,8 @@ async fn test_http_get_trades_history_spot() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1267,6 +1478,8 @@ async fn test_http_get_open_orders_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1309,6 +1522,8 @@ async fn test_http_get_order_events_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1357,6 +1572,8 @@ async fn test_http_get_fills_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1397,6 +1614,8 @@ async fn test_http_get_open_positions_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1441,6 +1660,8 @@ async fn test_http_add_order_spot() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1483,6 +1704,8 @@ async fn test_http_cancel_order_spot() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Spot,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1519,6 +1742,8 @@ async fn test_http_send_order_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,
@@ -1561,6 +1786,8 @@ async fn test_http_cancel_order_futures() {
     let client = KrakenRawHttpClient::with_credentials(
         "test".to_string(),
         "test".to_string(),
+        KrakenProductType::Futures,
+        KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
         None,

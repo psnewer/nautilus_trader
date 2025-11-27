@@ -59,7 +59,7 @@ impl KrakenFuturesWebSocketClient {
         self.is_closed()
     }
 
-    /// Cache instruments for price precision lookup.
+    /// Cache instruments for price precision lookup (bulk replace).
     #[pyo3(name = "cache_instruments")]
     fn py_cache_instruments(&self, py: Python<'_>, instruments: Vec<Py<PyAny>>) -> PyResult<()> {
         let mut instruments_any = Vec::new();
@@ -68,6 +68,13 @@ impl KrakenFuturesWebSocketClient {
             instruments_any.push(inst_any);
         }
         self.cache_instruments(instruments_any);
+        Ok(())
+    }
+
+    /// Cache a single instrument for price precision lookup (upsert).
+    #[pyo3(name = "cache_instrument")]
+    fn py_cache_instrument(&self, py: Python<'_>, instrument: Py<PyAny>) -> PyResult<()> {
+        self.cache_instrument(pyobject_to_instrument_any(py, instrument)?);
         Ok(())
     }
 

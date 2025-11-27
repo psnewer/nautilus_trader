@@ -26,14 +26,18 @@ use nautilus_model::{
 };
 use pyo3::{prelude::*, types::PyList};
 
-use crate::http::{client::KrakenHttpClient, error::KrakenHttpError};
+use crate::{
+    common::enums::{KrakenEnvironment, KrakenProductType},
+    http::{client::KrakenHttpClient, error::KrakenHttpError},
+};
 
 #[pymethods]
 impl KrakenHttpClient {
     #[new]
-    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, testnet=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None))]
+    #[pyo3(signature = (product_type=KrakenProductType::Spot, api_key=None, api_secret=None, base_url=None, testnet=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
+        product_type: KrakenProductType,
         api_key: Option<String>,
         api_secret: Option<String>,
         base_url: Option<String>,
@@ -45,6 +49,13 @@ impl KrakenHttpClient {
         proxy_url: Option<String>,
     ) -> PyResult<Self> {
         let timeout = timeout_secs.or(Some(60));
+
+        // Determine environment from testnet flag
+        let environment = if testnet {
+            KrakenEnvironment::Testnet
+        } else {
+            KrakenEnvironment::Mainnet
+        };
 
         // Try to get credentials from parameters or environment variables
         let (api_key_env, api_secret_env) = if testnet {
@@ -60,6 +71,8 @@ impl KrakenHttpClient {
             Self::with_credentials(
                 k,
                 s,
+                product_type,
+                environment,
                 base_url,
                 timeout,
                 max_retries,
@@ -70,6 +83,8 @@ impl KrakenHttpClient {
             .map_err(to_pyvalue_err)
         } else {
             Self::new(
+                product_type,
+                environment,
                 base_url,
                 timeout,
                 max_retries,
@@ -86,6 +101,13 @@ impl KrakenHttpClient {
     #[must_use]
     pub fn py_base_url(&self) -> String {
         self.inner.base_url().to_string()
+    }
+
+    #[getter]
+    #[pyo3(name = "product_type")]
+    #[must_use]
+    pub fn py_product_type(&self) -> KrakenProductType {
+        self.product_type()
     }
 
     #[getter]

@@ -15,7 +15,15 @@
 
 //! Data models for Kraken Futures WebSocket v1 API messages.
 
+use nautilus_model::data::{IndexPriceUpdate, MarkPriceUpdate};
 use serde::{Deserialize, Serialize};
+
+/// Output message types from the Futures WebSocket handler.
+#[derive(Clone, Debug)]
+pub enum FuturesWsMessage {
+    MarkPrice(MarkPriceUpdate),
+    IndexPrice(IndexPriceUpdate),
+}
 
 /// Kraken Futures WebSocket feed types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

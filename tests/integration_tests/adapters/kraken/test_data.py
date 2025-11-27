@@ -63,7 +63,7 @@ def data_client_builder(
 
         client = KrakenDataClient(
             loop=event_loop,
-            client=mock_http_client,
+            http_clients={KrakenProductType.SPOT: mock_http_client},
             msgbus=msgbus,
             cache=cache,
             clock=live_clock,

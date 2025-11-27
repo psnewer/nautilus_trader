@@ -20,4 +20,5 @@
 //! - Index price updates
 
 pub mod client;
+pub mod handler;
 pub mod messages;

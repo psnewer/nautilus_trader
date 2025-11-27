@@ -34,7 +34,7 @@ use ustr::Ustr;
 
 use super::{
     enums::{KrakenWsChannel, KrakenWsMethod},
-    handler::{FeedHandler, HandlerCommand},
+    handler::{SpotFeedHandler, SpotHandlerCommand},
     messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
 use crate::{
@@ -51,7 +51,7 @@ pub struct KrakenSpotWebSocketClient {
     config: KrakenDataClientConfig,
     signal: Arc<AtomicBool>,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
-    cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
+    cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<SpotHandlerCommand>>>,
     out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
@@ -81,7 +81,7 @@ impl Clone for KrakenSpotWebSocketClient {
 impl KrakenSpotWebSocketClient {
     pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
         let url = config.ws_public_url();
-        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SpotHandlerCommand>();
         let initial_mode = AtomicU8::new(ConnectionMode::Closed.as_u8());
         let connection_mode = Arc::new(ArcSwap::from_pointee(initial_mode));
 
@@ -144,10 +144,10 @@ impl KrakenSpotWebSocketClient {
         let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
         self.out_rx = Some(Arc::new(out_rx));
 
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SpotHandlerCommand>();
         *self.cmd_tx.write().await = cmd_tx.clone();
 
-        if let Err(e) = cmd_tx.send(HandlerCommand::SetClient(ws_client)) {
+        if let Err(e) = cmd_tx.send(SpotHandlerCommand::SetClient(ws_client)) {
             return Err(KrakenWsError::ConnectionError(format!(
                 "Failed to send WebSocketClient to handler: {e}"
             )));
@@ -156,7 +156,7 @@ impl KrakenSpotWebSocketClient {
         let signal = self.signal.clone();
 
         let stream_handle = get_runtime().spawn(async move {
-            let mut handler = FeedHandler::new(signal.clone(), cmd_rx, raw_rx);
+            let mut handler = SpotFeedHandler::new(signal.clone(), cmd_rx, raw_rx);
 
             loop {
                 match handler.next().await {
@@ -191,7 +191,12 @@ impl KrakenSpotWebSocketClient {
 
         self.signal.store(true, Ordering::Relaxed);
 
-        if let Err(e) = self.cmd_tx.read().await.send(HandlerCommand::Disconnect) {
+        if let Err(e) = self
+            .cmd_tx
+            .read()
+            .await
+            .send(SpotHandlerCommand::Disconnect)
+        {
             tracing::debug!(
                 "Failed to send disconnect command (handler may already be shut down): {e}"
             );
@@ -269,6 +274,8 @@ impl KrakenSpotWebSocketClient {
         let http_client = KrakenHttpClient::with_credentials(
             api_key,
             api_secret,
+            self.config.product_type,
+            self.config.environment,
             Some(self.config.http_base_url()),
             self.config.timeout_secs,
             None,
@@ -299,7 +306,7 @@ impl KrakenSpotWebSocketClient {
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         // Before connect() the handler isn't running; this send will fail and that's expected
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(HandlerCommand::InitializeInstruments(instruments))
+            && let Err(e) = cmd_tx.send(SpotHandlerCommand::InitializeInstruments(instruments))
         {
             tracing::debug!("Failed to send instruments to handler: {e}");
         }
@@ -308,7 +315,7 @@ impl KrakenSpotWebSocketClient {
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         // Before connect() the handler isn't running; this send will fail and that's expected
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(HandlerCommand::UpdateInstrument(instrument))
+            && let Err(e) = cmd_tx.send(SpotHandlerCommand::UpdateInstrument(instrument))
         {
             tracing::debug!("Failed to send instrument update to handler: {e}");
         }
@@ -434,7 +441,7 @@ impl KrakenSpotWebSocketClient {
         self.cmd_tx
             .read()
             .await
-            .send(HandlerCommand::SendText { payload })
+            .send(SpotHandlerCommand::SendText { payload })
             .map_err(|e| KrakenWsError::ConnectionError(format!("Failed to send request: {e}")))?;
 
         Ok(())

@@ -16,46 +16,28 @@
 //! WebSocket client for the Kraken Futures v1 streaming API.
 
 use std::sync::{
-    Arc, RwLock,
+    Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use ahash::AHashMap;
 use arc_swap::ArcSwap;
 use dashmap::DashSet;
 use nautilus_common::runtime::get_runtime;
-use nautilus_core::{nanos::UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_model::{
-    data::{IndexPriceUpdate, MarkPriceUpdate},
-    instruments::{Instrument, InstrumentAny},
-    types::Price,
-};
+use nautilus_model::instruments::InstrumentAny;
 use nautilus_network::{
     mode::ConnectionMode,
     websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
 };
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use ustr::Ustr;
 
-use super::messages::KrakenFuturesTickerData;
+// Re-export for backward compatibility
+pub use super::messages::FuturesWsMessage as KrakenFuturesWsMessage;
+use super::{
+    handler::{FuturesFeedHandler, HandlerCommand},
+    messages::FuturesWsMessage,
+};
 use crate::websocket::error::KrakenWsError;
-
-/// Output message types from the Futures WebSocket handler.
-#[derive(Clone, Debug)]
-pub enum KrakenFuturesWsMessage {
-    MarkPrice(MarkPriceUpdate),
-    IndexPrice(IndexPriceUpdate),
-}
-
-/// Commands for the Futures WebSocket handler.
-enum FuturesHandlerCommand {
-    SetClient(WebSocketClient),
-    Subscribe(String),
-    Unsubscribe(String),
-    Disconnect,
-}
 
 #[derive(Debug)]
 #[cfg_attr(
@@ -67,13 +49,11 @@ pub struct KrakenFuturesWebSocketClient {
     heartbeat_secs: Option<u64>,
     signal: Arc<AtomicBool>,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
-    cmd_tx: Arc<tokio::sync::RwLock<mpsc::UnboundedSender<FuturesHandlerCommand>>>,
-    out_rx: Option<Arc<mpsc::UnboundedReceiver<KrakenFuturesWsMessage>>>,
+    cmd_tx: Arc<tokio::sync::RwLock<mpsc::UnboundedSender<HandlerCommand>>>,
+    out_rx: Option<Arc<mpsc::UnboundedReceiver<FuturesWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: Arc<DashSet<String>>,
     cancellation_token: CancellationToken,
-    /// Cache of instruments keyed by raw symbol (e.g., "PI_XBTUSD")
-    instruments_cache: Arc<RwLock<AHashMap<Ustr, InstrumentAny>>>,
 }
 
 impl Clone for KrakenFuturesWebSocketClient {
@@ -88,7 +68,6 @@ impl Clone for KrakenFuturesWebSocketClient {
             task_handle: self.task_handle.clone(),
             subscriptions: self.subscriptions.clone(),
             cancellation_token: self.cancellation_token.clone(),
-            instruments_cache: Arc::clone(&self.instruments_cache),
         }
     }
 }
@@ -96,7 +75,7 @@ impl Clone for KrakenFuturesWebSocketClient {
 impl KrakenFuturesWebSocketClient {
     #[must_use]
     pub fn new(url: String, heartbeat_secs: Option<u64>) -> Self {
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<FuturesHandlerCommand>();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<HandlerCommand>();
         let initial_mode = AtomicU8::new(ConnectionMode::Closed.as_u8());
         let connection_mode = Arc::new(ArcSwap::from_pointee(initial_mode));
 
@@ -110,7 +89,6 @@ impl KrakenFuturesWebSocketClient {
             task_handle: None,
             subscriptions: Arc::new(DashSet::new()),
             cancellation_token: CancellationToken::new(),
-            instruments_cache: Arc::new(RwLock::new(AHashMap::new())),
         }
     }
 
@@ -125,14 +103,25 @@ impl KrakenFuturesWebSocketClient {
             == ConnectionMode::Closed
     }
 
-    /// Cache instruments for price precision lookup.
+    /// Cache instruments for price precision lookup (bulk replace).
+    ///
+    /// Must be called after `connect()` when the handler is ready to receive commands.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
-        // TODO: Implement standard handler pattern (will remove this mutex)
-        // SAFETY: Lock should not be poisoned in normal operation
-        let mut cache = self.instruments_cache.write().expect("Lock poisoned");
-        for inst in instruments {
-            // Key by raw_symbol (e.g., "PI_XBTUSD") since that's what WebSocket messages use
-            cache.insert(inst.raw_symbol().inner(), inst);
+        if let Ok(tx) = self.cmd_tx.try_read()
+            && let Err(e) = tx.send(HandlerCommand::InitializeInstruments(instruments))
+        {
+            tracing::debug!("Failed to send instruments to handler: {e}");
+        }
+    }
+
+    /// Cache a single instrument for price precision lookup (upsert).
+    ///
+    /// Must be called after `connect()` when the handler is ready to receive commands.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        if let Ok(tx) = self.cmd_tx.try_read()
+            && let Err(e) = tx.send(HandlerCommand::UpdateInstrument(instrument))
+        {
+            tracing::debug!("Failed to send instrument update to handler: {e}");
         }
     }
 
@@ -141,7 +130,7 @@ impl KrakenFuturesWebSocketClient {
 
         self.signal.store(false, Ordering::Relaxed);
 
-        let (raw_handler, mut raw_rx) = channel_message_handler();
+        let (raw_handler, raw_rx) = channel_message_handler();
 
         let ws_config = WebSocketConfig {
             url: self.url.clone(),
@@ -165,13 +154,13 @@ impl KrakenFuturesWebSocketClient {
         self.connection_mode
             .store(ws_client.connection_mode_atomic());
 
-        let (out_tx, out_rx) = mpsc::unbounded_channel::<KrakenFuturesWsMessage>();
+        let (out_tx, out_rx) = mpsc::unbounded_channel::<FuturesWsMessage>();
         self.out_rx = Some(Arc::new(out_rx));
 
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<FuturesHandlerCommand>();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HandlerCommand>();
         *self.cmd_tx.write().await = cmd_tx.clone();
 
-        if let Err(e) = cmd_tx.send(FuturesHandlerCommand::SetClient(ws_client)) {
+        if let Err(e) = cmd_tx.send(HandlerCommand::SetClient(ws_client)) {
             return Err(KrakenWsError::ConnectionError(format!(
                 "Failed to send WebSocketClient to handler: {e}"
             )));
@@ -179,132 +168,14 @@ impl KrakenFuturesWebSocketClient {
 
         let signal = self.signal.clone();
         let subscriptions = self.subscriptions.clone();
-        let instruments_cache: Arc<RwLock<AHashMap<Ustr, InstrumentAny>>> =
-            Arc::clone(&self.instruments_cache);
 
         let stream_handle = get_runtime().spawn(async move {
-            let mut ws_client: Option<WebSocketClient> = None;
+            let mut handler = FuturesFeedHandler::new(signal, cmd_rx, raw_rx, subscriptions);
 
-            loop {
-                tokio::select! {
-                    Some(cmd) = cmd_rx.recv() => {
-                        match cmd {
-                            FuturesHandlerCommand::SetClient(client) => {
-                                ws_client = Some(client);
-                            }
-                            FuturesHandlerCommand::Subscribe(product_id) => {
-                                if let Some(ref client) = ws_client {
-                                    let msg = format!(
-                                        r#"{{"event":"subscribe","feed":"ticker","product_ids":["{}"]}}"#,
-                                        product_id
-                                    );
-                                    if let Err(e) = client.send_text(msg, None).await {
-                                        tracing::error!("Failed to send subscribe: {e}");
-                                    }
-                                }
-                            }
-                            FuturesHandlerCommand::Unsubscribe(product_id) => {
-                                if let Some(ref client) = ws_client {
-                                    let msg = format!(
-                                        r#"{{"event":"unsubscribe","feed":"ticker","product_ids":["{}"]}}"#,
-                                        product_id
-                                    );
-                                    if let Err(e) = client.send_text(msg, None).await {
-                                        tracing::error!("Failed to send unsubscribe: {e}");
-                                    }
-                                }
-                            }
-                            FuturesHandlerCommand::Disconnect => {
-                                tracing::debug!("Disconnect command received");
-                                if let Some(ref client) = ws_client {
-                                    let _ = client.disconnect().await;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Some(raw_msg) = raw_rx.recv() => {
-                        if signal.load(Ordering::Relaxed) {
-                            break;
-                        }
-
-                        let text = match raw_msg {
-                            Message::Text(text) => text.to_string(),
-                            Message::Binary(data) => {
-                                match std::str::from_utf8(&data) {
-                                    Ok(s) => s.to_string(),
-                                    Err(_) => continue,
-                                }
-                            }
-                            _ => continue,
-                        };
-
-                        // Check if it's a ticker message
-                        if text.contains("\"feed\":\"ticker\"") && text.contains("\"product_id\"") {
-                            match serde_json::from_str::<KrakenFuturesTickerData>(&text) {
-                                Ok(ticker) => {
-                                    // Look up instrument from cache for price precision
-                                    // SAFETY: Lock should not be poisoned in normal operation
-                                    let instrument = {
-                                        let cache = instruments_cache.read().expect("Lock poisoned");
-                                        cache.get(&Ustr::from(ticker.product_id.as_str())).cloned()
-                                    };
-
-                                    let Some(instrument) = instrument else {
-                                        tracing::debug!(
-                                            "Instrument {} not in cache, skipping ticker update",
-                                            ticker.product_id
-                                        );
-                                        continue;
-                                    };
-
-                                    let ts_init = get_atomic_clock_realtime().get_time_ns();
-                                    let ts_event = ticker.time
-                                        .map(|t| UnixNanos::from((t as u64) * 1_000_000))
-                                        .unwrap_or(ts_init);
-
-                                    let instrument_id = instrument.id();
-                                    let price_precision = instrument.price_precision();
-
-                                    // Emit mark price if present and subscribed
-                                    if let Some(mark_price) = ticker.mark_price
-                                        && subscriptions.contains(&format!("mark:{}", ticker.product_id))
-                                    {
-                                        let update = MarkPriceUpdate::new(
-                                            instrument_id,
-                                            Price::new(mark_price, price_precision),
-                                            ts_event,
-                                            ts_init,
-                                        );
-                                        let _ = out_tx.send(KrakenFuturesWsMessage::MarkPrice(update));
-                                    }
-
-                                    // Emit index price if present and subscribed
-                                    if let Some(index_price) = ticker.index
-                                        && subscriptions.contains(&format!("index:{}", ticker.product_id))
-                                    {
-                                        let update = IndexPriceUpdate::new(
-                                            instrument_id,
-                                            Price::new(index_price, price_precision),
-                                            ts_event,
-                                            ts_init,
-                                        );
-                                        let _ = out_tx.send(KrakenFuturesWsMessage::IndexPrice(update));
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::trace!("Failed to parse ticker: {e}");
-                                }
-                            }
-                        } else if text.contains("\"event\":\"info\"") {
-                            tracing::debug!("Received info message: {text}");
-                        } else if text.contains("\"event\":\"subscribed\"") {
-                            tracing::debug!("Subscription confirmed: {text}");
-                        } else if text.contains("\"feed\":\"heartbeat\"") {
-                            tracing::trace!("Heartbeat received");
-                        }
-                    }
-                    else => break,
+            while let Some(msg) = handler.next().await {
+                if let Err(e) = out_tx.send(msg) {
+                    tracing::debug!("Output channel closed: {e}");
+                    break;
                 }
             }
 
@@ -322,12 +193,7 @@ impl KrakenFuturesWebSocketClient {
 
         self.signal.store(true, Ordering::Relaxed);
 
-        if let Err(e) = self
-            .cmd_tx
-            .read()
-            .await
-            .send(FuturesHandlerCommand::Disconnect)
-        {
+        if let Err(e) = self.cmd_tx.read().await.send(HandlerCommand::Disconnect) {
             tracing::debug!(
                 "Failed to send disconnect command (handler may already be shut down): {e}"
             );
@@ -375,7 +241,7 @@ impl KrakenFuturesWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(FuturesHandlerCommand::Subscribe(product_id.to_string()))
+                .send(HandlerCommand::Subscribe(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
 
@@ -395,7 +261,7 @@ impl KrakenFuturesWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(FuturesHandlerCommand::Unsubscribe(product_id.to_string()))
+                .send(HandlerCommand::Unsubscribe(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
 
@@ -418,7 +284,7 @@ impl KrakenFuturesWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(FuturesHandlerCommand::Subscribe(product_id.to_string()))
+                .send(HandlerCommand::Subscribe(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
 
@@ -438,7 +304,7 @@ impl KrakenFuturesWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(FuturesHandlerCommand::Unsubscribe(product_id.to_string()))
+                .send(HandlerCommand::Unsubscribe(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
 
@@ -446,7 +312,7 @@ impl KrakenFuturesWebSocketClient {
     }
 
     /// Get the output receiver for processed messages.
-    pub fn take_output_rx(&mut self) -> Option<mpsc::UnboundedReceiver<KrakenFuturesWsMessage>> {
+    pub fn take_output_rx(&mut self) -> Option<mpsc::UnboundedReceiver<FuturesWsMessage>> {
         self.out_rx.take().and_then(|arc| Arc::try_unwrap(arc).ok())
     }
 }

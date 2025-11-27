@@ -277,7 +277,10 @@ pub struct SpotTradesHistoryResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuturesMarginLevel {
-    pub contracts: i64,
+    /// Number of contracts (for inverse futures) or notional units (for flexible futures).
+    /// The field name varies: `contracts` for inverse, `numNonContractUnits` for flexible.
+    #[serde(alias = "numNonContractUnits", default)]
+    pub contracts: f64,
     #[serde(rename = "initialMargin")]
     pub initial_margin: f64,
     #[serde(rename = "maintenanceMargin")]
@@ -289,7 +292,9 @@ pub struct FuturesInstrument {
     pub symbol: String,
     #[serde(rename = "type")]
     pub instrument_type: String,
-    pub underlying: String,
+    /// Only present for inverse futures, not for flexible futures.
+    #[serde(default)]
+    pub underlying: Option<String>,
     #[serde(rename = "tickSize")]
     pub tick_size: f64,
     #[serde(rename = "contractSize")]
