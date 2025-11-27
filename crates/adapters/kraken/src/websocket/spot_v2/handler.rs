@@ -23,7 +23,7 @@ use std::sync::{
 use ahash::AHashMap;
 use nautilus_core::{AtomicTime, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    data::Data,
+    data::{Data, OrderBookDeltas},
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_network::websocket::WebSocketClient;
@@ -121,6 +121,8 @@ impl FeedHandler {
                         }
                         HandlerCommand::InitializeInstruments(instruments) => {
                             for inst in instruments {
+                                // Cache by symbol (ISO 4217-A3 format like "ETH/USD")
+                                // which matches what v2 WebSocket messages use
                                 self.instruments_cache.insert(inst.symbol().inner(), inst);
                             }
                         }
@@ -312,7 +314,6 @@ impl FeedHandler {
         if all_deltas.is_empty() {
             None
         } else {
-            use nautilus_model::data::OrderBookDeltas;
             let deltas = OrderBookDeltas::new(instrument_id?, all_deltas);
             Some(NautilusWsMessage::Deltas(deltas))
         }

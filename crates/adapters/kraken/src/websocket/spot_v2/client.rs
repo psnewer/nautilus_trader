@@ -34,18 +34,19 @@ use ustr::Ustr;
 
 use super::{
     enums::{KrakenWsChannel, KrakenWsMethod},
-    error::KrakenWsError,
     handler::{FeedHandler, HandlerCommand},
     messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
-use crate::{config::KrakenDataClientConfig, http::client::KrakenHttpClient};
+use crate::{
+    config::KrakenDataClientConfig, http::client::KrakenHttpClient, websocket::error::KrakenWsError,
+};
 
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
 )]
-pub struct KrakenWebSocketClient {
+pub struct KrakenSpotWebSocketClient {
     url: String,
     config: KrakenDataClientConfig,
     signal: Arc<AtomicBool>,
@@ -59,7 +60,7 @@ pub struct KrakenWebSocketClient {
     auth_token: Arc<RwLock<Option<String>>>,
 }
 
-impl Clone for KrakenWebSocketClient {
+impl Clone for KrakenSpotWebSocketClient {
     fn clone(&self) -> Self {
         Self {
             url: self.url.clone(),
@@ -77,7 +78,7 @@ impl Clone for KrakenWebSocketClient {
     }
 }
 
-impl KrakenWebSocketClient {
+impl KrakenSpotWebSocketClient {
     pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
         let url = config.ws_public_url();
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HandlerCommand>();
@@ -485,31 +486,32 @@ impl KrakenWebSocketClient {
         instrument_id: InstrumentId,
         depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        // Kraken v2 WebSocket expects ISO 4217-A3 format (e.g., "ETH/USD")
+        let symbol = instrument_id.symbol.inner();
         self.subscribe(KrakenWsChannel::Book, vec![symbol], depth)
             .await
     }
 
     pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        let symbol = instrument_id.symbol.inner();
         self.subscribe(KrakenWsChannel::Ticker, vec![symbol], None)
             .await
     }
 
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        let symbol = instrument_id.symbol.inner();
         self.subscribe(KrakenWsChannel::Trade, vec![symbol], None)
             .await
     }
 
     pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
+        let symbol = bar_type.instrument_id().symbol.inner();
         self.subscribe(KrakenWsChannel::Ohlc, vec![symbol], None)
             .await
     }
 
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        let symbol = instrument_id.symbol.inner();
         self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
     }
 
@@ -517,7 +519,7 @@ impl KrakenWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        let symbol = instrument_id.symbol.inner();
         self.unsubscribe(KrakenWsChannel::Ticker, vec![symbol])
             .await
     }
@@ -526,12 +528,12 @@ impl KrakenWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(instrument_id.symbol.as_str());
+        let symbol = instrument_id.symbol.inner();
         self.unsubscribe(KrakenWsChannel::Trade, vec![symbol]).await
     }
 
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
+        let symbol = bar_type.instrument_id().symbol.inner();
         self.unsubscribe(KrakenWsChannel::Ohlc, vec![symbol]).await
     }
 }

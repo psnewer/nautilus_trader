@@ -18,7 +18,7 @@
 use axum::{Router, body::Body, extract::Request, http::StatusCode, response::Response};
 use nautilus_kraken::{
     config::KrakenDataClientConfig, http::client::KrakenHttpClient,
-    websocket::client::KrakenWebSocketClient,
+    websocket::spot_v2::client::KrakenSpotWebSocketClient,
 };
 use rstest::rstest;
 use tokio_util::sync::CancellationToken;
@@ -111,7 +111,7 @@ async fn test_websocket_client_authenticate() {
     };
 
     let token = CancellationToken::new();
-    let client = KrakenWebSocketClient::new(config, token);
+    let client = KrakenSpotWebSocketClient::new(config, token);
 
     // Authenticate
     let result = client.authenticate().await;
@@ -123,7 +123,7 @@ async fn test_websocket_client_authenticate() {
 async fn test_websocket_client_authenticate_without_credentials() {
     let config = KrakenDataClientConfig::default();
     let token = CancellationToken::new();
-    let client = KrakenWebSocketClient::new(config, token);
+    let client = KrakenSpotWebSocketClient::new(config, token);
 
     // Try to authenticate without credentials
     let result = client.authenticate().await;

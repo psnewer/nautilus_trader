@@ -31,12 +31,13 @@ use crate::http::{client::KrakenHttpClient, error::KrakenHttpError};
 #[pymethods]
 impl KrakenHttpClient {
     #[new]
-    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None))]
+    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, testnet=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
         api_key: Option<String>,
         api_secret: Option<String>,
         base_url: Option<String>,
+        testnet: bool,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -46,8 +47,14 @@ impl KrakenHttpClient {
         let timeout = timeout_secs.or(Some(60));
 
         // Try to get credentials from parameters or environment variables
-        let key = api_key.or_else(|| std::env::var("KRAKEN_API_KEY").ok());
-        let secret = api_secret.or_else(|| std::env::var("KRAKEN_API_SECRET").ok());
+        let (api_key_env, api_secret_env) = if testnet {
+            ("KRAKEN_TESTNET_API_KEY", "KRAKEN_TESTNET_API_SECRET")
+        } else {
+            ("KRAKEN_API_KEY", "KRAKEN_API_SECRET")
+        };
+
+        let key = api_key.or_else(|| std::env::var(api_key_env).ok());
+        let secret = api_secret.or_else(|| std::env::var(api_secret_env).ok());
 
         if let (Some(k), Some(s)) = (key, secret) {
             Self::with_credentials(

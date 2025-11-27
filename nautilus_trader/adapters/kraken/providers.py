@@ -20,6 +20,7 @@ from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import instruments_from_pyo3
 
@@ -32,9 +33,9 @@ class KrakenInstrumentProvider(InstrumentProvider):
     ----------
     client : nautilus_pyo3.KrakenHttpClient
         The Kraken HTTP client.
-    product_types : list[str], optional
+    product_types : list[KrakenProductType], optional
         The Kraken product types to load.
-        Options: ["spot", "futures"]. If ``None`` then defaults to ["spot"].
+        If ``None`` then defaults to [KrakenProductType.SPOT].
     config : InstrumentProviderConfig, optional
         The instrument provider configuration, by default None.
 
@@ -43,24 +44,24 @@ class KrakenInstrumentProvider(InstrumentProvider):
     def __init__(
         self,
         client: nautilus_pyo3.KrakenHttpClient,
-        product_types: list[str] | None = None,
+        product_types: list[KrakenProductType] | None = None,
         config: InstrumentProviderConfig | None = None,
     ) -> None:
         super().__init__(config=config)
         self._client = client
-        self._product_types = product_types or ["spot"]
+        self._product_types = product_types or [KrakenProductType.SPOT]
         self._log_warnings = config.log_warnings if config else True
 
         self._instruments_pyo3: list[nautilus_pyo3.Instrument] = []
 
     @property
-    def product_types(self) -> list[str]:
+    def product_types(self) -> list[KrakenProductType]:
         """
         Return the product types configured for this provider.
 
         Returns
         -------
-        list[str]
+        list[KrakenProductType]
 
         """
         return self._product_types.copy()

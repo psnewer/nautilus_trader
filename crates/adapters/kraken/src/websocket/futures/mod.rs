@@ -13,13 +13,11 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! WebSocket client implementations for Kraken APIs.
+//! Kraken Futures WebSocket v1 API client implementation.
 //!
-//! This module provides WebSocket clients for real-time market data streams:
-//!
-//! - [`spot_v2`]: Kraken Spot WebSocket v2 API
-//! - [`futures`]: Kraken Futures WebSocket v1 API
+//! Provides real-time futures market data streams including:
+//! - Mark price updates
+//! - Index price updates
 
-pub mod error;
-pub mod futures;
-pub mod spot_v2;
+pub mod client;
+pub mod messages;
