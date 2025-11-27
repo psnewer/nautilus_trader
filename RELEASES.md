@@ -54,8 +54,9 @@ TBD
 
 ### Fixes
 - Fixed cache dropped same-timestamp market data on insert
-- Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
+- Fixed portfolio statistics various bugs and edge cases
+- Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
 - Fixed risk engine trailing stop order risk validations (#3160), thanks for reporting @GianC0
