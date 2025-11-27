@@ -138,7 +138,7 @@ pub trait Strategy: DataActor {
                 anyhow::bail!("OrderList denied: duplicate {}", order_list.id);
             }
 
-            for order in order_list.orders.iter() {
+            for order in &order_list.orders {
                 if order.status() != OrderStatus::Initialized {
                     anyhow::bail!(
                         "Order in list denied: invalid status for {}, expected INITIALIZED",
