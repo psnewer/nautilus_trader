@@ -201,7 +201,7 @@ pub trait Strategy: DataActor {
             manager.send_risk_command(TradingCommand::SubmitOrderList(command));
         }
 
-        for order in order_list.orders.iter() {
+        for order in &order_list.orders {
             self.set_gtd_expiry(order)?;
         }
 

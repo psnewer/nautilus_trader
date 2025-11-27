@@ -5250,6 +5250,7 @@ dependencies = [
 name = "nautilus-execution"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "async-trait",
  "chrono",
