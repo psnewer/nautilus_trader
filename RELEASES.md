@@ -6,6 +6,7 @@ This release adds support for Python 3.14 with the following limitations:
 - dYdX adapter extras (`[dydx]`) unavailable due to upstream `coincurve` compatibility (available on Python 3.12-3.13)
 - Interactive Brokers adapter extras (`[ib]`) unavailable due to upstream `nautilus-ibapi` compatibility (available on Python 3.12-3.13)
 
+
 ### Enhancements
 - Added support for Python 3.14
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
@@ -93,6 +94,7 @@ TBD
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
 - Added dYdX v4 ExecutionClient in Rust (#3163), thanks @nicolad
 - Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
+- Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
 - Scaffolded blockchain execution client with native balance fetch (#3214), thanks @filipmacek
@@ -104,6 +106,7 @@ TBD
 - Refactored Polymarket instrument provider to use async HttpClient
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
+- Improved JSON-RPC non-standard rate limit error handling (#3227), thanks @filipmacek
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
