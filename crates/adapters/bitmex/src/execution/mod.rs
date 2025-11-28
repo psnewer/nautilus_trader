@@ -272,6 +272,7 @@ impl BitmexExecutionClient {
     }
 }
 
+#[async_trait(?Send)]
 impl ExecutionClient for BitmexExecutionClient {
     fn is_connected(&self) -> bool {
         self.connected
@@ -592,10 +593,7 @@ impl ExecutionClient for BitmexExecutionClient {
 
         Ok(())
     }
-}
 
-#[async_trait(?Send)]
-impl LiveExecutionClient for BitmexExecutionClient {
     async fn connect(&mut self) -> anyhow::Result<()> {
         if self.connected {
             return Ok(());
@@ -649,15 +647,10 @@ impl LiveExecutionClient for BitmexExecutionClient {
         tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
+}
 
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> std::cell::Ref<'_, dyn nautilus_common::clock::Clock> {
-        self.core.clock().borrow()
-    }
-
+#[async_trait(?Send)]
+impl LiveExecutionClient for BitmexExecutionClient {
     async fn generate_order_status_report(
         &self,
         cmd: &GenerateOrderStatusReport,

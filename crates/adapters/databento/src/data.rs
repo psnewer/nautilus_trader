@@ -357,7 +357,7 @@ impl DatabentoDataClient {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for DatabentoDataClient {
     /// Returns the client identifier.
     fn client_id(&self) -> ClientId {

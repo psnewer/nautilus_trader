@@ -21,7 +21,7 @@ use std::{str::FromStr, sync::Arc};
 
 #[cfg(feature = "defi")]
 use alloy_primitives::{Address, I256, U160, U256};
-use common::mocks::MockDataClient;
+use common::mocks::{FailingMockDataClient, MockDataClient};
 #[cfg(feature = "defi")]
 use nautilus_common::defi;
 #[cfg(feature = "defi")]
@@ -3463,4 +3463,56 @@ fn test_pool_snapshot_request_routing_by_client_id(
     assert_eq!(recorder_1.borrow().len(), 1);
     assert_eq!(recorder_1.borrow()[0], cmd);
     assert_eq!(recorder_2.borrow().len(), 0);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Connection error propagation tests
+// ------------------------------------------------------------------------------------------------
+
+#[rstest]
+#[tokio::test]
+#[allow(clippy::await_holding_refcell_ref)] // Single-threaded test
+async fn test_data_engine_connect_propagates_client_error(
+    #[from(data_engine)] data_engine: Rc<RefCell<DataEngine>>,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+
+    let client_id = ClientId::from("FAILING_CLIENT");
+    let venue = Venue::from("TEST");
+    let error_message = "Authentication failed: invalid API key";
+
+    let client = FailingMockDataClient::new(client_id, Some(venue), error_message);
+    let adapter = DataClientAdapter::new(client_id, Some(venue), true, true, Box::new(client));
+    data_engine.register_client(adapter, None);
+
+    let result = data_engine.connect().await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains(error_message),
+        "Expected error message to contain '{error_message}', got: {err}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+#[allow(clippy::await_holding_refcell_ref)] // Single-threaded test
+async fn test_data_engine_connect_succeeds_with_working_client(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    #[from(data_engine)] data_engine: Rc<RefCell<DataEngine>>,
+) {
+    let mut data_engine = data_engine.borrow_mut();
+
+    let client_id = ClientId::from("WORKING_CLIENT");
+    let venue = Venue::from("TEST");
+
+    let client = MockDataClient::new(clock, cache, client_id, Some(venue));
+    let adapter = DataClientAdapter::new(client_id, Some(venue), true, true, Box::new(client));
+    data_engine.register_client(adapter, None);
+
+    let result = data_engine.connect().await;
+
+    assert!(result.is_ok());
 }

@@ -24,7 +24,7 @@ use nautilus_execution::client::ExecutionClient;
 ///
 /// This trait allows different client types to provide their configuration
 /// in a type-safe manner while still being usable in generic factory contexts.
-pub trait ClientConfig: Send + Sync + Debug {
+pub trait ClientConfig: Debug {
     /// Return the configuration as a trait object.
     fn as_any(&self) -> &dyn Any;
 }
@@ -33,7 +33,7 @@ pub trait ClientConfig: Send + Sync + Debug {
 ///
 /// Implementations of this trait should create specific data client types
 /// (e.g., Binance, Bybit, Databento) based on the provided configuration.
-pub trait DataClientFactory: Send + Sync + Debug {
+pub trait DataClientFactory: Debug {
     /// Create a new data client instance.
     ///
     /// # Errors
@@ -58,7 +58,7 @@ pub trait DataClientFactory: Send + Sync + Debug {
 ///
 /// Implementations of this trait should create specific execution client types
 /// (e.g., Binance, Bybit, Interactive Brokers) based on the provided configuration.
-pub trait ExecutionClientFactory: Send + Sync + Debug {
+pub trait ExecutionClientFactory: Debug {
     /// Create a new execution client instance.
     ///
     /// # Errors

@@ -427,7 +427,7 @@ impl HyperliquidDataClient {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for HyperliquidDataClient {
     fn client_id(&self) -> ClientId {
         self.client_id

@@ -276,7 +276,7 @@ impl DydxDataClient {
 }
 
 // Implement DataClient trait for integration with Nautilus DataEngine
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for DydxDataClient {
     fn client_id(&self) -> ClientId {
         self.client_id

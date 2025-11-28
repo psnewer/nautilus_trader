@@ -5149,6 +5149,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "indexmap 2.12.1",
  "log",
  "nautilus-common",
@@ -5157,6 +5158,7 @@ dependencies = [
  "nautilus-persistence",
  "pyo3",
  "rstest",
+ "tokio",
  "ustr",
 ]
 
@@ -5259,6 +5261,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "criterion",
+ "futures",
  "log",
  "nautilus-common",
  "nautilus-core",

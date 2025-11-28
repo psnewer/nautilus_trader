@@ -55,7 +55,7 @@ use crate::{
     execution::submitter::OrderSubmitter,
     grpc::{DydxGrpcClient, OrderBuilder, Wallet},
     http::client::DydxHttpClient,
-    websocket::client::DydxWebSocketClient,
+    websocket::{client::DydxWebSocketClient, messages::NautilusWsMessage},
 };
 
 pub mod submitter;
@@ -393,6 +393,8 @@ impl DydxExecutionClient {
         }
     }
 }
+
+#[async_trait(?Send)]
 impl ExecutionClient for DydxExecutionClient {
     fn is_connected(&self) -> bool {
         self.connected
@@ -845,70 +847,6 @@ impl ExecutionClient for DydxExecutionClient {
     fn query_order(&self, _cmd: &QueryOrder) -> anyhow::Result<()> {
         Ok(())
     }
-}
-
-/// Dispatches account state events to the portfolio.
-///
-/// AccountState events are routed to the Portfolio (not ExecEngine) via msgbus.
-/// This follows the pattern used by BitMEX, OKX, and other reference adapters.
-fn dispatch_account_state(state: nautilus_model::events::AccountState) {
-    use std::any::Any;
-    msgbus::send_any("Portfolio.update_account".into(), &state as &dyn Any);
-}
-
-/// Dispatches execution reports to the execution engine.
-///
-/// This follows the standard adapter pattern where WebSocket handlers parse messages
-/// into reports, and a dispatch function sends them via the execution event system.
-/// The execution engine then handles cache lookups and event generation.
-///
-/// # Architecture
-///
-/// Per `docs/developer_guide/adapters.md`, adapters should:
-/// 1. Parse WebSocket messages into ExecutionReports in the handler
-/// 2. Dispatch reports via `get_exec_event_sender()`
-/// 3. Let the execution engine handle event generation (has cache access)
-///
-/// This pattern is used by Hyperliquid, OKX, BitMEX, and other reference adapters.
-fn dispatch_execution_report(report: ExecutionReport) {
-    let sender = get_exec_event_sender();
-    match report {
-        ExecutionReport::Order(order_report) => {
-            tracing::debug!(
-                "Dispatching order report: status={:?}, venue_order_id={:?}, client_order_id={:?}",
-                order_report.order_status,
-                order_report.venue_order_id,
-                order_report.client_order_id
-            );
-            let exec_report = nautilus_common::messages::ExecutionReport::OrderStatus(order_report);
-            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
-                tracing::warn!("Failed to send order status report: {e}");
-            }
-        }
-        ExecutionReport::Fill(fill_report) => {
-            tracing::debug!(
-                "Dispatching fill report: venue_order_id={}, trade_id={}",
-                fill_report.venue_order_id,
-                fill_report.trade_id
-            );
-            let exec_report = nautilus_common::messages::ExecutionReport::Fill(fill_report);
-            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
-                tracing::warn!("Failed to send fill report: {e}");
-            }
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl LiveExecutionClient for DydxExecutionClient {
-    fn get_message_channel(&self) -> tokio::sync::mpsc::UnboundedSender<ExecutionEvent> {
-        get_exec_event_sender()
-    }
-
-    fn get_clock(&self) -> std::cell::Ref<'_, dyn nautilus_common::clock::Clock> {
-        self.core.clock().borrow()
-    }
-
     async fn connect(&mut self) -> anyhow::Result<()> {
         if self.connected {
             tracing::warn!("dYdX execution client already connected");
@@ -962,8 +900,6 @@ impl LiveExecutionClient for DydxExecutionClient {
             // Spawn WebSocket message processing task following standard adapter pattern
             // Per docs/developer_guide/adapters.md: Parse -> Dispatch -> Engine handles events
             if let Some(mut rx) = self.ws_client.take_receiver() {
-                use crate::websocket::messages::NautilusWsMessage;
-
                 // Clone data needed for account state parsing in spawned task
                 let account_id = self.core.account_id;
                 let instruments = self.instruments.clone();
@@ -1286,7 +1222,62 @@ impl LiveExecutionClient for DydxExecutionClient {
         tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
+}
 
+/// Dispatches account state events to the portfolio.
+///
+/// AccountState events are routed to the Portfolio (not ExecEngine) via msgbus.
+/// This follows the pattern used by BitMEX, OKX, and other reference adapters.
+fn dispatch_account_state(state: nautilus_model::events::AccountState) {
+    use std::any::Any;
+    msgbus::send_any("Portfolio.update_account".into(), &state as &dyn Any);
+}
+
+/// Dispatches execution reports to the execution engine.
+///
+/// This follows the standard adapter pattern where WebSocket handlers parse messages
+/// into reports, and a dispatch function sends them via the execution event system.
+/// The execution engine then handles cache lookups and event generation.
+///
+/// # Architecture
+///
+/// Per `docs/developer_guide/adapters.md`, adapters should:
+/// 1. Parse WebSocket messages into ExecutionReports in the handler
+/// 2. Dispatch reports via `get_exec_event_sender()`
+/// 3. Let the execution engine handle event generation (has cache access)
+///
+/// This pattern is used by Hyperliquid, OKX, BitMEX, and other reference adapters.
+fn dispatch_execution_report(report: ExecutionReport) {
+    let sender = get_exec_event_sender();
+    match report {
+        ExecutionReport::Order(order_report) => {
+            tracing::debug!(
+                "Dispatching order report: status={:?}, venue_order_id={:?}, client_order_id={:?}",
+                order_report.order_status,
+                order_report.venue_order_id,
+                order_report.client_order_id
+            );
+            let exec_report = nautilus_common::messages::ExecutionReport::OrderStatus(order_report);
+            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
+                tracing::warn!("Failed to send order status report: {e}");
+            }
+        }
+        ExecutionReport::Fill(fill_report) => {
+            tracing::debug!(
+                "Dispatching fill report: venue_order_id={}, trade_id={}",
+                fill_report.venue_order_id,
+                fill_report.trade_id
+            );
+            let exec_report = nautilus_common::messages::ExecutionReport::Fill(fill_report);
+            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
+                tracing::warn!("Failed to send fill report: {e}");
+            }
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl LiveExecutionClient for DydxExecutionClient {
     async fn generate_order_status_report(
         &self,
         cmd: &GenerateOrderStatusReport,

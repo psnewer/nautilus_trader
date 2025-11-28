@@ -349,7 +349,7 @@ fn datetime_to_unix_nanos(value: Option<DateTime<Utc>>) -> Option<UnixNanos> {
         .map(UnixNanos::from)
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for BitmexDataClient {
     fn client_id(&self) -> ClientId {
         self.client_id

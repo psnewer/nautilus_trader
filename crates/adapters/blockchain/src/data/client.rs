@@ -804,7 +804,7 @@ impl BlockchainDataClient {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for BlockchainDataClient {
     fn client_id(&self) -> ClientId {
         ClientId::from(format!("BLOCKCHAIN-{}", self.chain.name).as_str())

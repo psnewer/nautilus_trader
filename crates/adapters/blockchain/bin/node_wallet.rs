@@ -26,8 +26,7 @@ use nautilus_common::{
     runtime::get_runtime,
 };
 use nautilus_core::UUID4;
-use nautilus_execution::client::base::ExecutionClientCore;
-use nautilus_live::execution::client::LiveExecutionClient;
+use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
 use nautilus_model::{
     defi::chain::chains,
     enums::{AccountType, OmsType},
