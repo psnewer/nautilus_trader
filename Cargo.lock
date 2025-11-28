@@ -29,6 +29,7 @@ dependencies = [
  "const-random",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -4810,6 +4811,7 @@ dependencies = [
 name = "nautilus-analysis"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "nautilus-core",
  "nautilus-model",
@@ -4822,6 +4824,7 @@ dependencies = [
 name = "nautilus-backtest"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "async-trait",
  "cbindgen",
@@ -5593,6 +5596,7 @@ dependencies = [
 name = "nautilus-persistence"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "arrow",
  "binary-heap-plus",
@@ -5628,6 +5632,7 @@ dependencies = [
 name = "nautilus-portfolio"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "log",
  "nautilus-analysis",
  "nautilus-common",
@@ -5679,6 +5684,7 @@ dependencies = [
 name = "nautilus-risk"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -5721,6 +5727,7 @@ dependencies = [
 name = "nautilus-system"
 version = "0.52.0"
 dependencies = [
+ "ahash 0.8.12",
  "anyhow",
  "futures",
  "hostname",

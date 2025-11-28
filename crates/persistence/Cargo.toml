@@ -52,6 +52,7 @@ nautilus-core = { workspace = true, features = ["ffi"] }
 nautilus-model = { workspace = true, features = ["stubs"] }
 nautilus-serialization = { workspace = true }
 
+ahash = { workspace = true }
 anyhow = { workspace = true }
 arrow = { workspace = true }
 binary-heap-plus = { workspace = true }

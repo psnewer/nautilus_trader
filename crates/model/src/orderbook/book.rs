@@ -15,8 +15,9 @@
 
 //! A performant, generic, multi-purpose order book.
 
-use std::{collections::HashSet, fmt::Display};
+use std::fmt::Display;
 
+use ahash::AHashSet;
 use indexmap::IndexMap;
 use nautilus_core::UnixNanos;
 use rust_decimal::Decimal;
@@ -435,7 +436,7 @@ impl OrderBook {
         &self,
         depth: Option<usize>,
         own_book: Option<&OwnOrderBook>,
-        status: Option<HashSet<OrderStatus>>,
+        status: Option<AHashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         now: Option<u64>,
     ) -> IndexMap<Decimal, Decimal> {
@@ -463,7 +464,7 @@ impl OrderBook {
         &self,
         depth: Option<usize>,
         own_book: Option<&OwnOrderBook>,
-        status: Option<HashSet<OrderStatus>>,
+        status: Option<AHashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         now: Option<u64>,
     ) -> IndexMap<Decimal, Decimal> {
@@ -492,7 +493,7 @@ impl OrderBook {
         group_size: Decimal,
         depth: Option<usize>,
         own_book: Option<&OwnOrderBook>,
-        status: Option<HashSet<OrderStatus>>,
+        status: Option<AHashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         now: Option<u64>,
     ) -> IndexMap<Decimal, Decimal> {
@@ -518,7 +519,7 @@ impl OrderBook {
         group_size: Decimal,
         depth: Option<usize>,
         own_book: Option<&OwnOrderBook>,
-        status: Option<HashSet<OrderStatus>>,
+        status: Option<AHashSet<OrderStatus>>,
         accepted_buffer_ns: Option<u64>,
         now: Option<u64>,
     ) -> IndexMap<Decimal, Decimal> {

@@ -40,6 +40,7 @@ nautilus-portfolio = { workspace = true }
 nautilus-risk = { workspace = true }
 nautilus-trading = { workspace = true }
 
+ahash = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }

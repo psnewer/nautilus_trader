@@ -15,8 +15,7 @@
 
 //! Pool profiling utilities for analyzing DeFi pool event data.
 
-use std::collections::HashMap;
-
+use ahash::AHashMap;
 use alloy_primitives::{Address, I256, U160, U256};
 
 use crate::defi::{
@@ -71,7 +70,7 @@ pub struct PoolProfiler {
     /// Pool definition.
     pub pool: SharedPool,
     /// Position tracking by position key (owner:tick_lower:tick_upper).
-    positions: HashMap<String, PoolPosition>,
+    positions: AHashMap<String, PoolPosition>,
     /// Tick map managing liquidity distribution across price ranges.
     pub tick_map: TickMap,
     /// Global pool state including current price, tick, and cumulative flows with fees.
@@ -99,7 +98,7 @@ impl PoolProfiler {
         let tick_spacing = pool.tick_spacing.expect("Pool tick spacing must be set");
         Self {
             pool,
-            positions: HashMap::new(),
+            positions: AHashMap::new(),
             tick_map: TickMap::new(tick_spacing),
             state: PoolState::default(),
             analytics: PoolAnalytics::default(),
@@ -1431,7 +1430,7 @@ impl PoolProfiler {
         self.analytics.total_fee_collects = snapshot.analytics.total_fee_collects;
         self.analytics.total_flashes = snapshot.analytics.total_flashes;
 
-        // Rebuild positions HashMap
+        // Rebuild positions AHashMap
         self.positions.clear();
         for position in snapshot.positions {
             let key = PoolPosition::get_position_key(

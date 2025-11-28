@@ -16,11 +16,11 @@
 //! A `Position` for the trading domain model.
 
 use std::{
-    collections::{HashMap, HashSet},
     fmt::Display,
     hash::{Hash, Hasher},
 };
 
+use ahash::{AHashMap, AHashSet};
 use nautilus_core::{
     UUID4, UnixNanos,
     correctness::{FAILED, check_equal, check_predicate_true},
@@ -86,7 +86,7 @@ pub struct Position {
     pub trade_ids: Vec<TradeId>,
     pub buy_qty: Quantity,
     pub sell_qty: Quantity,
-    pub commissions: HashMap<Currency, Money>,
+    pub commissions: AHashMap<Currency, Money>,
 }
 
 impl Position {
@@ -116,7 +116,7 @@ impl Position {
             trade_ids: Vec::<TradeId>::new(),
             buy_qty: Quantity::zero(instrument.size_precision()),
             sell_qty: Quantity::zero(instrument.size_precision()),
-            commissions: HashMap::<Currency, Money>::new(),
+            commissions: AHashMap::<Currency, Money>::new(),
             trader_id: fill.trader_id,
             strategy_id: fill.strategy_id,
             instrument_id: fill.instrument_id,
@@ -743,7 +743,7 @@ impl Position {
             .events
             .iter()
             .map(|event| event.client_order_id)
-            .collect::<HashSet<ClientOrderId>>()
+            .collect::<AHashSet<ClientOrderId>>()
             .into_iter()
             .collect::<Vec<ClientOrderId>>();
         result.sort_unstable();
@@ -757,7 +757,7 @@ impl Position {
             .events
             .iter()
             .map(|event| event.venue_order_id)
-            .collect::<HashSet<VenueOrderId>>()
+            .collect::<AHashSet<VenueOrderId>>()
             .into_iter()
             .collect::<Vec<VenueOrderId>>();
         result.sort_unstable();
@@ -770,7 +770,7 @@ impl Position {
             .events
             .iter()
             .map(|event| event.trade_id)
-            .collect::<HashSet<TradeId>>()
+            .collect::<AHashSet<TradeId>>()
             .into_iter()
             .collect::<Vec<TradeId>>();
         result.sort_unstable();

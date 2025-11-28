@@ -13,8 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{any::Any, cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
+use std::{any::Any, cell::RefCell, fmt::Debug, rc::Rc};
 
+use ahash::AHashMap;
 use nautilus_common::{cache::Cache, clock::Clock};
 use nautilus_data::client::DataClient;
 use nautilus_execution::client::ExecutionClient;
@@ -84,7 +85,7 @@ pub trait ExecutionClientFactory: Send + Sync + Debug {
 /// enabling a plugin-like architecture for different data providers.
 #[derive(Debug, Default)]
 pub struct DataClientFactoryRegistry {
-    factories: std::collections::HashMap<String, Box<dyn DataClientFactory>>,
+    factories: AHashMap<String, Box<dyn DataClientFactory>>,
 }
 
 impl DataClientFactoryRegistry {
@@ -92,7 +93,7 @@ impl DataClientFactoryRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            factories: std::collections::HashMap::new(),
+            factories: AHashMap::new(),
         }
     }
 
@@ -143,7 +144,7 @@ impl DataClientFactoryRegistry {
 /// enabling a plugin-like architecture for different execution providers.
 #[derive(Debug, Default)]
 pub struct ExecutionClientFactoryRegistry {
-    factories: HashMap<String, Box<dyn ExecutionClientFactory>>,
+    factories: AHashMap<String, Box<dyn ExecutionClientFactory>>,
 }
 
 impl ExecutionClientFactoryRegistry {
@@ -151,7 +152,7 @@ impl ExecutionClientFactoryRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            factories: std::collections::HashMap::new(),
+            factories: AHashMap::new(),
         }
     }
 
