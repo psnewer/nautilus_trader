@@ -6,7 +6,6 @@ This release adds support for Python 3.14 with the following limitations:
 - dYdX adapter extras (`[dydx]`) unavailable due to upstream `coincurve` compatibility (available on Python 3.12-3.13)
 - Interactive Brokers adapter extras (`[ib]`) unavailable due to upstream `nautilus-ibapi` compatibility (available on Python 3.12-3.13)
 
-
 ### Enhancements
 - Added support for Python 3.14
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
@@ -65,6 +64,8 @@ TBD
 - Fixed spawned order client_id caching in `ExecAlgorithm` (#3122), thanks for reporting @kirill-gr1
 - Fixed parse_dates parameter in CSV loaders (#3132), thanks @maomao9-0
 - Fixed `GreeksCalculator` handling of missing price data (#3116), thanks for reporting @q351941406
+- Fixed `StreamingFeatherWriter` `_setup_streaming` with `replace_existing` config (#3234), thanks @cauta
+- Fixed conversion of streamed instruments to catalog (#3235), thanks @faysou
 - Fixed active liquidity calculation Pool profiler simulation (#3165), thanks @filipmacek
 - Fixed Betfair datetime encoding error in order status reports
 - Fixed Betfair login race condition during concurrent connections
@@ -98,6 +99,7 @@ TBD
 - Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
+- Implemented dual-parser architecture for DEX event parsing (#3228), thanks @filipmacek
 - Scaffolded blockchain execution client with native balance fetch (#3214), thanks @filipmacek
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
@@ -113,6 +115,7 @@ TBD
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
 - Improved dYdX adapter test coverage (#3212), thanks @nicolad
+- Improved dYdX network, bars, and batch cancel (#3231), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
