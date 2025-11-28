@@ -29,7 +29,7 @@ extension-module = [
   "python",
   "pyo3/extension-module",
 ]
-ffi = ["nautilus-core/ffi", "nautilus-model/ffi", "cbindgen"]
+ffi = ["nautilus-core/ffi", "nautilus-model/ffi", "cbindgen", "live"]
 indicators = ["nautilus-indicators"]
 python = [
   "nautilus-core/python",

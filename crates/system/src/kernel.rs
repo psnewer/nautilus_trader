@@ -23,12 +23,13 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(feature = "live")]
+use nautilus_common::live::clock::LiveClock;
 use nautilus_common::{
     cache::{Cache, CacheConfig, database::CacheDatabaseAdapter},
     clock::{Clock, TestClock},
     component::Component,
     enums::Environment,
-    live::clock::LiveClock,
     logging::{
         headers, init_logging, init_tracing,
         logger::{LogGuard, LoggerConfig},
@@ -252,9 +253,17 @@ impl NautilusKernel {
                 let test_clock = TestClock::new();
                 Rc::new(RefCell::new(test_clock))
             }
+            #[cfg(feature = "live")]
             Environment::Live | Environment::Sandbox => {
                 let live_clock = LiveClock::default();
                 Rc::new(RefCell::new(live_clock))
+            }
+            #[cfg(not(feature = "live"))]
+            Environment::Live | Environment::Sandbox => {
+                panic!(
+                    "Live/Sandbox environment requires the 'live' feature to be enabled. \
+                     Build with `--features live` or add `features = [\"live\"]` to your dependency."
+                );
             }
         }
     }

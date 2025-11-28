@@ -23,6 +23,7 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = []
 extension-module = ["python", "pyo3/extension-module"]
+live = ["nautilus-common/live"]
 python = ["pyo3"]
 
 [package.metadata.docs.rs]
