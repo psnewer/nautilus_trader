@@ -643,7 +643,7 @@ fn handle_error_msg(msg: &dbn::ErrorMsg) {
 
 /// Handles Databento system messages by logging them.
 fn handle_system_msg(msg: &dbn::SystemMsg) {
-    tracing::info!("{msg:?}");
+    tracing::debug!("{msg:?}");
 }
 
 /// Handles symbol mapping messages and updates the instrument ID map.
