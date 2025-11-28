@@ -72,7 +72,6 @@ thousands = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ustr = { workspace = true }
-uuid = { workspace = true }
 
 alloy-primitives = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
