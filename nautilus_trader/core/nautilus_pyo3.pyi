@@ -7615,10 +7615,9 @@ class KrakenProductType(Enum):
     SPOT = "spot"
     FUTURES = "futures"
 
-class KrakenHttpClient:
+class KrakenSpotHttpClient:
     def __init__(
         self,
-        product_type: KrakenProductType = ...,
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
@@ -7632,33 +7631,12 @@ class KrakenHttpClient:
     @property
     def base_url(self) -> str: ...
     @property
-    def product_type(self) -> KrakenProductType: ...
-    @property
     def api_key(self) -> str | None: ...
     @property
     def api_key_masked(self) -> str | None: ...
     def cache_instrument(self, instrument: Instrument) -> None: ...
     def cancel_all_requests(self) -> None: ...
     async def get_server_time(self) -> str: ...
-    async def get_system_status(self) -> str: ...
-    async def get_asset_pairs(self, pairs: list[str] | None = None) -> str: ...
-    async def get_ticker(self, pairs: list[str]) -> str: ...
-    async def get_ohlc(
-        self,
-        pair: str,
-        interval: int | None = None,
-        since: int | None = None,
-    ) -> str: ...
-    async def get_order_book(
-        self,
-        pair: str,
-        count: int | None = None,
-    ) -> str: ...
-    async def get_trades(
-        self,
-        pair: str,
-        since: str | None = None,
-    ) -> str: ...
     async def request_instruments(
         self,
         pairs: list[str] | None = None,
@@ -7676,6 +7654,53 @@ class KrakenHttpClient:
         start: int | None = None,
         end: int | None = None,
         limit: int | None = None,
+    ) -> list[Bar]: ...
+
+class KrakenFuturesHttpClient:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        base_url: str | None = None,
+        testnet: bool = False,
+        timeout_secs: int | None = None,
+        max_retries: int | None = None,
+        retry_delay_ms: int | None = None,
+        retry_delay_max_ms: int | None = None,
+        proxy_url: str | None = None,
+    ) -> None: ...
+    @property
+    def base_url(self) -> str: ...
+    @property
+    def api_key(self) -> str | None: ...
+    @property
+    def api_key_masked(self) -> str | None: ...
+    def cache_instrument(self, instrument: Instrument) -> None: ...
+    def cancel_all_requests(self) -> None: ...
+    async def request_mark_price(self, instrument_id: InstrumentId) -> float: ...
+    async def request_index_price(self, instrument_id: InstrumentId) -> float: ...
+    async def request_instruments(self) -> list[Instrument]: ...
+    async def request_trades(
+        self,
+        instrument_id: InstrumentId,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int | None = None,
+    ) -> list[TradeTick]: ...
+    async def request_bars(
+        self,
+        bar_type: BarType,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int | None = None,
+    ) -> list[Bar]: ...
+    async def request_bars_with_tick_type(
+        self,
+        bar_type: BarType,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int | None = None,
+        tick_type: str | None = None,
     ) -> list[Bar]: ...
 
 class KrakenSpotWebSocketClient:

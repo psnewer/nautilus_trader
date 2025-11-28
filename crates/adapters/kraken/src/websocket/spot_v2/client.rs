@@ -38,7 +38,7 @@ use super::{
     messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
 use crate::{
-    config::KrakenDataClientConfig, http::client::KrakenHttpClient, websocket::error::KrakenWsError,
+    config::KrakenDataClientConfig, http::KrakenSpotHttpClient, websocket::error::KrakenWsError,
 };
 
 #[derive(Debug)]
@@ -271,10 +271,9 @@ impl KrakenSpotWebSocketClient {
                 KrakenWsError::AuthenticationError("Missing API secret".to_string())
             })?;
 
-        let http_client = KrakenHttpClient::with_credentials(
+        let http_client = KrakenSpotHttpClient::with_credentials(
             api_key,
             api_secret,
-            self.config.product_type,
             self.config.environment,
             Some(self.config.http_base_url()),
             self.config.timeout_secs,
