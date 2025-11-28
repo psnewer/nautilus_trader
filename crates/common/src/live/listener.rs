@@ -102,7 +102,6 @@ impl MessageBusListener {
 mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
-    use tokio::sync::mpsc;
     use ustr::Ustr;
 
     use super::*;
@@ -130,7 +129,7 @@ mod tests {
             .expect("Failed to get stream receiver");
 
         // Create a simple channel to collect messages
-        let (notify_tx, mut notify_rx) = mpsc::channel::<()>(1);
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         // Spawn a task to process messages
         let handle = tokio::spawn(async move {
@@ -250,7 +249,7 @@ mod tests {
             .get_stream_receiver()
             .expect("Failed to get stream receiver");
 
-        let (notify_tx, mut notify_rx) = mpsc::channel::<()>(1);
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         // Spawn a task to process the message
         let handle = tokio::spawn(async move {
@@ -287,7 +286,7 @@ mod tests {
             .get_stream_receiver()
             .expect("Failed to get stream receiver");
 
-        let (notify_tx, mut notify_rx) = mpsc::channel::<()>(1);
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         let handle = tokio::spawn(async move {
             let stream = MessageBusListener::stream(rx);

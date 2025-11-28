@@ -28,7 +28,6 @@ use futures::Stream;
 use nautilus_core::{
     AtomicTime, UnixNanos, correctness::check_predicate_true, time::get_atomic_clock_realtime,
 };
-use tokio::sync::Mutex;
 use ustr::Ustr;
 
 use super::timer::LiveTimer;
@@ -283,11 +282,11 @@ impl Clock for LiveClock {
 // Helper struct to stream events from the heap
 #[derive(Debug)]
 pub struct TimeEventStream {
-    heap: Arc<Mutex<BinaryHeap<ScheduledTimeEvent>>>,
+    heap: Arc<tokio::sync::Mutex<BinaryHeap<ScheduledTimeEvent>>>,
 }
 
 impl TimeEventStream {
-    pub const fn new(heap: Arc<Mutex<BinaryHeap<ScheduledTimeEvent>>>) -> Self {
+    pub const fn new(heap: Arc<tokio::sync::Mutex<BinaryHeap<ScheduledTimeEvent>>>) -> Self {
         Self { heap }
     }
 }

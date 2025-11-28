@@ -38,26 +38,25 @@ use nautilus_common::testing::wait_until_async;
 use nautilus_model::identifiers::AccountId;
 use rstest::rstest;
 use serde_json::json;
-use tokio::sync::Mutex;
 
 const TEST_PING_PAYLOAD: &[u8] = b"test-server-ping";
 
 // Test server state for tracking WebSocket connections
 #[derive(Clone)]
 struct TestServerState {
-    connection_count: Arc<Mutex<usize>>,
-    subscriptions: Arc<Mutex<Vec<String>>>,
+    connection_count: Arc<tokio::sync::Mutex<usize>>,
+    subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
     authenticated: Arc<AtomicBool>,
     drop_connections: Arc<AtomicBool>,
     drop_next_connection: Arc<AtomicBool>,
     silent_drop: Arc<AtomicBool>,
-    auth_calls: Arc<Mutex<usize>>,
+    auth_calls: Arc<tokio::sync::Mutex<usize>>,
     send_initial_ping: Arc<AtomicBool>,
     received_pong: Arc<AtomicBool>,
-    last_pong: Arc<Mutex<Option<Vec<u8>>>>,
-    fail_next_subscriptions: Arc<Mutex<Vec<String>>>,
-    auth_response_delay_ms: Arc<Mutex<Option<u64>>>,
-    subscription_events: Arc<Mutex<Vec<(String, bool)>>>,
+    last_pong: Arc<tokio::sync::Mutex<Option<Vec<u8>>>>,
+    fail_next_subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
+    auth_response_delay_ms: Arc<tokio::sync::Mutex<Option<u64>>>,
+    subscription_events: Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
     ping_count: Arc<AtomicUsize>,
     pong_count: Arc<AtomicUsize>,
     fail_next_auth: Arc<AtomicBool>,
@@ -87,19 +86,19 @@ impl TestServerState {
 impl Default for TestServerState {
     fn default() -> Self {
         Self {
-            connection_count: Arc::new(Mutex::new(0)),
-            subscriptions: Arc::new(Mutex::new(Vec::new())),
+            connection_count: Arc::new(tokio::sync::Mutex::new(0)),
+            subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             authenticated: Arc::new(AtomicBool::new(false)),
             drop_connections: Arc::new(AtomicBool::new(false)),
             drop_next_connection: Arc::new(AtomicBool::new(false)),
             silent_drop: Arc::new(AtomicBool::new(false)),
-            auth_calls: Arc::new(Mutex::new(0)),
+            auth_calls: Arc::new(tokio::sync::Mutex::new(0)),
             send_initial_ping: Arc::new(AtomicBool::new(false)),
             received_pong: Arc::new(AtomicBool::new(false)),
-            last_pong: Arc::new(Mutex::new(None)),
-            fail_next_subscriptions: Arc::new(Mutex::new(Vec::new())),
-            auth_response_delay_ms: Arc::new(Mutex::new(None)),
-            subscription_events: Arc::new(Mutex::new(Vec::new())),
+            last_pong: Arc::new(tokio::sync::Mutex::new(None)),
+            fail_next_subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            auth_response_delay_ms: Arc::new(tokio::sync::Mutex::new(None)),
+            subscription_events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             ping_count: Arc::new(AtomicUsize::new(0)),
             pong_count: Arc::new(AtomicUsize::new(0)),
             fail_next_auth: Arc::new(AtomicBool::new(false)),

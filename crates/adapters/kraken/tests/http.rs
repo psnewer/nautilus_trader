@@ -43,13 +43,12 @@ use nautilus_model::{
 };
 use rstest::rstest;
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 #[derive(Clone, Default)]
 struct TestServerState {
     request_count: Arc<AtomicUsize>,
-    last_trades_query: Arc<Mutex<Option<HashMap<String, String>>>>,
-    last_ohlc_query: Arc<Mutex<Option<HashMap<String, String>>>>,
+    last_trades_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    last_ohlc_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
 }
 
 #[allow(dead_code)]

@@ -38,14 +38,13 @@ use nautilus_dydx::websocket::client::DydxWebSocketClient;
 use nautilus_model::identifiers::InstrumentId;
 use rstest::rstest;
 use serde_json::json;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct TestServerState {
-    connection_count: Arc<Mutex<usize>>,
-    subscriptions: Arc<Mutex<Vec<String>>>,
-    subscription_events: Arc<Mutex<Vec<(String, bool)>>>,
-    fail_next_subscriptions: Arc<Mutex<Vec<String>>>,
+    connection_count: Arc<tokio::sync::Mutex<usize>>,
+    subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
+    subscription_events: Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
+    fail_next_subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
     disconnect_trigger: Arc<AtomicBool>,
     ping_count: Arc<AtomicUsize>,
     pong_count: Arc<AtomicUsize>,
@@ -54,10 +53,10 @@ struct TestServerState {
 impl Default for TestServerState {
     fn default() -> Self {
         Self {
-            connection_count: Arc::new(Mutex::new(0)),
-            subscriptions: Arc::new(Mutex::new(Vec::new())),
-            subscription_events: Arc::new(Mutex::new(Vec::new())),
-            fail_next_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            connection_count: Arc::new(tokio::sync::Mutex::new(0)),
+            subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            subscription_events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            fail_next_subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             disconnect_trigger: Arc::new(AtomicBool::new(false)),
             ping_count: Arc::new(AtomicUsize::new(0)),
             pong_count: Arc::new(AtomicUsize::new(0)),

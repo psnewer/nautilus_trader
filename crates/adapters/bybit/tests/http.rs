@@ -43,27 +43,26 @@ use nautilus_model::{
 };
 use rstest::rstest;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 
-type SettleCoinQueries = Arc<Mutex<Vec<(String, Option<String>)>>>;
+type SettleCoinQueries = Arc<tokio::sync::Mutex<Vec<(String, Option<String>)>>>;
 
 #[allow(dead_code)]
 #[derive(Clone)]
 struct TestServerState {
-    request_count: Arc<Mutex<usize>>,
+    request_count: Arc<tokio::sync::Mutex<usize>>,
     // (endpoint, settle_coin)
     settle_coin_queries: SettleCoinQueries,
-    realtime_requests: Arc<Mutex<usize>>,
-    history_requests: Arc<Mutex<usize>>,
+    realtime_requests: Arc<tokio::sync::Mutex<usize>>,
+    history_requests: Arc<tokio::sync::Mutex<usize>>,
 }
 
 impl Default for TestServerState {
     fn default() -> Self {
         Self {
-            request_count: Arc::new(Mutex::new(0)),
-            settle_coin_queries: Arc::new(Mutex::new(Vec::new())),
-            realtime_requests: Arc::new(Mutex::new(0)),
-            history_requests: Arc::new(Mutex::new(0)),
+            request_count: Arc::new(tokio::sync::Mutex::new(0)),
+            settle_coin_queries: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            realtime_requests: Arc::new(tokio::sync::Mutex::new(0)),
+            history_requests: Arc::new(tokio::sync::Mutex::new(0)),
         }
     }
 }

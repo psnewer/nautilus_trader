@@ -46,7 +46,6 @@ use nautilus_network::{
 use reqwest::{Method, header::USER_AGENT};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tokio::time::sleep;
 use ustr::Ustr;
 
 use crate::{
@@ -398,7 +397,7 @@ impl HyperliquidRawHttpClient {
                     );
                 tracing::warn!(endpoint=?request, attempt, wait_ms=?delay.as_millis(), "429 Too Many Requests; backing off");
                 attempt += 1;
-                sleep(delay).await;
+                tokio::time::sleep(delay).await;
                 // tiny re-acquire to avoid stampede exactly on minute boundary
                 self.rest_limiter.acquire(1).await;
                 continue;
@@ -415,7 +414,7 @@ impl HyperliquidRawHttpClient {
                 );
                 tracing::warn!(endpoint=?request, attempt, status=?response.status.as_u16(), wait_ms=?delay.as_millis(), "transient error; retrying");
                 attempt += 1;
-                sleep(delay).await;
+                tokio::time::sleep(delay).await;
                 continue;
             }
 

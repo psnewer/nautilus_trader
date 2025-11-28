@@ -53,17 +53,16 @@ use nautilus_model::{
 };
 use rstest::rstest;
 use serde_json::json;
-use tokio::sync::Mutex;
 use ustr::Ustr;
 
 // Test server state for tracking WebSocket connections
 #[derive(Clone)]
 struct TestServerState {
-    connection_count: Arc<Mutex<usize>>,
-    subscriptions: Arc<Mutex<Vec<String>>>,
-    subscription_events: Arc<Mutex<Vec<(String, bool)>>>, // (topic, success)
-    fail_next_subscriptions: Arc<Mutex<Vec<String>>>,
-    auth_response_delay_ms: Arc<Mutex<Option<u64>>>,
+    connection_count: Arc<tokio::sync::Mutex<usize>>,
+    subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
+    subscription_events: Arc<tokio::sync::Mutex<Vec<(String, bool)>>>, // (topic, success)
+    fail_next_subscriptions: Arc<tokio::sync::Mutex<Vec<String>>>,
+    auth_response_delay_ms: Arc<tokio::sync::Mutex<Option<u64>>>,
     authenticated: Arc<AtomicBool>,
     disconnect_trigger: Arc<AtomicBool>,
     ping_count: Arc<AtomicUsize>,
@@ -73,11 +72,11 @@ struct TestServerState {
 impl Default for TestServerState {
     fn default() -> Self {
         Self {
-            connection_count: Arc::new(Mutex::new(0)),
-            subscriptions: Arc::new(Mutex::new(Vec::new())),
-            subscription_events: Arc::new(Mutex::new(Vec::new())),
-            fail_next_subscriptions: Arc::new(Mutex::new(Vec::new())),
-            auth_response_delay_ms: Arc::new(Mutex::new(None)),
+            connection_count: Arc::new(tokio::sync::Mutex::new(0)),
+            subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            subscription_events: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            fail_next_subscriptions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            auth_response_delay_ms: Arc::new(tokio::sync::Mutex::new(None)),
             authenticated: Arc::new(AtomicBool::new(false)),
             disconnect_trigger: Arc::new(AtomicBool::new(false)),
             ping_count: Arc::new(AtomicUsize::new(0)),

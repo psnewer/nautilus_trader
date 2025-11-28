@@ -28,7 +28,6 @@ use nautilus_network::{
     mode::ConnectionMode,
     websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
 };
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
@@ -56,8 +55,8 @@ pub struct KrakenSpotWebSocketClient {
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
     cancellation_token: CancellationToken,
-    req_id_counter: Arc<RwLock<u64>>,
-    auth_token: Arc<RwLock<Option<String>>>,
+    req_id_counter: Arc<tokio::sync::RwLock<u64>>,
+    auth_token: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl Clone for KrakenSpotWebSocketClient {
@@ -95,8 +94,8 @@ impl KrakenSpotWebSocketClient {
             task_handle: None,
             subscriptions: Arc::new(DashMap::new()),
             cancellation_token,
-            req_id_counter: Arc::new(RwLock::new(0)),
-            auth_token: Arc::new(RwLock::new(None)),
+            req_id_counter: Arc::new(tokio::sync::RwLock::new(0)),
+            auth_token: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 

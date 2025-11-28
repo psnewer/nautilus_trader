@@ -36,17 +36,16 @@ use nautilus_bitmex::{
 use nautilus_model::{identifiers::InstrumentId, instruments::Instrument};
 use rstest::rstest;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct TestServerState {
-    request_count: Arc<Mutex<usize>>,
+    request_count: Arc<tokio::sync::Mutex<usize>>,
 }
 
 impl Default for TestServerState {
     fn default() -> Self {
         Self {
-            request_count: Arc::new(Mutex::new(0)),
+            request_count: Arc::new(tokio::sync::Mutex::new(0)),
         }
     }
 }

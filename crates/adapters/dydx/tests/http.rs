@@ -31,12 +31,11 @@ use nautilus_dydx::{
 use nautilus_model::instruments::Instrument;
 use rstest::rstest;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 use ustr::Ustr;
 
 #[derive(Clone, Default)]
 struct TestServerState {
-    request_count: Arc<Mutex<usize>>,
+    request_count: Arc<tokio::sync::Mutex<usize>>,
 }
 
 fn load_test_instruments() -> Value {
@@ -1548,7 +1547,7 @@ async fn test_retry_exhaustion() {
 #[rstest]
 #[tokio::test]
 async fn test_mixed_success_and_error_responses() {
-    let counter = Arc::new(Mutex::new(0));
+    let counter = Arc::new(tokio::sync::Mutex::new(0));
     let state = TestServerState::default();
 
     let router = Router::new()

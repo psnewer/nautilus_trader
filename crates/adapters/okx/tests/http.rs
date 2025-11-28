@@ -50,16 +50,15 @@ use nautilus_okx::{
 };
 use rstest::rstest;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 use ustr::Ustr;
 
 #[derive(Clone, Default)]
 struct TestServerState {
-    request_count: Arc<Mutex<usize>>,
-    last_history_trades_query: Arc<Mutex<Option<HashMap<String, String>>>>,
-    last_pending_orders_query: Arc<Mutex<Option<HashMap<String, String>>>>,
-    last_order_history_query: Arc<Mutex<Option<HashMap<String, String>>>>,
-    last_order_detail_query: Arc<Mutex<Option<HashMap<String, String>>>>,
+    request_count: Arc<tokio::sync::Mutex<usize>>,
+    last_history_trades_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    last_pending_orders_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    last_order_history_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    last_order_detail_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
 }
 
 fn manifest_path() -> PathBuf {

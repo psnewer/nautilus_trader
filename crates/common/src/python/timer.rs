@@ -164,14 +164,13 @@ impl TimeEvent {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroU64, sync::Arc};
+    use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
     use nautilus_core::{
         UnixNanos, datetime::NANOSECONDS_IN_MILLISECOND, python::IntoPyObjectNautilusExt,
         time::get_atomic_clock_realtime,
     };
     use pyo3::prelude::*;
-    use tokio::time::Duration;
 
     use crate::{
         live::timer::LiveTimer,

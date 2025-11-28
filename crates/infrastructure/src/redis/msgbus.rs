@@ -42,7 +42,6 @@ use nautilus_cryptography::providers::install_cryptographic_provider;
 use nautilus_model::identifiers::TraderId;
 use redis::{AsyncCommands, streams};
 use streams::StreamReadOptions;
-use tokio::time::Instant;
 use ustr::Ustr;
 
 use super::{REDIS_MINID, REDIS_XTRIM, await_handle};
@@ -327,7 +326,7 @@ pub async fn publish_messages(
                 }
 
                 // Schedule the next tick
-                flush_timer.as_mut().reset(Instant::now() + buffer_interval);
+                flush_timer.as_mut().reset(tokio::time::Instant::now() + buffer_interval);
             }
         }
     }
