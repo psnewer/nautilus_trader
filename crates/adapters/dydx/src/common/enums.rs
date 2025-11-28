@@ -19,9 +19,7 @@ use nautilus_model::enums::{LiquiditySide, OrderSide, OrderStatus, OrderType, Po
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
-use crate::grpc::types::ChainId;
-
-use crate::error::DydxError;
+use crate::{error::DydxError, grpc::types::ChainId};
 
 /// dYdX order status throughout its lifecycle.
 #[derive(
