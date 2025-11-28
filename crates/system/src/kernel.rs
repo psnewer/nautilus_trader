@@ -25,9 +25,10 @@ use std::{
 
 use nautilus_common::{
     cache::{Cache, CacheConfig, database::CacheDatabaseAdapter},
-    clock::{Clock, LiveClock, TestClock},
+    clock::{Clock, TestClock},
     component::Component,
     enums::Environment,
+    live::clock::LiveClock,
     logging::{
         headers, init_logging, init_tracing,
         logger::{LogGuard, LoggerConfig},

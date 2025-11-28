@@ -1613,7 +1613,7 @@ impl ParquetDataCatalog {
     where
         F: std::future::Future<Output = anyhow::Result<R>>,
     {
-        let rt = nautilus_common::runtime::get_runtime();
+        let rt = nautilus_common::live::runtime::get_runtime();
         rt.block_on(future)
     }
 }

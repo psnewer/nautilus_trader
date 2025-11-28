@@ -25,6 +25,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
+    live::runner::get_data_event_sender,
     messages::{
         DataEvent,
         data::{
@@ -37,7 +38,6 @@ use nautilus_common::{
             UnsubscribeIndexPrices, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
-    runner::get_data_event_sender,
 };
 use nautilus_core::{
     MUTEX_POISONED, UnixNanos,

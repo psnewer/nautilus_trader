@@ -41,7 +41,7 @@ extension-module = [
 ]
 
 [dependencies]
-nautilus-common = { workspace = true }
+nautilus-common = { workspace = true, features = ["live"] }
 nautilus-core = { workspace = true }
 nautilus-data = { workspace = true }
 nautilus-execution = { workspace = true }

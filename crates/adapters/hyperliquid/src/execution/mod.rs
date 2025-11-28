@@ -20,6 +20,7 @@ use std::{str::FromStr, sync::Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_common::{
+    live::{runner::get_exec_event_sender, runtime::get_runtime},
     messages::{
         ExecutionEvent, ExecutionReport as NautilusExecutionReport,
         execution::{
@@ -28,8 +29,6 @@ use nautilus_common::{
             QueryOrder, SubmitOrder, SubmitOrderList,
         },
     },
-    runner::get_exec_event_sender,
-    runtime::get_runtime,
 };
 use nautilus_core::{MUTEX_POISONED, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};

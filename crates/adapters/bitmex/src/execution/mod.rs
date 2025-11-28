@@ -24,6 +24,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
+    live::{runner::get_exec_event_sender, runtime::get_runtime},
     messages::{
         ExecutionEvent,
         execution::{
@@ -33,8 +34,6 @@ use nautilus_common::{
         },
     },
     msgbus,
-    runner::get_exec_event_sender,
-    runtime::get_runtime,
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};

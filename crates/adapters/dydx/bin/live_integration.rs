@@ -37,11 +37,11 @@
 use std::time::Duration;
 
 use nautilus_common::{
+    live::runner::set_data_event_sender,
     messages::{
         DataEvent, DataResponse,
         data::{RequestBars, SubscribeBars, SubscribeBookDeltas, SubscribeTrades},
     },
-    runner::set_data_event_sender,
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_data::client::DataClient;

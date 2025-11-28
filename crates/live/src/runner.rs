@@ -16,13 +16,14 @@
 use std::{fmt::Debug, sync::Arc};
 
 use nautilus_common::{
+    live::runner::{set_data_event_sender, set_exec_event_sender},
     messages::{
         DataEvent, ExecutionEvent, ExecutionReport, data::DataCommand, execution::TradingCommand,
     },
     msgbus::{self, switchboard::MessagingSwitchboard},
     runner::{
         DataCommandSender, TimeEventSender, TradingCommandSender, set_data_cmd_sender,
-        set_data_event_sender, set_exec_cmd_sender, set_exec_event_sender, set_time_event_sender,
+        set_exec_cmd_sender, set_time_event_sender,
     },
     timer::TimeEventHandlerV2,
 };

@@ -26,13 +26,13 @@ use std::{
 use bytes::Bytes;
 use futures::stream::Stream;
 use nautilus_common::{
+    live::runtime::get_runtime,
     logging::{log_task_error, log_task_started, log_task_stopped},
     msgbus::{
         BusMessage,
         database::{DatabaseConfig, MessageBusConfig, MessageBusDatabaseAdapter},
         switchboard::CLOSE_TOPIC,
     },
-    runtime::get_runtime,
 };
 use nautilus_core::{
     UUID4,

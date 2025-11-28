@@ -174,9 +174,10 @@ mod tests {
     use tokio::time::Duration;
 
     use crate::{
+        live::timer::LiveTimer,
         runner::{TimeEventSender, set_time_event_sender},
         testing::wait_until,
-        timer::{LiveTimer, TimeEvent, TimeEventCallback},
+        timer::{TimeEvent, TimeEventCallback},
     };
 
     #[pyfunction]

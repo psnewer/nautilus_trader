@@ -28,7 +28,7 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::Stream;
-use nautilus_common::runtime::get_runtime;
+use nautilus_common::live::runtime::get_runtime;
 use nautilus_core::{consts::NAUTILUS_USER_AGENT, env::get_env_var};
 use nautilus_model::{
     data::bar::BarType,

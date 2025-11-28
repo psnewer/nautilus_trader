@@ -31,6 +31,7 @@ use ahash::AHashMap;
 use databento::live::Subscription;
 use indexmap::IndexMap;
 use nautilus_common::{
+    live::runner::get_data_event_sender,
     messages::{
         DataEvent,
         data::{
@@ -39,7 +40,6 @@ use nautilus_common::{
             UnsubscribeInstrumentStatus, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
-    runner::get_data_event_sender,
 };
 use nautilus_core::{MUTEX_POISONED, time::AtomicTime};
 use nautilus_data::client::DataClient;

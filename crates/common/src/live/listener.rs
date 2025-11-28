@@ -13,10 +13,12 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Message bus listener for live trading using tokio channels.
+
 use bytes::Bytes;
 use futures::stream::Stream;
 
-use super::{BusMessage, MStr, Topic};
+use crate::msgbus::{BusMessage, MStr, Topic};
 
 #[cfg_attr(
     feature = "python",

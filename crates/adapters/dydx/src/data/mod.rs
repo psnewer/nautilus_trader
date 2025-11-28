@@ -23,6 +23,7 @@ use std::sync::{
 use anyhow::Context;
 use dashmap::DashMap;
 use nautilus_common::{
+    live::runner::get_data_event_sender,
     messages::{
         DataEvent, DataResponse,
         data::{
@@ -34,7 +35,6 @@ use nautilus_common::{
             UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
-    runner::get_data_event_sender,
 };
 use nautilus_core::{
     UnixNanos,
@@ -2249,8 +2249,8 @@ mod tests {
     };
     use indexmap::IndexMap;
     use nautilus_common::{
+        live::runner::set_data_event_sender,
         messages::{DataEvent, data::DataResponse},
-        runner::set_data_event_sender,
     };
     use nautilus_core::UUID4;
     use nautilus_model::{

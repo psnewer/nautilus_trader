@@ -22,7 +22,7 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use nautilus_common::runtime::get_runtime;
+use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{data::BarType, identifiers::InstrumentId, instruments::InstrumentAny};
 use nautilus_network::{
     mode::ConnectionMode,

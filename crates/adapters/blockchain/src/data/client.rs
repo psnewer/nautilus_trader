@@ -14,6 +14,7 @@
 // -------------------------------------------------------------------------------------------------
 
 use nautilus_common::{
+    live::runtime::get_runtime,
     messages::{
         DataEvent,
         defi::{
@@ -24,7 +25,6 @@ use nautilus_common::{
             UnsubscribePoolLiquidityUpdates, UnsubscribePoolSwaps,
         },
     },
-    runtime::get_runtime,
 };
 use nautilus_data::client::DataClient;
 use nautilus_model::{
@@ -108,7 +108,7 @@ impl BlockchainDataClient {
 
         let cancellation_token = self.cancellation_token.clone();
 
-        let data_tx = nautilus_common::runner::get_data_event_sender();
+        let data_tx = nautilus_common::live::runner::get_data_event_sender();
 
         let mut hypersync_rx = self.hypersync_rx.take().unwrap();
         let hypersync_tx = self.hypersync_tx.take();

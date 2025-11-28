@@ -30,9 +30,9 @@ use std::{
 
 use nautilus_common::{
     actor::{Actor, DataActor},
-    clock::LiveClock,
     component::Component,
     enums::Environment,
+    live::clock::LiveClock,
 };
 use nautilus_core::UUID4;
 use nautilus_data::client::DataClientAdapter;
