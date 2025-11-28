@@ -61,6 +61,7 @@ pub fn order_side_to_proto(side: OrderSide) -> ProtoOrderSide {
 ///
 /// Note: `Unspecified` (proto enum value 0) is the protocol default and represents GTC behavior.
 /// GTD orders specify expiration separately via `good_til_block` or `good_til_block_time` fields.
+/// For post-only orders, use `time_in_force_to_proto_with_post_only()` which returns `ProtoTimeInForce::PostOnly`.
 #[must_use]
 pub fn time_in_force_to_proto(tif: TimeInForce) -> ProtoTimeInForce {
     match tif {
@@ -69,6 +70,22 @@ pub fn time_in_force_to_proto(tif: TimeInForce) -> ProtoTimeInForce {
         TimeInForce::Gtc => ProtoTimeInForce::Unspecified,
         TimeInForce::Gtd => ProtoTimeInForce::Unspecified,
         _ => ProtoTimeInForce::Unspecified,
+    }
+}
+
+/// Converts Nautilus `TimeInForce` to dYdX proto `TimeInForce` with post_only flag support.
+///
+/// When `post_only` is true, returns `ProtoTimeInForce::PostOnly` regardless of the input TIF.
+/// Otherwise, delegates to `time_in_force_to_proto()`.
+#[must_use]
+pub fn time_in_force_to_proto_with_post_only(
+    tif: TimeInForce,
+    post_only: bool,
+) -> ProtoTimeInForce {
+    if post_only {
+        ProtoTimeInForce::PostOnly
+    } else {
+        time_in_force_to_proto(tif)
     }
 }
 
@@ -159,6 +176,52 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    fn test_extract_raw_symbol() {
+        assert_eq!(extract_raw_symbol("BTC-USD-PERP.DYDX"), "BTC-USD");
+        assert_eq!(extract_raw_symbol("BTC-USD-PERP"), "BTC-USD");
+        assert_eq!(extract_raw_symbol("ETH-USD.DYDX"), "ETH-USD");
+        assert_eq!(extract_raw_symbol("SOL-USD"), "SOL-USD");
+    }
+
+    #[rstest]
+    #[case(OrderSide::Buy, ProtoOrderSide::Buy)]
+    #[case(OrderSide::Sell, ProtoOrderSide::Sell)]
+    #[case(OrderSide::NoOrderSide, ProtoOrderSide::Unspecified)]
+    fn test_order_side_to_proto(#[case] side: OrderSide, #[case] expected: ProtoOrderSide) {
+        assert_eq!(order_side_to_proto(side), expected);
+    }
+
+    #[rstest]
+    #[case(TimeInForce::Ioc, ProtoTimeInForce::Ioc)]
+    #[case(TimeInForce::Fok, ProtoTimeInForce::FillOrKill)]
+    #[case(TimeInForce::Gtc, ProtoTimeInForce::Unspecified)]
+    #[case(TimeInForce::Gtd, ProtoTimeInForce::Unspecified)]
+    #[case(TimeInForce::Day, ProtoTimeInForce::Unspecified)]
+    fn test_time_in_force_to_proto(#[case] tif: TimeInForce, #[case] expected: ProtoTimeInForce) {
+        assert_eq!(time_in_force_to_proto(tif), expected);
+    }
+
+    #[rstest]
+    #[case(TimeInForce::Gtc, false, ProtoTimeInForce::Unspecified)]
+    #[case(TimeInForce::Gtc, true, ProtoTimeInForce::PostOnly)]
+    #[case(TimeInForce::Ioc, false, ProtoTimeInForce::Ioc)]
+    #[case(TimeInForce::Ioc, true, ProtoTimeInForce::PostOnly)]
+    #[case(TimeInForce::Fok, false, ProtoTimeInForce::FillOrKill)]
+    #[case(TimeInForce::Fok, true, ProtoTimeInForce::PostOnly)]
+    #[case(TimeInForce::Gtd, false, ProtoTimeInForce::Unspecified)]
+    #[case(TimeInForce::Gtd, true, ProtoTimeInForce::PostOnly)]
+    fn test_time_in_force_to_proto_with_post_only(
+        #[case] tif: TimeInForce,
+        #[case] post_only: bool,
+        #[case] expected: ProtoTimeInForce,
+    ) {
+        assert_eq!(
+            time_in_force_to_proto_with_post_only(tif, post_only),
+            expected
+        );
+    }
 
     #[rstest]
     fn test_get_currency() {
