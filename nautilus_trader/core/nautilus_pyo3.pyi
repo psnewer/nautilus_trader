@@ -5755,6 +5755,77 @@ class BybitMarginMode(Enum):
     REGULAR_MARGIN = "REGULAR_MARGIN"
     PORTFOLIO_MARGIN = "PORTFOLIO_MARGIN"
 
+class BybitMarginAction(Enum):
+    BORROW = "borrow"
+    REPAY = "repay"
+    GET_BORROW_AMOUNT = "get_borrow_amount"
+
+class BybitMarginBorrowResult:
+    def __init__(
+        self,
+        coin: str,
+        amount: str,
+        success: bool,
+        message: str,
+        ts_event: int,
+        ts_init: int,
+    ) -> None: ...
+    @property
+    def coin(self) -> str: ...
+    @property
+    def amount(self) -> str: ...
+    @property
+    def success(self) -> bool: ...
+    @property
+    def message(self) -> str: ...
+    @property
+    def ts_event(self) -> int: ...
+    @property
+    def ts_init(self) -> int: ...
+
+class BybitMarginRepayResult:
+    def __init__(
+        self,
+        coin: str,
+        amount: str | None,
+        success: bool,
+        result_status: str,
+        message: str,
+        ts_event: int,
+        ts_init: int,
+    ) -> None: ...
+    @property
+    def coin(self) -> str: ...
+    @property
+    def amount(self) -> str | None: ...
+    @property
+    def success(self) -> bool: ...
+    @property
+    def result_status(self) -> str: ...
+    @property
+    def message(self) -> str: ...
+    @property
+    def ts_event(self) -> int: ...
+    @property
+    def ts_init(self) -> int: ...
+
+class BybitMarginStatusResult:
+    def __init__(
+        self,
+        coin: str,
+        borrow_amount: str,
+        ts_event: int,
+        ts_init: int,
+    ) -> None: ...
+    @property
+    def coin(self) -> str: ...
+    @property
+    def borrow_amount(self) -> str: ...
+    @property
+    def ts_event(self) -> int: ...
+    @property
+    def ts_init(self) -> int: ...
+
 class BybitPositionMode(Enum):
     MergedSingle = 0
     BothSides = 3
