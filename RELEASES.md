@@ -71,6 +71,7 @@ TBD
 - Fixed Betfair login race condition during concurrent connections
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Binance ADL orders with TRADE execution type
+- Fixed `BybitHttpClient` type stub pyi signatures (#3238), thanks @sunlei
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Databento Arrow serialization for `PRICE_UNDEF` (#3183), thanks for reporting @marloncalvo
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
@@ -114,8 +115,9 @@ TBD
 - Improved Betfair order rejection and duplicate fills handling
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
-- Improved dYdX adapter test coverage (#3212), thanks @nicolad
-- Improved dYdX network, bars, and batch cancel (#3231), thanks @nicolad
+- Improved dYdX v4 adapter test coverage (#3212), thanks @nicolad
+- Improved dYdX v4 network, bars, and batch cancel (#3231), thanks @nicolad
+- Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
