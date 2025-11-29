@@ -21,6 +21,10 @@
 //! endpoints via its registered execution clients.
 
 pub mod config;
+pub mod stubs;
+
+#[cfg(test)]
+mod tests;
 
 use std::{
     cell::{RefCell, RefMut},
