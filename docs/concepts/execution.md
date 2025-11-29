@@ -220,7 +220,7 @@ an execution model which determines the horizon and interval.
 
 :::info
 There is no limit to the number of execution algorithm parameters you can create. The parameters
-just need to be a dictionary with string keys and primitive values (values that can be serialized
+must be a dictionary with string keys and primitive values (values that can be serialized
 over the wire, such as ints, floats, and strings).
 :::
 
@@ -282,7 +282,7 @@ the intention is that the algorithm will then finally send the primary (original
 ### Spawned orders
 
 All secondary orders spawned from an execution algorithm will carry a `exec_spawn_id` which is
-simply the `ClientOrderId` of the primary (original) order, and whose `client_order_id`
+the `ClientOrderId` of the primary (original) order, and whose `client_order_id`
 derives from this original identifier with the following convention:
 
 - `exec_spawn_id` (primary order `client_order_id` value)

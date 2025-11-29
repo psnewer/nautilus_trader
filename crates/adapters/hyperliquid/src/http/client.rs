@@ -253,7 +253,7 @@ impl HyperliquidRawHttpClient {
         Ok(SignerId("hyperliquid:default".into()))
     }
 
-    /// Parse Retry-After from response headers (simplified)
+    /// Parse Retry-After from response headers
     fn parse_retry_after_simple(&self, headers: &HashMap<String, String>) -> Option<u64> {
         let retry_after = headers.get("retry-after")?;
         retry_after.parse::<u64>().ok().map(|s| s * 1000) // convert seconds to ms

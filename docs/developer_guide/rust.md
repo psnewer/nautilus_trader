@@ -808,7 +808,7 @@ of interoperating between Cython and Rust. The ability to step outside the bound
 implement many of the most fundamental features of the Rust language itself, just as C and C++ are used to implement
 their own standard libraries.
 
-Great care will be taken with the use of Rusts `unsafe` facility - which just enables a small set of additional language features, thereby changing
+Great care will be taken with the use of Rusts `unsafe` facility - which enables a small set of additional language features, thereby changing
 the contract between the interface and caller, shifting some responsibility for guaranteeing correctness
 from the Rust compiler, and onto us. The goal is to realize the advantages of the `unsafe` facility, whilst avoiding *any* undefined behavior.
 The definition for what the Rust language designers consider undefined behavior can be found in the [language reference](https://doc.rust-lang.org/stable/reference/behavior-considered-undefined.html).
