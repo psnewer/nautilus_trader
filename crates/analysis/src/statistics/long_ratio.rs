@@ -59,12 +59,12 @@ impl PortfolioStatistic for LongRatio {
 
         // Use `entry` (the opening order side) rather than `side` because
         // closed positions have side == PositionSide::Flat
-        let longs: Vec<&Position> = positions
+        let long_count = positions
             .iter()
             .filter(|p| p.entry == OrderSide::Buy)
-            .collect();
+            .count();
 
-        let value = longs.len() as f64 / positions.len() as f64;
+        let value = long_count as f64 / positions.len() as f64;
 
         let scale = 10f64.powi(self.precision as i32);
         Some((value * scale).round() / scale)

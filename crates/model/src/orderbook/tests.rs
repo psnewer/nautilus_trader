@@ -531,10 +531,8 @@ fn test_book_apply_depth_empty_snapshot() {
     assert!(!book.has_bid(), "Empty snapshot should not have bid");
     assert!(!book.has_ask(), "Empty snapshot should not have ask");
 
-    let bid_levels: Vec<_> = book.bids(None).collect();
-    let ask_levels: Vec<_> = book.asks(None).collect();
-    assert_eq!(bid_levels.len(), 0, "Should have 0 bid levels");
-    assert_eq!(ask_levels.len(), 0, "Should have 0 ask levels");
+    assert_eq!(book.bids(None).count(), 0, "Should have 0 bid levels");
+    assert_eq!(book.asks(None).count(), 0, "Should have 0 ask levels");
 
     // Verify metadata was still updated
     assert_eq!(book.sequence, 12345);

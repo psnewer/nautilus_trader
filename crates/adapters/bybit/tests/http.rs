@@ -1482,13 +1482,12 @@ async fn test_request_order_status_reports_respects_limit_across_settle_coins() 
 
     // Both settle coins should be queried
     let queries = state.settle_coin_queries.lock().await;
-    let realtime_queries: Vec<&Option<String>> = queries
+    let realtime_query_count = queries
         .iter()
         .filter(|(endpoint, _)| endpoint == "realtime")
-        .map(|(_, coin)| coin)
-        .collect();
+        .count();
 
-    assert_eq!(realtime_queries.len(), 2, "Should query both settle coins");
+    assert_eq!(realtime_query_count, 2, "Should query both settle coins");
 }
 
 #[rstest]

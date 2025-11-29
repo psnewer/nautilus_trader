@@ -1487,7 +1487,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::PartiallyFilled,
@@ -1530,18 +1530,17 @@ mod tests {
         // Verify some individual deltas are parsed correctly
         assert!(!deltas.deltas.is_empty());
         // Snapshot should have both bid and ask deltas
-        let bid_deltas: Vec<_> = deltas
-            .deltas
-            .iter()
-            .filter(|d| d.order.side == OrderSide::Buy)
-            .collect();
-        let ask_deltas: Vec<_> = deltas
-            .deltas
-            .iter()
-            .filter(|d| d.order.side == OrderSide::Sell)
-            .collect();
-        assert!(!bid_deltas.is_empty());
-        assert!(!ask_deltas.is_empty());
+        assert!(
+            deltas.deltas.iter().any(|d| d.order.side == OrderSide::Buy),
+            "Should have bid deltas"
+        );
+        assert!(
+            deltas
+                .deltas
+                .iter()
+                .any(|d| d.order.side == OrderSide::Sell),
+            "Should have ask deltas"
+        );
     }
 
     #[rstest]
@@ -1574,18 +1573,17 @@ mod tests {
         // Verify some individual deltas are parsed correctly
         assert!(!deltas.deltas.is_empty());
         // Update should also have both bid and ask deltas
-        let bid_deltas: Vec<_> = deltas
-            .deltas
-            .iter()
-            .filter(|d| d.order.side == OrderSide::Buy)
-            .collect();
-        let ask_deltas: Vec<_> = deltas
-            .deltas
-            .iter()
-            .filter(|d| d.order.side == OrderSide::Sell)
-            .collect();
-        assert!(!bid_deltas.is_empty());
-        assert!(!ask_deltas.is_empty());
+        assert!(
+            deltas.deltas.iter().any(|d| d.order.side == OrderSide::Buy),
+            "Should have bid deltas"
+        );
+        assert!(
+            deltas
+                .deltas
+                .iter()
+                .any(|d| d.order.side == OrderSide::Sell),
+            "Should have ask deltas"
+        );
     }
 
     #[rstest]
@@ -2219,7 +2217,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::PartiallyFilled,
@@ -2267,7 +2265,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::Filled,
@@ -2351,7 +2349,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::PartiallyFilled,
@@ -2399,7 +2397,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::Filled,
@@ -2481,7 +2479,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::PartiallyFilled,
@@ -2531,7 +2529,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::Filled,
@@ -2614,7 +2612,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::PartiallyFilled,
@@ -2662,7 +2660,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "0".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Buy,
             state: OKXOrderStatus::Filled,
@@ -2753,7 +2751,7 @@ mod tests {
         let account_id = AccountId::new("OKX-001");
         let ts_init = UnixNanos::default();
 
-        let order_msg = create_stub_order_msg("", Some("".to_string()), "1234567890", "trade_1");
+        let order_msg = create_stub_order_msg("", Some(String::new()), "1234567890", "trade_1");
 
         let result = parse_fill_report(
             &order_msg,
@@ -3323,7 +3321,7 @@ mod tests {
             cancel_source_reason: None,
             category: OKXOrderCategory::PartialLiquidation,
             ccy: Ustr::from("USDT"),
-            cl_ord_id: "".to_string(),
+            cl_ord_id: String::new(),
             algo_cl_ord_id: None,
             fee: Some("-9.75".to_string()),
             fee_ccy: Ustr::from("USDT"),
@@ -3337,7 +3335,7 @@ mod tests {
             ord_type: OKXOrderType::Market,
             pnl: "-2500".to_string(),
             pos_side: OKXPositionSide::Long,
-            px: "".to_string(),
+            px: String::new(),
             reduce_only: "false".to_string(),
             side: OKXSide::Sell,
             state: OKXOrderStatus::Filled,

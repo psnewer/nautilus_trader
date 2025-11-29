@@ -1701,15 +1701,11 @@ async fn test_request_trades_multiple_trades_same_id() {
     }
 
     // Verify the 3 trades with same ID are all present (different timestamps)
-    let id_1003_trades: Vec<_> = trades
+    let id_1003_count = trades
         .iter()
         .filter(|t| t.trade_id.to_string() == "1003")
-        .collect();
-    assert_eq!(
-        id_1003_trades.len(),
-        3,
-        "Should have all 3 trades with ID 1003"
-    );
+        .count();
+    assert_eq!(id_1003_count, 3, "Should have all 3 trades with ID 1003");
 }
 
 #[rstest]

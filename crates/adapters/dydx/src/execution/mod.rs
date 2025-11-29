@@ -1960,11 +1960,9 @@ mod tests {
     #[rstest]
     fn test_market_ticker_invalid_format() {
         let ticker = "BTCUSD";
-        let parts: Vec<&str> = ticker.split('-').collect();
-        assert_eq!(parts.len(), 1); // No separator
+        assert_eq!(ticker.split('-').count(), 1); // No separator
 
         let ticker = "BTC-USD-PERP";
-        let parts: Vec<&str> = ticker.split('-').collect();
-        assert_eq!(parts.len(), 3); // Too many parts
+        assert_eq!(ticker.split('-').count(), 3); // Too many parts
     }
 }

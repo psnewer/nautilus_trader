@@ -415,7 +415,7 @@ fn test_open_orders_response_empty_cursor() {
     assert_eq!(response.ret_code, 0);
     assert!(response.result.list.is_empty());
     // Empty string should deserialize to Some("")
-    assert_eq!(response.result.next_page_cursor, Some("".to_string()));
+    assert_eq!(response.result.next_page_cursor, Some(String::new()));
 }
 
 /// Test that order history response supports cursor pagination
@@ -522,7 +522,7 @@ fn test_pagination_loop_pattern() {
 /// Test that pagination stops on empty cursor
 #[rstest]
 fn test_pagination_stops_on_empty_cursor() {
-    let cursor: Option<String> = Some("".to_string());
+    let cursor: Option<String> = Some(String::new());
 
     // This is the termination condition used in the pagination loops
     let should_stop = cursor.is_none() || cursor.as_ref().is_none_or(|c| c.is_empty());

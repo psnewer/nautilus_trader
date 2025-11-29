@@ -169,7 +169,7 @@ async fn handle_post_order(headers: axum::http::HeaderMap, body: String) -> Resp
     // Create a mock order response
     Json(json!({
         "orderID": "new-order-id-12345",
-        "clOrdID": params.get("clOrdID").unwrap_or(&"".to_string()),
+        "clOrdID": params.get("clOrdID").unwrap_or(&String::new()),
         "symbol": params.get("symbol").unwrap(),
         "orderQty": params.get("orderQty").unwrap().parse::<i64>().unwrap_or(0),
         "side": params.get("side").unwrap_or(&"Buy".to_string()),

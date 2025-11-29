@@ -116,7 +116,7 @@ pub async fn run_sync_blocks(
     let config = BlockchainDataClientConfig::new(
         chain.clone(),
         vec![],
-        "".to_string(), // we dont need to http rpc url for block syncing
+        String::new(), // we dont need to http rpc url for block syncing
         None,
         None,
         None,

@@ -507,11 +507,16 @@ mod tests {
             None,
             false,
         );
-        let events: Vec<TimeEvent> = timer.advance(UnixNanos::from(5)).collect();
-        assert_eq!(events.len(), 1, "Expected one event at the 5 ns boundary");
-
-        let events: Vec<TimeEvent> = timer.advance(UnixNanos::from(10)).collect();
-        assert_eq!(events.len(), 1, "Expected one event at the 10 ns boundary");
+        assert_eq!(
+            timer.advance(UnixNanos::from(5)).count(),
+            1,
+            "Expected one event at the 5 ns boundary"
+        );
+        assert_eq!(
+            timer.advance(UnixNanos::from(10)).count(),
+            1,
+            "Expected one event at the 10 ns boundary"
+        );
     }
 
     #[rstest]
@@ -550,8 +555,7 @@ mod tests {
         assert_eq!(timer.next_time_ns(), UnixNanos::from(15));
 
         // Advance to start time should produce no events
-        let events: Vec<TimeEvent> = timer.advance(UnixNanos::from(10)).collect();
-        assert_eq!(events.len(), 0);
+        assert_eq!(timer.advance(UnixNanos::from(10)).count(), 0);
 
         // Advance to first interval should produce an event
         let events: Vec<TimeEvent> = timer.advance(UnixNanos::from(15)).collect();
@@ -595,6 +599,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::needless_collect)] // Collect needed for indexing and .is_empty()
     fn test_timer_with_operations(
         operations: Vec<TimerOperation>,
         (interval_ns, start_time_ns, stop_time_ns, fire_immediately): (u64, u64, Option<u64>, bool),

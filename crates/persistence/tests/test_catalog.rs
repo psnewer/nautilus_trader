@@ -1542,6 +1542,7 @@ fn test_prepare_consolidation_queries_basic_moved() {
 }
 
 #[rstest]
+#[allow(clippy::needless_collect)] // Collect needed for .len() and .iter().find()
 fn test_prepare_consolidation_queries_with_splits_moved() {
     let tmp = tempfile::tempdir().unwrap();
     let base_dir = tmp.path().join("catalog");

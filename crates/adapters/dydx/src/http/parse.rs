@@ -1239,7 +1239,7 @@ mod reconciliation_tests {
         let order = Order {
             id: "order456".to_string(),
             subaccount_id: "subacct1".to_string(),
-            client_id: "".to_string(), // Empty client ID
+            client_id: String::new(), // Empty client ID
             clob_pair_id: 1,
             side: OrderSide::Sell,
             size: dec!(2.0),
