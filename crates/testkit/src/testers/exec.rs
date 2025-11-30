@@ -722,9 +722,9 @@ impl ExecTester {
     ///
     /// Returns an error if order creation or submission fails.
     fn submit_limit_order(&mut self, order_side: OrderSide, price: Price) -> anyhow::Result<()> {
-        if self.instrument.is_none() {
+        let Some(instrument) = &self.instrument else {
             anyhow::bail!("No instrument loaded");
-        }
+        };
 
         if self.config.dry_run {
             log_warn!("Dry run, skipping create {order_side:?} order");
@@ -746,6 +746,7 @@ impl ExecTester {
         };
 
         // TODO: Calculate expire_time from order_expire_time_delta_mins
+        let quantity = instrument.make_qty(self.config.order_qty.as_f64(), None);
 
         let Some(factory) = &mut self.core.order_factory else {
             anyhow::bail!("Strategy not registered: OrderFactory missing");
@@ -754,7 +755,7 @@ impl ExecTester {
         let order = factory.limit(
             self.config.instrument_id,
             order_side,
-            self.config.order_qty,
+            quantity,
             price,
             Some(time_in_force),
             None, // expire_time
@@ -790,9 +791,9 @@ impl ExecTester {
         trigger_price: Price,
         limit_price: Option<Price>,
     ) -> anyhow::Result<()> {
-        if self.instrument.is_none() {
+        let Some(instrument) = &self.instrument else {
             anyhow::bail!("No instrument loaded");
-        }
+        };
 
         if self.config.dry_run {
             log_warn!("Dry run, skipping create {order_side:?} stop order");
@@ -813,6 +814,9 @@ impl ExecTester {
             TimeInForce::Gtc
         };
 
+        // Use instrument's make_qty to ensure correct precision
+        let quantity = instrument.make_qty(self.config.order_qty.as_f64(), None);
+
         let Some(factory) = &mut self.core.order_factory else {
             anyhow::bail!("Strategy not registered: OrderFactory missing");
         };
@@ -821,7 +825,7 @@ impl ExecTester {
             OrderType::StopMarket => factory.stop_market(
                 self.config.instrument_id,
                 order_side,
-                self.config.order_qty,
+                quantity,
                 trigger_price,
                 Some(self.config.stop_trigger_type),
                 Some(time_in_force),
@@ -843,7 +847,7 @@ impl ExecTester {
                 factory.stop_limit(
                     self.config.instrument_id,
                     order_side,
-                    self.config.order_qty,
+                    quantity,
                     limit_price,
                     trigger_price,
                     Some(self.config.stop_trigger_type),
@@ -864,7 +868,7 @@ impl ExecTester {
             OrderType::MarketIfTouched => factory.market_if_touched(
                 self.config.instrument_id,
                 order_side,
-                self.config.order_qty,
+                quantity,
                 trigger_price,
                 Some(self.config.stop_trigger_type),
                 Some(time_in_force),
@@ -885,7 +889,7 @@ impl ExecTester {
                 factory.limit_if_touched(
                     self.config.instrument_id,
                     order_side,
-                    self.config.order_qty,
+                    quantity,
                     limit_price,
                     trigger_price,
                     Some(self.config.stop_trigger_type),

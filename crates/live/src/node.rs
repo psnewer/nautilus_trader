@@ -20,6 +20,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    fmt::Debug,
     rc::Rc,
     sync::{
         Arc,
@@ -42,6 +43,7 @@ use nautilus_system::{
     factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
     kernel::NautilusKernel,
 };
+use nautilus_trading::strategy::Strategy;
 
 use crate::{config::LiveNodeConfig, runner::AsyncRunner};
 
@@ -398,14 +400,18 @@ impl LiveNode {
 
     /// Adds a strategy to the trader.
     ///
-    /// Strategies are registered with order factories and portfolio access for trading.
+    /// Strategies are registered in both the component registry (for lifecycle management)
+    /// and the actor registry (for data callbacks via msgbus).
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The node is currently running.
     /// - A strategy with the same ID is already registered.
-    pub fn add_strategy(&mut self, strategy: Box<dyn Component>) -> anyhow::Result<()> {
+    pub fn add_strategy<T>(&mut self, strategy: T) -> anyhow::Result<()>
+    where
+        T: Strategy + Component + Debug + 'static,
+    {
         if self.is_running {
             anyhow::bail!(
                 "Cannot add strategy while node is running, add strategies before calling start()"

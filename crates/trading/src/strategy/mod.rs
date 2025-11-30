@@ -29,7 +29,7 @@ use nautilus_common::{
 };
 use nautilus_core::UUID4;
 use nautilus_model::{
-    enums::{OrderSide, OrderStatus, PositionSide, TimeInForce},
+    enums::{OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
     events::{
         OrderAccepted, OrderCancelRejected, OrderCanceled, OrderDenied, OrderEmulated,
         OrderEventAny, OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
@@ -107,7 +107,7 @@ pub trait Strategy: DataActor {
             anyhow::bail!("Strategy not registered: OrderManager missing");
         };
 
-        if order.emulation_trigger().is_some() {
+        if matches!(order.emulation_trigger(), Some(trigger) if trigger != TriggerType::NoTrigger) {
             manager.send_emulator_command(TradingCommand::SubmitOrder(command));
         } else if order.exec_algorithm_id().is_some() {
             manager.send_algo_command(command, order.exec_algorithm_id().unwrap());
@@ -180,10 +180,10 @@ pub trait Strategy: DataActor {
             ts_init,
         )?;
 
-        let has_emulated_order = order_list
-            .orders
-            .iter()
-            .any(|o| o.emulation_trigger().is_some() || o.is_emulated());
+        let has_emulated_order = order_list.orders.iter().any(|o| {
+            matches!(o.emulation_trigger(), Some(trigger) if trigger != TriggerType::NoTrigger)
+                || o.is_emulated()
+        });
 
         let first_order = order_list.orders.first();
         let exec_algorithm_id = first_order.and_then(|o| o.exec_algorithm_id());
@@ -245,7 +245,7 @@ pub trait Strategy: DataActor {
             anyhow::bail!("Strategy not registered: OrderManager missing");
         };
 
-        if order.emulation_trigger().is_some() {
+        if matches!(order.emulation_trigger(), Some(trigger) if trigger != TriggerType::NoTrigger) {
             manager.send_emulator_command(TradingCommand::ModifyOrder(command));
         } else if order.exec_algorithm_id().is_some() {
             manager.send_risk_command(TradingCommand::ModifyOrder(command));
@@ -282,7 +282,9 @@ pub trait Strategy: DataActor {
             anyhow::bail!("Strategy not registered: OrderManager missing");
         };
 
-        if order.emulation_trigger().is_some() || order.is_emulated() {
+        if matches!(order.emulation_trigger(), Some(trigger) if trigger != TriggerType::NoTrigger)
+            || order.is_emulated()
+        {
             manager.send_emulator_command(TradingCommand::CancelOrder(command));
         } else if let Some(algo_id) = order.exec_algorithm_id() {
             let endpoint = format!("{algo_id}.execute");

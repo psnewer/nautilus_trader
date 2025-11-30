@@ -1124,14 +1124,17 @@ impl RiskEngine {
             return;
         }
 
-        let mut cache = self.cache.borrow_mut();
-        if !cache.order_exists(&order.client_order_id()) {
-            cache
-                .add_order(order.clone(), None, None, false)
-                .map_err(|e| {
-                    log::error!("Cannot add order to cache: {e}");
-                })
-                .unwrap();
+        // Scope the cache borrow to avoid RefCell conflict when sending to ExecEngine
+        {
+            let mut cache = self.cache.borrow_mut();
+            if !cache.order_exists(&order.client_order_id()) {
+                cache
+                    .add_order(order.clone(), None, None, false)
+                    .map_err(|e| {
+                        log::error!("Cannot add order to cache: {e}");
+                    })
+                    .unwrap();
+            }
         }
 
         let denied = OrderEventAny::Denied(OrderDenied::new(

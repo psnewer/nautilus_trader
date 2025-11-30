@@ -35,7 +35,7 @@ use nautilus_common::{
         logger::{LogGuard, LoggerConfig},
         writer::FileWriterConfig,
     },
-    messages::{DataResponse, data::DataCommand},
+    messages::{DataResponse, data::DataCommand, execution::TradingCommand},
     msgbus::{
         self, MessageBus, get_message_bus,
         handler::{ShareableMessageHandler, TypedMessageHandler},
@@ -46,8 +46,8 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_data::engine::DataEngine;
-use nautilus_execution::engine::ExecutionEngine;
-use nautilus_model::identifiers::TraderId;
+use nautilus_execution::{engine::ExecutionEngine, order_emulator::adapter::OrderEmulatorAdapter};
+use nautilus_model::{events::OrderEventAny, identifiers::TraderId};
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_risk::engine::RiskEngine;
 use ustr::Ustr;
@@ -72,7 +72,7 @@ pub struct NautilusKernel {
     /// The clock driving the kernel.
     pub clock: Rc<RefCell<dyn Clock>>,
     /// The portfolio manager.
-    pub portfolio: Portfolio,
+    pub portfolio: Rc<RefCell<Portfolio>>,
     /// Guard for the logging subsystem (keeps logger thread alive).
     pub log_guard: LogGuard,
     /// The data engine instance.
@@ -81,6 +81,8 @@ pub struct NautilusKernel {
     pub risk_engine: Rc<RefCell<RiskEngine>>,
     /// The execution engine instance.
     pub exec_engine: Rc<RefCell<ExecutionEngine>>,
+    /// The order emulator for handling emulated orders.
+    pub order_emulator: OrderEmulatorAdapter,
     /// The trader component.
     pub trader: Trader,
     /// The UNIX timestamp (nanoseconds) when the kernel was created.
@@ -133,7 +135,11 @@ impl NautilusKernel {
         )));
         set_message_bus(msgbus);
 
-        let portfolio = Portfolio::new(cache.clone(), clock.clone(), config.portfolio());
+        let portfolio = Rc::new(RefCell::new(Portfolio::new(
+            cache.clone(),
+            clock.clone(),
+            config.portfolio(),
+        )));
 
         let risk_engine = RiskEngine::new(
             config.risk_engine().unwrap_or_default(),
@@ -145,6 +151,9 @@ impl NautilusKernel {
 
         let exec_engine = ExecutionEngine::new(clock.clone(), cache.clone(), config.exec_engine());
         let exec_engine = Rc::new(RefCell::new(exec_engine));
+
+        // Create order emulator (auto-registers message handlers)
+        let order_emulator = OrderEmulatorAdapter::new(clock.clone(), cache.clone());
 
         let data_engine = DataEngine::new(clock.clone(), cache.clone(), config.data_engine());
         let data_engine = Rc::new(RefCell::new(data_engine));
@@ -197,12 +206,49 @@ impl NautilusKernel {
         )));
         msgbus::register(endpoint, handler);
 
+        // Register RiskEngine execute handler
+        let risk_engine_weak = WeakCell::from(Rc::downgrade(&risk_engine));
+        let endpoint = MessagingSwitchboard::risk_engine_execute();
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
+            move |cmd: &TradingCommand| {
+                if let Some(engine_rc) = risk_engine_weak.upgrade() {
+                    engine_rc.borrow_mut().execute(cmd.clone());
+                }
+            },
+        )));
+        msgbus::register(endpoint, handler);
+
+        // Register ExecEngine execute handler
+        let exec_engine_weak = WeakCell::from(Rc::downgrade(&exec_engine));
+        let exec_engine_weak_clone = exec_engine_weak.clone();
+        let endpoint = MessagingSwitchboard::exec_engine_execute();
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
+            move |cmd: &TradingCommand| {
+                if let Some(engine_rc) = exec_engine_weak.upgrade() {
+                    engine_rc.borrow().execute(cmd);
+                }
+            },
+        )));
+        msgbus::register(endpoint, handler);
+
+        // Register ExecEngine process handler
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
+            move |event: &OrderEventAny| {
+                if let Some(engine_rc) = exec_engine_weak_clone.upgrade() {
+                    engine_rc.borrow_mut().process(event);
+                }
+            },
+        )));
+        msgbus::register(endpoint, handler);
+
         let trader = Trader::new(
             config.trader_id(),
             instance_id,
             config.environment(),
             clock.clone(),
             cache.clone(),
+            portfolio.clone(),
         );
 
         let ts_created = clock.borrow().timestamp_ns();
@@ -219,6 +265,7 @@ impl NautilusKernel {
             data_engine,
             risk_engine,
             exec_engine,
+            order_emulator,
             trader,
             ts_created,
             ts_started: None,
@@ -367,8 +414,8 @@ impl NautilusKernel {
 
     /// Returns the kernel's portfolio.
     #[must_use]
-    pub const fn portfolio(&self) -> &Portfolio {
-        &self.portfolio
+    pub fn portfolio(&self) -> Ref<'_, Portfolio> {
+        self.portfolio.borrow()
     }
 
     /// Returns the kernel's data engine.

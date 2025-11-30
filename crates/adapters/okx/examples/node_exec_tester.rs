@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let tester = ExecTester::new(tester_config);
 
-    node.add_strategy(Box::new(tester))?;
+    node.add_strategy(tester)?;
     node.run().await?;
 
     Ok(())
