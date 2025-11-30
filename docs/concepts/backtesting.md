@@ -449,6 +449,39 @@ engine.add_venue(
 )
 ```
 
+### Trade based execution
+
+When you have trade tick data, enable `trade_execution=True` in your venue configuration to trigger order fills
+based on trade activity. A trade tick indicates that liquidity was accessed at the trade price, allowing resting
+limit orders to match.
+
+The matching engine uses a "transient override" mechanism: during the matching process, it temporarily updates
+the Best Bid (for BUYER trades) or Best Ask (for SELLER trades) to the trade price. This allows resting orders
+on the passive side to cross the spread and fill. After matching, the original book state is restored, ensuring
+the spread is not permanently corrupted by the transient trade price.
+
+**Fill behavior:**
+
+- **SELLER trade at P**: The engine temporarily sets the Best Ask to P. Resting BUY LIMIT orders at P or higher will fill (as they are willing to buy at P or more).
+- **BUYER trade at P**: The engine temporarily sets the Best Bid to P. Resting SELL LIMIT orders at P or lower will fill (as they are willing to sell at P or less).
+
+**Example:**
+
+```python
+engine.add_venue(
+    venue=venue,
+    oms_type=OmsType.NETTING,
+    account_type=AccountType.CASH,
+    starting_balances=[Money(10_000, USDT)],
+    trade_execution=True,
+)
+```
+
+:::tip
+Combine trade data with book or quote data for best results: book/quote data establishes the baseline spread,
+while trade ticks trigger execution for orders that might be inside the spread or ahead of the quote updates.
+:::
+
 ### Slippage and spread handling
 
 When backtesting with different types of data, Nautilus implements specific handling for slippage and spread simulation:

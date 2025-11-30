@@ -110,6 +110,7 @@ TBD
 - Refactored processing of historical data (#3038), thanks @faysou
 - Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
+- Improved trade execution matching with transient bid/ask override for `trade_execution=True` mode, ensuring limit orders fill correctly when trades occur at the limit price
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
 - Improved JSON-RPC non-standard rate limit error handling (#3227), thanks @filipmacek
