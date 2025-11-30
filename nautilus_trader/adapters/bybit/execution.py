@@ -1034,11 +1034,7 @@ class BybitExecutionClient(LiveExecutionClient):
         pyo3_trader_id = nautilus_pyo3.TraderId(order.trader_id.value)
         pyo3_strategy_id = nautilus_pyo3.StrategyId(order.strategy_id.value)
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        pyo3_client_order_id = (
-            nautilus_pyo3.ClientOrderId(command.client_order_id.value)
-            if command.client_order_id
-            else None
-        )
+        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(command.client_order_id.value)
         pyo3_venue_order_id = (
             nautilus_pyo3.VenueOrderId(command.venue_order_id.value)
             if command.venue_order_id
@@ -1092,11 +1088,7 @@ class BybitExecutionClient(LiveExecutionClient):
         pyo3_trader_id = nautilus_pyo3.TraderId(order.trader_id.value)
         pyo3_strategy_id = nautilus_pyo3.StrategyId(order.strategy_id.value)
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        pyo3_client_order_id = (
-            nautilus_pyo3.ClientOrderId(command.client_order_id.value)
-            if command.client_order_id
-            else None
-        )
+        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(command.client_order_id.value)
         pyo3_venue_order_id = (
             nautilus_pyo3.VenueOrderId(command.venue_order_id.value)
             if command.venue_order_id

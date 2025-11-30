@@ -36,7 +36,7 @@ use dashmap::DashMap;
 use nautilus_core::{
     UnixNanos,
     consts::{NAUTILUS_TRADER, NAUTILUS_USER_AGENT},
-    env::get_env_var,
+    env::get_or_env_var_opt,
     time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
@@ -911,8 +911,8 @@ impl BitmexHttpClient {
             ("BITMEX_API_KEY", "BITMEX_API_SECRET")
         };
 
-        let api_key = api_key.or_else(|| get_env_var(key_var).ok());
-        let api_secret = api_secret.or_else(|| get_env_var(secret_var).ok());
+        let api_key = get_or_env_var_opt(api_key, key_var);
+        let api_secret = get_or_env_var_opt(api_secret, secret_var);
 
         // If we're trying to create an authenticated client, we need both key and secret
         if api_key.is_some() && api_secret.is_none() {

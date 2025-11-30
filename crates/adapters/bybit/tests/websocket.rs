@@ -34,11 +34,8 @@ use axum::{
     routing::get,
 };
 use nautilus_bybit::{
-    common::{
-        credential::Credential,
-        enums::{
-            BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
-        },
+    common::enums::{
+        BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
     },
     websocket::{
         client::BybitWebSocketClient,
@@ -543,10 +540,10 @@ async fn test_private_client_authentication() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -575,10 +572,10 @@ async fn test_authentication_failure() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("invalid_key", "invalid_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("invalid_key".to_string()),
+        Some("invalid_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -913,10 +910,10 @@ async fn test_reauth_after_disconnect() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -945,10 +942,10 @@ async fn test_login_failure_emits_error() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("invalid_key", "invalid_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("invalid_key".to_string()),
+        Some("invalid_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1252,10 +1249,10 @@ async fn test_private_orders_subscription() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1281,10 +1278,10 @@ async fn test_private_executions_subscription() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1310,10 +1307,10 @@ async fn test_private_wallet_subscription() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1456,10 +1453,10 @@ async fn test_reconnection_waits_for_delayed_auth_ack() {
 
     state.set_auth_delay(500).await;
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1924,10 +1921,10 @@ async fn test_is_active_lifecycle() {
     let (addr, _state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_key", "test_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -1960,10 +1957,10 @@ async fn test_is_active_false_after_close() {
     let (addr, _state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_key", "test_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_key".to_string()),
+        Some("test_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -2032,10 +2029,10 @@ async fn test_unsubscribed_private_channel_not_resubscribed_after_disconnect() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url.clone()),
         None,
     );
@@ -2140,10 +2137,10 @@ async fn test_batch_place_orders_with_cache_keys() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -2237,10 +2234,10 @@ async fn test_batch_amend_orders() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );
@@ -2286,10 +2283,10 @@ async fn test_batch_cancel_orders() {
     let (addr, state) = start_test_server().await.unwrap();
     let ws_url = format!("ws://{addr}/v5/private");
 
-    let credential = Credential::new("test_api_key", "test_api_secret");
     let mut client = BybitWebSocketClient::new_private(
         BybitEnvironment::Mainnet,
-        credential,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
         Some(ws_url),
         None,
     );

@@ -213,6 +213,47 @@ Keep signing logic in a `Credential` struct under `common/credential.rs`:
 
 For WebSocket authentication, the handler constructs login messages using the same `Credential::sign()` method with a WebSocket-specific timestamp format.
 
+### Environment variable conventions
+
+Adapters support loading API credentials from environment variables when not provided directly. This enables secure credential management without hardcoding secrets.
+
+**Naming conventions:**
+
+| Environment  | API Key Variable          | API Secret Variable |
+|--------------|---------------------------|---------------------|
+| Mainnet/Live | `{VENUE}_API_KEY`         | `{VENUE}_API_SECRET` |
+| Testnet      | `{VENUE}_TESTNET_API_KEY` | `{VENUE}_TESTNET_API_SECRET` |
+| Demo         | `{VENUE}_DEMO_API_KEY`    | `{VENUE}_DEMO_API_SECRET` |
+
+Some venues require additional credentials:
+
+- OKX: `OKX_API_PASSPHRASE`
+- Coinbase INTX: `COINBASE_INTX_API_PASSPHRASE`, `COINBASE_INTX_PORTFOLIO_ID`
+
+**Implementation pattern:**
+
+Use `nautilus_core::env::get_or_env_var_opt` for optional credential resolution (returns `None` if missing) or `get_or_env_var` when credentials are required (returns error if missing):
+
+```rust
+use nautilus_core::env::get_or_env_var_opt;
+
+let (api_key_env, api_secret_env) = if testnet {
+    ("{VENUE}_TESTNET_API_KEY", "{VENUE}_TESTNET_API_SECRET")
+} else {
+    ("{VENUE}_API_KEY", "{VENUE}_API_SECRET")
+};
+
+let key = get_or_env_var_opt(api_key, api_key_env);
+let secret = get_or_env_var_opt(api_secret, api_secret_env);
+```
+
+**Key principles:**
+
+- Environment variable resolution should happen in core Rust code, not Python bindings.
+- Use `get_or_env_var_opt` for optional credentials (public-only clients).
+- Use `get_or_env_var` when credentials are required (returns error if missing).
+- Document supported environment variables in adapter README files.
+
 ### Error handling and retry logic
 
 Use the `RetryManager` from `nautilus_network` for consistent retry behavior.

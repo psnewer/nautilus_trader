@@ -32,7 +32,10 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::Stream;
 use nautilus_common::live::runtime::get_runtime;
-use nautilus_core::{consts::NAUTILUS_USER_AGENT, env::get_env_var};
+use nautilus_core::{
+    consts::NAUTILUS_USER_AGENT,
+    env::{get_env_var, get_or_env_var_opt},
+};
 use nautilus_model::{
     data::bar::BarType,
     enums::OrderType,
@@ -138,6 +141,36 @@ impl BitmexWebSocketClient {
             order_type_cache: Arc::new(DashMap::new()),
             order_symbol_cache: Arc::new(DashMap::new()),
         })
+    }
+
+    /// Creates a new [`BitmexWebSocketClient`] with environment variable credential resolution.
+    ///
+    /// If `api_key` or `api_secret` are not provided, they will be loaded from
+    /// environment variables based on the `testnet` flag:
+    /// - Testnet: `BITMEX_TESTNET_API_KEY`, `BITMEX_TESTNET_API_SECRET`
+    /// - Mainnet: `BITMEX_API_KEY`, `BITMEX_API_SECRET`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if only one of `api_key` or `api_secret` is provided.
+    pub fn new_with_env(
+        url: Option<String>,
+        api_key: Option<String>,
+        api_secret: Option<String>,
+        account_id: Option<AccountId>,
+        heartbeat: Option<u64>,
+        testnet: bool,
+    ) -> anyhow::Result<Self> {
+        let (api_key_env, api_secret_env) = if testnet {
+            ("BITMEX_TESTNET_API_KEY", "BITMEX_TESTNET_API_SECRET")
+        } else {
+            ("BITMEX_API_KEY", "BITMEX_API_SECRET")
+        };
+
+        let key = get_or_env_var_opt(api_key, api_key_env);
+        let secret = get_or_env_var_opt(api_secret, api_secret_env);
+
+        Self::new(url, key, secret, account_id, heartbeat)
     }
 
     /// Creates a new authenticated [`BitmexWebSocketClient`] using environment variables.

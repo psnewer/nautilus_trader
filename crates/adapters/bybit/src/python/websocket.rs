@@ -27,10 +27,7 @@ use nautilus_model::{
 use pyo3::{IntoPyObjectExt, prelude::*};
 
 use crate::{
-    common::{
-        credential::Credential,
-        enums::{BybitEnvironment, BybitProductType},
-    },
+    common::enums::{BybitEnvironment, BybitProductType},
     python::params::{BybitWsAmendOrderParams, BybitWsPlaceOrderParams},
     websocket::{
         client::BybitWebSocketClient,
@@ -97,25 +94,7 @@ impl BybitWebSocketClient {
         url: Option<String>,
         heartbeat: Option<u64>,
     ) -> Self {
-        // If both api_key and api_secret are None, try to load from environment
-        let (final_api_key, final_api_secret) = if api_key.is_none() && api_secret.is_none() {
-            let (key_var, secret_var) = match environment {
-                BybitEnvironment::Testnet => ("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET"),
-                _ => ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
-            };
-            let env_key = std::env::var(key_var).ok().unwrap_or_default();
-            let env_secret = std::env::var(secret_var).ok().unwrap_or_default();
-            (env_key, env_secret)
-        } else {
-            (api_key.unwrap_or_default(), api_secret.unwrap_or_default())
-        };
-
-        tracing::debug!(
-            "Creating private WebSocket client with API key: {}",
-            &final_api_key[..final_api_key.len().min(10)]
-        );
-        let credential = Credential::new(final_api_key, final_api_secret);
-        Self::new_private(environment, credential, url, heartbeat)
+        Self::new_private(environment, api_key, api_secret, url, heartbeat)
     }
 
     #[staticmethod]
@@ -128,21 +107,14 @@ impl BybitWebSocketClient {
         url: Option<String>,
         heartbeat: Option<u64>,
     ) -> Self {
-        // If both api_key and api_secret are None, try to load from environment
-        let (final_api_key, final_api_secret) = if api_key.is_none() && api_secret.is_none() {
-            let (key_var, secret_var) = match environment {
-                BybitEnvironment::Testnet => ("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET"),
-                _ => ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
-            };
-            let env_key = std::env::var(key_var).ok().unwrap_or_default();
-            let env_secret = std::env::var(secret_var).ok().unwrap_or_default();
-            (env_key, env_secret)
-        } else {
-            (api_key.unwrap_or_default(), api_secret.unwrap_or_default())
-        };
+        Self::new_trade(environment, api_key, api_secret, url, heartbeat)
+    }
 
-        let credential = Credential::new(final_api_key, final_api_secret);
-        Self::new_trade(environment, credential, url, heartbeat)
+    #[getter]
+    #[pyo3(name = "api_key_masked")]
+    #[must_use]
+    pub fn py_api_key_masked(&self) -> Option<String> {
+        self.credential().map(|c| c.api_key_masked())
     }
 
     #[pyo3(name = "is_active")]
@@ -158,13 +130,6 @@ impl BybitWebSocketClient {
     #[pyo3(name = "subscription_count")]
     fn py_subscription_count(&self) -> usize {
         self.subscription_count()
-    }
-
-    #[getter]
-    #[pyo3(name = "api_key_masked")]
-    #[must_use]
-    pub fn py_api_key_masked(&self) -> Option<String> {
-        self.credential().map(|c| c.api_key_masked())
     }
 
     #[pyo3(name = "cache_instrument")]
