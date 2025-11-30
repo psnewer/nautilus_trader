@@ -350,6 +350,7 @@ impl DataClient for OKXDataClient {
             self.config.instrument_types.clone()
         };
 
+        let mut all_instruments = Vec::new();
         for inst_type in &instrument_types {
             let mut fetched = self
                 .http_client
@@ -361,12 +362,31 @@ impl DataClient for OKXDataClient {
             self.http_client.cache_instruments(fetched.clone());
 
             let mut guard = self.instruments.write().expect(MUTEX_POISONED);
-            for instrument in fetched {
-                guard.insert(instrument.id(), instrument);
+            for instrument in &fetched {
+                guard.insert(instrument.id(), instrument.clone());
+            }
+            drop(guard);
+
+            all_instruments.extend(fetched);
+        }
+
+        for instrument in all_instruments {
+            if let Err(e) = self.data_sender.send(DataEvent::Instrument(instrument)) {
+                tracing::warn!("Failed to send instrument: {e}");
             }
         }
 
         if let Some(ref mut ws) = self.ws_public {
+            // Cache instruments to websocket before connecting so handler has them
+            let instruments: Vec<_> = self
+                .instruments
+                .read()
+                .expect(MUTEX_POISONED)
+                .values()
+                .cloned()
+                .collect();
+            ws.cache_instruments(instruments);
+
             ws.connect()
                 .await
                 .context("failed to connect OKX public websocket")?;
@@ -404,6 +424,16 @@ impl DataClient for OKXDataClient {
         }
 
         if let Some(ref mut ws) = self.ws_business {
+            // Cache instruments to websocket before connecting so handler has them
+            let instruments: Vec<_> = self
+                .instruments
+                .read()
+                .expect(MUTEX_POISONED)
+                .values()
+                .cloned()
+                .collect();
+            ws.cache_instruments(instruments);
+
             ws.connect()
                 .await
                 .context("failed to connect OKX business websocket")?;

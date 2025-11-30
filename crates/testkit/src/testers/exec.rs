@@ -263,38 +263,23 @@ impl DataActor for ExecTester {
             let cache = self.cache();
             cache.instrument(&instrument_id).cloned()
         };
-        self.instrument = instrument;
 
-        let Some(instrument) = &self.instrument else {
-            log::error!("Could not find instrument for {instrument_id}");
-            return Ok(());
-        };
-
-        self.price_offset = Some(self.get_price_offset(instrument));
-
-        if self.config.subscribe_quotes {
-            self.subscribe_quotes(instrument_id, client_id, None);
+        if let Some(inst) = instrument {
+            self.initialize_with_instrument(inst)?;
+        } else {
+            log::info!("Instrument {instrument_id} not in cache, subscribing...");
+            self.subscribe_instrument(instrument_id, client_id, None);
         }
 
-        if self.config.subscribe_trades {
-            self.subscribe_trades(instrument_id, client_id, None);
-        }
+        Ok(())
+    }
 
-        if self.config.subscribe_book {
-            self.subscribe_book_at_interval(
-                instrument_id,
-                self.config.book_type,
-                self.config.book_depth,
-                self.config.book_interval_ms,
-                client_id,
-                None,
-            );
+    fn on_instrument(&mut self, instrument: &InstrumentAny) -> anyhow::Result<()> {
+        if instrument.id() == self.config.instrument_id && self.instrument.is_none() {
+            let id = instrument.id();
+            log::info!("Received instrument {id}, initializing...");
+            self.initialize_with_instrument(instrument.clone())?;
         }
-
-        if let Some(qty) = self.config.open_position_on_start_qty {
-            self.open_position(qty)?;
-        }
-
         Ok(())
     }
 
@@ -338,7 +323,7 @@ impl DataActor for ExecTester {
             );
         }
 
-        if self.config.can_unsubscribe {
+        if self.config.can_unsubscribe && self.instrument.is_some() {
             if self.config.subscribe_quotes {
                 self.unsubscribe_quotes(instrument_id, client_id, None);
             }
@@ -420,6 +405,39 @@ impl ExecTester {
             buy_stop_order: None,
             sell_stop_order: None,
         }
+    }
+
+    fn initialize_with_instrument(&mut self, instrument: InstrumentAny) -> anyhow::Result<()> {
+        let instrument_id = self.config.instrument_id;
+        let client_id = self.config.client_id;
+
+        self.price_offset = Some(self.get_price_offset(&instrument));
+        self.instrument = Some(instrument);
+
+        if self.config.subscribe_quotes {
+            self.subscribe_quotes(instrument_id, client_id, None);
+        }
+
+        if self.config.subscribe_trades {
+            self.subscribe_trades(instrument_id, client_id, None);
+        }
+
+        if self.config.subscribe_book {
+            self.subscribe_book_at_interval(
+                instrument_id,
+                self.config.book_type,
+                self.config.book_depth,
+                self.config.book_interval_ms,
+                client_id,
+                None,
+            );
+        }
+
+        if let Some(qty) = self.config.open_position_on_start_qty {
+            self.open_position(qty)?;
+        }
+
+        Ok(())
     }
 
     /// Calculate the price offset from TOB based on configuration.

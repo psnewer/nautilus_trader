@@ -389,11 +389,30 @@ impl LiveNode {
     {
         if self.is_running {
             anyhow::bail!(
-                "Cannot add actor while node is running. Add actors before calling start()."
+                "Cannot add actor while node is running, add actors before calling start()"
             );
         }
 
         self.kernel.trader.add_actor_from_factory(factory)
+    }
+
+    /// Adds a strategy to the trader.
+    ///
+    /// Strategies are registered with order factories and portfolio access for trading.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The node is currently running.
+    /// - A strategy with the same ID is already registered.
+    pub fn add_strategy(&mut self, strategy: Box<dyn Component>) -> anyhow::Result<()> {
+        if self.is_running {
+            anyhow::bail!(
+                "Cannot add strategy while node is running, add strategies before calling start()"
+            );
+        }
+
+        self.kernel.trader.add_strategy(strategy)
     }
 }
 

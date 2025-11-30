@@ -213,6 +213,9 @@ impl AsyncRunner {
             DataEvent::Data(data) => {
                 msgbus::send_any(MessagingSwitchboard::data_engine_process(), &data);
             }
+            DataEvent::Instrument(data) => {
+                msgbus::send_any(MessagingSwitchboard::data_engine_process(), &data);
+            }
             DataEvent::Response(resp) => {
                 msgbus::send_any(MessagingSwitchboard::data_engine_response(), &resp);
             }

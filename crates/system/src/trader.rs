@@ -404,14 +404,14 @@ impl Trader {
             start_component(&actor_id.inner())?;
         }
 
-        for strategy_id in &mut self.strategies.keys() {
+        for (strategy_id, strategy) in &mut self.strategies {
             log::debug!("Starting strategy '{strategy_id}'");
-            // strategy.start()?; // TODO: TBD
+            strategy.start()?;
         }
 
-        for exec_algorithm_id in &mut self.exec_algorithms.keys() {
+        for (exec_algorithm_id, exec_algorithm) in &mut self.exec_algorithms {
             log::debug!("Starting execution algorithm '{exec_algorithm_id}'");
-            // exec_algorithm.start()?;  // TODO: TBD
+            exec_algorithm.start()?;
         }
 
         Ok(())
@@ -428,14 +428,14 @@ impl Trader {
             stop_component(&actor_id.inner())?;
         }
 
-        for exec_algorithm_id in &mut self.exec_algorithms.keys() {
+        for (exec_algorithm_id, exec_algorithm) in &mut self.exec_algorithms {
             log::debug!("Stopping execution algorithm '{exec_algorithm_id}'");
-            // exec_algorithm.stop()?;  // TODO: TBD
+            exec_algorithm.stop()?;
         }
 
-        for strategy_id in &mut self.strategies.keys() {
+        for (strategy_id, strategy) in &mut self.strategies {
             log::debug!("Stopping strategy '{strategy_id}'");
-            // strategy.stop()?;  // TODO: TBD
+            strategy.stop()?;
         }
 
         Ok(())
@@ -453,14 +453,14 @@ impl Trader {
             reset_component(&actor_id.inner())?;
         }
 
-        for strategy_id in &mut self.strategies.keys() {
+        for (strategy_id, strategy) in &mut self.strategies {
             log::debug!("Resetting strategy '{strategy_id}'");
-            // strategy.reset()?;  // TODO: TBD
+            strategy.reset()?;
         }
 
-        for exec_algorithm_id in &mut self.exec_algorithms.keys() {
+        for (exec_algorithm_id, exec_algorithm) in &mut self.exec_algorithms {
             log::debug!("Resetting execution algorithm '{exec_algorithm_id}'");
-            // exec_algorithm.reset()?;  // TODO: TBD
+            exec_algorithm.reset()?;
         }
 
         Ok(())
@@ -478,14 +478,14 @@ impl Trader {
             dispose_component(&actor_id.inner())?;
         }
 
-        for strategy_id in &mut self.strategies.keys() {
+        for (strategy_id, strategy) in &mut self.strategies {
             log::debug!("Disposing strategy '{strategy_id}'");
-            // strategy.dispose()?;  // TODO: TBD
+            strategy.dispose()?;
         }
 
-        for exec_algorithm_id in &mut self.exec_algorithms.keys() {
+        for (exec_algorithm_id, exec_algorithm) in &mut self.exec_algorithms {
             log::debug!("Disposing execution algorithm '{exec_algorithm_id}'");
-            // exec_algorithm.dispose()?;  // TODO: TBD
+            exec_algorithm.dispose()?;
         }
 
         self.actor_ids.clear();
@@ -683,8 +683,7 @@ mod tests {
             _clock: Rc<RefCell<dyn Clock>>,
             _cache: Rc<RefCell<Cache>>,
         ) -> anyhow::Result<()> {
-            // Mock implementation
-            Ok(())
+            self.transition_state(ComponentTrigger::Initialize)
         }
 
         fn on_start(&mut self) -> anyhow::Result<()> {

@@ -36,7 +36,6 @@ use nautilus_common::{
             GenerateOrderStatusReport, GeneratePositionReports,
         },
     },
-    msgbus,
 };
 use nautilus_core::{MUTEX_POISONED, UnixNanos};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
@@ -88,33 +87,22 @@ impl OKXExecutionClient {
     ///
     /// Returns an error if the client fails to initialize.
     pub fn new(core: ExecutionClientCore, config: OKXExecClientConfig) -> anyhow::Result<Self> {
-        let http_client = if config.has_api_credentials() {
-            OKXHttpClient::with_credentials(
-                config.api_key.clone(),
-                config.api_secret.clone(),
-                config.api_passphrase.clone(),
-                config.base_url_http.clone(),
-                config.http_timeout_secs,
-                config.max_retries,
-                config.retry_delay_initial_ms,
-                config.retry_delay_max_ms,
-                config.is_demo,
-                config.http_proxy_url.clone(),
-            )?
-        } else {
-            OKXHttpClient::new(
-                config.base_url_http.clone(),
-                config.http_timeout_secs,
-                config.max_retries,
-                config.retry_delay_initial_ms,
-                config.retry_delay_max_ms,
-                config.is_demo,
-                config.http_proxy_url.clone(),
-            )?
-        };
+        // Always use with_credentials which loads from env vars when config values are None
+        let http_client = OKXHttpClient::with_credentials(
+            config.api_key.clone(),
+            config.api_secret.clone(),
+            config.api_passphrase.clone(),
+            config.base_url_http.clone(),
+            config.http_timeout_secs,
+            config.max_retries,
+            config.retry_delay_initial_ms,
+            config.retry_delay_max_ms,
+            config.is_demo,
+            config.http_proxy_url.clone(),
+        )?;
 
         let account_id = core.account_id;
-        let ws_private = OKXWebSocketClient::new(
+        let ws_private = OKXWebSocketClient::with_credentials(
             Some(config.ws_private_url()),
             config.api_key.clone(),
             config.api_secret.clone(),
@@ -124,7 +112,7 @@ impl OKXExecutionClient {
         )
         .context("failed to construct OKX private websocket client")?;
 
-        let ws_business = OKXWebSocketClient::new(
+        let ws_business = OKXWebSocketClient::with_credentials(
             Some(config.ws_business_url()),
             config.api_key.clone(),
             config.api_secret.clone(),
@@ -600,10 +588,6 @@ impl ExecutionClient for OKXExecutionClient {
             );
             self.ws_private.subscribe_orders(*inst_type).await?;
 
-            if *inst_type != OKXInstrumentType::Option {
-                self.ws_private.subscribe_orders_algo(*inst_type).await?;
-            }
-
             if self.config.use_fills_channel
                 && let Err(e) = self.ws_private.subscribe_fills(*inst_type).await
             {
@@ -616,12 +600,23 @@ impl ExecutionClient for OKXExecutionClient {
         self.ws_business.connect().await?;
         self.ws_business.wait_until_active(10.0).await?;
 
+        // Subscribe to algo orders on business WebSocket (OKX requires this endpoint)
+        for inst_type in &instrument_types {
+            if *inst_type != OKXInstrumentType::Option {
+                self.ws_business.subscribe_orders_algo(*inst_type).await?;
+            }
+        }
+
+        // Capture the sender before spawning tasks (it's thread-local)
+        let exec_sender = get_exec_event_sender();
+
         if self.ws_stream_handle.is_none() {
             let stream = self.ws_private.stream();
+            let sender = exec_sender.clone();
             let handle = tokio::spawn(async move {
                 pin_mut!(stream);
                 while let Some(message) = stream.next().await {
-                    dispatch_ws_message(message);
+                    dispatch_ws_message(message, &sender);
                 }
             });
             self.ws_stream_handle = Some(handle);
@@ -629,10 +624,11 @@ impl ExecutionClient for OKXExecutionClient {
 
         if self.ws_business_stream_handle.is_none() {
             let stream = self.ws_business.stream();
+            let sender = exec_sender.clone();
             let handle = tokio::spawn(async move {
                 pin_mut!(stream);
                 while let Some(message) = stream.next().await {
-                    dispatch_ws_message(message);
+                    dispatch_ws_message(message, &sender);
                 }
             });
             self.ws_business_stream_handle = Some(handle);
@@ -644,7 +640,7 @@ impl ExecutionClient for OKXExecutionClient {
             .await
             .context("failed to request OKX account state")?;
 
-        dispatch_account_state(account_state);
+        dispatch_account_state(account_state, &exec_sender);
 
         self.connected.store(true, Ordering::Release);
         tracing::info!(client_id = %self.core.client_id, "Connected");
@@ -863,23 +859,27 @@ impl LiveExecutionClient for OKXExecutionClient {
     }
 }
 
-fn dispatch_ws_message(message: NautilusWsMessage) {
+type ExecEventSender = tokio::sync::mpsc::UnboundedSender<ExecutionEvent>;
+
+fn dispatch_ws_message(message: NautilusWsMessage, sender: &ExecEventSender) {
     match message {
-        NautilusWsMessage::AccountUpdate(state) => dispatch_account_state(state),
-        NautilusWsMessage::PositionUpdate(report) => dispatch_position_status_report(report),
+        NautilusWsMessage::AccountUpdate(state) => dispatch_account_state(state, sender),
+        NautilusWsMessage::PositionUpdate(report) => {
+            dispatch_position_status_report(report, sender);
+        }
         NautilusWsMessage::ExecutionReports(reports) => {
             for report in reports {
-                dispatch_execution_report(report);
+                dispatch_execution_report(report, sender);
             }
         }
         NautilusWsMessage::OrderRejected(event) => {
-            dispatch_order_event(OrderEventAny::Rejected(event));
+            dispatch_order_event(OrderEventAny::Rejected(event), sender);
         }
         NautilusWsMessage::OrderCancelRejected(event) => {
-            dispatch_order_event(OrderEventAny::CancelRejected(event));
+            dispatch_order_event(OrderEventAny::CancelRejected(event), sender);
         }
         NautilusWsMessage::OrderModifyRejected(event) => {
-            dispatch_order_event(OrderEventAny::ModifyRejected(event));
+            dispatch_order_event(OrderEventAny::ModifyRejected(event), sender);
         }
         NautilusWsMessage::Error(e) => {
             tracing::warn!(
@@ -905,23 +905,20 @@ fn dispatch_ws_message(message: NautilusWsMessage) {
     }
 }
 
-fn dispatch_account_state(state: AccountState) {
-    msgbus::send_any(
-        "Portfolio.update_account".into(),
-        &state as &dyn std::any::Any,
-    );
+fn dispatch_account_state(state: AccountState, sender: &ExecEventSender) {
+    if let Err(e) = sender.send(ExecutionEvent::Account(state)) {
+        tracing::warn!("Failed to send account state: {e}");
+    }
 }
 
-fn dispatch_position_status_report(report: PositionStatusReport) {
-    let sender = get_exec_event_sender();
+fn dispatch_position_status_report(report: PositionStatusReport, sender: &ExecEventSender) {
     let exec_report = nautilus_common::messages::ExecutionReport::Position(Box::new(report));
     if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
         tracing::warn!("Failed to send position status report: {e}");
     }
 }
 
-fn dispatch_execution_report(report: ExecutionReport) {
-    let sender = get_exec_event_sender();
+fn dispatch_execution_report(report: ExecutionReport, sender: &ExecEventSender) {
     match report {
         ExecutionReport::Order(order_report) => {
             let exec_report =
@@ -940,8 +937,7 @@ fn dispatch_execution_report(report: ExecutionReport) {
     }
 }
 
-fn dispatch_order_event(event: OrderEventAny) {
-    let sender = get_exec_event_sender();
+fn dispatch_order_event(event: OrderEventAny, sender: &ExecEventSender) {
     if let Err(e) = sender.send(ExecutionEvent::Order(event)) {
         tracing::warn!("Failed to send order event: {e}");
     }
