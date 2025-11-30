@@ -11,6 +11,7 @@ CARGO_AUDIT_VERSION := $(shell grep '^cargo-audit *= *"' Cargo.toml | awk -F\" '
 CARGO_DENY_VERSION := $(shell grep '^cargo-deny *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_LLVM_COV_VERSION := $(shell grep '^cargo-llvm-cov *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_NEXTEST_VERSION := $(shell grep '^cargo-nextest *= *"' Cargo.toml | awk -F\" '{print $$2}')
+CARGO_VET_VERSION := $(shell grep '^cargo-vet *= *"' Cargo.toml | awk -F\" '{print $$2}')
 LYCHEE_VERSION := $(shell grep '^lychee *= *"' Cargo.toml | awk -F\" '{print $$2}')
 UV_VERSION := $(shell cat uv-version | tr -d '\n')
 
@@ -224,7 +225,7 @@ check-code:  #-- Run clippy, and ruff --fix (use HYPERSYNC=true to include hyper
 
 .PHONY: pre-flight
 pre-flight: export CARGO_TARGET_DIR=$(TARGET_DIR)
-pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-test, build-debug, pytest)
+pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-vet, cargo-test, build-debug, pytest)
 	$(info $(M) Running pre-flight checks...)
 	@if ! git diff --quiet; then \
 		printf "$(RED)ERROR: You have unstaged changes$(RESET)\n"; \
@@ -232,6 +233,7 @@ pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-
 		exit 1; \
 	fi
 	@$(MAKE) --no-print-directory format
+	@$(MAKE) --no-print-directory cargo-vet
 	@$(MAKE) --no-print-directory check-code
 	@$(MAKE) --no-print-directory cargo-test
 	@$(MAKE) --no-print-directory build-debug
@@ -269,7 +271,7 @@ outdated: check-edit-installed  #-- Check for outdated dependencies
 	uv tree --outdated --depth 1 --all-groups
 	@printf "\n$(CYAN)Checking tool versions...$(RESET)\n"
 	@outdated_count=0; \
-	for tool in cargo-audit:$(CARGO_AUDIT_VERSION) cargo-deny:$(CARGO_DENY_VERSION) cargo-llvm-cov:$(CARGO_LLVM_COV_VERSION) cargo-nextest:$(CARGO_NEXTEST_VERSION) lychee:$(LYCHEE_VERSION); do \
+	for tool in cargo-audit:$(CARGO_AUDIT_VERSION) cargo-deny:$(CARGO_DENY_VERSION) cargo-llvm-cov:$(CARGO_LLVM_COV_VERSION) cargo-nextest:$(CARGO_NEXTEST_VERSION) cargo-vet:$(CARGO_VET_VERSION) lychee:$(LYCHEE_VERSION); do \
 		name=$${tool%%:*}; current=$${tool##*:}; \
 		latest=$$(cargo search $$name --limit 1 2>/dev/null | head -1 | awk -F\" '{print $$2}'); \
 		if [ "$$current" != "$$latest" ]; then \
@@ -289,6 +291,7 @@ install-tools:  #-- Install required development tools (Rust tools from Cargo.to
 	&& cargo install cargo-nextest --version $(CARGO_NEXTEST_VERSION) --locked \
 	&& cargo install cargo-llvm-cov --version $(CARGO_LLVM_COV_VERSION) --locked \
 	&& cargo install cargo-audit --version $(CARGO_AUDIT_VERSION) --locked \
+	&& cargo install cargo-vet --version $(CARGO_VET_VERSION) --locked \
 	&& cargo install lychee --version $(LYCHEE_VERSION) --locked \
 	&& uv self update $(UV_VERSION)
 
@@ -304,6 +307,10 @@ security-audit: check-audit-installed  #-- Run security audit for Rust dependenc
 .PHONY: cargo-deny
 cargo-deny: check-deny-installed  #-- Run cargo-deny checks (advisories, sources, bans, licenses)
 	cargo deny --all-features check
+
+.PHONY: cargo-vet
+cargo-vet: check-vet-installed  #-- Run cargo-vet supply chain audit
+	cargo vet
 
 #== Documentation
 
@@ -388,6 +395,13 @@ check-llvm-cov-installed:  #-- Verify cargo-llvm-cov is installed
 check-hack-installed:  #-- Verify cargo-hack is installed
 	@if ! cargo hack --version >/dev/null 2>&1; then \
 		echo "cargo-hack is not installed. You can install it using 'cargo install cargo-hack'"; \
+		exit 1; \
+	fi
+
+.PHONY: check-vet-installed
+check-vet-installed:  #-- Verify cargo-vet is installed
+	@if ! cargo vet --version >/dev/null 2>&1; then \
+		echo "cargo-vet is not installed. You can install it using 'cargo install cargo-vet'"; \
 		exit 1; \
 	fi
 

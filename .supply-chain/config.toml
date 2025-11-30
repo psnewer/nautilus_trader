@@ -1897,7 +1897,7 @@ version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3]]
-version = "0.27.1"
+version = "0.27.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-async-runtimes]]
@@ -1909,19 +1909,19 @@ version = "0.27.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-build-config]]
-version = "0.27.1"
+version = "0.27.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-ffi]]
-version = "0.27.1"
+version = "0.27.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-macros]]
-version = "0.27.1"
+version = "0.27.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-macros-backend]]
-version = "0.27.1"
+version = "0.27.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyo3-stub-gen]]
@@ -2933,11 +2933,11 @@ version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerocopy]]
-version = "0.8.30"
+version = "0.8.31"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerocopy-derive]]
-version = "0.8.30"
+version = "0.8.31"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerotrie]]
