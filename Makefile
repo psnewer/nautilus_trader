@@ -25,8 +25,12 @@ VERBOSE ?= true
 # Can be overridden to use a separate directory: make build-debug TARGET_DIR=target-python
 TARGET_DIR ?= target
 
-# Prefer sccache for faster builds when available
-SCCACHE := $(shell command -v sccache 2>/dev/null)
+# Compiler configuration
+# Uses clang by default (required by ed25519-blake2b and other deps).
+# When sccache is available, wraps the compiler for build caching.
+# Set CARGO_INCREMENTAL=0 with sccache for better cache hit rates.
+# To disable sccache: make build SCCACHE=
+SCCACHE ?= $(shell command -v sccache 2>/dev/null)
 
 ifeq ($(SCCACHE),)
 CC ?= clang
