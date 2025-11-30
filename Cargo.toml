@@ -362,7 +362,12 @@ cargo-audit = "0.22.0"
 cargo-deny = "0.18.6"
 cargo-llvm-cov = "0.6.21"
 cargo-nextest = "0.9.114"
+cargo-vet = "0.10.1"
 lychee = "0.21.0"
+
+# cargo-vet supply chain security configuration
+[workspace.metadata.vet]
+store = { path = '.supply-chain' }
 
 # -----------------------------------------------------------------------------
 # Profiles
