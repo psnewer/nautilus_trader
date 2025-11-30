@@ -17,7 +17,8 @@
 
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
-    data::Data,
+    data::{Data, OrderBookDeltas_API},
+    identifiers::InstrumentId,
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::prelude::*;
@@ -82,23 +83,46 @@ impl KrakenFuturesWebSocketClient {
     fn py_connect<'py>(
         &mut self,
         py: Python<'py>,
+        instruments: Vec<Py<PyAny>>,
         callback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut instruments_any = Vec::new();
+        for inst in instruments {
+            let inst_any = pyobject_to_instrument_any(py, inst)?;
+            instruments_any.push(inst_any);
+        }
+
         let mut client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client.connect().await.map_err(to_pyruntime_err)?;
+
+            // Cache instruments after connection is established
+            client.cache_instruments(instruments_any);
 
             // Take ownership of the receiver
             if let Some(mut rx) = client.take_output_rx() {
                 tokio::spawn(async move {
                     while let Some(msg) = rx.recv().await {
                         Python::attach(|py| {
-                            let data: Data = match msg {
-                                KrakenFuturesWsMessage::MarkPrice(update) => update.into(),
-                                KrakenFuturesWsMessage::IndexPrice(update) => update.into(),
+                            let py_obj = match msg {
+                                KrakenFuturesWsMessage::MarkPrice(update) => {
+                                    data_to_pycapsule(py, Data::from(update))
+                                }
+                                KrakenFuturesWsMessage::IndexPrice(update) => {
+                                    data_to_pycapsule(py, Data::from(update))
+                                }
+                                KrakenFuturesWsMessage::Quote(quote) => {
+                                    data_to_pycapsule(py, Data::from(quote))
+                                }
+                                KrakenFuturesWsMessage::Trade(trade) => {
+                                    data_to_pycapsule(py, Data::from(trade))
+                                }
+                                KrakenFuturesWsMessage::BookDeltas(deltas) => data_to_pycapsule(
+                                    py,
+                                    Data::Deltas(OrderBookDeltas_API::new(deltas)),
+                                ),
                             };
-                            let py_obj = data_to_pycapsule(py, data);
                             if let Err(e) = callback.call1(py, (py_obj,)) {
                                 tracing::error!("Error calling Python callback: {e}");
                             }
@@ -135,13 +159,13 @@ impl KrakenFuturesWebSocketClient {
     fn py_subscribe_mark_price<'py>(
         &self,
         py: Python<'py>,
-        product_id: String,
+        instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .subscribe_mark_price(&product_id)
+                .subscribe_mark_price(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -152,13 +176,13 @@ impl KrakenFuturesWebSocketClient {
     fn py_unsubscribe_mark_price<'py>(
         &self,
         py: Python<'py>,
-        product_id: String,
+        instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .unsubscribe_mark_price(&product_id)
+                .unsubscribe_mark_price(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -169,13 +193,13 @@ impl KrakenFuturesWebSocketClient {
     fn py_subscribe_index_price<'py>(
         &self,
         py: Python<'py>,
-        product_id: String,
+        instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .subscribe_index_price(&product_id)
+                .subscribe_index_price(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -186,13 +210,117 @@ impl KrakenFuturesWebSocketClient {
     fn py_unsubscribe_index_price<'py>(
         &self,
         py: Python<'py>,
-        product_id: String,
+        instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .unsubscribe_index_price(&product_id)
+                .unsubscribe_index_price(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_quotes")]
+    fn py_subscribe_quotes<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_quotes(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_quotes")]
+    fn py_unsubscribe_quotes<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_quotes(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_trades")]
+    fn py_subscribe_trades<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_trades(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_trades")]
+    fn py_unsubscribe_trades<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_trades(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_book")]
+    #[pyo3(signature = (instrument_id, depth=None))]
+    fn py_subscribe_book<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+        depth: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_book(instrument_id, depth)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_book")]
+    fn py_unsubscribe_book<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_book(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

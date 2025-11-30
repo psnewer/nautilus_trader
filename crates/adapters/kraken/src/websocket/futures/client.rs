@@ -23,7 +23,7 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use dashmap::DashSet;
 use nautilus_common::live::runtime::get_runtime;
-use nautilus_model::instruments::InstrumentAny;
+use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use nautilus_network::{
     mode::ConnectionMode,
     websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
@@ -224,77 +224,185 @@ impl KrakenFuturesWebSocketClient {
         self.disconnect().await
     }
 
-    /// Subscribe to mark price updates for the given product.
-    pub async fn subscribe_mark_price(&self, product_id: &str) -> Result<(), KrakenWsError> {
+    /// Subscribe to mark price updates for the given instrument.
+    pub async fn subscribe_mark_price(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
         let key = format!("mark:{product_id}");
         if self.subscriptions.contains(&key) {
             return Ok(());
         }
 
         self.subscriptions.insert(key);
-
-        // Only subscribe to ticker feed if not already subscribed for this product
-        let ticker_key = format!("ticker:{product_id}");
-        if !self.subscriptions.contains(&ticker_key) {
-            self.subscriptions.insert(ticker_key);
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::Subscribe(product_id.to_string()))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
-        }
-
-        Ok(())
+        self.ensure_ticker_subscribed(product_id).await
     }
 
-    /// Unsubscribe from mark price updates for the given product.
-    pub async fn unsubscribe_mark_price(&self, product_id: &str) -> Result<(), KrakenWsError> {
+    /// Unsubscribe from mark price updates for the given instrument.
+    pub async fn unsubscribe_mark_price(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
         self.subscriptions.remove(&format!("mark:{product_id}"));
-
-        // Only unsubscribe from ticker if no more mark/index subscriptions
-        let has_mark = self.subscriptions.contains(&format!("mark:{product_id}"));
-        let has_index = self.subscriptions.contains(&format!("index:{product_id}"));
-
-        if !has_mark && !has_index {
-            self.subscriptions.remove(&format!("ticker:{product_id}"));
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::Unsubscribe(product_id.to_string()))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
-        }
-
-        Ok(())
+        self.maybe_unsubscribe_ticker(product_id).await
     }
 
-    /// Subscribe to index price updates for the given product.
-    pub async fn subscribe_index_price(&self, product_id: &str) -> Result<(), KrakenWsError> {
+    /// Subscribe to index price updates for the given instrument.
+    pub async fn subscribe_index_price(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
         let key = format!("index:{product_id}");
         if self.subscriptions.contains(&key) {
             return Ok(());
         }
 
         self.subscriptions.insert(key);
+        self.ensure_ticker_subscribed(product_id).await
+    }
 
-        // Only subscribe to ticker feed if not already subscribed for this product
+    /// Unsubscribe from index price updates for the given instrument.
+    pub async fn unsubscribe_index_price(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        self.subscriptions.remove(&format!("index:{product_id}"));
+        self.maybe_unsubscribe_ticker(product_id).await
+    }
+
+    /// Subscribe to quote updates for the given instrument.
+    ///
+    /// Uses the order book channel for low-latency top-of-book quotes.
+    pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        let key = format!("quotes:{product_id}");
+        if self.subscriptions.contains(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.insert(key);
+
+        // Use book feed for low-latency quotes (not throttled ticker)
+        self.ensure_book_subscribed(product_id).await
+    }
+
+    /// Unsubscribe from quote updates for the given instrument.
+    pub async fn unsubscribe_quotes(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        self.subscriptions.remove(&format!("quotes:{product_id}"));
+        self.maybe_unsubscribe_book(product_id).await
+    }
+
+    /// Subscribe to trade updates for the given instrument.
+    pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        let key = format!("trades:{product_id}");
+        if self.subscriptions.contains(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.insert(key.clone());
+
+        // Subscribe to trade feed
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SubscribeTrade(product_id.to_string()))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Unsubscribe from trade updates for the given instrument.
+    pub async fn unsubscribe_trades(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        let key = format!("trades:{product_id}");
+        if !self.subscriptions.contains(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.remove(&key);
+
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::UnsubscribeTrade(product_id.to_string()))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Subscribe to order book updates for the given instrument.
+    ///
+    /// Note: The `depth` parameter is accepted for API compatibility with spot client but is
+    /// not used by Kraken Futures (full book is always returned).
+    pub async fn subscribe_book(
+        &self,
+        instrument_id: InstrumentId,
+        _depth: Option<u32>,
+    ) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        let key = format!("book:{product_id}");
+        if self.subscriptions.contains(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.insert(key.clone());
+
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SubscribeBook(product_id.to_string()))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Unsubscribe from order book updates for the given instrument.
+    pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
+        let product_id = instrument_id.symbol.as_str();
+        let key = format!("book:{product_id}");
+        if !self.subscriptions.contains(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.remove(&key);
+
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::UnsubscribeBook(product_id.to_string()))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Ensure ticker feed is subscribed for the given product.
+    async fn ensure_ticker_subscribed(&self, product_id: &str) -> Result<(), KrakenWsError> {
         let ticker_key = format!("ticker:{product_id}");
         if !self.subscriptions.contains(&ticker_key) {
             self.subscriptions.insert(ticker_key);
             self.cmd_tx
                 .read()
                 .await
-                .send(HandlerCommand::Subscribe(product_id.to_string()))
+                .send(HandlerCommand::SubscribeTicker(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
-
         Ok(())
     }
 
-    /// Unsubscribe from index price updates for the given product.
-    pub async fn unsubscribe_index_price(&self, product_id: &str) -> Result<(), KrakenWsError> {
-        self.subscriptions.remove(&format!("index:{product_id}"));
-
-        // Only unsubscribe from ticker if no more mark/index subscriptions
+    /// Unsubscribe from ticker if no more dependent subscriptions.
+    async fn maybe_unsubscribe_ticker(&self, product_id: &str) -> Result<(), KrakenWsError> {
         let has_mark = self.subscriptions.contains(&format!("mark:{product_id}"));
         let has_index = self.subscriptions.contains(&format!("index:{product_id}"));
 
@@ -303,10 +411,40 @@ impl KrakenFuturesWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(HandlerCommand::Unsubscribe(product_id.to_string()))
+                .send(HandlerCommand::UnsubscribeTicker(product_id.to_string()))
                 .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
         }
+        Ok(())
+    }
 
+    /// Ensure book feed is subscribed for the given product (for quotes).
+    async fn ensure_book_subscribed(&self, product_id: &str) -> Result<(), KrakenWsError> {
+        let book_key = format!("book:{product_id}");
+        if !self.subscriptions.contains(&book_key) {
+            self.subscriptions.insert(book_key);
+            self.cmd_tx
+                .read()
+                .await
+                .send(HandlerCommand::SubscribeBook(product_id.to_string()))
+                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Unsubscribe from book if no more dependent subscriptions.
+    async fn maybe_unsubscribe_book(&self, product_id: &str) -> Result<(), KrakenWsError> {
+        let has_quotes = self.subscriptions.contains(&format!("quotes:{product_id}"));
+        let has_book = self.subscriptions.contains(&format!("book:{product_id}"));
+
+        // Only unsubscribe if no quotes subscription and no explicit book subscription
+        if !has_quotes && !has_book {
+            self.subscriptions.remove(&format!("book:{product_id}"));
+            self.cmd_tx
+                .read()
+                .await
+                .send(HandlerCommand::UnsubscribeBook(product_id.to_string()))
+                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        }
         Ok(())
     }
 

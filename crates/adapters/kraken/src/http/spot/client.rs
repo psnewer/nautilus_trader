@@ -25,6 +25,7 @@ use std::{
     },
 };
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use indexmap::IndexMap;
 use nautilus_core::{
@@ -32,9 +33,11 @@ use nautilus_core::{
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    identifiers::{AccountId, InstrumentId},
+    enums::{OrderSide, OrderType, TimeInForce},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport},
+    types::{Price, Quantity},
 };
 use nautilus_network::{
     http::HttpClient,
@@ -49,6 +52,7 @@ use ustr::Ustr;
 use super::models::*;
 use crate::{
     common::{
+        consts::NAUTILUS_KRAKEN_BROKER_ID,
         credential::KrakenCredential,
         enums::{KrakenEnvironment, KrakenProductType},
         parse::{
@@ -224,7 +228,7 @@ impl KrakenSpotRawHttpClient {
         vec![KRAKEN_GLOBAL_RATE_KEY.to_string(), route]
     }
 
-    fn sign_request(
+    fn sign_spot(
         &self,
         path: &str,
         nonce: u64,
@@ -235,7 +239,7 @@ impl KrakenSpotRawHttpClient {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing credentials"))?;
 
-        let (signature, post_data) = credential.sign_request(path, nonce, params)?;
+        let (signature, post_data) = credential.sign_spot(path, nonce, params)?;
 
         let mut headers = HashMap::new();
         headers.insert("API-Key".to_string(), credential.api_key().to_string());
@@ -287,7 +291,7 @@ impl KrakenSpotRawHttpClient {
                     };
 
                     let (auth_headers, post_data) = self
-                        .sign_request(&endpoint, nonce, &params)
+                        .sign_spot(&endpoint, nonce, &params)
                         .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
                     headers.extend(auth_headers);
                     Some(post_data.into_bytes())
@@ -357,10 +361,6 @@ impl KrakenSpotRawHttpClient {
             )
             .await
     }
-
-    // -------------------------------------------------------------------------
-    // Public Endpoints
-    // -------------------------------------------------------------------------
 
     pub async fn get_server_time(&self) -> anyhow::Result<ServerTime, KrakenHttpError> {
         let response: KrakenResponse<ServerTime> = self
@@ -479,10 +479,6 @@ impl KrakenSpotRawHttpClient {
             KrakenHttpError::ParseError("Missing result in trades response".to_string())
         })
     }
-
-    // -------------------------------------------------------------------------
-    // Private Endpoints
-    // -------------------------------------------------------------------------
 
     pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
         if self.credential.is_none() {
@@ -635,10 +631,6 @@ impl KrakenSpotRawHttpClient {
 
         Ok(result.trades)
     }
-
-    // -------------------------------------------------------------------------
-    // Order Execution
-    // -------------------------------------------------------------------------
 
     pub async fn add_order(
         &self,
@@ -846,6 +838,50 @@ impl KrakenSpotHttpClient {
         })
     }
 
+    /// Creates a new [`KrakenSpotHttpClient`] loading credentials from environment variables.
+    ///
+    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET` (mainnet)
+    /// or `KRAKEN_SPOT_TESTNET_API_KEY` and `KRAKEN_SPOT_TESTNET_API_SECRET` (testnet).
+    ///
+    /// Falls back to unauthenticated client if credentials are not set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_env(
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
+        timeout_secs: Option<u64>,
+        max_retries: Option<u32>,
+        retry_delay_ms: Option<u64>,
+        retry_delay_max_ms: Option<u64>,
+        proxy_url: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let testnet = environment == KrakenEnvironment::Testnet;
+
+        if let Some(credential) = KrakenCredential::from_env_spot(testnet) {
+            let (api_key, api_secret) = credential.into_parts();
+            Self::with_credentials(
+                api_key,
+                api_secret,
+                environment,
+                base_url_override,
+                timeout_secs,
+                max_retries,
+                retry_delay_ms,
+                retry_delay_max_ms,
+                proxy_url,
+            )
+        } else {
+            Self::new(
+                environment,
+                base_url_override,
+                timeout_secs,
+                max_retries,
+                retry_delay_ms,
+                retry_delay_max_ms,
+                proxy_url,
+            )
+        }
+    }
+
     pub fn cancel_all_requests(&self) {
         self.inner.cancel_all_requests();
     }
@@ -885,17 +921,11 @@ impl KrakenSpotHttpClient {
         get_atomic_clock_realtime().get_time_ns()
     }
 
-    // -------------------------------------------------------------------------
-    // Pass-through methods to raw client
-    // -------------------------------------------------------------------------
-
     pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
         self.inner.get_websockets_token().await
     }
 
-    // -------------------------------------------------------------------------
     // High-Level Methods (return Nautilus domain types)
-    // -------------------------------------------------------------------------
 
     pub async fn request_instruments(
         &self,
@@ -923,33 +953,34 @@ impl KrakenSpotHttpClient {
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<u64>,
-        end: Option<u64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u64>,
     ) -> anyhow::Result<Vec<TradeTick>, KrakenHttpError> {
         let instrument = self
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}",
                 ))
             })?;
 
         let raw_symbol = instrument.raw_symbol().to_string();
         let ts_init = self.generate_ts_init();
 
-        let since = start.map(|s| s.to_string());
+        // Kraken trades API expects nanoseconds since epoch as string
+        let since = start.map(|dt| (dt.timestamp_nanos_opt().unwrap_or(0) as u64).to_string());
         let response = self.inner.get_trades(&raw_symbol, since).await?;
 
+        let end_ns = end.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
         let mut trades = Vec::new();
 
         for (_pair_name, trade_arrays) in &response.data {
             for trade_array in trade_arrays {
                 match parse_trade_tick_from_array(trade_array, &instrument, ts_init) {
                     Ok(trade_tick) => {
-                        if let Some(end_ns) = end
-                            && trade_tick.ts_event.as_u64() > end_ns
+                        if let Some(end_nanos) = end_ns
+                            && trade_tick.ts_event.as_u64() > end_nanos
                         {
                             continue;
                         }
@@ -974,8 +1005,8 @@ impl KrakenSpotHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<u64>,
-        end: Option<u64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u64>,
     ) -> anyhow::Result<Vec<Bar>, KrakenHttpError> {
         let instrument_id = bar_type.instrument_id();
@@ -983,8 +1014,7 @@ impl KrakenSpotHttpClient {
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}"
                 ))
             })?;
 
@@ -996,7 +1026,9 @@ impl KrakenSpotHttpClient {
                 .map_err(|e| KrakenHttpError::ParseError(e.to_string()))?,
         );
 
-        let since = start.map(|s| (s / 1_000_000_000) as i64);
+        // Kraken OHLC API expects Unix timestamp in seconds
+        let since = start.map(|dt| dt.timestamp());
+        let end_ns = end.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
         let response = self.inner.get_ohlc(&raw_symbol, interval, since).await?;
 
         let mut bars = Vec::new();
@@ -1004,7 +1036,8 @@ impl KrakenSpotHttpClient {
         for (_pair_name, ohlc_arrays) in &response.data {
             for ohlc_array in ohlc_arrays {
                 if ohlc_array.len() < 8 {
-                    tracing::warn!("OHLC array too short: {}", ohlc_array.len());
+                    let len = ohlc_array.len();
+                    tracing::warn!("OHLC array too short: {len}");
                     continue;
                 }
 
@@ -1021,8 +1054,8 @@ impl KrakenSpotHttpClient {
 
                 match parse_bar(&ohlc, &instrument, bar_type, ts_init) {
                     Ok(bar) => {
-                        if let Some(end_ns) = end
-                            && bar.ts_event.as_u64() > end_ns
+                        if let Some(end_nanos) = end_ns
+                            && bar.ts_event.as_u64() > end_nanos
                         {
                             continue;
                         }
@@ -1048,8 +1081,8 @@ impl KrakenSpotHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         open_only: bool,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         let ts_init = self.generate_ts_init();
@@ -1081,13 +1114,17 @@ impl KrakenSpotHttpClient {
             return Ok(all_reports);
         }
 
+        // Kraken API expects Unix timestamps in seconds
+        let start_ts = start.map(|dt| dt.timestamp());
+        let end_ts = end.map(|dt| dt.timestamp());
+
         let mut offset = 0;
         const PAGE_SIZE: i32 = 50;
 
         loop {
             let closed_orders = self
                 .inner
-                .get_closed_orders(Some(true), None, start, end, Some(offset), None)
+                .get_closed_orders(Some(true), None, start_ts, end_ts, Some(offset), None)
                 .await?;
 
             if closed_orders.is_empty() {
@@ -1132,11 +1169,15 @@ impl KrakenSpotHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Vec<FillReport>> {
         let ts_init = self.generate_ts_init();
         let mut all_reports = Vec::new();
+
+        // Kraken API expects Unix timestamps in seconds
+        let start_ts = start.map(|dt| dt.timestamp());
+        let end_ts = end.map(|dt| dt.timestamp());
 
         let mut offset = 0;
         const PAGE_SIZE: i32 = 50;
@@ -1144,7 +1185,7 @@ impl KrakenSpotHttpClient {
         loop {
             let trades = self
                 .inner
-                .get_trades_history(None, Some(true), start, end, Some(offset))
+                .get_trades_history(None, Some(true), start_ts, end_ts, Some(offset))
                 .await?;
 
             if trades.is_empty() {
@@ -1175,6 +1216,162 @@ impl KrakenSpotHttpClient {
         }
 
         Ok(all_reports)
+    }
+
+    /// Submit a new order to the Kraken Spot exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The instrument is not found in cache.
+    /// - The order type or time in force is not supported.
+    /// - The request fails.
+    /// - The order is rejected.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_order(
+        &self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Option<Price>,
+        reduce_only: bool,
+        post_only: bool,
+    ) -> anyhow::Result<OrderStatusReport> {
+        let instrument = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let raw_symbol = instrument.raw_symbol().to_string();
+
+        let kraken_side = match order_side {
+            OrderSide::Buy => "buy",
+            OrderSide::Sell => "sell",
+            _ => anyhow::bail!("Invalid order side: {order_side:?}"),
+        };
+
+        let kraken_order_type = match order_type {
+            OrderType::Market => "market",
+            OrderType::Limit => "limit",
+            OrderType::StopMarket => "stop-loss",
+            OrderType::StopLimit => "stop-loss-limit",
+            OrderType::MarketIfTouched => "take-profit",
+            OrderType::LimitIfTouched => "take-profit-limit",
+            _ => anyhow::bail!("Unsupported order type: {order_type:?}"),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("pair".to_string(), raw_symbol);
+        params.insert("type".to_string(), kraken_side.to_string());
+        params.insert("ordertype".to_string(), kraken_order_type.to_string());
+        params.insert("volume".to_string(), quantity.to_string());
+        params.insert("cl_ord_id".to_string(), client_order_id.to_string());
+
+        // Add broker ID for partner attribution
+        params.insert("broker".to_string(), NAUTILUS_KRAKEN_BROKER_ID.to_string());
+
+        if let Some(price) = price {
+            params.insert("price".to_string(), price.to_string());
+        }
+
+        // Build oflags based on time in force and order options
+        let mut oflags = Vec::new();
+
+        match time_in_force {
+            TimeInForce::Gtc => {} // Default, no flag needed
+            TimeInForce::Ioc => {
+                oflags.push("ioc");
+            }
+            TimeInForce::Fok => {
+                anyhow::bail!("FOK time in force not supported by Kraken Spot API");
+            }
+            TimeInForce::Gtd => {
+                anyhow::bail!("GTD time in force requires expire_time parameter");
+            }
+            _ => anyhow::bail!("Unsupported time in force: {time_in_force:?}"),
+        }
+
+        if post_only {
+            oflags.push("post");
+        }
+
+        if reduce_only {
+            // Kraken Spot doesn't support reduce_only, ignore silently
+            tracing::warn!("reduce_only is not supported by Kraken Spot API, ignoring");
+        }
+
+        if !oflags.is_empty() {
+            params.insert("oflags".to_string(), oflags.join(","));
+        }
+
+        let response = self.inner.add_order(params).await?;
+
+        let venue_order_id = response
+            .txid
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No transaction ID in order response"))?;
+
+        // Query the order to get full status
+        let orders = self.inner.get_open_orders(Some(true), None).await?;
+
+        let order = orders
+            .get(venue_order_id)
+            .ok_or_else(|| anyhow::anyhow!("Order not found after submission: {venue_order_id}"))?;
+
+        let ts_init = self.generate_ts_init();
+        parse_order_status_report(venue_order_id, order, &instrument, account_id, ts_init)
+    }
+
+    /// Cancel an order on the Kraken Spot exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - Neither client_order_id nor venue_order_id is provided.
+    /// - The order is not found.
+    /// - The request fails.
+    pub async fn cancel_order(
+        &self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+    ) -> anyhow::Result<OrderStatusReport> {
+        let instrument = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let txid = venue_order_id.map(|id| id.to_string());
+        let cl_ord_id = client_order_id.map(|id| id.to_string());
+
+        if txid.is_none() && cl_ord_id.is_none() {
+            anyhow::bail!("Either client_order_id or venue_order_id must be provided");
+        }
+
+        let _response = self.inner.cancel_order(txid.clone(), cl_ord_id).await?;
+
+        // Query the order to get final status
+        let order_id = txid.ok_or_else(|| {
+            anyhow::anyhow!("venue_order_id required to query order status after cancellation")
+        })?;
+
+        // Check closed orders for the canceled order
+        let closed_orders = self
+            .inner
+            .get_closed_orders(Some(true), None, None, None, None, None)
+            .await?;
+
+        let order = closed_orders
+            .get(&order_id)
+            .ok_or_else(|| anyhow::anyhow!("Order not found after cancellation: {order_id}"))?;
+
+        let ts_init = self.generate_ts_init();
+        parse_order_status_report(&order_id, order, &instrument, account_id, ts_init)
     }
 }
 

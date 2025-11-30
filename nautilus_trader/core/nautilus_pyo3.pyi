@@ -7716,6 +7716,42 @@ class KrakenSpotHttpClient:
         end: int | None = None,
         limit: int | None = None,
     ) -> list[Bar]: ...
+    async def request_order_status_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        open_only: bool = False,
+    ) -> list[OrderStatusReport]: ...
+    async def request_fill_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> list[FillReport]: ...
+    async def submit_order(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Price | None = None,
+        reduce_only: bool = False,
+        post_only: bool = False,
+    ) -> OrderStatusReport: ...
+    async def cancel_order(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+    ) -> OrderStatusReport: ...
+    async def cancel_all_orders(self) -> int: ...
 
 class KrakenFuturesHttpClient:
     def __init__(
@@ -7763,6 +7799,51 @@ class KrakenFuturesHttpClient:
         limit: int | None = None,
         tick_type: str | None = None,
     ) -> list[Bar]: ...
+    async def request_order_status_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        open_only: bool = False,
+    ) -> list[OrderStatusReport]: ...
+    async def request_fill_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> list[FillReport]: ...
+    async def request_position_status_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[PositionStatusReport]: ...
+    async def submit_order(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Price | None = None,
+        trigger_price: Price | None = None,
+        reduce_only: bool = False,
+        post_only: bool = False,
+    ) -> OrderStatusReport: ...
+    async def cancel_order(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+    ) -> OrderStatusReport: ...
+    async def cancel_all_orders(
+        self,
+        instrument_id: InstrumentId | None = None,
+    ) -> int: ...
 
 class KrakenSpotWebSocketClient:
     def __init__(
@@ -7808,13 +7889,23 @@ class KrakenFuturesWebSocketClient:
     def is_closed(self) -> bool: ...
     def cache_instruments(self, instruments: list[Instrument]) -> None: ...
     def cache_instrument(self, instrument: Instrument) -> None: ...
-    async def connect(self, callback: Callable) -> None: ...
+    async def connect(
+        self, instruments: list[Instrument], callback: Callable[..., Any]
+    ) -> None: ...
     async def disconnect(self) -> None: ...
     async def close(self) -> None: ...
-    async def subscribe_mark_price(self, product_id: str) -> None: ...
-    async def unsubscribe_mark_price(self, product_id: str) -> None: ...
-    async def subscribe_index_price(self, product_id: str) -> None: ...
-    async def unsubscribe_index_price(self, product_id: str) -> None: ...
+    async def subscribe_mark_price(self, instrument_id: InstrumentId) -> None: ...
+    async def unsubscribe_mark_price(self, instrument_id: InstrumentId) -> None: ...
+    async def subscribe_index_price(self, instrument_id: InstrumentId) -> None: ...
+    async def unsubscribe_index_price(self, instrument_id: InstrumentId) -> None: ...
+    async def subscribe_quotes(self, instrument_id: InstrumentId) -> None: ...
+    async def unsubscribe_quotes(self, instrument_id: InstrumentId) -> None: ...
+    async def subscribe_trades(self, instrument_id: InstrumentId) -> None: ...
+    async def unsubscribe_trades(self, instrument_id: InstrumentId) -> None: ...
+    async def subscribe_book(
+        self, instrument_id: InstrumentId, depth: int | None = None
+    ) -> None: ...
+    async def unsubscribe_book(self, instrument_id: InstrumentId) -> None: ...
 
 def kraken_product_type_from_symbol(symbol: str) -> KrakenProductType: ...
 def get_kraken_http_base_url(

@@ -25,15 +25,18 @@ use std::{
     },
 };
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    identifiers::{AccountId, InstrumentId},
+    enums::{OrderSide, OrderType, TimeInForce},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
+    types::{Price, Quantity},
 };
 use nautilus_network::{
     http::HttpClient,
@@ -45,11 +48,15 @@ use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
-use super::models::*;
+use super::{models::*, query::*};
 use crate::{
     common::{
+        consts::NAUTILUS_KRAKEN_BROKER_ID,
         credential::KrakenCredential,
-        enums::{KrakenEnvironment, KrakenProductType},
+        enums::{
+            KrakenApiResult, KrakenEnvironment, KrakenFuturesOrderType, KrakenOrderSide,
+            KrakenProductType,
+        },
         parse::{
             bar_type_to_futures_resolution, parse_bar, parse_futures_fill_report,
             parse_futures_instrument, parse_futures_order_event_status_report,
@@ -67,6 +74,22 @@ pub static KRAKEN_FUTURES_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
 });
 
 const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:futures:global";
+
+/// Global nonce counter to ensure unique nonces across concurrent requests.
+static NONCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Generate a unique nonce for Kraken Futures API requests.
+/// Uses millisecond timestamp combined with atomic counter for uniqueness.
+fn generate_nonce() -> u64 {
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis() as u64;
+
+    // Multiply by 1000 to make room for counter, add counter for uniqueness
+    let counter = NONCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 1000;
+    ts_ms * 1000 + counter
+}
 
 /// Raw HTTP client for low-level Kraken Futures API operations.
 ///
@@ -256,14 +279,16 @@ impl KrakenFuturesRawHttpClient {
                         )
                     })?;
 
-                    let nonce = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_millis() as u64;
+                    let nonce = generate_nonce();
 
                     let signature = cred.sign_futures(&endpoint, "", nonce).map_err(|e| {
                         KrakenHttpError::AuthenticationError(format!("Failed to sign request: {e}"))
                     })?;
+
+                    let base_url = &self.base_url;
+                    tracing::debug!(
+                        "Kraken Futures auth: endpoint={endpoint}, nonce={nonce}, base_url={base_url}"
+                    );
 
                     headers.insert("APIKey".to_string(), cred.api_key().to_string());
                     headers.insert("Authent".to_string(), signature);
@@ -333,10 +358,7 @@ impl KrakenFuturesRawHttpClient {
         let post_data = serde_urlencoded::to_string(&params)
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as u64;
+        let nonce = generate_nonce();
 
         let signature = credential
             .sign_futures(endpoint, &post_data, nonce)
@@ -387,9 +409,69 @@ impl KrakenFuturesRawHttpClient {
         })
     }
 
-    // -------------------------------------------------------------------------
-    // Public Endpoints
-    // -------------------------------------------------------------------------
+    /// Send a request with typed parameters (serializable struct).
+    async fn send_request_with_params<P: serde::Serialize, T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: &P,
+    ) -> anyhow::Result<T, KrakenHttpError> {
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            KrakenHttpError::AuthenticationError("Missing credentials".to_string())
+        })?;
+
+        let post_data = serde_urlencoded::to_string(params)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+
+        let nonce = generate_nonce();
+
+        let signature = credential
+            .sign_futures(endpoint, &post_data, nonce)
+            .map_err(|e| {
+                KrakenHttpError::AuthenticationError(format!("Failed to sign request: {e}"))
+            })?;
+
+        let url = format!("{}{endpoint}", self.base_url);
+        let mut headers = Self::default_headers();
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        );
+        headers.insert("APIKey".to_string(), credential.api_key().to_string());
+        headers.insert("Authent".to_string(), signature);
+        headers.insert("Nonce".to_string(), nonce.to_string());
+
+        let rate_limit_keys = Self::rate_limit_keys(endpoint);
+
+        let response = self
+            .client
+            .request(
+                Method::POST,
+                url,
+                None,
+                Some(headers),
+                Some(post_data.into_bytes()),
+                None,
+                Some(rate_limit_keys),
+            )
+            .await
+            .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
+
+        if response.status.as_u16() >= 400 {
+            let status = response.status.as_u16();
+            let body = String::from_utf8_lossy(&response.body).to_string();
+            return Err(KrakenHttpError::NetworkError(format!(
+                "HTTP error {status}: {body}"
+            )));
+        }
+
+        let response_text = String::from_utf8(response.body.to_vec()).map_err(|e| {
+            KrakenHttpError::ParseError(format!("Failed to parse response as UTF-8: {e}"))
+        })?;
+
+        serde_json::from_str(&response_text).map_err(|e| {
+            KrakenHttpError::ParseError(format!("Failed to deserialize response: {e}"))
+        })
+    }
 
     pub async fn get_instruments(
         &self,
@@ -469,10 +551,6 @@ impl KrakenFuturesRawHttpClient {
 
         self.send_request(Method::GET, &endpoint, url, false).await
     }
-
-    // -------------------------------------------------------------------------
-    // Private Endpoints
-    // -------------------------------------------------------------------------
 
     pub async fn get_open_orders(
         &self,
@@ -558,10 +636,6 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
-    // -------------------------------------------------------------------------
-    // Order Execution
-    // -------------------------------------------------------------------------
-
     pub async fn send_order(
         &self,
         params: HashMap<String, String>,
@@ -574,6 +648,21 @@ impl KrakenFuturesRawHttpClient {
 
         let endpoint = "/derivatives/api/v3/sendorder";
         self.send_request_with_body(endpoint, params).await
+    }
+
+    /// Send an order using typed parameters.
+    pub async fn send_order_params(
+        &self,
+        params: &KrakenFuturesSendOrderParams,
+    ) -> anyhow::Result<FuturesSendOrderResponse, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for sending orders".to_string(),
+            ));
+        }
+
+        let endpoint = "/derivatives/api/v3/sendorder";
+        self.send_request_with_params(endpoint, params).await
     }
 
     pub async fn cancel_order(
@@ -756,6 +845,50 @@ impl KrakenFuturesHttpClient {
         })
     }
 
+    /// Creates a new [`KrakenFuturesHttpClient`] loading credentials from environment variables.
+    ///
+    /// Looks for `KRAKEN_FUTURES_API_KEY` and `KRAKEN_FUTURES_API_SECRET` (mainnet)
+    /// or `KRAKEN_FUTURES_TESTNET_API_KEY` and `KRAKEN_FUTURES_TESTNET_API_SECRET` (testnet).
+    ///
+    /// Falls back to unauthenticated client if credentials are not set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_env(
+        environment: KrakenEnvironment,
+        base_url_override: Option<String>,
+        timeout_secs: Option<u64>,
+        max_retries: Option<u32>,
+        retry_delay_ms: Option<u64>,
+        retry_delay_max_ms: Option<u64>,
+        proxy_url: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let testnet = environment == KrakenEnvironment::Testnet;
+
+        if let Some(credential) = KrakenCredential::from_env_futures(testnet) {
+            let (api_key, api_secret) = credential.into_parts();
+            Self::with_credentials(
+                api_key,
+                api_secret,
+                environment,
+                base_url_override,
+                timeout_secs,
+                max_retries,
+                retry_delay_ms,
+                retry_delay_max_ms,
+                proxy_url,
+            )
+        } else {
+            Self::new(
+                environment,
+                base_url_override,
+                timeout_secs,
+                max_retries,
+                retry_delay_ms,
+                retry_delay_max_ms,
+                proxy_url,
+            )
+        }
+    }
+
     pub fn cancel_all_requests(&self) {
         self.inner.cancel_all_requests();
     }
@@ -795,10 +928,6 @@ impl KrakenFuturesHttpClient {
         get_atomic_clock_realtime().get_time_ns()
     }
 
-    // -------------------------------------------------------------------------
-    // High-Level Methods (return Nautilus domain types)
-    // -------------------------------------------------------------------------
-
     pub async fn request_instruments(&self) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
         let ts_init = self.generate_ts_init();
         let response = self.inner.get_instruments().await?;
@@ -810,10 +939,8 @@ impl KrakenFuturesHttpClient {
                 match parse_futures_instrument(fut_instrument, ts_init, ts_init) {
                     Ok(instrument) => Some(instrument),
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to parse futures instrument {}: {e}",
-                            fut_instrument.symbol
-                        );
+                        let symbol = &fut_instrument.symbol;
+                        tracing::warn!("Failed to parse futures instrument {symbol}: {e}");
                         None
                     }
                 }
@@ -831,8 +958,7 @@ impl KrakenFuturesHttpClient {
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}"
                 ))
             })?;
 
@@ -845,7 +971,7 @@ impl KrakenFuturesHttpClient {
             .find(|t| t.symbol == raw_symbol)
             .map(|t| t.mark_price)
             .ok_or_else(|| {
-                KrakenHttpError::ParseError(format!("Symbol {} not found in tickers", raw_symbol))
+                KrakenHttpError::ParseError(format!("Symbol {raw_symbol} not found in tickers"))
             })
     }
 
@@ -857,8 +983,7 @@ impl KrakenFuturesHttpClient {
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}"
                 ))
             })?;
 
@@ -871,31 +996,31 @@ impl KrakenFuturesHttpClient {
             .find(|t| t.symbol == raw_symbol)
             .map(|t| t.index_price)
             .ok_or_else(|| {
-                KrakenHttpError::ParseError(format!("Symbol {} not found in tickers", raw_symbol))
+                KrakenHttpError::ParseError(format!("Symbol {raw_symbol} not found in tickers"))
             })
     }
 
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
-        start: Option<u64>,
-        end: Option<u64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u64>,
     ) -> anyhow::Result<Vec<TradeTick>, KrakenHttpError> {
         let instrument = self
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}"
                 ))
             })?;
 
         let raw_symbol = instrument.raw_symbol().to_string();
         let ts_init = self.generate_ts_init();
 
-        let since = start.map(|s| (s / 1_000_000) as i64);
-        let before = end.map(|e| (e / 1_000_000) as i64);
+        // Kraken Futures API expects Unix timestamp in milliseconds
+        let since = start.map(|dt| dt.timestamp_millis());
+        let before = end.map(|dt| dt.timestamp_millis());
 
         let response = self
             .inner
@@ -928,8 +1053,8 @@ impl KrakenFuturesHttpClient {
     pub async fn request_bars(
         &self,
         bar_type: BarType,
-        start: Option<u64>,
-        end: Option<u64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u64>,
     ) -> anyhow::Result<Vec<Bar>, KrakenHttpError> {
         self.request_bars_with_tick_type(bar_type, start, end, limit, None)
@@ -939,8 +1064,8 @@ impl KrakenFuturesHttpClient {
     pub async fn request_bars_with_tick_type(
         &self,
         bar_type: BarType,
-        start: Option<u64>,
-        end: Option<u64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u64>,
         tick_type: Option<&str>,
     ) -> anyhow::Result<Vec<Bar>, KrakenHttpError> {
@@ -949,8 +1074,7 @@ impl KrakenFuturesHttpClient {
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| {
                 KrakenHttpError::ParseError(format!(
-                    "Instrument not found in cache: {}",
-                    instrument_id
+                    "Instrument not found in cache: {instrument_id}"
                 ))
             })?;
 
@@ -960,8 +1084,10 @@ impl KrakenFuturesHttpClient {
         let resolution = bar_type_to_futures_resolution(bar_type)
             .map_err(|e| KrakenHttpError::ParseError(e.to_string()))?;
 
-        let from = start.map(|s| (s / 1_000_000) as i64);
-        let to = end.map(|e| (e / 1_000_000) as i64);
+        // Kraken Futures OHLC API expects Unix timestamp in milliseconds
+        let from = start.map(|dt| dt.timestamp_millis());
+        let to = end.map(|dt| dt.timestamp_millis());
+        let end_ns = end.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
 
         let response = self
             .inner
@@ -983,8 +1109,8 @@ impl KrakenFuturesHttpClient {
 
             match parse_bar(&ohlc, &instrument, bar_type, ts_init) {
                 Ok(bar) => {
-                    if let Some(end_ns) = end
-                        && bar.ts_event.as_u64() > end_ns
+                    if let Some(end_nanos) = end_ns
+                        && bar.ts_event.as_u64() > end_nanos
                     {
                         continue;
                     }
@@ -1009,14 +1135,20 @@ impl KrakenFuturesHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         open_only: bool,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         let ts_init = self.generate_ts_init();
         let mut all_reports = Vec::new();
 
         let response = self.inner.get_open_orders().await?;
+        if response.result != KrakenApiResult::Success {
+            let error_msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Failed to get open orders: {error_msg}");
+        }
 
         for order in response.open_orders {
             if let Some(ref target_id) = instrument_id {
@@ -1032,15 +1164,17 @@ impl KrakenFuturesHttpClient {
                 match parse_futures_order_status_report(&order, &instrument, account_id, ts_init) {
                     Ok(report) => all_reports.push(report),
                     Err(e) => {
-                        tracing::warn!("Failed to parse futures order {}: {e}", order.order_id);
+                        let order_id = &order.order_id;
+                        tracing::warn!("Failed to parse futures order {order_id}: {e}");
                     }
                 }
             }
         }
 
         if !open_only {
-            let start_ms = start.map(|ns| ns / 1_000_000);
-            let end_ms = end.map(|ns| ns / 1_000_000);
+            // Kraken Futures order events API expects Unix timestamp in milliseconds
+            let start_ms = start.map(|dt| dt.timestamp_millis());
+            let end_ms = end.map(|dt| dt.timestamp_millis());
             let response = self.inner.get_order_events(end_ms, start_ms, None).await?;
 
             for event in response.elements {
@@ -1062,10 +1196,8 @@ impl KrakenFuturesHttpClient {
                     ) {
                         Ok(report) => all_reports.push(report),
                         Err(e) => {
-                            tracing::warn!(
-                                "Failed to parse futures order event {}: {e}",
-                                event.order_id
-                            );
+                            let order_id = &event.order_id;
+                            tracing::warn!("Failed to parse futures order event {order_id}: {e}");
                         }
                     }
                 }
@@ -1079,20 +1211,26 @@ impl KrakenFuturesHttpClient {
         &self,
         account_id: AccountId,
         instrument_id: Option<InstrumentId>,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Vec<FillReport>> {
         let ts_init = self.generate_ts_init();
         let mut all_reports = Vec::new();
 
         let response = self.inner.get_fills(None).await?;
+        if response.result != KrakenApiResult::Success {
+            let error_msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Failed to get fills: {error_msg}");
+        }
 
-        let start_ms = start.map(|ns| ns / 1_000_000);
-        let end_ms = end.map(|ns| ns / 1_000_000);
+        let start_ms = start.map(|dt| dt.timestamp_millis());
+        let end_ms = end.map(|dt| dt.timestamp_millis());
 
         for fill in response.fills {
             if let Some(start_threshold) = start_ms
-                && let Ok(fill_ts) = chrono::DateTime::parse_from_rfc3339(&fill.fill_time)
+                && let Ok(fill_ts) = DateTime::parse_from_rfc3339(&fill.fill_time)
             {
                 let fill_ms = fill_ts.timestamp_millis();
                 if fill_ms < start_threshold {
@@ -1100,7 +1238,7 @@ impl KrakenFuturesHttpClient {
                 }
             }
             if let Some(end_threshold) = end_ms
-                && let Ok(fill_ts) = chrono::DateTime::parse_from_rfc3339(&fill.fill_time)
+                && let Ok(fill_ts) = DateTime::parse_from_rfc3339(&fill.fill_time)
             {
                 let fill_ms = fill_ts.timestamp_millis();
                 if fill_ms > end_threshold {
@@ -1121,7 +1259,8 @@ impl KrakenFuturesHttpClient {
                 match parse_futures_fill_report(&fill, &instrument, account_id, ts_init) {
                     Ok(report) => all_reports.push(report),
                     Err(e) => {
-                        tracing::warn!("Failed to parse futures fill {}: {e}", fill.fill_id);
+                        let fill_id = &fill.fill_id;
+                        tracing::warn!("Failed to parse futures fill {fill_id}: {e}");
                     }
                 }
             }
@@ -1139,6 +1278,12 @@ impl KrakenFuturesHttpClient {
         let mut all_reports = Vec::new();
 
         let response = self.inner.get_open_positions().await?;
+        if response.result != KrakenApiResult::Success {
+            let error_msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Failed to get open positions: {error_msg}");
+        }
 
         for position in response.open_positions {
             if let Some(ref target_id) = instrument_id {
@@ -1159,13 +1304,200 @@ impl KrakenFuturesHttpClient {
                 ) {
                     Ok(report) => all_reports.push(report),
                     Err(e) => {
-                        tracing::warn!("Failed to parse futures position {}: {e}", position.symbol);
+                        let symbol = &position.symbol;
+                        tracing::warn!("Failed to parse futures position {symbol}: {e}");
                     }
                 }
             }
         }
 
         Ok(all_reports)
+    }
+
+    /// Submit a new order to the Kraken Futures exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The instrument is not found in cache.
+    /// - The order type or time in force is not supported.
+    /// - The request fails.
+    /// - The order is rejected.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_order(
+        &self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        reduce_only: bool,
+        post_only: bool,
+    ) -> anyhow::Result<OrderStatusReport> {
+        let instrument = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let raw_symbol = instrument.raw_symbol().to_string();
+
+        // Map order type and time-in-force to Kraken order type
+        // Kraken Futures encodes TIF in the orderType field:
+        // - lmt = limit (GTC)
+        // - ioc = immediate-or-cancel
+        // - post = post-only (maker only)
+        // - mkt = market
+        let kraken_order_type = match order_type {
+            OrderType::Market => KrakenFuturesOrderType::Market,
+            OrderType::Limit => {
+                if post_only {
+                    KrakenFuturesOrderType::Post
+                } else {
+                    match time_in_force {
+                        TimeInForce::Ioc => KrakenFuturesOrderType::Ioc,
+                        TimeInForce::Fok => {
+                            anyhow::bail!("FOK not supported by Kraken Futures, use IOC instead")
+                        }
+                        _ => KrakenFuturesOrderType::Limit, // GTC is default
+                    }
+                }
+            }
+            OrderType::StopMarket | OrderType::StopLimit => KrakenFuturesOrderType::Stop,
+            OrderType::MarketIfTouched => KrakenFuturesOrderType::TakeProfit,
+            _ => anyhow::bail!("Unsupported order type: {order_type:?}"),
+        };
+
+        let mut builder = KrakenFuturesSendOrderParamsBuilder::default();
+        builder
+            .symbol(raw_symbol)
+            .side(KrakenOrderSide::from(order_side))
+            .order_type(kraken_order_type)
+            .size(quantity.to_string())
+            .cli_ord_id(client_order_id.to_string())
+            .broker(NAUTILUS_KRAKEN_BROKER_ID.to_string());
+
+        // Handle prices based on order type
+        match order_type {
+            OrderType::StopMarket => {
+                // Stop market orders need stop_price (trigger price)
+                if let Some(trigger) = trigger_price {
+                    builder.stop_price(trigger.to_string());
+                }
+            }
+            OrderType::StopLimit => {
+                // Stop limit orders need both stop_price and limit_price
+                if let Some(trigger) = trigger_price {
+                    builder.stop_price(trigger.to_string());
+                }
+                if let Some(limit) = price {
+                    builder.limit_price(limit.to_string());
+                }
+            }
+            _ => {
+                // Regular orders just use limit_price
+                if let Some(limit) = price {
+                    builder.limit_price(limit.to_string());
+                }
+            }
+        }
+
+        if reduce_only {
+            builder.reduce_only(true);
+        }
+
+        let params = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build order params: {e}"))?;
+
+        let response = self.inner.send_order_params(&params).await?;
+
+        if response.result != KrakenApiResult::Success {
+            let error_msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Order submission failed: {error_msg}");
+        }
+
+        let send_status = response
+            .send_status
+            .ok_or_else(|| anyhow::anyhow!("No send_status in successful response"))?;
+
+        let status = &send_status.status;
+        let venue_order_id = send_status
+            .order_id
+            .ok_or_else(|| anyhow::anyhow!("No order_id in send_status: {status}"))?;
+
+        // Query the order to get full status
+        let response = self.inner.get_open_orders().await?;
+
+        let order = response
+            .open_orders
+            .iter()
+            .find(|o| o.order_id == venue_order_id)
+            .ok_or_else(|| anyhow::anyhow!("Order not found after submission: {venue_order_id}"))?;
+
+        let ts_init = self.generate_ts_init();
+        parse_futures_order_status_report(order, &instrument, account_id, ts_init)
+    }
+
+    /// Cancel an order on the Kraken Futures exchange.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - Neither client_order_id nor venue_order_id is provided.
+    /// - The order is not found.
+    /// - The request fails.
+    pub async fn cancel_order(
+        &self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+    ) -> anyhow::Result<OrderStatusReport> {
+        let instrument = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let order_id = venue_order_id.map(|id| id.to_string());
+        let cli_ord_id = client_order_id.map(|id| id.to_string());
+
+        if order_id.is_none() && cli_ord_id.is_none() {
+            anyhow::bail!("Either client_order_id or venue_order_id must be provided");
+        }
+
+        let response = self
+            .inner
+            .cancel_order(order_id.clone(), cli_ord_id)
+            .await?;
+
+        if response.result != KrakenApiResult::Success {
+            let status = &response.cancel_status.status;
+            anyhow::bail!("Order cancellation failed: {status}");
+        }
+
+        let venue_order_id_str = order_id.ok_or_else(|| {
+            anyhow::anyhow!("venue_order_id required to query order status after cancellation")
+        })?;
+
+        // Query order events to get the canceled order details
+        let events_response = self.inner.get_order_events(None, None, None).await?;
+
+        let ts_init = self.generate_ts_init();
+
+        // Find the most recent event for this order
+        let order_event = events_response
+            .elements
+            .iter()
+            .find(|e| e.order_id == venue_order_id_str)
+            .ok_or_else(|| anyhow::anyhow!("Order event not found for: {venue_order_id_str}"))?;
+
+        parse_futures_order_event_status_report(order_event, &instrument, account_id, ts_init)
     }
 }
 

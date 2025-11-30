@@ -16,6 +16,7 @@
 
 from nautilus_trader.adapters.kraken import KRAKEN
 from nautilus_trader.adapters.kraken import KrakenDataClientConfig
+from nautilus_trader.adapters.kraken import KrakenEnvironment
 from nautilus_trader.adapters.kraken import KrakenLiveDataClientFactory
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
@@ -36,9 +37,12 @@ from nautilus_trader.test_kit.strategies.tester_data import DataTesterConfig
 # Configuration - Change symbol for different trading pairs
 # SPOT examples: "BTC/USD", "ETH/USD", "SOL/USD"
 # PERP examples: "PF_XBTUSD", "PF_ETHUSD", "PF_SOLUSD"
-symbol = "ETH/USD"  # Spot pair
-# symbol = "PF_XBTUSD"  # Perpetual
+# symbol = "ETH/USD"  # Spot pair
+symbol = "PI_XBTUSD"  # Perpetual
 instrument_id = InstrumentId.from_str(f"{symbol}.{KRAKEN}")
+
+environment = KrakenEnvironment.MAINNET
+product_types = (KrakenProductType.SPOT, KrakenProductType.FUTURES)
 
 # Configure the trading node
 config_node = TradingNodeConfig(
@@ -55,7 +59,8 @@ config_node = TradingNodeConfig(
         KRAKEN: KrakenDataClientConfig(
             api_key=None,  # 'KRAKEN_API_KEY' env var
             api_secret=None,  # 'KRAKEN_API_SECRET' env var
-            product_types=(KrakenProductType.SPOT, KrakenProductType.FUTURES),
+            environment=environment,
+            product_types=product_types,
             base_url_http_spot=None,  # Override with custom endpoint
             base_url_http_futures=None,  # Override with custom endpoint
             base_url_ws=None,  # Override with custom endpoint
@@ -77,7 +82,7 @@ config_tester = DataTesterConfig(
     bar_types=[BarType.from_str(f"{instrument_id.value}-1-MINUTE-LAST-EXTERNAL")],
     subscribe_instrument=True,
     subscribe_quotes=True,
-    subscribe_trades=True,
+    # subscribe_trades=True,
     subscribe_mark_prices=True,
     subscribe_index_prices=True,
     # subscribe_bars=True,

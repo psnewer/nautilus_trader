@@ -350,6 +350,12 @@ pub enum KrakenFuturesOrderType {
     #[serde(rename = "lmt")]
     #[strum(serialize = "lmt")]
     Limit,
+    #[serde(rename = "ioc")]
+    #[strum(serialize = "ioc")]
+    Ioc,
+    #[serde(rename = "post")]
+    #[strum(serialize = "post")]
+    Post,
     #[serde(rename = "mkt")]
     #[strum(serialize = "mkt")]
     Market,
@@ -506,11 +512,23 @@ impl From<KrakenOrderStatus> for OrderStatus {
 impl From<KrakenFuturesOrderType> for OrderType {
     fn from(value: KrakenFuturesOrderType) -> Self {
         match value {
-            KrakenFuturesOrderType::Limit => Self::Limit,
+            KrakenFuturesOrderType::Limit
+            | KrakenFuturesOrderType::Ioc
+            | KrakenFuturesOrderType::Post => Self::Limit,
             KrakenFuturesOrderType::Market => Self::Market,
             KrakenFuturesOrderType::Stop => Self::StopMarket,
             KrakenFuturesOrderType::TakeProfit => Self::MarketIfTouched,
             KrakenFuturesOrderType::StopLoss => Self::StopMarket,
+        }
+    }
+}
+
+impl From<OrderSide> for KrakenOrderSide {
+    fn from(value: OrderSide) -> Self {
+        match value {
+            OrderSide::Buy => Self::Buy,
+            OrderSide::Sell => Self::Sell,
+            OrderSide::NoOrderSide => Self::Buy, // Default fallback
         }
     }
 }

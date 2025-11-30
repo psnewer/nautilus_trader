@@ -19,7 +19,9 @@ from decimal import Decimal
 from nautilus_trader.adapters.kraken import KRAKEN
 from nautilus_trader.adapters.kraken import KrakenDataClientConfig
 from nautilus_trader.adapters.kraken import KrakenEnvironment
+from nautilus_trader.adapters.kraken import KrakenExecClientConfig
 from nautilus_trader.adapters.kraken import KrakenLiveDataClientFactory
+from nautilus_trader.adapters.kraken import KrakenLiveExecClientFactory
 from nautilus_trader.adapters.kraken import KrakenProductType
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
@@ -43,17 +45,22 @@ from nautilus_trader.test_kit.strategies.tester_exec import ExecTesterConfig
 
 # Strategy config params
 # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
-symbol = "PI_ETHUSD"  # ETH inverse perpetual futures
+symbol = "ETH/USD"  # Spot pair
+# symbol = "PI_XBTUSD"  # BTC inverse perpetual futures
 instrument_id = InstrumentId.from_str(f"{symbol}.{KRAKEN}")
-order_qty = Decimal(100)  # Contract quantity
+# order_qty = Decimal(10)
+order_qty = Decimal("0.001")
+
+environment = KrakenEnvironment.MAINNET
+# product_types = (KrakenProductType.SPOT, KrakenProductType.FUTURES)
+product_types = (KrakenProductType.SPOT,)
 
 # Configure the trading node
 config_node = TradingNodeConfig(
     trader_id=TraderId("TESTER-001"),
     logging=LoggingConfig(
         log_level="INFO",
-        # log_level_file="DEBUG",
-        # log_file_format="json",
+        log_level_file="DEBUG",
         log_colors=True,
         use_pyo3=True,
     ),
@@ -75,24 +82,22 @@ config_node = TradingNodeConfig(
     ),
     data_clients={
         KRAKEN: KrakenDataClientConfig(
-            api_key=None,  # 'KRAKEN_TESTNET_API_KEY' env var
-            api_secret=None,  # 'KRAKEN_TESTNET_API_SECRET' env var
-            environment=KrakenEnvironment.TESTNET,  # Use Futures demo environment
-            product_types=(KrakenProductType.FUTURES,),
+            api_key=None,  # 'KRAKEN_API_KEY' env var
+            api_secret=None,  # 'KRAKEN_API_SECRET' env var
+            environment=environment,
+            product_types=product_types,
             instrument_provider=InstrumentProviderConfig(load_all=True),
         ),
     },
-    # TODO: Add exec_clients config once KrakenExecClientConfig is implemented
-    # exec_clients={
-    #     KRAKEN: KrakenExecClientConfig(
-    #         api_key=None,  # 'KRAKEN_TESTNET_API_KEY' env var
-    #         api_secret=None,  # 'KRAKEN_TESTNET_API_SECRET' env var
-    #         environment=KrakenEnvironment.TESTNET,  # Use Futures demo environment
-    #         product_types=(KrakenProductType.FUTURES,),
-    #         instrument_provider=InstrumentProviderConfig(load_all=True),
-    #         max_retries=3,
-    #     ),
-    # },
+    exec_clients={
+        KRAKEN: KrakenExecClientConfig(
+            api_key=None,  # 'KRAKEN_API_KEY' env var
+            api_secret=None,  # 'KRAKEN_API_SECRET' env var
+            environment=environment,
+            product_types=product_types,
+            instrument_provider=InstrumentProviderConfig(load_all=True),
+        ),
+    },
     timeout_connection=30.0,
     timeout_reconciliation=10.0,
     timeout_portfolio=10.0,
@@ -111,15 +116,15 @@ strat_config = ExecTesterConfig(
     subscribe_quotes=True,
     subscribe_trades=True,
     order_qty=order_qty,
-    # enable_buys=False,
-    # enable_sells=False,
-    open_position_on_start_qty=order_qty,
+    enable_limit_buys=True,
+    enable_limit_sells=True,
+    # open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,
     # use_individual_cancels_on_stop=True,
     use_post_only=True,
     # close_positions_on_stop=False,
-    log_data=False,
+    log_data=True,
 )
 
 # Instantiate your strategy
@@ -130,8 +135,7 @@ node.trader.add_strategy(strategy)
 
 # Register your client factories with the node
 node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
-# TODO: Add execution client factory once implemented
-# node.add_exec_client_factory(KRAKEN, KrakenLiveExecClientFactory)
+node.add_exec_client_factory(KRAKEN, KrakenLiveExecClientFactory)
 node.build()
 
 

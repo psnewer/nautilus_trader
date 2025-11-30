@@ -16,7 +16,9 @@
 import asyncio
 
 from nautilus_trader.adapters.kraken.config import KrakenDataClientConfig
+from nautilus_trader.adapters.kraken.config import KrakenExecClientConfig
 from nautilus_trader.adapters.kraken.data import KrakenDataClient
+from nautilus_trader.adapters.kraken.execution import KrakenExecutionClient
 from nautilus_trader.adapters.kraken.providers import KrakenInstrumentProvider
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
@@ -26,6 +28,7 @@ from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.nautilus_pyo3 import KrakenEnvironment
 from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.live.factories import LiveDataClientFactory
+from nautilus_trader.live.factories import LiveExecClientFactory
 
 
 def get_kraken_spot_http_client(
@@ -255,6 +258,97 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
         )
 
         return KrakenDataClient(
+            loop=loop,
+            http_client_spot=http_client_spot,
+            http_client_futures=http_client_futures,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            instrument_provider=provider,
+            config=config,
+            name=name,
+        )
+
+
+class KrakenLiveExecClientFactory(LiveExecClientFactory):
+    """
+    Provides a Kraken live execution client factory.
+    """
+
+    @staticmethod
+    def create(  # type: ignore
+        loop: asyncio.AbstractEventLoop,
+        name: str | None,
+        config: KrakenExecClientConfig,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: LiveClock,
+    ) -> KrakenExecutionClient:
+        """
+        Create a new Kraken execution client.
+
+        Parameters
+        ----------
+        loop : asyncio.AbstractEventLoop
+            The event loop for the client.
+        name : str, optional
+            The custom client ID.
+        config : KrakenExecClientConfig
+            The client configuration.
+        msgbus : MessageBus
+            The message bus for the client.
+        cache : Cache
+            The cache for the client.
+        clock : LiveClock
+            The clock for the client.
+
+        Returns
+        -------
+        KrakenExecutionClient
+
+        """
+        environment = config.environment or KrakenEnvironment.MAINNET
+        product_types = list(config.product_types or (KrakenProductType.SPOT,))
+        is_testnet = environment == KrakenEnvironment.TESTNET
+
+        # Create HTTP clients for each requested product type
+        http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None = None
+        http_client_futures: nautilus_pyo3.KrakenFuturesHttpClient | None = None
+
+        if KrakenProductType.SPOT in product_types:
+            http_client_spot = get_kraken_spot_http_client(
+                api_key=config.api_key,
+                api_secret=config.api_secret,
+                base_url=config.base_url_http_spot,
+                testnet=is_testnet,
+                timeout_secs=config.http_timeout_secs,
+                max_retries=config.max_retries,
+                retry_delay_ms=config.retry_delay_initial_ms,
+                retry_delay_max_ms=config.retry_delay_max_ms,
+                proxy_url=config.http_proxy_url,
+            )
+
+        if KrakenProductType.FUTURES in product_types:
+            http_client_futures = get_kraken_futures_http_client(
+                api_key=config.api_key,
+                api_secret=config.api_secret,
+                base_url=config.base_url_http_futures,
+                testnet=is_testnet,
+                timeout_secs=config.http_timeout_secs,
+                max_retries=config.max_retries,
+                retry_delay_ms=config.retry_delay_initial_ms,
+                retry_delay_max_ms=config.retry_delay_max_ms,
+                proxy_url=config.http_proxy_url,
+            )
+
+        provider = get_kraken_instrument_provider(
+            http_client_spot=http_client_spot,
+            http_client_futures=http_client_futures,
+            product_types=product_types,
+            config=config.instrument_provider,
+        )
+
+        return KrakenExecutionClient(
             loop=loop,
             http_client_spot=http_client_spot,
             http_client_futures=http_client_futures,

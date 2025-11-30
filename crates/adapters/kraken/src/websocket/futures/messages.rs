@@ -15,14 +15,20 @@
 
 //! Data models for Kraken Futures WebSocket v1 API messages.
 
-use nautilus_model::data::{IndexPriceUpdate, MarkPriceUpdate};
+use nautilus_model::data::{
+    IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick,
+};
 use serde::{Deserialize, Serialize};
+use ustr::Ustr;
 
 /// Output message types from the Futures WebSocket handler.
 #[derive(Clone, Debug)]
 pub enum FuturesWsMessage {
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
+    Quote(QuoteTick),
+    Trade(TradeTick),
+    BookDeltas(OrderBookDeltas),
 }
 
 /// Kraken Futures WebSocket feed types.
@@ -31,7 +37,9 @@ pub enum FuturesWsMessage {
 pub enum KrakenFuturesFeed {
     Ticker,
     Trade,
+    TradeSnapshot,
     Book,
+    BookSnapshot,
     Heartbeat,
 }
 
@@ -82,16 +90,15 @@ pub struct KrakenFuturesInfoMessage {
 /// Heartbeat message from Kraken Futures WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KrakenFuturesHeartbeat {
-    pub feed: String,
+    pub feed: KrakenFuturesFeed,
     pub time: i64,
 }
 
-/// Ticker data from Kraken Futures WebSocket.
+/// Ticker data from Kraken Futures WebSocket (uses snake_case).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct KrakenFuturesTickerData {
-    pub feed: String,
-    pub product_id: String,
+    pub feed: KrakenFuturesFeed,
+    pub product_id: Ustr,
     #[serde(default)]
     pub time: Option<i64>,
     #[serde(default)]
@@ -108,11 +115,11 @@ pub struct KrakenFuturesTickerData {
     pub volume: Option<f64>,
     #[serde(default)]
     pub volume_quote: Option<f64>,
-    #[serde(default)]
+    #[serde(default, rename = "openInterest")]
     pub open_interest: Option<f64>,
     #[serde(default)]
     pub index: Option<f64>,
-    #[serde(default)]
+    #[serde(default, rename = "markPrice")]
     pub mark_price: Option<f64>,
     #[serde(default)]
     pub change: Option<f64>,
@@ -140,12 +147,68 @@ pub struct KrakenFuturesTickerData {
     pub leverage: Option<String>,
     #[serde(default)]
     pub dtm: Option<i64>,
-    #[serde(default)]
+    #[serde(default, rename = "maturityTime")]
     pub maturity_time: Option<i64>,
     #[serde(default)]
     pub suspended: Option<bool>,
     #[serde(default)]
     pub post_only: Option<bool>,
+}
+
+/// Trade data from Kraken Futures WebSocket (uses snake_case).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrakenFuturesTradeData {
+    pub feed: KrakenFuturesFeed,
+    pub product_id: Ustr,
+    #[serde(default)]
+    pub uid: Option<String>,
+    pub side: Ustr,
+    #[serde(rename = "type", default)]
+    pub trade_type: Option<String>,
+    pub seq: i64,
+    pub time: i64,
+    pub qty: f64,
+    pub price: f64,
+}
+
+/// Trade snapshot from Kraken Futures WebSocket (sent on subscription).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrakenFuturesTradeSnapshot {
+    pub feed: KrakenFuturesFeed,
+    pub product_id: Ustr,
+    pub trades: Vec<KrakenFuturesTradeData>,
+}
+
+/// Book snapshot from Kraken Futures WebSocket (uses snake_case).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrakenFuturesBookSnapshot {
+    pub feed: KrakenFuturesFeed,
+    pub product_id: Ustr,
+    pub timestamp: i64,
+    pub seq: i64,
+    #[serde(default)]
+    pub tick_size: Option<f64>,
+    pub bids: Vec<KrakenFuturesBookLevel>,
+    pub asks: Vec<KrakenFuturesBookLevel>,
+}
+
+/// Book delta from Kraken Futures WebSocket (uses snake_case).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrakenFuturesBookDelta {
+    pub feed: KrakenFuturesFeed,
+    pub product_id: Ustr,
+    pub side: Ustr,
+    pub seq: i64,
+    pub price: f64,
+    pub qty: f64,
+    pub timestamp: i64,
+}
+
+/// Price level in order book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrakenFuturesBookLevel {
+    pub price: f64,
+    pub qty: f64,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -160,25 +223,26 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_ticker_data() {
+        // Kraken Futures WebSocket uses snake_case (unlike the REST API which uses camelCase)
         let json = r#"{
             "feed": "ticker",
-            "productId": "PI_XBTUSD",
+            "product_id": "PI_XBTUSD",
             "time": 1700000000000,
             "bid": 90650.5,
             "ask": 90651.0,
-            "bidSize": 10.5,
-            "askSize": 8.2,
+            "bid_size": 10.5,
+            "ask_size": 8.2,
             "last": 90650.8,
             "volume": 1234567.89,
             "index": 90648.5,
             "markPrice": 90649.2,
-            "fundingRate": 0.0001,
+            "funding_rate": 0.0001,
             "openInterest": 50000000.0
         }"#;
 
         let ticker: KrakenFuturesTickerData = serde_json::from_str(json).unwrap();
-        assert_eq!(ticker.feed, "ticker");
-        assert_eq!(ticker.product_id, "PI_XBTUSD");
+        assert_eq!(ticker.feed, KrakenFuturesFeed::Ticker);
+        assert_eq!(ticker.product_id, Ustr::from("PI_XBTUSD"));
         assert_eq!(ticker.bid, Some(90650.5));
         assert_eq!(ticker.ask, Some(90651.0));
         assert_eq!(ticker.index, Some(90648.5));

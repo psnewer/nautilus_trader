@@ -1671,7 +1671,7 @@ async fn test_futures_raw_send_order() {
 
     let response = result.unwrap();
     assert_eq!(response.result, KrakenApiResult::Success);
-    assert_eq!(response.send_status.status, "placed");
+    assert_eq!(response.send_status.unwrap().status, "placed");
 }
 
 #[rstest]

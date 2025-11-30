@@ -36,16 +36,67 @@ impl KrakenCredential {
         }
     }
 
+    /// Load credentials from environment variables for Kraken Spot.
+    ///
+    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET` (mainnet)
+    /// or `KRAKEN_SPOT_TESTNET_API_KEY` and `KRAKEN_SPOT_TESTNET_API_SECRET` (testnet).
+    ///
+    /// Returns `None` if either key or secret is not set.
+    #[must_use]
+    pub fn from_env_spot(testnet: bool) -> Option<Self> {
+        let (key_var, secret_var) = if testnet {
+            (
+                "KRAKEN_SPOT_TESTNET_API_KEY",
+                "KRAKEN_SPOT_TESTNET_API_SECRET",
+            )
+        } else {
+            ("KRAKEN_SPOT_API_KEY", "KRAKEN_SPOT_API_SECRET")
+        };
+
+        let key = std::env::var(key_var).ok()?;
+        let secret = std::env::var(secret_var).ok()?;
+
+        Some(Self::new(key, secret))
+    }
+
+    /// Load credentials from environment variables for Kraken Futures.
+    ///
+    /// Looks for `KRAKEN_FUTURES_API_KEY` and `KRAKEN_FUTURES_API_SECRET` (mainnet)
+    /// or `KRAKEN_FUTURES_TESTNET_API_KEY` and `KRAKEN_FUTURES_TESTNET_API_SECRET` (testnet).
+    ///
+    /// Returns `None` if either key or secret is not set.
+    #[must_use]
+    pub fn from_env_futures(testnet: bool) -> Option<Self> {
+        let (key_var, secret_var) = if testnet {
+            (
+                "KRAKEN_FUTURES_TESTNET_API_KEY",
+                "KRAKEN_FUTURES_TESTNET_API_SECRET",
+            )
+        } else {
+            ("KRAKEN_FUTURES_API_KEY", "KRAKEN_FUTURES_API_SECRET")
+        };
+
+        let key = std::env::var(key_var).ok()?;
+        let secret = std::env::var(secret_var).ok()?;
+
+        Some(Self::new(key, secret))
+    }
+
     pub fn api_key(&self) -> &str {
         &self.api_key
     }
 
-    /// Sign a request for Kraken REST API.
+    /// Returns the API key and secret as cloned strings.
+    pub fn into_parts(&self) -> (String, String) {
+        (self.api_key.clone(), self.api_secret.clone())
+    }
+
+    /// Sign a request for Kraken Spot REST API.
     ///
-    /// Kraken uses HMAC-SHA512 with the following message:
+    /// Kraken Spot uses HMAC-SHA512 with the following message:
     /// - path + SHA256(nonce + POST data)
     /// - The secret is base64 decoded before signing
-    pub fn sign_request(
+    pub fn sign_spot(
         &self,
         path: &str,
         nonce: u64,
@@ -74,18 +125,20 @@ impl KrakenCredential {
 
     /// Sign a request for Kraken Futures API v3.
     ///
-    /// Kraken Futures uses a different authentication method:
-    /// 1. Concatenate: POST params + nonce + endpoint path
-    /// 2. SHA256 hash the concatenation
-    /// 3. Base64 decode the secret
-    /// 4. HMAC-SHA512 of the SHA256 hash using decoded secret
-    /// 5. Base64 encode the result
+    /// Kraken Futures authentication steps:
+    /// 1. Strip "/derivatives" prefix from endpoint path
+    /// 2. Concatenate: `postData + nonce + endpointPath`
+    /// 3. SHA-256 hash the concatenation
+    /// 4. Base64 decode the API secret
+    /// 5. HMAC-SHA-512 of the SHA-256 hash using decoded secret
+    /// 6. Base64 encode the result
     pub fn sign_futures(&self, path: &str, post_data: &str, nonce: u64) -> anyhow::Result<String> {
         let secret = STANDARD
             .decode(&self.api_secret)
             .map_err(|e| anyhow::anyhow!("Failed to decode API secret: {e}"))?;
 
-        let message = format!("{post_data}{nonce}{path}");
+        let signing_path = path.strip_prefix("/derivatives").unwrap_or(path);
+        let message = format!("{post_data}{nonce}{signing_path}");
         let hash = digest::digest(&digest::SHA256, message.as_bytes());
         let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
         let signature = hmac::sign(&key, hash.as_ref());
@@ -157,5 +210,23 @@ mod tests {
             .sign_futures(endpoint, different_post_data, nonce)
             .unwrap();
         assert_ne!(signature, different_sig);
+    }
+
+    #[rstest]
+    fn test_sign_futures_strips_derivatives_prefix() {
+        // Verify that /derivatives prefix is stripped before signing
+        let secret = STANDARD.encode(b"test_secret_key_24bytes!");
+        let cred = KrakenCredential::new("test_key", secret);
+        let nonce = 1700000000000u64;
+
+        // Signing with /derivatives prefix should produce same result as without
+        let with_prefix = cred
+            .sign_futures("/derivatives/api/v3/openpositions", "", nonce)
+            .unwrap();
+        let without_prefix = cred
+            .sign_futures("/api/v3/openpositions", "", nonce)
+            .unwrap();
+
+        assert_eq!(with_prefix, without_prefix);
     }
 }
