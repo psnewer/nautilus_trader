@@ -1105,9 +1105,9 @@ pub fn parse_fill_report(
     // TODO: Extract to dedicated function:
     // OKX may not provide a trade_id, so generate a UUID4 as fallback
     let trade_id = if msg.trade_id.is_empty() {
-        TradeId::from(UUID4::new().to_string().as_str())
+        TradeId::new(UUID4::new().as_str())
     } else {
-        TradeId::from(msg.trade_id.as_str())
+        TradeId::new(&msg.trade_id)
     };
 
     let order_side: OrderSide = msg.side.into();

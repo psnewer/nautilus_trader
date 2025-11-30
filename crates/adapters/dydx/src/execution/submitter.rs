@@ -18,7 +18,6 @@ use nautilus_model::{
     identifiers::InstrumentId,
     types::{Price, Quantity},
 };
-use rust_decimal::{Decimal, prelude::FromStr};
 
 use crate::{
     common::parse::order_side_to_proto,
@@ -95,8 +94,7 @@ impl OrderSubmitter {
         );
 
         let proto_side = order_side_to_proto(side);
-        let size_decimal = Decimal::from_str(&quantity.to_string())
-            .map_err(|e| DydxError::Parse(format!("Failed to convert quantity: {e}")))?;
+        let size_decimal = quantity.as_decimal();
 
         builder = builder.market(proto_side, size_decimal);
         builder = builder.short_term(); // Market orders are short-term
@@ -160,10 +158,8 @@ impl OrderSubmitter {
         );
 
         let proto_side = order_side_to_proto(side);
-        let price_decimal = Decimal::from_str(&price.to_string())
-            .map_err(|e| DydxError::Parse(format!("Failed to convert price: {e}")))?;
-        let size_decimal = Decimal::from_str(&quantity.to_string())
-            .map_err(|e| DydxError::Parse(format!("Failed to convert quantity: {e}")))?;
+        let price_decimal = price.as_decimal();
+        let size_decimal = quantity.as_decimal();
 
         builder = builder.limit(proto_side, price_decimal, size_decimal);
 

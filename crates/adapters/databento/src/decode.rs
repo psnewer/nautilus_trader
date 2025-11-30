@@ -682,7 +682,7 @@ pub fn decode_cmbp1_msg(
             decode_price(msg.price, price_precision),
             decode_quantity(msg.size as u64),
             parse_aggressor_side(msg.side),
-            TradeId::new(UUID4::new().to_string()),
+            TradeId::new(UUID4::new().as_str()),
             ts_event,
             ts_init,
         ))
@@ -756,7 +756,7 @@ pub fn decode_tcbbo_msg(
         decode_price(msg.price, price_precision),
         decode_quantity(msg.size as u64),
         parse_aggressor_side(msg.side),
-        TradeId::new(UUID4::new().to_string()),
+        TradeId::new(UUID4::new().as_str()),
         ts_event,
         ts_init,
     );

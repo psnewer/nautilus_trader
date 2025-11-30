@@ -1404,7 +1404,7 @@ fn parse_multiplier_product(definition: &OKXInstrument) -> anyhow::Result<Option
     };
 
     let product = mult_value * val_value;
-    Ok(Some(Quantity::from(product.to_string().as_str())))
+    Ok(Some(Quantity::from(product.to_string())))
 }
 
 /// Trait for instrument-specific parsing logic.

@@ -719,8 +719,7 @@ impl DataClient for DydxDataClient {
             .remove(&(instrument_id, resolution.to_string()));
 
         // Unregister bar type from handler and local mappings
-        let symbol_str = instrument_id.symbol.to_string();
-        let ticker = extract_raw_symbol(&symbol_str);
+        let ticker = extract_raw_symbol(instrument_id.symbol.as_str());
         let topic = format!("{ticker}/{resolution}");
         self.bar_type_mappings.remove(&topic);
 

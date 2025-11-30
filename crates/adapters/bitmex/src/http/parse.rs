@@ -15,8 +15,6 @@
 
 //! Conversion routines that map BitMEX REST models into Nautilus domain structures.
 
-use std::str::FromStr;
-
 use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime, uuid::UUID4};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
@@ -213,22 +211,22 @@ pub fn parse_spot_instrument(
 
     let taker_fee = definition
         .taker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
     let maker_fee = definition
         .maker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
 
     let margin_init = definition
         .init_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
     let margin_maint = definition
         .maint_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
 
     let lot_size =
@@ -305,22 +303,22 @@ pub fn parse_perpetual_instrument(
 
     let taker_fee = definition
         .taker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
     let maker_fee = definition
         .maker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
 
     let margin_init = definition
         .init_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
     let margin_maint = definition
         .maint_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
 
     // TODO: How to handle negative multipliers?
@@ -406,22 +404,22 @@ pub fn parse_futures_instrument(
 
     let taker_fee = definition
         .taker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
     let maker_fee = definition
         .maker_fee
-        .and_then(|fee| Decimal::from_str(&fee.to_string()).ok())
+        .and_then(|fee| Decimal::try_from(fee).ok())
         .unwrap_or(Decimal::ZERO);
 
     let margin_init = definition
         .init_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
     let margin_maint = definition
         .maint_margin
         .as_ref()
-        .and_then(|margin| Decimal::from_str(&margin.to_string()).ok())
+        .and_then(|margin| Decimal::try_from(*margin).ok())
         .unwrap_or(Decimal::ZERO);
 
     // TODO: How to handle negative multipliers?
@@ -932,6 +930,8 @@ pub fn get_currency(code: &str) -> Currency {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use chrono::{DateTime, Utc};
     use nautilus_model::{
         data::{BarSpecification, BarType},

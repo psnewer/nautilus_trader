@@ -199,7 +199,7 @@ impl DataEngine {
     ///
     /// Panics if a catalog with the same `name` has already been registered.
     pub fn register_catalog(&mut self, catalog: ParquetDataCatalog, name: Option<String>) {
-        let name = Ustr::from(&name.unwrap_or("catalog_0".to_string()));
+        let name = Ustr::from(name.as_deref().unwrap_or("catalog_0"));
 
         check_key_not_in_map(&name, &self.catalogs, "name", "catalogs").expect(FAILED);
 

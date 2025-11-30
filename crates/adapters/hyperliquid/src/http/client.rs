@@ -23,7 +23,6 @@
 use std::{
     collections::HashMap,
     num::NonZeroU32,
-    str::FromStr,
     sync::{Arc, LazyLock, RwLock},
     time::Duration,
 };
@@ -1470,8 +1469,7 @@ impl HyperliquidHttpClient {
 
         // Convert price to decimal
         let price_decimal = match price {
-            Some(px) => Decimal::from_str(&px.to_string())
-                .map_err(|e| Error::bad_request(format!("Failed to convert price: {e}")))?,
+            Some(px) => px.as_decimal(),
             None => {
                 if matches!(
                     order_type,
@@ -1485,8 +1483,7 @@ impl HyperliquidHttpClient {
         };
 
         // Convert quantity to decimal
-        let size_decimal = Decimal::from_str(&quantity.to_string())
-            .map_err(|e| Error::bad_request(format!("Failed to convert quantity: {e}")))?;
+        let size_decimal = quantity.as_decimal();
 
         // Determine order kind based on order type
         let kind = match order_type {
@@ -1522,10 +1519,7 @@ impl HyperliquidHttpClient {
             | OrderType::MarketIfTouched
             | OrderType::LimitIfTouched => {
                 if let Some(trig_px) = trigger_price {
-                    let trigger_price_decimal =
-                        Decimal::from_str(&trig_px.to_string()).map_err(|e| {
-                            Error::bad_request(format!("Failed to convert trigger price: {e}"))
-                        })?;
+                    let trigger_price_decimal = trig_px.as_decimal();
 
                     // Determine TP/SL type based on order type
                     // StopMarket/StopLimit are always Sl (protective stops)
