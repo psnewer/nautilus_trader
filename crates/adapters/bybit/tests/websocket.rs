@@ -2334,3 +2334,123 @@ async fn test_batch_cancel_orders() {
 
     client.close().await.unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn test_batch_cancel_orders_chunking_over_20() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{addr}/v5/private");
+
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
+        Some(ws_url),
+        None,
+    );
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || async { state.authenticated.load(Ordering::Relaxed) },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let trader_id = TraderId::from("TESTER-001");
+    let strategy_id = StrategyId::from("S-001");
+    let btcusdt_linear = make_linear_pair("BTCUSDT", "BTC", "USDT");
+    client.cache_instrument(InstrumentAny::CurrencyPair(btcusdt_linear));
+
+    // 25 orders forces chunking into batches of 20 + 5
+    let orders: Vec<BybitWsCancelOrderParams> = (0..25)
+        .map(|i| BybitWsCancelOrderParams {
+            category: BybitProductType::Linear,
+            symbol: Ustr::from("BTCUSDT"),
+            order_id: Some(format!("order-{i}")),
+            order_link_id: Some(format!("client-order-{i}")),
+        })
+        .collect();
+
+    let result = client
+        .batch_cancel_orders(trader_id, strategy_id, orders)
+        .await;
+
+    assert!(result.is_ok(), "Batch cancel with chunking should succeed");
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_batch_cancel_orders_empty_list() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{addr}/v5/private");
+
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
+        Some(ws_url),
+        None,
+    );
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || async { state.authenticated.load(Ordering::Relaxed) },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let trader_id = TraderId::from("TESTER-001");
+    let strategy_id = StrategyId::from("S-001");
+    let orders: Vec<BybitWsCancelOrderParams> = vec![];
+
+    let result = client
+        .batch_cancel_orders(trader_id, strategy_id, orders)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Batch cancel with empty list should succeed"
+    );
+
+    client.close().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_build_cancel_order_params_requires_order_id() {
+    let (addr, state) = start_test_server().await.unwrap();
+    let ws_url = format!("ws://{addr}/v5/private");
+
+    let mut client = BybitWebSocketClient::new_private(
+        BybitEnvironment::Mainnet,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
+        Some(ws_url),
+        None,
+    );
+
+    client.connect().await.unwrap();
+    wait_until_async(
+        || async { state.authenticated.load(Ordering::Relaxed) },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let btcusdt_linear = make_linear_pair("BTCUSDT", "BTC", "USDT");
+    client.cache_instrument(InstrumentAny::CurrencyPair(btcusdt_linear));
+
+    let result =
+        client.build_cancel_order_params(BybitProductType::Linear, btcusdt_linear.id, None, None);
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Either venue_order_id or client_order_id must be provided")
+    );
+
+    client.close().await.unwrap();
+}

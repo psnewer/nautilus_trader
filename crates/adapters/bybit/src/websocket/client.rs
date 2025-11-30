@@ -1461,14 +1461,17 @@ impl BybitWebSocketClient {
         strategy_id: StrategyId,
         orders: Vec<BybitWsCancelOrderParams>,
     ) -> BybitWsResult<()> {
+        if orders.is_empty() {
+            return Ok(());
+        }
+
         let category = orders[0].category;
         let batch_req_id = UUID4::new().to_string();
 
-        // Extract order tracking data before consuming orders to register with handler
-        let mut batch_cancel_data = Vec::new();
+        let mut validated_data = Vec::new();
+
         for order in &orders {
             if let Some(order_link_id_str) = &order.order_link_id {
-                let client_order_id = ClientOrderId::from(order_link_id_str.as_str());
                 let cache_key = make_bybit_symbol(order.symbol.as_str(), category);
                 let instrument_id = self
                     .instruments_cache
@@ -1485,18 +1488,26 @@ impl BybitWebSocketClient {
                     .as_ref()
                     .map(|id| VenueOrderId::from(id.as_str()));
 
-                batch_cancel_data.push((
+                validated_data.push((order_link_id_str.clone(), instrument_id, venue_order_id));
+            }
+        }
+
+        let batch_cancel_data: Vec<_> = validated_data
+            .iter()
+            .map(|(order_link_id_str, instrument_id, venue_order_id)| {
+                let client_order_id = ClientOrderId::from(order_link_id_str.as_str());
+                (
                     client_order_id,
                     (
                         client_order_id,
                         trader_id,
                         strategy_id,
-                        instrument_id,
-                        venue_order_id,
+                        *instrument_id,
+                        *venue_order_id,
                     ),
-                ));
-            }
-        }
+                )
+            })
+            .collect();
 
         if !batch_cancel_data.is_empty() {
             let cmd = HandlerCommand::RegisterBatchCancel {
@@ -2010,7 +2021,12 @@ impl BybitWebSocketClient {
         })
     }
 
-    /// Builds order params for canceling an order.
+    /// Builds order params for canceling an order via WebSocket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if symbol parsing fails or if neither venue_order_id
+    /// nor client_order_id is provided.
     pub fn build_cancel_order_params(
         &self,
         product_type: BybitProductType,
@@ -2018,6 +2034,12 @@ impl BybitWebSocketClient {
         venue_order_id: Option<VenueOrderId>,
         client_order_id: Option<ClientOrderId>,
     ) -> BybitWsResult<BybitWsCancelOrderParams> {
+        if venue_order_id.is_none() && client_order_id.is_none() {
+            return Err(BybitWsError::ClientError(
+                "Either venue_order_id or client_order_id must be provided".to_string(),
+            ));
+        }
+
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
             .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
         let raw_symbol = Ustr::from(bybit_symbol.raw_symbol());
