@@ -98,9 +98,11 @@ TBD
 - Added dYdX v4 ExecutionClient in Rust (#3163), thanks @nicolad
 - Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
 - Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
+- Added dYdX v4 order execution via gRPC with Python bindings (#3245), thanks @nicolad
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
 - Implemented dual-parser architecture for DEX event parsing (#3228), thanks @filipmacek
+- Implemented Bybit chunking support for batch cancel orders (#3244), thanks @sunlei
 - Scaffolded blockchain execution client with native balance fetch (#3214), thanks @filipmacek
 - Ported Bybit integration adapter to Rust
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
@@ -127,6 +129,7 @@ TBD
 - Refined bar aggregators in Rust (#3170), thanks @faysou
 - Refined adding files to catalog session (#3215), thanks @faysou
 - Refined `HistoricInteractiveBrokersClient` (#3187), thanks @faysou
+- Optimized build to prefer sccache when available (#3243), thanks @sunlei
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
 - Optimized network clients by enabling `TCP_NODELAY` (#3156), thanks @sunlei
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
