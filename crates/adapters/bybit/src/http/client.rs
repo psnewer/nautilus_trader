@@ -62,7 +62,7 @@ use super::{
         BybitNoConvertRepayResponse, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
         BybitPlaceOrderResponse, BybitPositionListResponse, BybitServerTimeResponse,
         BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSetTradingStopResponse,
-        BybitSwitchModeResponse, BybitTradeHistoryResponse, BybitTradesResponse,
+        BybitSwitchModeResponse, BybitTickerData, BybitTradeHistoryResponse, BybitTradesResponse,
         BybitWalletBalanceResponse,
     },
     query::{
@@ -2745,6 +2745,42 @@ impl BybitHttpClient {
         }
 
         Ok(instruments)
+    }
+
+    /// Request ticker information for market data.
+    ///
+    /// Fetches ticker data from Bybit's `/v5/market/tickers` endpoint and returns
+    /// a unified `BybitTickerData` structure compatible with all product types.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or parsing fails.
+    ///
+    /// # References
+    ///
+    /// <https://bybit-exchange.github.io/docs/v5/market/tickers>
+    pub async fn request_tickers(
+        &self,
+        params: &BybitTickersParams,
+    ) -> anyhow::Result<Vec<BybitTickerData>> {
+        use super::models::{
+            BybitTickersLinearResponse, BybitTickersOptionResponse, BybitTickersSpotResponse,
+        };
+
+        match params.category {
+            BybitProductType::Spot => {
+                let response: BybitTickersSpotResponse = self.inner.get_tickers(params).await?;
+                Ok(response.result.list.into_iter().map(Into::into).collect())
+            }
+            BybitProductType::Linear | BybitProductType::Inverse => {
+                let response: BybitTickersLinearResponse = self.inner.get_tickers(params).await?;
+                Ok(response.result.list.into_iter().map(Into::into).collect())
+            }
+            BybitProductType::Option => {
+                let response: BybitTickersOptionResponse = self.inner.get_tickers(params).await?;
+                Ok(response.result.list.into_iter().map(Into::into).collect())
+            }
+        }
     }
 
     /// Request recent trade tick history for a given symbol.
