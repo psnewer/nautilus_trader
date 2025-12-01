@@ -225,7 +225,7 @@ check-code:  #-- Run clippy, and ruff --fix (use HYPERSYNC=true to include hyper
 
 .PHONY: pre-flight
 pre-flight: export CARGO_TARGET_DIR=$(TARGET_DIR)
-pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-vet, cargo-test, build-debug, pytest)
+pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-test, build-debug, pytest)
 	$(info $(M) Running pre-flight checks...)
 	@if ! git diff --quiet; then \
 		printf "$(RED)ERROR: You have unstaged changes$(RESET)\n"; \
@@ -233,7 +233,6 @@ pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-
 		exit 1; \
 	fi
 	@$(MAKE) --no-print-directory format
-	@$(MAKE) --no-print-directory cargo-vet
 	@$(MAKE) --no-print-directory check-code
 	@$(MAKE) --no-print-directory cargo-test
 	@$(MAKE) --no-print-directory build-debug

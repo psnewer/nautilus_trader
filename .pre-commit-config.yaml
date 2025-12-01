@@ -172,6 +172,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: cargo-vet
+        name: cargo vet (supply chain audit)
+        description: Run cargo-vet supply chain audit if installed
+        entry: .pre-commit-hooks/cargo_vet.sh
+        language: script
+        files: '^Cargo\.(toml|lock)$|^supply-chain/'
+        pass_filenames: false
+
+  - repo: local
+    hooks:
       - id: check-anyhow-usage
         name: check anyhow usage
         description: Enforces anyhow conventions
