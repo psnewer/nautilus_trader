@@ -83,8 +83,8 @@ use crate::{
         consts::BYBIT_NAUTILUS_BROKER_ID,
         credential::Credential,
         enums::{
-            BybitAccountType, BybitEnvironment, BybitMarginMode, BybitOrderSide, BybitOrderType,
-            BybitPositionMode, BybitProductType, BybitTimeInForce,
+            BybitAccountType, BybitEnvironment, BybitMarginMode, BybitOpenOnly, BybitOrderFilter,
+            BybitOrderSide, BybitOrderType, BybitPositionMode, BybitProductType, BybitTimeInForce,
         },
         models::BybitResponse,
         parse::{
@@ -677,8 +677,8 @@ impl BybitRawHttpClient {
         settle_coin: Option<String>,
         order_id: Option<String>,
         order_link_id: Option<String>,
-        open_only: Option<i32>,
-        order_filter: Option<String>,
+        open_only: Option<BybitOpenOnly>,
+        order_filter: Option<BybitOrderFilter>,
         limit: Option<u32>,
         cursor: Option<String>,
     ) -> Result<BybitOpenOrdersResponse, BybitHttpError> {
@@ -1511,8 +1511,8 @@ impl BybitHttpClient {
         settle_coin: Option<String>,
         order_id: Option<String>,
         order_link_id: Option<String>,
-        open_only: Option<i32>,
-        order_filter: Option<String>,
+        open_only: Option<BybitOpenOnly>,
+        order_filter: Option<BybitOrderFilter>,
         limit: Option<u32>,
         cursor: Option<String>,
     ) -> Result<BybitOpenOrdersResponse, BybitHttpError> {
@@ -2443,7 +2443,7 @@ impl BybitHttpClient {
             let mut stop_params = BybitOpenOrdersParamsBuilder::default();
             stop_params.category(product_type);
             stop_params.symbol(bybit_symbol.raw_symbol().to_string());
-            stop_params.order_filter("StopOrder".to_string());
+            stop_params.order_filter(BybitOrderFilter::StopOrder);
 
             if let Some(venue_order_id) = venue_order_id {
                 stop_params.order_id(venue_order_id.to_string());
@@ -2497,7 +2497,7 @@ impl BybitHttpClient {
                 let mut stop_history_params = BybitOrderHistoryParamsBuilder::default();
                 stop_history_params.category(product_type);
                 stop_history_params.symbol(bybit_symbol.raw_symbol().to_string());
-                stop_history_params.order_filter("StopOrder".to_string());
+                stop_history_params.order_filter(BybitOrderFilter::StopOrder);
 
                 if let Some(venue_order_id) = venue_order_id {
                     stop_history_params.order_id(venue_order_id.to_string());

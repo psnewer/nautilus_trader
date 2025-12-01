@@ -95,6 +95,8 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::common::enums::BybitEnvironment>()?;
     m.add_class::<crate::common::enums::BybitMarginAction>()?;
     m.add_class::<crate::common::enums::BybitMarginMode>()?;
+    m.add_class::<crate::common::enums::BybitOpenOnly>()?;
+    m.add_class::<crate::common::enums::BybitOrderFilter>()?;
     m.add_class::<crate::common::enums::BybitOrderSide>()?;
     m.add_class::<crate::common::enums::BybitOrderStatus>()?;
     m.add_class::<crate::common::enums::BybitOrderType>()?;

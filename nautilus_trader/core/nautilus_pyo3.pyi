@@ -5760,6 +5760,17 @@ class BybitMarginAction(Enum):
     REPAY = "repay"
     GET_BORROW_AMOUNT = "get_borrow_amount"
 
+class BybitOpenOnly(Enum):
+    OpenOnly = 0
+    ClosedRecent = 1
+
+class BybitOrderFilter(Enum):
+    Order = "Order"
+    StopOrder = "StopOrder"
+    TpslOrder = "tpslOrder"
+    OcoOrder = "OcoOrder"
+    BidirectionalTpslOrder = "BidirectionalTpslOrder"
+
 class BybitOrderSide(Enum):
     Unknown = "Unknown"
     Buy = "Buy"
@@ -6114,8 +6125,8 @@ class BybitRawHttpClient:
         settle_coin: str | None = None,
         order_id: str | None = None,
         order_link_id: str | None = None,
-        open_only: int | None = None,
-        order_filter: str | None = None,
+        open_only: BybitOpenOnly | None = None,
+        order_filter: BybitOrderFilter | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> BybitOrderCursorList: ...

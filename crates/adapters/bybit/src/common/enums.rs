@@ -664,6 +664,46 @@ pub enum BybitEndpointType {
     User,
 }
 
+/// Filter for open orders query.
+///
+/// Used with `GET /v5/order/realtime` to filter order status.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters", eq, eq_int)
+)]
+pub enum BybitOpenOnly {
+    /// Query open status orders only (New, PartiallyFilled).
+    #[default]
+    OpenOnly = 0,
+    /// Query up to 500 recent closed orders (cancelled, rejected, filled).
+    ClosedRecent = 1,
+}
+
+/// Order filter for querying specific order types.
+///
+/// Used with `GET /v5/order/realtime` to filter by order category.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters", eq, eq_int)
+)]
+pub enum BybitOrderFilter {
+    /// Active orders (default).
+    #[default]
+    Order,
+    /// Conditional orders (futures and spot).
+    StopOrder,
+    /// Spot take-profit/stop-loss orders.
+    #[serde(rename = "tpslOrder")]
+    TpslOrder,
+    /// Spot one-cancels-other orders.
+    OcoOrder,
+    /// Spot bidirectional TP/SL orders.
+    BidirectionalTpslOrder,
+}
+
 /// Margin actions for spot margin trading operations.
 #[derive(
     Clone,

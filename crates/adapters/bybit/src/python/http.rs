@@ -27,7 +27,9 @@ use nautilus_model::{
 use pyo3::{conversion::IntoPyObjectExt, prelude::*, types::PyList};
 
 use crate::{
-    common::enums::{BybitMarginMode, BybitPositionMode, BybitProductType},
+    common::enums::{
+        BybitMarginMode, BybitOpenOnly, BybitOrderFilter, BybitPositionMode, BybitProductType,
+    },
     http::{
         client::{BybitHttpClient, BybitRawHttpClient},
         error::BybitHttpError,
@@ -121,8 +123,8 @@ impl BybitRawHttpClient {
         settle_coin: Option<String>,
         order_id: Option<String>,
         order_link_id: Option<String>,
-        open_only: Option<i32>,
-        order_filter: Option<String>,
+        open_only: Option<BybitOpenOnly>,
+        order_filter: Option<BybitOrderFilter>,
         limit: Option<u32>,
         cursor: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
