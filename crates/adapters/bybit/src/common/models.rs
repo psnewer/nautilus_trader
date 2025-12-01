@@ -15,8 +15,9 @@
 
 //! Shared data transfer objects used across Bybit HTTP and WebSocket payloads.
 
-use crate::common::enums::BybitProductType;
 use serde::{Deserialize, Serialize};
+
+use crate::common::enums::BybitProductType;
 
 /// Generic wrapper that contains a list payload returned by Bybit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

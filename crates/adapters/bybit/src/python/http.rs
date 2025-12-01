@@ -15,13 +15,6 @@
 
 //! Python bindings for the Bybit HTTP client.
 
-use crate::{
-    common::enums::{BybitMarginMode, BybitPositionMode, BybitProductType},
-    http::{
-        client::BybitHttpClient, client::BybitRawHttpClient, error::BybitHttpError,
-        models::BybitOrderCursorList,
-    },
-};
 use chrono::{DateTime, Utc};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
@@ -32,6 +25,15 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use pyo3::{conversion::IntoPyObjectExt, prelude::*, types::PyList};
+
+use crate::{
+    common::enums::{BybitMarginMode, BybitPositionMode, BybitProductType},
+    http::{
+        client::{BybitHttpClient, BybitRawHttpClient},
+        error::BybitHttpError,
+        models::BybitOrderCursorList,
+    },
+};
 
 #[pymethods]
 impl BybitRawHttpClient {
