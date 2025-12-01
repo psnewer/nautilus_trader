@@ -19,7 +19,6 @@ use std::{cell::RefCell, rc::Rc};
 
 use nautilus_common::{
     actor::data_actor::{DataActorConfig, ImportableActorConfig},
-    component::{Component, register_component_actor_by_ref},
     enums::Environment,
     live::runtime::get_runtime,
     python::actor::PyDataActor,
@@ -384,33 +383,25 @@ impl LiveNode {
         })
         .map_err(to_pyruntime_err)?;
 
-        // Add the actor to the trader's lifecycle management without consuming it
         let actor_id = Python::attach(|py| -> anyhow::Result<ActorId> {
             let py_actor = python_actor.bind(py);
             let py_data_actor_ref = py_actor
                 .cast::<PyDataActor>()
                 .map_err(|e| anyhow::anyhow!("Failed to downcast to PyDataActor: {e}"))?;
             let py_data_actor = py_data_actor_ref.borrow();
-
-            // Register the component in the global registry using the unsafe method
-            // SAFETY: The Python instance will remain alive, keeping the PyDataActor valid
-            unsafe {
-                register_component_actor_by_ref(&*py_data_actor);
-            }
+            py_data_actor.register_in_global_registries();
 
             Ok(py_data_actor.actor_id())
         })
         .map_err(to_pyruntime_err)?;
 
-        // TODO: Add the actor ID to the trader for lifecycle management; clean up approach
         self.kernel_mut()
             .trader
             .add_actor_id_for_lifecycle(actor_id)
             .map_err(to_pyruntime_err)?;
 
-        // Store the Python actor reference to prevent garbage collection
-        // TODO: Add to a proper LiveNode registry for Python actors
-        std::mem::forget(python_actor); // Prevent dropping - we'll manage lifecycle manually
+        // Note: No mem::forget needed - the actor's py_self field holds a Py<PyAny>
+        // that keeps the Python instance alive, and registries share the inner via Rc::clone()
 
         log::info!("Registered Python actor {actor_id}");
         Ok(())

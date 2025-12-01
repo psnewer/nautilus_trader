@@ -44,6 +44,8 @@ use nautilus_system::{
     kernel::NautilusKernel,
 };
 use nautilus_trading::strategy::Strategy;
+#[cfg(feature = "python")]
+use pyo3::{Py, PyAny};
 
 use crate::{config::LiveNodeConfig, runner::AsyncRunner};
 
@@ -118,6 +120,9 @@ pub struct LiveNode {
     is_running: bool,
     /// Handle for thread-safe control of this node.
     handle: LiveNodeHandle,
+    #[cfg(feature = "python")]
+    #[allow(dead_code)]
+    python_actors: Vec<Py<PyAny>>,
 }
 
 impl LiveNode {
@@ -173,6 +178,8 @@ impl LiveNode {
             config,
             is_running: false,
             handle: LiveNodeHandle::new(),
+            #[cfg(feature = "python")]
+            python_actors: Vec::new(),
         })
     }
 
@@ -653,6 +660,8 @@ impl LiveNodeBuilder {
             config: self.config,
             is_running: false,
             handle: LiveNodeHandle::new(),
+            #[cfg(feature = "python")]
+            python_actors: Vec::new(),
         })
     }
 }
