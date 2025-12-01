@@ -26,6 +26,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `BinanceInstrumentProviderConfig` to support the `query_commission_rates` config option
 - Added Bybit spot margin auto-borrow and auto-repay with `auto_repay_spot_borrows` config option
 - Added Bybit spot margin manual operations (`BybitMarginAction`) for strategy-controlled borrow/repay via `query_account`
+- Added Bybit HTTP request_tickers support (#3241), thanks @TaiShanQ
 - Added Polymarket Gamma API support for instrument loading (#3141), thanks @DeirhX
 - Added OKX historical trades requests
 - Added `allow_overfills` config option to `ExecEngineConfig` (default `False`) to handle order fills exceeding order quantity with warning instead of raising
@@ -78,6 +79,7 @@ TBD
 - Fixed Databento quote decoding with undefined bid/ask prices
 - Fixed Interactive Brokers quote tick subscriptions to use tick-by-tick data (#3135), thanks for reporting @genliusrocks
 - Fixed Interactive Brokers serialization of `IBContractDetails` (#3181), thanks @faysou
+- Fixed Interactive Brokers parsing of invalid prices (#3246), thanks @faysou
 - Fixed OKX pre-open instrument parsing and standardize enum usage (#3134), thanks for reporting @3wtz
 - Fixed OKX `request_bars` pagination halting prematurely in Range mode (#3145), thanks for reporting @3wtz
 - Fixed OKX `request_bars` pagination using correct backwards API semantics (#3145), thanks for reporting @3wtz
@@ -92,6 +94,7 @@ TBD
 ### Internal Improvements
 - Added BitMEX submit broadcaster
 - Added Bybit start/end time filtering for order status reports (#3209), thanks @sunlei
+- Added BybitRawHttpClient Python bindings (#3252), thanks @sunlei
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added ERC20 token balance tracking to BlockchainExecutionClient (#3224), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
@@ -101,6 +104,7 @@ TBD
 - Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
 - Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
 - Added dYdX v4 order execution via gRPC with Python bindings (#3245), thanks @nicolad
+- Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
 - Implemented dual-parser architecture for DEX event parsing (#3228), thanks @filipmacek
@@ -120,6 +124,7 @@ TBD
 - Improved Betfair order rejection and duplicate fills handling
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
+- Improved dYdX v3 resilience and reliability (#3225), thanks @SarunasSS
 - Improved dYdX v4 adapter test coverage (#3212), thanks @nicolad
 - Improved dYdX v4 network, bars, and batch cancel (#3231), thanks @nicolad
 - Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad

@@ -125,7 +125,7 @@ version = "1.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.alloy-chains]]
-version = "0.2.20"
+version = "0.2.21"
 criteria = "safe-to-deploy"
 
 [[exemptions.alloy-consensus]]
@@ -485,7 +485,7 @@ version = "0.5.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitcoin-io]]
-version = "0.1.3"
+version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitcoin_hashes]]
