@@ -155,7 +155,7 @@ TBD
 - Repaired Bybit `set_position_mode` (#3220), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
-- Upgraded Cython to v3.2.1
+- Upgraded Cython to v3.2.2
 - Upgraded `databento` crate to v0.36.0
 - Upgraded `datafusion` crate to v51.0.0
 - Upgraded `msgspec` to 0.20.0
