@@ -69,6 +69,7 @@ TBD
 - Fixed active liquidity calculation Pool profiler simulation (#3165), thanks @filipmacek
 - Fixed Betfair datetime encoding error in order status reports
 - Fixed Betfair login race condition during concurrent connections
+- Fixed Betfair parsing errors for undocumented codes
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Binance ADL orders with TRADE execution type
 - Fixed `BybitHttpClient` type stub pyi signatures (#3238), thanks @sunlei
