@@ -43,10 +43,10 @@ use nautilus_core::{
 use nautilus_data::client::DataClient;
 use nautilus_model::{
     data::{
-        Bar, BarType, BookOrder, Data as NautilusData, IndexPriceUpdate, OrderBookDelta,
-        OrderBookDeltas_API, QuoteTick,
+        Bar, BarSpecification, BarType, BookOrder, Data as NautilusData, IndexPriceUpdate,
+        OrderBookDelta, OrderBookDeltas, OrderBookDeltas_API, QuoteTick,
     },
-    enums::{BookAction, OrderSide, RecordFlag},
+    enums::{BarAggregation, BookAction, BookType, OrderSide, RecordFlag},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
@@ -131,11 +131,7 @@ impl DydxDataClient {
     /// # Errors
     ///
     /// Returns an error if the bar aggregation or step is not supported by dYdX.
-    fn map_bar_spec_to_resolution(
-        spec: &nautilus_model::data::BarSpecification,
-    ) -> anyhow::Result<&'static str> {
-        use nautilus_model::enums::BarAggregation;
-
+    fn map_bar_spec_to_resolution(spec: &BarSpecification) -> anyhow::Result<&'static str> {
         match spec.step.get() {
             1 => match spec.aggregation {
                 BarAggregation::Minute => Ok("1MIN"),
@@ -461,8 +457,6 @@ impl DataClient for DydxDataClient {
     }
 
     fn subscribe_book_deltas(&mut self, cmd: &SubscribeBookDeltas) -> anyhow::Result<()> {
-        use nautilus_model::enums::BookType;
-
         if cmd.book_type != BookType::L2_MBP {
             anyhow::bail!(
                 "dYdX only supports L2_MBP order book deltas, received {:?}",
@@ -492,8 +486,6 @@ impl DataClient for DydxDataClient {
     }
 
     fn subscribe_book_snapshots(&mut self, cmd: &SubscribeBookSnapshots) -> anyhow::Result<()> {
-        use nautilus_model::enums::BookType;
-
         if cmd.book_type != BookType::L2_MBP {
             anyhow::bail!(
                 "dYdX only supports L2_MBP order book snapshots, received {:?}",
@@ -527,9 +519,6 @@ impl DataClient for DydxDataClient {
         );
 
         // Simply delegate to book deltas subscription
-        use nautilus_common::messages::data::SubscribeBookDeltas;
-        use nautilus_model::enums::BookType;
-
         let book_cmd = SubscribeBookDeltas {
             client_id: cmd.client_id,
             venue: cmd.venue,
@@ -674,36 +663,36 @@ impl DataClient for DydxDataClient {
         // Map BarType spec to dYdX candle resolution string
         let resolution = match spec.step.get() {
             1 => match spec.aggregation {
-                nautilus_model::enums::BarAggregation::Minute => "1MIN",
-                nautilus_model::enums::BarAggregation::Hour => "1HOUR",
-                nautilus_model::enums::BarAggregation::Day => "1DAY",
+                BarAggregation::Minute => "1MIN",
+                BarAggregation::Hour => "1HOUR",
+                BarAggregation::Day => "1DAY",
                 _ => {
                     anyhow::bail!("Unsupported bar aggregation: {:?}", spec.aggregation);
                 }
             },
             5 => {
-                if spec.aggregation == nautilus_model::enums::BarAggregation::Minute {
+                if spec.aggregation == BarAggregation::Minute {
                     "5MINS"
                 } else {
                     anyhow::bail!("Unsupported 5-step aggregation: {:?}", spec.aggregation);
                 }
             }
             15 => {
-                if spec.aggregation == nautilus_model::enums::BarAggregation::Minute {
+                if spec.aggregation == BarAggregation::Minute {
                     "15MINS"
                 } else {
                     anyhow::bail!("Unsupported 15-step aggregation: {:?}", spec.aggregation);
                 }
             }
             30 => {
-                if spec.aggregation == nautilus_model::enums::BarAggregation::Minute {
+                if spec.aggregation == BarAggregation::Minute {
                     "30MINS"
                 } else {
                     anyhow::bail!("Unsupported 30-step aggregation: {:?}", spec.aggregation);
                 }
             }
             4 => {
-                if spec.aggregation == nautilus_model::enums::BarAggregation::Hour {
+                if spec.aggregation == BarAggregation::Hour {
                     "4HOURS"
                 } else {
                     anyhow::bail!("Unsupported 4-step aggregation: {:?}", spec.aggregation);
@@ -1561,8 +1550,7 @@ impl DydxDataClient {
                             }
 
                             // Emit the snapshot deltas
-                            use nautilus_model::data::OrderBookDeltas_API;
-                            let data = nautilus_model::data::Data::from(OrderBookDeltas_API::new(deltas));
+                            let data = NautilusData::from(OrderBookDeltas_API::new(deltas));
                             if let Err(e) = data_sender.send(DataEvent::Data(data)) {
                                 tracing::error!("Failed to emit orderbook snapshot: {}", e);
                             }
@@ -1583,7 +1571,7 @@ impl DydxDataClient {
         instrument_id: InstrumentId,
         snapshot: &crate::http::models::OrderbookResponse,
         instrument: &InstrumentAny,
-    ) -> anyhow::Result<nautilus_model::data::OrderBookDeltas> {
+    ) -> anyhow::Result<OrderBookDeltas> {
         use nautilus_model::{
             data::{BookOrder, OrderBookDelta},
             enums::{BookAction, OrderSide, RecordFlag},
@@ -1647,10 +1635,7 @@ impl DydxDataClient {
             ));
         }
 
-        Ok(nautilus_model::data::OrderBookDeltas::new(
-            instrument_id,
-            deltas,
-        ))
+        Ok(OrderBookDeltas::new(instrument_id, deltas))
     }
 
     /// Get a cached instrument by symbol.
@@ -1665,11 +1650,7 @@ impl DydxDataClient {
         self.instruments.iter().map(|i| i.clone()).collect()
     }
 
-    fn ensure_order_book(
-        &self,
-        instrument_id: InstrumentId,
-        book_type: nautilus_model::enums::BookType,
-    ) {
+    fn ensure_order_book(&self, instrument_id: InstrumentId, book_type: BookType) {
         self.order_books
             .entry(instrument_id)
             .or_insert_with(|| OrderBook::new(instrument_id, book_type));
@@ -1932,9 +1913,9 @@ impl DydxDataClient {
     /// The algorithm continues until no more crosses exist or the book is empty.
     fn resolve_crossed_order_book(
         book: &mut OrderBook,
-        venue_deltas: nautilus_model::data::OrderBookDeltas,
+        venue_deltas: OrderBookDeltas,
         instrument: &InstrumentAny,
-    ) -> anyhow::Result<nautilus_model::data::OrderBookDeltas> {
+    ) -> anyhow::Result<OrderBookDeltas> {
         let instrument_id = venue_deltas.instrument_id;
         let ts_init = venue_deltas.ts_init;
         let mut all_deltas = venue_deltas.deltas.clone();
@@ -2070,8 +2051,7 @@ impl DydxDataClient {
             }
 
             // Apply temporary deltas to the book
-            let temp_deltas_obj =
-                nautilus_model::data::OrderBookDeltas::new(instrument_id, temp_deltas.clone());
+            let temp_deltas_obj = OrderBookDeltas::new(instrument_id, temp_deltas.clone());
             book.apply_deltas(&temp_deltas_obj)?;
             all_deltas.extend(temp_deltas);
 
@@ -2090,21 +2070,16 @@ impl DydxDataClient {
             last_delta.flags = RecordFlag::F_LAST as u8;
         }
 
-        Ok(nautilus_model::data::OrderBookDeltas::new(
-            instrument_id,
-            all_deltas,
-        ))
+        Ok(OrderBookDeltas::new(instrument_id, all_deltas))
     }
 
     fn handle_deltas_message(
-        deltas: nautilus_model::data::OrderBookDeltas,
+        deltas: OrderBookDeltas,
         data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
         order_books: &Arc<DashMap<InstrumentId, OrderBook>>,
         last_quotes: &Arc<DashMap<InstrumentId, QuoteTick>>,
         instruments: &Arc<DashMap<Ustr, InstrumentAny>>,
     ) {
-        use nautilus_model::enums::BookType;
-
         let instrument_id = deltas.instrument_id;
 
         // Get instrument for crossed orderbook resolution
@@ -2294,7 +2269,7 @@ mod tests {
         identifiers::{ClientId, InstrumentId, Symbol, Venue},
         instruments::{CryptoPerpetual, Instrument, InstrumentAny},
         orderbook::OrderBook,
-        types::{Price, Quantity},
+        types::{Currency, Price, Quantity},
     };
     use rstest::rstest;
     use rust_decimal::Decimal;
@@ -2541,12 +2516,7 @@ mod tests {
         let bid_delta = OrderBookDelta::new(
             instrument_id,
             BookAction::Add,
-            nautilus_model::data::order::BookOrder::new(
-                nautilus_model::enums::OrderSide::Buy,
-                price,
-                size,
-                1,
-            ),
+            BookOrder::new(OrderSide::Buy, price, size, 1),
             0,
             1,
             bar_ts,
@@ -2555,12 +2525,7 @@ mod tests {
         let ask_delta = OrderBookDelta::new(
             instrument_id,
             BookAction::Add,
-            nautilus_model::data::order::BookOrder::new(
-                nautilus_model::enums::OrderSide::Sell,
-                Price::from("101.00"),
-                size,
-                1,
-            ),
+            BookOrder::new(OrderSide::Sell, Price::from("101.00"), size, 1),
             0,
             1,
             bar_ts,
@@ -2876,9 +2841,9 @@ mod tests {
         InstrumentAny::CryptoPerpetual(CryptoPerpetual::new(
             instrument_id,
             instrument_id.symbol,
-            nautilus_model::types::currency::Currency::BTC(),
-            nautilus_model::types::currency::Currency::USD(),
-            nautilus_model::types::currency::Currency::USD(),
+            Currency::BTC(),
+            Currency::USD(),
+            Currency::USD(),
             false,
             2,                                // price_precision
             8,                                // size_precision

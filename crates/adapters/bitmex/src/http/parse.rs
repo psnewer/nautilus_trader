@@ -936,6 +936,7 @@ mod tests {
     use nautilus_model::{
         data::{BarSpecification, BarType},
         enums::{AggregationSource, BarAggregation, LiquiditySide, PositionSide, PriceType},
+        instruments::InstrumentAny,
     };
     use rstest::rstest;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -2643,7 +2644,7 @@ mod tests {
 
         // Check it's a CurrencyPair variant
         match result {
-            nautilus_model::instruments::InstrumentAny::CurrencyPair(spot) => {
+            InstrumentAny::CurrencyPair(spot) => {
                 assert_eq!(spot.id.symbol.as_str(), "XBTUSD");
                 assert_eq!(spot.id.venue.as_str(), "BITMEX");
                 assert_eq!(spot.raw_symbol.as_str(), "XBTUSD");
@@ -2667,7 +2668,7 @@ mod tests {
 
         // Check it's a CryptoPerpetual variant
         match result {
-            nautilus_model::instruments::InstrumentAny::CryptoPerpetual(perp) => {
+            InstrumentAny::CryptoPerpetual(perp) => {
                 assert_eq!(perp.id.symbol.as_str(), "XBTUSD");
                 assert_eq!(perp.id.venue.as_str(), "BITMEX");
                 assert_eq!(perp.raw_symbol.as_str(), "XBTUSD");
@@ -2691,7 +2692,7 @@ mod tests {
 
         // Check it's a CryptoFuture variant
         match result {
-            nautilus_model::instruments::InstrumentAny::CryptoFuture(instrument) => {
+            InstrumentAny::CryptoFuture(instrument) => {
                 assert_eq!(instrument.id.symbol.as_str(), "XBTH25");
                 assert_eq!(instrument.id.venue.as_str(), "BITMEX");
                 assert_eq!(instrument.raw_symbol.as_str(), "XBTH25");

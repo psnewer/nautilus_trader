@@ -792,7 +792,7 @@ mod tests {
         let command = DataCommand::Subscribe(SubscribeCommand::Data(SubscribeCustomData {
             client_id: Some(ClientId::from("TEST")),
             venue: None,
-            data_type: nautilus_model::data::DataType::new("QuoteTick", None),
+            data_type: DataType::new("QuoteTick", None),
             command_id: UUID4::new(),
             ts_init: UnixNanos::default(),
             params: None,
@@ -822,9 +822,7 @@ mod tests {
             UnixNanos::from(2),
         );
         exec_evt_tx
-            .send(ExecutionEvent::Order(
-                nautilus_model::events::OrderEventAny::Submitted(order_event),
-            ))
+            .send(ExecutionEvent::Order(OrderEventAny::Submitted(order_event)))
             .unwrap();
 
         // Send execution report (OrderStatus)

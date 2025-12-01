@@ -39,7 +39,7 @@ use nautilus_dydx::{
     common::consts::{DYDX_TESTNET_HTTP_URL, DYDX_TESTNET_WS_URL},
     grpc::wallet::Wallet,
     http::client::DydxHttpClient,
-    websocket::client::DydxWebSocketClient,
+    websocket::{client::DydxWebSocketClient, messages::NautilusWsMessage},
 };
 use tracing::level_filters::LevelFilter;
 
@@ -131,13 +131,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::debug!("[Event #{}] {:?}", event_count, event);
 
                         match event {
-                            nautilus_dydx::websocket::messages::NautilusWsMessage::Order(_) => {
+                            NautilusWsMessage::Order(_) => {
                                 tracing::info!("[Event #{}] Order status update received", event_count);
                             }
-                            nautilus_dydx::websocket::messages::NautilusWsMessage::Fill(_) => {
+                            NautilusWsMessage::Fill(_) => {
                                 tracing::info!("[Event #{}] Fill update received", event_count);
                             }
-                            nautilus_dydx::websocket::messages::NautilusWsMessage::Position(_) => {
+                            NautilusWsMessage::Position(_) => {
                                 tracing::info!("[Event #{}] Position update received", event_count);
                             }
                             _ => {}

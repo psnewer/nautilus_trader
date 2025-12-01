@@ -14,6 +14,7 @@
 // -------------------------------------------------------------------------------------------------
 
 use nautilus_common::{
+    defi::RequestPoolSnapshot,
     live::runtime::get_runtime,
     messages::{
         DataEvent,
@@ -997,10 +998,7 @@ impl DataClient for BlockchainDataClient {
         Ok(())
     }
 
-    fn request_pool_snapshot(
-        &self,
-        cmd: &nautilus_common::messages::defi::RequestPoolSnapshot,
-    ) -> anyhow::Result<()> {
+    fn request_pool_snapshot(&self, cmd: &RequestPoolSnapshot) -> anyhow::Result<()> {
         let command = DefiDataCommand::Request(DefiRequestCommand::PoolSnapshot(cmd.clone()));
         self.command_tx.send(command)?;
         Ok(())

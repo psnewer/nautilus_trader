@@ -26,7 +26,7 @@ use dashmap::DashMap;
 use nautilus_common::{
     live::{runner::get_exec_event_sender, runtime::get_runtime},
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, ExecutionReport as NautilusExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
             GenerateOrderStatusReport, GeneratePositionReports, ModifyOrder, QueryAccount,
@@ -41,7 +41,7 @@ use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderSide, OrderType, TimeInForce},
-    events::{OrderCancelRejected, OrderEventAny, OrderRejected},
+    events::{AccountState, OrderCancelRejected, OrderEventAny, OrderRejected},
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::Order,
@@ -398,9 +398,7 @@ impl DydxExecutionClient {
                 );
 
                 if let Err(send_err) =
-                    sender.send(nautilus_common::messages::ExecutionEvent::Order(
-                        OrderEventAny::Rejected(event),
-                    ))
+                    sender.send(ExecutionEvent::Order(OrderEventAny::Rejected(event)))
                 {
                     tracing::error!("Failed to send OrderRejected event: {send_err}");
                 }
@@ -988,9 +986,7 @@ impl ExecutionClient for DydxExecutionClient {
                                 // Dispatch position status reports via execution event system
                                 let sender = get_exec_event_sender();
                                 let exec_report =
-                                    nautilus_common::messages::ExecutionReport::Position(Box::new(
-                                        *report,
-                                    ));
+                                    NautilusExecutionReport::Position(Box::new(*report));
                                 if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
                                     tracing::warn!("Failed to send position status report: {e}");
                                 }
@@ -1066,10 +1062,9 @@ impl ExecutionClient for DydxExecutionClient {
                                                     market
                                                 );
                                                 let sender = get_exec_event_sender();
-                                                let exec_report =
-                                                    nautilus_common::messages::ExecutionReport::Position(
-                                                        Box::new(report),
-                                                    );
+                                                let exec_report = NautilusExecutionReport::Position(
+                                                    Box::new(report),
+                                                );
                                                 if let Err(e) =
                                                     sender.send(ExecutionEvent::Report(exec_report))
                                                 {
@@ -1113,9 +1108,9 @@ impl ExecutionClient for DydxExecutionClient {
                                                 );
                                                 let sender = get_exec_event_sender();
                                                 let exec_report =
-                                                    nautilus_common::messages::ExecutionReport::OrderStatus(
-                                                        Box::new(report),
-                                                    );
+                                                    NautilusExecutionReport::OrderStatus(Box::new(
+                                                        report,
+                                                    ));
                                                 if let Err(e) =
                                                     sender.send(ExecutionEvent::Report(exec_report))
                                                 {
@@ -1152,9 +1147,7 @@ impl ExecutionClient for DydxExecutionClient {
                                                 );
                                                 let sender = get_exec_event_sender();
                                                 let exec_report =
-                                                    nautilus_common::messages::ExecutionReport::Fill(
-                                                        Box::new(report),
-                                                    );
+                                                    NautilusExecutionReport::Fill(Box::new(report));
                                                 if let Err(e) =
                                                     sender.send(ExecutionEvent::Report(exec_report))
                                                 {
@@ -1294,7 +1287,7 @@ impl ExecutionClient for DydxExecutionClient {
 ///
 /// AccountState events are routed to the Portfolio (not ExecEngine) via msgbus.
 /// This follows the pattern used by BitMEX, OKX, and other reference adapters.
-fn dispatch_account_state(state: nautilus_model::events::AccountState) {
+fn dispatch_account_state(state: AccountState) {
     use std::any::Any;
     msgbus::send_any("Portfolio.update_account".into(), &state as &dyn Any);
 }
@@ -1323,7 +1316,7 @@ fn dispatch_execution_report(report: ExecutionReport) {
                 order_report.venue_order_id,
                 order_report.client_order_id
             );
-            let exec_report = nautilus_common::messages::ExecutionReport::OrderStatus(order_report);
+            let exec_report = NautilusExecutionReport::OrderStatus(order_report);
             if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
                 tracing::warn!("Failed to send order status report: {e}");
             }
@@ -1334,7 +1327,7 @@ fn dispatch_execution_report(report: ExecutionReport) {
                 fill_report.venue_order_id,
                 fill_report.trade_id
             );
-            let exec_report = nautilus_common::messages::ExecutionReport::Fill(fill_report);
+            let exec_report = NautilusExecutionReport::Fill(fill_report);
             if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
                 tracing::warn!("Failed to send fill report: {e}");
             }

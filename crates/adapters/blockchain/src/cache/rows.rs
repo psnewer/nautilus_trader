@@ -19,7 +19,7 @@ use alloy::primitives::{Address, I256, U160, U256};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     defi::{
-        PoolLiquidityUpdate, PoolLiquidityUpdateType, PoolSwap,
+        PoolLiquidityUpdate, PoolLiquidityUpdateType, PoolSwap, SharedChain, SharedDex,
         data::{DexPoolData, PoolFeeCollect, PoolFlash},
         validation::validate_address,
     },
@@ -133,8 +133,8 @@ impl FromRow<'_, PgRow> for BlockTimestampRow {
 /// Returns an error if row field extraction fails or data validation fails.
 pub fn transform_row_to_dex_pool_data(
     row: &PgRow,
-    chain: nautilus_model::defi::SharedChain,
-    dex: nautilus_model::defi::SharedDex,
+    chain: SharedChain,
+    dex: SharedDex,
     instrument_id: InstrumentId,
 ) -> Result<DexPoolData, sqlx::Error> {
     let event_type = row.try_get::<String, _>("event_type")?;

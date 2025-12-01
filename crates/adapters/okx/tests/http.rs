@@ -36,9 +36,12 @@ use chrono::{Duration as ChronoDuration, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use nautilus_okx::{
-    common::enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode},
+    common::{
+        enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode},
+        models::OKXInstrument,
+    },
     http::{
-        client::{OKXHttpClient, OKXRawHttpClient},
+        client::{OKXHttpClient, OKXRawHttpClient, OKXResponse},
         error::OKXHttpError,
         query::{
             GetAlgoOrdersParamsBuilder, GetInstrumentsParamsBuilder, GetOrderHistoryParams,
@@ -80,9 +83,7 @@ fn has_auth_headers(headers: &HeaderMap) -> bool {
 
 fn load_instruments_any() -> Vec<InstrumentAny> {
     let payload = load_test_data("http_get_instruments_spot.json");
-    let response: nautilus_okx::http::client::OKXResponse<
-        nautilus_okx::common::models::OKXInstrument,
-    > = serde_json::from_value(payload).unwrap();
+    let response: OKXResponse<OKXInstrument> = serde_json::from_value(payload).unwrap();
     let ts_init = UnixNanos::default();
     response
         .data

@@ -1324,9 +1324,8 @@ impl BitmexHttpClient {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let ts_init = nautilus_core::nanos::UnixNanos::from(
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64,
-        );
+        let ts_init =
+            UnixNanos::from(chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64);
 
         // Convert HTTP Margin to WebSocket MarginMsg for parsing
         let margin_msg = BitmexMarginMsg {

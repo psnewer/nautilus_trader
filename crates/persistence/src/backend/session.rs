@@ -323,8 +323,7 @@ impl DataQueryResult {
     /// drop if exists and reset the field.
     pub fn drop_chunk(&mut self) {
         if let Some(CVec { ptr, len, cap }) = self.chunk.take() {
-            let data: Vec<Data> =
-                unsafe { Vec::from_raw_parts(ptr.cast::<nautilus_model::data::Data>(), len, cap) };
+            let data: Vec<Data> = unsafe { Vec::from_raw_parts(ptr.cast::<Data>(), len, cap) };
             drop(data);
         }
     }

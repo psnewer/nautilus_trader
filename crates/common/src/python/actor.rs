@@ -1562,7 +1562,7 @@ mod tests {
             Bar, BarType, DataType, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
             OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick, close::InstrumentClose,
         },
-        enums::BookType,
+        enums::{AggressorSide, BookType, InstrumentCloseType, MarketStatusAction},
         identifiers::{ClientId, TraderId, Venue},
         instruments::{CurrencyPair, InstrumentAny, stubs::audusd_sim},
         orderbook::OrderBook,
@@ -2081,7 +2081,7 @@ mod tests {
             audusd_sim.id,
             Price::from("1.0000"),
             Quantity::from("100000"),
-            nautilus_model::enums::AggressorSide::Buyer,
+            AggressorSide::Buyer,
             "T123".to_string().into(),
             UnixNanos::default(),
             UnixNanos::default(),
@@ -2205,7 +2205,7 @@ mod tests {
 
         let status = InstrumentStatus::new(
             audusd_sim.id,
-            nautilus_model::enums::MarketStatusAction::Trading,
+            MarketStatusAction::Trading,
             UnixNanos::default(),
             UnixNanos::default(),
             None,
@@ -2232,7 +2232,7 @@ mod tests {
         let close = InstrumentClose::new(
             audusd_sim.id,
             Price::from("1.0000"),
-            nautilus_model::enums::InstrumentCloseType::EndOfSession,
+            InstrumentCloseType::EndOfSession,
             UnixNanos::default(),
             UnixNanos::default(),
         );

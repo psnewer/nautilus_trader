@@ -29,14 +29,19 @@ use std::{
 
 use ahash::AHashMap;
 use anyhow::Context;
-use nautilus_core::{UUID4, consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime};
+use nautilus_core::{
+    UUID4, UnixNanos, consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime,
+};
 use nautilus_model::{
-    enums::{BarAggregation, OrderSide, OrderType, TimeInForce},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
-    instruments::{Instrument, InstrumentAny},
+    data::{Bar, BarType},
+    enums::{
+        BarAggregation, CurrencyType, OrderSide, OrderStatus, OrderType, TimeInForce, TriggerType,
+    },
+    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, VenueOrderId},
+    instruments::{CurrencyPair, Instrument, InstrumentAny},
     orders::{Order, OrderAny},
-    reports::{FillReport, OrderStatusReport},
-    types::{Price, Quantity},
+    reports::{FillReport, OrderStatusReport, PositionStatusReport},
+    types::{Currency, Price, Quantity},
 };
 use nautilus_network::{
     http::{HttpClient, HttpClientError, HttpResponse},
@@ -653,7 +658,7 @@ impl HyperliquidRawHttpClient {
     async fn http_roundtrip_exchange<T>(
         &self,
         request: &HyperliquidExchangeRequest<T>,
-    ) -> Result<nautilus_network::http::HttpResponse>
+    ) -> Result<HttpResponse>
     where
         T: serde::Serialize,
     {
@@ -897,55 +902,54 @@ impl HyperliquidHttpClient {
 
             // Create synthetic vault token instrument
             let symbol_str = format!("{coin}-USDC-SPOT");
-            let symbol = nautilus_model::identifiers::Symbol::new(&symbol_str);
+            let symbol = Symbol::new(&symbol_str);
             let venue = *HYPERLIQUID_VENUE;
-            let instrument_id = nautilus_model::identifiers::InstrumentId::new(symbol, venue);
+            let instrument_id = InstrumentId::new(symbol, venue);
 
             // Create currencies
-            let base_currency = nautilus_model::types::Currency::new(
+            let base_currency = Currency::new(
                 coin.as_str(),
                 8, // precision
                 0, // ISO code (not applicable)
                 coin.as_str(),
-                nautilus_model::enums::CurrencyType::Crypto,
+                CurrencyType::Crypto,
             );
 
-            let quote_currency = nautilus_model::types::Currency::new(
+            let quote_currency = Currency::new(
                 "USDC",
                 6, // USDC standard precision
                 0,
                 "USDC",
-                nautilus_model::enums::CurrencyType::Crypto,
+                CurrencyType::Crypto,
             );
 
-            let price_increment = nautilus_model::types::Price::from("0.00000001");
-            let size_increment = nautilus_model::types::Quantity::from("0.00000001");
+            let price_increment = Price::from("0.00000001");
+            let size_increment = Quantity::from("0.00000001");
 
-            let instrument =
-                InstrumentAny::CurrencyPair(nautilus_model::instruments::CurrencyPair::new(
-                    instrument_id,
-                    symbol,
-                    base_currency,
-                    quote_currency,
-                    8, // price_precision
-                    8, // size_precision
-                    price_increment,
-                    size_increment,
-                    None, // price_increment
-                    None, // size_increment
-                    None, // maker_fee
-                    None, // taker_fee
-                    None, // margin_init
-                    None, // margin_maint
-                    None, // lot_size
-                    None, // max_quantity
-                    None, // min_quantity
-                    None, // max_notional
-                    None, // min_notional
-                    None, // max_price
-                    ts_event,
-                    ts_event,
-                ));
+            let instrument = InstrumentAny::CurrencyPair(CurrencyPair::new(
+                instrument_id,
+                symbol,
+                base_currency,
+                quote_currency,
+                8, // price_precision
+                8, // size_precision
+                price_increment,
+                size_increment,
+                None, // price_increment
+                None, // size_increment
+                None, // maker_fee
+                None, // taker_fee
+                None, // margin_init
+                None, // margin_maint
+                None, // lot_size
+                None, // max_quantity
+                None, // min_quantity
+                None, // max_notional
+                None, // min_notional
+                None, // max_price
+                ts_event,
+                ts_event,
+            ));
 
             self.cache_instrument(instrument.clone());
 
@@ -1164,7 +1168,7 @@ impl HyperliquidHttpClient {
     pub async fn request_order_status_reports(
         &self,
         user: &str,
-        instrument_id: Option<nautilus_model::identifiers::InstrumentId>,
+        instrument_id: Option<InstrumentId>,
     ) -> Result<Vec<OrderStatusReport>> {
         let response = self.info_frontend_open_orders(user).await?;
 
@@ -1173,7 +1177,7 @@ impl HyperliquidHttpClient {
             .map_err(|e| Error::bad_request(format!("Failed to parse orders: {e}")))?;
 
         let mut reports = Vec::new();
-        let ts_init = nautilus_core::UnixNanos::default();
+        let ts_init = UnixNanos::default();
 
         for order_value in orders {
             // Parse the order data
@@ -1232,12 +1236,12 @@ impl HyperliquidHttpClient {
     pub async fn request_fill_reports(
         &self,
         user: &str,
-        instrument_id: Option<nautilus_model::identifiers::InstrumentId>,
+        instrument_id: Option<InstrumentId>,
     ) -> Result<Vec<FillReport>> {
         let fills_response = self.info_user_fills(user).await?;
 
         let mut reports = Vec::new();
-        let ts_init = nautilus_core::UnixNanos::default();
+        let ts_init = UnixNanos::default();
 
         for fill in fills_response {
             // Get instrument from cache or create synthetic for vault tokens
@@ -1282,8 +1286,8 @@ impl HyperliquidHttpClient {
     pub async fn request_position_status_reports(
         &self,
         user: &str,
-        instrument_id: Option<nautilus_model::identifiers::InstrumentId>,
-    ) -> Result<Vec<nautilus_model::reports::PositionStatusReport>> {
+        instrument_id: Option<InstrumentId>,
+    ) -> Result<Vec<PositionStatusReport>> {
         let state_response = self.info_clearinghouse_state(user).await?;
 
         // Extract asset positions from the clearinghouse state
@@ -1294,7 +1298,7 @@ impl HyperliquidHttpClient {
             .clone();
 
         let mut reports = Vec::new();
-        let ts_init = nautilus_core::UnixNanos::default();
+        let ts_init = UnixNanos::default();
 
         for position_value in asset_positions {
             // Extract coin from position data
@@ -1351,11 +1355,11 @@ impl HyperliquidHttpClient {
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#candles-snapshot>
     pub async fn request_bars(
         &self,
-        bar_type: nautilus_model::data::BarType,
+        bar_type: BarType,
         start: Option<chrono::DateTime<chrono::Utc>>,
         end: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<u32>,
-    ) -> Result<Vec<nautilus_model::data::bar::Bar>> {
+    ) -> Result<Vec<Bar>> {
         let instrument_id = bar_type.instrument_id();
         let symbol = instrument_id.symbol;
 
@@ -1406,7 +1410,7 @@ impl HyperliquidHttpClient {
         // Filter out incomplete bars where end_timestamp >= current time
         let now_ms = now.timestamp_millis() as u64;
 
-        let mut bars: Vec<nautilus_model::data::bar::Bar> = candles
+        let mut bars: Vec<Bar> = candles
             .iter()
             .filter(|candle| candle.end_timestamp < now_ms)
             .enumerate()
@@ -1616,42 +1620,42 @@ impl HyperliquidHttpClient {
                 let account_id = self
                     .account_id
                     .ok_or_else(|| Error::bad_request("Account ID not set"))?;
-                let ts_init = nautilus_core::UnixNanos::default();
+                let ts_init = UnixNanos::default();
 
                 match order_status {
                     HyperliquidExecOrderStatus::Resting { resting } => self
                         .create_order_status_report(
                             instrument_id,
                             Some(client_order_id),
-                            nautilus_model::identifiers::VenueOrderId::new(resting.oid.to_string()),
+                            VenueOrderId::new(resting.oid.to_string()),
                             order_side,
                             order_type,
                             quantity,
                             time_in_force,
                             price,
                             trigger_price,
-                            nautilus_model::enums::OrderStatus::Accepted,
-                            nautilus_model::types::Quantity::new(0.0, instrument.size_precision()),
+                            OrderStatus::Accepted,
+                            Quantity::new(0.0, instrument.size_precision()),
                             &instrument,
                             account_id,
                             ts_init,
                         ),
                     HyperliquidExecOrderStatus::Filled { filled } => {
-                        let filled_qty = nautilus_model::types::Quantity::new(
+                        let filled_qty = Quantity::new(
                             filled.total_sz.to_string().parse::<f64>().unwrap_or(0.0),
                             instrument.size_precision(),
                         );
                         self.create_order_status_report(
                             instrument_id,
                             Some(client_order_id),
-                            nautilus_model::identifiers::VenueOrderId::new(filled.oid.to_string()),
+                            VenueOrderId::new(filled.oid.to_string()),
                             order_side,
                             order_type,
                             quantity,
                             time_in_force,
                             price,
                             trigger_price,
-                            nautilus_model::enums::OrderStatus::Filled,
+                            OrderStatus::Filled,
                             filled_qty,
                             &instrument,
                             account_id,
@@ -1693,20 +1697,20 @@ impl HyperliquidHttpClient {
     #[allow(clippy::too_many_arguments)]
     fn create_order_status_report(
         &self,
-        instrument_id: nautilus_model::identifiers::InstrumentId,
-        client_order_id: Option<nautilus_model::identifiers::ClientOrderId>,
-        venue_order_id: nautilus_model::identifiers::VenueOrderId,
-        order_side: nautilus_model::enums::OrderSide,
-        order_type: nautilus_model::enums::OrderType,
-        quantity: nautilus_model::types::Quantity,
-        time_in_force: nautilus_model::enums::TimeInForce,
-        price: Option<nautilus_model::types::Price>,
-        trigger_price: Option<nautilus_model::types::Price>,
-        order_status: nautilus_model::enums::OrderStatus,
-        filled_qty: nautilus_model::types::Quantity,
-        _instrument: &nautilus_model::instruments::InstrumentAny,
-        account_id: nautilus_model::identifiers::AccountId,
-        ts_init: nautilus_core::UnixNanos,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: VenueOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        order_status: OrderStatus,
+        filled_qty: Quantity,
+        _instrument: &InstrumentAny,
+        account_id: AccountId,
+        ts_init: UnixNanos,
     ) -> Result<OrderStatusReport> {
         let clock = get_atomic_clock_realtime();
         let ts_accepted = clock.get_time_ns();
@@ -1739,7 +1743,7 @@ impl HyperliquidHttpClient {
         if let Some(trig_px) = trigger_price {
             report = report
                 .with_trigger_price(trig_px)
-                .with_trigger_type(nautilus_model::enums::TriggerType::Default);
+                .with_trigger_type(TriggerType::Default);
         }
 
         Ok(report)
@@ -1792,7 +1796,7 @@ impl HyperliquidHttpClient {
                 let account_id = self
                     .account_id
                     .ok_or_else(|| Error::bad_request("Account ID not set"))?;
-                let ts_init = nautilus_core::UnixNanos::default();
+                let ts_init = UnixNanos::default();
 
                 // Validate we have the same number of statuses as orders submitted
                 if order_response.statuses.len() != orders.len() {
@@ -1826,20 +1830,15 @@ impl HyperliquidHttpClient {
                             self.create_order_status_report(
                                 order.instrument_id(),
                                 Some(order.client_order_id()),
-                                nautilus_model::identifiers::VenueOrderId::new(
-                                    resting.oid.to_string(),
-                                ),
+                                VenueOrderId::new(resting.oid.to_string()),
                                 order.order_side(),
                                 order.order_type(),
                                 order.quantity(),
                                 order.time_in_force(),
                                 order.price(),
                                 order.trigger_price(),
-                                nautilus_model::enums::OrderStatus::Accepted,
-                                nautilus_model::types::Quantity::new(
-                                    0.0,
-                                    instrument.size_precision(),
-                                ),
+                                OrderStatus::Accepted,
+                                Quantity::new(0.0, instrument.size_precision()),
                                 &instrument,
                                 account_id,
                                 ts_init,
@@ -1847,23 +1846,21 @@ impl HyperliquidHttpClient {
                         }
                         HyperliquidExecOrderStatus::Filled { filled } => {
                             // Order was filled immediately
-                            let filled_qty = nautilus_model::types::Quantity::new(
+                            let filled_qty = Quantity::new(
                                 filled.total_sz.to_string().parse::<f64>().unwrap_or(0.0),
                                 instrument.size_precision(),
                             );
                             self.create_order_status_report(
                                 order.instrument_id(),
                                 Some(order.client_order_id()),
-                                nautilus_model::identifiers::VenueOrderId::new(
-                                    filled.oid.to_string(),
-                                ),
+                                VenueOrderId::new(filled.oid.to_string()),
                                 order.order_side(),
                                 order.order_type(),
                                 order.quantity(),
                                 order.time_in_force(),
                                 order.price(),
                                 order.trigger_price(),
-                                nautilus_model::enums::OrderStatus::Filled,
+                                OrderStatus::Filled,
                                 filled_qty,
                                 &instrument,
                                 account_id,

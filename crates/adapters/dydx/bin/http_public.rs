@@ -43,7 +43,7 @@ use nautilus_dydx::{
     common::{consts::DYDX_TESTNET_HTTP_URL, enums::DydxCandleResolution},
     http::client::DydxHttpClient,
 };
-use nautilus_model::instruments::Instrument;
+use nautilus_model::instruments::{Instrument, InstrumentAny};
 use ustr::Ustr;
 
 #[tokio::main]
@@ -258,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn print_instrument_summary(instruments: &[nautilus_model::instruments::InstrumentAny]) {
+fn print_instrument_summary(instruments: &[InstrumentAny]) {
     let mut by_type: HashMap<String, usize> = HashMap::new();
     let mut by_base: HashMap<String, usize> = HashMap::new();
 

@@ -17,6 +17,11 @@
 
 use std::{str::FromStr, sync::Arc};
 
+use nautilus_model::{
+    enums::{OrderSide, TimeInForce},
+    identifiers::InstrumentId,
+    types::{Price, Quantity},
+};
 use pyo3::prelude::*;
 
 use crate::{
@@ -112,10 +117,10 @@ impl PyDydxOrderSubmitter {
     ) -> PyResult<Bound<'py, PyAny>> {
         let submitter = self.inner.clone();
         let wallet_inner = wallet.inner;
-        let instrument_id = nautilus_model::identifiers::InstrumentId::from(instrument_id);
-        let side = nautilus_model::enums::OrderSide::from_repr(side as usize)
+        let instrument_id = InstrumentId::from(instrument_id);
+        let side = OrderSide::from_repr(side as usize)
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid OrderSide"))?;
-        let quantity = nautilus_model::types::Quantity::from(quantity);
+        let quantity = Quantity::from(quantity);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             submitter
@@ -153,13 +158,12 @@ impl PyDydxOrderSubmitter {
     ) -> PyResult<Bound<'py, PyAny>> {
         let submitter = self.inner.clone();
         let wallet_inner = wallet.inner;
-        let instrument_id = nautilus_model::identifiers::InstrumentId::from(instrument_id);
-        let side = nautilus_model::enums::OrderSide::from_repr(side as usize)
+        let instrument_id = InstrumentId::from(instrument_id);
+        let side = OrderSide::from_repr(side as usize)
             .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid OrderSide"))?;
-        let price = nautilus_model::types::Price::from(price);
-        let quantity = nautilus_model::types::Quantity::from(quantity);
-        let time_in_force = nautilus_model::enums::TimeInForce::from_repr(time_in_force as usize)
-            .ok_or_else(|| {
+        let price = Price::from(price);
+        let quantity = Quantity::from(quantity);
+        let time_in_force = TimeInForce::from_repr(time_in_force as usize).ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid TimeInForce")
         })?;
 
@@ -196,7 +200,7 @@ impl PyDydxOrderSubmitter {
     ) -> PyResult<Bound<'py, PyAny>> {
         let submitter = self.inner.clone();
         let wallet_inner = wallet.inner;
-        let instrument_id = nautilus_model::identifiers::InstrumentId::from(instrument_id);
+        let instrument_id = InstrumentId::from(instrument_id);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             submitter

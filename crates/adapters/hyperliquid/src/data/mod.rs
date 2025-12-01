@@ -41,7 +41,7 @@ use nautilus_core::{
 use nautilus_data::client::DataClient;
 use nautilus_model::{
     data::{Bar, BarType, Data, OrderBookDeltas_API},
-    enums::BarAggregation,
+    enums::{BarAggregation, BookType},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -693,7 +693,7 @@ impl DataClient for HyperliquidDataClient {
     fn subscribe_book_deltas(&mut self, subscription: &SubscribeBookDeltas) -> anyhow::Result<()> {
         tracing::debug!("Subscribing to book deltas: {}", subscription.instrument_id);
 
-        if subscription.book_type != nautilus_model::enums::BookType::L2_MBP {
+        if subscription.book_type != BookType::L2_MBP {
             anyhow::bail!("Hyperliquid only supports L2_MBP order book deltas");
         }
 
@@ -739,7 +739,7 @@ impl DataClient for HyperliquidDataClient {
             subscription.instrument_id
         );
 
-        if subscription.book_type != nautilus_model::enums::BookType::L2_MBP {
+        if subscription.book_type != BookType::L2_MBP {
             anyhow::bail!("Hyperliquid only supports L2_MBP order book snapshots");
         }
 

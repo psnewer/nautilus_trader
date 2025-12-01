@@ -32,7 +32,7 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_data::client::DataClientAdapter;
 use nautilus_execution::models::{fee::FeeModelAny, fill::FillModel, latency::LatencyModel};
 use nautilus_model::{
-    data::Data,
+    data::{Data, HasTsInit},
     enums::{AccountType, BookType, OmsType},
     identifiers::{AccountId, ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -288,7 +288,7 @@ impl BacktestEngine {
         // If requested, sort by ts_init so internal stream is monotonic.
         let mut to_add = data;
         if sort {
-            to_add.sort_by_key(nautilus_model::data::HasTsInit::ts_init);
+            to_add.sort_by_key(HasTsInit::ts_init);
         }
 
         // Instrument & book tracking using Data helpers
@@ -314,7 +314,7 @@ impl BacktestEngine {
         if sort {
             // VecDeque cannot be sorted directly; convert to Vec for sorting, then back.
             let mut vec: Vec<Data> = self.data.drain(..).collect();
-            vec.sort_by_key(nautilus_model::data::HasTsInit::ts_init);
+            vec.sort_by_key(HasTsInit::ts_init);
             self.data = vec.into();
         }
 

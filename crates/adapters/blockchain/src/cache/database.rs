@@ -1680,7 +1680,7 @@ impl BlockchainCacheDatabase {
             let log_index: i32 = row.get("log_index");
             let transaction_hash: String = row.get("transaction_hash");
 
-            let block_position = nautilus_model::defi::data::block::BlockPosition::new(
+            let block_position = BlockPosition::new(
                 block as u64,
                 transaction_hash,
                 transaction_index as u32,
@@ -1733,10 +1733,10 @@ impl BlockchainCacheDatabase {
                 .await?;
 
             let dex_name: String = row.get("dex_name");
-            let chain = nautilus_model::defi::Chain::from_chain_id(chain_id)
+            let chain = Chain::from_chain_id(chain_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown chain_id: {chain_id}"))?;
 
-            let dex_type = nautilus_model::defi::DexType::from_dex_name(&dex_name)
+            let dex_type = DexType::from_dex_name(&dex_name)
                 .ok_or_else(|| anyhow::anyhow!("Unknown dex_name: {dex_name}"))?;
 
             let dex_extended = crate::exchanges::get_dex_extended(chain.name, &dex_type)

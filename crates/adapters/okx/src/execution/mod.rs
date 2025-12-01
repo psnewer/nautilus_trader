@@ -30,10 +30,11 @@ use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     live::{runner::get_exec_event_sender, runtime::get_runtime},
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, ExecutionReport as NautilusExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
-            GenerateOrderStatusReport, GeneratePositionReports,
+            GenerateOrderStatusReport, GeneratePositionReports, ModifyOrder, QueryAccount,
+            QueryOrder, SubmitOrder, SubmitOrderList,
         },
     },
 };
@@ -193,10 +194,7 @@ impl OKXExecutionClient {
         OKX_CONDITIONAL_ORDER_TYPES.contains(&order_type)
     }
 
-    fn submit_regular_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::SubmitOrder,
-    ) -> anyhow::Result<()> {
+    fn submit_regular_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
         let order = cmd.order.clone();
         let ws_private = self.ws_private.clone();
         let trade_mode = self.trade_mode;
@@ -227,10 +225,7 @@ impl OKXExecutionClient {
         Ok(())
     }
 
-    fn submit_conditional_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::SubmitOrder,
-    ) -> anyhow::Result<()> {
+    fn submit_conditional_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
         let order = cmd.order.clone();
         let trigger_price = order
             .trigger_price()
@@ -259,10 +254,7 @@ impl OKXExecutionClient {
         Ok(())
     }
 
-    fn cancel_ws_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::CancelOrder,
-    ) -> anyhow::Result<()> {
+    fn cancel_ws_order(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
         let ws_private = self.ws_private.clone();
         let command = cmd.clone();
 
@@ -424,10 +416,7 @@ impl ExecutionClient for OKXExecutionClient {
         Ok(())
     }
 
-    fn submit_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::SubmitOrder,
-    ) -> anyhow::Result<()> {
+    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
         let order = &cmd.order;
 
         if order.is_closed() {
@@ -463,10 +452,7 @@ impl ExecutionClient for OKXExecutionClient {
         Ok(())
     }
 
-    fn submit_order_list(
-        &self,
-        cmd: &nautilus_common::messages::execution::SubmitOrderList,
-    ) -> anyhow::Result<()> {
+    fn submit_order_list(&self, cmd: &SubmitOrderList) -> anyhow::Result<()> {
         tracing::warn!(
             "submit_order_list not yet implemented for OKX execution client (got {} orders)",
             cmd.order_list.orders.len()
@@ -474,10 +460,7 @@ impl ExecutionClient for OKXExecutionClient {
         Ok(())
     }
 
-    fn modify_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::ModifyOrder,
-    ) -> anyhow::Result<()> {
+    fn modify_order(&self, cmd: &ModifyOrder) -> anyhow::Result<()> {
         let ws_private = self.ws_private.clone();
         let command = cmd.clone();
 
@@ -527,17 +510,11 @@ impl ExecutionClient for OKXExecutionClient {
         Ok(())
     }
 
-    fn query_account(
-        &self,
-        _cmd: &nautilus_common::messages::execution::QueryAccount,
-    ) -> anyhow::Result<()> {
+    fn query_account(&self, _cmd: &QueryAccount) -> anyhow::Result<()> {
         self.update_account_state()
     }
 
-    fn query_order(
-        &self,
-        cmd: &nautilus_common::messages::execution::QueryOrder,
-    ) -> anyhow::Result<()> {
+    fn query_order(&self, cmd: &QueryOrder) -> anyhow::Result<()> {
         tracing::debug!(
             "query_order not implemented for OKX execution client (client_order_id={})",
             cmd.client_order_id
@@ -912,7 +889,7 @@ fn dispatch_account_state(state: AccountState, sender: &ExecEventSender) {
 }
 
 fn dispatch_position_status_report(report: PositionStatusReport, sender: &ExecEventSender) {
-    let exec_report = nautilus_common::messages::ExecutionReport::Position(Box::new(report));
+    let exec_report = NautilusExecutionReport::Position(Box::new(report));
     if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
         tracing::warn!("Failed to send position status report: {e}");
     }
@@ -921,15 +898,13 @@ fn dispatch_position_status_report(report: PositionStatusReport, sender: &ExecEv
 fn dispatch_execution_report(report: ExecutionReport, sender: &ExecEventSender) {
     match report {
         ExecutionReport::Order(order_report) => {
-            let exec_report =
-                nautilus_common::messages::ExecutionReport::OrderStatus(Box::new(order_report));
+            let exec_report = NautilusExecutionReport::OrderStatus(Box::new(order_report));
             if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
                 tracing::warn!("Failed to send order status report: {e}");
             }
         }
         ExecutionReport::Fill(fill_report) => {
-            let exec_report =
-                nautilus_common::messages::ExecutionReport::Fill(Box::new(fill_report));
+            let exec_report = NautilusExecutionReport::Fill(Box::new(fill_report));
             if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
                 tracing::warn!("Failed to send fill report: {e}");
             }
@@ -952,14 +927,12 @@ mod tests {
     use nautilus_common::messages::execution::{BatchCancelOrders, CancelOrder};
     use nautilus_core::UnixNanos;
     use nautilus_model::identifiers::{
-        ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId,
+        ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId,
     };
     use rstest::rstest;
 
     #[rstest]
     fn test_batch_cancel_orders_builds_payload() {
-        use nautilus_model::identifiers::ClientId;
-
         let trader_id = TraderId::from("TRADER-001");
         let strategy_id = StrategyId::from("STRATEGY-001");
         let client_id = ClientId::from("OKX");
@@ -1021,8 +994,6 @@ mod tests {
 
     #[rstest]
     fn test_batch_cancel_orders_with_empty_cancels() {
-        use nautilus_model::identifiers::ClientId;
-
         let cmd = BatchCancelOrders {
             trader_id: TraderId::from("TRADER-001"),
             client_id: ClientId::from("OKX"),

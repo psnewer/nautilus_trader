@@ -1656,10 +1656,16 @@ async fn test_sends_pong_for_text_ping_message() {
 #[cfg(test)]
 mod conditional_order_tests {
     use nautilus_bybit::{
-        common::enums::{BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce},
-        websocket::messages::BybitWsPlaceOrderParams,
+        common::enums::{
+            BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce, BybitTriggerType,
+        },
+        websocket::{client::BybitWebSocketClient, messages::BybitWsPlaceOrderParams},
     };
-    use nautilus_model::{enums::OrderType, types::Price};
+    use nautilus_model::{
+        enums::{OrderSide, OrderType, TimeInForce},
+        identifiers::{ClientOrderId, InstrumentId},
+        types::{Price, Quantity},
+    };
     use rstest::rstest;
 
     #[rstest]
@@ -1820,13 +1826,6 @@ mod conditional_order_tests {
         trigger_price: Option<Price>,
         price: Option<Price>,
     ) -> BybitWsPlaceOrderParams {
-        use nautilus_bybit::websocket::client::BybitWebSocketClient;
-        use nautilus_model::{
-            enums::OrderSide,
-            identifiers::{ClientOrderId, InstrumentId},
-            types::Quantity,
-        };
-
         let client = BybitWebSocketClient::new_public(None, None);
 
         let nautilus_side = match side {
@@ -1844,7 +1843,7 @@ mod conditional_order_tests {
                 order_type,
                 Quantity::from("0.01"),
                 false, // is_quote_quantity
-                Some(nautilus_model::enums::TimeInForce::Gtc),
+                Some(TimeInForce::Gtc),
                 price,
                 trigger_price,
                 None,  // post_only
@@ -1860,8 +1859,6 @@ mod conditional_order_tests {
         price: Option<Price>,
         reduce_only: Option<bool>,
     ) -> BybitWsPlaceOrderParams {
-        use nautilus_bybit::common::enums::BybitTriggerType;
-
         let is_stop_order = matches!(
             order_type,
             OrderType::StopMarket

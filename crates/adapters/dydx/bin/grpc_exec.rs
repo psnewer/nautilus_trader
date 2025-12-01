@@ -51,13 +51,21 @@ use nautilus_dydx::{
             OrderBuilder, OrderGoodUntil, OrderMarketParams, SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
         },
         types::ChainId,
-        wallet::Wallet,
+        wallet::{Account, Wallet},
     },
-    http::client::DydxHttpClient,
+    http::{
+        client::{DydxHttpClient, DydxRawHttpClient},
+        models::Order as DydxOrder,
+    },
     proto::{
         ToAny,
-        dydxprotocol::clob::{
-            MsgBatchCancel, MsgCancelOrder, MsgPlaceOrder, OrderBatch, OrderId, order::TimeInForce,
+        dydxprotocol::{
+            clob::{
+                MsgBatchCancel, MsgCancelOrder, MsgPlaceOrder, OrderBatch, OrderId,
+                msg_cancel_order::GoodTilOneof,
+                order::{Side as DydxSide, TimeInForce},
+            },
+            subaccounts::SubaccountId,
         },
     },
 };
@@ -207,14 +215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .expect("Failed to create HTTP client");
 
     // Also create raw HTTP client for order queries
-    let raw_http_client = nautilus_dydx::http::client::DydxRawHttpClient::new(
-        Some(http_url),
-        Some(30),
-        None,
-        !is_mainnet,
-        None,
-    )
-    .expect("Failed to create raw HTTP client");
+    let raw_http_client = DydxRawHttpClient::new(Some(http_url), Some(30), None, !is_mainnet, None)
+        .expect("Failed to create raw HTTP client");
 
     // Fetch instruments
     tracing::info!("Fetching instruments...");
@@ -266,8 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client_order_id,
     );
 
-    use nautilus_dydx::proto::dydxprotocol::clob::order::Side;
-    let proto_side = Side::Buy;
+    let proto_side = DydxSide::Buy;
     let size_decimal = Decimal::from_str(&quantity.to_string())?;
 
     builder = builder.limit(proto_side, price, size_decimal);
@@ -341,23 +342,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .parse()
                 .map_err(|e| format!("Failed to parse client_id: {e}"))?;
 
-            let msg_cancel = nautilus_dydx::proto::dydxprotocol::clob::MsgCancelOrder {
-                order_id: Some(nautilus_dydx::proto::dydxprotocol::clob::OrderId {
-                    subaccount_id: Some(
-                        nautilus_dydx::proto::dydxprotocol::subaccounts::SubaccountId {
-                            owner: wallet_address.clone(),
-                            number: subaccount_number,
-                        },
-                    ),
+            let msg_cancel = MsgCancelOrder {
+                order_id: Some(OrderId {
+                    subaccount_id: Some(SubaccountId {
+                        owner: wallet_address.clone(),
+                        number: subaccount_number,
+                    }),
                     client_id,
                     order_flags: 0, // Short-term orders
                     clob_pair_id: market_params.clob_pair_id,
                 }),
-                good_til_oneof: Some(
-                    nautilus_dydx::proto::dydxprotocol::clob::msg_cancel_order::GoodTilOneof::GoodTilBlock(
-                        height.0 + SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
-                    ),
-                ),
+                good_til_oneof: Some(GoodTilOneof::GoodTilBlock(
+                    height.0 + SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
+                )),
             };
 
             let any_cancel = msg_cancel.to_any();
@@ -415,7 +412,7 @@ async fn run_all_edge_case_tests(args: &[String]) -> Result<(), Box<dyn std::err
         !is_mainnet,
         None,
     )?;
-    let raw_http = nautilus_dydx::http::client::DydxRawHttpClient::new(
+    let raw_http = DydxRawHttpClient::new(
         Some(http_url.to_string()),
         Some(30),
         None,
@@ -439,10 +436,10 @@ async fn run_all_edge_case_tests(args: &[String]) -> Result<(), Box<dyn std::err
 
 async fn run_all_edge_tests(
     grpc: &mut DydxGrpcClient,
-    account: &mut nautilus_dydx::grpc::wallet::Account,
+    account: &mut Account,
     address: &str,
     http: &DydxHttpClient,
-    raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    raw_http: &DydxRawHttpClient,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("\n=== Running All Edge Case Tests ===\n");
@@ -470,9 +467,9 @@ async fn run_all_edge_tests(
 
 async fn test_cancel_specific(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
-    raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -524,9 +521,9 @@ async fn test_cancel_specific(
 
 async fn test_cancel_by_market(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
-    raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -578,9 +575,9 @@ async fn test_cancel_by_market(
 
 async fn test_replace_order(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
-    _raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    _raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -633,9 +630,9 @@ async fn test_replace_order(
 
 async fn test_duplicate_cancel(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
-    _raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    _raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -677,9 +674,9 @@ async fn test_duplicate_cancel(
 
 async fn test_rapid_sequence(
     grpc: &mut DydxGrpcClient,
-    account: &mut nautilus_dydx::grpc::wallet::Account,
+    account: &mut Account,
     http: &DydxHttpClient,
-    _raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    _raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -728,9 +725,9 @@ async fn test_rapid_sequence(
 
 async fn test_batch_cancel(
     grpc: &mut DydxGrpcClient,
-    account: &mut nautilus_dydx::grpc::wallet::Account,
+    account: &mut Account,
     http: &DydxHttpClient,
-    raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    raw_http: &DydxRawHttpClient,
     address: &str,
     is_mainnet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -758,7 +755,6 @@ async fn test_batch_cancel(
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Get market params for clob_pair_id
-    use nautilus_model::identifiers::InstrumentId;
     let instrument_id = InstrumentId::from("BTC-USD-PERP.DYDX");
     let market_params = http
         .get_market_params(&instrument_id)
@@ -772,12 +768,10 @@ async fn test_batch_cancel(
     };
 
     let msg_batch_cancel = MsgBatchCancel {
-        subaccount_id: Some(
-            nautilus_dydx::proto::dydxprotocol::subaccounts::SubaccountId {
-                owner: address.to_string(),
-                number: 0,
-            },
-        ),
+        subaccount_id: Some(SubaccountId {
+            owner: address.to_string(),
+            number: 0,
+        }),
         short_term_cancels: vec![order_batch],
         good_til_block: height.0 + SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
     };
@@ -823,16 +817,13 @@ fn generate_client_id() -> u32 {
 
 async fn place_edge_test_order(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
     client_id: u32,
     instrument: &str,
     price: f64,
     is_mainnet: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    use nautilus_dydx::proto::dydxprotocol::clob::order::Side;
-    use nautilus_model::identifiers::InstrumentId;
-
     let instrument_id = InstrumentId::from(instrument);
     let market_params = http
         .get_market_params(&instrument_id)
@@ -852,7 +843,7 @@ async fn place_edge_test_order(
     let mut builder = OrderBuilder::new(params, account.address.clone(), 0, client_id);
 
     builder = builder.limit(
-        Side::Buy,
+        DydxSide::Buy,
         Decimal::from_str(&price.to_string())?,
         Decimal::from_str("0.001")?,
     );
@@ -879,15 +870,13 @@ async fn place_edge_test_order(
 
 async fn cancel_order_by_client_id(
     grpc: &mut DydxGrpcClient,
-    account: &nautilus_dydx::grpc::wallet::Account,
+    account: &Account,
     http: &DydxHttpClient,
     address: &str,
     client_id: u32,
     ticker: &str,
     is_mainnet: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    use nautilus_model::identifiers::InstrumentId;
-
     let instrument_id = InstrumentId::from(format!("{ticker}-PERP.DYDX"));
     let market_params = http
         .get_market_params(&instrument_id)
@@ -897,21 +886,17 @@ async fn cancel_order_by_client_id(
 
     let msg_cancel = MsgCancelOrder {
         order_id: Some(OrderId {
-            subaccount_id: Some(
-                nautilus_dydx::proto::dydxprotocol::subaccounts::SubaccountId {
-                    owner: address.to_string(),
-                    number: 0,
-                },
-            ),
+            subaccount_id: Some(SubaccountId {
+                owner: address.to_string(),
+                number: 0,
+            }),
             client_id,
             order_flags: 0,
             clob_pair_id: market_params.clob_pair_id,
         }),
-        good_til_oneof: Some(
-            nautilus_dydx::proto::dydxprotocol::clob::msg_cancel_order::GoodTilOneof::GoodTilBlock(
-                height.0 + SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
-            ),
-        ),
+        good_til_oneof: Some(GoodTilOneof::GoodTilBlock(
+            height.0 + SHORT_TERM_ORDER_MAXIMUM_LIFETIME,
+        )),
     };
 
     let chain_id = if is_mainnet {
@@ -927,9 +912,9 @@ async fn cancel_order_by_client_id(
 }
 
 async fn fetch_open_orders(
-    raw_http: &nautilus_dydx::http::client::DydxRawHttpClient,
+    raw_http: &DydxRawHttpClient,
     address: &str,
-) -> Result<Vec<nautilus_dydx::http::models::Order>, Box<dyn std::error::Error>> {
+) -> Result<Vec<DydxOrder>, Box<dyn std::error::Error>> {
     let orders = raw_http.get_orders(address, 0, None, None).await?;
     Ok(orders
         .into_iter()

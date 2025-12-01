@@ -1862,7 +1862,7 @@ mod tests {
         assert_eq!(eth_detail.avail_bal, "0.000000185");
 
         let account_id = AccountId::new("OKX-001");
-        let ts_init = nautilus_core::nanos::UnixNanos::default();
+        let ts_init = UnixNanos::default();
         let account_state = parse_account_state(account, account_id, ts_init);
 
         assert!(account_state.is_ok());

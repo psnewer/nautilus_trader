@@ -13,6 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use nautilus_network::http::HttpClientError;
 use thiserror::Error;
 
 /// Comprehensive error type for Hyperliquid operations
@@ -156,7 +157,7 @@ impl Error {
     }
 
     /// Map HTTP client errors to appropriate error types
-    pub fn from_http_client(error: nautilus_network::http::HttpClientError) -> Self {
+    pub fn from_http_client(error: HttpClientError) -> Self {
         Self::transport(format!("HTTP client error: {error}"))
     }
 

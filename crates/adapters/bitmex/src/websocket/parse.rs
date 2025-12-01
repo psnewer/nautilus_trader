@@ -675,7 +675,7 @@ pub fn parse_order_update_msg(
     let ts_event = parse_optional_datetime_to_unix_nanos(&msg.timestamp, "timestamp");
     let ts_init = get_atomic_clock_realtime().get_time_ns();
 
-    Some(nautilus_model::events::OrderUpdated::new(
+    Some(OrderUpdated::new(
         trader_id,
         strategy_id,
         instrument_id,

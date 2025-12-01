@@ -973,6 +973,7 @@ impl ExecTester {
 mod tests {
     use nautilus_core::UnixNanos;
     use nautilus_model::{
+        enums::AggressorSide,
         identifiers::{StrategyId, TradeId},
         instruments::stubs::crypto_perpetual_ethusdt,
         orders::LimitOrder,
@@ -1248,7 +1249,7 @@ mod tests {
             InstrumentId::from("BTCUSDT-PERP.BINANCE"),
             Price::from("50000.0"),
             Quantity::from("0.1"),
-            nautilus_model::enums::AggressorSide::Buyer,
+            AggressorSide::Buyer,
             TradeId::new("12345"),
             UnixNanos::default(),
             UnixNanos::default(),
@@ -1267,7 +1268,7 @@ mod tests {
             InstrumentId::from("BTCUSDT-PERP.BINANCE"),
             Price::from("50000.0"),
             Quantity::from("0.1"),
-            nautilus_model::enums::AggressorSide::Buyer,
+            AggressorSide::Buyer,
             TradeId::new("12345"),
             UnixNanos::default(),
             UnixNanos::default(),

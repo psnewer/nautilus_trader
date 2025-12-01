@@ -23,8 +23,8 @@ use nautilus_core::{datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos, uuid
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{
-        AggressorSide, ContingencyType, LiquiditySide, OrderStatus, PositionSideSpecified,
-        TimeInForce, TrailingOffsetType,
+        AggressorSide, BarAggregation, ContingencyType, LiquiditySide, OrderStatus,
+        PositionSideSpecified, TimeInForce, TrailingOffsetType,
     },
     identifiers::{AccountId, InstrumentId, Symbol, TradeId, VenueOrderId},
     instruments::{
@@ -870,9 +870,9 @@ pub fn parse_futures_position_status_report(
 pub fn bar_type_to_spot_interval(bar_type: BarType) -> anyhow::Result<u32> {
     let step = bar_type.spec().step.get() as u32;
     let base_interval = match bar_type.spec().aggregation {
-        nautilus_model::enums::BarAggregation::Minute => 1,
-        nautilus_model::enums::BarAggregation::Hour => 60,
-        nautilus_model::enums::BarAggregation::Day => 1440,
+        BarAggregation::Minute => 1,
+        BarAggregation::Hour => 60,
+        BarAggregation::Day => 1440,
         other => {
             anyhow::bail!("Unsupported bar aggregation for Kraken Spot: {other:?}");
         }
@@ -892,26 +892,26 @@ pub fn bar_type_to_spot_interval(bar_type: BarType) -> anyhow::Result<u32> {
 pub fn bar_type_to_futures_resolution(bar_type: BarType) -> anyhow::Result<&'static str> {
     let step = bar_type.spec().step.get() as u32;
     match bar_type.spec().aggregation {
-        nautilus_model::enums::BarAggregation::Minute => match step {
+        BarAggregation::Minute => match step {
             1 => Ok("1m"),
             5 => Ok("5m"),
             15 => Ok("15m"),
             _ => anyhow::bail!("Unsupported minute step for Kraken Futures: {step}"),
         },
-        nautilus_model::enums::BarAggregation::Hour => match step {
+        BarAggregation::Hour => match step {
             1 => Ok("1h"),
             4 => Ok("4h"),
             12 => Ok("12h"),
             _ => anyhow::bail!("Unsupported hour step for Kraken Futures: {step}"),
         },
-        nautilus_model::enums::BarAggregation::Day => {
+        BarAggregation::Day => {
             if step == 1 {
                 Ok("1d")
             } else {
                 anyhow::bail!("Unsupported day step for Kraken Futures: {step}")
             }
         }
-        nautilus_model::enums::BarAggregation::Week => {
+        BarAggregation::Week => {
             if step == 1 {
                 Ok("1w")
             } else {

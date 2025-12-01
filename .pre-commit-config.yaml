@@ -222,6 +222,14 @@ repos:
         types_or: [rust]
         pass_filenames: false
 
+      - id: check-nautilus-conventions
+        name: check nautilus conventions
+        description: Enforces Nautilus type usage conventions
+        entry: .pre-commit-hooks/check_nautilus_conventions.sh
+        language: script
+        files: '\.rs$'
+        pass_filenames: false
+
       - id: fmt
         name: cargo fmt
         description: Format files with cargo fmt

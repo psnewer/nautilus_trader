@@ -18,9 +18,9 @@ use std::{collections::HashMap, str::FromStr};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, BookOrder, Data, IndexPriceUpdate, MarkPriceUpdate,
-        OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick, depth::DEPTH10_LEN,
-        is_monotonically_increasing_by_init, to_variant,
+        Bar, BarSpecification, BarType, BookOrder, Data, HasTsInit, IndexPriceUpdate,
+        MarkPriceUpdate, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
+        depth::DEPTH10_LEN, is_monotonically_increasing_by_init, to_variant,
     },
     enums::{AggregationSource, AggressorSide, BarAggregation, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, TradeId},
@@ -1404,7 +1404,7 @@ fn test_consolidation_preserves_data_integrity() {
 #[derive(Clone)]
 struct DummyData(u64);
 
-impl nautilus_model::data::HasTsInit for DummyData {
+impl HasTsInit for DummyData {
     fn ts_init(&self) -> UnixNanos {
         UnixNanos::from(self.0)
     }

@@ -31,7 +31,7 @@ use nautilus_model::{
     data::{
         BookOrder, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, TradeTick,
     },
-    enums::{AggressorSide, BookAction},
+    enums::{AggressorSide, BookAction, OrderSide},
     identifiers::TradeId,
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -534,7 +534,7 @@ impl FuturesFeedHandler {
             // Add bids
             for level in &snapshot.bids {
                 let order = BookOrder::new(
-                    nautilus_model::enums::OrderSide::Buy,
+                    OrderSide::Buy,
                     Price::new(level.price, price_precision),
                     Quantity::new(level.qty, size_precision),
                     0,
@@ -553,7 +553,7 @@ impl FuturesFeedHandler {
             // Add asks
             for level in &snapshot.asks {
                 let order = BookOrder::new(
-                    nautilus_model::enums::OrderSide::Sell,
+                    OrderSide::Sell,
                     Price::new(level.price, price_precision),
                     Quantity::new(level.qty, size_precision),
                     0,
@@ -605,8 +605,8 @@ impl FuturesFeedHandler {
         let size_precision = instrument.size_precision();
 
         let side = match delta.side.as_str() {
-            "buy" => nautilus_model::enums::OrderSide::Buy,
-            "sell" => nautilus_model::enums::OrderSide::Sell,
+            "buy" => OrderSide::Buy,
+            "sell" => OrderSide::Sell,
             _ => return,
         };
 
@@ -618,8 +618,8 @@ impl FuturesFeedHandler {
             let size = Quantity::new(delta.qty, size_precision);
 
             let (bid_price, ask_price, bid_size, ask_size) = match side {
-                nautilus_model::enums::OrderSide::Buy => (Some(price), None, Some(size), None),
-                nautilus_model::enums::OrderSide::Sell => (None, Some(price), None, Some(size)),
+                OrderSide::Buy => (Some(price), None, Some(size), None),
+                OrderSide::Sell => (None, Some(price), None, Some(size)),
                 _ => (None, None, None, None),
             };
 

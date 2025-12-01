@@ -99,7 +99,7 @@ impl NautilusKernel {
     pub const fn builder(
         name: String,
         trader_id: TraderId,
-        environment: nautilus_common::enums::Environment,
+        environment: Environment,
     ) -> NautilusKernelBuilder {
         NautilusKernelBuilder::new(name, trader_id, environment)
     }

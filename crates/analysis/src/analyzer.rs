@@ -462,7 +462,7 @@ mod tests {
     use ahash::AHashMap;
     use nautilus_core::approx_eq;
     use nautilus_model::{
-        enums::{AccountType, InstrumentClass, LiquiditySide, OrderSide},
+        enums::{AccountType, InstrumentClass, LiquiditySide, OrderSide, PositionSide},
         events::{AccountState, OrderFilled},
         identifiers::{
             AccountId, ClientOrderId,
@@ -526,7 +526,7 @@ mod tests {
             opening_order_id: ClientOrderId::default(),
             closing_order_id: None,
             entry: OrderSide::NoOrderSide,
-            side: nautilus_model::enums::PositionSide::NoPositionSide,
+            side: PositionSide::NoPositionSide,
             signed_qty: 0.0,
             quantity: Quantity::default(),
             peak_qty: Quantity::default(),
