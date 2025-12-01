@@ -71,6 +71,7 @@ from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from nautilus_trader.core.datetime import nanos_to_secs
+from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.messages import CancelAllOrders
@@ -913,7 +914,7 @@ class DYDXExecutionClient(LiveExecutionClient):
 
         start = self._clock.timestamp_ns()
 
-        while self._clock.timestamp_ns() - start < self._track_cancel_timeout_secs * 1e9:
+        while self._clock.timestamp_ns() - start < secs_to_nanos(self._track_cancel_timeout_secs):
             order = self._cache.order(client_order_id)
 
             if order is None:
@@ -1009,7 +1010,7 @@ class DYDXExecutionClient(LiveExecutionClient):
 
         elif order_msg.status == DYDXOrderStatus.BEST_EFFORT_CANCELED:
             good_til_block = int(order_msg.goodTilBlock) if order_msg.goodTilBlock else 0
-            self._loop.create_task(self._track_order_cancel( report.client_order_id, good_til_block))
+            self._loop.create_task(self._track_order_cancel(report.client_order_id, good_til_block))
 
         elif order_msg.status in (DYDXOrderStatus.FILLED,):
             if order.status == OrderStatus.SUBMITTED:
