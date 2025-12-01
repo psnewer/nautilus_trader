@@ -282,12 +282,11 @@ impl DatabentoHistoricalClient {
             )?;
 
             match data {
-                Some(Data::Quote(quote)) => {
-                    result.push(quote);
-                    Ok(())
-                }
+                Some(Data::Quote(quote)) => result.push(quote),
+                None => {} // Skip records with undefined bid/ask prices
                 _ => anyhow::bail!("Invalid data element not `QuoteTick`, was {data:?}"),
             }
+            Ok(())
         };
 
         match dbn_schema {
