@@ -192,7 +192,7 @@ clean-build-artifacts:  #-- Clean compiled artifacts (.so, .dll, .pyc, .c files)
 .PHONY: clean-caches
 clean-caches:  #-- Clean pytest, mypy, ruff, uv, and cargo caches
 	rm -rf .pytest_cache .mypy_cache .ruff_cache 2>/dev/null || true
-	-uv cache prune
+	-uv cache prune --force
 	-cargo clean
 
 .PHONY: distclean
