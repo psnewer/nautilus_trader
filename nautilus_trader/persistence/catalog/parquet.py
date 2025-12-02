@@ -1967,7 +1967,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         identifiers: list[str] | None = None,
         start: TimestampLike | None = None,
         end: TimestampLike | None = None,
-    ):
+    ) -> list[str]:
         file_prefix = class_to_filename(data_cls)
         base_path = self.path.rstrip("/")
         glob_path = f"{base_path}/data/{file_prefix}/**/*.parquet"
@@ -2015,6 +2015,21 @@ class ParquetDataCatalog(BaseDataCatalog):
                 print(file_path)
 
         return file_paths
+
+    def query_first_timestamp(
+        self,
+        data_cls: type,
+        identifier: str | None = None,
+    ) -> pd.Timestamp | None:
+        subclasses = [data_cls, *data_cls.__subclasses__()]
+
+        for cls in subclasses:
+            intervals = self.get_intervals(cls, identifier)
+
+            if intervals:
+                return time_object_to_dt(intervals[0][0])
+
+        return None
 
     def query_last_timestamp(
         self,
