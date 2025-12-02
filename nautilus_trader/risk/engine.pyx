@@ -42,6 +42,7 @@ from nautilus_trader.core.rust.model cimport InstrumentClass
 from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.core.rust.model cimport TimeInForce
 from nautilus_trader.core.rust.model cimport TradingState
 from nautilus_trader.core.rust.model cimport TrailingOffsetType
@@ -664,6 +665,56 @@ cdef class RiskEngine(Component):
         if self.debug:
             self._log.debug(f"Free: {free!r}", LogColor.MAGENTA)
 
+        # Get net LONG position quantity for this instrument (for position-reducing sell checks),
+        # accounting for already submitted (but unfilled) SELL orders to prevent overselling.
+        cdef list[Position] open_longs = self._cache.positions_open(
+            None,
+            instrument.id,
+            None,
+            PositionSide.LONG,
+        )
+        cdef Quantity net_long_qty = Quantity.zero_c(instrument.size_precision)
+        cdef Position position
+        for position in open_longs:
+            net_long_qty = Quantity.from_raw_c(
+                net_long_qty._mem.raw + position.quantity._mem.raw,
+                instrument.size_precision,
+            )
+
+        # Get pending (open) SELL orders for this instrument
+        cdef list open_sell_orders = self._cache.orders_open(
+            None,
+            instrument.id,
+            None,
+            OrderSide.SELL,
+        )
+        cdef Quantity submitted_sell_qty = Quantity.zero_c(instrument.size_precision)
+        cdef Order open_order
+        for open_order in open_sell_orders:
+            submitted_sell_qty = Quantity.from_raw_c(
+                submitted_sell_qty._mem.raw + open_order.leaves_qty._mem.raw,
+                instrument.size_precision,
+            )
+
+        # Available quantity is long position minus already submitted sells
+        cdef Quantity available_long_qty
+        if submitted_sell_qty._mem.raw >= net_long_qty._mem.raw:
+            available_long_qty = Quantity.zero_c(instrument.size_precision)
+        else:
+            available_long_qty = Quantity.from_raw_c(
+                net_long_qty._mem.raw - submitted_sell_qty._mem.raw,
+                instrument.size_precision,
+            )
+
+        if self.debug and net_long_qty._mem.raw > 0:
+            self._log.debug(
+                f"Net LONG qty: {net_long_qty}, submitted sells: {submitted_sell_qty}, available: {available_long_qty}",
+                LogColor.MAGENTA,
+            )
+
+        # Track cumulative sell quantity to determine position-reducing vs position-opening sells
+        cdef Quantity cum_sell_qty = Quantity.zero_c(instrument.size_precision)
+
         cdef:
             Order order
             Money notional
@@ -675,6 +726,8 @@ cdef class RiskEngine(Component):
             double xrate
             Quantity effective_quantity
             Price effective_price
+            bint is_position_reducing_sell
+            Quantity pending_sell_qty
         for order in orders:
             if self.debug:
                 self._log.debug(f"Pre-trade risk check: {order}", LogColor.MAGENTA)
@@ -881,35 +934,39 @@ cdef class RiskEngine(Component):
                     )
                     return False  # Denied
             elif order.is_sell_c():
-                if account.base_currency is not None:
-                    if order.is_reduce_only:
-                        if self.debug:
-                            self._log.debug(
-                                "Reduce-only SELL skips cumulative notional free-balance check",
-                                LogColor.MAGENTA,
-                            )
-                    else:
-                        if cum_notional_sell is None:
-                            cum_notional_sell = Money(order_balance_impact, order_balance_impact.currency)
-                        else:
-                            cum_notional_sell._mem.raw += order_balance_impact._mem.raw
+                pending_sell_qty = Quantity.from_raw_c(
+                    cum_sell_qty._mem.raw + effective_quantity._mem.raw,
+                    instrument.size_precision,
+                )
+                is_position_reducing_sell = (
+                    order.is_reduce_only
+                    or pending_sell_qty._mem.raw <= available_long_qty._mem.raw
+                )
+                cum_sell_qty = pending_sell_qty
 
-                        if self.debug:
-                            self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
-                        if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
-                            self._deny_order(
-                                order=order,
-                                reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
-                            )
-                            return False  # Denied
+                if is_position_reducing_sell:
+                    if self.debug:
+                        self._log.debug(
+                            "Position-reducing SELL skips balance check",
+                            LogColor.MAGENTA,
+                        )
+                    continue
+
+                if account.base_currency is not None:
+                    if cum_notional_sell is None:
+                        cum_notional_sell = Money(order_balance_impact, order_balance_impact.currency)
+                    else:
+                        cum_notional_sell._mem.raw += order_balance_impact._mem.raw
+
+                    if self.debug:
+                        self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
+                    if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
+                        self._deny_order(
+                            order=order,
+                            reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
+                        )
+                        return False  # Denied
                 elif base_currency is not None and account.type == AccountType.CASH:
-                    if order.is_reduce_only:
-                        if self.debug:
-                            self._log.debug(
-                                "Reduce-only SELL skips base-currency cumulative free check",
-                                LogColor.MAGENTA,
-                            )
-                        continue
                     cash_value = Money(effective_quantity.as_f64_c(), base_currency)
                     free = account.balance_free(base_currency)
 
