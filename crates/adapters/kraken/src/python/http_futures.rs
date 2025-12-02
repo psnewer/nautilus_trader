@@ -18,13 +18,10 @@
 use chrono::{DateTime, Utc};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
-    data::{BarType, Data},
+    data::BarType,
     enums::{OrderSide, OrderType, TimeInForce},
     identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
-    python::{
-        data::data_to_pycapsule,
-        instruments::{instrument_any_to_pyobject, pyobject_to_instrument_any},
-    },
+    python::instruments::{instrument_any_to_pyobject, pyobject_to_instrument_any},
     types::{Price, Quantity},
 };
 use pyo3::{conversion::IntoPyObjectExt, prelude::*, types::PyList};
@@ -155,12 +152,12 @@ impl KrakenFuturesHttpClient {
                 .map_err(to_pyruntime_err)?;
 
             Python::attach(|py| {
-                let py_trades: Vec<_> = trades
+                let py_trades: PyResult<Vec<_>> = trades
                     .into_iter()
-                    .map(|trade| data_to_pycapsule(py, Data::Trade(trade)))
+                    .map(|trade| trade.into_py_any(py))
                     .collect();
-                let pylist = PyList::new(py, py_trades).unwrap();
-                Ok(pylist.unbind())
+                let pylist = PyList::new(py, py_trades?).unwrap().into_any().unbind();
+                Ok(pylist)
             })
         })
     }
@@ -220,12 +217,10 @@ impl KrakenFuturesHttpClient {
                 .map_err(to_pyruntime_err)?;
 
             Python::attach(|py| {
-                let py_bars: Vec<_> = bars
-                    .into_iter()
-                    .map(|bar| data_to_pycapsule(py, Data::Bar(bar)))
-                    .collect();
-                let pylist = PyList::new(py, py_bars).unwrap();
-                Ok(pylist.unbind())
+                let py_bars: PyResult<Vec<_>> =
+                    bars.into_iter().map(|bar| bar.into_py_any(py)).collect();
+                let pylist = PyList::new(py, py_bars?).unwrap().into_any().unbind();
+                Ok(pylist)
             })
         })
     }

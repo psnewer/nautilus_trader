@@ -526,7 +526,7 @@ impl KrakenFuturesRawHttpClient {
         sort: Option<&str>,
         continuation_token: Option<&str>,
     ) -> anyhow::Result<FuturesPublicExecutionsResponse, KrakenHttpError> {
-        let endpoint = format!("/api/history/v2/market/{symbol}/executions");
+        let endpoint = format!("/api/history/v3/market/{symbol}/executions");
 
         let mut url = format!("{}{endpoint}", self.base_url);
 
@@ -1072,9 +1072,9 @@ impl KrakenFuturesHttpClient {
         let resolution = bar_type_to_futures_resolution(bar_type)
             .map_err(|e| KrakenHttpError::ParseError(e.to_string()))?;
 
-        // Kraken Futures OHLC API expects Unix timestamp in milliseconds
-        let from = start.map(|dt| dt.timestamp_millis());
-        let to = end.map(|dt| dt.timestamp_millis());
+        // Kraken Futures OHLC API expects Unix timestamp in seconds
+        let from = start.map(|dt| dt.timestamp());
+        let to = end.map(|dt| dt.timestamp());
         let end_ns = end.map(|dt| dt.timestamp_nanos_opt().unwrap_or(0) as u64);
 
         let response = self

@@ -34,6 +34,7 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import KrakenEnvironment
 from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.execution.messages import CancelAllOrders
@@ -274,16 +275,16 @@ class KrakenExecutionClient(LiveExecutionClient):
                     command.instrument_id.value,
                 )
 
-            start_ns = command.start.value if command.start else None
-            end_ns = command.end.value if command.end else None
+            start = ensure_pydatetime_utc(command.start)
+            end = ensure_pydatetime_utc(command.end)
 
             # Request from spot client
             if self._http_client_spot is not None:
                 pyo3_reports = await self._http_client_spot.request_order_status_reports(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
-                    start=start_ns,
-                    end=end_ns,
+                    start=start,
+                    end=end,
                     open_only=command.open_only,
                 )
                 for pyo3_report in pyo3_reports:
@@ -296,8 +297,8 @@ class KrakenExecutionClient(LiveExecutionClient):
                 pyo3_reports = await self._http_client_futures.request_order_status_reports(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
-                    start=start_ns,
-                    end=end_ns,
+                    start=start,
+                    end=end,
                     open_only=command.open_only,
                 )
                 for pyo3_report in pyo3_reports:
@@ -335,16 +336,16 @@ class KrakenExecutionClient(LiveExecutionClient):
                     command.instrument_id.value,
                 )
 
-            start_ns = command.start.value if command.start else None
-            end_ns = command.end.value if command.end else None
+            start = ensure_pydatetime_utc(command.start)
+            end = ensure_pydatetime_utc(command.end)
 
             # Request from spot client
             if self._http_client_spot is not None:
                 pyo3_reports = await self._http_client_spot.request_fill_reports(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
-                    start=start_ns,
-                    end=end_ns,
+                    start=start,
+                    end=end,
                 )
                 for pyo3_report in pyo3_reports:
                     report = FillReport.from_pyo3(pyo3_report)
@@ -356,8 +357,8 @@ class KrakenExecutionClient(LiveExecutionClient):
                 pyo3_reports = await self._http_client_futures.request_fill_reports(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
-                    start=start_ns,
-                    end=end_ns,
+                    start=start,
+                    end=end,
                 )
                 for pyo3_report in pyo3_reports:
                     report = FillReport.from_pyo3(pyo3_report)

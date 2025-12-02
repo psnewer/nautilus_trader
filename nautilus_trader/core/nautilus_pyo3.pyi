@@ -7942,31 +7942,31 @@ class KrakenSpotHttpClient:
     async def request_trades(
         self,
         instrument_id: InstrumentId,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[TradeTick]: ...
     async def request_bars(
         self,
         bar_type: BarType,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[Bar]: ...
     async def request_order_status_reports(
         self,
         account_id: AccountId,
         instrument_id: InstrumentId | None = None,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         open_only: bool = False,
     ) -> list[OrderStatusReport]: ...
     async def request_fill_reports(
         self,
         account_id: AccountId,
         instrument_id: InstrumentId | None = None,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
     ) -> list[FillReport]: ...
     async def submit_order(
         self,
@@ -8017,31 +8017,31 @@ class KrakenFuturesHttpClient:
     async def request_trades(
         self,
         instrument_id: InstrumentId,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[TradeTick]: ...
     async def request_bars(
         self,
         bar_type: BarType,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[Bar]: ...
     async def request_order_status_reports(
         self,
         account_id: AccountId,
         instrument_id: InstrumentId | None = None,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
         open_only: bool = False,
     ) -> list[OrderStatusReport]: ...
     async def request_fill_reports(
         self,
         account_id: AccountId,
         instrument_id: InstrumentId | None = None,
-        start: int | None = None,
-        end: int | None = None,
+        start: dt.datetime | None = None,
+        end: dt.datetime | None = None,
     ) -> list[FillReport]: ...
     async def request_position_status_reports(
         self,

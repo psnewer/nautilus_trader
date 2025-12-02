@@ -14,6 +14,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+
 from nautilus_trader.adapters.kraken import KRAKEN
 from nautilus_trader.adapters.kraken import KrakenDataClientConfig
 from nautilus_trader.adapters.kraken import KrakenEnvironment
@@ -37,8 +38,8 @@ from nautilus_trader.test_kit.strategies.tester_data import DataTesterConfig
 # Configuration - Change symbol for different trading pairs
 # SPOT examples: "BTC/USD", "ETH/USD", "SOL/USD"
 # PERP examples: "PF_XBTUSD", "PF_ETHUSD", "PF_SOLUSD"
-symbol = "ETH/USD"  # Spot pair
-# symbol = "PI_XBTUSD"  # Perpetual
+# symbol = "ETH/USD"  # Spot pair
+symbol = "PI_XBTUSD"  # Perpetual
 instrument_id = InstrumentId.from_str(f"{symbol}.{KRAKEN}")
 
 environment = KrakenEnvironment.MAINNET
@@ -91,6 +92,7 @@ config_tester = DataTesterConfig(
     # subscribe_book_at_interval=True,
     # book_depth=10,
     # book_interval_ms=10,
+    # requests_start_delta=pd.Timedelta(days=1),
     # request_bars=True,
     # request_trades=True,
 )

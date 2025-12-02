@@ -27,6 +27,7 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import KrakenEnvironment
 from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.data.messages import RequestBars
@@ -607,17 +608,13 @@ class KrakenDataClient(LiveMarketDataClient):
             )
             limit = 1000
 
-        # Get nanosecond timestamps directly from request
-        start = request.start.value if request.start else None
-        end = request.end.value if request.end else None
-
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
 
         try:
             pyo3_trades = await client.request_trades(
                 instrument_id=pyo3_instrument_id,
-                start=start,
-                end=end,
+                start=ensure_pydatetime_utc(request.start),
+                end=ensure_pydatetime_utc(request.end),
                 limit=limit,
             )
         except Exception as e:
@@ -656,15 +653,11 @@ class KrakenDataClient(LiveMarketDataClient):
 
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(bar_type))
 
-        # Get nanosecond timestamps directly from request
-        start = request.start.value if request.start else None
-        end = request.end.value if request.end else None
-
         try:
             pyo3_bars = await client.request_bars(
                 bar_type=pyo3_bar_type,
-                start=start,
-                end=end,
+                start=ensure_pydatetime_utc(request.start),
+                end=ensure_pydatetime_utc(request.end),
                 limit=limit,
             )
         except Exception as e:
