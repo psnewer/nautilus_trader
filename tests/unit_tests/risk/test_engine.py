@@ -19,6 +19,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
+from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.messages import TradingStateChanged
@@ -1523,6 +1524,91 @@ class TestRiskEngineWithCashAccount:
         # Assert
         assert order.status == OrderStatus.DENIED
         assert self.exec_engine.command_count == 0  # <-- Command never reaches engine
+
+    def test_submit_order_when_over_free_balance_with_borrowing_enabled_then_accepts(self):
+        # Arrange - Test that orders exceeding free balance are accepted when
+        # borrowing is enabled (e.g. spot margin trading on Bybit)
+        quote = TestDataStubs.quote_tick(_AUDUSD_SIM)
+        self.cache.add_quote_tick(quote)
+
+        # Register cash borrowing for the venue BEFORE account is created
+        # This mirrors how the Bybit adapter enables spot margin borrowing
+        AccountFactory.register_cash_borrowing(self.venue.value)
+
+        try:
+            self.msgbus = MessageBus(
+                trader_id=self.trader_id,
+                clock=self.clock,
+            )
+            self.cache = TestComponentStubs.cache()
+            self.portfolio = Portfolio(
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+            )
+            self.exec_engine = ExecutionEngine(
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+                config=ExecEngineConfig(debug=True),
+            )
+            self.risk_engine = RiskEngine(
+                portfolio=self.portfolio,
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+                config=RiskEngineConfig(debug=True),
+            )
+            self.exec_client = MockExecutionClient(
+                client_id=ClientId(self.venue.value),
+                venue=self.venue,
+                account_type=AccountType.CASH,
+                base_currency=USD,
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+            )
+
+            self.portfolio.update_account(TestEventStubs.cash_account_state())
+            self.exec_engine.register_client(self.exec_client)
+            self.cache.add_instrument(_AUDUSD_SIM)
+            self.cache.add_quote_tick(quote)
+
+            self.exec_engine.start()
+
+            strategy = Strategy()
+            strategy.register(
+                trader_id=self.trader_id,
+                portfolio=self.portfolio,
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+            )
+
+            order = strategy.order_factory.market(
+                _AUDUSD_SIM.id,
+                OrderSide.BUY,
+                Quantity.from_int(10_000_000),
+            )
+
+            submit_order = SubmitOrder(
+                trader_id=self.trader_id,
+                strategy_id=strategy.id,
+                position_id=None,
+                order=order,
+                command_id=UUID4(),
+                ts_init=self.clock.timestamp_ns(),
+            )
+
+            # Act
+            self.risk_engine.execute(submit_order)
+
+            # Assert - Order should NOT be denied because borrowing is enabled
+            assert order.status == OrderStatus.INITIALIZED
+            assert self.exec_engine.command_count == 1  # Command reaches engine
+        finally:
+            # Clean up global state to prevent leakage to other tests
+            AccountFactory.deregister_cash_borrowing(self.venue.value)
 
     def test_submit_order_list_buys_when_over_free_balance_then_denies(self):
         # Arrange - Initialize market

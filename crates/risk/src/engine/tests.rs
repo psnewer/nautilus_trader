@@ -34,7 +34,7 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_execution::engine::{ExecutionEngine, config::ExecutionEngineConfig};
 use nautilus_model::{
     accounts::{
-        AccountAny,
+        AccountAny, CashAccount,
         stubs::{cash_account, margin_account},
     },
     data::{QuoteTick, stubs::quote_audusd},
@@ -2313,6 +2313,74 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies(
         Ustr::from(
             "NOTIONAL_EXCEEDS_FREE_BALANCE: free=Money(1000000.00, USD), notional=Money(10100000.00, USD)"
         )
+    );
+}
+
+#[rstest]
+fn test_submit_order_when_market_order_over_free_balance_with_borrowing_enabled_then_accepts(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    client_order_id: ClientOrderId,
+    instrument_audusd: InstrumentAny,
+    venue_order_id: VenueOrderId,
+    process_order_event_handler: ShareableMessageHandler,
+    cash_account_state_million_usd: AccountState,
+    quote_audusd: QuoteTick,
+    mut simple_cache: Cache,
+) {
+    // Test that orders exceeding free balance are accepted when borrowing is enabled
+    // (e.g. spot margin trading on Bybit)
+    msgbus::register(
+        MessagingSwitchboard::exec_engine_process(),
+        process_order_event_handler.clone(),
+    );
+
+    simple_cache
+        .add_instrument(instrument_audusd.clone())
+        .unwrap();
+
+    let cash_account_with_borrowing = CashAccount::new(cash_account_state_million_usd, true, true);
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account_with_borrowing))
+        .unwrap();
+
+    simple_cache.add_quote(quote_audusd).unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+
+    // Create order that would exceed free balance (same as denied test above)
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument_audusd.id())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from_str("100000").unwrap())
+        .build();
+
+    let submit_order = SubmitOrder::new(
+        trader_id,
+        client_id_binance,
+        strategy_id_ema_cross,
+        instrument_audusd.id(),
+        client_order_id,
+        venue_order_id,
+        order,
+        None,
+        None,
+        None, // params
+        UUID4::new(),
+        risk_engine.clock.borrow().timestamp_ns(),
+    )
+    .unwrap();
+
+    risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
+
+    // Should NOT be denied because borrowing is enabled
+    let saved_process_messages =
+        get_process_order_event_handler_messages(process_order_event_handler);
+    assert!(
+        saved_process_messages.is_empty(),
+        "Order should not be denied when borrowing is enabled, but got: {saved_process_messages:?}"
     );
 }
 

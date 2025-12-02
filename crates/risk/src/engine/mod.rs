@@ -632,6 +632,7 @@ impl RiskEngine {
             AccountAny::Margin(_) => return true, // TODO: Determine risk controls for margin
         };
         let free = cash_account.balance_free(Some(instrument.quote_currency()));
+        let allow_borrowing = cash_account.allow_borrowing;
         if self.config.debug {
             log::debug!("Free cash: {free:?}");
         }
@@ -900,7 +901,9 @@ impl RiskEngine {
                 log::debug!("Balance impact: {order_balance_impact}");
             }
 
-            if let Some(free_val) = free
+            // Skip balance check when borrowing is enabled (e.g. spot margin trading)
+            if !allow_borrowing
+                && let Some(free_val) = free
                 && (free_val.as_decimal() + order_balance_impact.as_decimal()) < Decimal::ZERO
             {
                 self.deny_order(
@@ -932,7 +935,8 @@ impl RiskEngine {
                     log::debug!("Cumulative notional BUY: {cum_notional_buy:?}");
                 }
 
-                if let (Some(free), Some(cum_notional_buy)) = (free, cum_notional_buy)
+                if !allow_borrowing
+                    && let (Some(free), Some(cum_notional_buy)) = (free, cum_notional_buy)
                     && cum_notional_buy > free
                 {
                     self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_buy}"));
@@ -962,7 +966,8 @@ impl RiskEngine {
                             log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
                         }
 
-                        if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
+                        if !allow_borrowing
+                            && let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
                             && cum_notional_sell > free
                         {
                             self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));
@@ -1014,7 +1019,8 @@ impl RiskEngine {
                     if self.config.debug {
                         log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
                     }
-                    if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
+                    if !allow_borrowing
+                        && let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
                         && cum_notional_sell.raw > free.raw
                     {
                         self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));

@@ -22,6 +22,7 @@ from nautilus_trader.risk.config import RiskEngineConfig
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.accounting.accounts.base cimport Account
+from nautilus_trader.accounting.accounts.cash cimport CashAccount
 from nautilus_trader.cache.cache cimport Cache
 from nautilus_trader.common.component cimport CMD
 from nautilus_trader.common.component cimport EVT
@@ -656,6 +657,8 @@ cdef class RiskEngine(Component):
         if account.is_margin_account:
             return True  # TODO: Determine risk controls for margin
 
+        cdef bint allow_borrowing = isinstance(account, CashAccount) and account.allow_borrowing
+
         free = account.balance_free(instrument.quote_currency)
 
         if self.debug:
@@ -672,7 +675,6 @@ cdef class RiskEngine(Component):
             double xrate
             Quantity effective_quantity
             Price effective_price
-
         for order in orders:
             if self.debug:
                 self._log.debug(f"Pre-trade risk check: {order}", LogColor.MAGENTA)
@@ -852,7 +854,8 @@ cdef class RiskEngine(Component):
             if self.debug:
                 self._log.debug(f"Balance impact: {order_balance_impact!r}", LogColor.MAGENTA)
 
-            if free is not None and (free._mem.raw + order_balance_impact._mem.raw) < 0:
+            # Skip balance check when borrowing is enabled (e.g. spot margin trading)
+            if not allow_borrowing and free is not None and (free._mem.raw + order_balance_impact._mem.raw) < 0:
                 self._deny_order(
                     order=order,
                     reason=f"NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, balance_impact={order_balance_impact}",
@@ -871,7 +874,7 @@ cdef class RiskEngine(Component):
                 if self.debug:
                     self._log.debug(f"Cumulative notional BUY: {cum_notional_buy!r}")
 
-                if free is not None and cum_notional_buy._mem.raw > free._mem.raw:
+                if not allow_borrowing and free is not None and cum_notional_buy._mem.raw > free._mem.raw:
                     self._deny_order(
                         order=order,
                         reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_buy}",
@@ -893,7 +896,7 @@ cdef class RiskEngine(Component):
 
                         if self.debug:
                             self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
-                        if free is not None and cum_notional_sell._mem.raw > free._mem.raw:
+                        if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
                             self._deny_order(
                                 order=order,
                                 reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
@@ -925,7 +928,7 @@ cdef class RiskEngine(Component):
 
                     if self.debug:
                         self._log.debug(f"Cumulative notional SELL: {cum_notional_sell!r}")
-                    if free is not None and cum_notional_sell._mem.raw > free._mem.raw:
+                    if not allow_borrowing and free is not None and cum_notional_sell._mem.raw > free._mem.raw:
                         self._deny_order(
                             order=order,
                             reason=f"CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}",
