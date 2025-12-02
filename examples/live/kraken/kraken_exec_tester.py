@@ -45,7 +45,7 @@ from nautilus_trader.test_kit.strategies.tester_exec import ExecTesterConfig
 
 # Strategy config params
 # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
-symbol = "ETH/USD"  # Spot pair
+symbol = "ETH/USDT"  # Spot pair
 # symbol = "PI_XBTUSD"  # BTC inverse perpetual futures
 instrument_id = InstrumentId.from_str(f"{symbol}.{KRAKEN}")
 # order_qty = Decimal(10)
@@ -112,6 +112,7 @@ node = TradingNode(config=config_node)
 strat_config = ExecTesterConfig(
     instrument_id=instrument_id,
     external_order_claims=[instrument_id],
+    use_uuid_client_order_ids=True,
     # subscribe_book=True,
     subscribe_quotes=True,
     subscribe_trades=True,

@@ -31,6 +31,12 @@ pub struct KrakenResponse<T> {
     pub result: Option<T>,
 }
 
+// Balance Models
+
+/// Response from Kraken Balance endpoint.
+/// Maps currency codes (e.g., "USDT", "ETH") to their balance amounts as strings.
+pub type BalanceResponse = IndexMap<String, String>;
+
 // Asset Pairs (Instruments) Models
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +185,7 @@ pub struct WebSocketToken {
 
 // Spot Private Trading Models
 
+/// Order description from QueryOrders response (full details, required fields).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderDescription {
     pub pair: String,
@@ -189,6 +196,15 @@ pub struct OrderDescription {
     pub price2: String,
     pub leverage: String,
     pub order: String,
+    pub close: Option<String>,
+}
+
+/// Order description from AddOrder response (simpler, with optional fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddOrderDescription {
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
     pub close: Option<String>,
 }
 
@@ -283,7 +299,7 @@ pub struct SpotTradesHistoryResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotAddOrderResponse {
-    pub descr: Option<OrderDescription>,
+    pub descr: Option<AddOrderDescription>,
     #[serde(default)]
     pub txid: Vec<String>,
     #[serde(default)]
@@ -299,7 +315,7 @@ pub struct SpotCancelOrderResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotEditOrderResponse {
-    pub descr: Option<OrderDescription>,
+    pub descr: Option<AddOrderDescription>,
     pub txid: Option<String>,
     #[serde(default)]
     pub originaltxid: Option<String>,

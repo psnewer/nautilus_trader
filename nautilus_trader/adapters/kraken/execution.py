@@ -200,6 +200,8 @@ class KrakenExecutionClient(LiveExecutionClient):
     async def _connect(self) -> None:
         await self._instrument_provider.initialize()
         await self._cache_instruments()
+        await self._update_account_state()
+        await self._await_account_registered()
 
         # Connect to spot WebSocket if configured
         if self._ws_client_spot is not None:
@@ -255,6 +257,25 @@ class KrakenExecutionClient(LiveExecutionClient):
                 client.cache_instrument(inst)
 
         self._log.debug("Cached instruments", LogColor.MAGENTA)
+
+    async def _update_account_state(self) -> None:
+        if self._http_client_spot is not None:
+            pyo3_account_state = await self._http_client_spot.request_account_state(
+                self.pyo3_account_id,
+            )
+            account_state = AccountState.from_dict(pyo3_account_state.to_dict())
+
+            self.generate_account_state(
+                balances=account_state.balances,
+                margins=account_state.margins,
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+            if account_state.balances:
+                self._log.info(
+                    f"Generated account state with {len(account_state.balances)} balance(s)",
+                )
 
     async def generate_order_status_reports(
         self,

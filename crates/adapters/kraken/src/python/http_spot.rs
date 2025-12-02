@@ -347,4 +347,22 @@ impl KrakenSpotHttpClient {
             Ok(response.count)
         })
     }
+
+    #[pyo3(name = "request_account_state")]
+    fn py_request_account_state<'py>(
+        &self,
+        py: Python<'py>,
+        account_id: AccountId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let account_state = client
+                .request_account_state(account_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+
+            Python::attach(|py| account_state.into_pyobject(py).map(|o| o.unbind()))
+        })
+    }
 }

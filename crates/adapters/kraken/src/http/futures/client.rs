@@ -28,7 +28,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{
-    consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+    AtomicTime, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
@@ -75,22 +75,6 @@ pub static KRAKEN_FUTURES_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
 
 const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:futures:global";
 
-/// Global nonce counter to ensure unique nonces across concurrent requests.
-static NONCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Generate a unique nonce for Kraken Futures API requests.
-/// Uses millisecond timestamp combined with atomic counter for uniqueness.
-fn generate_nonce() -> u64 {
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis() as u64;
-
-    // Multiply by 1000 to make room for counter, add counter for uniqueness
-    let counter = NONCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 1000;
-    ts_ms * 1000 + counter
-}
-
 /// Raw HTTP client for low-level Kraken Futures API operations.
 ///
 /// This client handles request/response operations with the Kraken Futures API,
@@ -101,6 +85,9 @@ pub struct KrakenFuturesRawHttpClient {
     credential: Option<KrakenCredential>,
     retry_manager: RetryManager<KrakenHttpError>,
     cancellation_token: CancellationToken,
+    clock: &'static AtomicTime,
+    /// Mutex to serialize authenticated requests, ensuring nonces arrive at Kraken in order
+    auth_mutex: tokio::sync::Mutex<()>,
 }
 
 impl Default for KrakenFuturesRawHttpClient {
@@ -169,6 +156,8 @@ impl KrakenFuturesRawHttpClient {
             credential: None,
             retry_manager,
             cancellation_token: CancellationToken::new(),
+            clock: get_atomic_clock_realtime(),
+            auth_mutex: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -215,7 +204,17 @@ impl KrakenFuturesRawHttpClient {
             credential: Some(KrakenCredential::new(api_key, api_secret)),
             retry_manager,
             cancellation_token: CancellationToken::new(),
+            clock: get_atomic_clock_realtime(),
+            auth_mutex: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// Generate a unique nonce for Kraken Futures API requests.
+    ///
+    /// Uses `AtomicTime` for strict monotonicity. The nanosecond timestamp
+    /// guarantees uniqueness even for rapid consecutive calls.
+    fn generate_nonce(&self) -> u64 {
+        self.clock.get_time_ns().as_u64()
     }
 
     pub fn base_url(&self) -> &str {
@@ -258,6 +257,15 @@ impl KrakenFuturesRawHttpClient {
         url: String,
         authenticate: bool,
     ) -> anyhow::Result<T, KrakenHttpError> {
+        // Serialize authenticated requests to ensure nonces arrive at Kraken in order.
+        // Without this, concurrent requests can race through the network and arrive
+        // out-of-order, causing "Invalid nonce" errors.
+        let _guard = if authenticate {
+            Some(self.auth_mutex.lock().await)
+        } else {
+            None
+        };
+
         let endpoint = endpoint.to_string();
         let method_clone = method.clone();
         let url_clone = url.clone();
@@ -279,7 +287,7 @@ impl KrakenFuturesRawHttpClient {
                         )
                     })?;
 
-                    let nonce = generate_nonce();
+                    let nonce = self.generate_nonce();
 
                     let signature = cred.sign_futures(&endpoint, "", nonce).map_err(|e| {
                         KrakenHttpError::AuthenticationError(format!("Failed to sign request: {e}"))
@@ -351,6 +359,9 @@ impl KrakenFuturesRawHttpClient {
         endpoint: &str,
         params: HashMap<String, String>,
     ) -> anyhow::Result<T, KrakenHttpError> {
+        // Serialize authenticated requests to ensure nonces arrive at Kraken in order
+        let _guard = self.auth_mutex.lock().await;
+
         let credential = self.credential.as_ref().ok_or_else(|| {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
         })?;
@@ -358,7 +369,7 @@ impl KrakenFuturesRawHttpClient {
         let post_data = serde_urlencoded::to_string(&params)
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
-        let nonce = generate_nonce();
+        let nonce = self.generate_nonce();
 
         let signature = credential
             .sign_futures(endpoint, &post_data, nonce)
@@ -415,6 +426,9 @@ impl KrakenFuturesRawHttpClient {
         endpoint: &str,
         params: &P,
     ) -> anyhow::Result<T, KrakenHttpError> {
+        // Serialize authenticated requests to ensure nonces arrive at Kraken in order
+        let _guard = self.auth_mutex.lock().await;
+
         let credential = self.credential.as_ref().ok_or_else(|| {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
         })?;
@@ -422,7 +436,7 @@ impl KrakenFuturesRawHttpClient {
         let post_data = serde_urlencoded::to_string(params)
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
-        let nonce = generate_nonce();
+        let nonce = self.generate_nonce();
 
         let signature = credential
             .sign_futures(endpoint, &post_data, nonce)

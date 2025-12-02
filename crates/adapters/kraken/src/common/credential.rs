@@ -96,6 +96,9 @@ impl KrakenCredential {
     /// Kraken Spot uses HMAC-SHA512 with the following message:
     /// - path + SHA256(nonce + POST data)
     /// - The secret is base64 decoded before signing
+    ///
+    /// Note: "nonce + POST data" means the nonce value string is prepended
+    /// to the URL-encoded POST body, e.g., "1234567890nonce=1234567890&param=value".
     pub fn sign_spot(
         &self,
         path: &str,
@@ -106,7 +109,8 @@ impl KrakenCredential {
             .decode(&self.api_secret)
             .map_err(|e| anyhow::anyhow!("Failed to decode API secret: {e}"))?;
 
-        let mut post_data = format!("nonce={nonce}");
+        let nonce_str = nonce.to_string();
+        let mut post_data = format!("nonce={nonce_str}");
         if !params.is_empty() {
             let encoded = serde_urlencoded::to_string(params)
                 .map_err(|e| anyhow::anyhow!("Failed to encode params: {e}"))?;
@@ -114,7 +118,8 @@ impl KrakenCredential {
             post_data.push_str(&encoded);
         }
 
-        let hash = digest::digest(&digest::SHA256, post_data.as_bytes());
+        let sha_input = format!("{nonce_str}{post_data}");
+        let hash = digest::digest(&digest::SHA256, sha_input.as_bytes());
         let mut message = path.as_bytes().to_vec();
         message.extend_from_slice(hash.as_ref());
         let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);

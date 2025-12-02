@@ -451,7 +451,9 @@ pub fn parse_order_status_report(
     let order_type = order.descr.ordertype.into();
     let order_status = order.status.into();
 
-    let time_in_force = if order.expiretm.is_some() {
+    // Kraken returns expiretm=0 for GTC orders, so check for actual expiration value
+    let has_expiration = order.expiretm.is_some_and(|t| t > 0.0);
+    let time_in_force = if has_expiration {
         TimeInForce::Gtd
     } else if order.oflags.contains("ioc") {
         TimeInForce::Ioc
@@ -502,10 +504,14 @@ pub fn parse_order_status_report(
         })
         .transpose()?;
 
-    let expire_time = order
-        .expiretm
-        .map(|t| parse_millis_timestamp(t, "order.expiretm"))
-        .transpose()?;
+    let expire_time = if has_expiration {
+        order
+            .expiretm
+            .map(|t| parse_millis_timestamp(t, "order.expiretm"))
+            .transpose()?
+    } else {
+        None
+    };
 
     Ok(OrderStatusReport {
         account_id,

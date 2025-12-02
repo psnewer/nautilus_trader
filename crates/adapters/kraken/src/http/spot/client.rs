@@ -29,15 +29,17 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use indexmap::IndexMap;
 use nautilus_core::{
-    consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+    AtomicTime, UUID4, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos,
+    time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    enums::{OrderSide, OrderType, TimeInForce},
+    enums::{AccountType, CurrencyType, OrderSide, OrderType, TimeInForce},
+    events::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport},
-    types::{Price, Quantity},
+    types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use nautilus_network::{
     http::HttpClient,
@@ -81,6 +83,9 @@ pub struct KrakenSpotRawHttpClient {
     credential: Option<KrakenCredential>,
     retry_manager: RetryManager<KrakenHttpError>,
     cancellation_token: CancellationToken,
+    clock: &'static AtomicTime,
+    /// Mutex to serialize authenticated requests, ensuring nonces arrive at Kraken in order
+    auth_mutex: tokio::sync::Mutex<()>,
 }
 
 impl Default for KrakenSpotRawHttpClient {
@@ -149,6 +154,8 @@ impl KrakenSpotRawHttpClient {
             credential: None,
             retry_manager,
             cancellation_token: CancellationToken::new(),
+            clock: get_atomic_clock_realtime(),
+            auth_mutex: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -195,7 +202,17 @@ impl KrakenSpotRawHttpClient {
             credential: Some(KrakenCredential::new(api_key, api_secret)),
             retry_manager,
             cancellation_token: CancellationToken::new(),
+            clock: get_atomic_clock_realtime(),
+            auth_mutex: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// Generate a unique nonce for Kraken Spot API requests.
+    ///
+    /// Uses `AtomicTime` for strict monotonicity. The nanosecond timestamp
+    /// guarantees uniqueness even for rapid consecutive calls.
+    fn generate_nonce(&self) -> u64 {
+        self.clock.get_time_ns().as_u64()
     }
 
     pub fn base_url(&self) -> &str {
@@ -255,6 +272,15 @@ impl KrakenSpotRawHttpClient {
         body: Option<Vec<u8>>,
         authenticate: bool,
     ) -> anyhow::Result<KrakenResponse<T>, KrakenHttpError> {
+        // Serialize authenticated requests to ensure nonces arrive at Kraken in order.
+        // Without this, concurrent requests can race through the network and arrive
+        // out-of-order, causing "Invalid nonce" errors.
+        let _guard = if authenticate {
+            Some(self.auth_mutex.lock().await)
+        } else {
+            None
+        };
+
         let endpoint = endpoint.to_string();
         let url = format!("{}{endpoint}", self.base_url);
         let method_clone = method.clone();
@@ -270,10 +296,8 @@ impl KrakenSpotRawHttpClient {
                 let mut headers = Self::default_headers();
 
                 let final_body = if authenticate {
-                    let nonce = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_millis() as u64;
+                    let nonce = self.generate_nonce();
+                    tracing::debug!("Generated nonce {nonce} for {endpoint}");
 
                     let params: HashMap<String, String> = if let Some(ref body_bytes) = body {
                         let body_str = std::str::from_utf8(body_bytes).map_err(|e| {
@@ -726,6 +750,22 @@ impl KrakenSpotRawHttpClient {
         response
             .result
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
+    }
+
+    pub async fn get_balance(&self) -> anyhow::Result<BalanceResponse, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for Balance".to_string(),
+            ));
+        }
+
+        let response: KrakenResponse<BalanceResponse> = self
+            .send_request(Method::POST, "/0/private/Balance", None, true)
+            .await?;
+
+        response.result.ok_or_else(|| {
+            KrakenHttpError::ParseError("Missing result in balance response".to_string())
+        })
     }
 }
 
@@ -1264,12 +1304,15 @@ impl KrakenSpotHttpClient {
             _ => anyhow::bail!("Unsupported order type: {order_type:?}"),
         };
 
+        // Kraken cl_ord_id requires UUID format - use `use_uuid_client_order_ids=True` in strategy config
+        let cl_ord_id = client_order_id.to_string();
+
         let mut params = HashMap::new();
         params.insert("pair".to_string(), raw_symbol);
         params.insert("type".to_string(), kraken_side.to_string());
         params.insert("ordertype".to_string(), kraken_order_type.to_string());
         params.insert("volume".to_string(), quantity.to_string());
-        params.insert("cl_ord_id".to_string(), client_order_id.to_string());
+        params.insert("cl_ord_id".to_string(), cl_ord_id);
 
         // Add broker ID for partner attribution
         params.insert("broker".to_string(), NAUTILUS_KRAKEN_BROKER_ID.to_string());
@@ -1373,6 +1416,59 @@ impl KrakenSpotHttpClient {
         let ts_init = self.generate_ts_init();
         parse_order_status_report(&order_id, order, &instrument, account_id, ts_init)
     }
+
+    /// Request account state (balances) from Kraken.
+    ///
+    /// Returns an `AccountState` containing all currency balances.
+    pub async fn request_account_state(
+        &self,
+        account_id: AccountId,
+    ) -> anyhow::Result<AccountState> {
+        let balances_raw = self.inner.get_balance().await?;
+        let ts_init = self.generate_ts_init();
+
+        let balances: Vec<AccountBalance> = balances_raw
+            .iter()
+            .filter_map(|(currency_code, amount_str)| {
+                let amount = amount_str.parse::<f64>().ok()?;
+                if amount == 0.0 {
+                    return None;
+                }
+
+                // Kraken uses X-prefixed names for some currencies (e.g., XXBT for BTC)
+                let normalized_code = currency_code
+                    .strip_prefix("X")
+                    .or_else(|| currency_code.strip_prefix("Z"))
+                    .unwrap_or(currency_code);
+
+                let currency = Currency::new(
+                    normalized_code,
+                    8, // Default precision
+                    0,
+                    "0",
+                    CurrencyType::Crypto,
+                );
+
+                let total = Money::new(amount, currency);
+                let locked = Money::new(0.0, currency);
+
+                // Balance endpoint returns total only, so free = total (no locked info)
+                Some(AccountBalance::new(total, locked, total))
+            })
+            .collect();
+
+        Ok(AccountState::new(
+            account_id,
+            AccountType::Cash,
+            balances,
+            vec![], // No margins for spot
+            true,   // reported
+            UUID4::new(),
+            ts_init,
+            ts_init,
+            None,
+        ))
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1429,5 +1525,37 @@ mod tests {
         )
         .unwrap();
         assert!(client.instruments_cache.is_empty());
+    }
+
+    #[rstest]
+    fn test_nonce_generation_strictly_increasing() {
+        let client = KrakenSpotRawHttpClient::default();
+
+        let nonce1 = client.generate_nonce();
+        let nonce2 = client.generate_nonce();
+        let nonce3 = client.generate_nonce();
+
+        assert!(
+            nonce2 > nonce1,
+            "nonce2 ({nonce2}) should be > nonce1 ({nonce1})"
+        );
+        assert!(
+            nonce3 > nonce2,
+            "nonce3 ({nonce3}) should be > nonce2 ({nonce2})"
+        );
+    }
+
+    #[rstest]
+    fn test_nonce_is_nanosecond_timestamp() {
+        let client = KrakenSpotRawHttpClient::default();
+
+        let nonce = client.generate_nonce();
+
+        // Nonce should be a nanosecond timestamp (roughly 1.7e18 for Dec 2025)
+        // Verify it's in a reasonable range (> 1.5e18, which is ~2017)
+        assert!(
+            nonce > 1_500_000_000_000_000_000,
+            "Nonce should be nanosecond timestamp"
+        );
     }
 }
