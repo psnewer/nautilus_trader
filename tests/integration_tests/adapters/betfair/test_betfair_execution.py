@@ -73,6 +73,7 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from tests.integration_tests.adapters.betfair.test_kit import BetfairResponses
 from tests.integration_tests.adapters.betfair.test_kit import BetfairStreaming
@@ -1505,3 +1506,204 @@ async def test_submit_order_instruction_level_failure_shows_both_error_codes(
         reason = rejected_events[0].reason
         assert "INVALID_RUNNER" in reason
         assert "BET_ACTION_ERROR" in reason
+
+
+# -- Tests for fill cache sync and duplicate fill prevention ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_fill_caches_from_orders_populates_caches(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    # Arrange
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(10.0, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    fill_event = TestEventStubs.order_filled(
+        order,
+        instrument=instrument,
+        venue_order_id=venue_order_id,
+        trade_id=TradeId("TRADE-001"),
+        last_qty=Quantity(5.0, BETFAIR_QUANTITY_PRECISION),
+        last_px=Price(2.0, BETFAIR_PRICE_PRECISION),
+    )
+    order.apply(fill_event)
+    cache.update_order(order)
+
+    exec_client._filled_qty_cache.clear()
+    exec_client._published_executions.clear()
+
+    # Act
+    exec_client._sync_fill_caches_from_orders()
+
+    # Assert
+    assert order.client_order_id in exec_client._filled_qty_cache
+    assert exec_client._filled_qty_cache[order.client_order_id] == Quantity(5.0, BETFAIR_QUANTITY_PRECISION)
+    assert TradeId("TRADE-001") in exec_client._published_executions[order.client_order_id]
+
+
+@pytest.mark.asyncio
+async def test_determine_fill_qty_returns_zero_when_already_filled(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    # Arrange
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(5.33, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    fill_event = TestEventStubs.order_filled(
+        order,
+        instrument=instrument,
+        venue_order_id=venue_order_id,
+        trade_id=TradeId("TRADE-001"),
+        last_qty=Quantity(5.33, BETFAIR_QUANTITY_PRECISION),
+        last_px=Price(2.0, BETFAIR_PRICE_PRECISION),
+    )
+    order.apply(fill_event)
+    cache.update_order(order)
+
+    # Simulate stream sending same matched size (startup scenario)
+    unmatched_order = SimpleNamespace(sm=5.33)
+
+    # Act
+    exec_client._filled_qty_cache.clear()
+    fill_qty = exec_client._determine_fill_qty(unmatched_order, order)
+
+    # Assert
+    assert fill_qty == Quantity.zero(BETFAIR_QUANTITY_PRECISION)
+
+
+@pytest.mark.asyncio
+async def test_determine_fill_qty_uses_max_of_cache_and_order_filled(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    # Arrange
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(10.0, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    fill_event = TestEventStubs.order_filled(
+        order,
+        instrument=instrument,
+        venue_order_id=venue_order_id,
+        trade_id=TradeId("TRADE-001"),
+        last_qty=Quantity(3.0, BETFAIR_QUANTITY_PRECISION),
+        last_px=Price(2.0, BETFAIR_PRICE_PRECISION),
+    )
+    order.apply(fill_event)
+    cache.update_order(order)
+
+    # Cache has stale (lower) value
+    exec_client._filled_qty_cache[order.client_order_id] = Quantity(2.0, BETFAIR_QUANTITY_PRECISION)
+
+    # Stream reports 5.0 matched
+    unmatched_order = SimpleNamespace(sm=5.0)
+
+    # Act
+    fill_qty = exec_client._determine_fill_qty(unmatched_order, order)
+
+    # Assert - should use order.filled_qty (3.0) not cache (2.0)
+    assert fill_qty == Quantity(2.0, BETFAIR_QUANTITY_PRECISION)
+
+
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "_handle_stream_executable_order_update",
+        "_handle_stream_execution_complete_order_update",
+    ],
+)
+def test_duplicate_fill_prevented_on_startup(
+    handler_name,
+    exec_client: BetfairExecutionClient,
+    order_and_cache,
+    monkeypatch,
+):
+    """
+    Test that duplicate fills are prevented when stream sends full state on startup.
+    """
+    order, instrument = order_and_cache
+
+    # Simulate order already accepted
+    exec_client.generate_order_accepted(
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId("12345"),
+        ts_event=0,
+    )
+
+    # Simulate order fully filled previously
+    exec_client.generate_order_filled(
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId("12345"),
+        trade_id=TradeId("TRADE-001"),
+        venue_position_id=None,
+        order_side=order.side,
+        order_type=order.order_type,
+        last_qty=order.quantity,
+        last_px=order.price,
+        quote_currency=instrument.quote_currency,
+        commission=Money(0, GBP),
+        liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
+        ts_event=0,
+    )
+
+    # Clear caches to simulate startup/reconnect
+    exec_client._filled_qty_cache.clear()
+    exec_client._published_executions.clear()
+
+    generate_mock = MagicMock()
+    monkeypatch.setattr(exec_client, "generate_order_filled", generate_mock)
+    monkeypatch.setattr(OrderSideParser, "to_nautilus", lambda _side: OrderSide.BUY)
+    monkeypatch.setattr(parsing_requests, "order_to_trade_id", lambda _uo: TradeId("TRADE-NEW"))
+
+    # Stream sends same matched size (would cause duplicate if not handled)
+    unmatched_order = _StubUnmatchedOrder(
+        id=str(order.client_order_id),
+        side="L",
+        p=order.price.as_double(),
+        avp=order.price.as_double(),
+        s=order.quantity.as_double(),
+        sm=order.quantity.as_double(),
+        md=0,
+        pt=None,
+        ot=None,
+        sc=0,
+        sl=0,
+        sv=0,
+        lapse_status_reason_code=None,
+    )
+
+    # Act
+    getattr(exec_client, handler_name)(unmatched_order)
+
+    # Assert - no fill generated since order already fully filled
+    generate_mock.assert_not_called()
