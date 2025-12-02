@@ -1000,7 +1000,7 @@ impl ExecutionEngine {
         }
 
         let topic = switchboard::get_event_orders_topic(event.strategy_id());
-        msgbus::publish(topic, order);
+        msgbus::publish(topic, &event);
 
         if self.config.snapshot_orders {
             self.create_order_state_snapshot(order);
@@ -1510,7 +1510,7 @@ impl ExecutionEngine {
         }
 
         let topic = switchboard::get_event_orders_topic(order.strategy_id());
-        msgbus::publish(topic, &denied);
+        msgbus::publish(topic, &OrderEventAny::Denied(denied));
 
         if self.config.snapshot_orders {
             self.create_order_state_snapshot(&order);

@@ -129,12 +129,13 @@ pub fn init_tracing() -> anyhow::Result<()> {
     if let Ok(v) = env::var("RUST_LOG") {
         let env_filter = EnvFilter::new(v.clone());
 
-        tracing_subscriber::fmt()
+        if tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .try_init()
-            .map_err(|e| anyhow::anyhow!("Failed to initialize tracing subscriber: {e}"))?;
-
-        println!("Initialized tracing logs with RUST_LOG={v}");
+            .is_ok()
+        {
+            println!("Initialized tracing logs with RUST_LOG={v}");
+        }
     }
     Ok(())
 }

@@ -242,6 +242,29 @@ impl NautilusKernel {
         )));
         msgbus::register(endpoint, handler);
 
+        // TODO: Implement actual reconciliation logic in ExecEngine
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::with_any(
+            move |report: &dyn Any| {
+                log::debug!(
+                    "Received execution report for reconciliation: {:?}",
+                    report.type_id()
+                );
+            },
+        )));
+        msgbus::register(endpoint, handler);
+
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_mass_status();
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::with_any(
+            move |report: &dyn Any| {
+                log::debug!(
+                    "Received execution mass status for reconciliation: {:?}",
+                    report.type_id()
+                );
+            },
+        )));
+        msgbus::register(endpoint, handler);
+
         let trader = Trader::new(
             config.trader_id(),
             instance_id,
@@ -282,14 +305,14 @@ impl NautilusKernel {
         instance_id: UUID4,
         config: LoggerConfig,
     ) -> anyhow::Result<LogGuard> {
-        init_tracing()?;
-
         let log_guard = init_logging(
             trader_id,
             instance_id,
             config,
             FileWriterConfig::default(), // TODO: Properly incorporate file writer config
         )?;
+
+        init_tracing()?;
 
         Ok(log_guard)
     }

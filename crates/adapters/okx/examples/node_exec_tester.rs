@@ -69,12 +69,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_exec_client(None, Box::new(exec_factory), Box::new(exec_config))?
         .build()?;
 
-    let tester_config = ExecTesterConfig::new(
+    let mut tester_config = ExecTesterConfig::new(
         StrategyId::from("EXEC_TESTER-001"),
         instrument_id,
         client_id,
-        Quantity::from("0.001"),
+        Quantity::from("0.01"), // Minimum lot size for BTC-USDT-SWAP
     );
+
+    // OKX doesn't allow hyphens in client order IDs
+    tester_config.base.use_hyphens_in_client_order_ids = false;
+
     let tester = ExecTester::new(tester_config);
 
     node.add_strategy(tester)?;

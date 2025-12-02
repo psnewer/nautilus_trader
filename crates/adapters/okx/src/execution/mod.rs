@@ -38,13 +38,13 @@ use nautilus_common::{
         },
     },
 };
-use nautilus_core::{MUTEX_POISONED, UnixNanos};
+use nautilus_core::{MUTEX_POISONED, UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
 use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{AccountType, OmsType, OrderType},
-    events::{AccountState, OrderEventAny},
+    events::{AccountState, OrderEventAny, OrderRejected, OrderSubmitted},
     identifiers::{AccountId, ClientId, InstrumentId, Venue},
     orders::Order,
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
@@ -73,6 +73,7 @@ pub struct OKXExecutionClient {
     ws_private: OKXWebSocketClient,
     ws_business: OKXWebSocketClient,
     trade_mode: OKXTradeMode,
+    exec_event_sender: Option<tokio::sync::mpsc::UnboundedSender<ExecutionEvent>>,
     started: bool,
     connected: AtomicBool,
     instruments_initialized: AtomicBool,
@@ -132,6 +133,7 @@ impl OKXExecutionClient {
             ws_private,
             ws_business,
             trade_mode,
+            exec_event_sender: None,
             started: false,
             connected: AtomicBool::new(false),
             instruments_initialized: AtomicBool::new(false),
@@ -424,12 +426,21 @@ impl ExecutionClient for OKXExecutionClient {
             return Ok(());
         }
 
-        self.core.generate_order_submitted(
+        let event = OrderSubmitted::new(
+            self.core.trader_id,
             order.strategy_id(),
             order.instrument_id(),
             order.client_order_id(),
+            self.core.account_id,
+            UUID4::new(),
             cmd.ts_init,
+            get_atomic_clock_realtime().get_time_ns(),
         );
+        if let Some(sender) = &self.exec_event_sender
+            && let Err(e) = sender.send(ExecutionEvent::Order(OrderEventAny::Submitted(event)))
+        {
+            tracing::warn!("Failed to send OrderSubmitted event: {e}");
+        }
 
         let result = if self.is_conditional_order(order.order_type()) {
             self.submit_conditional_order(cmd)
@@ -438,14 +449,26 @@ impl ExecutionClient for OKXExecutionClient {
         };
 
         if let Err(e) = result {
-            self.core.generate_order_rejected(
+            let rejected_event = OrderRejected::new(
+                self.core.trader_id,
                 order.strategy_id(),
                 order.instrument_id(),
                 order.client_order_id(),
-                &format!("submit-order-error: {e}"),
+                self.core.account_id,
+                format!("submit-order-error: {e}").into(),
+                UUID4::new(),
                 cmd.ts_init,
+                get_atomic_clock_realtime().get_time_ns(),
+                false,
                 false,
             );
+            if let Some(sender) = &self.exec_event_sender
+                && let Err(e) = sender.send(ExecutionEvent::Order(OrderEventAny::Rejected(
+                    rejected_event,
+                )))
+            {
+                tracing::warn!("Failed to send OrderRejected event: {e}");
+            }
             return Err(e);
         }
 
@@ -527,6 +550,11 @@ impl ExecutionClient for OKXExecutionClient {
             return Ok(());
         }
 
+        // Initialize exec event sender (must be done in async context after runner is set up)
+        if self.exec_event_sender.is_none() {
+            self.exec_event_sender = Some(get_exec_event_sender());
+        }
+
         let instrument_types = self.instrument_types();
 
         if !self.instruments_initialized.load(Ordering::Acquire) {
@@ -584,12 +612,14 @@ impl ExecutionClient for OKXExecutionClient {
             }
         }
 
-        // Capture the sender before spawning tasks (it's thread-local)
-        let exec_sender = get_exec_event_sender();
+        let Some(sender) = self.exec_event_sender.as_ref() else {
+            tracing::error!("Execution event sender not initialized");
+            anyhow::bail!("Execution event sender not initialized");
+        };
 
         if self.ws_stream_handle.is_none() {
             let stream = self.ws_private.stream();
-            let sender = exec_sender.clone();
+            let sender = sender.clone();
             let handle = tokio::spawn(async move {
                 pin_mut!(stream);
                 while let Some(message) = stream.next().await {
@@ -601,7 +631,7 @@ impl ExecutionClient for OKXExecutionClient {
 
         if self.ws_business_stream_handle.is_none() {
             let stream = self.ws_business.stream();
-            let sender = exec_sender.clone();
+            let sender = sender.clone();
             let handle = tokio::spawn(async move {
                 pin_mut!(stream);
                 while let Some(message) = stream.next().await {
@@ -617,7 +647,7 @@ impl ExecutionClient for OKXExecutionClient {
             .await
             .context("failed to request OKX account state")?;
 
-        dispatch_account_state(account_state, &exec_sender);
+        dispatch_account_state(account_state, sender);
 
         self.connected.store(true, Ordering::Release);
         tracing::info!(client_id = %self.core.client_id, "Connected");
@@ -836,9 +866,10 @@ impl LiveExecutionClient for OKXExecutionClient {
     }
 }
 
-type ExecEventSender = tokio::sync::mpsc::UnboundedSender<ExecutionEvent>;
-
-fn dispatch_ws_message(message: NautilusWsMessage, sender: &ExecEventSender) {
+fn dispatch_ws_message(
+    message: NautilusWsMessage,
+    sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+) {
     match message {
         NautilusWsMessage::AccountUpdate(state) => dispatch_account_state(state, sender),
         NautilusWsMessage::PositionUpdate(report) => {
@@ -882,20 +913,29 @@ fn dispatch_ws_message(message: NautilusWsMessage, sender: &ExecEventSender) {
     }
 }
 
-fn dispatch_account_state(state: AccountState, sender: &ExecEventSender) {
+fn dispatch_account_state(
+    state: AccountState,
+    sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+) {
     if let Err(e) = sender.send(ExecutionEvent::Account(state)) {
         tracing::warn!("Failed to send account state: {e}");
     }
 }
 
-fn dispatch_position_status_report(report: PositionStatusReport, sender: &ExecEventSender) {
+fn dispatch_position_status_report(
+    report: PositionStatusReport,
+    sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+) {
     let exec_report = NautilusExecutionReport::Position(Box::new(report));
     if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
         tracing::warn!("Failed to send position status report: {e}");
     }
 }
 
-fn dispatch_execution_report(report: ExecutionReport, sender: &ExecEventSender) {
+fn dispatch_execution_report(
+    report: ExecutionReport,
+    sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+) {
     match report {
         ExecutionReport::Order(order_report) => {
             let exec_report = NautilusExecutionReport::OrderStatus(Box::new(order_report));
@@ -912,7 +952,10 @@ fn dispatch_execution_report(report: ExecutionReport, sender: &ExecEventSender) 
     }
 }
 
-fn dispatch_order_event(event: OrderEventAny, sender: &ExecEventSender) {
+fn dispatch_order_event(
+    event: OrderEventAny,
+    sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+) {
     if let Err(e) = sender.send(ExecutionEvent::Order(event)) {
         tracing::warn!("Failed to send order event: {e}");
     }
