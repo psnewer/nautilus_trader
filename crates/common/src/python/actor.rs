@@ -1881,7 +1881,8 @@ mod tests {
     use nautilus_core::{MUTEX_POISONED, UUID4, UnixNanos};
     #[cfg(feature = "defi")]
     use nautilus_model::defi::{
-        AmmType, Block, Blockchain, Chain, Dex, DexType, Pool, PoolLiquidityUpdate, PoolSwap, Token,
+        AmmType, Block, Blockchain, Chain, Dex, DexType, Pool, PoolIdentifier, PoolLiquidityUpdate,
+        PoolSwap, Token,
     };
     use nautilus_model::{
         data::{
@@ -2609,12 +2610,17 @@ mod tests {
             "Wrapped Ether".into(),
             18,
         );
+        let pool_address = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+            .parse()
+            .unwrap();
+        let pool_identifier: PoolIdentifier = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+            .parse()
+            .unwrap();
         let pool = Arc::new(Pool::new(
             chain.clone(),
             dex.clone(),
-            "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
-                .parse()
-                .unwrap(),
+            pool_address,
+            pool_identifier,
             12345,
             token0,
             token1,
@@ -2627,7 +2633,7 @@ mod tests {
             chain,
             dex,
             pool.instrument_id,
-            pool.address,
+            pool.pool_identifier,
             12345,
             "0xabc123".to_string(),
             0,

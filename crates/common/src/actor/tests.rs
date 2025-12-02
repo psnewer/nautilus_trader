@@ -44,7 +44,9 @@ use ustr::Ustr;
 #[cfg(feature = "defi")]
 use {
     alloy_primitives::Address,
-    nautilus_model::defi::{Block, Blockchain, Pool, PoolLiquidityUpdate, PoolSwap},
+    nautilus_model::defi::{
+        Block, Blockchain, Pool, PoolIdentifier, PoolLiquidityUpdate, PoolSwap,
+    },
 };
 
 use super::{Actor, DataActor, DataActorCore, data_actor::DataActorConfig};
@@ -1565,10 +1567,12 @@ fn test_subscribe_and_receive_pools(
         "WETH".to_string(),
         18,
     );
+    let pool_address = Address::from([0x12; 20]);
     let pool = Pool::new(
         chain,
         Arc::new(dex),
-        Address::from([0x12; 20]),
+        pool_address,
+        PoolIdentifier::from_address(pool_address),
         1000000,
         token0,
         token1,
@@ -1627,7 +1631,7 @@ fn test_subscribe_and_receive_pool_swaps(
         chain,
         Arc::new(dex),
         instrument_id,
-        pool_address,
+        PoolIdentifier::from_address(pool_address),
         1000u64,
         "0x123".to_string(),
         0,
@@ -1680,7 +1684,8 @@ fn test_unsubscribe_pool_swaps(
         "Collect",
     );
     let pool_address = Address::from_str("0xC31E54c7A869B9fCbECC14363CF510d1C41Fa443").unwrap();
-    let instrument_id = Pool::create_instrument_id(chain.name, &dex, &pool_address);
+    let pool_identifier = pool_address.to_string();
+    let instrument_id = Pool::create_instrument_id(chain.name, &dex, &pool_identifier);
 
     actor.subscribe_pool_swaps(instrument_id, None, None);
 
@@ -1690,7 +1695,7 @@ fn test_unsubscribe_pool_swaps(
         chain.clone(),
         Arc::new(dex.clone()),
         instrument_id,
-        pool_address,
+        PoolIdentifier::from_address(pool_address),
         1000u64,
         "0x123".to_string(),
         0,
@@ -1713,7 +1718,7 @@ fn test_unsubscribe_pool_swaps(
         chain,
         Arc::new(dex),
         instrument_id,
-        pool_address,
+        PoolIdentifier::from_address(pool_address),
         2000u64,
         "0x456".to_string(),
         0,

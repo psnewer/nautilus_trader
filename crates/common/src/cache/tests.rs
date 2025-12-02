@@ -21,7 +21,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use nautilus_core::UnixNanos;
 #[cfg(feature = "defi")]
-use nautilus_model::defi::{AmmType, Dex, DexType, Pool, PoolProfiler, Token, chain::chains};
+use nautilus_model::defi::{
+    AmmType, Dex, DexType, Pool, PoolIdentifier, PoolProfiler, Token, chain::chains,
+};
 use nautilus_model::{
     accounts::AccountAny,
     data::{Bar, BarType, FundingRateUpdate, MarkPriceUpdate, QuoteTick, TradeTick},
@@ -801,12 +803,17 @@ fn test_pool() -> Pool {
         6,
     );
 
+    let pool_address = "0x11b815efB8f581194ae79006d24E0d814B7697F6"
+        .parse()
+        .unwrap();
+    let pool_identifier: PoolIdentifier = "0x11b815efB8f581194ae79006d24E0d814B7697F6"
+        .parse()
+        .unwrap();
     Pool::new(
         chain,
         Arc::new(dex),
-        "0x11b815efB8f581194ae79006d24E0d814B7697F6"
-            .parse()
-            .unwrap(),
+        pool_address,
+        pool_identifier,
         12345678,
         token0,
         token1,
