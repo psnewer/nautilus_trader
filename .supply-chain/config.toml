@@ -120,6 +120,10 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.alloca]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.alloy]]
 version = "1.1.2"
 criteria = "safe-to-deploy"
@@ -692,6 +696,10 @@ criteria = "safe-to-deploy"
 version = "0.6.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.convert_case]]
+version = "0.10.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.core-foundation]]
 version = "0.10.1"
 criteria = "safe-to-deploy"
@@ -721,11 +729,11 @@ version = "1.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.criterion]]
-version = "0.7.0"
+version = "0.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.criterion-plot]]
-version = "0.6.0"
+version = "0.8.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-deque]]
@@ -961,7 +969,7 @@ version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.derive_more]]
-version = "2.0.1"
+version = "2.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.derive_more-impl]]
@@ -969,7 +977,7 @@ version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.derive_more-impl]]
-version = "2.0.1"
+version = "2.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.diff]]
@@ -1393,7 +1401,7 @@ version = "1.0.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
-version = "0.2.177"
+version = "0.2.178"
 criteria = "safe-to-deploy"
 
 [[exemptions.libm]]
@@ -1414,6 +1422,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.lock_api]]
 version = "0.4.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.log]]
+version = "0.4.29"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru]]
@@ -1597,7 +1609,7 @@ version = "0.52.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ndarray]]
-version = "0.16.1"
+version = "0.17.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.nonzero_ext]]
@@ -1637,7 +1649,7 @@ version = "0.1.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.numpy]]
-version = "0.27.0"
+version = "0.27.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.nybbles]]
@@ -1686,6 +1698,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.oval]]
 version = "2.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.page_size]]
+version = "0.6.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.papergrid]]
@@ -2641,7 +2657,7 @@ version = "0.7.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]
-version = "1.18.1"
+version = "1.19.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.value-bag]]

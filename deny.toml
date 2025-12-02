@@ -37,6 +37,11 @@ ignore = [
   { id = "RUSTSEC-2025-0090", reason = "unic-emoji-char unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
+
+  # rsa crate has timing sidechannel vulnerability (Marvin Attack), pulled in via sqlx-mysql
+  # Only affects MySQL connections using RSA authentication, not a risk for our PostgreSQL usage
+  # TODO: Monitor https://github.com/RustCrypto/RSA for fix
+  { id = "RUSTSEC-2023-0071", reason = "rsa timing sidechannel via sqlx-mysql, only affects MySQL RSA auth (we use PostgreSQL)" },
 ]
 
 # =============================================================================
@@ -138,6 +143,9 @@ skip = [
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
   { crate = "syn" },
+
+  # Case conversion - version fragmentation via derive_more
+  { crate = "convert_case" },
 
   # Compression crates - version fragmentation between polars and parquet
   { crate = "brotli" },

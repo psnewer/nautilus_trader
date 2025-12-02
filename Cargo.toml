@@ -171,7 +171,7 @@ implied-vol = { version = "2.0.0" }
 indexmap = { version = "2.12.1", features = ["serde"] }
 itertools = "0.14.0"
 itoa = "1.0.15"
-log = { version = "0.4.28", features = [
+log = { version = "0.4.29", features = [
   "std",
   "kv_unstable",
   "serde",
@@ -323,7 +323,7 @@ unbounded-interval-tree = { version = "1.1.2", default-features = false }
 url = { version = "2.5.7", default-features = false }
 urlencoding = "2.1.3"
 ustr = { version = "1.1.0", features = ["serde"] }
-uuid = { version = "1.18.1", features = ["v4", "serde"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
 webpki-roots = "1.0.4"
 zeroize = { version = "1.8.2", features = ["alloc", "zeroize_derive"] }
 
@@ -337,7 +337,7 @@ axum = { version = "0.8.7", default-features = false, features = [
   "query",
   "ws",
 ] }
-criterion = "0.7.0"
+criterion = "0.8.0"
 http-body-util = "0.1.3"
 iai = "0.1.1"
 pretty_assertions = "1.4.1"
@@ -359,7 +359,7 @@ walkdir = "2.5.0"
 # -----------------------------------------------------------------------------
 [workspace.metadata.tools]
 cargo-audit = "0.22.0"
-cargo-deny = "0.18.6"
+cargo-deny = "0.18.7"
 cargo-llvm-cov = "0.6.21"
 cargo-nextest = "0.9.114"
 cargo-vet = "0.10.1"

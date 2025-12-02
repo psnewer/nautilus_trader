@@ -21,6 +21,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `MaxDrawdown` portfolio statistic
 - Added `quote_quantity` parameter for `close_position(...)` and `close_all_positions(...)` strategy methods
 - Added remaining bar aggregation methods: `TICK_IMBALANCE`, `TICK_RUNS`, `VOLUME_IMBALANCE`, `VOLUME_RUNS`, `VALUE_IMBALANCE`, `VALUE_RUNS` (#3217), thanks @nicolad
+- Added `ParquetDataCatalog.query_first_timestamp` (#3253), thanks @MK27MK
 - Added `PolymarketDataLoader` for loading historical data with docs and example
 - Added Binance accurate commission rates per symbol (#3208), thanks @delusionpig
 - Added `BinanceInstrumentProviderConfig` to support the `query_commission_rates` config option
@@ -100,6 +101,7 @@ TBD
 - Added BybitRawHttpClient Python bindings (#3252), thanks @sunlei
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added ERC20 token balance tracking to BlockchainExecutionClient (#3224), thanks @filipmacek
+- Added DeFi pool discovery service with full Uniswap(V2/V3/V4) support (#3255), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -131,6 +133,7 @@ TBD
 - Improved dYdX v4 adapter test coverage (#3212), thanks @nicolad
 - Improved dYdX v4 network, bars, and batch cancel (#3231), thanks @nicolad
 - Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad
+- Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
