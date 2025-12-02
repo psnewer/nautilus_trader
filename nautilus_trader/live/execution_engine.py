@@ -663,12 +663,6 @@ class LiveExecutionEngine(ExecutionEngine):
         order, order consistency, and position consistency checks.
         """
         try:
-            # Track last execution times (in nanoseconds)
-            ts_last_inflight_check = 0
-            ts_last_consistency_check = 0
-            ts_last_position_check = 0
-            ts_last_cache_prune = 0
-
             # Convert intervals to nanoseconds (handle None values)
             inflight_check_interval_ns = (
                 millis_to_nanos(self.inflight_check_interval_ms)
@@ -729,6 +723,14 @@ class LiveExecutionEngine(ExecutionEngine):
                     "Startup reconciliation disabled, proceeding with continuous checks",
                     LogColor.BLUE,
                 )
+
+            # Initialize timestamps to current time so first checks wait the full interval,
+            # giving execution clients time to complete their connection initialization
+            ts_now_init = self._clock.timestamp_ns()
+            ts_last_inflight_check = ts_now_init
+            ts_last_consistency_check = ts_now_init
+            ts_last_position_check = ts_now_init
+            ts_last_cache_prune = ts_now_init
 
             while True:
                 if self._is_shutting_down:
