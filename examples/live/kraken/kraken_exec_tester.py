@@ -37,23 +37,27 @@ from nautilus_trader.test_kit.strategies.tester_exec import ExecTesterConfig
 # *** THIS IS A TEST STRATEGY WITH NO ALPHA ADVANTAGE WHATSOEVER. ***
 # *** IT IS NOT INTENDED TO BE USED TO TRADE LIVE WITH REAL MONEY. ***
 
-# NOTE: This example uses Kraken Futures demo environment for testing
-# Set up your demo account at https://demo-futures.kraken.com
-# and configure environment variables:
-# - KRAKEN_TESTNET_API_KEY
-# - KRAKEN_TESTNET_API_SECRET
+# Configuration - Change product_type to switch between trading modes
+product_type = KrakenProductType.SPOT  # SPOT or FUTURES
+token = "ETH"
 
-# Strategy config params
-# Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
-symbol = "ETH/USDT"  # Spot pair
-# symbol = "PI_XBTUSD"  # BTC inverse perpetual futures
+# Symbol and settings based on product type
+if product_type == KrakenProductType.SPOT:
+    symbol = f"{token}/USDT"
+    order_qty = Decimal("0.001")
+    enable_limit_sells = False  # Don't own base when starting fresh
+    environment = KrakenEnvironment.MAINNET
+elif product_type == KrakenProductType.FUTURES:
+    # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
+    symbol = f"PI_{token}USD"
+    order_qty = Decimal(10)
+    enable_limit_sells = True  # Can go short on futures
+    environment = KrakenEnvironment.TESTNET  # Use demo-futures.kraken.com
+else:
+    raise ValueError(f"Unsupported product type: {product_type}")
+
 instrument_id = InstrumentId.from_str(f"{symbol}.{KRAKEN}")
-# order_qty = Decimal(10)
-order_qty = Decimal("0.001")
-
-environment = KrakenEnvironment.MAINNET
-# product_types = (KrakenProductType.SPOT, KrakenProductType.FUTURES)
-product_types = (KrakenProductType.SPOT,)
+product_types = (product_type,)
 
 # Configure the trading node
 config_node = TradingNodeConfig(
@@ -118,14 +122,14 @@ strat_config = ExecTesterConfig(
     subscribe_trades=True,
     order_qty=order_qty,
     enable_limit_buys=True,
-    enable_limit_sells=True,
+    enable_limit_sells=enable_limit_sells,
     # open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,
     # use_individual_cancels_on_stop=True,
     use_post_only=True,
     # close_positions_on_stop=False,
-    log_data=True,
+    log_data=False,
 )
 
 # Instantiate your strategy

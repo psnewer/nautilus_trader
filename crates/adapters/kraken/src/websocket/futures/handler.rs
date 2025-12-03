@@ -52,25 +52,15 @@ use super::messages::{
     reason = "Commands are ephemeral and immediately consumed"
 )]
 pub enum HandlerCommand {
-    /// Set the WebSocketClient for the handler to use.
     SetClient(WebSocketClient),
-    /// Subscribe to a product's ticker feed.
     SubscribeTicker(String),
-    /// Unsubscribe from a product's ticker feed.
     UnsubscribeTicker(String),
-    /// Subscribe to a product's trade feed.
     SubscribeTrade(String),
-    /// Unsubscribe from a product's trade feed.
     UnsubscribeTrade(String),
-    /// Subscribe to a product's book feed.
     SubscribeBook(String),
-    /// Unsubscribe from a product's book feed.
     UnsubscribeBook(String),
-    /// Disconnect the WebSocket connection.
     Disconnect,
-    /// Initialize the instruments cache with the given instruments.
     InitializeInstruments(Vec<InstrumentAny>),
-    /// Update a single instrument in the cache.
     UpdateInstrument(InstrumentAny),
 }
 

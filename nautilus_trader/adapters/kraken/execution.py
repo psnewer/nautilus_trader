@@ -63,6 +63,7 @@ from nautilus_trader.model.functions import order_type_to_pyo3
 from nautilus_trader.model.functions import time_in_force_to_pyo3
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.orders import Order
 
 
@@ -158,16 +159,22 @@ class KrakenExecutionClient(LiveExecutionClient):
             masked_key = http_client_futures.api_key_masked
             self._log.info(f"Futures REST API key {masked_key}", LogColor.BLUE)
 
-        # Determine environment
         environment = config.environment or KrakenEnvironment.MAINNET
 
         # WebSocket API - Spot (Kraken v2 API)
+        # Uses private/authenticated WebSocket endpoint for execution events
         self._ws_client_spot: nautilus_pyo3.KrakenSpotWebSocketClient | None = None
         if KrakenProductType.SPOT in product_types:
+            ws_private_url = nautilus_pyo3.get_kraken_ws_private_url(
+                KrakenProductType.SPOT,
+                environment,
+            )
             self._ws_client_spot = nautilus_pyo3.KrakenSpotWebSocketClient(
                 environment=environment,
-                base_url=config.base_url_ws_spot,
+                base_url=ws_private_url,
                 heartbeat_secs=config.ws_heartbeat_secs,
+                api_key=config.api_key,
+                api_secret=config.api_secret,
             )
             self._log.info(f"Spot WebSocket URL {self._ws_client_spot.url}", LogColor.BLUE)
 
@@ -209,6 +216,14 @@ class KrakenExecutionClient(LiveExecutionClient):
             await self._ws_client_spot.connect(instruments_pyo3, self._handle_msg)
             await self._ws_client_spot.wait_until_active(timeout_secs=10.0)
             self._log.info("Connected to spot WebSocket", LogColor.BLUE)
+
+            # Set account ID and authenticate, then subscribe to executions
+            pyo3_account_id = nautilus_pyo3.AccountId.from_str(self.account_id.value)
+            self._ws_client_spot.set_account_id(pyo3_account_id)
+            await self._ws_client_spot.authenticate()
+            self._log.info("Authenticated to spot WebSocket", LogColor.BLUE)
+            await self._ws_client_spot.subscribe_executions(snap_orders=True, snap_trades=True)
+            self._log.info("Subscribed to spot executions channel", LogColor.BLUE)
 
         # Connect to futures WebSocket if configured
         if self._ws_client_futures is not None:
@@ -452,7 +467,6 @@ class KrakenExecutionClient(LiveExecutionClient):
             )
             return
 
-        # Generate OrderSubmitted event
         self.generate_order_submitted(
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
@@ -461,6 +475,15 @@ class KrakenExecutionClient(LiveExecutionClient):
         )
 
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+
+        # Cache client_order_id -> instrument_id BEFORE HTTP submission
+        # This handles the race condition where WebSocket execution messages
+        # arrive before the HTTP response (which contains the venue_order_id)
+        if self._ws_client_spot is not None:
+            self._ws_client_spot.cache_client_order(
+                order.client_order_id.value,
+                pyo3_instrument_id,
+            )
         pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
         pyo3_order_side = order_side_to_pyo3(order.side)
         pyo3_order_type = order_type_to_pyo3(order.order_type)
@@ -478,10 +501,9 @@ class KrakenExecutionClient(LiveExecutionClient):
         )
 
         try:
-            # Spot and futures clients have different signatures
             if product_type == nautilus_pyo3.KrakenProductType.FUTURES:
                 futures_client = cast(nautilus_pyo3.KrakenFuturesHttpClient, client)
-                pyo3_report = await futures_client.submit_order(
+                await futures_client.submit_order(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -496,7 +518,7 @@ class KrakenExecutionClient(LiveExecutionClient):
                 )
             else:
                 spot_client = cast(nautilus_pyo3.KrakenSpotHttpClient, client)
-                pyo3_report = await spot_client.submit_order(
+                await spot_client.submit_order(
                     account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -508,18 +530,7 @@ class KrakenExecutionClient(LiveExecutionClient):
                     reduce_only=order.is_reduce_only,
                     post_only=order.is_post_only,
                 )
-
-            report = OrderStatusReport.from_pyo3(pyo3_report)
-
-            self.generate_order_accepted(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                venue_order_id=report.venue_order_id,
-                ts_event=report.ts_last,
-            )
         except Exception as e:
-            self._log.error(f"Failed to submit order {order.client_order_id}: {e}")
             self.generate_order_rejected(
                 strategy_id=order.strategy_id,
                 instrument_id=order.instrument_id,
@@ -529,7 +540,7 @@ class KrakenExecutionClient(LiveExecutionClient):
             )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
-        # Submit orders individually since Kraken doesn't have a batch order API
+        # TODO: Submit orders individually since Kraken doesn't have a batch order API
         for order in command.order_list.orders:
             await self._submit_order(
                 SubmitOrder(
@@ -550,7 +561,7 @@ class KrakenExecutionClient(LiveExecutionClient):
             return
 
         self._log.warning(
-            "Kraken does not support order modification. Please cancel and resubmit the order.",
+            "Kraken does not support order modification, cancel and resubmit the order",
         )
 
         self.generate_order_modify_rejected(
@@ -595,24 +606,13 @@ class KrakenExecutionClient(LiveExecutionClient):
         )
 
         try:
-            pyo3_report = await client.cancel_order(
+            await client.cancel_order(
                 account_id=self.pyo3_account_id,
                 instrument_id=pyo3_instrument_id,
                 client_order_id=pyo3_client_order_id,
                 venue_order_id=pyo3_venue_order_id,
             )
-
-            report = OrderStatusReport.from_pyo3(pyo3_report)
-
-            self.generate_order_canceled(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                venue_order_id=report.venue_order_id,
-                ts_event=report.ts_last,
-            )
         except Exception as e:
-            self._log.error(f"Failed to cancel order {command.client_order_id}: {e}")
             self.generate_order_cancel_rejected(
                 strategy_id=order.strategy_id,
                 instrument_id=order.instrument_id,
@@ -649,7 +649,7 @@ class KrakenExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.error(f"Failed to cancel all orders for {command.instrument_id}: {e}")
 
-    def _handle_msg(self, msg: Any) -> None:  # noqa: C901 (too complex)
+    def _handle_msg(self, msg: Any) -> None:
         try:
             if isinstance(msg, nautilus_pyo3.AccountState):
                 self._handle_account_state(msg)
@@ -665,10 +665,6 @@ class KrakenExecutionClient(LiveExecutionClient):
                 self._handle_fill_report_pyo3(msg)
             elif isinstance(msg, nautilus_pyo3.PositionStatusReport):
                 self._handle_position_status_report_pyo3(msg)
-            elif isinstance(msg, str):
-                self._log.debug(f"Received raw message: {msg}", LogColor.MAGENTA)
-            elif isinstance(msg, bytes):
-                self._log.debug(f"Received bytes message: {msg.decode('utf-8')}", LogColor.MAGENTA)
             else:
                 self._log.debug(f"Received unhandled message type: {type(msg)}")
         except Exception as e:
@@ -724,6 +720,13 @@ class KrakenExecutionClient(LiveExecutionClient):
                 ts_event=report.ts_last,
             )
         elif report.order_status == OrderStatus.ACCEPTED:
+            if order.status in (
+                OrderStatus.ACCEPTED,
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.EXPIRED,
+            ):
+                return
             self.generate_order_accepted(
                 strategy_id=order.strategy_id,
                 instrument_id=report.instrument_id,
@@ -743,6 +746,8 @@ class KrakenExecutionClient(LiveExecutionClient):
                     f"order status {order.status_string()}",
                 )
         elif report.order_status == OrderStatus.CANCELED:
+            if order.status == OrderStatus.CANCELED:
+                return
             self.generate_order_canceled(
                 strategy_id=order.strategy_id,
                 instrument_id=report.instrument_id,
@@ -813,3 +818,6 @@ class KrakenExecutionClient(LiveExecutionClient):
     ) -> None:
         report = PositionStatusReport.from_pyo3(msg)
         self._log.debug(f"Received {report}", LogColor.MAGENTA)
+
+    def _is_external_order(self, client_order_id: ClientOrderId) -> bool:
+        return not client_order_id or not self._cache.strategy_id_for_order(client_order_id)

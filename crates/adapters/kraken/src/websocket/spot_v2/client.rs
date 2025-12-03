@@ -23,7 +23,11 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use nautilus_common::live::runtime::get_runtime;
-use nautilus_model::{data::BarType, identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    data::BarType,
+    identifiers::{AccountId, InstrumentId},
+    instruments::InstrumentAny,
+};
 use nautilus_network::{
     mode::ConnectionMode,
     websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
@@ -320,6 +324,34 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
+    /// Sets the account ID for execution reports.
+    ///
+    /// Must be called before subscribing to executions to properly generate
+    /// OrderStatusReport and FillReport objects.
+    pub fn set_account_id(&self, account_id: AccountId) {
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(SpotHandlerCommand::SetAccountId(account_id))
+        {
+            tracing::debug!("Failed to send account ID to handler: {e}");
+        }
+    }
+
+    /// Caches the mapping from client order ID to instrument ID.
+    ///
+    /// This should be called BEFORE submitting an order via HTTP to handle the
+    /// race condition where WebSocket execution messages arrive before the
+    /// HTTP response (which contains the venue_order_id).
+    pub fn cache_client_order(&self, client_order_id: String, instrument_id: InstrumentId) {
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(SpotHandlerCommand::CacheClientOrder {
+                client_order_id,
+                instrument_id,
+            })
+        {
+            tracing::debug!("Failed to send cache client order command to handler: {e}");
+        }
+    }
+
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
@@ -360,6 +392,8 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth,
                 token,
+                snap_orders: None,
+                snap_trades: None,
             }),
             req_id: Some(req_id),
         };
@@ -405,6 +439,8 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 token,
+                snap_orders: None,
+                snap_trades: None,
             }),
             req_id: Some(req_id),
         };
@@ -527,6 +563,45 @@ impl KrakenSpotWebSocketClient {
         let symbol = bar_type.instrument_id().symbol.inner();
         self.subscribe(KrakenWsChannel::Ohlc, vec![symbol], None)
             .await
+    }
+
+    /// Subscribe to execution updates (order and fill events).
+    ///
+    /// Requires authentication - call `authenticate()` first.
+    pub async fn subscribe_executions(
+        &self,
+        snap_orders: bool,
+        snap_trades: bool,
+    ) -> Result<(), KrakenWsError> {
+        let req_id = self.get_next_req_id().await;
+
+        let token = self.auth_token.read().await.clone().ok_or_else(|| {
+            KrakenWsError::AuthenticationError(
+                "Authentication token required for executions channel. Call authenticate() first"
+                    .to_string(),
+            )
+        })?;
+
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Subscribe,
+            params: Some(KrakenWsParams {
+                channel: KrakenWsChannel::Executions,
+                symbol: None,
+                snapshot: None,
+                depth: None,
+                token: Some(token),
+                snap_orders: Some(snap_orders),
+                snap_trades: Some(snap_trades),
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_request(&request).await?;
+
+        self.subscriptions
+            .insert("executions".to_string(), KrakenWsChannel::Executions);
+
+        Ok(())
     }
 
     /// Unsubscribe from order book updates for the given instrument.

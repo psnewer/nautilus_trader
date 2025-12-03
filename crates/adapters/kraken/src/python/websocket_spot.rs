@@ -45,10 +45,10 @@ use futures_util::StreamExt;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
-    identifiers::InstrumentId,
+    identifiers::{AccountId, InstrumentId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
-use pyo3::prelude::*;
+use pyo3::{IntoPyObjectExt, prelude::*};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -60,16 +60,41 @@ use crate::{
 #[pymethods]
 impl KrakenSpotWebSocketClient {
     #[new]
-    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None))]
+    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
     fn py_new(
         environment: Option<KrakenEnvironment>,
         base_url: Option<String>,
         heartbeat_secs: Option<u64>,
+        api_key: Option<String>,
+        api_secret: Option<String>,
     ) -> PyResult<Self> {
+        let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
+        let testnet = env == KrakenEnvironment::Testnet;
+
+        // Match HTTP client pattern exactly: if both credentials provided use them,
+        // otherwise load from environment
+        let (resolved_api_key, resolved_api_secret) =
+            if let (Some(k), Some(s)) = (api_key, api_secret) {
+                (Some(k), Some(s))
+            } else if let Some(cred) =
+                crate::common::credential::KrakenCredential::from_env_spot(testnet)
+            {
+                let (k, s) = cred.into_parts();
+                tracing::info!(
+                    "Loaded WebSocket credentials from environment (key={}...)",
+                    &k[..8.min(k.len())]
+                );
+                (Some(k), Some(s))
+            } else {
+                (None, None)
+            };
+
         let config = KrakenDataClientConfig {
-            environment: environment.unwrap_or(KrakenEnvironment::Mainnet),
+            environment: env,
             ws_public_url: base_url,
             heartbeat_interval_secs: heartbeat_secs,
+            api_key: resolved_api_key,
+            api_secret: resolved_api_secret,
             ..Default::default()
         };
 
@@ -109,6 +134,16 @@ impl KrakenSpotWebSocketClient {
     fn py_cache_instrument(&self, py: Python<'_>, instrument: Py<PyAny>) -> PyResult<()> {
         self.cache_instrument(pyobject_to_instrument_any(py, instrument)?);
         Ok(())
+    }
+
+    #[pyo3(name = "set_account_id")]
+    fn py_set_account_id(&self, account_id: AccountId) {
+        self.set_account_id(account_id);
+    }
+
+    #[pyo3(name = "cache_client_order")]
+    fn py_cache_client_order(&self, client_order_id: String, instrument_id: InstrumentId) {
+        self.cache_client_order(client_order_id, instrument_id);
     }
 
     #[pyo3(name = "cancel_all_requests")]
@@ -159,6 +194,28 @@ impl KrakenSpotWebSocketClient {
                                     Data::Deltas(OrderBookDeltas_API::new(deltas)),
                                 );
                                 call_python(py, &callback, py_obj);
+                            });
+                        }
+                        NautilusWsMessage::OrderStatusReport(report) => {
+                            Python::attach(|py| match (*report).into_py_any(py) {
+                                Ok(py_obj) => {
+                                    call_python(py, &callback, py_obj);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderStatusReport to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::FillReport(report) => {
+                            Python::attach(|py| match (*report).into_py_any(py) {
+                                Ok(py_obj) => {
+                                    call_python(py, &callback, py_obj);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to convert FillReport to Python: {e}");
+                                }
                             });
                         }
                     }
@@ -289,6 +346,25 @@ impl KrakenSpotWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .subscribe_bars(bar_type)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_executions")]
+    #[pyo3(signature = (snap_orders=true, snap_trades=true))]
+    fn py_subscribe_executions<'py>(
+        &self,
+        py: Python<'py>,
+        snap_orders: bool,
+        snap_trades: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_executions(snap_orders, snap_trades)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
