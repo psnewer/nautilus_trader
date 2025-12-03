@@ -32,6 +32,7 @@ from nautilus_trader.data.messages cimport RequestData
 from nautilus_trader.indicators.base cimport Indicator
 from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
+from nautilus_trader.model.data cimport BarSpecification
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport DataType
 from nautilus_trader.model.data cimport FundingRateUpdate
@@ -65,7 +66,7 @@ cdef class Actor(Component):
     cdef list[Indicator] _indicators
     cdef dict[InstrumentId, list[Indicator]] _indicators_for_quotes
     cdef dict[InstrumentId, list[Indicator]] _indicators_for_trades
-    cdef dict[BarType, list[Indicator]] _indicators_for_bars
+    cdef dict[tuple[InstrumentId, BarSpecification], list[Indicator]] _indicators_for_bars
 
     cdef readonly PortfolioFacade portfolio
     """The read-only portfolio for the actor.\n\n:returns: `PortfolioFacade`"""

@@ -1397,6 +1397,21 @@ cdef class BarType:
         bar_type._mem = bar_type_composite(&self._mem)
         return bar_type
 
+    cpdef tuple[InstrumentId, BarSpecification] id_spec_key(self):
+        """
+        Return the instrument ID and bar specification as a tuple key.
+
+        Useful as a hashmap key when aggregation source should be ignored,
+        such as for indicator registration where INTERNAL and EXTERNAL bars
+        should trigger the same indicators.
+
+        Returns
+        -------
+        tuple[InstrumentId, BarSpecification]
+
+        """
+        return (self.instrument_id, self.spec)
+
 
 cdef class Bar(Data):
     """

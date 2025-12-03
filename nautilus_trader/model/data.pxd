@@ -166,6 +166,7 @@ cdef class BarType:
     cpdef bint is_composite(self)
     cpdef BarType standard(self)
     cpdef BarType composite(self)
+    cpdef tuple[InstrumentId, BarSpecification] id_spec_key(self)
 
 
 cdef class Bar(Data):

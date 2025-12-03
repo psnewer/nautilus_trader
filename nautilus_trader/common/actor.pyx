@@ -95,6 +95,7 @@ from nautilus_trader.data.messages cimport UnsubscribeTradeTicks
 from nautilus_trader.indicators.base cimport Indicator
 from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
+from nautilus_trader.model.data cimport BarSpecification
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport DataType
 from nautilus_trader.model.data cimport FundingRateUpdate
@@ -165,7 +166,7 @@ cdef class Actor(Component):
         self._indicators: list[Indicator] = []
         self._indicators_for_quotes: dict[InstrumentId, list[Indicator]] = {}
         self._indicators_for_trades: dict[InstrumentId, list[Indicator]] = {}
-        self._indicators_for_bars: dict[BarType, list[Indicator]] = {}
+        self._indicators_for_bars: dict[tuple[InstrumentId, BarSpecification], list[Indicator]] = {}
 
         # Topic cache
 
@@ -840,15 +841,15 @@ cdef class Actor(Component):
         if indicator not in self._indicators:
             self._indicators.append(indicator)
 
-        cdef BarType standard_bar_type = bar_type.standard()
-        if standard_bar_type not in self._indicators_for_bars:
-            self._indicators_for_bars[standard_bar_type] = []  # type: list[Indicator]
+        cdef tuple bar_key = bar_type.id_spec_key()
+        if bar_key not in self._indicators_for_bars:
+            self._indicators_for_bars[bar_key] = []  # type: list[Indicator]
 
-        if indicator not in self._indicators_for_bars[standard_bar_type]:
-            self._indicators_for_bars[standard_bar_type].append(indicator)
-            self.log.info(f"Registered Indicator {indicator} for {standard_bar_type} bars")
+        if indicator not in self._indicators_for_bars[bar_key]:
+            self._indicators_for_bars[bar_key].append(indicator)
+            self.log.info(f"Registered Indicator {indicator} for {bar_type.standard()} bars")
         else:
-            self.log.error(f"Indicator {indicator} already registered for {standard_bar_type} bars")
+            self.log.error(f"Indicator {indicator} already registered for {bar_type.standard()} bars")
 
 # -- ACTOR COMMANDS -------------------------------------------------------------------------------
 
@@ -3989,7 +3990,7 @@ cdef class Actor(Component):
         Condition.not_none(bar, "bar")
 
         # Update indicators
-        cdef list indicators = self._indicators_for_bars.get(bar.bar_type)
+        cdef list indicators = self._indicators_for_bars.get(bar.bar_type.id_spec_key())
         if indicators:
             self._handle_indicators_for_bar(indicators, bar)
 
