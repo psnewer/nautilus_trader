@@ -22,7 +22,7 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -158,7 +158,7 @@ fn convert_ws_order_to_http(
     let good_til_block_time = ws_order
         .good_til_block_time
         .as_ref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc));
 
     let trigger_price = ws_order
@@ -170,7 +170,7 @@ fn convert_ws_order_to_http(
     let updated_at = ws_order
         .updated_at
         .as_ref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc));
 
     // Parse updated_at_height (optional for BEST_EFFORT_OPENED orders)
@@ -284,7 +284,7 @@ fn convert_ws_fill_to_http(
         .context("Failed to parse client_metadata")?;
 
     // Parse timestamp
-    let created_at = chrono::DateTime::parse_from_rfc3339(&ws_fill.created_at)
+    let created_at = DateTime::parse_from_rfc3339(&ws_fill.created_at)
         .context("Failed to parse created_at")?
         .with_timezone(&Utc);
 
@@ -406,14 +406,14 @@ fn convert_ws_position_to_http(
         .context("Failed to parse net_funding")?;
 
     // Parse timestamps
-    let created_at = chrono::DateTime::parse_from_rfc3339(&ws_position.created_at)
+    let created_at = DateTime::parse_from_rfc3339(&ws_position.created_at)
         .context("Failed to parse created_at")?
         .with_timezone(&Utc);
 
     let closed_at = ws_position
         .closed_at
         .as_ref()
-        .map(|s| chrono::DateTime::parse_from_rfc3339(s))
+        .map(|s| DateTime::parse_from_rfc3339(s))
         .transpose()
         .context("Failed to parse closed_at")?
         .map(|dt| dt.with_timezone(&Utc));
@@ -443,6 +443,10 @@ fn convert_ws_position_to_http(
         closed_at,
     })
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

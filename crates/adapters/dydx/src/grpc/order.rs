@@ -23,6 +23,8 @@
 //!
 //! See [dYdX order types](https://help.dydx.trade/en/articles/166985-short-term-vs-long-term-order-types).
 
+#[cfg(test)]
+use chrono::Duration;
 use chrono::{DateTime, Utc};
 use nautilus_model::enums::OrderType;
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -453,6 +455,10 @@ impl Default for OrderBuilder {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -665,8 +671,8 @@ mod tests {
         let market = sample_market_params();
         let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 7);
 
-        let now = chrono::Utc::now();
-        let until = now + chrono::Duration::hours(1);
+        let now = Utc::now();
+        let until = now + Duration::hours(1);
 
         let order = builder
             .long_term()

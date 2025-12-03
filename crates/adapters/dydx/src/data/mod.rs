@@ -21,6 +21,7 @@ use std::sync::{
 };
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_common::{
     live::runner::get_data_event_sender,
@@ -1030,7 +1031,6 @@ impl DataClient for DydxDataClient {
     }
 
     fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
-        use chrono::Duration;
         use nautilus_model::enums::{AggregationSource, BarAggregation, PriceType};
 
         const DYDX_MAX_BARS_PER_REQUEST: u32 = 1_000;
@@ -1233,7 +1233,7 @@ impl DataClient for DydxDataClient {
 
             // Determine chunk duration using max bars per request.
             let bars_per_call = DYDX_MAX_BARS_PER_REQUEST.min(remaining);
-            let chunk_duration = Duration::seconds(bar_secs * bars_per_call as i64);
+            let chunk_duration = chrono::Duration::seconds(bar_secs * bars_per_call as i64);
 
             let mut chunk_start = range_start;
 
@@ -1349,7 +1349,7 @@ fn upsert_instrument(cache: &Arc<DashMap<Ustr, InstrumentAny>>, instrument: Inst
 }
 
 /// Convert optional DateTime to optional UnixNanos timestamp.
-fn datetime_to_unix_nanos(value: Option<chrono::DateTime<chrono::Utc>>) -> Option<UnixNanos> {
+fn datetime_to_unix_nanos(value: Option<DateTime<Utc>>) -> Option<UnixNanos> {
     value
         .and_then(|dt| dt.timestamp_nanos_opt())
         .and_then(|nanos| u64::try_from(nanos).ok())
@@ -2624,7 +2624,7 @@ mod tests {
         };
         let bar_type = BarType::new(instrument_id, spec, AggregationSource::External);
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now - chrono::Duration::hours(10));
         let end = Some(now);
 
@@ -2649,7 +2649,7 @@ mod tests {
         setup_test_env();
 
         // Prepare a simple candles response served by a local Axum HTTP server.
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let candle = crate::http::models::Candle {
             started_at: now - chrono::Duration::minutes(1),
             ticker: "BTC-USD".to_string(),
@@ -2874,7 +2874,7 @@ mod tests {
         setup_test_env();
 
         let clock = get_atomic_clock_realtime();
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         // Very large prices and sizes (edge cases).
         let candle = Candle {
@@ -2920,7 +2920,7 @@ mod tests {
         setup_test_env();
 
         let clock = get_atomic_clock_realtime();
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         let candle = Candle {
             started_at: now,
@@ -2965,7 +2965,7 @@ mod tests {
         // Simulate bars with ts_event both before and after current_time_ns and
         // ensure only completed bars (ts_event < now) are retained.
         let clock = get_atomic_clock_realtime();
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         // Use a dedicated data channel for this test and register it
         // before constructing the data client.
@@ -3754,7 +3754,7 @@ mod tests {
         let http_client = DydxHttpClient::default();
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now - chrono::Duration::hours(24));
         let end = Some(now);
 
@@ -3794,7 +3794,7 @@ mod tests {
         let http_client = DydxHttpClient::default();
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now - chrono::Duration::hours(24));
 
         let request = RequestInstruments::new(
@@ -3830,7 +3830,7 @@ mod tests {
         let http_client = DydxHttpClient::default();
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let end = Some(now);
 
         let request = RequestInstruments::new(
@@ -3938,7 +3938,7 @@ mod tests {
         let http_client = DydxHttpClient::default();
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now - chrono::Duration::hours(48));
         let end = Some(now - chrono::Duration::hours(24));
 
@@ -4404,7 +4404,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
 
         let http_trade = crate::http::models::Trade {
             id: "trade-1".to_string(),
@@ -4455,7 +4455,7 @@ mod tests {
         client.instruments.insert(symbol_key, instrument);
 
         let request_id = UUID4::new();
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now - chrono::Duration::seconds(10));
         let end = Some(now + chrono::Duration::seconds(10));
         let limit = std::num::NonZeroUsize::new(100).unwrap();
@@ -4578,7 +4578,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let trade_before = crate::http::models::Trade {
             id: "before".to_string(),
             side: OrderSide::Buy,
@@ -4747,7 +4747,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
         let http_trade = crate::http::models::Trade {
             id: "format-test".to_string(),
             side: OrderSide::Sell,
@@ -5923,7 +5923,7 @@ mod tests {
         client.instruments.insert(symbol_key, instrument);
 
         // Invalid date range: end is before start
-        let start = chrono::Utc::now();
+        let start = Utc::now();
         let end = start - chrono::Duration::hours(24); // End is 24 hours before start
 
         let request = RequestTrades::new(
@@ -6173,7 +6173,7 @@ mod tests {
         assert!(client.request_instrument(&req1).is_ok());
 
         // Test 2: Invalid date range
-        let start = chrono::Utc::now();
+        let start = Utc::now();
         let end = start - chrono::Duration::hours(1);
         let req2 = RequestTrades::new(
             instrument_id,
@@ -6470,8 +6470,8 @@ mod tests {
 
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
-        let start = Some(chrono::Utc::now() - chrono::Duration::days(1));
-        let end = Some(chrono::Utc::now());
+        let start = Some(Utc::now() - chrono::Duration::days(1));
+        let end = Some(Utc::now());
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
         let request = RequestInstruments::new(
@@ -6611,8 +6611,8 @@ mod tests {
         let client = DydxDataClient::new(client_id, config, http_client, None).unwrap();
 
         let request_id = UUID4::new();
-        let start = Some(chrono::Utc::now() - chrono::Duration::hours(1));
-        let end = Some(chrono::Utc::now());
+        let start = Some(Utc::now() - chrono::Duration::hours(1));
+        let end = Some(Utc::now());
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
         let request = RequestInstruments::new(
@@ -6823,8 +6823,8 @@ mod tests {
         client.instruments.insert(symbol_key, instrument);
 
         let request_id = UUID4::new();
-        let start = Some(chrono::Utc::now() - chrono::Duration::hours(1));
-        let end = Some(chrono::Utc::now());
+        let start = Some(Utc::now() - chrono::Duration::hours(1));
+        let end = Some(Utc::now());
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
         let request = RequestInstrument::new(
@@ -6996,7 +6996,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
         let http_trades = vec![
             crate::http::models::Trade {
                 id: "trade-1".to_string(),
@@ -7088,7 +7088,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
         let http_trade = crate::http::models::Trade {
             id: "instrument-id-test".to_string(),
             side: OrderSide::Buy,
@@ -7174,7 +7174,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let base_time = chrono::Utc::now();
+        let base_time = Utc::now();
         let http_trades = vec![
             crate::http::models::Trade {
                 id: "trade-oldest".to_string(),
@@ -7288,7 +7288,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
         let http_trade = crate::http::models::Trade {
             id: "field-test".to_string(),
             side: OrderSide::Buy,
@@ -7395,7 +7395,7 @@ mod tests {
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
 
-        let created_at = chrono::Utc::now();
+        let created_at = Utc::now();
         let http_trade = crate::http::models::Trade {
             id: "metadata-test".to_string(),
             side: OrderSide::Buy,
@@ -7596,7 +7596,7 @@ mod tests {
         };
         let bar_type = BarType::new(instrument_id, spec, AggregationSource::External);
 
-        let now = chrono::Utc::now();
+        let now = Utc::now();
         let start = Some(now);
         let end = Some(now - chrono::Duration::hours(1));
 

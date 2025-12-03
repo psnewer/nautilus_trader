@@ -13,6 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use chrono::{DateTime, Duration, Utc};
 use nautilus_model::{
     enums::{OrderSide, TimeInForce},
     identifiers::InstrumentId,
@@ -51,30 +52,31 @@ pub enum ConditionalOrderType {
 
 /// Calculates the expiration time for conditional orders based on TimeInForce.
 ///
-/// - `GTD` with explicit `expire_time`: uses the provided timestamp
-/// - `GTC` or no `expire_time`: defaults to 90 days from now
-/// - `IOC`/`FOK`: uses 1 hour (these are unusual for conditional orders)
+/// - `GTD` with explicit `expire_time`: uses the provided timestamp.
+/// - `GTC` or no `expire_time`: defaults to 90 days from now.
+/// - `IOC`/`FOK`: uses 1 hour (these are unusual for conditional orders).
+///
+/// # Errors
+///
+/// Returns `DydxError::Parse` if the provided `expire_time` timestamp is invalid.
 fn calculate_conditional_order_expiration(
     time_in_force: TimeInForce,
     expire_time: Option<i64>,
-) -> chrono::DateTime<chrono::Utc> {
+) -> Result<DateTime<Utc>, DydxError> {
     if let Some(expire_ts) = expire_time {
-        // from_timestamp returns None only for out-of-range values (beyond year 262143)
-        // which won't occur with valid i64 timestamps, so expect is safe here
-        chrono::DateTime::from_timestamp(expire_ts, 0)
-            .expect("expire_time should be a valid Unix timestamp")
+        DateTime::from_timestamp(expire_ts, 0)
+            .ok_or_else(|| DydxError::Parse(format!("Invalid expire timestamp: {expire_ts}")))
     } else {
-        match time_in_force {
-            TimeInForce::Gtc => {
-                chrono::Utc::now() + chrono::Duration::days(GTC_CONDITIONAL_ORDER_EXPIRATION_DAYS)
-            }
+        let expiration = match time_in_force {
+            TimeInForce::Gtc => Utc::now() + Duration::days(GTC_CONDITIONAL_ORDER_EXPIRATION_DAYS),
             TimeInForce::Ioc | TimeInForce::Fok => {
                 // IOC/FOK don't typically apply to conditional orders, use short expiration
-                chrono::Utc::now() + chrono::Duration::hours(1)
+                Utc::now() + Duration::hours(1)
             }
             // GTD without expire_time, or any other TIF - use long default
-            _ => chrono::Utc::now() + chrono::Duration::days(GTC_CONDITIONAL_ORDER_EXPIRATION_DAYS),
-        }
+            _ => Utc::now() + Duration::days(GTC_CONDITIONAL_ORDER_EXPIRATION_DAYS),
+        };
+        Ok(expiration)
     }
 }
 
@@ -221,7 +223,7 @@ impl OrderSubmitter {
         if let Some(expire_ts) = expire_time {
             builder = builder.long_term();
             builder = builder.until(OrderGoodUntil::Time(
-                chrono::DateTime::from_timestamp(expire_ts, 0)
+                DateTime::from_timestamp(expire_ts, 0)
                     .ok_or_else(|| DydxError::Parse("Invalid expire timestamp".to_string()))?,
             ));
         } else {
@@ -462,7 +464,7 @@ impl OrderSubmitter {
             builder = builder.reduce_only(true);
         }
 
-        let expire = calculate_conditional_order_expiration(effective_tif, expire_time);
+        let expire = calculate_conditional_order_expiration(effective_tif, expire_time)?;
         builder = builder.until(OrderGoodUntil::Time(expire));
 
         let order = builder
@@ -825,6 +827,10 @@ impl OrderSubmitter {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -852,17 +858,18 @@ mod tests {
     #[rstest]
     fn test_conditional_order_expiration_with_explicit_timestamp() {
         let expire_ts = 1735689600i64; // 2025-01-01 00:00:00 UTC
-        let result = calculate_conditional_order_expiration(TimeInForce::Gtd, Some(expire_ts));
+        let result =
+            calculate_conditional_order_expiration(TimeInForce::Gtd, Some(expire_ts)).unwrap();
         assert_eq!(result.timestamp(), expire_ts);
     }
 
     #[rstest]
     fn test_conditional_order_expiration_gtc_uses_90_days() {
-        let now = chrono::Utc::now();
-        let result = calculate_conditional_order_expiration(TimeInForce::Gtc, None);
+        let now = Utc::now();
+        let result = calculate_conditional_order_expiration(TimeInForce::Gtc, None).unwrap();
 
-        let expected_min = now + chrono::Duration::days(89);
-        let expected_max = now + chrono::Duration::days(91);
+        let expected_min = now + Duration::days(89);
+        let expected_max = now + Duration::days(91);
 
         assert!(result > expected_min);
         assert!(result < expected_max);
@@ -870,11 +877,11 @@ mod tests {
 
     #[rstest]
     fn test_conditional_order_expiration_gtd_without_timestamp_uses_90_days() {
-        let now = chrono::Utc::now();
-        let result = calculate_conditional_order_expiration(TimeInForce::Gtd, None);
+        let now = Utc::now();
+        let result = calculate_conditional_order_expiration(TimeInForce::Gtd, None).unwrap();
 
-        let expected_min = now + chrono::Duration::days(89);
-        let expected_max = now + chrono::Duration::days(91);
+        let expected_min = now + Duration::days(89);
+        let expected_max = now + Duration::days(91);
 
         assert!(result > expected_min);
         assert!(result < expected_max);
@@ -882,11 +889,11 @@ mod tests {
 
     #[rstest]
     fn test_conditional_order_expiration_ioc_uses_1_hour() {
-        let now = chrono::Utc::now();
-        let result = calculate_conditional_order_expiration(TimeInForce::Ioc, None);
+        let now = Utc::now();
+        let result = calculate_conditional_order_expiration(TimeInForce::Ioc, None).unwrap();
 
-        let expected_min = now + chrono::Duration::minutes(59);
-        let expected_max = now + chrono::Duration::minutes(61);
+        let expected_min = now + Duration::minutes(59);
+        let expected_max = now + Duration::minutes(61);
 
         assert!(result > expected_min);
         assert!(result < expected_max);
@@ -894,11 +901,11 @@ mod tests {
 
     #[rstest]
     fn test_conditional_order_expiration_fok_uses_1_hour() {
-        let now = chrono::Utc::now();
-        let result = calculate_conditional_order_expiration(TimeInForce::Fok, None);
+        let now = Utc::now();
+        let result = calculate_conditional_order_expiration(TimeInForce::Fok, None).unwrap();
 
-        let expected_min = now + chrono::Duration::minutes(59);
-        let expected_max = now + chrono::Duration::minutes(61);
+        let expected_min = now + Duration::minutes(59);
+        let expected_max = now + Duration::minutes(61);
 
         assert!(result > expected_min);
         assert!(result < expected_max);
@@ -906,14 +913,21 @@ mod tests {
 
     #[rstest]
     fn test_conditional_order_expiration_day_uses_90_days() {
-        let now = chrono::Utc::now();
-        let result = calculate_conditional_order_expiration(TimeInForce::Day, None);
+        let now = Utc::now();
+        let result = calculate_conditional_order_expiration(TimeInForce::Day, None).unwrap();
 
-        let expected_min = now + chrono::Duration::days(89);
-        let expected_max = now + chrono::Duration::days(91);
+        let expected_min = now + Duration::days(89);
+        let expected_max = now + Duration::days(91);
 
         assert!(result > expected_min);
         assert!(result < expected_max);
+    }
+
+    #[rstest]
+    fn test_conditional_order_expiration_invalid_timestamp_returns_error() {
+        // i64::MAX is beyond the valid range for chrono timestamps
+        let result = calculate_conditional_order_expiration(TimeInForce::Gtd, Some(i64::MAX));
+        assert!(result.is_err());
     }
 
     #[rstest]

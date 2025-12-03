@@ -22,6 +22,7 @@ use std::sync::{
 
 use anyhow::Context;
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use nautilus_common::{
     live::{runner::get_exec_event_sender, runtime::get_runtime},
@@ -1624,8 +1625,7 @@ impl LiveExecutionClient for DydxExecutionClient {
         );
 
         // Calculate cutoff time if lookback is specified
-        let cutoff_time =
-            lookback_mins.map(|mins| chrono::Utc::now() - chrono::Duration::minutes(mins as i64));
+        let cutoff_time = lookback_mins.map(|mins| Utc::now() - Duration::minutes(mins as i64));
 
         // Query all orders
         let orders_response = self
@@ -1755,6 +1755,10 @@ impl LiveExecutionClient for DydxExecutionClient {
         Ok(Some(mass_status))
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
