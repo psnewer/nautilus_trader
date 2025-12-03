@@ -2256,3 +2256,50 @@ def test_backend_session_table_naming_special_characters(catalog: ParquetDataCat
     assert len(instrument_ids) == 2
     assert str(eurusd_instrument.id) in instrument_ids
     assert str(btcusd_instrument.id) in instrument_ids
+
+
+def test_query_first_and_last_timestamp(catalog: ParquetDataCatalog) -> None:
+    # Arrange
+    instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD", venue=Venue("SIM"))
+    first_ts = 1000000000
+    last_ts = 2000000000
+
+    trade_ticks = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.0"),
+            size=Quantity.from_int(1),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId("1"),
+            ts_event=first_ts,
+            ts_init=first_ts,
+        ),
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.1"),
+            size=Quantity.from_int(1),
+            aggressor_side=AggressorSide.SELLER,
+            trade_id=TradeId("2"),
+            ts_event=last_ts,
+            ts_init=last_ts,
+        ),
+    ]
+    catalog.write_data([instrument])
+    catalog.write_data(trade_ticks)
+
+    # Act
+    first_result = catalog.query_first_timestamp(TradeTick, str(instrument.id))
+    last_result = catalog.query_last_timestamp(TradeTick, str(instrument.id))
+
+    # Assert
+    assert first_result == pd.Timestamp(first_ts, tz="UTC")
+    assert last_result == pd.Timestamp(last_ts, tz="UTC")
+    assert first_result < last_result
+
+
+def test_query_first_timestamp_returns_none_when_no_data(catalog: ParquetDataCatalog) -> None:
+    # Act
+    result = catalog.query_first_timestamp(TradeTick, "NONEXISTENT.VENUE")
+
+    # Assert
+    assert result is None
