@@ -359,7 +359,7 @@ walkdir = "2.5.0"
 # -----------------------------------------------------------------------------
 [workspace.metadata.tools]
 cargo-audit = "0.22.0"
-cargo-deny = "0.18.7"
+cargo-deny = "0.18.8"
 cargo-llvm-cov = "0.6.21"
 cargo-nextest = "0.9.114"
 cargo-vet = "0.10.1"

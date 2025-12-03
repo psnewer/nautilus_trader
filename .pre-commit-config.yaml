@@ -164,7 +164,7 @@ repos:
   #  Rust formatting and linting
   ##############################################################################
   - repo: https://github.com/EmbarkStudios/cargo-deny
-    rev: 0.18.7
+    rev: 0.18.8
     hooks:
       - id: cargo-deny
         name: cargo deny (dependency vulnerabilities)
@@ -341,7 +341,7 @@ repos:
         ]
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.14 # Must match uv-version file
+    rev: 0.9.15 # Must match uv-version file
     hooks:
       - id: uv-lock
         files: ^python/uv\.lock$

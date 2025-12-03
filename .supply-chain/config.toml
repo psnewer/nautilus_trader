@@ -1233,7 +1233,7 @@ version = "0.5.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.hyper-util]]
-version = "0.1.18"
+version = "0.1.19"
 criteria = "safe-to-deploy"
 
 [[exemptions.hypersync-client]]
@@ -1414,6 +1414,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.libsqlite3-sys]]
 version = "0.30.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.libz-rs-sys]]
+version = "0.5.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.linux-raw-sys]]
@@ -2962,6 +2966,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.zerovec]]
 version = "0.11.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.zlib-rs]]
+version = "0.5.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.zstd]]

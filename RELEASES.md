@@ -8,6 +8,7 @@ This release adds support for Python 3.14 with the following limitations:
 
 ### Enhancements
 - Added support for Python 3.14
+- Added Kraken integration adapter
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
 - Added initial backtest visualization tearsheets with plotly
 - Added price protection support for market orders (#3065), thanks @Antifrajz
@@ -109,6 +110,8 @@ TBD
 - Added dYdX v4 execution reconciliation in Rust (#3171), thanks @nicolad
 - Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
 - Added dYdX v4 order execution via gRPC with Python bindings (#3245), thanks @nicolad
+- Added dYdX v4 conditional orders (#3259), thanks @nicolad
+- Added Kraken Futures demo support (#3262), thanks @nicolad
 - Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
@@ -121,6 +124,7 @@ TBD
 - Refactored processing of historical data (#3038), thanks @faysou
 - Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
+- Refactored Interactive Brokers `HistoricInteractiveBrokersClient` (#3261), thanks @faysou
 - Improved trade execution matching with transient bid/ask override for `trade_execution=True` mode, ensuring limit orders fill correctly when trades occur at the limit price
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
