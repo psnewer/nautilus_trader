@@ -142,6 +142,7 @@ TBD
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
+- Standardized dYdX per adapter guide conventions (#3267), thanks @nicolad
 - Changed Interactive Brokers default quote tick subscription to batch quotes (#3196), thanks @faysou
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
@@ -149,6 +150,8 @@ TBD
 - Refined adding files to catalog session (#3215), thanks @faysou
 - Refined `HistoricInteractiveBrokersClient` (#3187), thanks @faysou
 - Refined `BacktestDataIterator` docstrings (#3264), thanks @faysou
+- Refined `BacktestDataConfig.query` (#3266), thanks @faysou
+- Refined Databento utils (#3268), thanks @faysou
 - Optimized unnecessary string allocations and `Ustr` usage
 - Optimized build to prefer sccache when available (#3243), thanks @sunlei
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX
@@ -511,7 +514,7 @@ Released on 9th September 2025 (UTC).
 - Standardized `NAUTILUS_PATH` env var across Tardis integration (#2850), thanks @nicolad
 - Standardized zero PnL as Money instead of None when exchange rate missing (#2880), thanks @nicolad
 - Refactored `SpreadQuoteAggregator` (#2905), thanks @faysou
-- Refactored bar aggregators to use `ts_init` instead of `ts_event` (#2924), thanks @fayosu
+- Refactored bar aggregators to use `ts_init` instead of `ts_event` (#2924), thanks @faysuo
 - Improved typing for all the DEX IDs with `DexType` and add validation (#2827), thanks @filipmacek
 - Improved reconciliation handling of internally generated orders to align positions (now uses the `INTERNAL-DIFF` strategy ID)
 - Improved data client for blockchain adapter (#2787), thanks @filipmacek
