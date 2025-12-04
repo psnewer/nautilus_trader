@@ -189,7 +189,7 @@ async def test_fetch_orderbook_history(test_instrument, orderbook_history_data):
     # Assert
     mock_http_client.get.assert_called_once()
     assert len(snapshots) == 3
-    assert snapshots[0]["timestamp"] == 1729000000000
+    assert snapshots[0]["timestamp"] == "1729000000000"
     assert len(snapshots[0]["bids"]) == 3
     assert len(snapshots[0]["asks"]) == 3
 
@@ -198,13 +198,15 @@ async def test_fetch_orderbook_history(test_instrument, orderbook_history_data):
 async def test_fetch_orderbook_history_with_pagination(test_instrument):
     # Arrange
     mock_http_client = MagicMock(spec=nautilus_pyo3.HttpClient)
+
+    # Simulate pagination: total count is 2, each page returns 1 item with limit=1
     page1_data = {
-        "snapshots": [{"timestamp": 1729000000000, "bids": [], "asks": []}],
-        "pagination": {"has_more": True, "pagination_key": "key123"},
+        "count": 2,
+        "data": [{"timestamp": "1729000000000", "bids": [], "asks": []}],
     }
     page2_data = {
-        "snapshots": [{"timestamp": 1729000060000, "bids": [], "asks": []}],
-        "pagination": {"has_more": False},
+        "count": 2,
+        "data": [{"timestamp": "1729000060000", "bids": [], "asks": []}],
     }
 
     mock_response1 = Mock()
@@ -219,8 +221,8 @@ async def test_fetch_orderbook_history_with_pagination(test_instrument):
 
     loader = PolymarketDataLoader(test_instrument, http_client=mock_http_client)
 
-    # Act
-    snapshots = await loader.fetch_orderbook_history("token123", 1729000000000, 1729000120000)
+    # Act - use limit=1 to force pagination
+    snapshots = await loader.fetch_orderbook_history("token123", 1729000000000, 1729000120000, limit=1)
 
     # Assert
     assert mock_http_client.get.call_count == 2
@@ -254,7 +256,7 @@ async def test_fetch_price_history(test_instrument, price_history_data):
 
 def test_parse_orderbook_snapshots(loader, orderbook_history_data):
     # Arrange
-    snapshots = orderbook_history_data["snapshots"]
+    snapshots = orderbook_history_data["data"]
 
     # Act
     deltas_list = loader.parse_orderbook_snapshots(snapshots)
@@ -273,7 +275,7 @@ def test_parse_orderbook_snapshots_uses_instrument_precision(
     orderbook_history_data,
 ):
     # Arrange
-    snapshots = orderbook_history_data["snapshots"]
+    snapshots = orderbook_history_data["data"]
 
     # Act
     deltas_list = loader.parse_orderbook_snapshots(snapshots)

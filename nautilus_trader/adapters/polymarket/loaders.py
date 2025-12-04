@@ -43,8 +43,7 @@ class PolymarketDataLoader:
 
     This loader fetches data from:
     - Polymarket Gamma API (market information)
-    - Polymarket CLOB API (price/trade history)
-    - DomeAPI (orderbook history, available from October 14th, 2025)
+    - Polymarket CLOB API (price/trade history and orderbook history)
 
     Parameters
     ----------
@@ -375,7 +374,7 @@ class PolymarketDataLoader:
         limit: int = 500,
     ) -> list[dict[str, Any]]:
         """
-        Fetch orderbook history from DomeAPI.
+        Fetch orderbook history from Polymarket CLOB API.
 
         Parameters
         ----------
@@ -395,26 +394,23 @@ class PolymarketDataLoader:
 
         Notes
         -----
-        DomeAPI orderbook history only has data starting from October 14th, 2025.
-        This method automatically handles pagination.
+        This method automatically handles pagination using offset-based requests.
 
         """
         all_snapshots = []
-        pagination_key = None
+        offset = 0
 
         while True:
             params = {
-                "token_id": token_id,
-                "start_time": start_time_ms,
-                "end_time": end_time_ms,
+                "asset_id": token_id,
+                "startTs": start_time_ms,
+                "endTs": end_time_ms,
                 "limit": limit,
+                "offset": offset,
             }
 
-            if pagination_key:
-                params["pagination_key"] = pagination_key
-
             response = await self._http_client.get(
-                url="https://api.domeapi.io/v1/polymarket/orderbooks",
+                url="https://clob.polymarket.com/orderbook-history",
                 params=params,
             )
 
@@ -425,15 +421,13 @@ class PolymarketDataLoader:
 
             data = msgspec.json.decode(response.body)
 
-            snapshots = data.get("snapshots", [])
+            snapshots = data.get("data", [])
             all_snapshots.extend(snapshots)
 
-            pagination = data.get("pagination", {})
-            if not pagination.get("has_more", False):
-                break
+            total_count = data.get("count", 0)
+            offset += len(snapshots)
 
-            pagination_key = pagination.get("pagination_key")
-            if not pagination_key:
+            if offset >= total_count or len(snapshots) < limit:
                 break
 
         return all_snapshots
@@ -499,7 +493,7 @@ class PolymarketDataLoader:
         Parameters
         ----------
         snapshots : list[dict]
-            Raw orderbook snapshots from DomeAPI.
+            Raw orderbook snapshots from Polymarket CLOB API.
 
         Returns
         -------
@@ -507,75 +501,72 @@ class PolymarketDataLoader:
             List of OrderBookDeltas for backtesting.
 
         """
-        all_deltas: list[OrderBookDelta] = []
+        all_deltas: list[OrderBookDeltas] = []
+        instrument_id = self.instrument.id
+        make_price = self.instrument.make_price
+        make_qty = self.instrument.make_qty
 
+        # Skip zero-size entries as they represent no liquidity
         for snapshot in snapshots:
-            timestamp_ms = snapshot["timestamp"]
-            ts_event = millis_to_nanos(timestamp_ms)
+            ts_event = millis_to_nanos(int(snapshot["timestamp"]))
 
-            deltas = []
+            deltas = [
+                OrderBookDelta.clear(
+                    instrument_id=instrument_id,
+                    ts_event=ts_event,
+                    ts_init=ts_event,
+                    sequence=0,
+                ),
+            ]
 
-            # Clear the book first
-            clear_delta = OrderBookDelta.clear(
-                instrument_id=self.instrument.id,
-                ts_event=ts_event,
-                ts_init=ts_event,
-                sequence=0,
-            )
-            deltas.append(clear_delta)
-
-            # Add bids
             for bid in snapshot.get("bids", []):
-                price = self.instrument.make_price(bid["price"])
-                size = self.instrument.make_qty(bid["size"])
+                size_val = float(bid["size"])
+                if size_val <= 0:
+                    continue
 
                 order = BookOrder(
                     side=OrderSide.BUY,
-                    price=price,
-                    size=size,
+                    price=make_price(float(bid["price"])),
+                    size=make_qty(size_val),
                     order_id=0,
                 )
-
-                delta = OrderBookDelta(
-                    instrument_id=self.instrument.id,
-                    action=BookAction.ADD,
-                    order=order,
-                    flags=0,
-                    sequence=0,
-                    ts_event=ts_event,
-                    ts_init=ts_event,
+                deltas.append(
+                    OrderBookDelta(
+                        instrument_id=instrument_id,
+                        action=BookAction.ADD,
+                        order=order,
+                        flags=0,
+                        sequence=0,
+                        ts_event=ts_event,
+                        ts_init=ts_event,
+                    ),
                 )
-                deltas.append(delta)
 
-            # Add asks
             for ask in snapshot.get("asks", []):
-                price = self.instrument.make_price(ask["price"])
-                size = self.instrument.make_qty(ask["size"])
+                size_val = float(ask["size"])
+                if size_val <= 0:
+                    continue
 
                 order = BookOrder(
                     side=OrderSide.SELL,
-                    price=price,
-                    size=size,
+                    price=make_price(float(ask["price"])),
+                    size=make_qty(size_val),
                     order_id=0,
                 )
-
-                delta = OrderBookDelta(
-                    instrument_id=self.instrument.id,
-                    action=BookAction.ADD,
-                    order=order,
-                    flags=0,
-                    sequence=0,
-                    ts_event=ts_event,
-                    ts_init=ts_event,
+                deltas.append(
+                    OrderBookDelta(
+                        instrument_id=instrument_id,
+                        action=BookAction.ADD,
+                        order=order,
+                        flags=0,
+                        sequence=0,
+                        ts_event=ts_event,
+                        ts_init=ts_event,
+                    ),
                 )
-                deltas.append(delta)
 
             if deltas:
-                book_deltas = OrderBookDeltas(
-                    instrument_id=self.instrument.id,
-                    deltas=deltas,
-                )
-                all_deltas.append(book_deltas)
+                all_deltas.append(OrderBookDeltas(instrument_id=instrument_id, deltas=deltas))
 
         return all_deltas
 
