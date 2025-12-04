@@ -3380,9 +3380,10 @@ mod tests {
         let ts_init = UnixNanos::default();
 
         // Create initial instrument with fees (simulating HTTP load)
+        // These values are already in Nautilus format (HTTP client negates OKX values)
         let initial_fees = (
-            Some(Decimal::new(8, 4)),  // maker_fee = 0.0008
-            Some(Decimal::new(10, 4)), // taker_fee = 0.0010
+            Some(Decimal::new(8, 4)),  // Nautilus: 0.0008 (commission)
+            Some(Decimal::new(10, 4)), // Nautilus: 0.0010 (commission)
         );
 
         // Deserialize initial instrument from JSON

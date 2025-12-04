@@ -2585,6 +2585,38 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_instrument_any_passes_through_fees() {
+        // parse_instrument_any receives fees already converted to Nautilus format
+        // (negation happens in HTTP client when parsing OKX API values)
+        let json_data = load_test_json("http_get_instruments_spot.json");
+        let response: OKXResponse<OKXInstrument> = serde_json::from_str(&json_data).unwrap();
+        let okx_inst = response.data.first().unwrap();
+
+        // Fees are already in Nautilus convention (negated by HTTP client)
+        let maker_fee = Some(dec!(-0.00025)); // Nautilus: rebate (negative)
+        let taker_fee = Some(dec!(0.00050)); // Nautilus: commission (positive)
+
+        let instrument = parse_instrument_any(
+            okx_inst,
+            None,
+            None,
+            maker_fee,
+            taker_fee,
+            UnixNanos::default(),
+        )
+        .unwrap()
+        .expect("Should parse spot instrument");
+
+        // Fees should pass through unchanged
+        if let InstrumentAny::CurrencyPair(pair) = instrument {
+            assert_eq!(pair.maker_fee, dec!(-0.00025));
+            assert_eq!(pair.taker_fee, dec!(0.00050));
+        } else {
+            panic!("Expected CurrencyPair instrument");
+        }
+    }
+
+    #[rstest]
     fn test_parse_swap_instrument() {
         let json_data = load_test_json("http_get_instruments_swap.json");
         let response: OKXResponse<OKXInstrument> = serde_json::from_str(&json_data).unwrap();

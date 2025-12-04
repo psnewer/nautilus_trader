@@ -89,6 +89,7 @@ TBD
 - Fixed OKX `request_bars` pagination halting prematurely in Range mode (#3145), thanks for reporting @3wtz
 - Fixed OKX `request_bars` pagination using correct backwards API semantics (#3145), thanks for reporting @3wtz
 - Fixed OKX FOK/IOC order type preservation across parsers (#3182), thanks @CuBeof
+- Fixed OKX fee rate sign convention for backtesting (#3260), thanks @GhostLee
 - Fixed Polymarket maker fill order side inversion (#3126), thanks for reporting @santivazq
 - Fixed Polymarket instrument provider market filtering (#3133), thanks @MisterMM23
 - Fixed Polymarket websocket client cancellation on concurrent subscriptions (#3169), thanks @DeirhX
