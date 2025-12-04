@@ -191,6 +191,17 @@ self.portfolio.balances_locked(venue)
 - Maker Fee (`maker_fee`): A fee (typically lower) charged when you "make" liquidity by placing an order that remains on the order book. For example, a limit buy order below the current price adds liquidity, and the *maker* fee applies when it fills.
 - Taker Fee (`taker_fee`): A fee (typically higher) charged when you "take" liquidity by placing an order that executes immediately. For instance, a market buy order or a limit buy above the current price removes liquidity, and the *taker* fee applies.
 
+**Fee rate sign convention**: Nautilus uses a consistent sign convention for fee rates across all adapters and the backtesting engine:
+
+- **Positive fee rate** = commission (fee charged, reducing account balance).
+- **Negative fee rate** = rebate (fee earned, increasing account balance).
+
+For example, a maker fee of `-0.00025` means you receive a 0.025% rebate for providing liquidity, while a taker fee of `0.00075` means you pay a 0.075% commission for taking liquidity.
+
+:::note
+Different exchanges use different sign conventions in their APIs. Nautilus adapters normalize these to the convention above. If you're manually specifying fee rates for backtesting, ensure you follow this convention.
+:::
+
 :::tip
 Not all exchanges or instruments implement maker/taker fees. If absent, set both `maker_fee` and `taker_fee` to 0 for the `Instrument` (e.g., `FuturesContract`, `Equity`, `CurrencyPair`, `Commodity`, `Cfd`, `BinaryOption`, `BettingInstrument`).
 :::
