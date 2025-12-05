@@ -306,8 +306,9 @@ impl Hash for SyntheticInstrument {
 ///////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
     use std::str::FromStr;
+
+    use rstest::rstest;
 
     use super::*;
 
