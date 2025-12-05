@@ -218,6 +218,12 @@ fn download_file(
     timeout_secs: u64,
     retry_config: Option<RetryConfig>,
 ) -> anyhow::Result<()> {
+    // Validate HTTPS for security (allow HTTP in tests for local servers)
+    #[cfg(not(test))]
+    if !url.starts_with("https://") {
+        anyhow::bail!("URL must use HTTPS protocol for security: {url}");
+    }
+
     println!("Downloading file from {url} to {filepath:?}");
 
     if let Some(parent) = filepath.parent() {

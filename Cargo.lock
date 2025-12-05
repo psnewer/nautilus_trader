@@ -5014,6 +5014,7 @@ dependencies = [
  "futures-util",
  "log",
  "nautilus-blockchain",
+ "nautilus-core",
  "nautilus-infrastructure",
  "nautilus-model",
  "simple_logger",
