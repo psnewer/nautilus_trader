@@ -157,7 +157,7 @@ ed25519-dalek = "2.2.0"
 enum_dispatch = "0.3.13"
 evalexpr = "=11.3.1" # Pinned to v11.3.1 for MIT licensing
 fallible-streaming-iterator = "0.1.9"
-flate2 = "1.1.5"
+flate2 = "1.1.7"
 futures = { version = "0.3.31", default-features = false, features = [
   "std",
   "async-await",
@@ -365,7 +365,7 @@ cargo-deny = "0.18.8"
 cargo-llvm-cov = "0.6.21"
 cargo-nextest = "0.9.114"
 cargo-vet = "0.10.1"
-lychee = "0.21.0"
+lychee = "0.22.0"
 
 # cargo-vet supply chain security configuration
 [workspace.metadata.vet]

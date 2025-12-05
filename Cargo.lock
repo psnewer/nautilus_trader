@@ -1424,9 +1424,9 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
 name = "bitcoin_hashes"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb18c03d0db0247e147a21a6faafd5a7eb851c743db062de72018b6b7e8e4d16"
+checksum = "26ec84b80c482df901772e931a9a681e26a1b9ee2302edeff23cb30328745c8b"
 dependencies = [
  "bitcoin-io",
  "hex-conservative",
@@ -3541,13 +3541,13 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.1.5"
+version = "1.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
+checksum = "a2152dbcb980c05735e2a651d96011320a949eb31a0c8b38b72645ce97dec676"
 dependencies = [
  "crc32fast",
- "libz-rs-sys",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -4610,15 +4610,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libz-rs-sys"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b484ba8d4f775eeca644c452a56650e544bf7e617f1d170fe7298122ead5222"
-dependencies = [
- "zlib-rs",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4792,9 +4783,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d83b0086dc8ecf3ce9ae2874b2d1290252e2a30720bea58a5c6639b0092873"
+checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
 dependencies = [
  "libc",
  "wasi",
@@ -9116,9 +9107,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.23.7"
+version = "0.23.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6485ef6d0d9b5d0ec17244ff7eb05310113c3f316f2d14200d4de56b3cb98f8d"
+checksum = "5a9b7ac41d92f2d2803f233e297127bac397df7b337e0460a1cc39d6c006dee4"
 dependencies = [
  "indexmap 2.12.1",
  "toml_datetime",
