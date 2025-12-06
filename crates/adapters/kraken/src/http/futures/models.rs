@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::enums::{
     KrakenApiResult, KrakenFillType, KrakenFuturesOrderStatus, KrakenFuturesOrderType,
-    KrakenOrderSide, KrakenPositionSide, KrakenTriggerSignal,
+    KrakenInstrumentType, KrakenOrderSide, KrakenPositionSide, KrakenTriggerSide,
+    KrakenTriggerSignal,
 };
 
 // Futures Instruments Models
@@ -40,7 +41,7 @@ pub struct FuturesMarginLevel {
 pub struct FuturesInstrument {
     pub symbol: String,
     #[serde(rename = "type")]
-    pub instrument_type: String,
+    pub instrument_type: KrakenInstrumentType,
     /// Only present for inverse futures, not for flexible futures.
     #[serde(default)]
     pub underlying: Option<String>,
@@ -375,9 +376,9 @@ pub struct FuturesOrderTriggerData {
     #[serde(rename = "triggerPrice")]
     pub trigger_price: f64,
     #[serde(rename = "triggerSide")]
-    pub trigger_side: String,
+    pub trigger_side: KrakenTriggerSide,
     #[serde(rename = "triggerSignal")]
-    pub trigger_signal: String,
+    pub trigger_signal: KrakenTriggerSignal,
     #[serde(rename = "reduceOnly", default)]
     pub reduce_only: bool,
     pub timestamp: String,
