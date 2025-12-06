@@ -8037,6 +8037,10 @@ class KrakenFuturesHttpClient:
         end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[Bar]: ...
+    async def request_account_state(
+        self,
+        account_id: AccountId,
+    ) -> AccountState: ...
     async def request_order_status_reports(
         self,
         account_id: AccountId,

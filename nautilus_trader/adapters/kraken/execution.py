@@ -301,6 +301,23 @@ class KrakenExecutionClient(LiveExecutionClient):
                 self._log.info(
                     f"Generated account state with {len(account_state.balances)} balance(s)",
                 )
+        elif self._http_client_futures is not None:
+            pyo3_account_state = await self._http_client_futures.request_account_state(
+                self.pyo3_account_id,
+            )
+            account_state = AccountState.from_dict(pyo3_account_state.to_dict())
+
+            self.generate_account_state(
+                balances=account_state.balances,
+                margins=account_state.margins,
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+            if account_state.balances:
+                self._log.info(
+                    f"Generated account state with {len(account_state.balances)} balance(s)",
+                )
 
     async def generate_order_status_reports(
         self,
