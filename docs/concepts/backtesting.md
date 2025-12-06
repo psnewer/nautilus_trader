@@ -104,7 +104,7 @@ For datasets that don't fit in memory, use the streaming API:
 
 ```python
 def data_generator():
-    # Yield chunks of pre-sorted data
+    # Yield chunks of data (each chunk is a list of Data objects)
     yield load_chunk_1()
     yield load_chunk_2()
     yield load_chunk_3()
@@ -114,6 +114,10 @@ engine.add_data_iterator(
     generator=data_generator(),
 )
 ```
+
+:::note
+The streaming API processes data chunks on-demand during the backtest run, avoiding the need to load all data into memory upfront.
+:::
 
 :::tip Performance impact
 For a backtest with 10 instruments, each with 1M bars:
@@ -130,9 +134,10 @@ The `BacktestEngine` enforces important invariants to ensure data integrity:
 
 **Requirements:**
 
-- All data must be sorted and synced to the internal iterator before calling `run()`.
-- When using `sort=False`, you **must** call `sort_data()` or add more data with `sort=True` before running.
-- The engine validates this requirement and raises `RuntimeError` if violated.
+- All data must be sorted before calling `run()`.
+- When using `sort=False`, you **must** call `sort_data()` before running.
+- The engine validates this and raises `RuntimeError` if unsorted data is detected.
+- Calling `sort_data()` multiple times is safe (idempotent).
 
 **Safety guarantees:**
 
@@ -167,15 +172,15 @@ The `.reset()` method returns all stateful fields to their **initial value**, ex
 
 **What gets reset:**
 
-- All trading state (orders, positions, account balances)
-- Strategy state
-- Engine counters and timestamps
+- All trading state (orders, positions, account balances).
+- Strategy instances are removed (you must re-add strategies before the next run).
+- Engine counters and timestamps.
 
 **What persists:**
 
-- Data added via `.add_data()` (use `.clear_data()` to drop it)
-- Instruments (required to match the persisted data)
-- Venue configurations
+- Data added via `.add_data()` (use `.clear_data()` to remove).
+- Instruments (must match the persisted data).
+- Venue configurations.
 
 **Instrument handling:**
 
@@ -362,8 +367,8 @@ If your data source provides bars timestamped at the **opening time** (common in
 
 **Approach 2: Use `ts_init_delta` parameter**
 
-- When calling `BarDataWrangler.process()`, set `ts_init_delta` to the bar's duration in nanoseconds.
-- The wrangler will compute `ts_init = ts_event + ts_init_delta`, shifting execution timing to the close.
+- When calling `BarDataWrangler.process()`, set `ts_init_delta` to the bar's duration in nanoseconds (e.g., `60_000_000_000` for 1-minute bars).
+- The wrangler computes `ts_init = ts_event + ts_init_delta`, shifting execution timing to the close.
 - Use this when you cannot or prefer not to modify source data timestamps.
 
 Always verify your data's timestamp convention with a small sample to avoid simulation inaccuracies. Incorrect timestamp handling can lead to look-ahead bias and unrealistic backtest results.

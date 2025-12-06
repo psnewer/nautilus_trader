@@ -495,30 +495,15 @@ Python bindings for the Rust core are provided by statically linking the Rust li
 
 ### Dependency flow
 
-```
-┌─────────────────────────┐
-│                         │
-│                         │
-│     nautilus_trader     │
-│                         │
-│     Python / Cython     │
-│                         │
-│                         │
-└────────────┬────────────┘
- C API       │
-             │
-             │
-             │
- C API       ▼
-┌─────────────────────────┐
-│                         │
-│                         │
-│      nautilus_core      │
-│                         │
-│          Rust           │
-│                         │
-│                         │
-└─────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph trader["nautilus_trader<br/>Python / Cython"]
+    end
+
+    subgraph core["nautilus_core<br/>Rust"]
+    end
+
+    trader -->|"C API"| core
 ```
 
 :::note

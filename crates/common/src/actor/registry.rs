@@ -35,12 +35,6 @@
 //!   allowing aliased mutable access. This is technically undefined behavior but is
 //!   required by the re-entrant callback pattern. Higher-level discipline is required.
 //! - **Thread-local only**: Guards must not be sent across threads.
-//!
-//! # Alternatives Considered
-//!
-//! - **`RefCell`-style tracking**: Panicked on re-entrant access, breaking 44+ tests.
-//! - **`&'static mut T` returns**: Allowed storing references indefinitely, enabling
-//!   use-after-free if the registry was cleared.
 
 use std::{
     any::TypeId,
