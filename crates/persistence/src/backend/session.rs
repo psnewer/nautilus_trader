@@ -326,17 +326,13 @@ impl DataQueryResult {
     /// drop if exists and reset the field.
     pub fn drop_chunk(&mut self) {
         if let Some(CVec { ptr, len, cap }) = self.chunk.take() {
-            debug_assert!(
+            assert!(
                 len <= cap,
                 "drop_chunk: len ({len}) > cap ({cap}) - memory corruption or wrong chunk type"
             );
-            debug_assert!(
+            assert!(
                 len == 0 || !ptr.is_null(),
                 "drop_chunk: null ptr with non-zero len ({len}) - memory corruption"
-            );
-            debug_assert!(
-                cap < 1_000_000_000,
-                "drop_chunk: suspiciously large cap ({cap}) - likely corrupted CVec"
             );
 
             let data: Vec<Data> = unsafe { Vec::from_raw_parts(ptr.cast::<Data>(), len, cap) };

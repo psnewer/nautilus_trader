@@ -119,6 +119,11 @@ pub extern "C" fn level_exposure(level: &BookLevel_API) -> f64 {
     level.exposure()
 }
 
+/// Drops a `CVec` of `BookLevel_API` values.
+///
+/// # Panics
+///
+/// Panics if `CVec` invariants are violated (corrupted metadata).
 #[unsafe(no_mangle)]
 pub extern "C" fn vec_drop_book_levels(v: CVec) {
     if v.ptr.is_null() {
@@ -127,13 +132,9 @@ pub extern "C" fn vec_drop_book_levels(v: CVec) {
 
     let CVec { ptr, len, cap } = v;
 
-    debug_assert!(
+    assert!(
         len <= cap,
         "vec_drop_book_levels: len ({len}) > cap ({cap})"
-    );
-    debug_assert!(
-        cap < 1_000_000_000,
-        "vec_drop_book_levels: suspiciously large cap ({cap})"
     );
 
     let data: Vec<BookLevel_API> =
@@ -141,6 +142,11 @@ pub extern "C" fn vec_drop_book_levels(v: CVec) {
     drop(data); // Memory freed here
 }
 
+/// Drops a `CVec` of `BookOrder` values.
+///
+/// # Panics
+///
+/// Panics if `CVec` invariants are violated (corrupted metadata).
 #[unsafe(no_mangle)]
 pub extern "C" fn vec_drop_book_orders(v: CVec) {
     if v.ptr.is_null() {
@@ -149,13 +155,9 @@ pub extern "C" fn vec_drop_book_orders(v: CVec) {
 
     let CVec { ptr, len, cap } = v;
 
-    debug_assert!(
+    assert!(
         len <= cap,
         "vec_drop_book_orders: len ({len}) > cap ({cap})"
-    );
-    debug_assert!(
-        cap < 1_000_000_000,
-        "vec_drop_book_orders: suspiciously large cap ({cap})"
     );
 
     let orders: Vec<BookOrder> = unsafe { Vec::from_raw_parts(ptr.cast::<BookOrder>(), len, cap) };
