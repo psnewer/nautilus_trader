@@ -330,12 +330,9 @@ cdef class OrderMatchingEngine:
     cdef Logger _log
     cdef MessageBus _msgbus
     cdef OrderBook _book
-    cdef OrderBook _opening_auction_book
-    cdef OrderBook _closing_auction_book
     cdef FillModel _fill_model
     cdef FeeModel _fee_model
     cdef InstrumentClose _instrument_close
-    # cdef object _auction_match_algo
     cdef bint _instrument_has_expiration
     cdef bint _reject_stop_orders
     cdef bint _support_gtd_orders
@@ -407,7 +404,6 @@ cdef class OrderMatchingEngine:
     cpdef void process_trade_tick(self, TradeTick tick)
     cpdef void process_bar(self, Bar bar)
     cpdef void process_status(self, MarketStatusAction status)
-    cpdef void process_auction_book(self, OrderBook book)
     cpdef void process_instrument_close(self, InstrumentClose close)
     cdef void _process_trade_ticks_from_bar(self, Bar bar)
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size)
@@ -437,9 +433,6 @@ cdef class OrderMatchingEngine:
     cdef void _process_market_if_touched_order(self, MarketIfTouchedOrder order)
     cdef void _process_limit_if_touched_order(self, LimitIfTouchedOrder order)
     cdef void _process_trailing_stop_order(self, Order order)
-    cdef void _process_auction_market_order(self, MarketOrder order)
-    cdef void _process_auction_limit_order(self, LimitOrder order)
-    cdef void _process_auction_book_order(self, BookOrder order, TimeInForce time_in_force)
     cdef void _update_limit_order(self, Order order, Quantity qty, Price price)
     cdef void _update_stop_market_order(self, Order order, Quantity qty, Price trigger_price)
     cdef void _update_stop_limit_order(self, Order order, Quantity qty, Price price, Price trigger_price)
