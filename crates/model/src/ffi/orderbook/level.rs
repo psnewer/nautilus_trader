@@ -126,6 +126,16 @@ pub extern "C" fn vec_drop_book_levels(v: CVec) {
     }
 
     let CVec { ptr, len, cap } = v;
+
+    debug_assert!(
+        len <= cap,
+        "vec_drop_book_levels: len ({len}) > cap ({cap})"
+    );
+    debug_assert!(
+        cap < 1_000_000_000,
+        "vec_drop_book_levels: suspiciously large cap ({cap})"
+    );
+
     let data: Vec<BookLevel_API> =
         unsafe { Vec::from_raw_parts(ptr.cast::<BookLevel_API>(), len, cap) };
     drop(data); // Memory freed here
@@ -138,6 +148,16 @@ pub extern "C" fn vec_drop_book_orders(v: CVec) {
     }
 
     let CVec { ptr, len, cap } = v;
+
+    debug_assert!(
+        len <= cap,
+        "vec_drop_book_orders: len ({len}) > cap ({cap})"
+    );
+    debug_assert!(
+        cap < 1_000_000_000,
+        "vec_drop_book_orders: suspiciously large cap ({cap})"
+    );
+
     let orders: Vec<BookOrder> = unsafe { Vec::from_raw_parts(ptr.cast::<BookOrder>(), len, cap) };
     drop(orders); // Memory freed here
 }

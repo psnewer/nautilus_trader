@@ -334,7 +334,7 @@ where
     }
 
     fn handle(&self, _message: &dyn Any) {
-        let throttler = get_actor_unchecked::<Throttler<T, F>>(&self.actor_id);
+        let mut throttler = get_actor_unchecked::<Throttler<T, F>>(&self.actor_id);
         while let Some(msg) = throttler.buffer.pop_back() {
             throttler.send_msg(msg);
 
@@ -369,7 +369,7 @@ where
     F: Fn(T) + 'static,
 {
     TimeEventCallback::from(move |_event: TimeEvent| {
-        let throttler = get_actor_unchecked::<Throttler<T, F>>(&actor_id);
+        let mut throttler = get_actor_unchecked::<Throttler<T, F>>(&actor_id);
         throttler.is_limiting = false;
     })
 }

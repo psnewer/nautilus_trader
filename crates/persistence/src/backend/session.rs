@@ -242,7 +242,10 @@ impl DataBackendSession {
     }
 }
 
-// Note: Intended to be used on a single Python thread
+// SAFETY: DataBackendSession contains non-Send types but implements Send to satisfy
+// PyO3 trait bounds. It must only be used on a single Python thread.
+// WARNING: Actually sending this type across threads is undefined behavior.
+#[allow(unsafe_code)]
 unsafe impl Send for DataBackendSession {}
 
 #[must_use]
@@ -323,6 +326,19 @@ impl DataQueryResult {
     /// drop if exists and reset the field.
     pub fn drop_chunk(&mut self) {
         if let Some(CVec { ptr, len, cap }) = self.chunk.take() {
+            debug_assert!(
+                len <= cap,
+                "drop_chunk: len ({len}) > cap ({cap}) - memory corruption or wrong chunk type"
+            );
+            debug_assert!(
+                len == 0 || !ptr.is_null(),
+                "drop_chunk: null ptr with non-zero len ({len}) - memory corruption"
+            );
+            debug_assert!(
+                cap < 1_000_000_000,
+                "drop_chunk: suspiciously large cap ({cap}) - likely corrupted CVec"
+            );
+
             let data: Vec<Data> = unsafe { Vec::from_raw_parts(ptr.cast::<Data>(), len, cap) };
             drop(data);
         }
@@ -355,5 +371,8 @@ impl Drop for DataQueryResult {
     }
 }
 
-// Note: Intended to be used on a single Python thread
+// SAFETY: DataQueryResult contains non-Send types but implements Send to satisfy
+// PyO3 trait bounds. It must only be used on a single Python thread.
+// WARNING: Actually sending this type across threads is undefined behavior.
+#[allow(unsafe_code)]
 unsafe impl Send for DataQueryResult {}

@@ -90,6 +90,20 @@ pub extern "C" fn orderbook_deltas_ts_init(deltas: &OrderBookDeltas_API) -> Unix
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_deltas_vec_drop(v: CVec) {
     let CVec { ptr, len, cap } = v;
+
+    debug_assert!(
+        len <= cap,
+        "orderbook_deltas_vec_drop: len ({len}) > cap ({cap})"
+    );
+    debug_assert!(
+        len == 0 || !ptr.is_null(),
+        "orderbook_deltas_vec_drop: null ptr with non-zero len ({len})"
+    );
+    debug_assert!(
+        cap < 1_000_000_000,
+        "orderbook_deltas_vec_drop: suspiciously large cap ({cap})"
+    );
+
     let deltas: Vec<OrderBookDelta> =
         unsafe { Vec::from_raw_parts(ptr.cast::<OrderBookDelta>(), len, cap) };
     drop(deltas); // Memory freed here
