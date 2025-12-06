@@ -378,6 +378,7 @@ cdef class OrderMatchingEngine:
     cdef PriceRaw _target_last
     cdef Bar _last_bid_bar
     cdef Bar _last_ask_bar
+    cdef Quantity _last_trade_size
 
     cdef int _position_count
     cdef int _order_count
@@ -454,6 +455,7 @@ cdef class OrderMatchingEngine:
     cpdef list determine_market_price_and_volume(self, Order order)
     cdef list determine_market_fills_with_simulation(self, Order order)
     cdef list determine_limit_fills_with_simulation(self, Order order)
+    cdef Quantity determine_trade_fill_qty(self, Order order)
     cpdef void fill_market_order(self, Order order)
     cpdef void fill_limit_order(self, Order order)
     cdef void _trail_stop_order(self, Order order)

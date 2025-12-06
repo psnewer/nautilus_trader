@@ -465,6 +465,16 @@ the spread is not permanently corrupted by the transient trade price.
 - **SELLER trade at P**: The engine temporarily sets the Best Ask to P. Resting BUY LIMIT orders at P or higher will fill (as they are willing to buy at P or more).
 - **BUYER trade at P**: The engine temporarily sets the Best Bid to P. Resting SELL LIMIT orders at P or lower will fill (as they are willing to sell at P or less).
 
+**Fill quantity capping:**
+
+Fill quantities are capped to ensure realistic execution simulation:
+
+- **Per-order capping**: Each order's fill quantity is limited to the minimum of the order's remaining quantity and the trade tick's size. For example, if you have a BUY LIMIT order for 100,000 units and a 200-unit SELLER trade occurs at your limit price, the order will be partially filled for 200 units (not the full 100,000).
+
+- **Multi-order capping**: When multiple orders match the same trade tick, the total filled quantity across all orders will not exceed the trade tick's size. For example, if two BUY LIMIT orders (40 and 60 units) are resting and a 50-unit SELLER trade occurs, the first order fills for 40 units and the second fills for 10 units (the remaining trade size), totaling 50 units.
+
+This behavior ensures that backtests don't overstate execution volumes beyond what the historical trade data indicates was actually available in the market.
+
 **Example:**
 
 ```python

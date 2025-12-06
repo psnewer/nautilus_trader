@@ -3563,6 +3563,7 @@ cdef class OrderMatchingEngine:
         self._has_targets = False
         self._last_bid_bar: Bar | None = None
         self._last_ask_bar: Bar | None = None
+        self._last_trade_size: Quantity | None = None
 
         self._position_count = 0
         self._order_count = 0
@@ -3591,6 +3592,7 @@ cdef class OrderMatchingEngine:
         self._has_targets = False
         self._last_bid_bar = None
         self._last_ask_bar = None
+        self._last_trade_size = None
 
         self._position_count = 0
         self._order_count = 0
@@ -3907,9 +3909,15 @@ cdef class OrderMatchingEngine:
             elif aggressor_side == AggressorSide.BUYER and price_raw > original_bid:
                 self._core.set_bid_raw(price_raw)
 
+            # Set last trade size for fill quantity capping
+            self._last_trade_size = tick.size
+
         self.iterate(tick.ts_init, aggressor_side)
 
         if self._trade_execution:
+            # Reset trade size after matching
+            self._last_trade_size = None
+
             # Restore original state after matching
             if aggressor_side == AggressorSide.SELLER and price_raw < original_ask:
                 self._core.set_ask_raw(original_ask)
@@ -5273,6 +5281,41 @@ cdef class OrderMatchingEngine:
             # Fall back to standard logic
             return self.determine_limit_price_and_volume(order)
 
+    cdef Quantity determine_trade_fill_qty(self, Order order):
+        """
+        Determine the fill quantity for trade execution mode.
+
+        When trade execution mode triggers a match via the transient price override,
+        this method calculates the fill quantity as the minimum of:
+        - The order's remaining quantity (leaves_qty)
+        - The remaining trade tick size (if available)
+
+        The trade size is decremented after each fill to ensure total fills
+        across multiple orders do not exceed the trade tick's reported size.
+
+        Returns None if there is no quantity available to fill.
+        """
+        cdef uint64_t leaves_raw = order.quantity._mem.raw - order.filled_qty._mem.raw
+        if leaves_raw == 0:
+            return None
+
+        cdef uint64_t fill_raw = leaves_raw
+        cdef uint64_t remaining_raw
+
+        if self._last_trade_size is not None:
+            if self._last_trade_size._mem.raw == 0:
+                return None
+            fill_raw = min(leaves_raw, self._last_trade_size._mem.raw)
+
+            # Decrement remaining trade size for subsequent orders
+            remaining_raw = self._last_trade_size._mem.raw - fill_raw
+            self._last_trade_size = Quantity.from_raw_c(
+                remaining_raw,
+                self._last_trade_size._mem.precision,
+            )
+
+        return Quantity.from_raw_c(fill_raw, order.quantity._mem.precision)
+
     cpdef list determine_limit_price_and_volume(self, Order order):
         """
         Return the projected fills for the given *limit* order filling passively
@@ -5306,21 +5349,15 @@ cdef class OrderMatchingEngine:
 
         cdef Price triggered_price = order.get_triggered_price_c()
         cdef Price price = order.price
-        cdef Quantity leaves_qty
 
-        # Handle trade execution mode where the order is matched via transient price override
-        # but the book doesn't have liquidity at that price.
         if (
             not fills
             and order.liquidity_side == LiquiditySide.MAKER
             and self._core.is_limit_matched(order.side, order.price)
         ):
-            leaves_qty = Quantity.from_raw_c(
-                order.quantity._mem.raw - order.filled_qty._mem.raw,
-                order.quantity._mem.precision,
-            )
-            if leaves_qty.as_double() > 0:
-                fills = [(order.price, leaves_qty)]
+            fill_qty = self.determine_trade_fill_qty(order)
+            if fill_qty is not None:
+                fills = [(order.price, fill_qty)]
 
         if (
                 fills
