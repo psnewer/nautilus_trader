@@ -43,7 +43,7 @@ use ustr::Ustr;
 
 use super::{enums::TardisExchange, http::models::TardisInstrumentInfo};
 use crate::{
-    config::TardisReplayConfig,
+    config::{BookSnapshotOutput, TardisReplayConfig},
     http::TardisHttpClient,
     machine::{TardisMachineClient, types::TardisInstrumentMiniInfo},
     parse::{normalize_instrument_id, parse_instrument_id},
@@ -139,9 +139,18 @@ pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> an
     let normalize_symbols = config.normalize_symbols.unwrap_or(true);
     tracing::info!("normalize_symbols={normalize_symbols}");
 
+    let book_snapshot_output = config
+        .book_snapshot_output
+        .clone()
+        .unwrap_or(BookSnapshotOutput::Deltas);
+    tracing::info!("book_snapshot_output={book_snapshot_output:?}");
+
     let http_client = TardisHttpClient::new(None, None, None, normalize_symbols)?;
-    let mut machine_client =
-        TardisMachineClient::new(config.tardis_ws_url.as_deref(), normalize_symbols)?;
+    let mut machine_client = TardisMachineClient::new(
+        config.tardis_ws_url.as_deref(),
+        normalize_symbols,
+        book_snapshot_output,
+    )?;
 
     let info_map = gather_instruments_info(&config, &http_client).await;
 
@@ -393,11 +402,12 @@ fn batch_and_write_depths(
     date: NaiveDate,
     path: &Path,
 ) {
-    let typename = stringify!(OrderBookDepth10);
+    // Use "order_book_depths" to match catalog path prefix
+    let typename = "order_book_depths";
     match book_depth10_to_arrow_record_batch_bytes(depths) {
         Ok(batch) => write_batch(batch, typename, instrument_id, date, path),
         Err(e) => {
-            tracing::error!("Error converting `{typename}` to Arrow: {e:?}");
+            tracing::error!("Error converting OrderBookDepth10 to Arrow: {e:?}");
         }
     }
 }

@@ -35,7 +35,7 @@ use super::{
         TardisInstrumentMiniInfo,
     },
 };
-use crate::machine::parse::parse_tardis_ws_message;
+use crate::{config::BookSnapshotOutput, machine::parse::parse_tardis_ws_message};
 
 /// Provides a client for connecting to a [Tardis Machine Server](https://docs.tardis.dev/api/tardis-machine).
 #[cfg_attr(
@@ -49,6 +49,7 @@ pub struct TardisMachineClient {
     pub stream_signal: Arc<AtomicBool>,
     pub instruments: HashMap<TardisInstrumentKey, Arc<TardisInstrumentMiniInfo>>,
     pub normalize_symbols: bool,
+    pub book_snapshot_output: BookSnapshotOutput,
 }
 
 impl TardisMachineClient {
@@ -57,7 +58,11 @@ impl TardisMachineClient {
     /// # Errors
     ///
     /// Returns an error if `base_url` is not provided and `TARDIS_MACHINE_WS_URL` env var is missing.
-    pub fn new(base_url: Option<&str>, normalize_symbols: bool) -> anyhow::Result<Self> {
+    pub fn new(
+        base_url: Option<&str>,
+        normalize_symbols: bool,
+        book_snapshot_output: BookSnapshotOutput,
+    ) -> anyhow::Result<Self> {
         let base_url = base_url
             .map(ToString::to_string)
             .or_else(|| env::var("TARDIS_MACHINE_WS_URL").ok())
@@ -73,6 +78,7 @@ impl TardisMachineClient {
             stream_signal: Arc::new(AtomicBool::new(false)),
             instruments: HashMap::new(),
             normalize_symbols,
+            book_snapshot_output,
         })
     }
 
@@ -112,6 +118,7 @@ impl TardisMachineClient {
             Box::pin(stream),
             None,
             Some(self.instruments.clone()),
+            self.book_snapshot_output.clone(),
         ))
     }
 
@@ -133,6 +140,7 @@ impl TardisMachineClient {
             Box::pin(stream),
             Some(Arc::new(instrument)),
             None,
+            self.book_snapshot_output.clone(),
         ))
     }
 }
@@ -141,6 +149,7 @@ fn handle_ws_stream<S>(
     stream: S,
     instrument: Option<Arc<TardisInstrumentMiniInfo>>,
     instrument_map: Option<HashMap<TardisInstrumentKey, Arc<TardisInstrumentMiniInfo>>>,
+    book_snapshot_output: BookSnapshotOutput,
 ) -> impl Stream<Item = Result<Data, Error>>
 where
     S: Stream<Item = Result<WsMessage, Error>> + Unpin,
@@ -168,7 +177,7 @@ where
                     });
 
                     if let Some(info) = info {
-                        if let Some(data) = parse_tardis_ws_message(msg, info) {
+                        if let Some(data) = parse_tardis_ws_message(msg, info, &book_snapshot_output) {
                             yield Ok(data);
                         }
                     } else {

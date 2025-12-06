@@ -20,8 +20,8 @@ use chrono::{DateTime, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarType, BookOrder, Data, FundingRateUpdate, OrderBookDelta, OrderBookDeltas,
-        OrderBookDeltas_API, QuoteTick, TradeTick,
+        Bar, BarType, BookOrder, DEPTH10_LEN, Data, FundingRateUpdate, NULL_ORDER, OrderBookDelta,
+        OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggregationSource, BookAction, OrderSide, RecordFlag},
     identifiers::{InstrumentId, TradeId},
@@ -35,20 +35,24 @@ use super::{
     },
     types::TardisInstrumentMiniInfo,
 };
-use crate::parse::{normalize_amount, parse_aggressor_side, parse_bar_spec, parse_book_action};
+use crate::{
+    config::BookSnapshotOutput,
+    parse::{normalize_amount, parse_aggressor_side, parse_bar_spec, parse_book_action},
+};
 
 #[must_use]
 pub fn parse_tardis_ws_message(
     msg: WsMessage,
     info: Arc<TardisInstrumentMiniInfo>,
+    book_snapshot_output: &BookSnapshotOutput,
 ) -> Option<Data> {
     match msg {
         WsMessage::BookChange(msg) => {
             if msg.bids.is_empty() && msg.asks.is_empty() {
+                let exchange = msg.exchange;
+                let symbol = &msg.symbol;
                 tracing::error!(
-                    "Invalid book change for {} {} (empty bids and asks)",
-                    msg.exchange,
-                    msg.symbol
+                    "Invalid book change for {exchange} {symbol} (empty bids and asks)"
                 );
                 return None;
             }
@@ -81,20 +85,36 @@ pub fn parse_tardis_ws_message(
                     }
                 }
             }
-            _ => {
-                match parse_book_snapshot_msg_as_deltas(
-                    msg,
-                    info.price_precision,
-                    info.size_precision,
-                    info.instrument_id,
-                ) {
-                    Ok(deltas) => Some(Data::Deltas(deltas)),
-                    Err(e) => {
-                        tracing::error!("Failed to parse book snapshot message: {e}");
-                        None
+            _ => match book_snapshot_output {
+                BookSnapshotOutput::Depth10 => {
+                    match parse_book_snapshot_msg_as_depth10(
+                        msg,
+                        info.price_precision,
+                        info.size_precision,
+                        info.instrument_id,
+                    ) {
+                        Ok(depth10) => Some(Data::Depth10(Box::new(depth10))),
+                        Err(e) => {
+                            tracing::error!("Failed to parse book snapshot as depth10: {e}");
+                            None
+                        }
                     }
                 }
-            }
+                BookSnapshotOutput::Deltas => {
+                    match parse_book_snapshot_msg_as_deltas(
+                        msg,
+                        info.price_precision,
+                        info.size_precision,
+                        info.instrument_id,
+                    ) {
+                        Ok(deltas) => Some(Data::Deltas(deltas)),
+                        Err(e) => {
+                            tracing::error!("Failed to parse book snapshot as deltas: {e}");
+                            None
+                        }
+                    }
+                }
+            },
         },
         WsMessage::Trade(msg) => {
             match parse_trade_msg(
@@ -192,6 +212,67 @@ pub fn parse_book_snapshot_msg_as_deltas(
         msg.timestamp,
         msg.local_timestamp,
     )
+}
+
+/// Parse a book snapshot message into an [`OrderBookDepth10`].
+///
+/// # Errors
+///
+/// Returns an error if timestamp fields cannot be converted to nanoseconds.
+pub fn parse_book_snapshot_msg_as_depth10(
+    msg: BookSnapshotMsg,
+    price_precision: u8,
+    size_precision: u8,
+    instrument_id: InstrumentId,
+) -> anyhow::Result<OrderBookDepth10> {
+    let ts_event_nanos = msg
+        .timestamp
+        .timestamp_nanos_opt()
+        .context("invalid timestamp: cannot extract event nanoseconds")?;
+    let ts_event = UnixNanos::from(ts_event_nanos as u64);
+
+    let ts_init_nanos = msg
+        .local_timestamp
+        .timestamp_nanos_opt()
+        .context("invalid timestamp: cannot extract init nanoseconds")?;
+    let ts_init = UnixNanos::from(ts_init_nanos as u64);
+
+    let mut bids = [NULL_ORDER; DEPTH10_LEN];
+    let mut asks = [NULL_ORDER; DEPTH10_LEN];
+    let mut bid_counts = [0u32; DEPTH10_LEN];
+    let mut ask_counts = [0u32; DEPTH10_LEN];
+
+    for (i, level) in msg.bids.iter().take(DEPTH10_LEN).enumerate() {
+        bids[i] = BookOrder::new(
+            OrderSide::Buy,
+            Price::new(level.price, price_precision),
+            Quantity::new(level.amount, size_precision),
+            0,
+        );
+        bid_counts[i] = 1;
+    }
+
+    for (i, level) in msg.asks.iter().take(DEPTH10_LEN).enumerate() {
+        asks[i] = BookOrder::new(
+            OrderSide::Sell,
+            Price::new(level.price, price_precision),
+            Quantity::new(level.amount, size_precision),
+            0,
+        );
+        ask_counts[i] = 1;
+    }
+
+    Ok(OrderBookDepth10::new(
+        instrument_id,
+        bids,
+        asks,
+        bid_counts,
+        ask_counts,
+        RecordFlag::F_SNAPSHOT.value(),
+        0, // Sequence not available from Tardis
+        ts_event,
+        ts_init,
+    ))
 }
 
 /// Parse raw book levels into order book deltas, returning error for invalid timestamps.
@@ -452,7 +533,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::tests::load_test_json;
+    use crate::{enums::TardisExchange, tests::load_test_json};
 
     #[rstest]
     fn test_parse_book_change_message() {
@@ -538,6 +619,58 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_book_snapshot_message_as_depth10() {
+        let json_data = load_test_json("book_snapshot.json");
+        let msg: BookSnapshotMsg = serde_json::from_str(&json_data).unwrap();
+
+        let price_precision = 1;
+        let size_precision = 0;
+        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
+
+        let depth10 =
+            parse_book_snapshot_msg_as_depth10(msg, price_precision, size_precision, instrument_id)
+                .unwrap();
+
+        assert_eq!(depth10.instrument_id, instrument_id);
+        assert_eq!(depth10.flags, RecordFlag::F_SNAPSHOT.value());
+        assert_eq!(depth10.sequence, 0);
+        assert_eq!(depth10.ts_event, UnixNanos::from(1572010786950000000));
+        assert_eq!(depth10.ts_init, UnixNanos::from(1572010786961000000));
+
+        // Check first bid level
+        assert_eq!(depth10.bids[0].side, OrderSide::Buy);
+        assert_eq!(depth10.bids[0].price, Price::from("7633.5"));
+        assert_eq!(depth10.bids[0].size, Quantity::from(1906067));
+        assert_eq!(depth10.bids[0].order_id, 0);
+        assert_eq!(depth10.bid_counts[0], 1);
+
+        // Check second bid level
+        assert_eq!(depth10.bids[1].side, OrderSide::Buy);
+        assert_eq!(depth10.bids[1].price, Price::from("7633.0"));
+        assert_eq!(depth10.bids[1].size, Quantity::from(65319));
+        assert_eq!(depth10.bid_counts[1], 1);
+
+        // Check first ask level
+        assert_eq!(depth10.asks[0].side, OrderSide::Sell);
+        assert_eq!(depth10.asks[0].price, Price::from("7634.0"));
+        assert_eq!(depth10.asks[0].size, Quantity::from(1467849));
+        assert_eq!(depth10.asks[0].order_id, 0);
+        assert_eq!(depth10.ask_counts[0], 1);
+
+        // Check second ask level
+        assert_eq!(depth10.asks[1].side, OrderSide::Sell);
+        assert_eq!(depth10.asks[1].price, Price::from("7634.5"));
+        assert_eq!(depth10.asks[1].size, Quantity::from(67939));
+        assert_eq!(depth10.ask_counts[1], 1);
+
+        // Check empty levels are NULL_ORDER
+        assert_eq!(depth10.bids[2], NULL_ORDER);
+        assert_eq!(depth10.bid_counts[2], 0);
+        assert_eq!(depth10.asks[2], NULL_ORDER);
+        assert_eq!(depth10.ask_counts[2], 0);
+    }
+
+    #[rstest]
     fn test_parse_book_snapshot_message_as_quote() {
         let json_data = load_test_json("book_snapshot.json");
         let msg: BookSnapshotMsg = serde_json::from_str(&json_data).unwrap();
@@ -598,5 +731,47 @@ mod tests {
         assert_eq!(bar.volume, Quantity::from(37034));
         assert_eq!(bar.ts_event, UnixNanos::from(1572009100000000000));
         assert_eq!(bar.ts_init, UnixNanos::from(1572009100369000000));
+    }
+
+    #[rstest]
+    fn test_parse_tardis_ws_message_book_snapshot_routes_to_depth10() {
+        let json_data = load_test_json("book_snapshot.json");
+        let msg: BookSnapshotMsg = serde_json::from_str(&json_data).unwrap();
+        let ws_msg = WsMessage::BookSnapshot(msg);
+
+        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
+        let info = Arc::new(TardisInstrumentMiniInfo::new(
+            instrument_id,
+            None,
+            TardisExchange::Bitmex,
+            1,
+            0,
+        ));
+
+        let result = parse_tardis_ws_message(ws_msg, info, &BookSnapshotOutput::Depth10);
+
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), Data::Depth10(_)));
+    }
+
+    #[rstest]
+    fn test_parse_tardis_ws_message_book_snapshot_routes_to_deltas() {
+        let json_data = load_test_json("book_snapshot.json");
+        let msg: BookSnapshotMsg = serde_json::from_str(&json_data).unwrap();
+        let ws_msg = WsMessage::BookSnapshot(msg);
+
+        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
+        let info = Arc::new(TardisInstrumentMiniInfo::new(
+            instrument_id,
+            None,
+            TardisExchange::Bitmex,
+            1,
+            0,
+        ));
+
+        let result = parse_tardis_ws_message(ws_msg, info, &BookSnapshotOutput::Deltas);
+
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), Data::Deltas(_)));
     }
 }
