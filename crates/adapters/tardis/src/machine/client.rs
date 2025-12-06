@@ -87,16 +87,22 @@ impl TardisMachineClient {
         self.instruments.insert(key, Arc::new(info));
     }
 
+    /// Returns `true` if `close()` has been called.
+    ///
+    /// This checks that both replay and stream signals have been set,
+    /// which only occurs when `close()` is explicitly called.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.replay_signal.load(Ordering::Relaxed) || self.stream_signal.load(Ordering::Relaxed)
+        // Use Acquire ordering to synchronize with Release stores in close()
+        self.replay_signal.load(Ordering::Acquire) && self.stream_signal.load(Ordering::Acquire)
     }
 
     pub fn close(&mut self) {
         tracing::debug!("Closing");
 
-        self.replay_signal.store(true, Ordering::Relaxed);
-        self.stream_signal.store(true, Ordering::Relaxed);
+        // Use Release ordering to ensure visibility to Acquire loads in is_closed()
+        self.replay_signal.store(true, Ordering::Release);
+        self.stream_signal.store(true, Ordering::Release);
 
         tracing::debug!("Closed");
     }
@@ -221,5 +227,58 @@ pub fn determine_instrument_info(
     } else {
         tracing::error!("Instrument definition info not available for {key:?}");
         None
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    fn test_is_closed_initial_state() {
+        let client = TardisMachineClient::new(
+            Some("ws://localhost:8001"),
+            false,
+            BookSnapshotOutput::Deltas,
+        )
+        .unwrap();
+        // Initially neither signal is set, so is_closed should be false
+        assert!(!client.is_closed());
+    }
+
+    #[rstest]
+    fn test_is_closed_after_close() {
+        let mut client = TardisMachineClient::new(
+            Some("ws://localhost:8001"),
+            false,
+            BookSnapshotOutput::Deltas,
+        )
+        .unwrap();
+        client.close();
+        // After close(), both signals are set, so is_closed should be true
+        assert!(client.is_closed());
+    }
+
+    #[rstest]
+    fn test_is_closed_partial_signal() {
+        let client = TardisMachineClient::new(
+            Some("ws://localhost:8001"),
+            false,
+            BookSnapshotOutput::Deltas,
+        )
+        .unwrap();
+        // Set only one signal - is_closed should still be false
+        // (since close() wasn't called, which sets both)
+        client.replay_signal.store(true, Ordering::Release);
+        assert!(!client.is_closed());
+
+        client.stream_signal.store(true, Ordering::Release);
+        // Now both are set, so is_closed should be true
+        assert!(client.is_closed());
     }
 }

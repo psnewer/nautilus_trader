@@ -143,6 +143,7 @@ TBD
 - Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad
 - Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
+- Improved Tardis adapter robustness and error handling
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
 - Standardized dYdX per adapter guide conventions (#3267), thanks @nicolad

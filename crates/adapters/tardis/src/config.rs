@@ -21,10 +21,10 @@ use super::machine::types::ReplayNormalizedRequestOptions;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BookSnapshotOutput {
-    /// Convert book snapshots to [`OrderBookDeltas`] and write to `order_book_deltas/`.
+    /// Convert book snapshots to `OrderBookDeltas` and write to `order_book_deltas/`.
     #[default]
     Deltas,
-    /// Convert book snapshots to [`OrderBookDepth10`] and write to `order_book_depths/`.
+    /// Convert book snapshots to `OrderBookDepth10` and write to `order_book_depths/`.
     Depth10,
 }
 
@@ -46,7 +46,7 @@ pub struct TardisReplayConfig {
     pub ws_proxy_url: Option<String>,
     /// The output format for `book_snapshot_*` messages.
     ///
-    /// - `deltas`: Convert to [`OrderBookDeltas`] and write to `order_book_deltas/` (default).
-    /// - `depth10`: Convert to [`OrderBookDepth10`] and write to `order_book_depths/`.
+    /// - `deltas`: Convert to `OrderBookDeltas` and write to `order_book_deltas/` (default).
+    /// - `depth10`: Convert to `OrderBookDepth10` and write to `order_book_depths/`.
     pub book_snapshot_output: Option<BookSnapshotOutput>,
 }

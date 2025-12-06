@@ -130,12 +130,20 @@ pub fn parse_tardis_ws_message(
                 }
             }
         }
-        WsMessage::TradeBar(msg) => Some(Data::Bar(parse_bar_msg(
-            msg,
-            info.price_precision,
-            info.size_precision,
-            info.instrument_id,
-        ))),
+        WsMessage::TradeBar(msg) => {
+            match parse_bar_msg(
+                msg,
+                info.price_precision,
+                info.size_precision,
+                info.instrument_id,
+            ) {
+                Ok(bar) => Some(Data::Bar(bar)),
+                Err(e) => {
+                    tracing::error!("Failed to parse bar message: {e}");
+                    None
+                }
+            }
+        }
         // Derivative ticker messages are handled through a separate callback path
         // for FundingRateUpdate since they're not part of the Data enum.
         WsMessage::DerivativeTicker(_) => None,
@@ -229,12 +237,20 @@ pub fn parse_book_snapshot_msg_as_depth10(
         .timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract event nanoseconds")?;
+    anyhow::ensure!(
+        ts_event_nanos >= 0,
+        "invalid timestamp: event nanoseconds {ts_event_nanos} is before UNIX epoch"
+    );
     let ts_event = UnixNanos::from(ts_event_nanos as u64);
 
     let ts_init_nanos = msg
         .local_timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract init nanoseconds")?;
+    anyhow::ensure!(
+        ts_init_nanos >= 0,
+        "invalid timestamp: init nanoseconds {ts_init_nanos} is before UNIX epoch"
+    );
     let ts_init = UnixNanos::from(ts_init_nanos as u64);
 
     let mut bids = [NULL_ORDER; DEPTH10_LEN];
@@ -295,16 +311,24 @@ pub fn parse_book_msg_as_deltas(
     let event_nanos = timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract event nanoseconds")?;
+    anyhow::ensure!(
+        event_nanos >= 0,
+        "invalid timestamp: event nanoseconds {event_nanos} is before UNIX epoch"
+    );
     let ts_event = UnixNanos::from(event_nanos as u64);
     let init_nanos = local_timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract init nanoseconds")?;
+    anyhow::ensure!(
+        init_nanos >= 0,
+        "invalid timestamp: init nanoseconds {init_nanos} is before UNIX epoch"
+    );
     let ts_init = UnixNanos::from(init_nanos as u64);
 
     let mut deltas: Vec<OrderBookDelta> = Vec::with_capacity(bids.len() + asks.len());
 
     for level in bids {
-        deltas.push(parse_book_level(
+        match parse_book_level(
             instrument_id,
             price_precision,
             size_precision,
@@ -313,11 +337,14 @@ pub fn parse_book_msg_as_deltas(
             is_snapshot,
             ts_event,
             ts_init,
-        ));
+        ) {
+            Ok(delta) => deltas.push(delta),
+            Err(e) => tracing::warn!("Skipping invalid bid level for {instrument_id}: {e}"),
+        }
     }
 
     for level in asks {
-        deltas.push(parse_book_level(
+        match parse_book_level(
             instrument_id,
             price_precision,
             size_precision,
@@ -326,11 +353,14 @@ pub fn parse_book_msg_as_deltas(
             is_snapshot,
             ts_event,
             ts_init,
-        ));
+        ) {
+            Ok(delta) => deltas.push(delta),
+            Err(e) => tracing::warn!("Skipping invalid ask level for {instrument_id}: {e}"),
+        }
     }
 
     if let Some(last_delta) = deltas.last_mut() {
-        last_delta.flags += RecordFlag::F_LAST.value();
+        last_delta.flags |= RecordFlag::F_LAST.value();
     }
 
     // TODO: Opaque pointer wrapper necessary for Cython (remove once Cython gone)
@@ -340,12 +370,11 @@ pub fn parse_book_msg_as_deltas(
     )))
 }
 
-#[must_use]
 /// Parse a single book level into an order book delta.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if a non-delete action has a zero size after normalization.
+/// Returns an error if a non-delete action has a zero size after normalization.
 #[allow(clippy::too_many_arguments)]
 pub fn parse_book_level(
     instrument_id: InstrumentId,
@@ -356,7 +385,7 @@ pub fn parse_book_level(
     is_snapshot: bool,
     ts_event: UnixNanos,
     ts_init: UnixNanos,
-) -> OrderBookDelta {
+) -> anyhow::Result<OrderBookDelta> {
     let amount = normalize_amount(level.amount, size_precision);
     let action = parse_book_action(is_snapshot, amount);
     let price = Price::new(level.price, price_precision);
@@ -370,12 +399,12 @@ pub fn parse_book_level(
     };
     let sequence = 0; // Not available
 
-    assert!(
+    anyhow::ensure!(
         !(action != BookAction::Delete && size.is_zero()),
         "Invalid zero size for {action}"
     );
 
-    OrderBookDelta::new(
+    Ok(OrderBookDelta::new(
         instrument_id,
         action,
         order,
@@ -383,7 +412,7 @@ pub fn parse_book_level(
         sequence,
         ts_event,
         ts_init,
-    )
+    ))
 }
 
 /// Parse a book snapshot message into a quote tick, returning an error on invalid data.
@@ -459,14 +488,18 @@ pub fn parse_trade_msg(
     ))
 }
 
-#[must_use]
+/// Parse a bar message into a Bar.
+///
+/// # Errors
+///
+/// Returns an error if the bar specification cannot be parsed.
 pub fn parse_bar_msg(
     msg: BarMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
-) -> Bar {
-    let spec = parse_bar_spec(&msg.name);
+) -> anyhow::Result<Bar> {
+    let spec = parse_bar_spec(&msg.name)?;
     let bar_type = BarType::new(instrument_id, spec, AggregationSource::External);
 
     let open = Price::new(msg.open, price_precision);
@@ -477,7 +510,9 @@ pub fn parse_bar_msg(
     let ts_event = UnixNanos::from(msg.timestamp);
     let ts_init = UnixNanos::from(msg.local_timestamp);
 
-    Bar::new(bar_type, open, high, low, close, volume, ts_event, ts_init)
+    Ok(Bar::new(
+        bar_type, open, high, low, close, volume, ts_event, ts_init,
+    ))
 }
 
 /// Parse a derivative ticker message into a funding rate update.
@@ -495,17 +530,25 @@ pub fn parse_derivative_ticker_msg(
         None => return Ok(None), // No funding rate data
     };
 
-    let ts_event = msg
+    let ts_event_nanos = msg
         .timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract event nanoseconds")?;
-    let ts_event = UnixNanos::from(ts_event as u64);
+    anyhow::ensure!(
+        ts_event_nanos >= 0,
+        "invalid timestamp: event nanoseconds {ts_event_nanos} is before UNIX epoch"
+    );
+    let ts_event = UnixNanos::from(ts_event_nanos as u64);
 
-    let ts_init = msg
+    let ts_init_nanos = msg
         .local_timestamp
         .timestamp_nanos_opt()
         .context("invalid timestamp: cannot extract init nanoseconds")?;
-    let ts_init = UnixNanos::from(ts_init as u64);
+    anyhow::ensure!(
+        ts_init_nanos >= 0,
+        "invalid timestamp: init nanoseconds {ts_init_nanos} is before UNIX epoch"
+    );
+    let ts_init = UnixNanos::from(ts_init_nanos as u64);
 
     let rate = rust_decimal::Decimal::try_from(funding_rate)
         .with_context(|| format!("Failed to convert funding rate {funding_rate} to Decimal"))?
@@ -718,7 +761,7 @@ mod tests {
         let price_precision = 1;
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
-        let bar = parse_bar_msg(msg, price_precision, size_precision, instrument_id);
+        let bar = parse_bar_msg(msg, price_precision, size_precision, instrument_id).unwrap();
 
         assert_eq!(
             bar.bar_type,
