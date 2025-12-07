@@ -65,11 +65,18 @@ pub async fn run_sync_dex(
             )
         });
 
+    // Mask potential API key in URL for logging (key is typically the last path segment)
     let masked_url = if let Some(idx) = rpc_http_url.rfind('/') {
         let (base, key) = rpc_http_url.split_at(idx + 1);
-        format!("{}{}", base, mask_api_key(key))
+        if key.is_empty() {
+            rpc_http_url.clone()
+        } else {
+            let masked_key = mask_api_key(key);
+            format!("{base}{masked_key}")
+        }
     } else {
-        rpc_http_url.clone()
+        // URL without path separator - mask entirely as it may contain credentials
+        mask_api_key(&rpc_http_url)
     };
 
     log::info!("Using RPC HTTP URL: '{masked_url}'");

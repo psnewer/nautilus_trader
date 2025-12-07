@@ -218,7 +218,9 @@ fn download_file(
     timeout_secs: u64,
     retry_config: Option<RetryConfig>,
 ) -> anyhow::Result<()> {
-    // Validate HTTPS for security (allow HTTP in tests for local servers)
+    // Validate HTTPS for security in production builds,
+    // HTTP is intentionally allowed in test builds for local test servers (127.0.0.1),
+    // CodeQL flags this as "non-https-url" but it's a deliberate design choice for testkit.
     #[cfg(not(test))]
     if !url.starts_with("https://") {
         anyhow::bail!("URL must use HTTPS protocol for security: {url}");
