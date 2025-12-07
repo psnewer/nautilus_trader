@@ -311,8 +311,8 @@ Track connection state using `Arc<ArcSwap<AtomicU8>>` to provide lock-free, race
 use arc_swap::ArcSwap;
 
 pub struct MyWebSocketClient {
-    connection_mode: Arc<ArcSwap<AtomicU8>>,  // Shared connection state (lock-free)
-    signal: Arc<AtomicBool>,                   // Manual disconnect signal
+    connection_mode: Arc<ArcSwap<AtomicU8>>,  // Shared connection mode (lock-free)
+    signal: Arc<AtomicBool>,                   // Cancellation signal for graceful shutdown
     // ...
 }
 ```
