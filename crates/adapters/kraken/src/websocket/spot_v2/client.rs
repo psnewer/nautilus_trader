@@ -44,6 +44,8 @@ use crate::{
     config::KrakenDataClientConfig, http::KrakenSpotHttpClient, websocket::error::KrakenWsError,
 };
 
+const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
+
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
@@ -122,7 +124,7 @@ impl KrakenSpotWebSocketClient {
             message_handler: Some(raw_handler),
             ping_handler: None,
             heartbeat: self.config.heartbeat_interval_secs,
-            heartbeat_msg: Some("ping".to_string()),
+            heartbeat_msg: Some(WS_PING_MSG.to_string()),
             reconnect_timeout_ms: None,
             reconnect_delay_initial_ms: None,
             reconnect_delay_max_ms: None,

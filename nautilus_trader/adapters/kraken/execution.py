@@ -193,6 +193,8 @@ class KrakenExecutionClient(LiveExecutionClient):
             self._ws_client_futures = nautilus_pyo3.KrakenFuturesWebSocketClient(
                 environment=environment,
                 heartbeat_secs=config.ws_heartbeat_secs,
+                api_key=config.api_key,
+                api_secret=config.api_secret,
             )
             self._log.info(f"Futures WebSocket URL {self._ws_client_futures.url}", LogColor.BLUE)
 
@@ -219,27 +221,33 @@ class KrakenExecutionClient(LiveExecutionClient):
         await self._update_account_state()
         await self._await_account_registered()
 
-        # Connect to spot WebSocket if configured
         if self._ws_client_spot is not None:
             instruments_pyo3 = self.kraken_instrument_provider.instruments_pyo3()
             await self._ws_client_spot.connect(instruments_pyo3, self._handle_msg)
             await self._ws_client_spot.wait_until_active(timeout_secs=10.0)
             self._log.info("Connected to spot WebSocket", LogColor.BLUE)
 
-            # Set account ID and authenticate, then subscribe to executions
             pyo3_account_id = nautilus_pyo3.AccountId.from_str(self.account_id.value)
             self._ws_client_spot.set_account_id(pyo3_account_id)
             await self._ws_client_spot.authenticate()
             self._log.info("Authenticated to spot WebSocket", LogColor.BLUE)
-            # Disable WebSocket snapshots - REST reconciliation handles initial state
+
             await self._ws_client_spot.subscribe_executions(snap_orders=False, snap_trades=False)
             self._log.info("Subscribed to spot executions channel", LogColor.BLUE)
 
-        # Connect to futures WebSocket if configured
         if self._ws_client_futures is not None:
             instruments_pyo3 = self.kraken_instrument_provider.instruments_pyo3()
             await self._ws_client_futures.connect(instruments_pyo3, self._handle_msg)
+            await self._ws_client_futures.wait_until_active(timeout_secs=10.0)
             self._log.info("Connected to futures WebSocket", LogColor.BLUE)
+
+            pyo3_account_id = nautilus_pyo3.AccountId.from_str(self.account_id.value)
+            self._ws_client_futures.set_account_id(pyo3_account_id)
+            await self._ws_client_futures.authenticate()
+            self._log.info("Authenticated to futures WebSocket", LogColor.BLUE)
+
+            await self._ws_client_futures.subscribe_executions()
+            self._log.info("Subscribed to futures executions", LogColor.BLUE)
 
     async def _disconnect(self) -> None:
         if self._http_client_spot is not None:

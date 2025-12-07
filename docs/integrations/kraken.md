@@ -250,31 +250,45 @@ The product types for each client must be specified in the configurations.
 
 ### Data client configuration options
 
-| Option              | Default   | Description                                                             |
-|---------------------|-----------|-------------------------------------------------------------------------|
-| `api_key`           | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
-| `api_secret`        | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
-| `environment`       | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
-| `product_types`     | `(SPOT,)` | Product types tuple (e.g., `(KrakenProductType.SPOT,)`).                |
-| `base_url_http`     | `None`    | Override for the REST base URL.                                         |
-| `timeout_secs`      | `60`      | HTTP request timeout in seconds.                                        |
-| `max_retries`       | `3`       | Maximum retry attempts for REST requests.                               |
-| `retry_delay_ms`    | `1000`    | Initial delay (milliseconds) between retries.                           |
-| `retry_delay_max_ms`| `10000`   | Maximum delay (milliseconds) between retries.                           |
+| Option                          | Default   | Description                                                             |
+|---------------------------------|-----------|-------------------------------------------------------------------------|
+| `api_key`                       | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
+| `api_secret`                    | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
+| `environment`                   | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
+| `product_types`                 | `(SPOT,)` | Product types tuple (e.g., `(KrakenProductType.SPOT,)`).                |
+| `base_url_http_spot`            | `None`    | Override for Kraken Spot REST base URL.                                 |
+| `base_url_http_futures`         | `None`    | Override for Kraken Futures REST base URL.                              |
+| `base_url_ws`                   | `None`    | Override for WebSocket base URL.                                        |
+| `http_proxy_url`                | `None`    | Optional HTTP proxy URL.                                                |
+| `ws_proxy_url`                  | `None`    | Optional WebSocket proxy URL.                                           |
+| `update_instruments_interval_mins` | `60`   | Interval (minutes) to reload instruments; `None` to disable.            |
+| `max_retries`                   | `None`    | Maximum retry attempts for REST requests.                               |
+| `retry_delay_initial_ms`        | `None`    | Initial delay (milliseconds) between retries.                           |
+| `retry_delay_max_ms`            | `None`    | Maximum delay (milliseconds) between retries.                           |
+| `http_timeout_secs`             | `None`    | HTTP request timeout in seconds.                                        |
+| `ws_heartbeat_secs`             | `30`      | WebSocket heartbeat interval in seconds.                                |
 
 ### Execution client configuration options
 
-| Option              | Default   | Description                                                             |
-|---------------------|-----------|-------------------------------------------------------------------------|
-| `api_key`           | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
-| `api_secret`        | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
-| `environment`       | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
-| `product_types`     | `(SPOT,)` | Product types tuple (e.g., `(KrakenProductType.SPOT,)`).                |
-| `base_url_http`     | `None`    | Override for the REST base URL.                                         |
-| `timeout_secs`      | `60`      | HTTP request timeout in seconds.                                        |
-| `max_retries`       | `3`       | Maximum retry attempts for order submission/cancel calls.               |
-| `retry_delay_ms`    | `1000`    | Initial delay (milliseconds) between retries.                           |
-| `retry_delay_max_ms`| `10000`   | Maximum delay (milliseconds) between retries.                           |
+| Option                          | Default   | Description                                                             |
+|---------------------------------|-----------|-------------------------------------------------------------------------|
+| `api_key`                       | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
+| `api_secret`                    | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
+| `environment`                   | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
+| `product_types`                 | `(SPOT,)` | Product types tuple; `SPOT` uses CASH, `FUTURES` uses MARGIN account.   |
+| `base_url_http_spot`            | `None`    | Override for Kraken Spot REST base URL.                                 |
+| `base_url_http_futures`         | `None`    | Override for Kraken Futures REST base URL.                              |
+| `base_url_ws_spot`              | `None`    | Override for Kraken Spot WebSocket URL.                                 |
+| `base_url_ws_futures`           | `None`    | Override for Kraken Futures WebSocket URL.                              |
+| `http_proxy_url`                | `None`    | Optional HTTP proxy URL.                                                |
+| `ws_proxy_url`                  | `None`    | Optional WebSocket proxy URL.                                           |
+| `max_retries`                   | `None`    | Maximum retry attempts for order submission/cancel calls.               |
+| `retry_delay_initial_ms`        | `None`    | Initial delay (milliseconds) between retries.                           |
+| `retry_delay_max_ms`            | `None`    | Maximum delay (milliseconds) between retries.                           |
+| `http_timeout_secs`             | `None`    | HTTP request timeout in seconds.                                        |
+| `ws_heartbeat_secs`             | `30`      | WebSocket heartbeat interval in seconds.                                |
+| `use_spot_position_reports`     | `False`   | Report wallet balances as positions (see below).                        |
+| `spot_positions_quote_currency` | `"USDT"`  | Quote currency filter for spot position reports.                        |
 
 ### Demo environment setup
 
@@ -368,15 +382,20 @@ There are two options for supplying your credentials to the Kraken clients.
 Either pass the corresponding `api_key` and `api_secret` values to the
 configuration objects, or set the following environment variables:
 
-For Kraken live clients, you can set:
+For Kraken Spot clients (mainnet):
 
-- `KRAKEN_API_KEY`
-- `KRAKEN_API_SECRET`
+- `KRAKEN_SPOT_API_KEY`
+- `KRAKEN_SPOT_API_SECRET`
 
-For Kraken Futures demo environment clients, you can set:
+For Kraken Futures clients (mainnet):
 
-- `KRAKEN_TESTNET_API_KEY`
-- `KRAKEN_TESTNET_API_SECRET`
+- `KRAKEN_FUTURES_API_KEY`
+- `KRAKEN_FUTURES_API_SECRET`
+
+For Kraken Futures demo environment (testnet):
+
+- `KRAKEN_FUTURES_TESTNET_API_KEY`
+- `KRAKEN_FUTURES_TESTNET_API_SECRET`
 
 :::note
 **Demo environment**: Only Kraken Futures offers a demo environment

@@ -151,6 +151,24 @@ impl KrakenCredential {
         Ok(STANDARD.encode(signature.as_ref()))
     }
 
+    /// Sign a WebSocket challenge for Kraken Futures private feeds.
+    ///
+    /// The signing process is similar to REST API authentication:
+    /// 1. SHA-256 hash the challenge string
+    /// 2. HMAC-SHA-512 of the hash using decoded API secret
+    /// 3. Base64 encode the result
+    pub fn sign_ws_challenge(&self, challenge: &str) -> anyhow::Result<String> {
+        let secret = STANDARD
+            .decode(&self.api_secret)
+            .map_err(|e| anyhow::anyhow!("Failed to decode API secret: {e}"))?;
+
+        let hash = digest::digest(&digest::SHA256, challenge.as_bytes());
+        let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
+        let signature = hmac::sign(&key, hash.as_ref());
+
+        Ok(STANDARD.encode(signature.as_ref()))
+    }
+
     /// Returns a masked version of the API key for logging purposes.
     ///
     /// Shows first 4 and last 4 characters with ellipsis in between.

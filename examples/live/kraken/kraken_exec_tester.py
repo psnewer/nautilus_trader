@@ -51,8 +51,8 @@ if product_type == KrakenProductType.SPOT:
     environment = KrakenEnvironment.MAINNET
 elif product_type == KrakenProductType.FUTURES:
     # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
-    symbol = f"PI_{token}USD"
-    order_qty = Decimal(10)
+    symbol = f"PF_{token}USD"
+    order_qty = Decimal("0.001")
     enable_sells = True
     reduce_only_on_stop = True
     use_spot_position_reports = False  # Not applicable
