@@ -81,6 +81,7 @@ TBD
 - Fixed Betfair duplicate fills on startup/reconnect
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Binance ADL orders with TRADE execution type
+- Fixed Bybit historical bars requests partial (unclosed) bar filtering
 - Fixed `BybitHttpClient` type stub pyi signatures (#3238), thanks @sunlei
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Databento Arrow serialization for `PRICE_UNDEF` (#3183), thanks for reporting @marloncalvo
