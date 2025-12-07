@@ -53,19 +53,29 @@ make pre-commit
 
 Make sure the Rust compiler reports **zero errors** – broken builds slow everyone down.
 
-3. **Required for Rust tests**: When using Python installed via `uv`, set the `PYTHONHOME` environment variable for Rust tests to work correctly:
+3. **Required for Rust/PyO3**: When using Python installed via `uv`, set the following environment variables:
 
 ```bash
-# Get the Python home path
-PYTHON_HOME=$(python -c "import sys; print(sys.base_prefix)")
-
 # Add to your shell configuration (e.g., ~/.zshrc or ~/.bashrc)
-export PYTHONHOME="$PYTHON_HOME"
+
+# Set the library path for the Python interpreter (in this case Python 3.13.4)
+export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
+
+# Set the Python executable path for PyO3
+export PYO3_PYTHON=$(pwd)/.venv/bin/python
+
+# Set the Python home path (required for Rust tests)
+export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
 ```
 
 :::note
-The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
-Without it, tests that depend on PyO3 may fail to locate the Python runtime.
+Adjust the Python version and architecture in the `LD_LIBRARY_PATH` to match your system.
+Use `uv python list` to find the exact path for your Python installation.
+
+- `PYO3_PYTHON` tells PyO3 which Python interpreter to use, reducing unnecessary recompilation.
+- `PYTHONHOME` is required when running `make cargo-test` with a `uv`-installed Python.
+  Without it, tests that depend on PyO3 may fail to locate the Python runtime.
+
 :::
 
 ## Builds
