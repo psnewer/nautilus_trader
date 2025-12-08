@@ -882,6 +882,15 @@ fn dispatch_ws_message(
                 dispatch_execution_report(report, sender);
             }
         }
+        NautilusWsMessage::OrderAccepted(event) => {
+            dispatch_order_event(OrderEventAny::Accepted(event), sender);
+        }
+        NautilusWsMessage::OrderCanceled(event) => {
+            dispatch_order_event(OrderEventAny::Canceled(event), sender);
+        }
+        NautilusWsMessage::OrderExpired(event) => {
+            dispatch_order_event(OrderEventAny::Expired(event), sender);
+        }
         NautilusWsMessage::OrderRejected(event) => {
             dispatch_order_event(OrderEventAny::Rejected(event), sender);
         }
@@ -890,6 +899,12 @@ fn dispatch_ws_message(
         }
         NautilusWsMessage::OrderModifyRejected(event) => {
             dispatch_order_event(OrderEventAny::ModifyRejected(event), sender);
+        }
+        NautilusWsMessage::OrderTriggered(event) => {
+            dispatch_order_event(OrderEventAny::Triggered(event), sender);
+        }
+        NautilusWsMessage::OrderUpdated(event) => {
+            dispatch_order_event(OrderEventAny::Updated(event), sender);
         }
         NautilusWsMessage::Error(e) => {
             tracing::warn!(
