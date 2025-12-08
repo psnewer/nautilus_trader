@@ -23,7 +23,7 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
-    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId},
     instruments::InstrumentAny,
 };
 use nautilus_network::{
@@ -787,16 +787,25 @@ impl KrakenFuturesWebSocketClient {
         }
     }
 
-    /// Cache a client order ID to instrument ID mapping for order tracking.
+    /// Cache a client order ID mapping for order tracking.
     ///
-    /// This helps the handler resolve instrument info when WebSocket messages
-    /// arrive before HTTP responses.
-    pub fn cache_client_order(&self, client_order_id: ClientOrderId, instrument_id: InstrumentId) {
+    /// This caches the trader_id, strategy_id, and instrument_id for an order,
+    /// allowing the handler to emit proper order events with correct identifiers
+    /// when WebSocket messages arrive.
+    pub fn cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
         if let Ok(tx) = self.cmd_tx.try_read()
-            && let Err(e) = tx.send(HandlerCommand::CacheClientOrder(
+            && let Err(e) = tx.send(HandlerCommand::CacheClientOrder {
                 client_order_id,
                 instrument_id,
-            ))
+                trader_id,
+                strategy_id,
+            })
         {
             tracing::debug!("Failed to cache client order: {e}");
         }

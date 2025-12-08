@@ -360,8 +360,22 @@ impl KrakenFuturesRawHttpClient {
         endpoint: &str,
         params: HashMap<String, String>,
     ) -> anyhow::Result<T, KrakenHttpError> {
+        // Check cancellation before blocking on mutex to allow graceful shutdown
+        if self.cancellation_token.is_cancelled() {
+            return Err(KrakenHttpError::NetworkError(
+                "Request cancelled".to_string(),
+            ));
+        }
+
         // Serialize authenticated requests to ensure nonces arrive at Kraken in order
         let _guard = self.auth_mutex.lock().await;
+
+        // Check again after acquiring mutex in case shutdown started while waiting
+        if self.cancellation_token.is_cancelled() {
+            return Err(KrakenHttpError::NetworkError(
+                "Request cancelled".to_string(),
+            ));
+        }
 
         let credential = self.credential.as_ref().ok_or_else(|| {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
@@ -371,6 +385,7 @@ impl KrakenFuturesRawHttpClient {
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
         let nonce = self.generate_nonce();
+        tracing::debug!("Generated nonce {nonce} for {endpoint}");
 
         let signature = credential
             .sign_futures(endpoint, &post_data, nonce)
@@ -427,8 +442,22 @@ impl KrakenFuturesRawHttpClient {
         endpoint: &str,
         params: &P,
     ) -> anyhow::Result<T, KrakenHttpError> {
+        // Check cancellation before blocking on mutex to allow graceful shutdown
+        if self.cancellation_token.is_cancelled() {
+            return Err(KrakenHttpError::NetworkError(
+                "Request cancelled".to_string(),
+            ));
+        }
+
         // Serialize authenticated requests to ensure nonces arrive at Kraken in order
         let _guard = self.auth_mutex.lock().await;
+
+        // Check again after acquiring mutex in case shutdown started while waiting
+        if self.cancellation_token.is_cancelled() {
+            return Err(KrakenHttpError::NetworkError(
+                "Request cancelled".to_string(),
+            ));
+        }
 
         let credential = self.credential.as_ref().ok_or_else(|| {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
@@ -438,6 +467,7 @@ impl KrakenFuturesRawHttpClient {
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
         let nonce = self.generate_nonce();
+        tracing::debug!("Generated nonce {nonce} for {endpoint}");
 
         let signature = credential
             .sign_futures(endpoint, &post_data, nonce)

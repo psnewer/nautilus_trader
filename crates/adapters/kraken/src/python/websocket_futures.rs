@@ -18,7 +18,7 @@
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},
-    identifiers::{AccountId, ClientOrderId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{IntoPyObjectExt, prelude::*};
@@ -182,6 +182,62 @@ impl KrakenFuturesWebSocketClient {
                                 );
                                 if let Err(e) = callback.call1(py, (py_obj,)) {
                                     tracing::error!("Error calling Python callback: {e}");
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderAccepted(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to convert OrderAccepted to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderCanceled(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to convert OrderCanceled to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderExpired(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to convert OrderExpired to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderUpdated(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            tracing::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to convert OrderUpdated to Python: {e}"
+                                        );
+                                    }
                                 }
                             }
                             KrakenFuturesWsMessage::OrderStatusReport(report) => {
@@ -422,8 +478,14 @@ impl KrakenFuturesWebSocketClient {
     }
 
     #[pyo3(name = "cache_client_order")]
-    fn py_cache_client_order(&self, client_order_id: ClientOrderId, instrument_id: InstrumentId) {
-        self.cache_client_order(client_order_id, instrument_id);
+    fn py_cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
+        self.cache_client_order(client_order_id, instrument_id, trader_id, strategy_id);
     }
 
     #[pyo3(name = "sign_challenge")]

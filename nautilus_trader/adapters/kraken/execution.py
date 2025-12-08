@@ -40,6 +40,7 @@ from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import SubmitOrder
@@ -54,9 +55,13 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.events import AccountState
+from nautilus_trader.model.events import OrderAccepted
+from nautilus_trader.model.events import OrderCanceled
 from nautilus_trader.model.events import OrderCancelRejected
+from nautilus_trader.model.events import OrderExpired
 from nautilus_trader.model.events import OrderModifyRejected
 from nautilus_trader.model.events import OrderRejected
+from nautilus_trader.model.events import OrderUpdated
 from nautilus_trader.model.functions import order_side_to_pyo3
 from nautilus_trader.model.functions import order_type_to_pyo3
 from nautilus_trader.model.functions import time_in_force_to_pyo3
@@ -390,6 +395,72 @@ class KrakenExecutionClient(LiveExecutionClient):
 
         return reports
 
+    async def generate_order_status_report(
+        self,
+        command: GenerateOrderStatusReport,
+    ) -> OrderStatusReport | None:
+        self._log.debug(
+            "Requesting OrderStatusReport "
+            + ", ".join(
+                repr(x)
+                for x in [
+                    command.instrument_id,
+                    command.client_order_id,
+                    command.venue_order_id,
+                ]
+                if x
+            )
+            + " ...",
+        )
+
+        symbol = command.instrument_id.symbol.value
+        product_type = nautilus_pyo3.kraken_product_type_from_symbol(symbol)
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+
+        try:
+            # Kraken API doesn't support single order queries, so we fetch all and filter
+            pyo3_reports: list[nautilus_pyo3.OrderStatusReport] = []
+
+            if product_type == KrakenProductType.SPOT and self._http_client_spot is not None:
+                pyo3_reports = await self._http_client_spot.request_order_status_reports(
+                    account_id=self.pyo3_account_id,
+                    instrument_id=pyo3_instrument_id,
+                    start=None,
+                    end=None,
+                    open_only=False,
+                )
+            elif (
+                product_type == KrakenProductType.FUTURES and self._http_client_futures is not None
+            ):
+                pyo3_reports = await self._http_client_futures.request_order_status_reports(
+                    account_id=self.pyo3_account_id,
+                    instrument_id=pyo3_instrument_id,
+                    start=None,
+                    end=None,
+                    open_only=False,
+                )
+
+            # Filter for the specific order we're looking for
+            for pyo3_report in pyo3_reports:
+                report = OrderStatusReport.from_pyo3(pyo3_report)
+                if (
+                    command.client_order_id and report.client_order_id == command.client_order_id
+                ) or (command.venue_order_id and report.venue_order_id == command.venue_order_id):
+                    self._log.debug(f"Received {report}", LogColor.MAGENTA)
+                    return report
+
+            return None
+
+        except asyncio.CancelledError:
+            self._log.debug("Canceled task 'generate_order_status_report'")
+            return None
+        except Exception as e:
+            if "canceled" in str(e).lower():
+                self._log.debug("Canceled task 'generate_order_status_report'")
+            else:
+                self._log.exception("Failed to generate OrderStatusReport", e)
+            return None
+
     async def generate_fill_reports(
         self,
         command: GenerateFillReports,
@@ -531,16 +602,33 @@ class KrakenExecutionClient(LiveExecutionClient):
         )
 
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
+        pyo3_trader_id = nautilus_pyo3.TraderId(command.trader_id.value)
+        pyo3_strategy_id = nautilus_pyo3.StrategyId(order.strategy_id.value)
 
-        # Cache client_order_id -> instrument_id BEFORE HTTP submission
         # This handles the race condition where WebSocket execution messages
         # arrive before the HTTP response (which contains the venue_order_id)
-        if self._ws_client_spot is not None:
+        if (
+            product_type == nautilus_pyo3.KrakenProductType.SPOT
+            and self._ws_client_spot is not None
+        ):
             self._ws_client_spot.cache_client_order(
-                order.client_order_id.value,
+                pyo3_client_order_id,
                 pyo3_instrument_id,
+                pyo3_trader_id,
+                pyo3_strategy_id,
             )
-        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
+        elif (
+            product_type == nautilus_pyo3.KrakenProductType.FUTURES
+            and self._ws_client_futures is not None
+        ):
+            self._ws_client_futures.cache_client_order(
+                pyo3_client_order_id,
+                pyo3_instrument_id,
+                pyo3_trader_id,
+                pyo3_strategy_id,
+            )
+
         pyo3_order_side = order_side_to_pyo3(order.side)
         pyo3_order_type = order_type_to_pyo3(order.order_type)
         pyo3_quantity = nautilus_pyo3.Quantity.from_str(str(order.quantity))
@@ -688,10 +776,18 @@ class KrakenExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.error(f"Failed to cancel all orders for {command.instrument_id}: {e}")
 
-    def _handle_msg(self, msg: Any) -> None:
+    def _handle_msg(self, msg: Any) -> None:  # noqa: C901 (too complex)
         try:
             if isinstance(msg, nautilus_pyo3.AccountState):
                 self._handle_account_state(msg)
+            elif isinstance(msg, nautilus_pyo3.OrderAccepted):
+                self._handle_order_accepted_pyo3(msg)
+            elif isinstance(msg, nautilus_pyo3.OrderCanceled):
+                self._handle_order_canceled_pyo3(msg)
+            elif isinstance(msg, nautilus_pyo3.OrderExpired):
+                self._handle_order_expired_pyo3(msg)
+            elif isinstance(msg, nautilus_pyo3.OrderUpdated):
+                self._handle_order_updated_pyo3(msg)
             elif isinstance(msg, nautilus_pyo3.OrderRejected):
                 self._handle_order_rejected_pyo3(msg)
             elif isinstance(msg, nautilus_pyo3.OrderCancelRejected):
@@ -728,6 +824,22 @@ class KrakenExecutionClient(LiveExecutionClient):
 
     def _handle_order_modify_rejected_pyo3(self, msg: nautilus_pyo3.OrderModifyRejected) -> None:
         event = OrderModifyRejected.from_dict(msg.to_dict())
+        self._send_order_event(event)
+
+    def _handle_order_accepted_pyo3(self, msg: nautilus_pyo3.OrderAccepted) -> None:
+        event = OrderAccepted.from_dict(msg.to_dict())
+        self._send_order_event(event)
+
+    def _handle_order_canceled_pyo3(self, msg: nautilus_pyo3.OrderCanceled) -> None:
+        event = OrderCanceled.from_dict(msg.to_dict())
+        self._send_order_event(event)
+
+    def _handle_order_expired_pyo3(self, msg: nautilus_pyo3.OrderExpired) -> None:
+        event = OrderExpired.from_dict(msg.to_dict())
+        self._send_order_event(event)
+
+    def _handle_order_updated_pyo3(self, msg: nautilus_pyo3.OrderUpdated) -> None:
+        event = OrderUpdated.from_dict(msg.to_dict())
         self._send_order_event(event)
 
     def _handle_order_status_report_pyo3(  # noqa: C901 (too complex)

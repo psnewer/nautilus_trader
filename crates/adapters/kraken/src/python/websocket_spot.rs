@@ -45,7 +45,7 @@ use futures_util::StreamExt;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
-    identifiers::{AccountId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{IntoPyObjectExt, prelude::*};
@@ -144,8 +144,14 @@ impl KrakenSpotWebSocketClient {
     }
 
     #[pyo3(name = "cache_client_order")]
-    fn py_cache_client_order(&self, client_order_id: String, instrument_id: InstrumentId) {
-        self.cache_client_order(client_order_id, instrument_id);
+    fn py_cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
+        self.cache_client_order(client_order_id, instrument_id, trader_id, strategy_id);
     }
 
     #[pyo3(name = "cancel_all_requests")]
@@ -198,11 +204,49 @@ impl KrakenSpotWebSocketClient {
                                 call_python(py, &callback, py_obj);
                             });
                         }
+                        NautilusWsMessage::OrderAccepted(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderAccepted to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderCanceled(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderCanceled to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderExpired(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderExpired to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderUpdated(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderUpdated to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
                         NautilusWsMessage::OrderStatusReport(report) => {
                             Python::attach(|py| match (*report).into_py_any(py) {
-                                Ok(py_obj) => {
-                                    call_python(py, &callback, py_obj);
-                                }
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
                                 Err(e) => {
                                     tracing::error!(
                                         "Failed to convert OrderStatusReport to Python: {e}"
@@ -212,9 +256,7 @@ impl KrakenSpotWebSocketClient {
                         }
                         NautilusWsMessage::FillReport(report) => {
                             Python::attach(|py| match (*report).into_py_any(py) {
-                                Ok(py_obj) => {
-                                    call_python(py, &callback, py_obj);
-                                }
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
                                 Err(e) => {
                                     tracing::error!("Failed to convert FillReport to Python: {e}");
                                 }

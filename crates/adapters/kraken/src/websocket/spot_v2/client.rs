@@ -24,7 +24,7 @@ use arc_swap::ArcSwap;
 use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
     data::BarType,
-    identifiers::{AccountId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     instruments::InstrumentAny,
 };
 use nautilus_network::{
@@ -506,16 +506,24 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
-    /// Caches the mapping from client order ID to instrument ID.
+    /// Cache order info for order tracking.
     ///
     /// This should be called BEFORE submitting an order via HTTP to handle the
     /// race condition where WebSocket execution messages arrive before the
     /// HTTP response (which contains the venue_order_id).
-    pub fn cache_client_order(&self, client_order_id: String, instrument_id: InstrumentId) {
+    pub fn cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
             && let Err(e) = cmd_tx.send(SpotHandlerCommand::CacheClientOrder {
                 client_order_id,
                 instrument_id,
+                trader_id,
+                strategy_id,
             })
         {
             tracing::debug!("Failed to send cache client order command to handler: {e}");

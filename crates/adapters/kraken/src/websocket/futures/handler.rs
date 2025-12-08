@@ -34,7 +34,10 @@ use nautilus_model::{
     enums::{
         AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce,
     },
-    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, TradeId, VenueOrderId},
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TradeId, TraderId, VenueOrderId,
+    },
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport},
     types::{Money, Price, Quantity},
@@ -50,11 +53,30 @@ use ustr::Ustr;
 use super::messages::{
     KrakenFuturesBookDelta, KrakenFuturesBookSnapshot, KrakenFuturesChallengeRequest,
     KrakenFuturesEvent, KrakenFuturesFeed, KrakenFuturesFill, KrakenFuturesFillsDelta,
-    KrakenFuturesFillsSnapshot, KrakenFuturesOpenOrder, KrakenFuturesOpenOrdersDelta,
-    KrakenFuturesOpenOrdersSnapshot, KrakenFuturesPrivateSubscribeRequest, KrakenFuturesTickerData,
-    KrakenFuturesTradeData, KrakenFuturesTradeSnapshot, KrakenFuturesWsMessage,
+    KrakenFuturesFillsSnapshot, KrakenFuturesOpenOrder, KrakenFuturesOpenOrdersCancel,
+    KrakenFuturesOpenOrdersDelta, KrakenFuturesOpenOrdersSnapshot,
+    KrakenFuturesPrivateSubscribeRequest, KrakenFuturesTickerData, KrakenFuturesTradeData,
+    KrakenFuturesTradeSnapshot, KrakenFuturesWsMessage,
 };
 use crate::common::enums::KrakenOrderSide;
+
+/// Parsed order event from a Kraken Futures WebSocket message.
+#[derive(Debug, Clone)]
+pub enum ParsedOrderEvent {
+    Accepted(OrderAccepted),
+    Canceled(OrderCanceled),
+    Expired(OrderExpired),
+    Updated(OrderUpdated),
+    StatusOnly(Box<OrderStatusReport>),
+}
+
+/// Cached order info for proper event generation.
+#[derive(Debug, Clone)]
+struct CachedOrderInfo {
+    instrument_id: InstrumentId,
+    trader_id: TraderId,
+    strategy_id: StrategyId,
+}
 
 /// Commands sent from the outer client to the inner message handler.
 #[allow(
@@ -84,7 +106,12 @@ pub enum HandlerCommand {
     },
     SubscribeOpenOrders,
     SubscribeFills,
-    CacheClientOrder(ClientOrderId, InstrumentId),
+    CacheClientOrder {
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    },
 }
 
 impl Debug for HandlerCommand {
@@ -118,9 +145,15 @@ impl Debug for HandlerCommand {
             }
             Self::SubscribeOpenOrders => write!(f, "SubscribeOpenOrders"),
             Self::SubscribeFills => write!(f, "SubscribeFills"),
-            Self::CacheClientOrder(c, i) => {
-                f.debug_tuple("CacheClientOrder").field(c).field(i).finish()
-            }
+            Self::CacheClientOrder {
+                client_order_id,
+                instrument_id,
+                ..
+            } => f
+                .debug_struct("CacheClientOrder")
+                .field("client_order_id", client_order_id)
+                .field("instrument_id", instrument_id)
+                .finish(),
         }
     }
 }
@@ -140,7 +173,7 @@ pub struct FuturesFeedHandler {
     api_key: Option<String>,
     original_challenge: Option<String>,
     signed_challenge: Option<String>,
-    client_order_instruments: AHashMap<String, InstrumentId>,
+    client_order_cache: AHashMap<String, CachedOrderInfo>,
     pending_challenge_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
@@ -166,7 +199,7 @@ impl FuturesFeedHandler {
             api_key: None,
             original_challenge: None,
             signed_challenge: None,
-            client_order_instruments: AHashMap::new(),
+            client_order_cache: AHashMap::new(),
             pending_challenge_tx: None,
         }
     }
@@ -175,7 +208,6 @@ impl FuturesFeedHandler {
         self.signal.load(Ordering::Relaxed)
     }
 
-    /// Checks if a topic is active (confirmed or pending subscribe).
     fn is_subscribed(&self, topic: &str) -> bool {
         self.subscriptions.all_topics().iter().any(|t| t == topic)
     }
@@ -226,8 +258,6 @@ impl FuturesFeedHandler {
                         }
                         HandlerCommand::InitializeInstruments(instruments) => {
                             for inst in instruments {
-                                // Key by raw_symbol (e.g., "PI_XBTUSD") since that's what
-                                // WebSocket messages use
                                 self.instruments_cache.insert(inst.raw_symbol().inner(), inst);
                             }
                             let count = self.instruments_cache.len();
@@ -257,8 +287,20 @@ impl FuturesFeedHandler {
                         HandlerCommand::SubscribeFills => {
                             self.send_private_subscribe(KrakenFuturesFeed::Fills).await;
                         }
-                        HandlerCommand::CacheClientOrder(client_order_id, instrument_id) => {
-                            self.client_order_instruments.insert(client_order_id.to_string(), instrument_id);
+                        HandlerCommand::CacheClientOrder {
+                            client_order_id,
+                            instrument_id,
+                            trader_id,
+                            strategy_id,
+                        } => {
+                            self.client_order_cache.insert(
+                                client_order_id.to_string(),
+                                CachedOrderInfo {
+                                    instrument_id,
+                                    trader_id,
+                                    strategy_id,
+                                },
+                            );
                         }
                     }
                     continue;
@@ -287,7 +329,8 @@ impl FuturesFeedHandler {
                             }
                         }
                         Message::Ping(data) => {
-                            tracing::trace!("Received ping frame with {} bytes", data.len());
+                            let len = data.len();
+                            tracing::trace!("Received ping frame with {len} bytes");
                             if let Some(client) = &self.client
                                 && let Err(e) = client.send_pong(data.to_vec()).await
                             {
@@ -432,7 +475,10 @@ impl FuturesFeedHandler {
             tracing::debug!(
                 "Skipping open_orders_snapshot (REST reconciliation handles initial state)"
             );
-        } else if text.contains("\"feed\":\"open_orders\"") && text.contains("\"order\"") {
+        } else if text.contains("\"feed\":\"open_orders\"") && text.contains("\"is_cancel\":true") {
+            // Check cancel first - cancel messages have "order_id" which contains "order" substring
+            self.handle_open_orders_cancel(text, ts_init);
+        } else if text.contains("\"feed\":\"open_orders\"") && text.contains("\"order\":") {
             self.handle_open_orders_delta(text, ts_init);
         } else if text.contains("\"feed\":\"fills_snapshot\"") {
             tracing::debug!("Skipping fills_snapshot (REST reconciliation handles initial state)");
@@ -501,11 +547,11 @@ impl FuturesFeedHandler {
             }
         };
 
-        // Extract instrument info upfront to avoid borrow conflicts
         let (instrument_id, price_precision) = {
             let Some(instrument) = self.get_instrument(&Ustr::from(ticker.product_id.as_str()))
             else {
-                tracing::debug!("Instrument not found for product_id: {}", ticker.product_id);
+                let product_id = &ticker.product_id;
+                tracing::debug!("Instrument not found for product_id: {product_id}");
                 return;
             };
             (instrument.id(), instrument.price_precision())
@@ -579,8 +625,12 @@ impl FuturesFeedHandler {
             )
         };
 
-        if trade.qty == 0.0 {
-            tracing::warn!("Skipping zero quantity trade for {}", trade.product_id);
+        // Check after rounding to precision (small values may round to zero)
+        let size = Quantity::new(trade.qty, size_precision);
+        if size.is_zero() {
+            let product_id = trade.product_id;
+            let raw_qty = trade.qty;
+            tracing::warn!("Skipping zero quantity trade for {product_id} (raw qty: {raw_qty})");
             return;
         }
 
@@ -596,7 +646,7 @@ impl FuturesFeedHandler {
         let trade_tick = TradeTick::new(
             instrument_id,
             Price::new(trade.price, price_precision),
-            Quantity::new(trade.qty, size_precision),
+            size,
             aggressor_side,
             TradeId::new(&trade_id),
             ts_event,
@@ -635,10 +685,13 @@ impl FuturesFeedHandler {
         };
 
         for trade in snapshot.trades {
-            if trade.qty == 0.0 {
+            // Check after rounding to precision (small values may round to zero)
+            let size = Quantity::new(trade.qty, size_precision);
+            if size.is_zero() {
+                let product_id = snapshot.product_id;
+                let raw_qty = trade.qty;
                 tracing::warn!(
-                    "Skipping zero quantity trade in snapshot for {}",
-                    snapshot.product_id
+                    "Skipping zero quantity trade in snapshot for {product_id} (raw qty: {raw_qty})"
                 );
                 continue;
             }
@@ -655,7 +708,7 @@ impl FuturesFeedHandler {
             let trade_tick = TradeTick::new(
                 instrument_id,
                 Price::new(trade.price, price_precision),
-                Quantity::new(trade.qty, size_precision),
+                size,
                 aggressor_side,
                 TradeId::new(&trade_id),
                 ts_event,
@@ -923,12 +976,99 @@ impl FuturesFeedHandler {
             "Received open_orders delta"
         );
 
-        if let Some(report) =
-            self.parse_order_to_status_report(&delta.order, ts_init, delta.is_cancel)
-        {
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::OrderStatusReport(Box::new(report)));
+        if let Some(event) = self.parse_order_event(
+            &delta.order,
+            ts_init,
+            delta.is_cancel,
+            delta.reason.as_deref(),
+        ) {
+            self.emit_order_event(event);
         }
+    }
+
+    /// Emits the appropriate WebSocket message for a parsed order event.
+    fn emit_order_event(&mut self, event: ParsedOrderEvent) {
+        match event {
+            ParsedOrderEvent::Accepted(accepted) => {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::OrderAccepted(accepted));
+            }
+            ParsedOrderEvent::Canceled(canceled) => {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::OrderCanceled(canceled));
+            }
+            ParsedOrderEvent::Expired(expired) => {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::OrderExpired(expired));
+            }
+            ParsedOrderEvent::Updated(updated) => {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::OrderUpdated(updated));
+            }
+            ParsedOrderEvent::StatusOnly(report) => {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::OrderStatusReport(report));
+            }
+        }
+    }
+
+    fn handle_open_orders_cancel(&mut self, text: &str, ts_init: UnixNanos) {
+        let cancel = match serde_json::from_str::<KrakenFuturesOpenOrdersCancel>(text) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to parse open_orders cancel: {e}");
+                return;
+            }
+        };
+
+        tracing::debug!(
+            order_id = %cancel.order_id,
+            cli_ord_id = ?cancel.cli_ord_id,
+            reason = ?cancel.reason,
+            "Received open_orders cancel"
+        );
+
+        let Some(account_id) = self.account_id else {
+            tracing::warn!("Cannot process cancel: account_id not set");
+            return;
+        };
+
+        // Only emit OrderCanceled if we have cached order info (i.e., this is our order)
+        let Some(cli_ord_id) = cancel.cli_ord_id.as_ref() else {
+            tracing::debug!(
+                order_id = %cancel.order_id,
+                "Cancel received without cli_ord_id, skipping (external order)"
+            );
+            return;
+        };
+
+        let Some(info) = self.client_order_cache.get(cli_ord_id) else {
+            tracing::debug!(
+                order_id = %cancel.order_id,
+                cli_ord_id = %cli_ord_id,
+                "Cancel received for unknown order, skipping (not in cache)"
+            );
+            return;
+        };
+
+        let client_order_id = ClientOrderId::new(cli_ord_id);
+        let venue_order_id = VenueOrderId::new(&cancel.order_id);
+
+        let canceled = OrderCanceled::new(
+            info.trader_id,
+            info.strategy_id,
+            info.instrument_id,
+            client_order_id,
+            UUID4::new(),
+            ts_init,
+            ts_init,
+            false,
+            Some(venue_order_id),
+            Some(account_id),
+        );
+
+        self.pending_messages
+            .push_back(KrakenFuturesWsMessage::OrderCanceled(canceled));
     }
 
     #[allow(dead_code)]
@@ -956,23 +1096,158 @@ impl FuturesFeedHandler {
         let delta = match serde_json::from_str::<KrakenFuturesFillsDelta>(text) {
             Ok(d) => d,
             Err(e) => {
-                tracing::error!("Failed to parse fills delta: {e}");
+                tracing::error!("Failed to parse fills delta: {e}\nMessage: {text}");
                 return;
             }
         };
 
-        tracing::debug!(
-            fill_id = %delta.fill.fill_id,
-            order_id = %delta.fill.order_id,
-            "Received fills delta"
-        );
+        tracing::debug!(fill_count = delta.fills.len(), "Received fills delta");
 
-        if let Some(report) = self.parse_fill_to_report(&delta.fill, ts_init) {
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::FillReport(Box::new(report)));
+        for fill in &delta.fills {
+            tracing::debug!(
+                fill_id = %fill.fill_id,
+                order_id = %fill.order_id,
+                "Processing fill"
+            );
+
+            if let Some(report) = self.parse_fill_to_report(fill, ts_init) {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::FillReport(Box::new(report)));
+            }
         }
     }
 
+    /// Parses a Kraken Futures order message into a proper order event.
+    ///
+    /// Returns the appropriate event type based on order status:
+    /// - New orders with no fills -> `OrderAccepted`
+    /// - Canceled orders -> `OrderCanceled` or `OrderExpired` (based on reason)
+    /// - Orders without cached info -> `StatusOnly` (for reconciliation)
+    fn parse_order_event(
+        &self,
+        order: &KrakenFuturesOpenOrder,
+        ts_init: UnixNanos,
+        is_cancel: bool,
+        cancel_reason: Option<&str>,
+    ) -> Option<ParsedOrderEvent> {
+        let Some(account_id) = self.account_id else {
+            tracing::warn!("Cannot process order: account_id not set");
+            return None;
+        };
+
+        let instrument = self
+            .instruments_cache
+            .get(&Ustr::from(order.instrument.as_str()))?;
+
+        let instrument_id = instrument.id();
+
+        if order.qty <= 0.0 {
+            tracing::warn!(
+                order_id = %order.order_id,
+                "Skipping order with invalid quantity: {}",
+                order.qty
+            );
+            return None;
+        }
+
+        let ts_event = UnixNanos::from((order.last_update_time as u64) * 1_000_000);
+        let venue_order_id = VenueOrderId::new(&order.order_id);
+
+        let client_order_id = order
+            .cli_ord_id
+            .as_ref()
+            .map(|s| ClientOrderId::new(s.as_str()));
+
+        let cached_info = order
+            .cli_ord_id
+            .as_ref()
+            .and_then(|id| self.client_order_cache.get(id));
+
+        // External orders or snapshots fall back to OrderStatusReport for reconciliation
+        let Some(info) = cached_info else {
+            return self
+                .parse_order_to_status_report(order, ts_init, is_cancel)
+                .map(|r| ParsedOrderEvent::StatusOnly(Box::new(r)));
+        };
+
+        let client_order_id = client_order_id.expect("client_order_id should exist if cached");
+
+        let status = if is_cancel {
+            OrderStatus::Canceled
+        } else if order.filled >= order.qty {
+            OrderStatus::Filled
+        } else if order.filled > 0.0 {
+            OrderStatus::PartiallyFilled
+        } else {
+            OrderStatus::Accepted
+        };
+
+        match status {
+            OrderStatus::Accepted => Some(ParsedOrderEvent::Accepted(OrderAccepted::new(
+                info.trader_id,
+                info.strategy_id,
+                instrument_id,
+                client_order_id,
+                venue_order_id,
+                account_id,
+                UUID4::new(),
+                ts_event,
+                ts_init,
+                false,
+            ))),
+            OrderStatus::Canceled => {
+                // Detect expiry by cancel reason keywords
+                let is_expired = cancel_reason
+                    .map(|r| {
+                        let r_lower = r.to_lowercase();
+                        r_lower.contains("expir")
+                            || r_lower.contains("gtd")
+                            || r_lower.contains("timeout")
+                    })
+                    .unwrap_or(false);
+
+                if is_expired {
+                    Some(ParsedOrderEvent::Expired(OrderExpired::new(
+                        info.trader_id,
+                        info.strategy_id,
+                        instrument_id,
+                        client_order_id,
+                        UUID4::new(),
+                        ts_event,
+                        ts_init,
+                        false,
+                        Some(venue_order_id),
+                        Some(account_id),
+                    )))
+                } else {
+                    Some(ParsedOrderEvent::Canceled(OrderCanceled::new(
+                        info.trader_id,
+                        info.strategy_id,
+                        instrument_id,
+                        client_order_id,
+                        UUID4::new(),
+                        ts_event,
+                        ts_init,
+                        false,
+                        Some(venue_order_id),
+                        Some(account_id),
+                    )))
+                }
+            }
+
+            // Fill events are handled separately via the fills feed
+            OrderStatus::PartiallyFilled | OrderStatus::Filled => self
+                .parse_order_to_status_report(order, ts_init, is_cancel)
+                .map(|r| ParsedOrderEvent::StatusOnly(Box::new(r))),
+            _ => self
+                .parse_order_to_status_report(order, ts_init, is_cancel)
+                .map(|r| ParsedOrderEvent::StatusOnly(Box::new(r))),
+        }
+    }
+
+    /// Parses a Kraken Futures order into an `OrderStatusReport`.
+    ///
+    /// Used for snapshots (reconciliation) and external orders.
     fn parse_order_to_status_report(
         &self,
         order: &KrakenFuturesOpenOrder,
@@ -1016,7 +1291,8 @@ impl FuturesFeedHandler {
         };
 
         if order.qty <= 0.0 {
-            tracing::warn!(order_id = %order.order_id, "Skipping order with invalid quantity: {}", order.qty);
+            let qty = order.qty;
+            tracing::warn!(order_id = %order.order_id, "Skipping order with invalid quantity: {qty}");
             return None;
         }
 
@@ -1061,16 +1337,38 @@ impl FuturesFeedHandler {
             return None;
         };
 
-        let instrument = self
-            .instruments_cache
-            .get(&Ustr::from(fill.instrument.as_str()))?;
+        // Resolve instrument: try message field first, then fall back to cache
+        let instrument = if let Some(ref symbol) = fill.instrument {
+            self.instruments_cache.get(symbol).cloned()
+        } else if let Some(ref cli_ord_id) = fill.cli_ord_id {
+            // Fall back to client order cache
+            self.client_order_cache.get(cli_ord_id).and_then(|info| {
+                self.instruments_cache
+                    .iter()
+                    .find(|(_, inst)| inst.id() == info.instrument_id)
+                    .map(|(_, inst)| inst.clone())
+            })
+        } else {
+            None
+        };
+
+        let Some(instrument) = instrument else {
+            tracing::warn!(
+                fill_id = %fill.fill_id,
+                order_id = %fill.order_id,
+                cli_ord_id = ?fill.cli_ord_id,
+                "Cannot resolve instrument for fill"
+            );
+            return None;
+        };
 
         let instrument_id = instrument.id();
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
 
         if fill.qty <= 0.0 {
-            tracing::warn!(fill_id = %fill.fill_id, "Skipping fill with invalid quantity: {}", fill.qty);
+            let qty = fill.qty;
+            tracing::warn!(fill_id = %fill.fill_id, "Skipping fill with invalid quantity: {qty}");
             return None;
         }
 

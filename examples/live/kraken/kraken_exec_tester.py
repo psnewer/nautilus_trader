@@ -76,6 +76,7 @@ config_node = TradingNodeConfig(
         reconciliation=True,
         open_check_interval_secs=5.0,
         open_check_open_only=False,
+        position_check_interval_secs=10.0,
         # snapshot_orders=True,
         # snapshot_positions=True,
         # snapshot_positions_interval_secs=5.0,
@@ -134,13 +135,13 @@ strat_config = ExecTesterConfig(
     # tob_offset_ticks=0,
     # stop_order_type=OrderType.LIMIT_IF_TOUCHED,
     # stop_trigger_type=TriggerType.LAST_PRICE,
-    # open_position_on_start_qty=order_qty,
+    open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,
     # use_individual_cancels_on_stop=True,
     use_post_only=True,
     # close_positions_on_stop=False,
-    reduce_only_on_stop=reduce_only_on_stop,
+    # reduce_only_on_stop=reduce_only_on_stop,
     log_data=False,
 )
 
