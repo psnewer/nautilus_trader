@@ -21,7 +21,6 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwap;
-use dashmap::DashSet;
 use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol},
@@ -29,15 +28,22 @@ use nautilus_model::{
 };
 use nautilus_network::{
     mode::ConnectionMode,
-    websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
+    websocket::{
+        AuthTracker, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
+    },
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{
     handler::{FuturesFeedHandler, HandlerCommand},
-    messages::KrakenFuturesWsMessage,
+    messages::{KrakenFuturesFeed, KrakenFuturesWsMessage},
 };
 use crate::{common::credential::KrakenCredential, websocket::error::KrakenWsError};
+
+/// Topic delimiter for Kraken Futures WebSocket subscriptions.
+///
+/// Topics use colon format: `feed:symbol` (e.g., `trades:PF_ETHUSD`).
+pub const KRAKEN_FUTURES_WS_TOPIC_DELIMITER: char = ':';
 
 const WS_PING_MSG: &str = r#"{"event":"ping"}"#;
 
@@ -54,7 +60,8 @@ pub struct KrakenFuturesWebSocketClient {
     cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
     out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<KrakenFuturesWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
-    subscriptions: Arc<DashSet<String>>,
+    subscriptions: SubscriptionState,
+    auth_tracker: AuthTracker,
     cancellation_token: CancellationToken,
     credential: Option<KrakenCredential>,
     original_challenge: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -72,6 +79,7 @@ impl Clone for KrakenFuturesWebSocketClient {
             out_rx: self.out_rx.clone(),
             task_handle: self.task_handle.clone(),
             subscriptions: self.subscriptions.clone(),
+            auth_tracker: self.auth_tracker.clone(),
             cancellation_token: self.cancellation_token.clone(),
             credential: self.credential.clone(),
             original_challenge: Arc::clone(&self.original_challenge),
@@ -105,7 +113,8 @@ impl KrakenFuturesWebSocketClient {
             cmd_tx: Arc::new(tokio::sync::RwLock::new(cmd_tx)),
             out_rx: None,
             task_handle: None,
-            subscriptions: Arc::new(DashSet::new()),
+            subscriptions: SubscriptionState::new(KRAKEN_FUTURES_WS_TOPIC_DELIMITER),
+            auth_tracker: AuthTracker::new(),
             cancellation_token: CancellationToken::new(),
             credential,
             original_challenge: Arc::new(tokio::sync::RwLock::new(None)),
@@ -242,11 +251,11 @@ impl KrakenFuturesWebSocketClient {
             ping_handler: None,
             heartbeat: self.heartbeat_secs,
             heartbeat_msg: Some(WS_PING_MSG.to_string()),
-            reconnect_timeout_ms: None,
-            reconnect_delay_initial_ms: None,
-            reconnect_delay_max_ms: None,
-            reconnect_backoff_factor: None,
-            reconnect_jitter_ms: None,
+            reconnect_timeout_ms: Some(5_000),
+            reconnect_delay_initial_ms: Some(500),
+            reconnect_delay_max_ms: Some(5_000),
+            reconnect_backoff_factor: Some(1.5),
+            reconnect_jitter_ms: Some(250),
             reconnect_max_attempts: None,
         };
 
@@ -271,14 +280,175 @@ impl KrakenFuturesWebSocketClient {
 
         let signal = self.signal.clone();
         let subscriptions = self.subscriptions.clone();
+        let cmd_tx_for_reconnect = cmd_tx.clone();
+        let credential_for_reconnect = self.credential.clone();
 
         let stream_handle = get_runtime().spawn(async move {
-            let mut handler = FuturesFeedHandler::new(signal, cmd_rx, raw_rx, subscriptions);
+            let mut handler =
+                FuturesFeedHandler::new(signal.clone(), cmd_rx, raw_rx, subscriptions.clone());
 
-            while let Some(msg) = handler.next().await {
-                if let Err(e) = out_tx.send(msg) {
-                    tracing::debug!("Output channel closed: {e}");
-                    break;
+            loop {
+                match handler.next().await {
+                    Some(KrakenFuturesWsMessage::Reconnected) => {
+                        if signal.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        tracing::info!("WebSocket reconnected, resubscribing");
+
+                        // Mark all confirmed as failed to transition to pending for replay
+                        let confirmed_topics = subscriptions.all_topics();
+                        for topic in &confirmed_topics {
+                            subscriptions.mark_failure(topic);
+                        }
+
+                        let topics = subscriptions.all_topics();
+                        if topics.is_empty() {
+                            tracing::debug!("No subscriptions to restore after reconnection");
+                        } else {
+                            // Check if we have private subscriptions that need re-authentication
+                            let has_private_subs = topics.iter().any(|t| {
+                                t == "open_orders"
+                                    || t == "fills"
+                                    || t.starts_with("open_orders:")
+                                    || t.starts_with("fills:")
+                            });
+
+                            if has_private_subs {
+                                if let Some(ref cred) = credential_for_reconnect {
+                                    // Request fresh challenge for the new connection
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    if let Err(e) = cmd_tx_for_reconnect.send(
+                                        HandlerCommand::RequestChallenge {
+                                            api_key: cred.api_key().to_string(),
+                                            response_tx: tx,
+                                        },
+                                    ) {
+                                        tracing::error!(
+                                            error = %e,
+                                            "Failed to request challenge for reconnect"
+                                        );
+                                    } else {
+                                        match tokio::time::timeout(
+                                            tokio::time::Duration::from_secs(10),
+                                            rx,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(challenge)) => {
+                                                match cred.sign_ws_challenge(&challenge) {
+                                                    Ok(signed) => {
+                                                        if let Err(e) = cmd_tx_for_reconnect.send(
+                                                            HandlerCommand::SetAuthCredentials {
+                                                                api_key: cred.api_key().to_string(),
+                                                                original_challenge: challenge,
+                                                                signed_challenge: signed,
+                                                            },
+                                                        ) {
+                                                            tracing::error!(
+                                                                error = %e,
+                                                                "Failed to set auth credentials"
+                                                            );
+                                                        } else {
+                                                            tracing::debug!(
+                                                                "Re-authenticated after reconnect"
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            error = %e,
+                                                            "Failed to sign challenge for reconnect"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Ok(Err(_)) => {
+                                                tracing::error!(
+                                                    "Challenge channel closed during reconnect"
+                                                );
+                                            }
+                                            Err(_) => {
+                                                tracing::error!(
+                                                    "Timeout waiting for challenge during reconnect"
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        "Private subscriptions exist but no credentials available"
+                                    );
+                                }
+                            }
+
+                            tracing::info!(
+                                count = topics.len(),
+                                "Resubscribing after reconnection"
+                            );
+
+                            for topic in &topics {
+                                let cmd =
+                                    if let Some((feed_str, symbol_str)) = topic.split_once(':') {
+                                        let symbol = Symbol::from(symbol_str);
+                                        match feed_str.parse::<KrakenFuturesFeed>() {
+                                            Ok(KrakenFuturesFeed::Trade) => {
+                                                Some(HandlerCommand::SubscribeTrade(symbol))
+                                            }
+                                            Ok(KrakenFuturesFeed::Book) => {
+                                                Some(HandlerCommand::SubscribeBook(symbol))
+                                            }
+                                            Ok(KrakenFuturesFeed::Ticker) => {
+                                                Some(HandlerCommand::SubscribeTicker(symbol))
+                                            }
+                                            Ok(KrakenFuturesFeed::OpenOrders) => {
+                                                Some(HandlerCommand::SubscribeOpenOrders)
+                                            }
+                                            Ok(KrakenFuturesFeed::Fills) => {
+                                                Some(HandlerCommand::SubscribeFills)
+                                            }
+                                            Ok(_) | Err(_) => None,
+                                        }
+                                    } else {
+                                        match topic.parse::<KrakenFuturesFeed>() {
+                                            Ok(KrakenFuturesFeed::OpenOrders) => {
+                                                Some(HandlerCommand::SubscribeOpenOrders)
+                                            }
+                                            Ok(KrakenFuturesFeed::Fills) => {
+                                                Some(HandlerCommand::SubscribeFills)
+                                            }
+                                            Ok(_) | Err(_) => None,
+                                        }
+                                    };
+
+                                if let Some(cmd) = cmd
+                                    && let Err(e) = cmd_tx_for_reconnect.send(cmd)
+                                {
+                                    tracing::error!(
+                                        error = %e, topic,
+                                        "Failed to send resubscribe command"
+                                    );
+                                }
+
+                                subscriptions.mark_subscribe(topic);
+                            }
+                        }
+
+                        if let Err(e) = out_tx.send(KrakenFuturesWsMessage::Reconnected) {
+                            tracing::debug!("Output channel closed: {e}");
+                            break;
+                        }
+                        continue;
+                    }
+                    Some(msg) => {
+                        if let Err(e) = out_tx.send(msg) {
+                            tracing::debug!("Output channel closed: {e}");
+                            break;
+                        }
+                    }
+                    None => {
+                        tracing::debug!("Handler stream ended");
+                        break;
+                    }
                 }
             }
 
@@ -321,6 +491,7 @@ impl KrakenFuturesWebSocketClient {
         }
 
         self.subscriptions.clear();
+        self.auth_tracker.fail("Disconnected");
         Ok(())
     }
 
@@ -335,11 +506,13 @@ impl KrakenFuturesWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("mark:{symbol}");
-        if self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.insert(key);
+        self.subscriptions.mark_subscribe(&key);
+        self.subscriptions.confirm_subscribe(&key);
         self.ensure_ticker_subscribed(symbol).await
     }
 
@@ -349,7 +522,14 @@ impl KrakenFuturesWebSocketClient {
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
-        self.subscriptions.remove(&format!("mark:{symbol}"));
+        let key = format!("mark:{symbol}");
+
+        if !self.subscriptions.remove_reference(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.mark_unsubscribe(&key);
+        self.subscriptions.confirm_unsubscribe(&key);
         self.maybe_unsubscribe_ticker(symbol).await
     }
 
@@ -360,11 +540,13 @@ impl KrakenFuturesWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("index:{symbol}");
-        if self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.insert(key);
+        self.subscriptions.mark_subscribe(&key);
+        self.subscriptions.confirm_subscribe(&key);
         self.ensure_ticker_subscribed(symbol).await
     }
 
@@ -374,7 +556,14 @@ impl KrakenFuturesWebSocketClient {
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
-        self.subscriptions.remove(&format!("index:{symbol}"));
+        let key = format!("index:{symbol}");
+
+        if !self.subscriptions.remove_reference(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.mark_unsubscribe(&key);
+        self.subscriptions.confirm_unsubscribe(&key);
         self.maybe_unsubscribe_ticker(symbol).await
     }
 
@@ -384,11 +573,13 @@ impl KrakenFuturesWebSocketClient {
     pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("quotes:{symbol}");
-        if self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.insert(key);
+        self.subscriptions.mark_subscribe(&key);
+        self.subscriptions.confirm_subscribe(&key);
 
         // Use book feed for low-latency quotes (not throttled ticker)
         self.ensure_book_subscribed(symbol).await
@@ -400,7 +591,14 @@ impl KrakenFuturesWebSocketClient {
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
-        self.subscriptions.remove(&format!("quotes:{symbol}"));
+        let key = format!("quotes:{symbol}");
+
+        if !self.subscriptions.remove_reference(&key) {
+            return Ok(());
+        }
+
+        self.subscriptions.mark_unsubscribe(&key);
+        self.subscriptions.confirm_unsubscribe(&key);
         self.maybe_unsubscribe_book(symbol).await
     }
 
@@ -408,11 +606,12 @@ impl KrakenFuturesWebSocketClient {
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("trades:{symbol}");
-        if self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.insert(key.clone());
+        self.subscriptions.mark_subscribe(&key);
 
         self.cmd_tx
             .read()
@@ -420,6 +619,7 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::SubscribeTrade(symbol))
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_subscribe(&key);
         Ok(())
     }
 
@@ -430,11 +630,12 @@ impl KrakenFuturesWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("trades:{symbol}");
-        if !self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.remove_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.remove(&key);
+        self.subscriptions.mark_unsubscribe(&key);
 
         self.cmd_tx
             .read()
@@ -442,6 +643,7 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::UnsubscribeTrade(symbol))
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_unsubscribe(&key);
         Ok(())
     }
 
@@ -456,11 +658,12 @@ impl KrakenFuturesWebSocketClient {
     ) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("book:{symbol}");
-        if self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.insert(key.clone());
+        self.subscriptions.mark_subscribe(&key);
 
         self.cmd_tx
             .read()
@@ -468,6 +671,7 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::SubscribeBook(symbol))
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_subscribe(&key);
         Ok(())
     }
 
@@ -475,11 +679,12 @@ impl KrakenFuturesWebSocketClient {
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("book:{symbol}");
-        if !self.subscriptions.contains(&key) {
+
+        if !self.subscriptions.remove_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.remove(&key);
+        self.subscriptions.mark_unsubscribe(&key);
 
         self.cmd_tx
             .read()
@@ -487,67 +692,79 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::UnsubscribeBook(symbol))
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_unsubscribe(&key);
         Ok(())
     }
 
     /// Ensure ticker feed is subscribed for the given symbol.
     async fn ensure_ticker_subscribed(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let ticker_key = format!("ticker:{symbol}");
-        if !self.subscriptions.contains(&ticker_key) {
-            self.subscriptions.insert(ticker_key);
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::SubscribeTicker(symbol))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        if !self.subscriptions.add_reference(&ticker_key) {
+            return Ok(());
         }
+
+        self.subscriptions.mark_subscribe(&ticker_key);
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SubscribeTicker(symbol))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        self.subscriptions.confirm_subscribe(&ticker_key);
         Ok(())
     }
 
     /// Unsubscribe from ticker if no more dependent subscriptions.
     async fn maybe_unsubscribe_ticker(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
-        let has_mark = self.subscriptions.contains(&format!("mark:{symbol}"));
-        let has_index = self.subscriptions.contains(&format!("index:{symbol}"));
+        let ticker_key = format!("ticker:{symbol}");
 
-        if !has_mark && !has_index {
-            self.subscriptions.remove(&format!("ticker:{symbol}"));
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::UnsubscribeTicker(symbol))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        if !self.subscriptions.remove_reference(&ticker_key) {
+            return Ok(());
         }
+
+        self.subscriptions.mark_unsubscribe(&ticker_key);
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::UnsubscribeTicker(symbol))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        self.subscriptions.confirm_unsubscribe(&ticker_key);
         Ok(())
     }
 
     /// Ensure book feed is subscribed for the given symbol (for quotes).
     async fn ensure_book_subscribed(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let book_key = format!("book:{symbol}");
-        if !self.subscriptions.contains(&book_key) {
-            self.subscriptions.insert(book_key);
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::SubscribeBook(symbol))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+
+        if !self.subscriptions.add_reference(&book_key) {
+            return Ok(());
         }
+
+        self.subscriptions.mark_subscribe(&book_key);
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::SubscribeBook(symbol))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        self.subscriptions.confirm_subscribe(&book_key);
         Ok(())
     }
 
     /// Unsubscribe from book if no more dependent subscriptions.
     async fn maybe_unsubscribe_book(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
-        let has_quotes = self.subscriptions.contains(&format!("quotes:{symbol}"));
-        let has_book = self.subscriptions.contains(&format!("book:{symbol}"));
+        let book_key = format!("book:{symbol}");
 
-        // Only unsubscribe if no quotes subscription and no explicit book subscription
-        if !has_quotes && !has_book {
-            self.subscriptions.remove(&format!("book:{symbol}"));
-            self.cmd_tx
-                .read()
-                .await
-                .send(HandlerCommand::UnsubscribeBook(symbol))
-                .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        if !self.subscriptions.remove_reference(&book_key) {
+            return Ok(());
         }
+
+        self.subscriptions.mark_unsubscribe(&book_key);
+        self.cmd_tx
+            .read()
+            .await
+            .send(HandlerCommand::UnsubscribeBook(symbol))
+            .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
+        self.subscriptions.confirm_unsubscribe(&book_key);
         Ok(())
     }
 
@@ -667,7 +884,12 @@ impl KrakenFuturesWebSocketClient {
             ));
         }
 
-        self.subscriptions.insert("open_orders".to_string());
+        let key = "open_orders";
+        if !self.subscriptions.add_reference(key) {
+            return Ok(());
+        }
+
+        self.subscriptions.mark_subscribe(key);
 
         self.cmd_tx
             .read()
@@ -675,6 +897,7 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::SubscribeOpenOrders)
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_subscribe(key);
         Ok(())
     }
 
@@ -686,7 +909,12 @@ impl KrakenFuturesWebSocketClient {
             ));
         }
 
-        self.subscriptions.insert("fills".to_string());
+        let key = "fills";
+        if !self.subscriptions.add_reference(key) {
+            return Ok(());
+        }
+
+        self.subscriptions.mark_subscribe(key);
 
         self.cmd_tx
             .read()
@@ -694,6 +922,7 @@ impl KrakenFuturesWebSocketClient {
             .send(HandlerCommand::SubscribeFills)
             .map_err(|e| KrakenWsError::ChannelError(e.to_string()))?;
 
+        self.subscriptions.confirm_subscribe(key);
         Ok(())
     }
 

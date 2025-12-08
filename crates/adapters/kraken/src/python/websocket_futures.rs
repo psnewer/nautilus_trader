@@ -212,6 +212,9 @@ impl KrakenFuturesWebSocketClient {
                                     }
                                 }
                             }
+                            KrakenFuturesWsMessage::Reconnected => {
+                                tracing::info!("WebSocket reconnected");
+                            }
                         });
                     }
                 });

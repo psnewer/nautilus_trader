@@ -20,6 +20,7 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
+use strum::{AsRefStr, EnumString};
 use ustr::Ustr;
 
 use crate::common::enums::KrakenOrderSide;
@@ -34,11 +35,13 @@ pub enum KrakenFuturesWsMessage {
     IndexPrice(IndexPriceUpdate),
     OrderStatusReport(Box<OrderStatusReport>),
     FillReport(Box<FillReport>),
+    Reconnected,
 }
 
 /// Kraken Futures WebSocket feed types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, AsRefStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum KrakenFuturesFeed {
     Ticker,
     Trade,

@@ -25,7 +25,6 @@ use std::{
 };
 
 use ahash::AHashMap;
-use dashmap::DashSet;
 use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{AtomicTime, UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
@@ -40,7 +39,10 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport},
     types::{Money, Price, Quantity},
 };
-use nautilus_network::websocket::WebSocketClient;
+use nautilus_network::{
+    RECONNECTED,
+    websocket::{SubscriptionState, WebSocketClient},
+};
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
@@ -130,7 +132,7 @@ pub struct FuturesFeedHandler {
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    subscriptions: Arc<DashSet<String>>,
+    subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     quote_cache: QuoteCache,
     pending_messages: VecDeque<KrakenFuturesWsMessage>,
@@ -148,7 +150,7 @@ impl FuturesFeedHandler {
         signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
         raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-        subscriptions: Arc<DashSet<String>>,
+        subscriptions: SubscriptionState,
     ) -> Self {
         Self {
             clock: get_atomic_clock_realtime(),
@@ -171,6 +173,11 @@ impl FuturesFeedHandler {
 
     pub fn is_stopped(&self) -> bool {
         self.signal.load(Ordering::Relaxed)
+    }
+
+    /// Checks if a topic is active (confirmed or pending subscribe).
+    fn is_subscribed(&self, topic: &str) -> bool {
+        self.subscriptions.all_topics().iter().any(|t| t == topic)
     }
 
     fn get_instrument(&self, symbol: &Ustr) -> Option<&InstrumentAny> {
@@ -301,6 +308,12 @@ impl FuturesFeedHandler {
                             continue;
                         }
                     };
+
+                    if text == RECONNECTED {
+                        tracing::info!("Received WebSocket reconnected signal");
+                        self.quote_cache.clear();
+                        return Some(KrakenFuturesWsMessage::Reconnected);
+                    }
 
                     let ts_init = self.clock.get_time_ns();
                     self.parse_message(&text, ts_init);
@@ -506,8 +519,8 @@ impl FuturesFeedHandler {
         let product_id = &ticker.product_id;
         let mark_key = format!("mark:{product_id}");
         let index_key = format!("index:{product_id}");
-        let has_mark = self.subscriptions.contains(&mark_key);
-        let has_index = self.subscriptions.contains(&index_key);
+        let has_mark = self.is_subscribed(&mark_key);
+        let has_index = self.is_subscribed(&index_key);
 
         // Enqueue mark price if present and subscribed
         if let Some(mark_price) = ticker.mark_price
@@ -549,7 +562,7 @@ impl FuturesFeedHandler {
 
         // Check if subscribed to trades for this product
         let product_id = &trade.product_id;
-        if !self.subscriptions.contains(&format!("trades:{product_id}")) {
+        if !self.is_subscribed(&format!("trades:{product_id}")) {
             return;
         }
 
@@ -605,7 +618,7 @@ impl FuturesFeedHandler {
 
         // Check if subscribed to trades for this product
         let product_id = &snapshot.product_id;
-        if !self.subscriptions.contains(&format!("trades:{product_id}")) {
+        if !self.is_subscribed(&format!("trades:{product_id}")) {
             return;
         }
 
@@ -666,8 +679,8 @@ impl FuturesFeedHandler {
         let product_id = &snapshot.product_id;
 
         // Check subscriptions
-        let has_book = self.subscriptions.contains(&format!("book:{product_id}"));
-        let has_quotes = self.subscriptions.contains(&format!("quotes:{product_id}"));
+        let has_book = self.is_subscribed(&format!("book:{product_id}"));
+        let has_quotes = self.is_subscribed(&format!("quotes:{product_id}"));
 
         if !has_book && !has_quotes {
             return;
@@ -738,13 +751,14 @@ impl FuturesFeedHandler {
             ));
 
             for level in &snapshot.bids {
-                if level.qty == 0.0 {
+                let size = Quantity::new(level.qty, size_precision);
+                if size.is_zero() {
                     continue;
                 }
                 let order = BookOrder::new(
                     OrderSide::Buy,
                     Price::new(level.price, price_precision),
-                    Quantity::new(level.qty, size_precision),
+                    size,
                     0,
                 );
                 deltas.push(OrderBookDelta::new(
@@ -759,13 +773,14 @@ impl FuturesFeedHandler {
             }
 
             for level in &snapshot.asks {
-                if level.qty == 0.0 {
+                let size = Quantity::new(level.qty, size_precision);
+                if size.is_zero() {
                     continue;
                 }
                 let order = BookOrder::new(
                     OrderSide::Sell,
                     Price::new(level.price, price_precision),
-                    Quantity::new(level.qty, size_precision),
+                    size,
                     0,
                 );
                 deltas.push(OrderBookDelta::new(
@@ -797,8 +812,8 @@ impl FuturesFeedHandler {
         let product_id = &delta.product_id;
 
         // Check subscriptions - quotes also uses book feed
-        let has_book = self.subscriptions.contains(&format!("book:{product_id}"));
-        let has_quotes = self.subscriptions.contains(&format!("quotes:{product_id}"));
+        let has_book = self.is_subscribed(&format!("book:{product_id}"));
+        let has_quotes = self.is_subscribed(&format!("quotes:{product_id}"));
 
         // Need at least one subscription to process
         if !has_book && !has_quotes {
@@ -845,10 +860,12 @@ impl FuturesFeedHandler {
 
         // Emit book delta if subscribed
         if has_book {
-            let (action, size) = if delta.qty == 0.0 {
-                (BookAction::Delete, Quantity::zero(size_precision))
+            // Create quantity first, then determine action based on whether it rounds to zero
+            let size = Quantity::new(delta.qty, size_precision);
+            let action = if size.is_zero() {
+                BookAction::Delete
             } else {
-                (BookAction::Update, Quantity::new(delta.qty, size_precision))
+                BookAction::Update
             };
 
             let order = BookOrder::new(side, Price::new(delta.price, price_precision), size, 0);

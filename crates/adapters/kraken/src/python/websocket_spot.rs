@@ -220,6 +220,9 @@ impl KrakenSpotWebSocketClient {
                                 }
                             });
                         }
+                        NautilusWsMessage::Reconnected => {
+                            tracing::info!("WebSocket reconnected");
+                        }
                     }
                 }
             });

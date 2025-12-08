@@ -24,7 +24,6 @@ use std::{
 };
 
 use ahash::AHashMap;
-use dashmap::DashMap;
 use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{AtomicTime, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
@@ -33,7 +32,10 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
 };
-use nautilus_network::websocket::WebSocketClient;
+use nautilus_network::{
+    RECONNECTED,
+    websocket::{SubscriptionState, WebSocketClient},
+};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
@@ -78,7 +80,7 @@ pub(super) struct SpotFeedHandler {
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<SpotHandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
+    subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     client_order_instruments: AHashMap<String, InstrumentId>,
     order_qty_cache: AHashMap<String, f64>,
@@ -95,7 +97,7 @@ impl SpotFeedHandler {
         signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<SpotHandlerCommand>,
         raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-        subscriptions: Arc<DashMap<String, KrakenWsChannel>>,
+        subscriptions: SubscriptionState,
     ) -> Self {
         Self {
             clock: get_atomic_clock_realtime(),
@@ -117,6 +119,11 @@ impl SpotFeedHandler {
 
     pub(super) fn is_stopped(&self) -> bool {
         self.signal.load(Ordering::Relaxed)
+    }
+
+    /// Checks if a topic is active (confirmed or pending subscribe).
+    fn is_subscribed(&self, topic: &str) -> bool {
+        self.subscriptions.all_topics().iter().any(|t| t == topic)
     }
 
     fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
@@ -235,6 +242,12 @@ impl SpotFeedHandler {
                         _ => continue,
                     };
 
+                    if text == RECONNECTED {
+                        tracing::info!("Received WebSocket reconnected signal");
+                        self.quote_cache.clear();
+                        return Some(NautilusWsMessage::Reconnected);
+                    }
+
                     let ts_init = self.clock.get_time_ns();
 
                     if let Some(nautilus_msg) = self.parse_message(&text, ts_init) {
@@ -352,8 +365,8 @@ impl SpotFeedHandler {
                     let price_precision = instrument.price_precision();
                     let size_precision = instrument.size_precision();
 
-                    let has_book = self.subscriptions.contains_key(&format!("book:{symbol}"));
-                    let has_quotes = self.subscriptions.contains_key(&format!("quotes:{symbol}"));
+                    let has_book = self.is_subscribed(&format!("book:{symbol}"));
+                    let has_quotes = self.is_subscribed(&format!("quotes:{symbol}"));
 
                     if has_quotes {
                         let best_bid = book_data.bids.as_ref().and_then(|bids| bids.first());

@@ -36,6 +36,7 @@ pub enum NautilusWsMessage {
     Deltas(OrderBookDeltas),
     OrderStatusReport(Box<OrderStatusReport>),
     FillReport(Box<FillReport>),
+    Reconnected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
