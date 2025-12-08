@@ -108,6 +108,7 @@ pub enum HandlerCommand {
     SubscribeFills,
     CacheClientOrder {
         client_order_id: ClientOrderId,
+        venue_order_id: Option<VenueOrderId>,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
@@ -174,6 +175,7 @@ pub struct FuturesFeedHandler {
     original_challenge: Option<String>,
     signed_challenge: Option<String>,
     client_order_cache: AHashMap<String, CachedOrderInfo>,
+    venue_order_cache: AHashMap<String, String>,
     pending_challenge_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
@@ -200,6 +202,7 @@ impl FuturesFeedHandler {
             original_challenge: None,
             signed_challenge: None,
             client_order_cache: AHashMap::new(),
+            venue_order_cache: AHashMap::new(),
             pending_challenge_tx: None,
         }
     }
@@ -289,18 +292,24 @@ impl FuturesFeedHandler {
                         }
                         HandlerCommand::CacheClientOrder {
                             client_order_id,
+                            venue_order_id,
                             instrument_id,
                             trader_id,
                             strategy_id,
                         } => {
+                            let client_order_id_str = client_order_id.to_string();
                             self.client_order_cache.insert(
-                                client_order_id.to_string(),
+                                client_order_id_str.clone(),
                                 CachedOrderInfo {
                                     instrument_id,
                                     trader_id,
                                     strategy_id,
                                 },
                             );
+                            if let Some(venue_id) = venue_order_id {
+                                self.venue_order_cache
+                                    .insert(venue_id.to_string(), client_order_id_str);
+                            }
                         }
                     }
                     continue;
@@ -1033,25 +1042,50 @@ impl FuturesFeedHandler {
             return;
         };
 
-        // Only emit OrderCanceled if we have cached order info (i.e., this is our order)
-        let Some(cli_ord_id) = cancel.cli_ord_id.as_ref() else {
+        // Try to find order info - first by cli_ord_id, then by venue_order_id
+        let (client_order_id, info) = if let Some(cli_ord_id) = cancel.cli_ord_id.as_ref() {
+            // Try lookup by client order ID
+            if let Some(info) = self.client_order_cache.get(cli_ord_id) {
+                (ClientOrderId::new(cli_ord_id), info.clone())
+            } else if let Some(mapped_cli_ord_id) = self.venue_order_cache.get(&cancel.order_id) {
+                // Fallback: lookup by venue_order_id -> client_order_id mapping
+                if let Some(info) = self.client_order_cache.get(mapped_cli_ord_id) {
+                    (ClientOrderId::new(mapped_cli_ord_id), info.clone())
+                } else {
+                    tracing::debug!(
+                        order_id = %cancel.order_id,
+                        cli_ord_id = %cli_ord_id,
+                        "Cancel received for unknown order (not in cache)"
+                    );
+                    return;
+                }
+            } else {
+                tracing::debug!(
+                    order_id = %cancel.order_id,
+                    cli_ord_id = %cli_ord_id,
+                    "Cancel received for unknown order (not in cache)"
+                );
+                return;
+            }
+        } else if let Some(mapped_cli_ord_id) = self.venue_order_cache.get(&cancel.order_id) {
+            // No cli_ord_id from Kraken, but we have a venue_order_id mapping (reconciled order)
+            if let Some(info) = self.client_order_cache.get(mapped_cli_ord_id) {
+                (ClientOrderId::new(mapped_cli_ord_id), info.clone())
+            } else {
+                tracing::debug!(
+                    order_id = %cancel.order_id,
+                    "Cancel received but mapped order not in cache"
+                );
+                return;
+            }
+        } else {
             tracing::debug!(
                 order_id = %cancel.order_id,
-                "Cancel received without cli_ord_id, skipping (external order)"
+                "Cancel received without cli_ord_id and no venue mapping (external order)"
             );
             return;
         };
 
-        let Some(info) = self.client_order_cache.get(cli_ord_id) else {
-            tracing::debug!(
-                order_id = %cancel.order_id,
-                cli_ord_id = %cli_ord_id,
-                "Cancel received for unknown order, skipping (not in cache)"
-            );
-            return;
-        };
-
-        let client_order_id = ClientOrderId::new(cli_ord_id);
         let venue_order_id = VenueOrderId::new(&cancel.order_id);
 
         let canceled = OrderCanceled::new(

@@ -251,6 +251,43 @@ class KrakenExecutionClient(LiveExecutionClient):
             await self._ws_client_futures.subscribe_executions()
             self._log.info("Subscribed to futures executions", LogColor.BLUE)
 
+    def _cache_order_with_websocket(self, order: Order) -> None:
+        symbol = order.instrument_id.symbol.value
+        product_type = nautilus_pyo3.kraken_product_type_from_symbol(symbol)
+        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
+        pyo3_venue_order_id = (
+            nautilus_pyo3.VenueOrderId(order.venue_order_id.value) if order.venue_order_id else None
+        )
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+        pyo3_trader_id = nautilus_pyo3.TraderId(order.trader_id.value)
+        pyo3_strategy_id = nautilus_pyo3.StrategyId(order.strategy_id.value)
+
+        if product_type == KrakenProductType.SPOT and self._ws_client_spot is not None:
+            self._ws_client_spot.cache_client_order(
+                pyo3_client_order_id,
+                pyo3_venue_order_id,
+                pyo3_instrument_id,
+                pyo3_trader_id,
+                pyo3_strategy_id,
+            )
+        elif product_type == KrakenProductType.FUTURES and self._ws_client_futures is not None:
+            self._ws_client_futures.cache_client_order(
+                pyo3_client_order_id,
+                pyo3_venue_order_id,
+                pyo3_instrument_id,
+                pyo3_trader_id,
+                pyo3_strategy_id,
+            )
+
+    def _cache_open_orders_with_websocket(self) -> None:
+        open_orders: list[Order] = self._cache.orders_open(venue=self.venue)
+
+        for order in open_orders:
+            self._cache_order_with_websocket(order)
+
+        if open_orders:
+            self._log.info(f"Cached {len(open_orders)} open order(s) with WebSocket clients")
+
     async def _disconnect(self) -> None:
         if self._http_client_spot is not None:
             self._http_client_spot.cancel_all_requests()
@@ -614,6 +651,7 @@ class KrakenExecutionClient(LiveExecutionClient):
         ):
             self._ws_client_spot.cache_client_order(
                 pyo3_client_order_id,
+                None,  # venue_order_id not known yet for new orders
                 pyo3_instrument_id,
                 pyo3_trader_id,
                 pyo3_strategy_id,
@@ -624,6 +662,7 @@ class KrakenExecutionClient(LiveExecutionClient):
         ):
             self._ws_client_futures.cache_client_order(
                 pyo3_client_order_id,
+                None,  # venue_order_id not known yet for new orders
                 pyo3_instrument_id,
                 pyo3_trader_id,
                 pyo3_strategy_id,
@@ -720,6 +759,8 @@ class KrakenExecutionClient(LiveExecutionClient):
             self._log.error(f"No HTTP client available for symbol {symbol}")
             return
 
+        self._cache_order_with_websocket(order)
+
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         pyo3_client_order_id = (
             nautilus_pyo3.ClientOrderId(command.client_order_id.value)
@@ -762,6 +803,8 @@ class KrakenExecutionClient(LiveExecutionClient):
         if client is None:
             self._log.error(f"No HTTP client available for symbol {symbol}")
             return
+
+        self._cache_open_orders_with_websocket()
 
         try:
             # Futures client requires instrument_id parameter, spot does not

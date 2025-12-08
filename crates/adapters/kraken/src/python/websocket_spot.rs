@@ -45,7 +45,7 @@ use futures_util::StreamExt;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{IntoPyObjectExt, prelude::*};
@@ -147,10 +147,12 @@ impl KrakenSpotWebSocketClient {
     fn py_cache_client_order(
         &self,
         client_order_id: ClientOrderId,
+        _venue_order_id: Option<VenueOrderId>,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
     ) {
+        // Note: venue_order_id not used for spot yet, but kept for API consistency
         self.cache_client_order(client_order_id, instrument_id, trader_id, strategy_id);
     }
 

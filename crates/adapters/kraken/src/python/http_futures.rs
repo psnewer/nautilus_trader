@@ -370,12 +370,10 @@ impl KrakenFuturesHttpClient {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let report = client
+            client
                 .cancel_order(account_id, instrument_id, client_order_id, venue_order_id)
                 .await
-                .map_err(to_pyruntime_err)?;
-
-            Python::attach(|py| report.into_pyobject(py).map(|o| o.unbind()))
+                .map_err(to_pyruntime_err)
         })
     }
 

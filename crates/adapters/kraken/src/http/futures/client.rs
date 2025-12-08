@@ -1215,7 +1215,7 @@ impl KrakenFuturesHttpClient {
             anyhow::bail!("Failed to get open orders: {error_msg}");
         }
 
-        for order in response.open_orders {
+        for order in &response.open_orders {
             if let Some(ref target_id) = instrument_id {
                 let instrument = self.get_cached_instrument(&target_id.symbol.inner());
                 if let Some(inst) = instrument
@@ -1226,7 +1226,7 @@ impl KrakenFuturesHttpClient {
             }
 
             if let Some(instrument) = self.get_instrument_by_raw_symbol(&order.symbol) {
-                match parse_futures_order_status_report(&order, &instrument, account_id, ts_init) {
+                match parse_futures_order_status_report(order, &instrument, account_id, ts_init) {
                     Ok(report) => all_reports.push(report),
                     Err(e) => {
                         let order_id = &order.order_id;
@@ -1605,61 +1605,34 @@ impl KrakenFuturesHttpClient {
     /// Returns an error if:
     /// - Credentials are missing.
     /// - Neither client_order_id nor venue_order_id is provided.
-    /// - The order is not found.
     /// - The request fails.
+    /// - The order cancellation is rejected.
     pub async fn cancel_order(
         &self,
-        account_id: AccountId,
+        _account_id: AccountId,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
-    ) -> anyhow::Result<OrderStatusReport> {
-        let instrument = self
+    ) -> anyhow::Result<()> {
+        let _ = self
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
 
-        let order_id = venue_order_id.map(|id| id.to_string());
-        let cli_ord_id = client_order_id.map(|id| id.to_string());
+        let order_id = venue_order_id.as_ref().map(|id| id.to_string());
+        let cli_ord_id = client_order_id.as_ref().map(|id| id.to_string());
 
         if order_id.is_none() && cli_ord_id.is_none() {
             anyhow::bail!("Either client_order_id or venue_order_id must be provided");
         }
 
-        let response = self
-            .inner
-            .cancel_order(order_id.clone(), cli_ord_id)
-            .await?;
+        let response = self.inner.cancel_order(order_id, cli_ord_id).await?;
 
         if response.result != KrakenApiResult::Success {
             let status = &response.cancel_status.status;
             anyhow::bail!("Order cancellation failed: {status}");
         }
 
-        // Get venue_order_id from response if not provided by caller
-        let venue_order_id_str = order_id
-            .or(response.cancel_status.order_id.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!("No order_id in cancel response and none provided by caller")
-            })?;
-
-        // Query order events to get the canceled order details
-        let events_response = self.inner.get_order_events(None, None, None).await?;
-
-        let ts_init = self.generate_ts_init();
-
-        // Find the most recent event for this order
-        let event_wrapper = events_response
-            .order_events
-            .iter()
-            .find(|e| e.order.order_id == venue_order_id_str)
-            .ok_or_else(|| anyhow::anyhow!("Order event not found for: {venue_order_id_str}"))?;
-
-        parse_futures_order_event_status_report(
-            &event_wrapper.order,
-            &instrument,
-            account_id,
-            ts_init,
-        )
+        Ok(())
     }
 
     /// Request account state from the Kraken Futures exchange.
@@ -1714,11 +1687,32 @@ impl KrakenFuturesHttpClient {
                             .available
                             .unwrap_or(total_amount)
                             .min(total_amount);
-                        let locked_amount = total_amount - available_amount;
-                        let free = Money::new(available_amount, currency);
+                        let locked_amount = (total_amount - available_amount).max(0.0);
                         let locked = Money::new(locked_amount, currency);
+                        // Compute free from total - locked to guarantee the invariant holds
+                        let free = total - locked;
 
                         balances.push(AccountBalance::new(total, locked, free));
+                    }
+
+                    // Add USD balance from portfolio value for margin calculations.
+                    // Multi-collateral accounts track margin in USD even though the
+                    // actual collateral is held in various crypto currencies.
+                    if let Some(portfolio_value) = account.portfolio_value
+                        && portfolio_value > 0.0
+                    {
+                        let usd_currency = Currency::USD();
+                        let total_usd = Money::new(portfolio_value, usd_currency);
+                        let available_usd = account
+                            .available_margin
+                            .unwrap_or(portfolio_value)
+                            .min(portfolio_value);
+                        // Compute locked = total - available to guarantee the invariant holds
+                        let locked_usd =
+                            Money::new((portfolio_value - available_usd).max(0.0), usd_currency);
+                        let free_usd = total_usd - locked_usd;
+
+                        balances.push(AccountBalance::new(total_usd, locked_usd, free_usd));
                     }
                 }
                 "marginAccount" => {

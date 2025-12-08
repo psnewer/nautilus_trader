@@ -23,7 +23,9 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId},
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId, VenueOrderId,
+    },
     instruments::InstrumentAny,
 };
 use nautilus_network::{
@@ -795,6 +797,7 @@ impl KrakenFuturesWebSocketClient {
     pub fn cache_client_order(
         &self,
         client_order_id: ClientOrderId,
+        venue_order_id: Option<VenueOrderId>,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
@@ -802,6 +805,7 @@ impl KrakenFuturesWebSocketClient {
         if let Ok(tx) = self.cmd_tx.try_read()
             && let Err(e) = tx.send(HandlerCommand::CacheClientOrder {
                 client_order_id,
+                venue_order_id,
                 instrument_id,
                 trader_id,
                 strategy_id,

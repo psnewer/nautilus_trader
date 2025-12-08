@@ -7993,7 +7993,7 @@ class KrakenSpotHttpClient:
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId | None = None,
         venue_order_id: VenueOrderId | None = None,
-    ) -> OrderStatusReport: ...
+    ) -> None: ...
     async def cancel_all_orders(self) -> int: ...
     async def request_account_state(self, account_id: AccountId) -> AccountState: ...
     def set_use_spot_position_reports(self, value: bool) -> None: ...
@@ -8081,7 +8081,7 @@ class KrakenFuturesHttpClient:
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId | None = None,
         venue_order_id: VenueOrderId | None = None,
-    ) -> OrderStatusReport: ...
+    ) -> None: ...
     async def cancel_all_orders(
         self,
         instrument_id: InstrumentId | None = None,
@@ -8108,6 +8108,7 @@ class KrakenSpotWebSocketClient:
     def cache_client_order(
         self,
         client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId | None,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
@@ -8160,6 +8161,7 @@ class KrakenFuturesWebSocketClient:
     def cache_client_order(
         self,
         client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId | None,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
