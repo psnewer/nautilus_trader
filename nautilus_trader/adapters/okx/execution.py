@@ -1686,7 +1686,7 @@ class OKXExecutionClient(LiveExecutionClient):
             if venue_is_original_algo:
                 return
 
-            if is_order_updated(order, report):
+            if report.is_order_updated(order):
                 self.generate_order_updated(
                     strategy_id=order.strategy_id,
                     instrument_id=report.instrument_id,
@@ -2021,17 +2021,3 @@ class OKXExecutionClient(LiveExecutionClient):
                 self._client_id_aliases.pop(key, None)
 
         self._client_id_children.pop(canonical, None)
-
-
-def is_order_updated(order: Order, report: OrderStatusReport) -> bool:
-    if order.has_price and report.price and order.price != report.price:
-        return True
-
-    if (
-        order.has_trigger_price
-        and report.trigger_price
-        and order.trigger_price != report.trigger_price
-    ):
-        return True
-
-    return order.quantity != report.quantity
