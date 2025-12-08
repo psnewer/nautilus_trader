@@ -40,11 +40,12 @@ use ahash::AHashMap;
 use dashmap::DashMap;
 use nautilus_core::{AtomicTime, UUID4, nanos::UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    enums::{OrderStatus, OrderType, TimeInForce},
-    events::{AccountState, OrderCancelRejected, OrderModifyRejected, OrderRejected},
+    enums::{OrderStatus, OrderType},
+    events::{
+        AccountState, OrderAccepted, OrderCancelRejected, OrderModifyRejected, OrderRejected,
+    },
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
-    reports::OrderStatusReport,
     types::{Money, Quantity},
 };
 use nautilus_network::{
@@ -78,8 +79,8 @@ use crate::{
             should_retry_error_code,
         },
         enums::{
-            OKXBookAction, OKXInstrumentType, OKXOrderStatus, OKXOrderType, OKXSide,
-            OKXTargetCurrency, OKXTradeMode,
+            OKXBookAction, OKXInstrumentType, OKXOrderStatus, OKXSide, OKXTargetCurrency,
+            OKXTradeMode,
         },
         parse::{
             determine_order_type, is_market_price, okx_instrument_type, parse_account_state,
@@ -940,7 +941,7 @@ impl OKXWsFeedHandler {
                 );
             } else if op == OKXWsOperation::Order
                 && let Some(request_id) = &id
-                && let Some((params, client_order_id, _trader_id, _strategy_id, instrument_id)) =
+                && let Some((params, client_order_id, trader_id, strategy_id, instrument_id)) =
                     self.pending_place_requests.remove(request_id)
             {
                 let (venue_order_id, ts_accepted) = if let Some(first) = data.first() {
@@ -1000,74 +1001,33 @@ impl OKXWsFeedHandler {
                                 return None;
                             }
 
-                            let order_side = order_params.side.into();
-                            let time_in_force = match order_params.ord_type {
-                                OKXOrderType::Fok => TimeInForce::Fok,
-                                OKXOrderType::Ioc | OKXOrderType::OptimalLimitIoc => {
-                                    TimeInForce::Ioc
-                                }
-                                _ => TimeInForce::Gtc,
+                            let Some(v_order_id) = venue_order_id else {
+                                tracing::error!(
+                                    "No venue_order_id for accepted order: client_order_id={client_order_id}"
+                                );
+                                return None;
                             };
 
-                            let size_precision = instrument.size_precision();
-                            let quantity = match parse_quantity(&order_params.sz, size_precision) {
-                                Ok(q) => q,
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to parse quantity for accepted order: {e}"
-                                    );
-                                    return None;
-                                }
-                            };
+                            self.emitted_order_accepted.insert(v_order_id, ());
 
-                            let filled_qty = Quantity::zero(size_precision);
-
-                            let mut report = OrderStatusReport::new(
-                                self.account_id,
+                            let accepted = OrderAccepted::new(
+                                trader_id,
+                                strategy_id,
                                 instrument_id,
-                                Some(client_order_id),
-                                venue_order_id.unwrap_or_else(|| VenueOrderId::new("PENDING")),
-                                order_side,
-                                order_type,
-                                time_in_force,
-                                OrderStatus::Accepted,
-                                quantity,
-                                filled_qty,
+                                client_order_id,
+                                v_order_id,
+                                self.account_id,
+                                UUID4::new(),
                                 ts_accepted,
-                                ts_accepted, // ts_last same as ts_accepted for new orders
                                 ts_init,
-                                None, // Generate UUID4 automatically
+                                false, // Not from reconciliation
                             );
-
-                            if let Some(px) = &order_params.px
-                                && !px.is_empty()
-                                && let Ok(price) = parse_price(px, instrument.price_precision())
-                            {
-                                report = report.with_price(price);
-                            }
-
-                            if let Some(true) = order_params.reduce_only {
-                                report = report.with_reduce_only(true);
-                            }
-
-                            if order_type == OrderType::Limit
-                                && order_params.ord_type == OKXOrderType::PostOnly
-                            {
-                                report = report.with_post_only(true);
-                            }
-
-                            if let Some(ref v_order_id) = venue_order_id {
-                                self.emitted_order_accepted.insert(*v_order_id, ());
-                            }
 
                             tracing::debug!(
-                                "Order accepted: client_order_id={client_order_id}, venue_order_id={:?}",
-                                venue_order_id
+                                "Order accepted: client_order_id={client_order_id}, venue_order_id={v_order_id}"
                             );
 
-                            return Some(NautilusWsMessage::ExecutionReports(vec![
-                                ExecutionReport::Order(report),
-                            ]));
+                            return Some(NautilusWsMessage::OrderAccepted(accepted));
                         }
                         PendingOrderParams::Algo(_) => {
                             tracing::info!(

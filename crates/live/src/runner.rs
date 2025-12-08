@@ -198,8 +198,6 @@ impl AsyncRunner {
                     return;
                 }
             };
-
-            log::info!("AsyncRunner stopped");
         }
     }
 
