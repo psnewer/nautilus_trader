@@ -44,16 +44,11 @@ impl KrakenFuturesWebSocketClient {
         api_secret: Option<String>,
     ) -> PyResult<Self> {
         let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
-        let testnet = env == KrakenEnvironment::Testnet;
+        let demo = env == KrakenEnvironment::Demo;
         let url = base_url.unwrap_or_else(|| {
             get_kraken_ws_public_url(KrakenProductType::Futures, env).to_string()
         });
-
-        // Use provided credentials, or fall back to environment variables
-        let credential = match (api_key, api_secret) {
-            (Some(key), Some(secret)) => Some(KrakenCredential::new(key, secret)),
-            _ => KrakenCredential::from_env_futures(testnet),
-        };
+        let credential = KrakenCredential::resolve_futures(api_key, api_secret, demo);
 
         Ok(KrakenFuturesWebSocketClient::with_credentials(
             url,

@@ -879,8 +879,9 @@ impl KrakenSpotHttpClient {
 
     /// Creates a new [`KrakenSpotHttpClient`] loading credentials from environment variables.
     ///
-    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET` (mainnet)
-    /// or `KRAKEN_SPOT_TESTNET_API_KEY` and `KRAKEN_SPOT_TESTNET_API_SECRET` (testnet).
+    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET`.
+    ///
+    /// Note: Kraken Spot does not have a testnet/demo environment.
     ///
     /// Falls back to unauthenticated client if credentials are not set.
     #[allow(clippy::too_many_arguments)]
@@ -893,9 +894,7 @@ impl KrakenSpotHttpClient {
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
-        let testnet = environment == KrakenEnvironment::Testnet;
-
-        if let Some(credential) = KrakenCredential::from_env_spot(testnet) {
+        if let Some(credential) = KrakenCredential::from_env_spot() {
             let (api_key, api_secret) = credential.into_parts();
             Self::with_credentials(
                 api_key,

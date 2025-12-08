@@ -57,7 +57,7 @@ elif product_type == KrakenProductType.FUTURES:
     reduce_only_on_stop = True
     use_spot_position_reports = False  # Not applicable
     environment = KrakenEnvironment.MAINNET
-    # environment = KrakenEnvironment.TESTNET  # Use demo-futures.kraken.com
+    # environment = KrakenEnvironment.DEMO  # Use demo-futures.kraken.com
 else:
     raise ValueError(f"Unsupported product type: {product_type}")
 

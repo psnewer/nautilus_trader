@@ -885,7 +885,7 @@ impl KrakenFuturesHttpClient {
     /// Creates a new [`KrakenFuturesHttpClient`] loading credentials from environment variables.
     ///
     /// Looks for `KRAKEN_FUTURES_API_KEY` and `KRAKEN_FUTURES_API_SECRET` (mainnet)
-    /// or `KRAKEN_FUTURES_TESTNET_API_KEY` and `KRAKEN_FUTURES_TESTNET_API_SECRET` (testnet).
+    /// or `KRAKEN_FUTURES_DEMO_API_KEY` and `KRAKEN_FUTURES_DEMO_API_SECRET` (demo).
     ///
     /// Falls back to unauthenticated client if credentials are not set.
     #[allow(clippy::too_many_arguments)]
@@ -898,9 +898,9 @@ impl KrakenFuturesHttpClient {
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
-        let testnet = environment == KrakenEnvironment::Testnet;
+        let demo = environment == KrakenEnvironment::Demo;
 
-        if let Some(credential) = KrakenCredential::from_env_futures(testnet) {
+        if let Some(credential) = KrakenCredential::from_env_futures(demo) {
             let (api_key, api_secret) = credential.into_parts();
             Self::with_credentials(
                 api_key,

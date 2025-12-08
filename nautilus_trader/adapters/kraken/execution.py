@@ -174,13 +174,10 @@ class KrakenExecutionClient(LiveExecutionClient):
         # Uses private/authenticated WebSocket endpoint for execution events
         self._ws_client_spot: nautilus_pyo3.KrakenSpotWebSocketClient | None = None
         if KrakenProductType.SPOT in product_types:
-            ws_private_url = nautilus_pyo3.get_kraken_ws_private_url(
-                KrakenProductType.SPOT,
-                environment,
-            )
             self._ws_client_spot = nautilus_pyo3.KrakenSpotWebSocketClient(
                 environment=environment,
-                base_url=ws_private_url,
+                private=True,
+                base_url=config.base_url_ws_spot,
                 heartbeat_secs=config.ws_heartbeat_secs,
                 api_key=config.api_key,
                 api_secret=config.api_secret,

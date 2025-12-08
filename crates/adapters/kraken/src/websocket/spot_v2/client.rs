@@ -85,7 +85,12 @@ impl Clone for KrakenSpotWebSocketClient {
 
 impl KrakenSpotWebSocketClient {
     pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
-        let url = config.ws_public_url();
+        // Prefer private URL if explicitly set (for authenticated endpoints)
+        let url = if config.ws_private_url.is_some() {
+            config.ws_private_url()
+        } else {
+            config.ws_public_url()
+        };
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SpotHandlerCommand>();
         let initial_mode = AtomicU8::new(ConnectionMode::Closed.as_u8());
         let connection_mode = Arc::new(ArcSwap::from_pointee(initial_mode));

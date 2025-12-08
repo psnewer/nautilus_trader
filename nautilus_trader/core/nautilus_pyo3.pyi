@@ -7907,7 +7907,7 @@ class HyperliquidWebSocketClient:
 
 class KrakenEnvironment(Enum):
     MAINNET = "mainnet"
-    TESTNET = "testnet"
+    DEMO = "demo"
 
 class KrakenProductType(Enum):
     SPOT = "spot"
@@ -7919,7 +7919,7 @@ class KrakenSpotHttpClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
-        testnet: bool = False,
+        demo: bool = False,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -8005,7 +8005,7 @@ class KrakenFuturesHttpClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
-        testnet: bool = False,
+        demo: bool = False,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -8091,6 +8091,7 @@ class KrakenSpotWebSocketClient:
     def __init__(
         self,
         environment: KrakenEnvironment | None = None,
+        private: bool = False,
         base_url: str | None = None,
         heartbeat_secs: int | None = None,
         api_key: str | None = None,
@@ -8180,18 +8181,6 @@ class KrakenFuturesWebSocketClient:
     async def subscribe_executions(self) -> None: ...
 
 def kraken_product_type_from_symbol(symbol: str) -> KrakenProductType: ...
-def get_kraken_http_base_url(
-    product_type: KrakenProductType,
-    environment: KrakenEnvironment,
-) -> str: ...
-def get_kraken_ws_public_url(
-    product_type: KrakenProductType,
-    environment: KrakenEnvironment,
-) -> str: ...
-def get_kraken_ws_private_url(
-    product_type: KrakenProductType,
-    environment: KrakenEnvironment,
-) -> str: ...
 
 # Greeks
 

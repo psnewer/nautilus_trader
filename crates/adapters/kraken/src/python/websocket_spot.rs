@@ -52,7 +52,10 @@ use pyo3::{IntoPyObjectExt, prelude::*};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    common::enums::KrakenEnvironment,
+    common::{
+        enums::{KrakenEnvironment, KrakenProductType},
+        urls::get_kraken_ws_private_url,
+    },
     config::KrakenDataClientConfig,
     websocket::spot_v2::{client::KrakenSpotWebSocketClient, messages::NautilusWsMessage},
 };
@@ -60,38 +63,37 @@ use crate::{
 #[pymethods]
 impl KrakenSpotWebSocketClient {
     #[new]
-    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
+    #[pyo3(signature = (environment=None, private=false, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
     fn py_new(
         environment: Option<KrakenEnvironment>,
+        private: bool,
         base_url: Option<String>,
         heartbeat_secs: Option<u64>,
         api_key: Option<String>,
         api_secret: Option<String>,
     ) -> PyResult<Self> {
         let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
-        let testnet = env == KrakenEnvironment::Testnet;
 
-        // Match HTTP client pattern exactly: if both credentials provided use them,
-        // otherwise load from environment
         let (resolved_api_key, resolved_api_secret) =
-            if let (Some(k), Some(s)) = (api_key, api_secret) {
-                (Some(k), Some(s))
-            } else if let Some(cred) =
-                crate::common::credential::KrakenCredential::from_env_spot(testnet)
-            {
-                let (k, s) = cred.into_parts();
-                tracing::debug!(
-                    "Loaded WebSocket credentials from environment (key={}...)",
-                    &k[..8.min(k.len())]
-                );
-                (Some(k), Some(s))
-            } else {
-                (None, None)
-            };
+            crate::common::credential::KrakenCredential::resolve_spot(api_key, api_secret)
+                .map(|c| c.into_parts())
+                .map(|(k, s)| (Some(k), Some(s)))
+                .unwrap_or((None, None));
+
+        let (ws_public_url, ws_private_url) = if private {
+            // Use provided URL or default to the private endpoint
+            let private_url = base_url.unwrap_or_else(|| {
+                get_kraken_ws_private_url(KrakenProductType::Spot, env).to_string()
+            });
+            (None, Some(private_url))
+        } else {
+            (base_url, None)
+        };
 
         let config = KrakenDataClientConfig {
             environment: env,
-            ws_public_url: base_url,
+            ws_public_url,
+            ws_private_url,
             heartbeat_interval_secs: heartbeat_secs,
             api_key: resolved_api_key,
             api_secret: resolved_api_secret,

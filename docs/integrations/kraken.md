@@ -297,9 +297,9 @@ To test with Kraken Futures demo (paper trading):
 1. Sign up at [https://demo-futures.kraken.com](https://demo-futures.kraken.com)
    and generate API credentials.
 2. Set environment variables with your demo credentials:
-   - `KRAKEN_TESTNET_API_KEY`
-   - `KRAKEN_TESTNET_API_SECRET`
-3. Configure the adapter with `environment=KrakenEnvironment.TESTNET` and
+   - `KRAKEN_FUTURES_DEMO_API_KEY`
+   - `KRAKEN_FUTURES_DEMO_API_SECRET`
+3. Configure the adapter with `environment=KrakenEnvironment.DEMO` and
    `product_types=(KrakenProductType.FUTURES,)`.
 
 ```python
@@ -311,13 +311,13 @@ config = TradingNodeConfig(
     ...,  # Omitted
     data_clients={
         KRAKEN: {
-            "environment": KrakenEnvironment.TESTNET,
+            "environment": KrakenEnvironment.DEMO,
             "product_types": (KrakenProductType.FUTURES,),
         },
     },
     exec_clients={
         KRAKEN: {
-            "environment": KrakenEnvironment.TESTNET,
+            "environment": KrakenEnvironment.DEMO,
             "product_types": (KrakenProductType.FUTURES,),
         },
     },
@@ -382,20 +382,14 @@ There are two options for supplying your credentials to the Kraken clients.
 Either pass the corresponding `api_key` and `api_secret` values to the
 configuration objects, or set the following environment variables:
 
-For Kraken Spot clients (mainnet):
-
-- `KRAKEN_SPOT_API_KEY`
-- `KRAKEN_SPOT_API_SECRET`
-
-For Kraken Futures clients (mainnet):
-
-- `KRAKEN_FUTURES_API_KEY`
-- `KRAKEN_FUTURES_API_SECRET`
-
-For Kraken Futures demo environment (testnet):
-
-- `KRAKEN_FUTURES_TESTNET_API_KEY`
-- `KRAKEN_FUTURES_TESTNET_API_SECRET`
+| Environment Variable             | Description                              |
+|----------------------------------|------------------------------------------|
+| `KRAKEN_SPOT_API_KEY`            | API key for Kraken Spot (mainnet).       |
+| `KRAKEN_SPOT_API_SECRET`         | API secret for Kraken Spot (mainnet).    |
+| `KRAKEN_FUTURES_API_KEY`         | API key for Kraken Futures (mainnet).    |
+| `KRAKEN_FUTURES_API_SECRET`      | API secret for Kraken Futures (mainnet). |
+| `KRAKEN_FUTURES_DEMO_API_KEY`    | API key for Kraken Futures (demo).       |
+| `KRAKEN_FUTURES_DEMO_API_SECRET` | API secret for Kraken Futures (demo).    |
 
 :::note
 **Demo environment**: Only Kraken Futures offers a demo environment
@@ -410,6 +404,8 @@ We recommend using environment variables to manage your credentials.
 
 When starting the trading node, you'll receive immediate confirmation of whether
 your credentials are valid and have trading permissions.
+
+## Contributing
 
 :::info
 For additional features or to contribute to the Kraken adapter, please see our
