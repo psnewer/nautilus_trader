@@ -377,6 +377,7 @@ impl FeedHandler {
             let Some(subscription) =
                 self.subscription_from_topic(&topic, super::enums::DydxWsOperation::Subscribe)
             else {
+                tracing::warn!("Failed to reconstruct subscription from topic: {topic}");
                 continue;
             };
 

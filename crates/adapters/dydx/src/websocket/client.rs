@@ -35,6 +35,9 @@
 /// See: <https://docs.dydx.trade/developers/indexer/websockets#rate-limits>
 pub const DYDX_RATE_LIMIT_KEY_SUBSCRIPTION: &str = "subscription";
 
+/// WebSocket topic delimiter for dYdX (channel:symbol format).
+pub const DYDX_WS_TOPIC_DELIMITER: char = ':';
+
 /// Default WebSocket quota for dYdX subscriptions (2 messages per second).
 pub static DYDX_WS_SUBSCRIPTION_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(2).expect("non-zero")));
@@ -160,7 +163,7 @@ impl DydxWebSocketClient {
             credential: None,
             requires_auth: false,
             auth_tracker: AuthTracker::new(),
-            subscriptions: SubscriptionState::new(':'), // dYdX uses colon delimiter (channel:symbol)
+            subscriptions: SubscriptionState::new(DYDX_WS_TOPIC_DELIMITER),
             connection_mode: Arc::new(ArcSwap::from_pointee(AtomicU8::new(
                 ConnectionMode::Closed as u8,
             ))),
@@ -192,7 +195,7 @@ impl DydxWebSocketClient {
             credential: Some(Arc::new(credential)),
             requires_auth: true,
             auth_tracker: AuthTracker::new(),
-            subscriptions: SubscriptionState::new(':'), // dYdX uses colon delimiter (channel:symbol)
+            subscriptions: SubscriptionState::new(DYDX_WS_TOPIC_DELIMITER),
             connection_mode: Arc::new(ArcSwap::from_pointee(AtomicU8::new(
                 ConnectionMode::Closed as u8,
             ))),
@@ -460,7 +463,7 @@ impl DydxWebSocketClient {
 
     fn topic(channel: super::enums::DydxWsChannel, id: Option<&str>) -> String {
         match id {
-            Some(id) => format!("{}:{}", channel.as_ref(), id),
+            Some(id) => format!("{}{}{}", channel.as_ref(), DYDX_WS_TOPIC_DELIMITER, id),
             None => channel.as_ref().to_string(),
         }
     }
