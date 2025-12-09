@@ -55,9 +55,9 @@ use nautilus_network::{
 use ustr::Ustr;
 
 use super::{
+    enums::NautilusWsMessage,
     error::{DydxWsError, DydxWsResult},
     handler::{FeedHandler, HandlerCommand},
-    messages::NautilusWsMessage,
 };
 use crate::common::credential::DydxCredential;
 
