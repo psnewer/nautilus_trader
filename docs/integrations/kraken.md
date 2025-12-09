@@ -116,6 +116,11 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 | `IOC`         | ✓    | Immediate or Cancel.         |
 | `FOK`         | -    | *Not currently supported*.   |
 
+:::note
+**Market orders** are inherently immediate and do not support the `timeinforce`
+parameter. The `IOC` time in force only applies to limit-type orders.
+:::
+
 #### Execution instructions
 
 | Instruction   | Spot | Notes                              |
@@ -142,6 +147,11 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 | `GTC`         | ✓       | Good Till Canceled.          |
 | `GTD`         | -       | *Not supported*.             |
 | `IOC`         | ✓       | Immediate or Cancel.         |
+
+:::note
+**Market orders** are inherently immediate. For Futures, the `IOC` time in force
+is encoded as a separate order type (`ioc`) and only applies to limit orders.
+:::
 
 #### Execution instructions
 

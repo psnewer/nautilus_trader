@@ -398,6 +398,23 @@ impl KrakenFuturesHttpClient {
         })
     }
 
+    /// Cancel multiple orders in a single batch request.
+    #[pyo3(name = "cancel_orders_batch")]
+    fn py_cancel_orders_batch<'py>(
+        &self,
+        py: Python<'py>,
+        venue_order_ids: Vec<VenueOrderId>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .cancel_orders_batch(venue_order_ids)
+                .await
+                .map_err(to_pyruntime_err)
+        })
+    }
+
     #[pyo3(name = "request_account_state")]
     fn py_request_account_state<'py>(
         &self,

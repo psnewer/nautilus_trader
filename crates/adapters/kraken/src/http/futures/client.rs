@@ -320,9 +320,15 @@ impl KrakenFuturesRawHttpClient {
                     .await
                     .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
 
-                if response.status.as_u16() >= 400 {
-                    let status = response.status.as_u16();
+                let status = response.status.as_u16();
+                if status >= 400 {
                     let body = String::from_utf8_lossy(&response.body).to_string();
+                    // Don't retry authentication errors
+                    if status == 401 || status == 403 {
+                        return Err(KrakenHttpError::AuthenticationError(format!(
+                            "HTTP error {status}: {body}"
+                        )));
+                    }
                     return Err(KrakenHttpError::NetworkError(format!(
                         "HTTP error {status}: {body}"
                     )));
@@ -355,22 +361,18 @@ impl KrakenFuturesRawHttpClient {
             .await
     }
 
-    async fn send_request_with_body<T: DeserializeOwned>(
+    /// Send authenticated GET request with query parameters included in signature.
+    ///
+    /// For Kraken Futures, GET requests with query params must include them in postData
+    /// for signing: message = postData + nonce + endpoint
+    async fn send_get_with_query<T: DeserializeOwned>(
         &self,
         endpoint: &str,
-        params: HashMap<String, String>,
+        url: String,
+        query_string: &str,
     ) -> anyhow::Result<T, KrakenHttpError> {
-        // Check cancellation before blocking on mutex to allow graceful shutdown
-        if self.cancellation_token.is_cancelled() {
-            return Err(KrakenHttpError::NetworkError(
-                "Request cancelled".to_string(),
-            ));
-        }
-
-        // Serialize authenticated requests to ensure nonces arrive at Kraken in order
         let _guard = self.auth_mutex.lock().await;
 
-        // Check again after acquiring mutex in case shutdown started while waiting
         if self.cancellation_token.is_cancelled() {
             return Err(KrakenHttpError::NetworkError(
                 "Request cancelled".to_string(),
@@ -381,24 +383,20 @@ impl KrakenFuturesRawHttpClient {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
         })?;
 
-        let post_data = serde_urlencoded::to_string(&params)
-            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
-
         let nonce = self.generate_nonce();
-        tracing::debug!("Generated nonce {nonce} for {endpoint}");
 
+        // Query params go in postData for signing (not in endpoint)
         let signature = credential
-            .sign_futures(endpoint, &post_data, nonce)
+            .sign_futures(endpoint, query_string, nonce)
             .map_err(|e| {
                 KrakenHttpError::AuthenticationError(format!("Failed to sign request: {e}"))
             })?;
 
-        let url = format!("{}{endpoint}", self.base_url);
-        let mut headers = Self::default_headers();
-        headers.insert(
-            "Content-Type".to_string(),
-            "application/x-www-form-urlencoded".to_string(),
+        tracing::debug!(
+            "Kraken Futures GET with query: endpoint={endpoint}, query={query_string}, nonce={nonce}"
         );
+
+        let mut headers = Self::default_headers();
         headers.insert("APIKey".to_string(), credential.api_key().to_string());
         headers.insert("Authent".to_string(), signature);
         headers.insert("Nonce".to_string(), nonce.to_string());
@@ -408,20 +406,25 @@ impl KrakenFuturesRawHttpClient {
         let response = self
             .client
             .request(
-                Method::POST,
+                Method::GET,
                 url,
                 None,
                 Some(headers),
-                Some(post_data.into_bytes()),
+                None,
                 None,
                 Some(rate_limit_keys),
             )
             .await
             .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
 
-        if response.status.as_u16() >= 400 {
-            let status = response.status.as_u16();
+        let status = response.status.as_u16();
+        if status >= 400 {
             let body = String::from_utf8_lossy(&response.body).to_string();
+            if status == 401 || status == 403 {
+                return Err(KrakenHttpError::AuthenticationError(format!(
+                    "HTTP error {status}: {body}"
+                )));
+            }
             return Err(KrakenHttpError::NetworkError(format!(
                 "HTTP error {status}: {body}"
             )));
@@ -432,8 +435,18 @@ impl KrakenFuturesRawHttpClient {
         })?;
 
         serde_json::from_str(&response_text).map_err(|e| {
-            KrakenHttpError::ParseError(format!("Failed to deserialize response: {e}"))
+            KrakenHttpError::ParseError(format!("Failed to deserialize futures response: {e}"))
         })
+    }
+
+    async fn send_request_with_body<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: HashMap<String, String>,
+    ) -> anyhow::Result<T, KrakenHttpError> {
+        let post_data = serde_urlencoded::to_string(&params)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+        self.send_authenticated_post(endpoint, post_data).await
     }
 
     /// Send a request with typed parameters (serializable struct).
@@ -442,7 +455,17 @@ impl KrakenFuturesRawHttpClient {
         endpoint: &str,
         params: &P,
     ) -> anyhow::Result<T, KrakenHttpError> {
-        // Check cancellation before blocking on mutex to allow graceful shutdown
+        let post_data = serde_urlencoded::to_string(params)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+        self.send_authenticated_post(endpoint, post_data).await
+    }
+
+    /// Core authenticated POST request - takes raw post_data string.
+    async fn send_authenticated_post<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        post_data: String,
+    ) -> anyhow::Result<T, KrakenHttpError> {
         if self.cancellation_token.is_cancelled() {
             return Err(KrakenHttpError::NetworkError(
                 "Request cancelled".to_string(),
@@ -452,7 +475,6 @@ impl KrakenFuturesRawHttpClient {
         // Serialize authenticated requests to ensure nonces arrive at Kraken in order
         let _guard = self.auth_mutex.lock().await;
 
-        // Check again after acquiring mutex in case shutdown started while waiting
         if self.cancellation_token.is_cancelled() {
             return Err(KrakenHttpError::NetworkError(
                 "Request cancelled".to_string(),
@@ -462,9 +484,6 @@ impl KrakenFuturesRawHttpClient {
         let credential = self.credential.as_ref().ok_or_else(|| {
             KrakenHttpError::AuthenticationError("Missing credentials".to_string())
         })?;
-
-        let post_data = serde_urlencoded::to_string(params)
-            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
 
         let nonce = self.generate_nonce();
         tracing::debug!("Generated nonce {nonce} for {endpoint}");
@@ -632,7 +651,6 @@ impl KrakenFuturesRawHttpClient {
         }
 
         let endpoint = "/api/history/v2/orders";
-        let mut url = format!("{}{endpoint}", self.base_url);
         let mut query_params = Vec::new();
 
         if let Some(before_ts) = before {
@@ -645,12 +663,17 @@ impl KrakenFuturesRawHttpClient {
             query_params.push(format!("continuation_token={token}"));
         }
 
-        if !query_params.is_empty() {
-            url.push('?');
-            url.push_str(&query_params.join("&"));
-        }
+        // Build URL with query params
+        let query_string = query_params.join("&");
+        let url = if query_string.is_empty() {
+            format!("{}{endpoint}", self.base_url)
+        } else {
+            format!("{}{endpoint}?{query_string}", self.base_url)
+        };
 
-        self.send_request(Method::GET, endpoint, url, true).await
+        // For signing: query params go in postData, not endpoint
+        // Kraken: message = postData + nonce + endpoint
+        self.send_get_with_query(endpoint, url, &query_string).await
     }
 
     pub async fn get_fills(
@@ -664,13 +687,18 @@ impl KrakenFuturesRawHttpClient {
         }
 
         let endpoint = "/derivatives/api/v3/fills";
-        let mut url = format!("{}{endpoint}", self.base_url);
+        let query_string = last_fill_time
+            .map(|t| format!("lastFillTime={t}"))
+            .unwrap_or_default();
 
-        if let Some(last_fill) = last_fill_time {
-            url.push_str(&format!("?lastFillTime={last_fill}"));
-        }
+        let url = if query_string.is_empty() {
+            format!("{}{endpoint}", self.base_url)
+        } else {
+            format!("{}{endpoint}?{query_string}", self.base_url)
+        };
 
-        self.send_request(Method::GET, endpoint, url, true).await
+        // Query params go in postData for signing
+        self.send_get_with_query(endpoint, url, &query_string).await
     }
 
     pub async fn get_open_positions(
@@ -780,6 +808,34 @@ impl KrakenFuturesRawHttpClient {
 
         let endpoint = "/derivatives/api/v3/batchorder";
         self.send_request_with_body(endpoint, params).await
+    }
+
+    /// Cancel multiple orders in a single batch request.
+    ///
+    /// # Parameters
+    /// - `order_ids` - List of venue order IDs to cancel.
+    pub async fn cancel_orders_batch(
+        &self,
+        order_ids: Vec<String>,
+    ) -> anyhow::Result<FuturesBatchCancelResponse, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for batch orders".to_string(),
+            ));
+        }
+
+        let batch_items: Vec<KrakenFuturesBatchCancelItem> = order_ids
+            .into_iter()
+            .map(KrakenFuturesBatchCancelItem::from_order_id)
+            .collect();
+
+        let params = KrakenFuturesBatchOrderParams::new(batch_items);
+        let post_data = params
+            .to_body()
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to serialize batch: {e}")))?;
+
+        let endpoint = "/derivatives/api/v3/batchorder";
+        self.send_authenticated_post(endpoint, post_data).await
     }
 
     pub async fn cancel_all_orders(
@@ -1207,7 +1263,11 @@ impl KrakenFuturesHttpClient {
         let ts_init = self.generate_ts_init();
         let mut all_reports = Vec::new();
 
-        let response = self.inner.get_open_orders().await?;
+        let response = self
+            .inner
+            .get_open_orders()
+            .await
+            .map_err(|e| anyhow::anyhow!("get_open_orders failed: {e}"))?;
         if response.result != KrakenApiResult::Success {
             let error_msg = response
                 .error
@@ -1240,7 +1300,11 @@ impl KrakenFuturesHttpClient {
             // Kraken Futures order events API expects Unix timestamp in milliseconds
             let start_ms = start.map(|dt| dt.timestamp_millis());
             let end_ms = end.map(|dt| dt.timestamp_millis());
-            let response = self.inner.get_order_events(end_ms, start_ms, None).await?;
+            let response = self
+                .inner
+                .get_order_events(end_ms, start_ms, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("get_order_events failed: {e}"))?;
 
             for event_wrapper in response.order_events {
                 let event = &event_wrapper.order;
@@ -1502,6 +1566,18 @@ impl KrakenFuturesHttpClient {
             .ok_or_else(|| anyhow::anyhow!("No send_status in successful response"))?;
 
         let status = &send_status.status;
+
+        // Check for post-only rejection (Kraken returns status="postWouldExecute")
+        if status == "postWouldExecute" {
+            let reason = send_status
+                .order_events
+                .as_ref()
+                .and_then(|events| events.first())
+                .and_then(|e| e.reason.clone())
+                .unwrap_or_else(|| "Post-only order would have crossed".to_string());
+            anyhow::bail!("POST_ONLY_REJECTED: {reason}");
+        }
+
         let venue_order_id = send_status
             .order_id
             .ok_or_else(|| anyhow::anyhow!("No order_id in send_status: {status}"))?;
@@ -1633,6 +1709,43 @@ impl KrakenFuturesHttpClient {
         }
 
         Ok(())
+    }
+
+    /// Cancel multiple orders on the Kraken Futures exchange in a single batch request.
+    ///
+    /// # Parameters
+    /// - `venue_order_ids` - List of venue order IDs to cancel.
+    ///
+    /// # Returns
+    /// The number of successfully cancelled orders.
+    pub async fn cancel_orders_batch(
+        &self,
+        venue_order_ids: Vec<VenueOrderId>,
+    ) -> anyhow::Result<usize> {
+        if venue_order_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let order_ids: Vec<String> = venue_order_ids.iter().map(|id| id.to_string()).collect();
+        let response = self.inner.cancel_orders_batch(order_ids).await?;
+
+        if response.result != KrakenApiResult::Success {
+            let error_msg = response.error.as_deref().unwrap_or("Unknown error");
+            anyhow::bail!("Batch cancel failed: {error_msg}");
+        }
+
+        let success_count = response
+            .batch_status
+            .iter()
+            .filter(|s| {
+                s.status.as_deref() == Some("cancelled")
+                    || s.cancel_status
+                        .as_ref()
+                        .is_some_and(|cs| cs.status == "cancelled")
+            })
+            .count();
+
+        Ok(success_count)
     }
 
     /// Request account state from the Kraken Futures exchange.
