@@ -7925,6 +7925,7 @@ class KrakenSpotHttpClient:
         retry_delay_ms: int | None = None,
         retry_delay_max_ms: int | None = None,
         proxy_url: str | None = None,
+        max_requests_per_second: int | None = None,
     ) -> None: ...
     @property
     def base_url(self) -> str: ...
@@ -8015,6 +8016,7 @@ class KrakenFuturesHttpClient:
         retry_delay_ms: int | None = None,
         retry_delay_max_ms: int | None = None,
         proxy_url: str | None = None,
+        max_requests_per_second: int | None = None,
     ) -> None: ...
     @property
     def base_url(self) -> str: ...

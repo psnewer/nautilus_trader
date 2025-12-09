@@ -39,6 +39,7 @@ fn get_client() -> Option<KrakenFuturesRawHttpClient> {
             None,
             None,
             None,
+            None,
         )
         .expect("Failed to create client"),
     )

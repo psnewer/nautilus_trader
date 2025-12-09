@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::common::enums::{
     KrakenApiResult, KrakenFillType, KrakenFuturesOrderEventType, KrakenFuturesOrderStatus,
     KrakenFuturesOrderType, KrakenInstrumentType, KrakenOrderSide, KrakenPositionSide,
-    KrakenTriggerSide, KrakenTriggerSignal,
+    KrakenSendStatus, KrakenTriggerSide, KrakenTriggerSignal,
 };
 
 // Futures Instruments Models
@@ -423,7 +423,7 @@ pub struct FuturesCancelOrderResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelStatus {
-    pub status: String,
+    pub status: KrakenSendStatus,
     #[serde(rename = "order_id", default)]
     pub order_id: Option<String>,
     #[serde(rename = "cli_ord_id", default)]
@@ -482,7 +482,7 @@ pub struct FuturesBatchCancelStatus {
     #[serde(default)]
     pub cli_ord_id: Option<String>,
     #[serde(default)]
-    pub status: Option<String>,
+    pub status: Option<KrakenSendStatus>,
     #[serde(default)]
     pub cancel_status: Option<FuturesCancelStatus>,
 }
@@ -499,7 +499,7 @@ pub struct FuturesCancelAllOrdersResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelAllStatus {
-    pub status: String,
+    pub status: KrakenSendStatus,
     #[serde(default)]
     pub cancelled_orders: Vec<CancelledOrder>,
 }

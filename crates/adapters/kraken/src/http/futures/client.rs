@@ -20,7 +20,7 @@ use std::{
     fmt::{Debug, Formatter},
     num::NonZeroU32,
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -56,7 +56,7 @@ use crate::{
         credential::KrakenCredential,
         enums::{
             KrakenApiResult, KrakenEnvironment, KrakenFuturesOrderType, KrakenOrderSide,
-            KrakenProductType,
+            KrakenProductType, KrakenSendStatus,
         },
         parse::{
             bar_type_to_futures_resolution, parse_bar, parse_futures_fill_report,
@@ -69,12 +69,13 @@ use crate::{
     http::{error::KrakenHttpError, models::OhlcData},
 };
 
-/// Default Kraken Futures REST API rate limit.
-pub static KRAKEN_FUTURES_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
-    Quota::per_second(NonZeroU32::new(5).expect("Should be a valid non-zero u32"))
-});
+/// Default Kraken Futures REST API rate limit (requests per second).
+pub const KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
 
 const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:futures:global";
+
+/// Maximum orders per batch cancel request for Kraken Futures API.
+const BATCH_CANCEL_LIMIT: usize = 50;
 
 /// Raw HTTP client for low-level Kraken Futures API operations.
 ///
@@ -97,6 +98,7 @@ impl Default for KrakenFuturesRawHttpClient {
             KrakenEnvironment::Mainnet,
             None,
             Some(60),
+            None,
             None,
             None,
             None,
@@ -126,6 +128,7 @@ impl KrakenFuturesRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -143,13 +146,16 @@ impl KrakenFuturesRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Futures, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_FUTURES_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -174,6 +180,7 @@ impl KrakenFuturesRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -191,13 +198,16 @@ impl KrakenFuturesRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Futures, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_FUTURES_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -238,10 +248,16 @@ impl KrakenFuturesRawHttpClient {
         HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())])
     }
 
-    fn rate_limiter_quotas() -> Vec<(String, Quota)> {
+    fn default_quota(max_requests_per_second: u32) -> Quota {
+        Quota::per_second(NonZeroU32::new(max_requests_per_second).unwrap_or_else(|| {
+            NonZeroU32::new(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND).unwrap()
+        }))
+    }
+
+    fn rate_limiter_quotas(max_requests_per_second: u32) -> Vec<(String, Quota)> {
         vec![(
             KRAKEN_GLOBAL_RATE_KEY.to_string(),
-            *KRAKEN_FUTURES_REST_QUOTA,
+            Self::default_quota(max_requests_per_second),
         )]
     }
 
@@ -897,6 +913,7 @@ impl Default for KrakenFuturesHttpClient {
             None,
             None,
             None,
+            None,
         )
         .expect("Failed to create default KrakenFuturesHttpClient")
     }
@@ -921,6 +938,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenFuturesRawHttpClient::new(
@@ -931,6 +949,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -949,6 +968,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenFuturesRawHttpClient::with_credentials(
@@ -961,6 +981,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -982,6 +1003,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let demo = environment == KrakenEnvironment::Demo;
 
@@ -997,6 +1019,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         } else {
             Self::new(
@@ -1007,6 +1030,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         }
     }
@@ -1711,13 +1735,15 @@ impl KrakenFuturesHttpClient {
         Ok(())
     }
 
-    /// Cancel multiple orders on the Kraken Futures exchange in a single batch request.
+    /// Cancel multiple orders on the Kraken Futures exchange.
+    ///
+    /// Automatically chunks requests into batches of 50 orders.
     ///
     /// # Parameters
     /// - `venue_order_ids` - List of venue order IDs to cancel.
     ///
     /// # Returns
-    /// The number of successfully cancelled orders.
+    /// The total number of successfully cancelled orders.
     pub async fn cancel_orders_batch(
         &self,
         venue_order_ids: Vec<VenueOrderId>,
@@ -1726,26 +1752,32 @@ impl KrakenFuturesHttpClient {
             return Ok(0);
         }
 
-        let order_ids: Vec<String> = venue_order_ids.iter().map(|id| id.to_string()).collect();
-        let response = self.inner.cancel_orders_batch(order_ids).await?;
+        let mut total_cancelled = 0;
 
-        if response.result != KrakenApiResult::Success {
-            let error_msg = response.error.as_deref().unwrap_or("Unknown error");
-            anyhow::bail!("Batch cancel failed: {error_msg}");
+        for chunk in venue_order_ids.chunks(BATCH_CANCEL_LIMIT) {
+            let order_ids: Vec<String> = chunk.iter().map(|id| id.to_string()).collect();
+            let response = self.inner.cancel_orders_batch(order_ids).await?;
+
+            if response.result != KrakenApiResult::Success {
+                let error_msg = response.error.as_deref().unwrap_or("Unknown error");
+                anyhow::bail!("Batch cancel failed: {error_msg}");
+            }
+
+            let success_count = response
+                .batch_status
+                .iter()
+                .filter(|s| {
+                    s.status == Some(KrakenSendStatus::Cancelled)
+                        || s.cancel_status
+                            .as_ref()
+                            .is_some_and(|cs| cs.status == KrakenSendStatus::Cancelled)
+                })
+                .count();
+
+            total_cancelled += success_count;
         }
 
-        let success_count = response
-            .batch_status
-            .iter()
-            .filter(|s| {
-                s.status.as_deref() == Some("cancelled")
-                    || s.cancel_status
-                        .as_ref()
-                        .is_some_and(|cs| cs.status == "cancelled")
-            })
-            .count();
-
-        Ok(success_count)
+        Ok(total_cancelled)
     }
 
     /// Request account state from the Kraken Futures exchange.
@@ -1930,6 +1962,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(client.credential.is_some());
@@ -1947,6 +1980,7 @@ mod tests {
             "test_key".to_string(),
             "test_secret".to_string(),
             KrakenEnvironment::Mainnet,
+            None,
             None,
             None,
             None,

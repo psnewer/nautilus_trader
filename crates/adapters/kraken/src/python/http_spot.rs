@@ -34,7 +34,7 @@ use crate::{
 #[pymethods]
 impl KrakenSpotHttpClient {
     #[new]
-    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, demo=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None))]
+    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, demo=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None, proxy_url=None, max_requests_per_second=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
         api_key: Option<String>,
@@ -46,6 +46,7 @@ impl KrakenSpotHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> PyResult<Self> {
         let timeout = timeout_secs.or(Some(60));
 
@@ -67,6 +68,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
             .map_err(to_pyvalue_err)
         } else {
@@ -78,6 +80,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
             .map_err(to_pyvalue_err)
         }
