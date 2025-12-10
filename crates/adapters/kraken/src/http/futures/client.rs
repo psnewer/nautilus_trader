@@ -220,7 +220,7 @@ impl KrakenFuturesRawHttpClient {
         })
     }
 
-    /// Generate a unique nonce for Kraken Futures API requests.
+    /// Generates a unique nonce for Kraken Futures API requests.
     ///
     /// Uses `AtomicTime` for strict monotonicity. The nanosecond timestamp
     /// guarantees uniqueness even for rapid consecutive calls.
@@ -228,18 +228,22 @@ impl KrakenFuturesRawHttpClient {
         self.clock.get_time_ns().as_u64()
     }
 
+    /// Returns the base URL for this client.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
+    /// Returns the credential for this client, if set.
     pub fn credential(&self) -> Option<&KrakenCredential> {
         self.credential.as_ref()
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
@@ -377,7 +381,7 @@ impl KrakenFuturesRawHttpClient {
             .await
     }
 
-    /// Send authenticated GET request with query parameters included in signature.
+    /// Sends authenticated GET request with query parameters included in signature.
     ///
     /// For Kraken Futures, GET requests with query params must include them in postData
     /// for signing: message = postData + nonce + endpoint
@@ -465,7 +469,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_authenticated_post(endpoint, post_data).await
     }
 
-    /// Send a request with typed parameters (serializable struct).
+    /// Sends a request with typed parameters (serializable struct).
     async fn send_request_with_params<P: serde::Serialize, T: DeserializeOwned>(
         &self,
         endpoint: &str,
@@ -554,6 +558,7 @@ impl KrakenFuturesRawHttpClient {
         })
     }
 
+    /// Requests tradable instruments from Kraken Futures.
     pub async fn get_instruments(
         &self,
     ) -> anyhow::Result<FuturesInstrumentsResponse, KrakenHttpError> {
@@ -563,6 +568,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, false).await
     }
 
+    /// Requests ticker information for all futures instruments.
     pub async fn get_tickers(&self) -> anyhow::Result<FuturesTickersResponse, KrakenHttpError> {
         let endpoint = "/derivatives/api/v3/tickers";
         let url = format!("{}{endpoint}", self.base_url);
@@ -570,6 +576,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, false).await
     }
 
+    /// Requests OHLC candlestick data for a futures symbol.
     pub async fn get_ohlc(
         &self,
         tick_type: &str,
@@ -598,7 +605,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, &endpoint, url, false).await
     }
 
-    /// Get public execution events (trades) for a futures symbol.
+    /// Gets public execution events (trades) for a futures symbol.
     pub async fn get_public_executions(
         &self,
         symbol: &str,
@@ -633,6 +640,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, &endpoint, url, false).await
     }
 
+    /// Requests all open orders (requires authentication).
     pub async fn get_open_orders(
         &self,
     ) -> anyhow::Result<FuturesOpenOrdersResponse, KrakenHttpError> {
@@ -648,6 +656,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
+    /// Requests historical order events (requires authentication).
     pub async fn get_order_events(
         &self,
         before: Option<i64>,
@@ -686,6 +695,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_get_with_query(endpoint, url, &query_string).await
     }
 
+    /// Requests fill/trade history (requires authentication).
     pub async fn get_fills(
         &self,
         last_fill_time: Option<&str>,
@@ -711,6 +721,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_get_with_query(endpoint, url, &query_string).await
     }
 
+    /// Requests open positions (requires authentication).
     pub async fn get_open_positions(
         &self,
     ) -> anyhow::Result<FuturesOpenPositionsResponse, KrakenHttpError> {
@@ -726,7 +737,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
-    /// Get all accounts (cash and margin) with balances and margin info.
+    /// Requests all accounts (cash and margin) with balances and margin info.
     pub async fn get_accounts(&self) -> anyhow::Result<FuturesAccountsResponse, KrakenHttpError> {
         if self.credential.is_none() {
             return Err(KrakenHttpError::AuthenticationError(
@@ -740,6 +751,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
+    /// Submits a new order (requires authentication).
     pub async fn send_order(
         &self,
         params: HashMap<String, String>,
@@ -754,7 +766,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
-    /// Send an order using typed parameters.
+    /// Submits a new order using typed parameters (requires authentication).
     pub async fn send_order_params(
         &self,
         params: &KrakenFuturesSendOrderParams,
@@ -769,6 +781,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_params(endpoint, params).await
     }
 
+    /// Cancels an open order (requires authentication).
     pub async fn cancel_order(
         &self,
         order_id: Option<String>,
@@ -792,6 +805,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
+    /// Edits an existing order (requires authentication).
     pub async fn edit_order(
         &self,
         params: &KrakenFuturesEditOrderParams,
@@ -806,6 +820,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_params(endpoint, params).await
     }
 
+    /// Submits multiple orders in a single batch request (requires authentication).
     pub async fn batch_order(
         &self,
         params: HashMap<String, String>,
@@ -820,10 +835,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
-    /// Cancel multiple orders in a single batch request.
-    ///
-    /// # Parameters
-    /// - `order_ids` - List of venue order IDs to cancel.
+    /// Cancels multiple orders in a single batch request (requires authentication).
     pub async fn cancel_orders_batch(
         &self,
         order_ids: Vec<String>,
@@ -848,6 +860,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_authenticated_post(endpoint, post_data).await
     }
 
+    /// Cancels all open orders, optionally filtered by symbol (requires authentication).
     pub async fn cancel_all_orders(
         &self,
         symbol: Option<String>,
@@ -1029,20 +1042,24 @@ impl KrakenFuturesHttpClient {
         }
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.inner.cancel_all_requests();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         self.inner.cancellation_token()
     }
 
+    /// Caches an instrument for symbol lookup.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
             .insert(instrument.symbol().inner(), instrument);
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Caches multiple instruments for symbol lookup.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for instrument in instruments {
             self.instruments_cache
@@ -1051,6 +1068,7 @@ impl KrakenFuturesHttpClient {
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Gets an instrument from the cache by symbol.
     pub fn get_cached_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
         self.instruments_cache
             .get(symbol)
@@ -1068,6 +1086,7 @@ impl KrakenFuturesHttpClient {
         get_atomic_clock_realtime().get_time_ns()
     }
 
+    /// Requests tradable instruments from Kraken Futures.
     pub async fn request_instruments(&self) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
         let ts_init = self.generate_ts_init();
         let response = self.inner.get_instruments().await?;
@@ -1090,6 +1109,7 @@ impl KrakenFuturesHttpClient {
         Ok(instruments)
     }
 
+    /// Requests the mark price for an instrument.
     pub async fn request_mark_price(
         &self,
         instrument_id: InstrumentId,
@@ -1270,7 +1290,7 @@ impl KrakenFuturesHttpClient {
         Ok(bars)
     }
 
-    /// Request account state from the Kraken Futures exchange.
+    /// Requests account state from the Kraken Futures exchange.
     ///
     /// This queries the accounts endpoint and converts the response into a
     /// Nautilus `AccountState` event containing balances and margin info.
@@ -1614,7 +1634,7 @@ impl KrakenFuturesHttpClient {
         Ok(all_reports)
     }
 
-    /// Submit a new order to the Kraken Futures exchange.
+    /// Submits a new order to the Kraken Futures exchange.
     ///
     /// # Errors
     ///
@@ -1661,6 +1681,9 @@ impl KrakenFuturesHttpClient {
                         TimeInForce::Ioc => KrakenFuturesOrderType::Ioc,
                         TimeInForce::Fok => {
                             anyhow::bail!("FOK not supported by Kraken Futures, use IOC instead")
+                        }
+                        TimeInForce::Gtd => {
+                            anyhow::bail!("GTD not supported by Kraken Futures, use GTC instead")
                         }
                         _ => KrakenFuturesOrderType::Limit, // GTC is default
                     }
@@ -1844,7 +1867,7 @@ impl KrakenFuturesHttpClient {
         )
     }
 
-    /// Modify an existing order on the Kraken Futures exchange.
+    /// Modifies an existing order on the Kraken Futures exchange.
     ///
     /// Returns the new venue order ID assigned to the modified order.
     ///
@@ -1914,7 +1937,7 @@ impl KrakenFuturesHttpClient {
         Ok(VenueOrderId::new(&new_venue_order_id))
     }
 
-    /// Cancel an order on the Kraken Futures exchange.
+    /// Cancels an order on the Kraken Futures exchange.
     ///
     /// # Errors
     ///
@@ -1951,7 +1974,7 @@ impl KrakenFuturesHttpClient {
         Ok(())
     }
 
-    /// Cancel multiple orders on the Kraken Futures exchange.
+    /// Cancels multiple orders on the Kraken Futures exchange.
     ///
     /// Automatically chunks requests into batches of 50 orders.
     ///

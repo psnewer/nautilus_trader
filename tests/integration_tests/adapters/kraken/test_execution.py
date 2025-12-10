@@ -2124,3 +2124,166 @@ async def test_modify_order_rejection(
         await client._modify_order(command)
     finally:
         await client._disconnect()
+
+
+# ============================================================================
+# GTD TIME-IN-FORCE TESTS
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_submit_gtd_limit_order_spot_passes_expire_time(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTD order with expire_time_ns set
+    expire_time_ns = 1_704_067_200_000_000_000  # 2024-01-01 00:00:00 UTC
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-GTD-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTD,
+        expire_time_ns=expire_time_ns,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should be called with expire_time parameter
+        http_client.submit_order.assert_awaited_once()
+        call_kwargs = http_client.submit_order.call_args.kwargs
+        assert call_kwargs["expire_time"] == expire_time_ns
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_submit_gtd_limit_order_futures_denied(
+    exec_client_builder_futures,
+    monkeypatch,
+    futures_instrument,
+    cache,
+    msgbus,
+):
+    # Arrange
+    cache.add_instrument(futures_instrument)
+
+    client, ws_client, http_client, instrument_provider = exec_client_builder_futures(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTD order for futures - should be denied
+    expire_time_ns = 1_704_067_200_000_000_000
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=futures_instrument.id,
+        client_order_id=ClientOrderId("O-GTD-FUTURES-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTD,
+        expire_time_ns=expire_time_ns,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    initial_sent_count = msgbus.sent_count
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should NOT be called (order denied before submission)
+        http_client.submit_order.assert_not_awaited()
+
+        # Assert - OrderDenied event should be sent
+        assert msgbus.sent_count > initial_sent_count
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_submit_gtc_limit_order_spot_no_expire_time(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTC order - no expire_time
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-GTC-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTC,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should be called without expire_time
+        http_client.submit_order.assert_awaited_once()
+        call_kwargs = http_client.submit_order.call_args.kwargs
+        assert call_kwargs["expire_time"] is None
+    finally:
+        await client._disconnect()

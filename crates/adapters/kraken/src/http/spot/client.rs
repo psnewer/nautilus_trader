@@ -29,8 +29,8 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use indexmap::IndexMap;
 use nautilus_core::{
-    AtomicTime, UUID4, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos,
-    time::get_atomic_clock_realtime,
+    AtomicTime, UUID4, consts::NAUTILUS_USER_AGENT, datetime::NANOSECONDS_IN_SECOND,
+    nanos::UnixNanos, time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
@@ -72,6 +72,38 @@ const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:spot:global";
 
 /// Maximum orders per batch cancel request for Kraken Spot API.
 const BATCH_CANCEL_LIMIT: usize = 50;
+
+/// Computes the time-in-force and expiration time parameters for Kraken Spot orders.
+///
+/// Returns a tuple of (timeinforce, expiretm) for use in order requests.
+/// For limit orders, handles GTC, IOC, and GTD. Market orders return (None, None).
+fn compute_time_in_force(
+    is_limit_order: bool,
+    time_in_force: TimeInForce,
+    expire_time: Option<UnixNanos>,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    if is_limit_order {
+        match time_in_force {
+            TimeInForce::Gtc => Ok((None, None)), // Default, no parameter needed
+            TimeInForce::Ioc => Ok((Some("IOC".to_string()), None)),
+            TimeInForce::Fok => {
+                anyhow::bail!("FOK time in force not supported by Kraken Spot API")
+            }
+            TimeInForce::Gtd => {
+                let expire = expire_time.ok_or_else(|| {
+                    anyhow::anyhow!("GTD time in force requires expire_time parameter")
+                })?;
+                // Convert nanoseconds to seconds for Kraken API
+                let expire_secs = expire.as_u64() / NANOSECONDS_IN_SECOND;
+                Ok((Some("GTD".to_string()), Some(expire_secs.to_string())))
+            }
+            _ => anyhow::bail!("Unsupported time in force: {time_in_force:?}"),
+        }
+    } else {
+        // Market orders are inherently immediate, timeinforce not applicable
+        Ok((None, None))
+    }
+}
 
 /// Raw HTTP client for low-level Kraken Spot API operations.
 ///
@@ -216,7 +248,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
-    /// Generate a unique nonce for Kraken Spot API requests.
+    /// Generates a unique nonce for Kraken Spot API requests.
     ///
     /// Uses `AtomicTime` for strict monotonicity. The nanosecond timestamp
     /// guarantees uniqueness even for rapid consecutive calls.
@@ -224,18 +256,22 @@ impl KrakenSpotRawHttpClient {
         self.clock.get_time_ns().as_u64()
     }
 
+    /// Returns the base URL for this client.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
+    /// Returns the credential for this client, if set.
     pub fn credential(&self) -> Option<&KrakenCredential> {
         self.credential.as_ref()
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
@@ -412,6 +448,7 @@ impl KrakenSpotRawHttpClient {
             .await
     }
 
+    /// Requests the server time from Kraken.
     pub async fn get_server_time(&self) -> anyhow::Result<ServerTime, KrakenHttpError> {
         let response: KrakenResponse<ServerTime> = self
             .send_request(Method::GET, "/0/public/Time", None, false)
@@ -422,6 +459,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests the system status from Kraken.
     pub async fn get_system_status(&self) -> anyhow::Result<SystemStatus, KrakenHttpError> {
         let response: KrakenResponse<SystemStatus> = self
             .send_request(Method::GET, "/0/public/SystemStatus", None, false)
@@ -432,6 +470,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests tradable asset pairs from Kraken.
     pub async fn get_asset_pairs(
         &self,
         pairs: Option<Vec<String>>,
@@ -451,6 +490,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests ticker information for asset pairs.
     pub async fn get_ticker(
         &self,
         pairs: Vec<String>,
@@ -466,6 +506,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests OHLC candlestick data for an asset pair.
     pub async fn get_ohlc(
         &self,
         pair: &str,
@@ -490,6 +531,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests order book depth for an asset pair.
     pub async fn get_book_depth(
         &self,
         pair: &str,
@@ -510,6 +552,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests recent trades for an asset pair.
     pub async fn get_trades(
         &self,
         pair: &str,
@@ -530,6 +573,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests an authentication token for WebSocket connections.
     pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
         if self.credential.is_none() {
             return Err(KrakenHttpError::AuthenticationError(
@@ -546,6 +590,7 @@ impl KrakenSpotRawHttpClient {
         })
     }
 
+    /// Requests all open orders (requires authentication).
     pub async fn get_open_orders(
         &self,
         trades: Option<bool>,
@@ -582,6 +627,7 @@ impl KrakenSpotRawHttpClient {
         Ok(result.open)
     }
 
+    /// Requests closed orders history (requires authentication).
     pub async fn get_closed_orders(
         &self,
         trades: Option<bool>,
@@ -634,6 +680,7 @@ impl KrakenSpotRawHttpClient {
         Ok(result.closed)
     }
 
+    /// Requests trades history (requires authentication).
     pub async fn get_trades_history(
         &self,
         trade_type: Option<String>,
@@ -682,6 +729,7 @@ impl KrakenSpotRawHttpClient {
         Ok(result.trades)
     }
 
+    /// Submits a new order (requires authentication).
     pub async fn add_order(
         &self,
         params: &KrakenSpotAddOrderParams,
@@ -705,6 +753,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Cancels an open order (requires authentication).
     pub async fn cancel_order(
         &self,
         params: &KrakenSpotCancelOrderParams,
@@ -729,12 +778,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
-    /// Cancel multiple orders in a single batch request.
-    ///
-    /// # Parameters
-    /// - `params` - Batch cancel parameters containing list of order IDs (max 50).
-    ///
-    /// Note: This endpoint uses JSON body with `application/json` content type.
+    /// Cancels multiple orders in a single batch request (max 50 orders).
     pub async fn cancel_order_batch(
         &self,
         params: &KrakenSpotCancelOrderBatchParams,
@@ -811,6 +855,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Cancels all open orders (requires authentication).
     pub async fn cancel_all_orders(
         &self,
     ) -> anyhow::Result<SpotCancelOrderResponse, KrakenHttpError> {
@@ -829,6 +874,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Edits an existing order (cancel and replace).
     pub async fn edit_order(
         &self,
         params: &KrakenSpotEditOrderParams,
@@ -853,6 +899,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Amends an existing order in-place (no cancel/replace).
     pub async fn amend_order(
         &self,
         params: &KrakenSpotAmendOrderParams,
@@ -877,6 +924,7 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Requests account balances (requires authentication).
     pub async fn get_balance(&self) -> anyhow::Result<BalanceResponse, KrakenHttpError> {
         if self.credential.is_none() {
             return Err(KrakenHttpError::AuthenticationError(
@@ -1062,20 +1110,24 @@ impl KrakenSpotHttpClient {
         }
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.inner.cancel_all_requests();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         self.inner.cancellation_token()
     }
 
+    /// Caches an instrument for symbol lookup.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
             .insert(instrument.symbol().inner(), instrument);
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Caches multiple instruments for symbol lookup.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for instrument in instruments {
             self.instruments_cache
@@ -1084,6 +1136,7 @@ impl KrakenSpotHttpClient {
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Gets an instrument from the cache by symbol.
     pub fn get_cached_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
         self.instruments_cache
             .get(symbol)
@@ -1113,12 +1166,12 @@ impl KrakenSpotHttpClient {
         *guard = Ustr::from(currency);
     }
 
+    /// Requests an authentication token for WebSocket connections.
     pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
         self.inner.get_websockets_token().await
     }
 
-    // High-Level Methods (return Nautilus domain types)
-
+    /// Requests tradable instruments from Kraken.
     pub async fn request_instruments(
         &self,
         pairs: Option<Vec<String>>,
@@ -1142,6 +1195,7 @@ impl KrakenSpotHttpClient {
         Ok(instruments)
     }
 
+    /// Requests historical trades for an instrument.
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
@@ -1194,6 +1248,7 @@ impl KrakenSpotHttpClient {
         Ok(trades)
     }
 
+    /// Requests historical bars/OHLC data for an instrument.
     pub async fn request_bars(
         &self,
         bar_type: BarType,
@@ -1269,7 +1324,7 @@ impl KrakenSpotHttpClient {
         Ok(bars)
     }
 
-    /// Request account state (balances) from Kraken.
+    /// Requests account state (balances) from Kraken.
     ///
     /// Returns an `AccountState` containing all currency balances.
     pub async fn request_account_state(
@@ -1322,6 +1377,7 @@ impl KrakenSpotHttpClient {
         ))
     }
 
+    /// Requests order status reports from Kraken.
     pub async fn request_order_status_reports(
         &self,
         account_id: AccountId,
@@ -1410,6 +1466,7 @@ impl KrakenSpotHttpClient {
         Ok(all_reports)
     }
 
+    /// Requests fill/trade reports from Kraken.
     pub async fn request_fill_reports(
         &self,
         account_id: AccountId,
@@ -1463,7 +1520,7 @@ impl KrakenSpotHttpClient {
         Ok(all_reports)
     }
 
-    /// Request position status reports for SPOT instruments.
+    /// Requests position status reports for SPOT instruments.
     ///
     /// Returns wallet balances as position reports if `use_spot_position_reports` is enabled.
     /// Otherwise returns an empty vector (spot traditionally has no "positions").
@@ -1480,7 +1537,7 @@ impl KrakenSpotHttpClient {
         }
     }
 
-    /// Generate SPOT position reports from wallet balances.
+    /// Generates SPOT position reports from wallet balances.
     ///
     /// Kraken spot balances are simple totals (no borrowing concept).
     /// Positive balances are reported as LONG positions.
@@ -1598,7 +1655,7 @@ impl KrakenSpotHttpClient {
         Ok(reports)
     }
 
-    /// Submit a new order to the Kraken Spot exchange.
+    /// Submits a new order to the Kraken Spot exchange.
     ///
     /// Returns the venue order ID on success. WebSocket handles all execution events.
     ///
@@ -1620,6 +1677,7 @@ impl KrakenSpotHttpClient {
         order_type: OrderType,
         quantity: Quantity,
         time_in_force: TimeInForce,
+        expire_time: Option<UnixNanos>,
         price: Option<Price>,
         trigger_price: Option<Price>,
         reduce_only: bool,
@@ -1654,22 +1712,8 @@ impl KrakenSpotHttpClient {
             OrderType::Limit | OrderType::StopLimit | OrderType::LimitIfTouched
         );
 
-        let timeinforce = if is_limit_order {
-            match time_in_force {
-                TimeInForce::Gtc => None, // Default, no parameter needed
-                TimeInForce::Ioc => Some("IOC".to_string()),
-                TimeInForce::Fok => {
-                    anyhow::bail!("FOK time in force not supported by Kraken Spot API");
-                }
-                TimeInForce::Gtd => {
-                    anyhow::bail!("GTD time in force requires expire_time parameter");
-                }
-                _ => anyhow::bail!("Unsupported time in force: {time_in_force:?}"),
-            }
-        } else {
-            // Market orders are inherently immediate, timeinforce not applicable
-            None
-        };
+        let (timeinforce, expiretm) =
+            compute_time_in_force(is_limit_order, time_in_force, expire_time)?;
 
         if post_only {
             oflags.push("post");
@@ -1720,6 +1764,10 @@ impl KrakenSpotHttpClient {
             builder.timeinforce(tif);
         }
 
+        if let Some(expire) = expiretm {
+            builder.expiretm(expire);
+        }
+
         let params = builder
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build order params: {e}"))?;
@@ -1734,7 +1782,7 @@ impl KrakenSpotHttpClient {
         Ok(VenueOrderId::new(venue_order_id))
     }
 
-    /// Modify an existing order on the Kraken Spot exchange using atomic amend.
+    /// Modifies an existing order on the Kraken Spot exchange using atomic amend.
     ///
     /// Uses the AmendOrder endpoint which modifies the order in-place,
     /// keeping the same order ID and queue position.
@@ -1797,7 +1845,7 @@ impl KrakenSpotHttpClient {
         Ok(order_id)
     }
 
-    /// Cancel an order on the Kraken Spot exchange.
+    /// Cancels an order on the Kraken Spot exchange.
     ///
     /// # Errors
     ///
@@ -1841,15 +1889,7 @@ impl KrakenSpotHttpClient {
         Ok(())
     }
 
-    /// Cancel multiple orders on the Kraken Spot exchange.
-    ///
-    /// Automatically chunks requests into batches of 50 orders (Kraken's limit).
-    ///
-    /// # Parameters
-    /// - `venue_order_ids` - List of venue order IDs (txids) to cancel.
-    ///
-    /// # Returns
-    /// The total count of successfully cancelled orders.
+    /// Cancels multiple orders on the Kraken Spot exchange (batched, max 50 per request).
     pub async fn cancel_orders_batch(
         &self,
         venue_order_ids: Vec<VenueOrderId>,
@@ -1960,5 +2000,44 @@ mod tests {
             nonce > 1_500_000_000_000_000_000,
             "Nonce should be nanosecond timestamp"
         );
+    }
+
+    #[rstest]
+    #[case::gtc_limit(true, TimeInForce::Gtc, None, None, None)]
+    #[case::ioc_limit(true, TimeInForce::Ioc, None, Some("IOC"), None)]
+    #[case::gtd_limit_with_expire(
+        true,
+        TimeInForce::Gtd,
+        Some(1_704_067_200_000_000_000u64),
+        Some("GTD"),
+        Some("1704067200")
+    )]
+    #[case::gtc_market(false, TimeInForce::Gtc, None, None, None)]
+    #[case::ioc_market(false, TimeInForce::Ioc, None, None, None)]
+    fn test_compute_time_in_force_success(
+        #[case] is_limit: bool,
+        #[case] tif: TimeInForce,
+        #[case] expire_nanos: Option<u64>,
+        #[case] expected_tif: Option<&str>,
+        #[case] expected_expire: Option<&str>,
+    ) {
+        let expire_time = expire_nanos.map(UnixNanos::from);
+        let result = compute_time_in_force(is_limit, tif, expire_time).unwrap();
+        assert_eq!(result.0, expected_tif.map(String::from));
+        assert_eq!(result.1, expected_expire.map(String::from));
+    }
+
+    #[rstest]
+    #[case::fok_not_supported(TimeInForce::Fok, None, "FOK")]
+    #[case::gtd_missing_expire(TimeInForce::Gtd, None, "expire_time")]
+    fn test_compute_time_in_force_errors(
+        #[case] tif: TimeInForce,
+        #[case] expire_nanos: Option<u64>,
+        #[case] expected_error: &str,
+    ) {
+        let expire_time = expire_nanos.map(UnixNanos::from);
+        let result = compute_time_in_force(true, tif, expire_time);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(expected_error));
     }
 }

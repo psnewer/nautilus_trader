@@ -7986,6 +7986,7 @@ class KrakenSpotHttpClient:
         order_type: OrderType,
         quantity: Quantity,
         time_in_force: TimeInForce,
+        expire_time: int | None = None,
         price: Price | None = None,
         trigger_price: Price | None = None,
         reduce_only: bool = False,

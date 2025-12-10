@@ -55,6 +55,7 @@ from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.events import OrderAccepted
@@ -198,6 +199,7 @@ class KrakenExecutionClient(LiveExecutionClient):
         if KrakenProductType.FUTURES in product_types:
             self._ws_client_futures = nautilus_pyo3.KrakenFuturesWebSocketClient(
                 environment=environment,
+                base_url=config.base_url_ws_futures,
                 heartbeat_secs=config.ws_heartbeat_secs,
                 api_key=config.api_key,
                 api_secret=config.api_secret,
@@ -669,6 +671,20 @@ class KrakenExecutionClient(LiveExecutionClient):
             )
             return
 
+        # Reject GTD orders for Futures (not supported by Kraken Futures API)
+        if (
+            product_type == nautilus_pyo3.KrakenProductType.FUTURES
+            and order.time_in_force == TimeInForce.GTD
+        ):
+            self.generate_order_denied(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                reason="UNSUPPORTED_TIME_IN_FORCE: GTD not supported for Kraken Futures",
+                ts_event=self._clock.timestamp_ns(),
+            )
+            return
+
         self.generate_order_submitted(
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
@@ -720,6 +736,11 @@ class KrakenExecutionClient(LiveExecutionClient):
             if hasattr(order, "trigger_price") and order.trigger_price
             else None
         )
+        pyo3_expire_time = (
+            order.expire_time_ns
+            if hasattr(order, "expire_time_ns") and order.expire_time_ns
+            else None
+        )
 
         try:
             if product_type == nautilus_pyo3.KrakenProductType.FUTURES:
@@ -747,6 +768,7 @@ class KrakenExecutionClient(LiveExecutionClient):
                     order_type=pyo3_order_type,
                     quantity=pyo3_quantity,
                     time_in_force=pyo3_time_in_force,
+                    expire_time=pyo3_expire_time,
                     price=pyo3_price,
                     trigger_price=pyo3_trigger_price,
                     reduce_only=order.is_reduce_only,

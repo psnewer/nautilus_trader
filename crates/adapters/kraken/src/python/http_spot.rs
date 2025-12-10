@@ -16,7 +16,10 @@
 //! Python bindings for the Kraken Spot HTTP client.
 
 use chrono::{DateTime, Utc};
-use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
+use nautilus_core::{
+    nanos::UnixNanos,
+    python::{to_pyruntime_err, to_pyvalue_err},
+};
 use nautilus_model::{
     data::BarType,
     enums::{OrderSide, OrderType, TimeInForce},
@@ -334,7 +337,7 @@ impl KrakenSpotHttpClient {
     }
 
     #[pyo3(name = "submit_order")]
-    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, price=None, trigger_price=None, reduce_only=false, post_only=false))]
+    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, expire_time=None, price=None, trigger_price=None, reduce_only=false, post_only=false))]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_order<'py>(
         &self,
@@ -346,12 +349,14 @@ impl KrakenSpotHttpClient {
         order_type: OrderType,
         quantity: Quantity,
         time_in_force: TimeInForce,
+        expire_time: Option<u64>,
         price: Option<Price>,
         trigger_price: Option<Price>,
         reduce_only: bool,
         post_only: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
+        let expire_time = expire_time.map(UnixNanos::from);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let venue_order_id = client
@@ -363,6 +368,7 @@ impl KrakenSpotHttpClient {
                     order_type,
                     quantity,
                     time_in_force,
+                    expire_time,
                     price,
                     trigger_price,
                     reduce_only,
