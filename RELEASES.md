@@ -129,6 +129,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added dYdX v4 conditional orders (#3259), thanks @nicolad
 - Added dYdX v4 Python adapter layer (#3275), thanks @nicolad
 - Added dYdX v4 batch cancel and expose missing Python bindings (#3282), thanks @nicolad
+- Added dYdX v4 HTTP data, execution, and WebSocket tests (#3290), thanks @nicolad
 - Added Kraken Futures demo support (#3262), thanks @nicolad
 - Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
