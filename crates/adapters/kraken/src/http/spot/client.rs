@@ -841,10 +841,35 @@ impl KrakenSpotRawHttpClient {
 
         let param_string = serde_urlencoded::to_string(params)
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+
         let body = Some(param_string.into_bytes());
 
         let response: KrakenResponse<SpotEditOrderResponse> = self
             .send_request(Method::POST, "/0/private/EditOrder", body, true)
+            .await?;
+
+        response
+            .result
+            .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
+    }
+
+    pub async fn amend_order(
+        &self,
+        params: &KrakenSpotAmendOrderParams,
+    ) -> anyhow::Result<SpotAmendOrderResponse, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for amending orders".to_string(),
+            ));
+        }
+
+        let param_string = serde_urlencoded::to_string(params)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+
+        let body = Some(param_string.into_bytes());
+
+        let response: KrakenResponse<SpotAmendOrderResponse> = self
+            .send_request(Method::POST, "/0/private/AmendOrder", body, true)
             .await?;
 
         response
@@ -1244,6 +1269,59 @@ impl KrakenSpotHttpClient {
         Ok(bars)
     }
 
+    /// Request account state (balances) from Kraken.
+    ///
+    /// Returns an `AccountState` containing all currency balances.
+    pub async fn request_account_state(
+        &self,
+        account_id: AccountId,
+    ) -> anyhow::Result<AccountState> {
+        let balances_raw = self.inner.get_balance().await?;
+        let ts_init = self.generate_ts_init();
+
+        let balances: Vec<AccountBalance> = balances_raw
+            .iter()
+            .filter_map(|(currency_code, amount_str)| {
+                let amount = amount_str.parse::<f64>().ok()?;
+                if amount == 0.0 {
+                    return None;
+                }
+
+                // Kraken uses X-prefixed names for some currencies (e.g., XXBT for BTC)
+                let normalized_code = currency_code
+                    .strip_prefix("X")
+                    .or_else(|| currency_code.strip_prefix("Z"))
+                    .unwrap_or(currency_code);
+
+                let currency = Currency::new(
+                    normalized_code,
+                    8, // Default precision
+                    0,
+                    "0",
+                    CurrencyType::Crypto,
+                );
+
+                let total = Money::new(amount, currency);
+                let locked = Money::new(0.0, currency);
+
+                // Balance endpoint returns total only, so free = total (no locked info)
+                Some(AccountBalance::new(total, locked, total))
+            })
+            .collect();
+
+        Ok(AccountState::new(
+            account_id,
+            AccountType::Cash,
+            balances,
+            vec![], // No margins for spot
+            true,   // reported
+            UUID4::new(),
+            ts_init,
+            ts_init,
+            None,
+        ))
+    }
+
     pub async fn request_order_status_reports(
         &self,
         account_id: AccountId,
@@ -1385,6 +1463,141 @@ impl KrakenSpotHttpClient {
         Ok(all_reports)
     }
 
+    /// Request position status reports for SPOT instruments.
+    ///
+    /// Returns wallet balances as position reports if `use_spot_position_reports` is enabled.
+    /// Otherwise returns an empty vector (spot traditionally has no "positions").
+    pub async fn request_position_status_reports(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        if self.use_spot_position_reports.load(Ordering::Relaxed) {
+            self.generate_spot_position_reports_from_wallet(account_id, instrument_id)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Generate SPOT position reports from wallet balances.
+    ///
+    /// Kraken spot balances are simple totals (no borrowing concept).
+    /// Positive balances are reported as LONG positions.
+    /// Zero balances are reported as FLAT.
+    async fn generate_spot_position_reports_from_wallet(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        let balances_raw = self.inner.get_balance().await?;
+        let ts_init = self.generate_ts_init();
+        let mut wallet_by_coin: HashMap<Ustr, f64> = HashMap::new();
+
+        for (currency_code, amount_str) in balances_raw.iter() {
+            let balance = match amount_str.parse::<f64>() {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            if balance == 0.0 {
+                continue;
+            }
+
+            wallet_by_coin.insert(Ustr::from(normalize_currency_code(currency_code)), balance);
+        }
+
+        let mut reports = Vec::new();
+
+        if let Some(instrument_id) = instrument_id {
+            if let Some(instrument) = self.get_cached_instrument(&instrument_id.symbol.inner()) {
+                let base_currency = match instrument.base_currency() {
+                    Some(currency) => currency,
+                    None => return Ok(reports),
+                };
+
+                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
+
+                let side = if wallet_balance > 0.0 {
+                    PositionSideSpecified::Long
+                } else {
+                    PositionSideSpecified::Flat
+                };
+
+                let abs_balance = wallet_balance.abs();
+                let quantity = Quantity::new(abs_balance, instrument.size_precision());
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument_id,
+                    side,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        } else {
+            let quote_filter = *self.spot_positions_quote_currency.read().expect("lock");
+
+            for entry in self.instruments_cache.iter() {
+                let instrument = entry.value();
+
+                let quote_currency = match instrument.quote_currency() {
+                    currency if currency.code == quote_filter => currency,
+                    _ => continue,
+                };
+
+                let base_currency = match instrument.base_currency() {
+                    Some(currency) => currency,
+                    None => continue,
+                };
+
+                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
+
+                if wallet_balance == 0.0 {
+                    continue;
+                }
+
+                let side = PositionSideSpecified::Long;
+                let quantity = Quantity::new(wallet_balance, instrument.size_precision());
+
+                if quantity.is_zero() {
+                    continue;
+                }
+
+                tracing::debug!(
+                    "Spot position: {} {} (quote: {})",
+                    quantity,
+                    base_currency.code,
+                    quote_currency.code
+                );
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument.id(),
+                    side,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        }
+
+        Ok(reports)
+    }
+
     /// Submit a new order to the Kraken Spot exchange.
     ///
     /// Returns the venue order ID on success. WebSocket handles all execution events.
@@ -1521,6 +1734,69 @@ impl KrakenSpotHttpClient {
         Ok(VenueOrderId::new(venue_order_id))
     }
 
+    /// Modify an existing order on the Kraken Spot exchange using atomic amend.
+    ///
+    /// Uses the AmendOrder endpoint which modifies the order in-place,
+    /// keeping the same order ID and queue position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Neither `client_order_id` nor `venue_order_id` is provided.
+    /// - The instrument is not found in cache.
+    /// - The request fails.
+    pub async fn modify_order(
+        &self,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+    ) -> anyhow::Result<VenueOrderId> {
+        let _ = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let txid = venue_order_id.as_ref().map(|id| id.to_string());
+        let cl_ord_id = client_order_id.as_ref().map(|id| id.to_string());
+
+        if txid.is_none() && cl_ord_id.is_none() {
+            anyhow::bail!("Either client_order_id or venue_order_id must be provided");
+        }
+
+        let mut builder = KrakenSpotAmendOrderParamsBuilder::default();
+
+        // Prefer txid (venue_order_id) over cl_ord_id
+        if let Some(ref id) = txid {
+            builder.txid(id.clone());
+        } else if let Some(ref id) = cl_ord_id {
+            builder.cl_ord_id(id.clone());
+        }
+
+        if let Some(qty) = quantity {
+            builder.order_qty(qty.to_string());
+        }
+        if let Some(p) = price {
+            builder.limit_price(p.to_string());
+        }
+        if let Some(tp) = trigger_price {
+            builder.trigger_price(tp.to_string());
+        }
+
+        let params = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build amend order params: {e}"))?;
+
+        let _response = self.inner.amend_order(&params).await?;
+
+        // AmendOrder modifies in-place, so the order keeps its original ID
+        let order_id = venue_order_id
+            .ok_or_else(|| anyhow::anyhow!("venue_order_id required for amend response"))?;
+
+        Ok(order_id)
+    }
+
     /// Cancel an order on the Kraken Spot exchange.
     ///
     /// # Errors
@@ -1593,194 +1869,6 @@ impl KrakenSpotHttpClient {
         }
 
         Ok(total_cancelled)
-    }
-
-    /// Request account state (balances) from Kraken.
-    ///
-    /// Returns an `AccountState` containing all currency balances.
-    pub async fn request_account_state(
-        &self,
-        account_id: AccountId,
-    ) -> anyhow::Result<AccountState> {
-        let balances_raw = self.inner.get_balance().await?;
-        let ts_init = self.generate_ts_init();
-
-        let balances: Vec<AccountBalance> = balances_raw
-            .iter()
-            .filter_map(|(currency_code, amount_str)| {
-                let amount = amount_str.parse::<f64>().ok()?;
-                if amount == 0.0 {
-                    return None;
-                }
-
-                // Kraken uses X-prefixed names for some currencies (e.g., XXBT for BTC)
-                let normalized_code = currency_code
-                    .strip_prefix("X")
-                    .or_else(|| currency_code.strip_prefix("Z"))
-                    .unwrap_or(currency_code);
-
-                let currency = Currency::new(
-                    normalized_code,
-                    8, // Default precision
-                    0,
-                    "0",
-                    CurrencyType::Crypto,
-                );
-
-                let total = Money::new(amount, currency);
-                let locked = Money::new(0.0, currency);
-
-                // Balance endpoint returns total only, so free = total (no locked info)
-                Some(AccountBalance::new(total, locked, total))
-            })
-            .collect();
-
-        Ok(AccountState::new(
-            account_id,
-            AccountType::Cash,
-            balances,
-            vec![], // No margins for spot
-            true,   // reported
-            UUID4::new(),
-            ts_init,
-            ts_init,
-            None,
-        ))
-    }
-
-    /// Request position status reports for SPOT instruments.
-    ///
-    /// Returns wallet balances as position reports if `use_spot_position_reports` is enabled.
-    /// Otherwise returns an empty vector (spot traditionally has no "positions").
-    pub async fn request_position_status_reports(
-        &self,
-        account_id: AccountId,
-        instrument_id: Option<InstrumentId>,
-    ) -> anyhow::Result<Vec<PositionStatusReport>> {
-        if self.use_spot_position_reports.load(Ordering::Relaxed) {
-            self.generate_spot_position_reports_from_wallet(account_id, instrument_id)
-                .await
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    /// Generate SPOT position reports from wallet balances.
-    ///
-    /// Kraken spot balances are simple totals (no borrowing concept).
-    /// Positive balances are reported as LONG positions.
-    /// Zero balances are reported as FLAT.
-    async fn generate_spot_position_reports_from_wallet(
-        &self,
-        account_id: AccountId,
-        instrument_id: Option<InstrumentId>,
-    ) -> anyhow::Result<Vec<PositionStatusReport>> {
-        let balances_raw = self.inner.get_balance().await?;
-        let ts_init = self.generate_ts_init();
-        let mut wallet_by_coin: HashMap<Ustr, f64> = HashMap::new();
-
-        for (currency_code, amount_str) in balances_raw.iter() {
-            let balance = match amount_str.parse::<f64>() {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-
-            if balance == 0.0 {
-                continue;
-            }
-
-            wallet_by_coin.insert(Ustr::from(normalize_currency_code(currency_code)), balance);
-        }
-
-        let mut reports = Vec::new();
-
-        if let Some(instrument_id) = instrument_id {
-            if let Some(instrument) = self.get_cached_instrument(&instrument_id.symbol.inner()) {
-                let base_currency = match instrument.base_currency() {
-                    Some(currency) => currency,
-                    None => return Ok(reports),
-                };
-
-                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
-                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
-
-                let side = if wallet_balance > 0.0 {
-                    PositionSideSpecified::Long
-                } else {
-                    PositionSideSpecified::Flat
-                };
-
-                let abs_balance = wallet_balance.abs();
-                let quantity = Quantity::new(abs_balance, instrument.size_precision());
-
-                let report = PositionStatusReport::new(
-                    account_id,
-                    instrument_id,
-                    side,
-                    quantity,
-                    ts_init,
-                    ts_init,
-                    None,
-                    None,
-                    None,
-                );
-
-                reports.push(report);
-            }
-        } else {
-            let quote_filter = *self.spot_positions_quote_currency.read().expect("lock");
-
-            for entry in self.instruments_cache.iter() {
-                let instrument = entry.value();
-
-                let quote_currency = match instrument.quote_currency() {
-                    currency if currency.code == quote_filter => currency,
-                    _ => continue,
-                };
-
-                let base_currency = match instrument.base_currency() {
-                    Some(currency) => currency,
-                    None => continue,
-                };
-
-                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
-                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
-
-                if wallet_balance == 0.0 {
-                    continue;
-                }
-
-                let side = PositionSideSpecified::Long;
-                let quantity = Quantity::new(wallet_balance, instrument.size_precision());
-
-                if quantity.is_zero() {
-                    continue;
-                }
-
-                tracing::debug!(
-                    "Spot position: {} {} (quote: {})",
-                    quantity,
-                    base_currency.code,
-                    quote_currency.code
-                );
-
-                let report = PositionStatusReport::new(
-                    account_id,
-                    instrument.id(),
-                    side,
-                    quantity,
-                    ts_init,
-                    ts_init,
-                    None,
-                    None,
-                    None,
-                );
-
-                reports.push(report);
-            }
-        }
-
-        Ok(reports)
     }
 }
 

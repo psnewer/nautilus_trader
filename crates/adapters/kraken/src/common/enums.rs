@@ -449,11 +449,13 @@ pub enum KrakenFuturesOrderStatus {
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
 )]
-#[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
 pub enum KrakenTriggerSignal {
+    #[serde(rename = "last", alias = "last_price")]
     Last,
+    #[serde(rename = "mark", alias = "mark_price")]
     Mark,
+    #[serde(rename = "index", alias = "index_price")]
     Index,
 }
 
