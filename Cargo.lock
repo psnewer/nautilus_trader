@@ -92,9 +92,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-chains"
-version = "0.2.22"
+version = "0.2.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff8c665521d11efbb11d5e5c5d63971426bb63df00d24545baf97e7f3dc91c0c"
+checksum = "35d744058a9daa51a8cf22a3009607498fcf82d3cf4c5444dd8056cdf651f471"
 dependencies = [
  "alloy-primitives",
  "num_enum",
@@ -2368,9 +2368,9 @@ checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 
 [[package]]
 name = "databento"
-version = "0.36.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90cc653f79822f6edfa5d465eb5266cb819ff978a38677337a0f7d329679ca32"
+checksum = "f71d8eb28ee1fd7a23f99df0323e8d74c3e16c4ee654d2f97cb6689262913a3c"
 dependencies = [
  "async-compression",
  "dbn",
@@ -3020,9 +3020,9 @@ dependencies = [
 
 [[package]]
 name = "dbn"
-version = "0.44.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5633ccaa54c143ba79b23a1752d6479fbddcc7bc20421abd208b154977e9881"
+checksum = "c0ce97da0733faa207a0ff8feea166b5508c4941bd08e15f9514832bfe0e46c2"
 dependencies = [
  "async-compression",
  "csv",
@@ -3041,9 +3041,9 @@ dependencies = [
 
 [[package]]
 name = "dbn-macros"
-version = "0.44.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b796ef693b4bbb5c8950d4dcf967880b9485a0c7a4f6e7b4b6de87f7acc4e5df"
+checksum = "bba743d04027b13120076e55bda4898079594aecf81a829a2c7aa351da06e134"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4221,9 +4221,9 @@ checksum = "7aedcccd01fc5fe81e6b489c15b247b8b0690feb23304303a9e560f37efc560a"
 
 [[package]]
 name = "icu_properties"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e93fcd3157766c0c8da2f8cff6ce651a31f0810eaa1c51ec363ef790bbb5fb99"
+checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
 dependencies = [
  "icu_collections",
  "icu_locale_core",
@@ -4235,9 +4235,9 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02845b3647bb045f1100ecd6480ff52f34c35f82d9880e029d329c21d1054899"
+checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
 
 [[package]]
 name = "icu_provider"

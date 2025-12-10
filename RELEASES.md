@@ -191,7 +191,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.91.1
 - Upgraded Cython to v3.2.2
-- Upgraded `databento` crate to v0.36.0
+- Upgraded `databento` crate to v0.37.0
 - Upgraded `datafusion` crate to v51.0.0
 - Upgraded `msgspec` to 0.20.0
 - Upgraded `pyo3` crate to v0.27.2
