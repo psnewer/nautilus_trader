@@ -67,7 +67,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
 - Fixed portfolio statistics various bugs and edge cases
 - Fixed SyntheticInstrument formula error during parsing with hyphened InstrumentId (#3257), thanks @Javdu10
-- Fixed GTD order expiry key mismatch in matching engine (#3272), thanks for reporting @linimin
+- Fixed matching engine GTD order expiry key mismatch (#3272), thanks for reporting @linimin
+- Fixed matching engine order modification for partial fills
 - Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
