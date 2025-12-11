@@ -360,11 +360,21 @@ class KrakenDataClient(LiveMarketDataClient):
         await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        self._log.error(
-            f"Cannot subscribe to {command.bar_type} bars: "
-            f"WebSocket bar streaming not yet implemented. "
-            f"Use request_bars for historical bar data instead.",
-        )
+        symbol = command.bar_type.instrument_id.symbol.value
+        if symbol.startswith(("PI_", "PF_", "PV_", "FI_", "FF_")):
+            # Kraken Futures does not support bar streaming via WebSocket
+            self._log.error(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"Kraken Futures does not support bar streaming via WebSocket. "
+                f"Use request_bars for historical bar data instead.",
+            )
+        else:
+            # Kraken Spot supports OHLC streaming but not yet implemented in Nautilus
+            self._log.error(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"WebSocket bar streaming not yet implemented. "
+                f"Use request_bars for historical bar data instead.",
+            )
 
     async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         if self._config.update_instruments_interval_mins:

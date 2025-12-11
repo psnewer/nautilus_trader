@@ -280,72 +280,92 @@ impl SpotFeedHandler {
     }
 
     fn parse_message(&mut self, text: &str, ts_init: UnixNanos) -> Option<NautilusWsMessage> {
-        // Try to parse as a data message first
-        if let Ok(msg) = serde_json::from_str::<KrakenWsMessage>(text) {
-            return self.handle_data_message(msg, ts_init);
-        }
-
-        // Check for control messages (heartbeat, status, subscription responses)
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            if value.get("channel").and_then(|v| v.as_str()) == Some("heartbeat") {
+        // Fast pre-filter for high-frequency control messages (no JSON parsing)
+        // Heartbeats and status messages are short and share common prefix
+        if text.len() < 50 && text.starts_with("{\"channel\":\"") {
+            if text.contains("heartbeat") {
                 tracing::trace!("Received heartbeat");
                 return None;
             }
-
-            if value.get("channel").and_then(|v| v.as_str()) == Some("status") {
+            if text.contains("status") {
                 tracing::debug!("Received status message");
-                return None;
-            }
-
-            if value.get("method").is_some() {
-                if let Ok(response) = serde_json::from_value::<KrakenWsResponse>(value) {
-                    match response {
-                        KrakenWsResponse::Subscribe(sub) => {
-                            if sub.success {
-                                if let Some(result) = &sub.result {
-                                    tracing::debug!(
-                                        channel = ?result.channel,
-                                        req_id = ?sub.req_id,
-                                        "Subscription confirmed"
-                                    );
-                                } else {
-                                    tracing::debug!(req_id = ?sub.req_id, "Subscription confirmed");
-                                }
-                            } else {
-                                tracing::warn!(
-                                    error = ?sub.error,
-                                    req_id = ?sub.req_id,
-                                    "Subscription failed"
-                                );
-                            }
-                        }
-                        KrakenWsResponse::Unsubscribe(unsub) => {
-                            if unsub.success {
-                                tracing::debug!(req_id = ?unsub.req_id, "Unsubscription confirmed");
-                            } else {
-                                tracing::warn!(
-                                    error = ?unsub.error,
-                                    req_id = ?unsub.req_id,
-                                    "Unsubscription failed"
-                                );
-                            }
-                        }
-                        KrakenWsResponse::Pong(pong) => {
-                            tracing::trace!(req_id = ?pong.req_id, "Received pong");
-                        }
-                        KrakenWsResponse::Other => {
-                            tracing::debug!("Received unknown subscription response");
-                        }
-                    }
-                } else {
-                    tracing::debug!("Received subscription response (failed to parse details)");
-                }
                 return None;
             }
         }
 
-        tracing::warn!("Failed to parse message: {text}");
+        let value: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to parse message: {e}");
+                return None;
+            }
+        };
+
+        // Control messages have "method" field
+        if value.get("method").is_some() {
+            self.handle_control_message(value);
+            return None;
+        }
+
+        // Data messages have "channel" and "data" fields
+        if value.get("channel").is_some() && value.get("data").is_some() {
+            match serde_json::from_value::<KrakenWsMessage>(value) {
+                Ok(msg) => return self.handle_data_message(msg, ts_init),
+                Err(e) => {
+                    tracing::debug!("Failed to parse data message: {e}");
+                    return None;
+                }
+            }
+        }
+
+        tracing::debug!("Unhandled message structure: {text}");
         None
+    }
+
+    fn handle_control_message(&self, value: Value) {
+        match serde_json::from_value::<KrakenWsResponse>(value) {
+            Ok(response) => match response {
+                KrakenWsResponse::Subscribe(sub) => {
+                    if sub.success {
+                        if let Some(result) = &sub.result {
+                            tracing::debug!(
+                                channel = ?result.channel,
+                                req_id = ?sub.req_id,
+                                "Subscription confirmed"
+                            );
+                        } else {
+                            tracing::debug!(req_id = ?sub.req_id, "Subscription confirmed");
+                        }
+                    } else {
+                        tracing::warn!(
+                            error = ?sub.error,
+                            req_id = ?sub.req_id,
+                            "Subscription failed"
+                        );
+                    }
+                }
+                KrakenWsResponse::Unsubscribe(unsub) => {
+                    if unsub.success {
+                        tracing::debug!(req_id = ?unsub.req_id, "Unsubscription confirmed");
+                    } else {
+                        tracing::warn!(
+                            error = ?unsub.error,
+                            req_id = ?unsub.req_id,
+                            "Unsubscription failed"
+                        );
+                    }
+                }
+                KrakenWsResponse::Pong(pong) => {
+                    tracing::trace!(req_id = ?pong.req_id, "Received pong");
+                }
+                KrakenWsResponse::Other => {
+                    tracing::debug!("Received unknown control response");
+                }
+            },
+            Err(_) => {
+                tracing::debug!("Received control message (failed to parse details)");
+            }
+        }
     }
 
     fn handle_data_message(
