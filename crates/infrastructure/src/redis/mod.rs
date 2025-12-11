@@ -139,20 +139,16 @@ pub async fn create_redis_connection(
     let connection_timeout = Duration::from_secs(u64::from(config.connection_timeout));
     let response_timeout = Duration::from_secs(u64::from(config.response_timeout));
     let number_of_retries = config.number_of_retries;
-    let exponent_base = config.exponent_base;
-    let factor = config.factor;
-
-    // into milliseconds
-    let max_delay = config.max_delay * 1000;
+    let exponent_base = config.exponent_base as f32;
+    let max_delay = Duration::from_millis(config.max_delay * 1000);
 
     let client = redis::Client::open(redis_url)?;
 
     let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
         .set_exponent_base(exponent_base)
-        .set_factor(factor)
         .set_number_of_retries(number_of_retries)
-        .set_response_timeout(response_timeout)
-        .set_connection_timeout(connection_timeout)
+        .set_response_timeout(Some(response_timeout))
+        .set_connection_timeout(Some(connection_timeout))
         .set_max_delay(max_delay);
 
     let mut con = client
