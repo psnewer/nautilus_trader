@@ -196,7 +196,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Repaired Bybit `get_account_details` (#3219), thanks @sunlei
 - Repaired Bybit `set_position_mode` (#3220), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
-- Upgraded Rust (MSRV) to 1.91.1
+- Upgraded Rust (MSRV) to 1.92.0
 - Upgraded Cython to v3.2.2
 - Upgraded `databento` crate to v0.37.0
 - Upgraded `datafusion` crate to v51.0.0
