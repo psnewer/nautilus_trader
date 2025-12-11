@@ -208,6 +208,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved execution concept guide with overfills explanation
 - Improved backtesting concept guide to clarify bar execution behavior
 - Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
+- Improved notebook path handling and fix quickstart data loading, thanks for reporting @semihtekten
 - Documented fee rate sign convention in instruments concept guide
 
 ### Deprecations
