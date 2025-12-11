@@ -97,8 +97,8 @@ config_tester = DataTesterConfig(
     # book_depth=10,
     # book_interval_ms=10,
     # requests_start_delta=pd.Timedelta(days=1),
-    request_bars=True,
-    request_trades=True,
+    # request_bars=True,
+    # request_trades=True,
 )
 tester = DataTester(config=config_tester)
 

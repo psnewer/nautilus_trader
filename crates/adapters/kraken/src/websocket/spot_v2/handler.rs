@@ -27,7 +27,7 @@ use ahash::AHashMap;
 use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{AtomicTime, UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    data::{Data, OrderBookDeltas, QuoteTick},
+    data::{Bar, Data, OrderBookDeltas, QuoteTick},
     events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
@@ -44,11 +44,11 @@ use ustr::Ustr;
 use super::{
     enums::{KrakenExecType, KrakenWsChannel},
     messages::{
-        KrakenWsBookData, KrakenWsExecutionData, KrakenWsMessage, KrakenWsResponse,
-        KrakenWsTickerData, KrakenWsTradeData, NautilusWsMessage,
+        KrakenWsBookData, KrakenWsExecutionData, KrakenWsMessage, KrakenWsOhlcData,
+        KrakenWsResponse, KrakenWsTickerData, KrakenWsTradeData, NautilusWsMessage,
     },
     parse::{
-        parse_book_deltas, parse_quote_tick, parse_trade_tick, parse_ws_fill_report,
+        parse_book_deltas, parse_quote_tick, parse_trade_tick, parse_ws_bar, parse_ws_fill_report,
         parse_ws_order_status_report,
     },
 };
@@ -84,6 +84,12 @@ pub enum SpotHandlerCommand {
     },
 }
 
+/// Key for buffering OHLC bars: (symbol, interval).
+type OhlcBufferKey = (Ustr, u32);
+
+/// Buffered OHLC bar with its interval start time for period detection.
+type OhlcBufferEntry = (Bar, UnixNanos);
+
 /// WebSocket message handler for Kraken.
 pub(super) struct SpotFeedHandler {
     clock: &'static AtomicTime,
@@ -100,6 +106,7 @@ pub(super) struct SpotFeedHandler {
     pending_quotes: Vec<QuoteTick>,
     pending_messages: VecDeque<NautilusWsMessage>,
     account_id: Option<AccountId>,
+    ohlc_buffer: AHashMap<OhlcBufferKey, OhlcBufferEntry>,
 }
 
 impl SpotFeedHandler {
@@ -125,6 +132,7 @@ impl SpotFeedHandler {
             pending_quotes: Vec::new(),
             pending_messages: VecDeque::new(),
             account_id: None,
+            ohlc_buffer: AHashMap::new(),
         }
     }
 
@@ -139,6 +147,28 @@ impl SpotFeedHandler {
 
     fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
         self.instruments_cache.get(symbol).cloned()
+    }
+
+    /// Flushes all buffered OHLC bars to pending messages.
+    ///
+    /// Called when the stream ends to ensure the last bar for each symbol/interval
+    /// is not lost.
+    fn flush_ohlc_buffer(&mut self) {
+        if self.ohlc_buffer.is_empty() {
+            return;
+        }
+
+        let bars: Vec<Data> = self
+            .ohlc_buffer
+            .drain()
+            .map(|(_, (bar, _))| Data::Bar(bar))
+            .collect();
+
+        if !bars.is_empty() {
+            tracing::debug!("Flushing {} buffered OHLC bars on stream end", bars.len());
+            self.pending_messages
+                .push_back(NautilusWsMessage::Data(bars));
+        }
     }
 
     /// Processes messages and commands, returning when stopped or stream ends.
@@ -216,7 +246,8 @@ impl SpotFeedHandler {
                         Some(msg) => msg,
                         None => {
                             tracing::debug!("WebSocket stream closed");
-                            return None;
+                            self.flush_ohlc_buffer();
+                            return self.pending_messages.pop_front();
                         }
                     };
 
@@ -232,7 +263,8 @@ impl SpotFeedHandler {
 
                     if self.signal.load(Ordering::Relaxed) {
                         tracing::debug!("Stop signal received");
-                        return None;
+                        self.flush_ohlc_buffer();
+                        return self.pending_messages.pop_front();
                     }
 
                     let text = match msg {
@@ -252,7 +284,8 @@ impl SpotFeedHandler {
                         }
                         Message::Close(_) => {
                             tracing::info!("WebSocket connection closed");
-                            return None;
+                            self.flush_ohlc_buffer();
+                            return self.pending_messages.pop_front();
                         }
                         Message::Frame(_) => {
                             tracing::trace!("Received raw frame");
@@ -528,13 +561,53 @@ impl SpotFeedHandler {
     }
 
     fn handle_ohlc_message(
-        &self,
-        _msg: KrakenWsMessage,
-        _ts_init: UnixNanos,
+        &mut self,
+        msg: KrakenWsMessage,
+        ts_init: UnixNanos,
     ) -> Option<NautilusWsMessage> {
-        // OHLC/Bar parsing not yet implemented in parse.rs
-        tracing::debug!("OHLC message received but parsing not yet implemented");
-        None
+        let mut closed_bars = Vec::new();
+
+        for data in msg.data {
+            match serde_json::from_value::<KrakenWsOhlcData>(data) {
+                Ok(ohlc_data) => {
+                    let instrument = self.get_instrument(&ohlc_data.symbol)?;
+
+                    match parse_ws_bar(&ohlc_data, &instrument, ts_init) {
+                        Ok(new_bar) => {
+                            let key = (ohlc_data.symbol, ohlc_data.interval);
+                            let new_interval_begin = UnixNanos::from(
+                                ohlc_data.interval_begin.timestamp_nanos_opt().unwrap_or(0) as u64,
+                            );
+
+                            // Check if we have a buffered bar for this symbol/interval
+                            if let Some((buffered_bar, buffered_interval_begin)) =
+                                self.ohlc_buffer.get(&key)
+                            {
+                                // If interval_begin changed, the buffered bar is closed
+                                if new_interval_begin != *buffered_interval_begin {
+                                    closed_bars.push(Data::Bar(*buffered_bar));
+                                }
+                            }
+
+                            // Update buffer with the new (potentially incomplete) bar
+                            self.ohlc_buffer.insert(key, (new_bar, new_interval_begin));
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to parse bar: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to deserialize OHLC data: {e}");
+                }
+            }
+        }
+
+        if closed_bars.is_empty() {
+            None
+        } else {
+            Some(NautilusWsMessage::Data(closed_bars))
+        }
     }
 
     fn handle_executions_message(
