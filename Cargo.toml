@@ -442,6 +442,7 @@ inherits = "release"
 debug = "full"
 strip = false
 lto = false
+panic = "unwind"
 incremental = true
 
 # -----------------------------------------------------------------------------
