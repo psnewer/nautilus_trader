@@ -53,13 +53,13 @@ make pre-commit
 
 Make sure the Rust compiler reports **zero errors** – broken builds slow everyone down.
 
-3. **Required for Rust/PyO3 (Linux only)**: When using Python installed via `uv` on Linux, set the following environment variables:
+3. **Required for Rust/PyO3 (Linux and macOS)**: When using Python installed via `uv` on Linux or macOS, set the following environment variables:
 
 ```bash
 # Add to your shell configuration (e.g., ~/.zshrc or ~/.bashrc)
 
 # Linux only: Set the library path for the Python interpreter
-export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$(python -c 'import sys; print(sys.base_prefix)')/lib:$LD_LIBRARY_PATH"
 
 # Set the Python executable path for PyO3
 export PYO3_PYTHON=$(pwd)/.venv/bin/python
@@ -70,7 +70,6 @@ export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
 
 :::note
 The `LD_LIBRARY_PATH` export is Linux-specific and not needed on macOS or Windows.
-Adjust the Python version in the path to match your system. Use `uv python list` to find the exact path.
 
 - `PYO3_PYTHON` tells PyO3 which Python interpreter to use, reducing unnecessary recompilation.
 - `PYTHONHOME` is required when running `make cargo-test` with a `uv`-installed Python.
