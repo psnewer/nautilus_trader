@@ -211,6 +211,16 @@ CREATE DATABASE
 The Nautilus CLI is a command-line interface tool for interacting with the NautilusTrader ecosystem.
 It offers commands for managing the PostgreSQL database and handling various trading operations.
 
+:::warning
+On Linux systems with GNOME desktop, the `nautilus` command typically refers to the GNOME file manager (`/usr/bin/nautilus`).
+After installing the NautilusTrader CLI, you may need to ensure the Cargo binary takes precedence by either:
+
+- Adding an alias to your shell config: `alias nautilus="$HOME/.cargo/bin/nautilus"`
+- Using the full path: `~/.cargo/bin/nautilus`
+- Ensuring `~/.cargo/bin` appears before `/usr/bin` in your `PATH`
+
+:::
+
 :::note
 The Nautilus CLI command is only supported on UNIX-like systems.
 :::
