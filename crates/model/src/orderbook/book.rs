@@ -344,7 +344,7 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - The deltas' instrument ID does not match this book's instrument ID.
-    /// - Any individual delta application fails (see [`apply_delta`]).
+    /// - Any individual delta application fails (see [`Self::apply_delta`]).
     pub fn apply_deltas(&mut self, deltas: &OrderBookDeltas) -> Result<(), BookIntegrityError> {
         if deltas.instrument_id != self.instrument_id {
             return Err(BookIntegrityError::InstrumentMismatch(
@@ -357,7 +357,7 @@ impl OrderBook {
 
     /// Applies multiple order book delta operations without instrument ID validation.
     ///
-    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    /// See [`Self::apply_delta_unchecked`] for details on why this function exists.
     ///
     /// # Errors
     ///
@@ -389,7 +389,7 @@ impl OrderBook {
 
     /// Replaces current book state with a depth snapshot without instrument ID validation.
     ///
-    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    /// See [`Self::apply_delta_unchecked`] for details on why this function exists.
     ///
     /// # Errors
     ///

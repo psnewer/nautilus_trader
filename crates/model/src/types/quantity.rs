@@ -264,7 +264,7 @@ impl Quantity {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
@@ -280,7 +280,7 @@ impl Quantity {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
