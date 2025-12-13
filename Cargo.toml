@@ -442,8 +442,8 @@ inherits = "release"
 debug = "full"
 strip = false
 lto = false
-panic = "unwind"
 incremental = true
+# Cargo ignores `panic` for bench profile (harness requires unwind to catch failures)
 
 # -----------------------------------------------------------------------------
 # Workspace lints

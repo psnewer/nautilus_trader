@@ -122,6 +122,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added DeFi pool discovery service with full Uniswap(V2/V3/V4) support (#3255), thanks @filipmacek
 - Added Deribit HTTP client with instrument support (#3288), thanks @filipmacek
 - Added Deribit account balance and credential management (#3295), thanks @filipmacek
+- Added Deribit WebSocket client with market data support (#3297), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -149,6 +150,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Refactored Interactive Brokers `HistoricInteractiveBrokersClient` (#3261), thanks @faysou
 - Refactored IB Historical client (#3276), thanks @faysou
 - Improved trade execution matching with transient bid/ask override for `trade_execution=True` mode, ensuring limit orders fill correctly when trades occur at the limit price
+- Improved Stochastics indicator with additional parameters (#3296), thanks @mahmutf
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
 - Improved JSON-RPC non-standard rate limit error handling (#3227), thanks @filipmacek

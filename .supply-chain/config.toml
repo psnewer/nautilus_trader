@@ -597,7 +597,7 @@ version = "0.7.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.cmake]]
-version = "0.1.54"
+version = "0.1.55"
 criteria = "safe-to-deploy"
 
 [[exemptions.coins-bip32]]
