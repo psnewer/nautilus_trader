@@ -25,7 +25,6 @@ use axum::{
 };
 use dashmap::DashMap;
 use nautilus_common::testing::wait_until_async;
-use nautilus_cryptography::providers::install_cryptographic_provider;
 use nautilus_deribit::http::{
     client::DeribitRawHttpClient,
     error::DeribitHttpError,
@@ -241,7 +240,6 @@ fn create_router(state: TestServerState) -> Router {
 
 #[tokio::test]
 async fn test_get_instrument_success() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;
@@ -279,7 +277,6 @@ async fn test_get_instrument_success() {
 
 #[tokio::test]
 async fn test_get_instrument_invalid_params() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;
@@ -315,7 +312,6 @@ async fn test_get_instrument_invalid_params() {
 
 #[tokio::test]
 async fn test_get_instrument_not_found() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;
@@ -354,7 +350,6 @@ async fn test_get_instrument_not_found() {
 
 #[tokio::test]
 async fn test_get_instruments_success() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;
@@ -411,7 +406,6 @@ async fn test_get_instruments_success() {
 
 #[tokio::test]
 async fn test_get_instruments_with_kind_filter() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;
@@ -445,7 +439,6 @@ async fn test_get_instruments_with_kind_filter() {
 
 #[tokio::test]
 async fn test_get_instruments_empty_result() {
-    install_cryptographic_provider();
     let state = TestServerState::default();
     let addr = start_test_server(state.clone()).await;
     wait_for_server(addr).await;

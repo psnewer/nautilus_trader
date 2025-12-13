@@ -33,7 +33,6 @@
 use std::env;
 
 use futures_util::StreamExt;
-use nautilus_cryptography::providers::install_cryptographic_provider;
 use nautilus_deribit::{
     http::{client::DeribitHttpClient, models::DeribitCurrency},
     websocket::client::DeribitWebSocketClient,
@@ -44,7 +43,6 @@ use tracing::level_filters::LevelFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    install_cryptographic_provider();
     tracing_subscriber::fmt()
         .with_max_level(LevelFilter::DEBUG)
         .init();
