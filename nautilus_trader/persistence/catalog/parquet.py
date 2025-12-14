@@ -2034,10 +2034,9 @@ class ParquetDataCatalog(BaseDataCatalog):
         return file_paths
 
     def get_file_list_from_data_cls(
-            self,
-            data_cls: type,
-
-    )->list[str]:
+        self,
+        data_cls: type,
+    ) -> list[str]:
         """
         Retrieve a list of file paths for a given data class.
 
@@ -2094,11 +2093,7 @@ class ParquetDataCatalog(BaseDataCatalog):
             List of file paths that match the query criteria.
 
         """
-        file_paths = []
-        if files:
-            file_paths = files
-        else:
-            file_paths = self.get_file_list_from_data_cls(data_cls)
+        file_paths = files if files is not None else self.get_file_list_from_data_cls(data_cls)
 
         return self.filter_files(data_cls, file_paths, identifiers, start, end)
 
