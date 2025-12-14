@@ -643,29 +643,6 @@ The `check_pyo3_conventions.sh` pre-commit hook enforces the `py_` prefix for Py
 The `check_testing_conventions.sh` pre-commit hook enforces the use of `#[rstest]` over `#[test]`.
 :::
 
-#### Test organization
-
-Use consistent test module structure with section separators:
-
-```rust
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(test)]
-mod tests {
-    use rstest::rstest;
-    use super::*;
-    use crate::identifiers::{Symbol, stubs::*};
-
-    #[rstest]
-    fn test_string_reprs(symbol_eth_perp: Symbol) {
-        assert_eq!(symbol_eth_perp.as_str(), "ETH-PERP");
-        assert_eq!(format!("{symbol_eth_perp}"), "ETH-PERP");
-    }
-}
-```
-
 #### Parameterized testing
 
 Use the `rstest` attribute consistently, and for parameterized tests:
