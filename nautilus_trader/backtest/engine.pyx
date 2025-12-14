@@ -3553,6 +3553,7 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar: Bar | None = None
         self._last_ask_bar: Bar | None = None
         self._last_trade_size: Quantity | None = None
+
         self._position_count = 0
         self._order_count = 0
         self._execution_count = 0
@@ -3781,19 +3782,19 @@ cdef class OrderMatchingEngine:
         # Validate precisions
         if tick._mem.bid_price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.bid_price.precision=} did not match {self._price_prec=}",
+                f"invalid {tick.bid_price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if tick._mem.ask_price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.ask_price.precision=} did not match {self._price_prec=}",
+                f"invalid {tick.ask_price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if tick._mem.bid_size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.bid_size.precision=} did not match {self._size_prec=}",
+                f"invalid {tick.bid_size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
         if tick._mem.ask_size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.ask_size.precision=} did not match {self._size_prec=}",
+                f"invalid {tick.ask_size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         if self.book_type == BookType.L1_MBP:
@@ -3828,11 +3829,11 @@ cdef class OrderMatchingEngine:
         # Validate precisions
         if tick._mem.price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.price.precision=} did not match {self._price_prec=}",
+                f"invalid {tick.price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if tick._mem.size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.size.precision=} did not match {self._size_prec=}",
+                f"invalid {tick.size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         if self.book_type == BookType.L1_MBP:
@@ -3928,23 +3929,23 @@ cdef class OrderMatchingEngine:
         # Validate precisions
         if bar._mem.open.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.open.precision=} did not match {self._price_prec=}",
+                f"invalid {bar.open.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if bar._mem.high.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.high.precision=} did not match {self._price_prec=}",
+                f"invalid {bar.high.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if bar._mem.low.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.low.precision=} did not match {self._price_prec=}",
+                f"invalid {bar.low.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if bar._mem.close.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.close.precision=} did not match {self._price_prec=}",
+                f"invalid {bar.close.precision=} did not match instrument.price_precision={self._price_prec}",
             )
         if bar._mem.volume.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {bar.volume.precision=} did not match {self._size_prec=}",
+                f"invalid {bar.volume.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         cdef InstrumentId instrument_id = bar_type.instrument_id
