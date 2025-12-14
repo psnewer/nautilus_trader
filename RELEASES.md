@@ -165,6 +165,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved dYdX v4 WebSocket subscription state management (#3286), thanks @nicolad
 - Improved dYdX v4 enums for type safety and improve WS tests (#3294), thanks @nicolad
+- Improved dYdX v4 model type safety with enums (#3299), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Improved Tardis adapter robustness and error handling
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
@@ -188,6 +189,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
 - Optimized BitMEX submit and cancel broadcasters by removing unnecessary lock on internal transport clients
 - Optimized full math division for DeFi calculations (#3179), thanks @filipmacek
+- Optimized parquet data filtering and streaming initialization performance (#3298), thanks @ReCodeLife
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
