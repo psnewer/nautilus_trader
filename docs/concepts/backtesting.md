@@ -515,6 +515,53 @@ Combine trade data with book or quote data for best results: book/quote data est
 while trade ticks trigger execution for orders that might be inside the spread or ahead of the quote updates.
 :::
 
+### Precision requirements and invariants
+
+The matching engine enforces strict precision invariants to ensure data integrity throughout the fill pipeline.
+All prices and quantities must match the instrument's configured precision (`price_precision` and `size_precision`).
+Mismatches raise a `RuntimeError` immediately, preventing silent corruption of fill quantities.
+
+| Data/Operation | Field                          | Required Precision           | Validation Location          |
+|----------------|--------------------------------|------------------------------|------------------------------|
+| `QuoteTick`    | `bid_price`, `ask_price`       | `instrument.price_precision` | `process_quote_tick`         |
+| `QuoteTick`    | `bid_size`, `ask_size`         | `instrument.size_precision`  | `process_quote_tick`         |
+| `TradeTick`    | `price`                        | `instrument.price_precision` | `process_trade_tick`         |
+| `TradeTick`    | `size`                         | `instrument.size_precision`  | `process_trade_tick`         |
+| `Bar`          | `open`, `high`, `low`, `close` | `instrument.price_precision` | `process_bar`                |
+| `Bar`          | `volume` (base units)          | `instrument.size_precision`  | `process_bar`                |
+| `Order`        | `quantity`                     | `instrument.size_precision`  | `process_order`              |
+| `Order`        | `price`                        | `instrument.price_precision` | `process_order`              |
+| `Order`        | `trigger_price`                | `instrument.price_precision` | `process_order`              |
+| `Order`        | `activation_price`*            | `instrument.price_precision` | `process_order`              |
+| Order update   | `quantity`                     | `instrument.size_precision`  | `update_order`               |
+| Order update   | `price`, `trigger_price`       | `instrument.price_precision` | `update_order`               |
+| Fill           | `fill_qty`                     | `instrument.size_precision`  | `apply_fills`, `fill_order`  |
+| Fill           | `fill_px`                      | `instrument.price_precision` | `apply_fills`                |
+
+*`activation_price` is immutable after order submission.
+
+:::warning
+`Bar.volume` must be in **base currency units**. Some data providers report quote-currency volume;
+convert to base units before loading (divide by price or use provider-specific fields).
+:::
+
+:::tip
+If you encounter a precision mismatch error, align your data to the instrument:
+
+```python
+# Align price/quantity to instrument precision
+price = instrument.make_price(raw_price)
+qty = instrument.make_qty(raw_qty)
+```
+
+Also verify that:
+
+1. The instrument definition matches your data source's precision.
+2. Data was not inadvertently rounded or truncated during loading.
+3. Custom data loaders preserve the original precision metadata.
+
+:::
+
 ### Slippage and spread handling
 
 When backtesting with different types of data, Nautilus implements specific handling for slippage and spread simulation:

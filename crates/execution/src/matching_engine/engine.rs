@@ -281,9 +281,36 @@ impl OrderMatchingEngine {
 
     /// # Panics
     ///
-    /// Panics if updating the order book with the quote tick fails.
+    /// - If updating the order book with the quote tick fails.
+    /// - If bid/ask price precision does not match the instrument.
+    /// - If bid/ask size precision does not match the instrument.
     pub fn process_quote_tick(&mut self, quote: &QuoteTick) {
         log::debug!("Processing {quote}");
+
+        let price_prec = self.instrument.price_precision();
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+
+        assert!(
+            quote.bid_price.precision == price_prec,
+            "Invalid bid_price precision {}, expected {price_prec} for {instrument_id}",
+            quote.bid_price.precision
+        );
+        assert!(
+            quote.ask_price.precision == price_prec,
+            "Invalid ask_price precision {}, expected {price_prec} for {instrument_id}",
+            quote.ask_price.precision
+        );
+        assert!(
+            quote.bid_size.precision == size_prec,
+            "Invalid bid_size precision {}, expected {size_prec} for {instrument_id}",
+            quote.bid_size.precision
+        );
+        assert!(
+            quote.ask_size.precision == size_prec,
+            "Invalid ask_size precision {}, expected {size_prec} for {instrument_id}",
+            quote.ask_size.precision
+        );
 
         if self.book_type == BookType::L1_MBP {
             self.book.update_quote_tick(quote).unwrap();
@@ -294,7 +321,9 @@ impl OrderMatchingEngine {
 
     /// # Panics
     ///
-    /// Panics if the bar type configuration is missing a time delta.
+    /// - If the bar type configuration is missing a time delta.
+    /// - If bar OHLC price precision does not match the instrument.
+    /// - If bar volume precision does not match the instrument.
     pub fn process_bar(&mut self, bar: &Bar) {
         log::debug!("Processing {bar}");
 
@@ -308,6 +337,36 @@ impl OrderMatchingEngine {
         if bar_type.aggregation_source() == AggregationSource::Internal {
             return;
         }
+
+        let price_prec = self.instrument.price_precision();
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+
+        assert!(
+            bar.open.precision == price_prec,
+            "Invalid bar open precision {}, expected {price_prec} for {instrument_id}",
+            bar.open.precision
+        );
+        assert!(
+            bar.high.precision == price_prec,
+            "Invalid bar high precision {}, expected {price_prec} for {instrument_id}",
+            bar.high.precision
+        );
+        assert!(
+            bar.low.precision == price_prec,
+            "Invalid bar low precision {}, expected {price_prec} for {instrument_id}",
+            bar.low.precision
+        );
+        assert!(
+            bar.close.precision == price_prec,
+            "Invalid bar close precision {}, expected {price_prec} for {instrument_id}",
+            bar.close.precision
+        );
+        assert!(
+            bar.volume.precision == size_prec,
+            "Invalid bar volume precision {}, expected {size_prec} for {instrument_id}",
+            bar.volume.precision
+        );
 
         let execution_bar_type =
             if let Some(execution_bar_type) = self.execution_bar_types.get(&bar.instrument_id()) {
@@ -496,9 +555,26 @@ impl OrderMatchingEngine {
 
     /// # Panics
     ///
-    /// Panics if updating the order book with the trade tick fails.
+    /// - If updating the order book with the trade tick fails.
+    /// - If trade price precision does not match the instrument.
+    /// - If trade size precision does not match the instrument.
     pub fn process_trade_tick(&mut self, trade: &TradeTick) {
         log::debug!("Processing {trade}");
+
+        let price_prec = self.instrument.price_precision();
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+
+        assert!(
+            trade.price.precision == price_prec,
+            "Invalid trade price precision {}, expected {price_prec} for {instrument_id}",
+            trade.price.precision
+        );
+        assert!(
+            trade.size.precision == size_prec,
+            "Invalid trade size precision {}, expected {size_prec} for {instrument_id}",
+            trade.size.precision
+        );
 
         if self.book_type == BookType::L1_MBP {
             self.book.update_trade_tick(trade).unwrap();
@@ -1650,8 +1726,8 @@ impl OrderMatchingEngine {
         }
 
         let mut initial_market_to_limit_fill = false;
+
         for &(mut fill_px, ref fill_qty) in &fills {
-            // Validate price precision
             assert!(
                 (fill_px.precision == self.instrument.price_precision()),
                 "Invalid price precision for fill price {} when instrument price precision is {}.\
@@ -1661,7 +1737,6 @@ impl OrderMatchingEngine {
                 self.instrument.id()
             );
 
-            // Validate quantity precision
             assert!(
                 (fill_qty.precision == self.instrument.size_precision()),
                 "Invalid quantity precision for fill quantity {} when instrument size precision is {}.\
@@ -1770,6 +1845,14 @@ impl OrderMatchingEngine {
         venue_position_id: Option<PositionId>,
         position: Option<Position>,
     ) {
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+        assert!(
+            last_qty.precision == size_prec,
+            "Invalid fill quantity precision {}, expected {size_prec} for {instrument_id}",
+            last_qty.precision
+        );
+
         match self.cached_filled_qty.get(&order.client_order_id()) {
             Some(filled_qty) => {
                 // Use saturating_sub to prevent panic if filled_qty > quantity
@@ -2310,6 +2393,59 @@ impl OrderMatchingEngine {
     ) {
         let update_contingencies = update_contingencies.unwrap_or(true);
         let quantity = quantity.unwrap_or(order.quantity());
+
+        let price_prec = self.instrument.price_precision();
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+        if quantity.precision != size_prec {
+            self.generate_order_modify_rejected(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                Ustr::from(&format!(
+                    "Invalid update quantity precision {}, expected {size_prec} for {instrument_id}",
+                    quantity.precision
+                )),
+                order.venue_order_id(),
+                order.account_id(),
+            );
+            return;
+        }
+        if let Some(px) = price
+            && px.precision != price_prec
+        {
+            self.generate_order_modify_rejected(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                Ustr::from(&format!(
+                    "Invalid update price precision {}, expected {price_prec} for {instrument_id}",
+                    px.precision
+                )),
+                order.venue_order_id(),
+                order.account_id(),
+            );
+            return;
+        }
+        if let Some(tp) = trigger_price
+            && tp.precision != price_prec
+        {
+            self.generate_order_modify_rejected(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                Ustr::from(&format!(
+                    "Invalid update trigger_price precision {}, expected {price_prec} for {instrument_id}",
+                    tp.precision
+                )),
+                order.venue_order_id(),
+                order.account_id(),
+            );
+            return;
+        }
 
         // Use cached_filled_qty since PassiveOrderAny in core is not updated with fills
         let filled_qty = self

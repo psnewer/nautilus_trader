@@ -3001,7 +3001,7 @@ fn test_process_monthly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
         high: Price::from("1510.00"),
         low: Price::from("1490.00"),
         close: Price::from("1505.00"),
-        volume: Quantity::from("100000"),
+        volume: Quantity::from("100000.000"),
         ts_event: UnixNanos::from(1_000_000_000),
         ts_init: UnixNanos::from(1_000_000_000),
     };
@@ -3032,7 +3032,7 @@ fn test_process_yearly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
         high: Price::from("1510.00"),
         low: Price::from("1490.00"),
         close: Price::from("1505.00"),
-        volume: Quantity::from("100000"),
+        volume: Quantity::from("100000.000"),
         ts_event: UnixNanos::from(1_000_000_000),
         ts_init: UnixNanos::from(1_000_000_000),
     };

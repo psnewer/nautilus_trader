@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from cpython.datetime cimport datetime
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint32_t
 from libc.stdint cimport uint64_t
 
@@ -369,6 +370,8 @@ cdef class OrderMatchingEngine:
     """The message bus for the matching engine.\n\n:returns: `MessageBus`"""
 
     cdef MatchingCore _core
+    cdef uint8_t _price_prec
+    cdef uint8_t _size_prec
     cdef bint _has_targets
     cdef PriceRaw _target_bid
     cdef PriceRaw _target_ask

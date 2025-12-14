@@ -979,10 +979,10 @@ mod tests {
         // process tick
         let quote_tick = QuoteTick::new(
             crypto_perpetual_ethusdt.id,
-            Price::from("1000"),
-            Price::from("1001"),
-            Quantity::from(1),
-            Quantity::from(1),
+            Price::from("1000.00"),
+            Price::from("1001.00"),
+            Quantity::from("1.000"),
+            Quantity::from("1.000"),
             UnixNanos::default(),
             UnixNanos::default(),
         );
@@ -991,11 +991,11 @@ mod tests {
         let best_bid_price = exchange
             .borrow()
             .best_bid_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_bid_price, Some(Price::from("1000")));
+        assert_eq!(best_bid_price, Some(Price::from("1000.00")));
         let best_ask_price = exchange
             .borrow()
             .best_ask_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_ask_price, Some(Price::from("1001")));
+        assert_eq!(best_ask_price, Some(Price::from("1001.00")));
     }
 
     #[rstest]
@@ -1014,8 +1014,8 @@ mod tests {
         // process tick
         let trade_tick = TradeTick::new(
             crypto_perpetual_ethusdt.id,
-            Price::from("1000"),
-            Quantity::from(1),
+            Price::from("1000.00"),
+            Quantity::from("1.000"),
             AggressorSide::Buyer,
             TradeId::from("1"),
             UnixNanos::default(),
@@ -1026,11 +1026,11 @@ mod tests {
         let best_bid_price = exchange
             .borrow()
             .best_bid_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_bid_price, Some(Price::from("1000")));
+        assert_eq!(best_bid_price, Some(Price::from("1000.00")));
         let best_ask = exchange
             .borrow()
             .best_ask_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_ask, Some(Price::from("1000")));
+        assert_eq!(best_ask, Some(Price::from("1000.00")));
     }
 
     #[rstest]
@@ -1053,7 +1053,7 @@ mod tests {
             Price::from("1505.00"),
             Price::from("1490.00"),
             Price::from("1502.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::default(),
             UnixNanos::default(),
         );
@@ -1091,7 +1091,7 @@ mod tests {
             Price::from("1505.00"),
             Price::from("1490.00"),
             Price::from("1502.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::from(1),
             UnixNanos::from(1),
         );
@@ -1101,7 +1101,7 @@ mod tests {
             Price::from("1506.00"),
             Price::from("1491.00"),
             Price::from("1503.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::from(1),
             UnixNanos::from(1),
         );
