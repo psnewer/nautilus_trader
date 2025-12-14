@@ -528,7 +528,8 @@ class BacktestNode:
     ) -> None:
         # Create session for entire stream
         session = DataBackendSession(chunk_size=chunk_size)
-
+        # Cache file lists by data type to avoid repeated filesystem operations
+        cached_file_lists = {}
         # Add query for all data configs
         for config in data_configs:
             catalog = self.load_catalog(config)
@@ -560,12 +561,25 @@ class BacktestNode:
                     for instrument_id in config.instrument_ids:
                         used_bar_types.append(f"{instrument_id}-{config.bar_spec}-EXTERNAL")
 
+            # Cache file list for this data type if not already cached
+            if config.data_type not in cached_file_lists:
+                cached_file_lists[config.data_type] = catalog.get_file_list_from_data_cls(config.data_type)
+
+            filter_files=catalog.filter_files(
+                data_cls=config.data_type,
+                file_paths=cached_file_lists.get(config.data_type,[]),
+                identifiers=(used_bar_types or used_instrument_ids),
+                start=used_start,
+                end=used_end,
+            )
+
             session = catalog.backend_session(
                 data_cls=config.data_type,
                 identifiers=(used_bar_types or used_instrument_ids),
                 start=used_start,
                 end=used_end,
                 session=session,
+                files=filter_files,
             )
 
         # Stream data
