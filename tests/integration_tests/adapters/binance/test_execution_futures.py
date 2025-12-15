@@ -35,6 +35,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
@@ -1867,3 +1868,120 @@ class TestBinanceFuturesExecutionClient:
         assert request[0][0] == HttpMethod.PUT
         assert request[0][1] == "/fapi/v1/order"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_reports_passes_correct_symbol_to_algo_orders(
+        self,
+        mocker,
+    ):
+        """
+        Test that generate_order_status_reports passes the correct symbol parameter to
+        _generate_algo_order_status_reports.
+        """
+        # Arrange
+        mock_open_orders = [
+            mocker.Mock(symbol="ETHUSDT"),
+            mocker.Mock(symbol="BTCUSDT"),
+            mocker.Mock(symbol="XRPUSDT"),
+        ]
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_open_orders",
+            return_value=mock_open_orders,
+        )
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_all_orders",
+            return_value=[],
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_binance_active_position_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_cache_active_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_parse_order_status_reports",
+            return_value=[],
+        )
+        mock_algo_reports = mocker.patch.object(
+            self.exec_client,
+            "_generate_algo_order_status_reports",
+            return_value=[],
+        )
+
+        # open_only=False forces iteration through active_symbols loop
+        command = GenerateOrderStatusReports(
+            instrument_id=None,
+            start=None,
+            end=None,
+            open_only=False,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client.generate_order_status_reports(command)
+
+        # Assert
+        mock_algo_reports.assert_called_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_reports_with_instrument_filter_passes_symbol(
+        self,
+        mocker,
+    ):
+        """
+        Test that generate_order_status_reports passes the instrument's symbol to
+        _generate_algo_order_status_reports when a specific instrument is requested.
+        """
+        # Arrange
+        mock_open_orders = [
+            mocker.Mock(symbol="ETHUSDT"),
+            mocker.Mock(symbol="BTCUSDT"),
+            mocker.Mock(symbol="XRPUSDT"),
+        ]
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_open_orders",
+            return_value=mock_open_orders,
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_binance_active_position_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_cache_active_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_parse_order_status_reports",
+            return_value=[],
+        )
+        mock_algo_reports = mocker.patch.object(
+            self.exec_client,
+            "_generate_algo_order_status_reports",
+            return_value=[],
+        )
+        command = GenerateOrderStatusReports(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            start=None,
+            end=None,
+            open_only=True,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client.generate_order_status_reports(command)
+
+        # Assert
+        mock_algo_reports.assert_called_once_with("ETHUSDT-PERP")
