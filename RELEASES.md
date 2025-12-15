@@ -157,6 +157,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved JSON-RPC non-standard rate limit error handling (#3227), thanks @filipmacek
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
+- Improved Binance data client with optional authentication
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
 - Improved dYdX v3 resilience and reliability (#3225), thanks @SarunasSS
