@@ -893,27 +893,20 @@ This feature is opt-in to avoid requiring the Cap'n Proto compiler for standard 
 
 ### Installing Cap'n Proto
 
-Install the Cap'n Proto compiler before working with schemas:
+Install the Cap'n Proto compiler before working with schemas. The required version is
+specified in the `capnp-version` file in the repository root.
 
-**macOS:**
+See the [Environment Setup](environment_setup.md#capn-proto) guide for detailed installation
+instructions for each platform.
 
-```bash
-brew install capnp
-```
-
-**Linux (Debian/Ubuntu):**
-
-```bash
-sudo apt-get install capnproto
-```
-
-**Windows:**
-See the [Cap'n Proto installation guide](https://capnproto.org/install.html).
+:::warning
+Ubuntu's default `capnproto` package is too old. Linux users must install from source.
+:::
 
 Verify installation:
 
 ```bash
-capnp --version  # Should show version 1.0.0 or later
+capnp --version  # Should match the version in capnp-version
 ```
 
 ### Schema development workflow

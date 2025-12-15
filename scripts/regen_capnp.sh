@@ -24,15 +24,35 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Read required version from capnp-version file
+CAPNP_VERSION_FILE="${PROJECT_ROOT}/capnp-version"
+if [[ -f "$CAPNP_VERSION_FILE" ]]; then
+  REQUIRED_VERSION=$(cat "$CAPNP_VERSION_FILE" | tr -d '[:space:]')
+else
+  echo -e "${RED}Error: capnp-version file not found at $CAPNP_VERSION_FILE${NC}"
+  exit 1
+fi
+
 echo -e "${YELLOW}Regenerating Cap'n Proto schemas...${NC}"
 
 # Check if capnp is installed
 if ! command -v capnp &> /dev/null; then
   echo -e "${RED}Error: capnp compiler not found${NC}"
-  echo "Please install Cap'n Proto:"
+  echo "Please install Cap'n Proto ${REQUIRED_VERSION}:"
   echo "  - macOS: brew install capnp"
-  echo "  - Linux: sudo apt-get install capnproto"
-  echo "  - Or build from source: https://capnproto.org/install.html"
+  echo "  - Linux: Install from source (Ubuntu's package is too old):"
+  echo "      ./scripts/install-capnp.sh"
+  echo "    Or manually: https://capnproto.org/install.html"
+  exit 1
+fi
+
+# Verify installed version matches required version
+INSTALLED_VERSION=$(capnp --version | awk '{print $NF}')
+if [[ "$INSTALLED_VERSION" != "$REQUIRED_VERSION" ]]; then
+  echo -e "${RED}Error: capnp version mismatch${NC}"
+  echo "  Required: ${REQUIRED_VERSION} (from capnp-version)"
+  echo "  Installed: ${INSTALLED_VERSION}"
+  echo "Please install the correct version using: ./scripts/install-capnp.sh"
   exit 1
 fi
 
@@ -76,14 +96,11 @@ echo -e "${YELLOW}Copying generated files to repository...${NC}"
 mkdir -p crates/serialization/generated/capnp
 cp -r "${OUT_DIR}/"* crates/serialization/generated/capnp/
 
-# Format the generated files (requires nightly)
-if rustup toolchain list | grep -q "nightly"; then
-  echo -e "${YELLOW}Formatting generated files...${NC}"
-  make format
-else
-  echo -e "${YELLOW}Warning: Nightly toolchain not found. Skipping formatting.${NC}"
-  echo "Please run 'make format' manually after installing Rust nightly."
-fi
+# Format the generated files (requires nightly for some options, but stable works too)
+echo -e "${YELLOW}Formatting generated files...${NC}"
+find crates/serialization/generated/capnp -name "*.rs" -exec rustfmt {} + 2> /dev/null || {
+  echo -e "${YELLOW}Warning: rustfmt failed. Please run 'make format' manually.${NC}"
+}
 # Show what was generated
 echo -e "${GREEN}Successfully regenerated Cap'n Proto schemas!${NC}"
 echo ""

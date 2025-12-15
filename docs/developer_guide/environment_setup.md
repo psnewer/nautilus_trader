@@ -9,6 +9,10 @@ For development we recommend using the PyCharm *Professional* edition IDE, as it
 NautilusTrader uses increasingly more [Rust](https://www.rust-lang.org), so Rust should be installed on your system as well
 ([installation guide](https://www.rust-lang.org/tools/install)).
 
+[Cap'n Proto](https://capnproto.org/) is required for serialization schema compilation. The required
+version is specified in the `capnp-version` file in the repository root. Ubuntu's default package
+is typically too old, so you may need to install from source (see below).
+
 :::info
 NautilusTrader *must* compile and run on **Linux, macOS, and Windows**. Please keep portability in
 mind (use `std::path::Path`, avoid Bash-isms in shell scripts, etc.).
@@ -105,6 +109,50 @@ To compile in debug mode, use:
 ```bash
 make build-debug
 ```
+
+## Cap'n Proto
+
+[Cap'n Proto](https://capnproto.org/) is required for serialization schema compilation.
+The required version is defined in the `capnp-version` file in the repository root.
+
+On **macOS**, install via Homebrew:
+
+```bash
+brew install capnp
+```
+
+Verify the installed version matches `capnp-version`. If Homebrew provides an older version,
+install from source using the Linux instructions below.
+
+On **Ubuntu/Linux**, the default package is typically too old. Install from source:
+
+```bash
+CAPNP_VERSION=$(cat capnp-version)
+cd ~
+wget https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz
+tar xzf capnproto-c++-${CAPNP_VERSION}.tar.gz
+cd capnproto-c++-${CAPNP_VERSION}
+./configure
+make -j$(nproc)
+sudo make install
+sudo ldconfig
+```
+
+Verify installation:
+
+```bash
+capnp --version
+```
+
+On **Windows**, install via Chocolatey:
+
+```bash
+choco install capnproto
+```
+
+Verify the installed version matches `capnp-version`. If Chocolatey provides an older version,
+see the [Cap'n Proto installation guide](https://capnproto.org/install.html) for alternative
+installation methods.
 
 ## Faster builds
 
