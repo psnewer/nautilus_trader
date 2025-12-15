@@ -3186,6 +3186,7 @@ fn test_modify_order_when_no_order_found_logs_error(
         None,
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
+        None,
     )
     .unwrap();
 
@@ -3249,6 +3250,7 @@ fn test_modify_order_beyond_rate_limit_then_rejects(
             None,
             UUID4::new(),
             risk_engine.clock.borrow().timestamp_ns(),
+            None,
         )
         .unwrap();
 
@@ -3342,6 +3344,7 @@ fn test_modify_order_with_default_settings_then_sends_to_client(
         None,
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
+        None,
     )
     .unwrap();
 

@@ -1378,6 +1378,7 @@ fn test_process_cancel_command_valid(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1429,6 +1430,7 @@ fn test_process_cancel_command_order_not_found(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1544,6 +1546,7 @@ fn test_process_cancel_all_command(
         OrderSide::Buy,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_cancel_all(&cancel_all_command, account_id);
@@ -1648,6 +1651,7 @@ fn test_process_batch_cancel_command(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     let cancel_2 = CancelOrder::new(
@@ -1659,6 +1663,7 @@ fn test_process_batch_cancel_command(
         VenueOrderId::from("V2"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     let batch_cancel_command = BatchCancelOrders::new(
@@ -1669,6 +1674,7 @@ fn test_process_batch_cancel_command(
         vec![cancel_1, cancel_2],
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1820,6 +1826,7 @@ fn test_process_modify_order_rejected_not_found(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -1889,6 +1896,7 @@ fn test_update_limit_order_post_only_matched(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -1970,6 +1978,7 @@ fn test_update_limit_order_valid(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -2056,6 +2065,7 @@ fn test_update_stop_market_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2119,6 +2129,7 @@ fn test_update_stop_limit_order_valid_update_not_triggered(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2234,6 +2245,7 @@ fn test_update_market_if_touched_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2380,6 +2392,7 @@ fn test_update_limit_if_touched_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2722,6 +2735,7 @@ fn test_updating_of_contingent_orders(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -3119,6 +3133,7 @@ fn test_modify_partially_filled_order_quantity_below_filled_rejected(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -3248,6 +3263,7 @@ fn test_ouo_child_cancelled_when_parent_leaves_zero(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);

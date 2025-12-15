@@ -5815,6 +5815,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "chrono-tz",
+ "indexmap 2.12.1",
  "log",
  "nautilus-common",
  "nautilus-core",
