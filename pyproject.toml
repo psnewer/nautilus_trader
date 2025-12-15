@@ -97,7 +97,7 @@ visualization = ["plotly>=6.3.1,<7.0.0"]
 dev = [
   "cython==3.2.3", # Pinned to 3.2.3 for stability
   "setuptools>=80",
-  "mypy==1.19.0,<2.0.0", # Pinned to 1.19.0 (keep in line with pre-commit)
+  "mypy==1.19.1,<2.0.0", # Pinned to 1.19.1 (keep in line with pre-commit)
   "pandas-stubs>=2.3.3,<3.0.0",
   "pre-commit>=4.5.0,<5.0.0",
   "ruff==0.14.9", # Pinned to 0.14.9 (keep in line with pre-commit)

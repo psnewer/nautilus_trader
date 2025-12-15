@@ -124,6 +124,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Deribit HTTP client with instrument support (#3288), thanks @filipmacek
 - Added Deribit account balance and credential management (#3295), thanks @filipmacek
 - Added Deribit WebSocket client with market data support (#3297), thanks @filipmacek
+- Added Deribit WebSocket auth and raw data stream support (#3304), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
