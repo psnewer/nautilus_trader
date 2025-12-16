@@ -13,15 +13,19 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common types, constants, and utilities for the Binance adapter.
+//! Internal WebSocket message types.
+//!
+//! These types represent the internal message flow between the WebSocket client
+//! and handler, including subscription management and data events.
 
-pub mod consts;
-pub mod credential;
-pub mod enums;
-pub mod models;
-pub mod parse;
-pub mod sbe;
-pub mod urls;
+// Re-export SBE stream types for convenience
+pub use crate::common::sbe::stream::{
+    BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, PriceLevel, Trade,
+    TradesStreamEvent,
+};
 
-#[cfg(test)]
-pub mod testing;
+// TODO: Add internal message types
+// - SubscriptionRequest
+// - UnsubscriptionRequest
+// - ConnectionState
+// - etc.

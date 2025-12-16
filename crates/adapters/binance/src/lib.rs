@@ -64,6 +64,7 @@ pub mod data;
 pub mod error;
 pub mod execution;
 pub mod http;
+pub mod spot;
 pub mod websocket;
 
 #[cfg(feature = "python")]

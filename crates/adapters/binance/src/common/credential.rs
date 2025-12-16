@@ -14,16 +14,21 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Binance API credential handling and request signing.
+//!
+//! This module provides two types of credentials:
+//! - [`Credential`]: HMAC SHA256 signing for REST API and standard WebSocket
+//! - [`Ed25519Credential`]: Ed25519 signing for SBE market data streams
 
 #![allow(unused_assignments)] // Fields are used in methods; false positive on some toolchains
 
 use std::fmt::Debug;
 
 use aws_lc_rs::hmac;
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use ustr::Ustr;
 use zeroize::ZeroizeOnDrop;
 
-/// Binance API credentials for signing requests.
+/// Binance API credentials for signing requests (HMAC SHA256).
 ///
 /// Uses HMAC SHA256 with hexadecimal encoding, as required by Binance REST API signing.
 #[derive(Clone, ZeroizeOnDrop)]
@@ -31,6 +36,17 @@ pub struct Credential {
     #[zeroize(skip)]
     pub api_key: Ustr,
     api_secret: Box<[u8]>,
+}
+
+/// Binance Ed25519 credentials for SBE market data streams.
+///
+/// SBE market data streams at `stream-sbe.binance.com` require Ed25519 API key
+/// authentication via the `X-MBX-APIKEY` header.
+#[derive(ZeroizeOnDrop)]
+pub struct Ed25519Credential {
+    #[zeroize(skip)]
+    pub api_key: Ustr,
+    signing_key: SigningKey,
 }
 
 impl Debug for Credential {
@@ -66,6 +82,78 @@ impl Credential {
         hex::encode(tag.as_ref())
     }
 }
+
+impl Debug for Ed25519Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(Ed25519Credential))
+            .field("api_key", &self.api_key)
+            .field("signing_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Ed25519Credential {
+    /// Creates a new [`Ed25519Credential`] from API key and base64-encoded private key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the private key is not valid base64 or not a valid
+    /// Ed25519 private key (32 bytes).
+    pub fn new(api_key: String, private_key_base64: &str) -> Result<Self, Ed25519CredentialError> {
+        let private_key_bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            private_key_base64,
+        )
+        .map_err(|e| Ed25519CredentialError::InvalidBase64(e.to_string()))?;
+
+        let key_bytes: [u8; 32] = private_key_bytes
+            .try_into()
+            .map_err(|_| Ed25519CredentialError::InvalidKeyLength)?;
+
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+
+        Ok(Self {
+            api_key: api_key.into(),
+            signing_key,
+        })
+    }
+
+    /// Returns the API key.
+    #[must_use]
+    pub fn api_key(&self) -> &str {
+        self.api_key.as_str()
+    }
+
+    /// Signs a message with Ed25519 and returns a base64-encoded signature.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> String {
+        let signature: Signature = self.signing_key.sign(message);
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            signature.to_bytes(),
+        )
+    }
+}
+
+/// Error type for Ed25519 credential creation.
+#[derive(Debug, Clone)]
+pub enum Ed25519CredentialError {
+    /// The private key is not valid base64.
+    InvalidBase64(String),
+    /// The private key is not 32 bytes.
+    InvalidKeyLength,
+}
+
+impl std::fmt::Display for Ed25519CredentialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidBase64(e) => write!(f, "Invalid base64 encoding: {e}"),
+            Self::InvalidKeyLength => write!(f, "Ed25519 private key must be 32 bytes"),
+        }
+    }
+}
+
+impl std::error::Error for Ed25519CredentialError {}
 
 #[cfg(test)]
 mod tests {

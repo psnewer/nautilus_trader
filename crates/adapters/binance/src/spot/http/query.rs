@@ -13,15 +13,10 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common types, constants, and utilities for the Binance adapter.
+//! Query parameter builders for Binance Spot HTTP requests.
 
-pub mod consts;
-pub mod credential;
-pub mod enums;
-pub mod models;
-pub mod parse;
-pub mod sbe;
-pub mod urls;
-
-#[cfg(test)]
-pub mod testing;
+// TODO: Add query builders
+// - ExchangeInfoQuery
+// - OrderQuery
+// - AccountQuery
+// - etc.

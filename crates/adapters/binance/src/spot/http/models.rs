@@ -13,15 +13,13 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common types, constants, and utilities for the Binance adapter.
+//! Binance Spot HTTP response models.
+//!
+//! These models wrap the SBE-decoded responses and provide convenient access
+//! to the underlying data with proper Rust types.
 
-pub mod consts;
-pub mod credential;
-pub mod enums;
-pub mod models;
-pub mod parse;
-pub mod sbe;
-pub mod urls;
-
-#[cfg(test)]
-pub mod testing;
+// TODO: Add response wrapper types that use the SBE codecs
+// - ExchangeInfo
+// - OrderResponse
+// - AccountResponse
+// - etc.

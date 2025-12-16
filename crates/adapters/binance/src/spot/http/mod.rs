@@ -13,15 +13,10 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common types, constants, and utilities for the Binance adapter.
+//! Binance Spot HTTP client with SBE encoding support.
 
-pub mod consts;
-pub mod credential;
-pub mod enums;
+pub mod client;
 pub mod models;
-pub mod parse;
-pub mod sbe;
-pub mod urls;
+pub mod query;
 
-#[cfg(test)]
-pub mod testing;
+pub use client::BinanceSpotHttpClient;

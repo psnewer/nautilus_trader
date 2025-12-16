@@ -4764,6 +4764,7 @@ dependencies = [
  "dashmap",
  "derive_builder",
  "dotenvy",
+ "ed25519-dalek",
  "futures-util",
  "hex",
  "indexmap 2.12.1",
