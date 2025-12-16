@@ -65,6 +65,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed code scanning security alerts
 
 ### Fixes
+- Fixed stop market order fill price in `L1_MBP` mode
 - Fixed cache dropped same-timestamp market data on insert
 - Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
 - Fixed portfolio statistics various bugs and edge cases
@@ -216,12 +217,13 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Polymarket historical data loading docs
 - Added visualization docs for `bars_with_fills` tearsheet feature
 - Added order state flow diagram with lifecycle documentation
+- Added fee rate sign convention in instruments concept guide
+- Added fill price determination to backtesting concept guide
 - Improved concept docs with Mermaid diagrams replacing ASCII diagrams
 - Improved execution concept guide with overfills explanation
 - Improved backtesting concept guide to clarify bar execution behavior
 - Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
 - Improved notebook path handling and fix quickstart data loading, thanks for reporting @semihtekten
-- Documented fee rate sign convention in instruments concept guide
 
 ### Deprecations
 None

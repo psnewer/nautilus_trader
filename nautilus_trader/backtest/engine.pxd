@@ -379,6 +379,7 @@ cdef class OrderMatchingEngine:
     cdef Bar _last_bid_bar
     cdef Bar _last_ask_bar
     cdef Quantity _last_trade_size
+    cdef bint _fill_at_market
 
     cdef int _position_count
     cdef int _order_count

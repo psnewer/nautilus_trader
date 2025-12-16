@@ -3553,6 +3553,7 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar: Bar | None = None
         self._last_ask_bar: Bar | None = None
         self._last_trade_size: Quantity | None = None
+        self._fill_at_market = True  # Fill stop orders at market price vs trigger price
 
         self._position_count = 0
         self._order_count = 0
@@ -4050,6 +4051,9 @@ cdef class OrderMatchingEngine:
 
         self._process_trade_bar_close(bar, tick, close_size)
 
+        # Reset flag after bar processing for correct inter-bar behavior
+        self._fill_at_market = True
+
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size):
         return TradeTick(
             bar.bar_type.instrument_id,
@@ -4066,6 +4070,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with open {bar.open}")
 
+            self._fill_at_market = True  # Gap from previous bar
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.open.raw)
@@ -4075,6 +4080,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with high {bar.high}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.high
             tick._mem.aggressor_side = AggressorSide.BUYER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
@@ -4087,6 +4093,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with low {bar.low}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.low
             tick._mem.aggressor_side = AggressorSide.SELLER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
@@ -4099,6 +4106,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with close {bar.close}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.close
             if close_size is not None:
                 tick._mem.size = close_size._mem
@@ -4155,6 +4163,9 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar = None
         self._last_ask_bar = None
 
+        # Reset flag after bar processing for correct inter-bar behavior
+        self._fill_at_market = True
+
     cdef QuoteTick _create_base_quote_tick(self, Quantity bid_size, Quantity ask_size):
         return QuoteTick(
             self._book.instrument_id,
@@ -4167,22 +4178,26 @@ cdef class OrderMatchingEngine:
         )
 
     cdef void _process_quote_bar_open(self, QuoteTick tick):
+        self._fill_at_market = True  # Gap from previous bar
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_high(self, QuoteTick tick):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.high
         tick._mem.ask_price = self._last_ask_bar._mem.high
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_low(self, QuoteTick tick):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.low
         tick._mem.ask_price = self._last_ask_bar._mem.low
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size = None, Quantity ask_close_size = None):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.close
         tick._mem.ask_price = self._last_ask_bar._mem.close
         if bid_close_size is not None:
@@ -5058,59 +5073,18 @@ cdef class OrderMatchingEngine:
             is_aggressive=True,
         )
 
-        cdef Price price
+        # For stop market orders during bar H/L/C processing, fill at trigger price
+        # (market moved through the trigger). For gaps/immediate triggers, fill at market.
         cdef Price triggered_price
-        if self._book.book_type == BookType.L1_MBP and fills:
+        if (
+            not self._fill_at_market
+            and self._book.book_type == BookType.L1_MBP
+            and fills
+            and (order.order_type == OrderType.STOP_MARKET or order.order_type == OrderType.TRAILING_STOP_MARKET)
+        ):
             triggered_price = order.get_triggered_price_c()
-
-            if order.order_type == OrderType.MARKET or order.order_type == OrderType.MARKET_TO_LIMIT or order.order_type == OrderType.MARKET_IF_TOUCHED:
-                if order.side == OrderSide.BUY:
-                    if self._core.is_ask_initialized:
-                        price = self._core.ask
-                    else:
-                        price = self.best_ask_price()
-
-                    if triggered_price:
-                        price = triggered_price
-
-                    if price is not None:
-                        self._core.set_last_raw(price._mem.raw)
-                        fills[0] = (price, fills[0][1])
-                    else:
-                        raise RuntimeError(  # pragma: no cover (design-time error)
-                            "Market best ASK price was None when filling MARKET order",  # pragma: no cover
-                        )
-                elif order.side == OrderSide.SELL:
-                    if self._core.is_bid_initialized:
-                        price = self._core.bid
-                    else:
-                        price = self.best_bid_price()
-
-                    if triggered_price:
-                        price = triggered_price
-
-                    if price is not None:
-                        self._core.set_last_raw(price._mem.raw)
-                        fills[0] = (price, fills[0][1])
-                    else:
-                        raise RuntimeError(  # pragma: no cover (design-time error)
-                            "Market best BID price was None when filling MARKET order",  # pragma: no cover
-                        )
-            else:
-                price = order.price if (order.order_type == OrderType.LIMIT or order.order_type == OrderType.LIMIT_IF_TOUCHED) else order.trigger_price
-
-                if triggered_price:
-                    price = triggered_price
-
-                if order.side == OrderSide.BUY:
-                    self._core.set_ask_raw(price._mem.raw)
-                elif order.side == OrderSide.SELL:
-                    self._core.set_bid_raw(price._mem.raw)
-                else:
-                    raise RuntimeError(f"invalid `OrderSide`, was {order.side}")  # pragma: no cover (design-time error)
-
-                self._core.set_last_raw(price._mem.raw)
-                fills[0] = (price, fills[0][1])
+            if triggered_price is not None:
+                fills[0] = (triggered_price, fills[0][1])
 
         return fills
 
