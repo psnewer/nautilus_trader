@@ -799,7 +799,7 @@ cdef class VolumeSensitiveFillModel(FillModel):
         )
 
         # Minimum 1 to avoid zero-size orders being silently dropped by OrderBook
-        available_volume = max(1, <uint64_t>(self._recent_volume * 0.25))
+        available_volume = max(<uint64_t>1, <uint64_t>(self._recent_volume * 0.25))
 
         bid_order_tier1 = BookOrder(
             side=OrderSide.BUY,
@@ -875,8 +875,8 @@ cdef class CompetitionAwareFillModel(FillModel):
             BookOrder ask_order
 
         # Minimum 1 to avoid zero-size orders being silently dropped by OrderBook
-        available_bid = max(1, <uint64_t>(typical_bid_volume * self.liquidity_factor))
-        available_ask = max(1, <uint64_t>(typical_ask_volume * self.liquidity_factor))
+        available_bid = max(<uint64_t>1, <uint64_t>(typical_bid_volume * self.liquidity_factor))
+        available_ask = max(<uint64_t>1, <uint64_t>(typical_ask_volume * self.liquidity_factor))
 
         book = OrderBook(
             instrument_id=instrument.id,
