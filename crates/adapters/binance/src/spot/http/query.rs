@@ -15,8 +15,60 @@
 
 //! Query parameter builders for Binance Spot HTTP requests.
 
-// TODO: Add query builders
-// - ExchangeInfoQuery
-// - OrderQuery
-// - AccountQuery
-// - etc.
+use serde::Serialize;
+
+/// Query parameters for the depth endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct DepthParams {
+    /// Trading pair symbol (e.g., "BTCUSDT").
+    pub symbol: String,
+    /// Number of price levels to return (default 100, max 5000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl DepthParams {
+    /// Create new depth query params.
+    #[must_use]
+    pub fn new(symbol: impl Into<String>) -> Self {
+        Self {
+            symbol: symbol.into(),
+            limit: None,
+        }
+    }
+
+    /// Set the limit.
+    #[must_use]
+    pub fn with_limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+/// Query parameters for the trades endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct TradesParams {
+    /// Trading pair symbol (e.g., "BTCUSDT").
+    pub symbol: String,
+    /// Number of trades to return (default 500, max 1000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl TradesParams {
+    /// Create new trades query params.
+    #[must_use]
+    pub fn new(symbol: impl Into<String>) -> Self {
+        Self {
+            symbol: symbol.into(),
+            limit: None,
+        }
+    }
+
+    /// Set the limit.
+    #[must_use]
+    pub fn with_limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
