@@ -38,9 +38,9 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     data::{Bar, BarType, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick, order::BookOrder},
     enums::{
-        AccountType, AggregationSource, AggressorSide, BookType, ContingencyType, LiquiditySide,
-        MarketStatus, MarketStatusAction, OmsType, OrderSide, OrderSideSpecified, OrderStatus,
-        OrderType, PriceType, TimeInForce,
+        AccountType, AggregationSource, AggressorSide, BookAction, BookType, ContingencyType,
+        LiquiditySide, MarketStatus, MarketStatusAction, OmsType, OrderSide, OrderSideSpecified,
+        OrderStatus, OrderType, PriceType, TimeInForce,
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny, OrderExpired,
@@ -251,9 +251,31 @@ impl OrderMatchingEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if applying the delta to the book fails.
+    /// - If delta order price precision does not match the instrument (for Add/Update actions).
+    /// - If delta order size precision does not match the instrument (for Add/Update actions).
+    /// - If applying the delta to the book fails.
     pub fn process_order_book_delta(&mut self, delta: &OrderBookDelta) -> anyhow::Result<()> {
         log::debug!("Processing {delta}");
+
+        // Validate precision for Add and Update actions (Delete/Clear may have NULL_ORDER)
+        if matches!(delta.action, BookAction::Add | BookAction::Update) {
+            let price_prec = self.instrument.price_precision();
+            let size_prec = self.instrument.size_precision();
+            let instrument_id = self.instrument.id();
+
+            if delta.order.price.precision != price_prec {
+                anyhow::bail!(
+                    "Invalid delta order price precision {prec}, expected {price_prec} for {instrument_id}",
+                    prec = delta.order.price.precision
+                );
+            }
+            if delta.order.size.precision != size_prec {
+                anyhow::bail!(
+                    "Invalid delta order size precision {prec}, expected {size_prec} for {instrument_id}",
+                    prec = delta.order.size.precision
+                );
+            }
+        }
 
         if self.book_type == BookType::L2_MBP || self.book_type == BookType::L3_MBO {
             self.book.apply_delta(delta)?;
@@ -267,9 +289,33 @@ impl OrderMatchingEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if applying the deltas to the book fails.
+    /// - If any delta order price precision does not match the instrument (for Add/Update actions).
+    /// - If any delta order size precision does not match the instrument (for Add/Update actions).
+    /// - If applying the deltas to the book fails.
     pub fn process_order_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
         log::debug!("Processing {deltas}");
+
+        // Validate precision for Add and Update actions (Delete/Clear may have NULL_ORDER)
+        let price_prec = self.instrument.price_precision();
+        let size_prec = self.instrument.size_precision();
+        let instrument_id = self.instrument.id();
+
+        for delta in &deltas.deltas {
+            if matches!(delta.action, BookAction::Add | BookAction::Update) {
+                if delta.order.price.precision != price_prec {
+                    anyhow::bail!(
+                        "Invalid delta order price precision {prec}, expected {price_prec} for {instrument_id}",
+                        prec = delta.order.price.precision
+                    );
+                }
+                if delta.order.size.precision != size_prec {
+                    anyhow::bail!(
+                        "Invalid delta order size precision {prec}, expected {size_prec} for {instrument_id}",
+                        prec = delta.order.size.precision
+                    );
+                }
+            }
+        }
 
         if self.book_type == BookType::L2_MBP || self.book_type == BookType::L3_MBO {
             self.book.apply_deltas(deltas)?;
@@ -2806,6 +2852,13 @@ impl OrderMatchingEngine {
         commission: Money,
         liquidity_side: LiquiditySide,
     ) {
+        debug_assert!(
+            last_qty <= order.quantity(),
+            "Fill quantity {last_qty} exceeds order quantity {order_qty} for {client_order_id}",
+            order_qty = order.quantity(),
+            client_order_id = order.client_order_id()
+        );
+
         let ts_now = self.clock.borrow().timestamp_ns();
         let account_id = order
             .account_id()

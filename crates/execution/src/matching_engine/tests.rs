@@ -703,9 +703,18 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     let mut engine_l2 = get_order_matching_engine_l2(instrument_es.clone(), None, None, None, None);
     // Create bid and ask orderbook delta and check if
     // bid and ask are initialized in order matching core
-    let book_order_buy = BookOrder::new(OrderSide::Buy, Price::from("100"), Quantity::from("1"), 0);
-    let book_order_sell =
-        BookOrder::new(OrderSide::Sell, Price::from("101"), Quantity::from("1"), 0);
+    let book_order_buy = BookOrder::new(
+        OrderSide::Buy,
+        Price::from("100.00"),
+        Quantity::from("1"),
+        0,
+    );
+    let book_order_sell = BookOrder::new(
+        OrderSide::Sell,
+        Price::from("101.00"),
+        Quantity::from("1"),
+        0,
+    );
     let orderbook_delta_buy = OrderBookDeltaTestBuilder::new(instrument_es.id())
         .book_action(BookAction::Add)
         .book_order(book_order_buy)
@@ -718,7 +727,7 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     engine_l2
         .process_order_book_delta(&orderbook_delta_buy)
         .unwrap();
-    assert_eq!(engine_l2.core.bid, Some(Price::from("100")));
+    assert_eq!(engine_l2.core.bid, Some(Price::from("100.00")));
     assert!(engine_l2.core.is_bid_initialized);
     assert_eq!(engine_l2.core.ask, None);
     assert!(!engine_l2.core.is_ask_initialized);
@@ -726,9 +735,9 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     engine_l2
         .process_order_book_delta(&orderbook_delta_sell)
         .unwrap();
-    assert_eq!(engine_l2.core.bid, Some(Price::from("100")));
+    assert_eq!(engine_l2.core.bid, Some(Price::from("100.00")));
     assert!(engine_l2.core.is_bid_initialized);
-    assert_eq!(engine_l2.core.ask, Some(Price::from("101")));
+    assert_eq!(engine_l2.core.ask, Some(Price::from("101.00")));
     assert!(engine_l2.core.is_ask_initialized);
 }
 

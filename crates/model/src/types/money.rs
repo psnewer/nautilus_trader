@@ -176,6 +176,16 @@ impl Money {
         )
         .expect(FAILED);
         check_fixed_precision(currency.precision).expect(FAILED);
+
+        // TODO: Enforce spurious bits validation in v2
+        // Validate raw value has no spurious bits beyond the precision scale
+        // if raw != 0 {
+        //     #[cfg(feature = "high-precision")]
+        //     super::fixed::check_fixed_raw_i128(raw, currency.precision).expect(FAILED);
+        //     #[cfg(not(feature = "high-precision"))]
+        //     super::fixed::check_fixed_raw_i64(raw, currency.precision).expect(FAILED);
+        // }
+
         Self { raw, currency }
     }
 

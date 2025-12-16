@@ -50,8 +50,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = FillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -72,8 +72,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = BestPriceFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -107,8 +107,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = OneTickSlippageFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -144,8 +144,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = TwoTierFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -183,8 +183,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = SizeAwareFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         small_order = TestExecStubs.market_order(
             instrument=self.instrument,
             quantity=Quantity.from_int(5),
@@ -217,8 +217,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = SizeAwareFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         large_order = TestExecStubs.market_order(
             instrument=self.instrument,
             quantity=Quantity.from_int(50),
@@ -262,8 +262,8 @@ class TestEnhancedFillModels:
         # This test would require integration with the matching engine
         # For now, we just verify the method exists and returns None by default
         fill_model = FillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         result = fill_model.get_orderbook_for_fill_simulation(
@@ -309,8 +309,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = ProbabilisticFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
         tick = self.instrument.price_increment
 
@@ -344,8 +344,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = LimitOrderPartialFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -383,8 +383,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = ThreeTierFillModel()
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -431,8 +431,8 @@ class TestEnhancedFillModels:
         # Arrange
         fill_model = MarketHoursFillModel()
         fill_model.set_low_liquidity_period(False)
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -464,8 +464,8 @@ class TestEnhancedFillModels:
         # Arrange
         fill_model = MarketHoursFillModel()
         fill_model.set_low_liquidity_period(True)
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -497,8 +497,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = VolumeSensitiveFillModel()  # Default volume is 1000
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -535,8 +535,8 @@ class TestEnhancedFillModels:
         # Arrange
         fill_model = VolumeSensitiveFillModel()
         fill_model.set_recent_volume(400.0)  # 25% = 100
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -565,8 +565,8 @@ class TestEnhancedFillModels:
         # Arrange
         fill_model = VolumeSensitiveFillModel()
         fill_model.set_recent_volume(1.0)  # 25% = 0.25, should clamp to 1
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -594,8 +594,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = CompetitionAwareFillModel()  # Default factor is 0.3
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -626,8 +626,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = CompetitionAwareFillModel(liquidity_factor=0.5)
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act
@@ -655,8 +655,8 @@ class TestEnhancedFillModels:
         """
         # Arrange
         fill_model = CompetitionAwareFillModel(liquidity_factor=0.0001)  # Very small
-        best_bid = Price.from_str("1.0000")
-        best_ask = Price.from_str("1.0001")
+        best_bid = Price.from_str("1.00000")
+        best_ask = Price.from_str("1.00010")
         order = TestExecStubs.market_order(instrument=self.instrument)
 
         # Act

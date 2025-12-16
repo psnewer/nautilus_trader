@@ -1134,7 +1134,12 @@ mod tests {
         let delta_buy = OrderBookDelta::new(
             crypto_perpetual_ethusdt.id,
             BookAction::Add,
-            BookOrder::new(OrderSide::Buy, Price::from("1000.00"), Quantity::from(1), 1),
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("1000.00"),
+                Quantity::from("1.000"),
+                1,
+            ),
             0,
             0,
             UnixNanos::from(1),
@@ -1146,7 +1151,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1001.00"),
-                Quantity::from(1),
+                Quantity::from("1.000"),
                 1,
             ),
             0,
@@ -1197,7 +1202,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1000.00"),
-                Quantity::from(3),
+                Quantity::from("3.000"),
                 1,
             ),
             0,
@@ -1211,7 +1216,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1001.00"),
-                Quantity::from(1),
+                Quantity::from("1.000"),
                 1,
             ),
             0,
