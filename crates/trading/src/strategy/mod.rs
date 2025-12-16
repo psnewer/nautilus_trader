@@ -24,8 +24,8 @@ use nautilus_common::{
     actor::DataActor,
     logging::{EVT, RECV},
     messages::execution::{
-        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrder, SubmitOrderList,
-        TradingCommand,
+        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
+        SubmitOrder, SubmitOrderList, TradingCommand,
     },
     msgbus,
     timer::TimeEvent,
@@ -39,7 +39,7 @@ use nautilus_model::{
         OrderPendingUpdate, OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered,
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     orders::{Order, OrderAny, OrderCore, OrderList},
     position::Position,
     types::{Price, Quantity},
@@ -696,6 +696,74 @@ pub trait Strategy: DataActor {
             self.submit_order(order, Some(pos_id), client_id)?;
         }
 
+        Ok(())
+    }
+
+    /// Queries account state from the execution client.
+    ///
+    /// Creates a [`QueryAccount`] command and sends it to the execution engine,
+    /// which will request the current account state from the execution client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered.
+    fn query_account(
+        &mut self,
+        account_id: AccountId,
+        client_id: Option<ClientId>,
+    ) -> anyhow::Result<()> {
+        let core = self.core_mut();
+
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let ts_init = core.clock().timestamp_ns();
+
+        let command = QueryAccount::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            account_id,
+            UUID4::new(),
+            ts_init,
+        )?;
+
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        manager.send_exec_command(TradingCommand::QueryAccount(command));
+        Ok(())
+    }
+
+    /// Queries order state from the execution client.
+    ///
+    /// Creates a [`QueryOrder`] command and sends it to the execution engine,
+    /// which will request the current order state from the execution client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered.
+    fn query_order(&mut self, order: &OrderAny, client_id: Option<ClientId>) -> anyhow::Result<()> {
+        let core = self.core_mut();
+
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
+        let ts_init = core.clock().timestamp_ns();
+
+        let command = QueryOrder::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            strategy_id,
+            order.instrument_id(),
+            order.client_order_id(),
+            order.venue_order_id().unwrap_or_default(),
+            UUID4::new(),
+            ts_init,
+        )?;
+
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        manager.send_exec_command(TradingCommand::QueryOrder(command));
         Ok(())
     }
 
@@ -1442,6 +1510,62 @@ mod tests {
         register_strategy(&mut strategy);
 
         let result = Strategy::on_start(&mut strategy);
+        assert!(result.is_ok());
+    }
+
+    // -- QUERY TESTS ---------------------------------------------------------------------------------
+
+    #[rstest]
+    fn test_query_account_when_registered() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let account_id = AccountId::from("ACC-001");
+
+        let result = strategy.query_account(account_id, None);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_account_with_client_id() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let account_id = AccountId::from("ACC-001");
+        let client_id = ClientId::from("BINANCE");
+
+        let result = strategy.query_account(account_id, Some(client_id));
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_order_when_registered() {
+        use nautilus_model::orders::MarketOrder;
+
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let order = OrderAny::Market(MarketOrder::default());
+
+        let result = strategy.query_order(&order, None);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_order_with_client_id() {
+        use nautilus_model::orders::MarketOrder;
+
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let order = OrderAny::Market(MarketOrder::default());
+        let client_id = ClientId::from("BINANCE");
+
+        let result = strategy.query_order(&order, Some(client_id));
+
         assert!(result.is_ok());
     }
 }
