@@ -1707,8 +1707,9 @@ class ParquetDataCatalog(BaseDataCatalog):
         if self.fs_protocol != "file":
             self._register_object_store_with_session(session)
 
-        if files is not None and not optimize_file_loading:
-            # If specific files are requested, register them individually
+        if files is not None:
+            # When specific files are explicitly provided, always register them
+            # individually to respect the caller's intent to only read those files.
             for file in files:
                 self._register_file_table(
                     session=session,
@@ -1719,20 +1720,28 @@ class ParquetDataCatalog(BaseDataCatalog):
                     end=end,
                     where=where,
                 )
-        else:
-            # Otherwise, group by directory (instrument) to reduce the number of
-            # registered tables and streams. This significantly reduces memory usage
-            # when dealing with many small files.
-            if files is not None:
-                file_list = files
-            else:
-                file_list = self._query_files(data_cls, identifiers, start, end)
-
+        elif optimize_file_loading:
+            # Group by directory (instrument) to reduce the number of registered tables
+            # and streams, which significantly reduces memory usage with many small files.
+            file_list = self._query_files(data_cls, identifiers, start, end)
             directories = {os.path.dirname(file) for file in file_list}
             for directory in directories:
                 self._register_directory_table(
                     session=session,
                     directory=directory,
+                    data_type=data_type,
+                    file_prefix=file_prefix,
+                    start=start,
+                    end=end,
+                    where=where,
+                )
+        else:
+            # Register files individually when optimize_file_loading is disabled
+            file_list = self._query_files(data_cls, identifiers, start, end)
+            for file in file_list:
+                self._register_file_table(
+                    session=session,
+                    file=file,
                     data_type=data_type,
                     file_prefix=file_prefix,
                     start=start,

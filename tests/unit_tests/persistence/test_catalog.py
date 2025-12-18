@@ -2355,3 +2355,151 @@ def test_query_first_timestamp_returns_none_when_no_data(catalog: ParquetDataCat
 
     # Assert
     assert result is None
+
+
+def test_backend_session_files_parameter_restricts_to_specified_files(
+    catalog: ParquetDataCatalog,
+) -> None:
+    """
+    Test that backend_session with files parameter only reads the specified files.
+
+    When specific files are passed to backend_session, only those files should be read
+    regardless of other files in the same directory. This tests the interaction between
+    the files parameter and optimize_file_loading.
+
+    """
+    # Arrange
+    instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", Venue("SIM"))
+    catalog.write_data([instrument])
+
+    trades_batch1 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.10000"),
+            size=Quantity.from_int(100),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"batch1_{i}"),
+            ts_event=1000 + i,
+            ts_init=1000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch1)
+
+    trades_batch2 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.20000"),
+            size=Quantity.from_int(200),
+            aggressor_side=AggressorSide.SELLER,
+            trade_id=TradeId(f"batch2_{i}"),
+            ts_event=2000 + i,
+            ts_init=2000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch2)
+
+    trades_batch3 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.30000"),
+            size=Quantity.from_int(300),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"batch3_{i}"),
+            ts_event=3000 + i,
+            ts_init=3000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch3)
+
+    all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
+    assert len(all_files) == 3, f"Expected 3 files, got {len(all_files)}: {all_files}"
+    selected_files = [all_files[0]]
+
+    # Act
+    session = catalog.backend_session(
+        data_cls=TradeTick,
+        files=selected_files,
+        optimize_file_loading=False,
+    )
+
+    result = session.to_query_result()
+    data = []
+    for chunk in result:
+        from nautilus_trader.model.data import capsule_to_list
+
+        data.extend(capsule_to_list(chunk))
+
+    # Assert
+    assert len(data) == 3, f"Expected 3 trades from one file, got {len(data)}"
+    prices = {str(trade.price) for trade in data}
+    assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
+
+
+def test_backend_session_files_parameter_ignores_optimize_loading_flag(
+    catalog: ParquetDataCatalog,
+) -> None:
+    """
+    Test that files parameter always takes precedence over optimize_file_loading.
+
+    When specific files are passed to backend_session, only those files should be read
+    regardless of the optimize_file_loading flag value. The flag only affects behavior
+    when files is not provided (automatic file discovery).
+
+    """
+    # Arrange
+    instrument = TestInstrumentProvider.default_fx_ccy("GBP/USD", Venue("SIM"))
+    catalog.write_data([instrument])
+
+    trades_batch1 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.25000"),
+            size=Quantity.from_int(100),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"opt_batch1_{i}"),
+            ts_event=1000 + i,
+            ts_init=1000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch1)
+
+    trades_batch2 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.26000"),
+            size=Quantity.from_int(200),
+            aggressor_side=AggressorSide.SELLER,
+            trade_id=TradeId(f"opt_batch2_{i}"),
+            ts_event=2000 + i,
+            ts_init=2000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch2)
+
+    all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
+    assert len(all_files) == 2
+    selected_files = [all_files[0]]
+
+    # Act
+    session = catalog.backend_session(
+        data_cls=TradeTick,
+        files=selected_files,
+        optimize_file_loading=True,
+    )
+
+    result = session.to_query_result()
+    data = []
+    for chunk in result:
+        from nautilus_trader.model.data import capsule_to_list
+
+        data.extend(capsule_to_list(chunk))
+
+    # Assert
+    assert len(data) == 3, f"Expected 3 trades from one file, got {len(data)}"
+    prices = {str(trade.price) for trade in data}
+    assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
