@@ -43,6 +43,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
 - Renamed `ExecTesterConfig.enable_buys` to `enable_limit_buys`
 - Renamed `ExecTesterConfig.enable_sells` to `enable_limit_sells`
+- Changed matching engine L2/L3 to track consumed liquidity per order (backtest results may differ)
 - Changed `ParquetDataCatalog.register_data` to now treat `files=[]` as registering no files; pass `files=None` (default) to include all files
 - **Standardized data catalog directory naming**: Order book data directory names now use plural forms to align with the Rust catalog and Tardis Machine conventions; this ensures data written by the Python `StreamingFeatherWriter` can be read by the Rust catalog
   - `order_book_delta/` → `order_book_deltas/`
@@ -73,6 +74,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed SyntheticInstrument formula error during parsing with hyphened InstrumentId (#3257), thanks @Javdu10
 - Fixed matching engine GTD order expiry key mismatch (#3272), thanks for reporting @linimin
 - Fixed matching engine order modification for partial fills
+- Fixed matching engine L2/L3 partial fill quantity calculation on subsequent book updates
 - Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed incorrect handling of data responses in msgbus (#3310), thanks @filipmacek
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5

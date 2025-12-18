@@ -5186,6 +5186,7 @@ cdef class OrderMatchingEngine:
         Condition.is_true(order.has_price_c(), "order has no limit `price`")
 
         cdef Quantity cached_filled_qty = self._cached_filled_qty.get(order.client_order_id)
+
         if cached_filled_qty is not None and cached_filled_qty._mem.raw >= order.quantity._mem.raw:
             self._log.debug(
                 f"Ignoring fill as already filled pending application of events: "
@@ -5214,6 +5215,52 @@ cdef class OrderMatchingEngine:
             return  # Order canceled
 
         cdef list fills = self.determine_limit_fills_with_simulation(order)
+
+        cdef:
+            Price fill_px
+            Quantity fill_qty
+            QuantityRaw total_book_liquidity_raw
+
+        # Adjust fills to account for liquidity already consumed from the immutable book.
+        # The book doesn't change when we fill, so we track consumed liquidity via
+        # cached_filled_qty and subtract it from available book liquidity.
+        # NOTE: Only applies to L2/L3 book types where deltas are incremental updates.
+        # For L1 (quotes/bars), each update is a full state snapshot with fresh liquidity.
+        # Also skip during trade execution (_last_trade_size is set) as each trade is independent.
+        cdef QuantityRaw consumed_raw
+        cdef QuantityRaw adjusted_raw
+        cdef list adjusted_fills
+        if (
+            fills
+            and cached_filled_qty is not None
+            and self._last_trade_size is None
+            and self.book_type != BookType.L1_MBP
+        ):
+            total_book_liquidity_raw = 0
+
+            for fill_px, fill_qty in fills:
+                total_book_liquidity_raw += fill_qty._mem.raw
+
+            if total_book_liquidity_raw <= cached_filled_qty._mem.raw:
+                return
+
+            consumed_raw = cached_filled_qty._mem.raw
+            adjusted_fills = []
+
+            for fill_px, fill_qty in fills:
+                if consumed_raw >= fill_qty._mem.raw:
+                    consumed_raw -= fill_qty._mem.raw
+                elif consumed_raw > 0:
+                    adjusted_raw = fill_qty._mem.raw - consumed_raw
+                    adjusted_fills.append((
+                        fill_px,
+                        Quantity.from_raw_c(adjusted_raw, fill_qty._mem.precision),
+                    ))
+                    consumed_raw = 0
+                else:
+                    adjusted_fills.append((fill_px, fill_qty))
+
+            fills = adjusted_fills
 
         self.apply_fills(
             order=order,
