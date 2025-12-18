@@ -1584,10 +1584,15 @@ class TestBinanceFuturesExecutionClient:
         assert request[1]["payload"]["symbol"] == "ETHUSDT"
 
     @pytest.mark.asyncio
-    async def test_reconciliation_populates_triggered_set_for_triggered_algo_orders(self, mocker):
+    async def test_triggered_algo_orders_skipped_but_tracked_in_triggered_set(self, mocker):
         """
-        Test that reconciliation populates _triggered_algo_order_ids for algo orders
-        that have actualOrderId (i.e., have been triggered).
+        Test that triggered algo orders (with actualOrderId) are skipped during
+        reconciliation but still tracked in _triggered_algo_order_ids.
+
+        Triggered algo orders should be skipped because:
+        1. The regular orders API provides accurate fill data for the triggered order
+        2. Algo order reports have filled_qty=0 which causes reconciliation conflicts
+
         """
         # Arrange - Mock response with a triggered algo order (has actualOrderId)
         triggered_algo_order = {
@@ -1622,8 +1627,10 @@ class TestBinanceFuturesExecutionClient:
             end_ms=None,
         )
 
-        # Assert - ClientOrderId should be in triggered set
-        assert len(reports) == 1
+        # Assert - No reports generated (triggered orders skipped)
+        assert len(reports) == 0
+
+        # Assert - ClientOrderId should still be in triggered set for cancel routing
         client_order_id = ClientOrderId("O-20251211-053131-TEST-000-1")
         assert client_order_id in self.exec_client._triggered_algo_order_ids
 
@@ -1673,6 +1680,83 @@ class TestBinanceFuturesExecutionClient:
         assert len(reports) == 1
         client_order_id = ClientOrderId("O-20251211-053131-TEST-000-2")
         assert client_order_id not in self.exec_client._triggered_algo_order_ids
+
+    @pytest.mark.asyncio
+    async def test_mixed_triggered_and_non_triggered_algo_orders(self, mocker):
+        """
+        Test that when both triggered and non-triggered algo orders are returned, only
+        non-triggered orders generate reports while triggered ones are skipped.
+        """
+        # Arrange - Mix of triggered and non-triggered algo orders
+        algo_orders = [
+            {
+                "algoId": 1000000000001,
+                "clientAlgoId": "O-TRIGGERED-001",
+                "algoType": "CONDITIONAL",
+                "orderType": "STOP_MARKET",
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "quantity": "10",
+                "algoStatus": "TRIGGERED",
+                "triggerPrice": "3000.00",
+                "workingType": "CONTRACT_PRICE",
+                "actualOrderId": "99999999001",  # Triggered
+            },
+            {
+                "algoId": 1000000000002,
+                "clientAlgoId": "O-PENDING-001",
+                "algoType": "CONDITIONAL",
+                "orderType": "STOP_MARKET",
+                "symbol": "ETHUSDT",
+                "side": "SELL",
+                "positionSide": "BOTH",
+                "quantity": "20",
+                "algoStatus": "NEW",
+                "triggerPrice": "2500.00",
+                "workingType": "CONTRACT_PRICE",
+                # No actualOrderId - not triggered
+            },
+            {
+                "algoId": 1000000000003,
+                "clientAlgoId": "O-FINISHED-001",
+                "algoType": "CONDITIONAL",
+                "orderType": "STOP_MARKET",
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "quantity": "30",
+                "algoStatus": "FINISHED",
+                "triggerPrice": "3500.00",
+                "workingType": "CONTRACT_PRICE",
+                "actualOrderId": "99999999002",  # Triggered and filled
+            },
+        ]
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps(algo_orders).encode(),
+        )
+
+        self.exec_client._triggered_algo_order_ids.clear()
+
+        # Act
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
+
+        # Assert - Only non-triggered order generates a report
+        assert len(reports) == 1
+        assert reports[0].client_order_id == ClientOrderId("O-PENDING-001")
+
+        # Assert - Both triggered orders are in the triggered set
+        assert ClientOrderId("O-TRIGGERED-001") in self.exec_client._triggered_algo_order_ids
+        assert ClientOrderId("O-FINISHED-001") in self.exec_client._triggered_algo_order_ids
+        assert ClientOrderId("O-PENDING-001") not in self.exec_client._triggered_algo_order_ids
 
     @pytest.mark.asyncio
     async def test_algo_order_trailing_offset_converts_percent_to_basis_points(self, mocker):

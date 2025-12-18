@@ -704,6 +704,21 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             if end_ms is not None and algo_order.createTime > end_ms:
                 continue
 
+            # Skip triggered algo orders - the regular orders API provides accurate
+            # fill data for these. Algo order reports have filled_qty=0 which causes
+            # reconciliation conflicts with cached orders that have actual fill data.
+            if algo_order.actualOrderId:
+                client_order_id = (
+                    ClientOrderId(algo_order.clientAlgoId) if algo_order.clientAlgoId else None
+                )
+                if client_order_id:
+                    self._triggered_algo_order_ids.add(client_order_id)
+                self._log.debug(
+                    f"Skipping triggered algo order {algo_order.clientAlgoId} "
+                    f"(actualOrderId={algo_order.actualOrderId}) - using regular order data",
+                )
+                continue
+
             try:
                 report = algo_order.parse_to_order_status_report(
                     account_id=self.account_id,
@@ -719,14 +734,6 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
             self._log.debug(f"Received algo {report}")
             reports.append(report)
-
-            # Track triggered algo orders so cancel uses correct endpoint
-            if algo_order.actualOrderId and report.client_order_id:
-                self._triggered_algo_order_ids.add(report.client_order_id)
-                self._log.debug(
-                    f"Added {report.client_order_id} to triggered algo order set "
-                    f"(actualOrderId={algo_order.actualOrderId})",
-                )
 
         return reports
 
