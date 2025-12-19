@@ -748,13 +748,13 @@ jobs:
 
       - name: Create GitHub release
         id: create-release
-        # https://github.com/actions/create-release # v1.1.4
-        uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e
+        # https://github.com/softprops/action-gh-release v2.5.0
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.TAG_NAME }}
-          release_name: ${{ env.RELEASE_NAME }}
+          name: ${{ env.RELEASE_NAME }}
           draft: false
           prerelease: false
           body_path: RELEASE.md

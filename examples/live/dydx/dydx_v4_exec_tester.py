@@ -74,7 +74,7 @@ symbol = "ETH-USD-PERP"
 instrument_id = InstrumentId.from_str(f"{symbol}.{DYDX_VENUE}")
 
 # Order parameters
-order_qty = Decimal("0.01")
+order_qty = Decimal("0.0001")
 
 # Only reconcile these instruments
 reconciliation_instrument_ids = [instrument_id]
