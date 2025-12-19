@@ -2357,15 +2357,15 @@ def test_query_first_timestamp_returns_none_when_no_data(catalog: ParquetDataCat
     assert result is None
 
 
-def test_backend_session_files_parameter_restricts_to_specified_files(
+def test_backend_session_files_with_optimize_disabled_reads_only_specified_files(
     catalog: ParquetDataCatalog,
 ) -> None:
     """
-    Test that backend_session with files parameter only reads the specified files.
+    Test that with optimize_file_loading=False, only specified files are read.
 
-    When specific files are passed to backend_session, only those files should be read
-    regardless of other files in the same directory. This tests the interaction between
-    the files parameter and optimize_file_loading.
+    When `optimize_file_loading=False`, each file is registered individually with
+    DataFusion. This is needed for operations like consolidation where precise file
+    control is required.
 
     """
     # Arrange
@@ -2438,15 +2438,16 @@ def test_backend_session_files_parameter_restricts_to_specified_files(
     assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
 
 
-def test_backend_session_files_parameter_ignores_optimize_loading_flag(
+def test_backend_session_files_with_optimize_reads_entire_directory(
     catalog: ParquetDataCatalog,
 ) -> None:
     """
-    Test that files parameter always takes precedence over optimize_file_loading.
+    Test that with optimize_file_loading=True, the entire directory is read.
 
-    When specific files are passed to backend_session, only those files should be read
-    regardless of the optimize_file_loading flag value. The flag only affects behavior
-    when files is not provided (automatic file discovery).
+    The `files` parameter is a performance hint to skip file discovery, but with
+    `optimize_file_loading=True` (the default), DataFusion reads all files in the
+    directory for efficiency. Only with `optimize_file_loading=False` are the
+    specific files honored.
 
     """
     # Arrange
@@ -2483,13 +2484,13 @@ def test_backend_session_files_parameter_ignores_optimize_loading_flag(
 
     all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
     assert len(all_files) == 2
-    selected_files = [all_files[0]]
+    selected_files = [all_files[0]]  # Only pass one file, but expect all to be read
 
     # Act
     session = catalog.backend_session(
         data_cls=TradeTick,
         files=selected_files,
-        optimize_file_loading=True,
+        optimize_file_loading=True,  # Directory-based reading
     )
 
     result = session.to_query_result()
@@ -2499,7 +2500,7 @@ def test_backend_session_files_parameter_ignores_optimize_loading_flag(
 
         data.extend(capsule_to_list(chunk))
 
-    # Assert
-    assert len(data) == 3, f"Expected 3 trades from one file, got {len(data)}"
+    # Assert - with optimize_file_loading=True, the entire directory is read
+    assert len(data) == 6, f"Expected 6 trades from entire directory, got {len(data)}"
     prices = {str(trade.price) for trade in data}
-    assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
+    assert len(prices) == 2, f"Expected trades from both batches, got prices: {prices}"

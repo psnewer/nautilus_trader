@@ -1668,12 +1668,15 @@ class ParquetDataCatalog(BaseDataCatalog):
         session : DataBackendSession, optional
             An existing session to update. If None, a new session is created.
         files : list[str], optional
-            A specific list of files to query from. If provided, these files are used
-            instead of discovering files through the normal process.
+            A list of known files to use, skipping the file discovery step. This is a
+            performance optimization when the caller already knows which files exist.
+            Note: With `optimize_file_loading=True`, the entire directory containing
+            these files will be read by DataFusion, not just the specified files.
         optimize_file_loading : bool, default True
-            If True, groups files by directory to reduce the number of registered tables
-            and streams, significantly reducing memory usage when dealing with many small files.
-            If False, registers each file individually.
+            If True (default), registers entire directories with DataFusion, which is
+            more efficient for managing many files. If False, registers each file
+            individually (needed for operations like consolidation where precise file
+            control is required).
         **kwargs : Any
             Additional keyword arguments.
 
@@ -1707,9 +1710,9 @@ class ParquetDataCatalog(BaseDataCatalog):
         if self.fs_protocol != "file":
             self._register_object_store_with_session(session)
 
-        if files is not None:
-            # When specific files are explicitly provided, always register them
-            # individually to respect the caller's intent to only read those files.
+        if files is not None and not optimize_file_loading:
+            # Register files individually only when optimization is disabled
+            # (e.g., for consolidation operations requiring precise file control)
             for file in files:
                 self._register_file_table(
                     session=session,
@@ -1720,28 +1723,20 @@ class ParquetDataCatalog(BaseDataCatalog):
                     end=end,
                     where=where,
                 )
-        elif optimize_file_loading:
-            # Group by directory (instrument) to reduce the number of registered tables
-            # and streams, which significantly reduces memory usage with many small files.
-            file_list = self._query_files(data_cls, identifiers, start, end)
+        else:
+            # Use directory-based registration for efficiency. DataFusion handles
+            # reading all files in each directory, which is more memory-efficient
+            # than registering many individual file tables.
+            if files is not None:
+                file_list = files
+            else:
+                file_list = self._query_files(data_cls, identifiers, start, end)
+
             directories = {os.path.dirname(file) for file in file_list}
             for directory in directories:
                 self._register_directory_table(
                     session=session,
                     directory=directory,
-                    data_type=data_type,
-                    file_prefix=file_prefix,
-                    start=start,
-                    end=end,
-                    where=where,
-                )
-        else:
-            # Register files individually when optimize_file_loading is disabled
-            file_list = self._query_files(data_cls, identifiers, start, end)
-            for file in file_list:
-                self._register_file_table(
-                    session=session,
-                    file=file,
                     data_type=data_type,
                     file_prefix=file_prefix,
                     start=start,
