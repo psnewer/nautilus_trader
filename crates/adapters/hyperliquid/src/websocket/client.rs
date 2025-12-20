@@ -25,7 +25,7 @@ use std::{
 use anyhow::Context;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_model::{
     data::BarType,
     identifiers::{AccountId, InstrumentId},

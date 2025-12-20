@@ -42,7 +42,7 @@ use std::{
 };
 
 use futures_util::future;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_model::{
     enums::OrderSide,
     identifiers::{ClientOrderId, InstrumentId, VenueOrderId},

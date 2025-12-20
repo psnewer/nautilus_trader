@@ -24,7 +24,7 @@ use std::{
 
 use derive_builder::Builder;
 use futures_util::future::BoxFuture;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use tokio::{
     sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time,

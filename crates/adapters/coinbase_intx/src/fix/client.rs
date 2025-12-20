@@ -33,7 +33,7 @@ use std::{
 use aws_lc_rs::hmac;
 use base64::prelude::*;
 use nautilus_common::{
-    live::runtime::get_runtime,
+    live::get_runtime,
     logging::{log_task_started, log_task_stopped},
 };
 #[cfg(feature = "python")]

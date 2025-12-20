@@ -42,7 +42,7 @@
 //! - Always clone before async blocks for lifetime requirements.
 
 use futures_util::StreamExt;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},

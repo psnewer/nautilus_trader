@@ -15,7 +15,7 @@
 
 //! Python bindings for the Kraken Futures WebSocket client.
 
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},

@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyvalue_err;
 use nautilus_model::{
     data::BarType,
