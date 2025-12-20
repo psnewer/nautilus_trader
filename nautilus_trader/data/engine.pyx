@@ -2921,6 +2921,7 @@ cdef class DataEngine(Component):
         cdef list leg_request_ids = []
         for leg_id, _ in spread_legs:
             self._log.info(f"Creating leg quote tick request: {leg_id}, start={request.start}, end={request.end}")
+
             leg_request = RequestQuoteTicks(
                 instrument_id=leg_id,
                 start=request.start,
@@ -2946,7 +2947,6 @@ cdef class DataEngine(Component):
             correlation_id=request.id,
             ts_init=ts_init,
             params=request.params,
-            correlation_id=request.id,
         )
         self._requests[request.id] = request
         self._parent_request_id[join_request.id] = request.id
@@ -3026,7 +3026,7 @@ cdef class DataEngine(Component):
             )
             return
 
-        update_interval_seconds = params.get("update_interval_seconds", None)
+        update_interval_seconds = (params or {}).get("update_interval_seconds", None)
 
         greeks_calculator = GreeksCalculator(self._msgbus, self._cache, self._clock)
         if historical:
@@ -3129,6 +3129,8 @@ cdef class DataEngine(Component):
         if aggregator is None:
             self._log.error(f"Cannot dispose spread quote aggregator: no aggregator found for {spread_instrument_id}")
             return
+
+        aggregator.stop_timer()
 
         # Unsubscribe from leg data
         for leg_id, _ in aggregator._legs:
