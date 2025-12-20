@@ -152,6 +152,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Implemented Bybit chunking support for batch cancel orders (#3244), thanks @sunlei
 - Scaffolded blockchain execution client with native balance fetch (#3214), thanks @filipmacek
 - Ported Bybit integration adapter to Rust
+- Unified tokio runtime selection in Rust adapters (#3321), thanks @filipmacek
 - Refactored network crate to modularize `http`, `socket`, and `websocket`
 - Refactored reading of feather files in catalog (#3114), thanks @faysou
 - Refactored processing of historical data (#3038), thanks @faysou
