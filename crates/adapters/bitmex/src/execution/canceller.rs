@@ -1631,9 +1631,6 @@ mod tests {
             assert!(task_guard.is_some());
         }
 
-        // Wait a bit for health check to potentially run
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // Stop the broadcaster
         broadcaster.stop().await;
         assert!(!broadcaster.running.load(Ordering::Relaxed));

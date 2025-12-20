@@ -1392,9 +1392,6 @@ mod tests {
                 .is_some()
         );
 
-        // Wait a bit to let health checks run
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // Stop should clean up task
         broadcaster.stop().await;
         assert!(!broadcaster.running.load(Ordering::Relaxed));
@@ -1452,6 +1449,7 @@ mod tests {
         #[derive(Clone)]
         struct CaptureExecutor {
             captured_ids: Arc<Mutex<Vec<String>>>,
+            barrier: Arc<tokio::sync::Barrier>,
             report: OrderStatusReport,
         }
 
@@ -1487,10 +1485,11 @@ mod tests {
                     .unwrap()
                     .push(client_order_id.as_str().to_string());
                 let report = self.report.clone();
-                // Small delay to ensure all tasks start and capture IDs before any completes
-                // (with global runtime, tasks run concurrently and first success aborts others)
+                let barrier = Arc::clone(&self.barrier);
+                // Wait for all tasks to capture their IDs before any completes
+                // (with concurrent execution, first success aborts others)
                 Box::pin(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    barrier.wait().await;
                     Ok(report)
                 })
             }
@@ -1499,12 +1498,14 @@ mod tests {
         }
 
         let captured_ids = Arc::new(Mutex::new(Vec::new()));
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let report = create_test_report("ORDER-1");
 
         let transports = vec![
             TransportClient::new(
                 CaptureExecutor {
                     captured_ids: Arc::clone(&captured_ids),
+                    barrier: Arc::clone(&barrier),
                     report: report.clone(),
                 },
                 "client-0".to_string(),
@@ -1512,6 +1513,7 @@ mod tests {
             TransportClient::new(
                 CaptureExecutor {
                     captured_ids: Arc::clone(&captured_ids),
+                    barrier: Arc::clone(&barrier),
                     report: report.clone(),
                 },
                 "client-1".to_string(),
@@ -1519,6 +1521,7 @@ mod tests {
             TransportClient::new(
                 CaptureExecutor {
                     captured_ids: Arc::clone(&captured_ids),
+                    barrier: Arc::clone(&barrier),
                     report: report.clone(),
                 },
                 "client-2".to_string(),
