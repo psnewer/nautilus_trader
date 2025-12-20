@@ -176,12 +176,10 @@ impl FeedHandler {
     pub async fn run(&mut self) {
         loop {
             tokio::select! {
-                // Process commands from outer client
                 Some(cmd) = self.cmd_rx.recv() => {
                     self.handle_command(cmd).await;
                 }
 
-                // Process raw WebSocket messages
                 Some(msg) = self.raw_rx.recv() => {
                     if let Some(nautilus_msg) = self.process_raw_message(msg).await
                         && self.out_tx.send(nautilus_msg).is_err()
@@ -197,7 +195,6 @@ impl FeedHandler {
                 }
             }
 
-            // Check for stop signal
             if self.signal.load(Ordering::Relaxed) {
                 tracing::debug!("Handler received stop signal");
                 break;
@@ -235,12 +232,10 @@ impl FeedHandler {
                                     serde_json::from_value::<DydxWsConnectedMsg>(val)
                                         .map(DydxWsMessage::Connected)
                                 } else if meta.is_subscribed() {
-                                    // Check if this is a subaccounts subscription with initial state
                                     if let Ok(sub_msg) =
                                         serde_json::from_value::<DydxWsSubscriptionMsg>(val.clone())
                                     {
                                         if sub_msg.channel == DydxWsChannel::Subaccounts {
-                                            // Parse as subaccounts-specific subscription message
                                             serde_json::from_value::<DydxWsSubaccountsSubscribed>(
                                                 val.clone(),
                                             )
@@ -339,7 +334,6 @@ impl FeedHandler {
                         .await
                 }
                 DydxWsSubaccountsMessage::ChannelData(data) => {
-                    // Extract the generic parts to create DydxWsChannelDataMsg
                     self.handle_dydx_message(DydxWsMessage::ChannelData(DydxWsChannelDataMsg {
                         msg_type: data.msg_type,
                         connection_id: data.connection_id,
@@ -392,33 +386,25 @@ impl FeedHandler {
                 }
             },
             DydxWsFeedMessage::BlockHeight(msg) => match msg {
-                DydxWsBlockHeightMessage::Subscribed(_)
-                | DydxWsBlockHeightMessage::ChannelData(_) => {
-                    // Convert to generic channel data and let existing handler parse it
-                    let channel_data = match msg {
-                        DydxWsBlockHeightMessage::Subscribed(data) => DydxWsChannelDataMsg {
-                            msg_type: data.msg_type,
-                            connection_id: data.connection_id,
-                            message_id: data.message_id,
-                            channel: data.channel,
-                            id: Some(data.id),
-                            contents: serde_json::to_value(&data.contents)
-                                .unwrap_or(serde_json::Value::Null),
-                            version: None,
-                        },
-                        DydxWsBlockHeightMessage::ChannelData(data) => DydxWsChannelDataMsg {
-                            msg_type: data.msg_type,
-                            connection_id: data.connection_id,
-                            message_id: data.message_id,
-                            channel: data.channel,
-                            id: Some(data.id),
-                            contents: serde_json::to_value(&data.contents)
-                                .unwrap_or(serde_json::Value::Null),
-                            version: Some(data.version),
-                        },
-                    };
-                    self.handle_dydx_message(DydxWsMessage::ChannelData(channel_data))
-                        .await
+                DydxWsBlockHeightMessage::Subscribed(data) => {
+                    // Subscribed message uses "height" field, parse directly
+                    match data.contents.height.parse::<u64>() {
+                        Ok(height) => Some(NautilusWsMessage::BlockHeight(height)),
+                        Err(e) => {
+                            tracing::warn!("Failed to parse block height from subscription: {e}");
+                            None
+                        }
+                    }
+                }
+                DydxWsBlockHeightMessage::ChannelData(data) => {
+                    // Channel data uses "blockHeight" field, parse directly
+                    match data.contents.block_height.parse::<u64>() {
+                        Ok(height) => Some(NautilusWsMessage::BlockHeight(height)),
+                        Err(e) => {
+                            tracing::warn!("Failed to parse block height from channel data: {e}");
+                            None
+                        }
+                    }
                 }
             },
         }
@@ -557,10 +543,7 @@ impl FeedHandler {
             }
             DydxWsMessage::ChannelData(data) => self.handle_channel_data(data),
             DydxWsMessage::ChannelBatchData(data) => self.handle_channel_batch_data(data),
-            DydxWsMessage::BlockHeight(height) => {
-                tracing::debug!("Block height update: {}", height);
-                Ok(Some(NautilusWsMessage::BlockHeight(height)))
-            }
+            DydxWsMessage::BlockHeight(height) => Ok(Some(NautilusWsMessage::BlockHeight(height))),
             DydxWsMessage::Error(err) => Ok(Some(NautilusWsMessage::Error(err))),
             DydxWsMessage::Reconnected => {
                 if let Err(e) = self.replay_subscriptions().await {
@@ -628,7 +611,6 @@ impl FeedHandler {
             .parse::<u64>()
             .map_err(|e| DydxWsError::Parse(format!("Failed to parse block height: {e}")))?;
 
-        tracing::debug!("Parsed block height: {}", height);
         Ok(Some(NautilusWsMessage::BlockHeight(height)))
     }
 
@@ -780,8 +762,6 @@ impl FeedHandler {
         ts_init: UnixNanos,
     ) -> DydxWsResult<OrderBookDeltas> {
         let mut deltas = Vec::new();
-
-        // Add clear delta first
         deltas.push(OrderBookDelta::clear(*instrument_id, 0, ts_init, ts_init));
 
         let bids = contents.bids.as_deref().unwrap_or(&[]);
@@ -1007,7 +987,6 @@ impl FeedHandler {
 
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
-        // Calculate ts_event: startedAt + interval
         let started_at_nanos = candle.started_at.timestamp_nanos_opt().ok_or_else(|| {
             DydxWsError::Parse(format!(
                 "Timestamp out of range for candle at {}",
@@ -1072,7 +1051,6 @@ impl FeedHandler {
                 DydxWsError::Parse(format!("Failed to parse subaccounts contents: {e}"))
             })?;
 
-        // Check if we have any orders or fills
         let has_orders = contents.orders.as_ref().is_some_and(|o| !o.is_empty());
         let has_fills = contents.fills.as_ref().is_some_and(|f| !f.is_empty());
 

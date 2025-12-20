@@ -29,10 +29,6 @@ use crate::common::enums::{
     DydxPositionStatus, DydxTickerType, DydxTimeInForce, DydxTradeType,
 };
 
-// ------------------------------------------------------------------------------------------------
-// Subscription messages
-// ------------------------------------------------------------------------------------------------
-
 /// dYdX WebSocket subscription message.
 ///
 /// # References
@@ -78,10 +74,6 @@ pub struct DydxWsConnectedMsg {
     /// The message sequence number.
     pub message_id: u64,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Channel data messages
-// ------------------------------------------------------------------------------------------------
 
 /// Single channel data update message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,10 +319,6 @@ impl DydxWsGenericMsg {
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// Block height channel
-// ------------------------------------------------------------------------------------------------
-
 /// Block height subscription confirmed contents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DydxBlockHeightSubscribedContents {
@@ -370,10 +358,6 @@ pub struct DydxWsBlockHeightChannelData {
     pub version: String,
     pub contents: DydxBlockHeightChannelContents,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Markets channel
-// ------------------------------------------------------------------------------------------------
 
 /// Oracle price data for a market (full format from subscribed message).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,10 +421,6 @@ pub struct DydxMarketsContents {
     pub oracle_prices: Option<HashMap<String, DydxOraclePriceMarket>>,
 }
 
-// ------------------------------------------------------------------------------------------------
-// Trades channel
-// ------------------------------------------------------------------------------------------------
-
 /// Trade message from v4_trades channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -469,10 +449,6 @@ pub struct DydxTradeContents {
     /// Array of trades.
     pub trades: Vec<DydxTrade>,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Candles channel
-// ------------------------------------------------------------------------------------------------
 
 /// Candle/bar data from v4_candles channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,10 +484,6 @@ pub struct DydxCandle {
     pub orderbook_mid_price_open: Option<String>,
 }
 
-// ------------------------------------------------------------------------------------------------
-// Orderbook channel
-// ------------------------------------------------------------------------------------------------
-
 /// Order book price level (price, size tuple).
 pub type PriceLevel = (String, String);
 
@@ -545,10 +517,6 @@ pub struct DydxOrderbookSnapshotContents {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asks: Option<Vec<DydxPriceLevel>>,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Subaccounts channel
-// ------------------------------------------------------------------------------------------------
 
 /// Subaccount balance update.
 #[derive(Debug, Clone, Serialize, Deserialize)]

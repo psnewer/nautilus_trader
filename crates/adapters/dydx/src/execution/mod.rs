@@ -40,7 +40,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU32, AtomicU64},
+    atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use anyhow::Context;
@@ -532,6 +532,26 @@ impl ExecutionClient for DydxExecutionClient {
             let reason = "Cannot submit order: execution client not connected";
             tracing::error!("{}", reason);
             anyhow::bail!(reason);
+        }
+
+        // Check block height is available for short-term orders
+        let current_block = self.block_height.load(Ordering::Relaxed);
+        if current_block == 0 {
+            let reason = "Block height not initialized";
+            tracing::warn!(
+                "Cannot submit order {}: {}",
+                order.client_order_id(),
+                reason
+            );
+            self.core.generate_order_rejected(
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                reason,
+                cmd.ts_init,
+                false,
+            );
+            return Ok(());
         }
 
         // Check if order is already closed

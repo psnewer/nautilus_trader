@@ -2897,3 +2897,54 @@ async fn test_block_height_invalid_format() {
         "Parsing invalid block height should fail"
     );
 }
+
+#[rstest]
+#[tokio::test]
+async fn test_block_height_subscribed_parsing() {
+    use chrono::Utc;
+    use nautilus_dydx::websocket::{
+        enums::{DydxWsChannel, DydxWsMessageType},
+        messages::{DydxBlockHeightSubscribedContents, DydxWsBlockHeightSubscribedData},
+    };
+
+    let test_height = "98765432";
+    let subscribed_msg = DydxWsBlockHeightSubscribedData {
+        msg_type: DydxWsMessageType::Subscribed,
+        connection_id: "test-conn-456".to_string(),
+        message_id: 1,
+        channel: DydxWsChannel::BlockHeight,
+        id: "v4_block_height".to_string(),
+        contents: DydxBlockHeightSubscribedContents {
+            height: test_height.to_string(),
+            time: Utc::now(),
+        },
+    };
+
+    assert_eq!(
+        subscribed_msg.contents.height.parse::<u64>().unwrap(),
+        98765432_u64,
+        "Subscribed message height field should parse correctly"
+    );
+    assert_eq!(subscribed_msg.channel, DydxWsChannel::BlockHeight);
+    assert_eq!(subscribed_msg.msg_type, DydxWsMessageType::Subscribed);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_block_height_field_names_differ() {
+    // This test documents that subscribed and channel_data messages
+    // use different field names for block height
+    use nautilus_dydx::websocket::messages::{
+        DydxBlockHeightChannelContents, DydxBlockHeightSubscribedContents,
+    };
+
+    let subscribed_json = r#"{"height": "100", "time": "2024-01-01T00:00:00Z"}"#;
+    let subscribed: DydxBlockHeightSubscribedContents =
+        serde_json::from_str(subscribed_json).unwrap();
+    assert_eq!(subscribed.height, "100");
+
+    let channel_data_json = r#"{"blockHeight": "200", "time": "2024-01-01T00:00:00Z"}"#;
+    let channel_data: DydxBlockHeightChannelContents =
+        serde_json::from_str(channel_data_json).unwrap();
+    assert_eq!(channel_data.block_height, "200");
+}

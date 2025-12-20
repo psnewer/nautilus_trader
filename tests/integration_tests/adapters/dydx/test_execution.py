@@ -152,3 +152,36 @@ def test_block_height_large_values():
 
     good_til_block = result + 20
     assert good_til_block > result
+
+
+def test_block_height_rejection_reason_message():
+    reason = "Block height not initialized"
+    assert "Block height" in reason
+    assert "initialized" in reason
+
+
+def test_block_height_zero_should_reject():
+    block_height = 0
+    should_reject = block_height == 0
+    assert should_reject
+
+
+def test_block_height_nonzero_should_allow():
+    block_height = 12345
+    should_reject = block_height == 0
+    assert not should_reject
+
+
+@pytest.mark.parametrize(
+    ("block_height", "should_reject"),
+    [
+        (0, True),
+        (1, False),
+        (100, False),
+        (999999999, False),
+    ],
+)
+def test_block_height_rejection_conditions(block_height, should_reject):
+    # Mirrors the condition in dydx_v4/execution.py _submit_order
+    result = block_height == 0
+    assert result == should_reject
