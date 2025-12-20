@@ -45,6 +45,7 @@ use std::{
 };
 
 use futures_util::future;
+use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
     enums::{ContingencyType, OrderSide, OrderType, TimeInForce, TriggerType},
     identifiers::{ClientOrderId, InstrumentId, OrderListId},
@@ -445,7 +446,7 @@ impl SubmitBroadcaster {
         let interval_secs = self.config.health_check_interval_secs;
         let timeout_secs = self.config.health_check_timeout_secs;
 
-        let task = tokio::spawn(async move {
+        let task = get_runtime().spawn(async move {
             let mut ticker = interval(Duration::from_secs(interval_secs));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -659,7 +660,7 @@ impl SubmitBroadcaster {
                 ClientOrderId::new(format!("{}-{}", client_order_id.as_str(), idx))
             };
 
-            let handle = tokio::spawn(async move {
+            let handle = get_runtime().spawn(async move {
                 let client_id = transport.client_id.clone();
                 let result = transport
                     .submit_order(
@@ -1206,14 +1207,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_stats_collection() {
-        let report = create_test_report("ORDER-1");
-        let report_clone = report.clone();
-
+        // Both clients fail so broadcast waits for all of them (no early abort on success).
+        // This ensures both clients execute and record their stats before the function returns.
         let transports = vec![
-            create_stub_transport("client-0", move || {
-                let report = report_clone.clone();
-                async move { Ok(report) }
-            }),
+            create_stub_transport("client-0", || async { anyhow::bail!("Timeout error") }),
             create_stub_transport("client-1", || async { anyhow::bail!("Connection error") }),
         ];
 
@@ -1246,7 +1243,7 @@ mod tests {
 
         let client0 = stats.iter().find(|s| s.client_id == "client-0").unwrap();
         assert_eq!(client0.submit_count, 1);
-        assert_eq!(client0.error_count, 0);
+        assert_eq!(client0.error_count, 1);
 
         let client1 = stats.iter().find(|s| s.client_id == "client-1").unwrap();
         assert_eq!(client1.submit_count, 1);
@@ -1490,7 +1487,12 @@ mod tests {
                     .unwrap()
                     .push(client_order_id.as_str().to_string());
                 let report = self.report.clone();
-                Box::pin(async move { Ok(report) })
+                // Small delay to ensure all tasks start and capture IDs before any completes
+                // (with global runtime, tasks run concurrently and first success aborts others)
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Ok(report)
+                })
             }
 
             fn add_instrument(&self, _instrument: InstrumentAny) {}
@@ -1549,12 +1551,12 @@ mod tests {
 
         assert!(result.is_ok());
 
-        // Check captured client_order_ids
+        // Check captured client_order_ids (order is non-deterministic with concurrent execution)
         let ids = captured_ids.lock().unwrap();
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], "O-123"); // First client gets original ID
-        assert_eq!(ids[1], "O-123-1"); // Second client gets suffix -1
-        assert_eq!(ids[2], "O-123-2"); // Third client gets suffix -2
+        assert!(ids.contains(&"O-123".to_string())); // First client gets original ID
+        assert!(ids.contains(&"O-123-1".to_string())); // Second client gets suffix -1
+        assert!(ids.contains(&"O-123-2".to_string())); // Third client gets suffix -2
     }
 
     #[tokio::test]
