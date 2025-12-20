@@ -26,6 +26,7 @@ from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
 from nautilus_trader.adapters.binance.futures.execution import BinanceFuturesExecutionClient
 from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesInstrumentProvider
 from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesAccountInfo
+from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesAlgoOrder
 from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesSymbolConfig
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.common.component import LiveClock
@@ -1882,6 +1883,80 @@ class TestBinanceFuturesExecutionClient:
 
         # Assert - order is skipped, no reports returned
         assert len(reports) == 0
+
+    @pytest.mark.asyncio
+    async def test_algo_order_reconciliation_deduplicates_open_and_historical(self, mocker):
+        """
+        Test that when open_only=False, open orders are fetched first and deduplicated
+        against historical orders from allAlgoOrders endpoint.
+
+        This ensures orders older than 7 days (beyond allAlgoOrders limit) are still
+        captured via openAlgoOrders, while preventing duplicates.
+
+        """
+        # Order that appears in both endpoints (open and historical)
+        shared_order = {
+            "algoId": 1000000000001,
+            "clientAlgoId": "O-SHARED-001",
+            "algoType": "CONDITIONAL",
+            "orderType": "STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "BUY",
+            "positionSide": "BOTH",
+            "quantity": "10",
+            "algoStatus": "NEW",
+            "triggerPrice": "3000.00",
+            "workingType": "CONTRACT_PRICE",
+            "createTime": 1733900000000,
+        }
+
+        # Order only in historical (recently closed, within 7 days)
+        historical_only_order = {
+            "algoId": 1000000000002,
+            "clientAlgoId": "O-HISTORICAL-001",
+            "algoType": "CONDITIONAL",
+            "orderType": "STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "quantity": "5",
+            "algoStatus": "CANCELED",
+            "triggerPrice": "2500.00",
+            "workingType": "CONTRACT_PRICE",
+            "createTime": 1733900000000,
+        }
+
+        # Mock the HTTP account methods directly
+        mocker.patch.object(
+            self.exec_client._futures_http_account,
+            "query_open_algo_orders",
+            new=AsyncMock(return_value=[BinanceFuturesAlgoOrder(**shared_order)]),
+        )
+        mocker.patch.object(
+            self.exec_client._futures_http_account,
+            "query_all_algo_orders",
+            new=AsyncMock(
+                return_value=[
+                    BinanceFuturesAlgoOrder(**shared_order),  # Duplicate
+                    BinanceFuturesAlgoOrder(**historical_only_order),
+                ],
+            ),
+        )
+
+        # Act - open_only=False with active symbols triggers historical fetch
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols={"ETHUSDT"},
+            open_only=False,
+            start_ms=None,
+            end_ms=None,
+        )
+
+        # Assert - should have 2 reports, not 3 (shared order deduplicated)
+        assert len(reports) == 2
+        algo_ids = {r.venue_order_id.value for r in reports}
+        assert "1000000000001" in algo_ids  # Shared order
+        assert "1000000000002" in algo_ids  # Historical only order
 
     # -------------------------------------------------------------------------
     # Algo Order Modification Tests
