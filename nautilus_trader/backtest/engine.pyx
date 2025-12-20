@@ -5968,12 +5968,11 @@ cdef class OrderMatchingEngine:
             last_qty = Quantity.from_raw_c(min(order.quantity._mem.raw, last_qty._mem.raw), size_prec)
             self._cached_filled_qty[order.client_order_id] = Quantity.from_raw_c(last_qty._mem.raw, size_prec)
         else:
-            # Guard against underflow when order quantity was reduced below cached_filled_qty
-            # (can happen during contingent order updates)
             if order.quantity._mem.raw <= cached_filled_qty._mem.raw:
-                # Clean up stale cache entry to keep bookkeeping consistent
+                self._core.delete_order(order)
                 self._cached_filled_qty.pop(order.client_order_id, None)
                 return
+
             leaves_qty = Quantity.from_raw_c(order.quantity._mem.raw - cached_filled_qty._mem.raw, size_prec)
             last_qty = Quantity.from_raw_c(min(leaves_qty._mem.raw, last_qty._mem.raw), size_prec)
             cached_filled_qty._mem.raw += last_qty._mem.raw

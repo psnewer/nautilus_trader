@@ -1632,3 +1632,76 @@ class TestOrderMatchingEngine:
         assert total_filled == 50.0, (
             f"Total fill should be 50 (new liquidity). Got {total_filled} from {len(filled_events)} fill(s)"
         )
+
+    def test_fully_filled_order_not_rematched_on_subsequent_iterate(self) -> None:
+        # A fully-filled order should be removed from matching core to prevent
+        # duplicate fills on subsequent iterate() calls.
+
+        # Arrange
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=False,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        bid_delta = OrderBookDelta(
+            instrument_id=self.instrument.id,
+            action=BookAction.ADD,
+            order=BookOrder(
+                side=OrderSide.BUY,
+                price=Price.from_str("90.00"),
+                size=Quantity.from_str("100.000"),
+                order_id=100,
+            ),
+            flags=0,
+            sequence=0,
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine_l2.process_order_book_delta(bid_delta)
+
+        ask_delta = OrderBookDelta(
+            instrument_id=self.instrument.id,
+            action=BookAction.ADD,
+            order=BookOrder(
+                side=OrderSide.SELL,
+                price=Price.from_str("100.00"),
+                size=Quantity.from_str("50.000"),
+                order_id=1,
+            ),
+            flags=0,
+            sequence=1,
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine_l2.process_order_book_delta(ask_delta)
+
+        order = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("100.00"),
+            quantity=self.instrument.make_qty(50.0),
+        )
+        matching_engine_l2.process_order(order, self.account_id)
+
+        # Act
+        matching_engine_l2.iterate(timestamp_ns=1)
+
+        # Assert
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1, (
+            f"Expected exactly 1 fill (initial), but got {len(filled_events)} "
+            f"(duplicate fill on subsequent iterate)"
+        )
