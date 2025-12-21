@@ -384,34 +384,35 @@ async def test_request_instrument_receives_single_instrument(
     mock_pyo3_instrument = MagicMock()
     http_client.request_instrument = AsyncMock(return_value=mock_pyo3_instrument)
 
-    # Patch transform_instrument_from_pyo3 to return our fixture instrument
-    with patch(
-        "nautilus_trader.adapters.okx.data.transform_instrument_from_pyo3",
-        return_value=instrument,
-    ):
-        # Create request
-        request = RequestInstrument(
-            instrument_id=instrument.id,
-            start=None,
-            end=None,
-            client_id=ClientId(OKX_VENUE.value),
-            venue=OKX_VENUE,
-            callback=lambda x: None,
-            request_id=UUID4(),
-            ts_init=live_clock.timestamp_ns(),
-            params=None,
+    try:
+        # Patch transform_instrument_from_pyo3 to return our fixture instrument
+        with patch(
+            "nautilus_trader.adapters.okx.data.transform_instrument_from_pyo3",
+            return_value=instrument,
+        ):
+            # Create request
+            request = RequestInstrument(
+                instrument_id=instrument.id,
+                start=None,
+                end=None,
+                client_id=ClientId(OKX_VENUE.value),
+                venue=OKX_VENUE,
+                callback=lambda x: None,
+                request_id=UUID4(),
+                ts_init=live_clock.timestamp_ns(),
+                params=None,
+            )
+
+            # Act - Request the instrument
+            await client._request_instrument(request)
+
+        # Assert - Should receive exactly ONE instrument (not 2!)
+        assert len(received_instruments) == 1, (
+            f"Expected 1 instrument publication, got {len(received_instruments)}. "
+            f"This indicates duplicate publication bug! "
+            f"Received: {received_instruments}"
         )
-
-        # Act - Request the instrument
-        await client._request_instrument(request)
-
-    # Assert - Should receive exactly ONE instrument (not 2!)
-    assert len(received_instruments) == 1, (
-        f"Expected 1 instrument publication, got {len(received_instruments)}. "
-        f"This indicates duplicate publication bug! "
-        f"Received: {received_instruments}"
-    )
-    assert received_instruments[0].id == instrument.id
-
-    # Cleanup
-    data_engine.stop()
+        assert received_instruments[0].id == instrument.id
+    finally:
+        data_engine.stop()
+        await client._disconnect()
