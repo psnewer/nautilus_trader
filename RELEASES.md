@@ -78,6 +78,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed matching engine L2/L3 partial fill quantity calculation on subsequent book updates
 - Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed incorrect handling of data responses in msgbus (#3310), thanks @filipmacek
+- Fixed data engine to use separate aggregators for historical data (#3326), thanks @faysou
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
 - Fixed risk engine trailing stop order risk validations (#3160), thanks for reporting @GianC0
@@ -89,6 +90,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed `StreamingFeatherWriter` `_setup_streaming` with `replace_existing` config (#3234), thanks @cauta
 - Fixed conversion of streamed instruments to catalog (#3235), thanks @faysou
 - Fixed active liquidity calculation Pool profiler simulation (#3165), thanks @filipmacek
+- Fixed duplicate `on_instrument` callback in request flow for Python adapters (#3323), thanks @filipmacek
 - Fixed Betfair datetime encoding error in order status reports
 - Fixed Betfair login race condition during concurrent connections
 - Fixed Betfair parsing errors for undocumented codes
