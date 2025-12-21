@@ -1662,10 +1662,11 @@ mod tests {
         assert!(result.is_ok());
 
         // Check that both clients received unique client_order_ids
+        // Order is non-deterministic due to concurrent execution
         let ids = captured_ids.lock().unwrap();
         assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], "O-456"); // First client gets original ID
-        assert_eq!(ids[1], "O-456-1"); // Second client gets suffix -1
+        assert!(ids.contains(&"O-456".to_string()));
+        assert!(ids.contains(&"O-456-1".to_string()));
     }
 
     #[tokio::test]
