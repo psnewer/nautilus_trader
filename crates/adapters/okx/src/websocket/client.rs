@@ -134,7 +134,7 @@ pub const OKX_RATE_LIMIT_KEY_AMEND: &str = "amend";
 #[derive(Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.okx")
 )]
 pub struct OKXWebSocketClient {
     url: String,

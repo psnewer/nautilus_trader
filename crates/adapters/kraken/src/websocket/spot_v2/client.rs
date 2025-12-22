@@ -57,7 +57,7 @@ const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
 )]
 pub struct KrakenSpotWebSocketClient {
     url: String,

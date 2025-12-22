@@ -60,7 +60,7 @@ use crate::{
 
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.coinbase_intx")
 )]
 #[derive(Debug, Clone)]
 pub struct CoinbaseIntxFixClient {

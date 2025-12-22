@@ -41,7 +41,7 @@ use crate::common::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 pub struct BybitOrderCursorList {
     /// Collection of orders returned by the endpoint.
@@ -92,7 +92,7 @@ impl BybitOrderCursorList {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitServerTime {
@@ -633,7 +633,7 @@ pub type BybitInstrumentOptionResponse = BybitCursorListResponse<BybitInstrument
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 pub struct BybitFeeRate {
     pub symbol: Ustr,
@@ -750,7 +750,7 @@ pub type BybitWalletBalanceResponse = BybitListResponse<BybitWalletBalance>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitOrder {
@@ -1275,7 +1275,7 @@ pub type BybitNoConvertRepayResponse = BybitResponse<BybitNoConvertRepayResult>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "PascalCase")]
 pub struct BybitApiKeyPermissions {
@@ -1305,7 +1305,7 @@ pub struct BybitApiKeyPermissions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitAccountDetails {

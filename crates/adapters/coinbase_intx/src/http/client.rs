@@ -618,7 +618,7 @@ impl CoinbaseIntxHttpInnerClient {
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.coinbase_intx")
 )]
 pub struct CoinbaseIntxHttpClient {
     pub(crate) inner: Arc<CoinbaseIntxHttpInnerClient>,

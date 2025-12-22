@@ -40,7 +40,7 @@ use crate::{config::BookSnapshotOutput, machine::parse::parse_tardis_ws_message}
 /// Provides a client for connecting to a [Tardis Machine Server](https://docs.tardis.dev/api/tardis-machine).
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.tardis")
 )]
 #[derive(Debug, Clone)]
 pub struct TardisMachineClient {
