@@ -1480,7 +1480,9 @@ cdef class TimeBarAggregator(BarAggregator):
                         f"{fire_immediately=}, {start_time=}, {now=}, {self._bar_build_delay=}")
 
     cpdef void stop_timer(self):
-        self._clock.cancel_timer(str(self.bar_type))
+        cdef str timer_name = str(self.bar_type)
+        if timer_name in self._clock.timer_names:
+            self._clock.cancel_timer(timer_name)
 
     def get_start_time(self, now: datetime) -> datetime:
         """

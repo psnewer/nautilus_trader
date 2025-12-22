@@ -94,8 +94,8 @@ cdef class DataEngine(Component):
     cdef readonly dict[ClientId, DataClient] _clients
     cdef readonly dict[Venue, DataClient] _routing_map
     cdef readonly dict _order_book_intervals
-    cdef readonly dict[tuple, BarAggregator] _bar_aggregators
-    cdef readonly dict[tuple, SpreadQuoteAggregator] _spread_quote_aggregators
+    cdef readonly dict[tuple[BarType, UUID4], BarAggregator] _bar_aggregators
+    cdef readonly dict[tuple[InstrumentId, UUID4], SpreadQuoteAggregator] _spread_quote_aggregators
     cdef readonly dict[InstrumentId, list] _spread_quote_aggregator_handlers
     cdef readonly dict[InstrumentId, list[SyntheticInstrument]] _synthetic_quote_feeds
     cdef readonly dict[InstrumentId, list[SyntheticInstrument]] _synthetic_trade_feeds

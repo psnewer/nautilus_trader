@@ -72,6 +72,7 @@ from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import AggregationSource
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BarAggregation
@@ -4303,6 +4304,53 @@ class TestDataEngine:
         assert all(
             bar.bar_type == bar_type.standard() for bar in request_historical_bars
         ), "All historical bars should have the correct bar type"
+
+    def test_backfill_with_update_subscriptions_restores_live_mode(self):
+        # Arrange
+        self.data_engine.register_client(self.binance_client)
+        self.binance_client.start()
+
+        bar_spec = BarSpecification(1, BarAggregation.MINUTE, PriceType.LAST)
+        bar_type = BarType(ETHUSDT_BINANCE.id, bar_spec, AggregationSource.INTERNAL)
+
+        subscribe = SubscribeBars(
+            client_id=None,
+            venue=BINANCE,
+            bar_type=bar_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+        self.data_engine.execute(subscribe)
+
+        key = (bar_type.standard(), None)
+        aggregator = self.data_engine._bar_aggregators.get(key)
+        assert aggregator is not None
+        assert not aggregator.historical_mode
+        assert aggregator.is_running
+
+        # Simulate backfill switching aggregator to historical mode
+        self.data_engine._setup_bar_aggregator(bar_type, historical=True)
+        assert aggregator.historical_mode
+
+        # Act: Finalize with update_subscriptions=True
+        params = {"bar_types": (bar_type,), "update_subscriptions": True}
+        response = DataResponse(
+            client_id=ClientId("BINANCE"),
+            venue=BINANCE,
+            data_type=DataType(TradeTick),
+            data=[],
+            correlation_id=UUID4(),
+            response_id=UUID4(),
+            start=None,
+            end=None,
+            ts_init=self.clock.timestamp_ns(),
+            params=params,
+        )
+        self.data_engine._finalize_aggregated_bars_request(response)
+
+        # Assert
+        assert not aggregator.historical_mode
+        assert aggregator.is_running
 
     # TODO: Implement with new Rust datafusion backend"
     # def test_request_quote_ticks_when_catalog_registered_using_rust(self) -> None:

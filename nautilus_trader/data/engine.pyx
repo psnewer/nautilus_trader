@@ -2746,7 +2746,7 @@ cdef class DataEngine(Component):
 
         if isinstance(aggregator, TimeBarAggregator):
             if historical:
-                # Each aggregator gets its own independent clock
+                aggregator.stop_timer()
                 test_clock = TestClock()
                 aggregator.set_clock(test_clock)
             else:
@@ -2813,9 +2813,11 @@ cdef class DataEngine(Component):
 
             aggregator.set_running(False)
 
-            if not update_subscriptions:
+            if update_subscriptions:
+                self._setup_bar_aggregator(bar_type, historical=False)
+            else:
                 self._dispose_bar_aggregator(bar_type, historical=True, request_id=request_id)
-                self._bar_aggregators.pop(key)
+                self._bar_aggregators.pop(key, None)
 
     cpdef void _stop_bar_aggregator(self, MarketDataClient client, UnsubscribeBars command):
         key = self._get_bar_aggregator_key(command.bar_type)
@@ -2834,7 +2836,7 @@ cdef class DataEngine(Component):
         self._dispose_bar_aggregator(command.bar_type)
         self._unsubscribe_bar_aggregator(client, command)
 
-        del self._bar_aggregators[key]
+        self._bar_aggregators.pop(key, None)
 
     cpdef void _dispose_bar_aggregator(self, BarType bar_type, bint historical = False, UUID4 request_id = None):
         key = self._get_bar_aggregator_key(bar_type, request_id)
@@ -2931,7 +2933,7 @@ cdef class DataEngine(Component):
         self._dispose_spread_quote_aggregator(command.instrument_id)
         self._unsubscribe_spread_quote_aggregator(client, command)
 
-        del self._spread_quote_aggregators[key]
+        self._spread_quote_aggregators.pop(key, None)
 
     cpdef void _handle_spread_quote_tick_request(self, RequestQuoteTicks request):
         spread_instrument_id = request.instrument_id
@@ -3013,7 +3015,7 @@ cdef class DataEngine(Component):
 
             if not update_subscriptions:
                 self._dispose_spread_quote_aggregator(spread_instrument_id, historical=True, request_id=request.id)
-                del self._spread_quote_aggregators[key]
+                self._spread_quote_aggregators.pop(key, None)
 
         # Send response for the original request to trigger its callback
         final_response = DataResponse(
