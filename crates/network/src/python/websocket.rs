@@ -355,7 +355,7 @@ mod tests {
 
     use futures_util::{SinkExt, StreamExt};
     use nautilus_core::python::IntoPyObjectNautilusExt;
-    use pyo3::prelude::*;
+    use pyo3::{prelude::*, types::PyBytes};
     use tokio::{
         net::TcpListener,
         task::{self, JoinHandle},
@@ -364,13 +364,14 @@ mod tests {
     use tokio_tungstenite::{
         accept_hdr_async,
         tungstenite::{
+            Message,
             handshake::server::{self, Callback},
             http::HeaderValue,
         },
     };
     use tracing_test::traced_test;
 
-    use crate::websocket::{WebSocketClient, WebSocketConfig};
+    use crate::websocket::{MessageHandler, WebSocketClient, WebSocketConfig};
 
     struct TestServer {
         task: JoinHandle<()>,
@@ -531,20 +532,19 @@ counter = Counter()
 
         let handler_clone = Python::attach(|py| handler.clone_ref(py));
 
-        let message_handler: super::super::types::MessageHandler =
-            std::sync::Arc::new(move |msg: Message| {
-                Python::attach(|py| {
-                    let data = match msg {
-                        Message::Binary(data) => data.to_vec(),
-                        Message::Text(text) => text.as_bytes().to_vec(),
-                        _ => return,
-                    };
-                    let py_bytes = PyBytes::new(py, &data);
-                    if let Err(e) = handler_clone.call1(py, (py_bytes,)) {
-                        tracing::error!("Error calling handler: {e}");
-                    }
-                });
+        let message_handler: MessageHandler = std::sync::Arc::new(move |msg: Message| {
+            Python::attach(|py| {
+                let data = match msg {
+                    Message::Binary(data) => data.to_vec(),
+                    Message::Text(text) => text.as_bytes().to_vec(),
+                    _ => return,
+                };
+                let py_bytes = PyBytes::new(py, &data);
+                if let Err(e) = handler_clone.call1(py, (py_bytes,)) {
+                    tracing::error!("Error calling handler: {e}");
+                }
             });
+        });
 
         let client =
             WebSocketClient::connect(config, Some(message_handler), None, None, vec![], None)
@@ -621,20 +621,19 @@ counter = Counter()
 
         let handler_clone = Python::attach(|py| handler.clone_ref(py));
 
-        let message_handler: super::super::types::MessageHandler =
-            std::sync::Arc::new(move |msg: Message| {
-                Python::attach(|py| {
-                    let data = match msg {
-                        Message::Binary(data) => data.to_vec(),
-                        Message::Text(text) => text.as_bytes().to_vec(),
-                        _ => return,
-                    };
-                    let py_bytes = PyBytes::new(py, &data);
-                    if let Err(e) = handler_clone.call1(py, (py_bytes,)) {
-                        tracing::error!("Error calling handler: {e}");
-                    }
-                });
+        let message_handler: MessageHandler = std::sync::Arc::new(move |msg: Message| {
+            Python::attach(|py| {
+                let data = match msg {
+                    Message::Binary(data) => data.to_vec(),
+                    Message::Text(text) => text.as_bytes().to_vec(),
+                    _ => return,
+                };
+                let py_bytes = PyBytes::new(py, &data);
+                if let Err(e) = handler_clone.call1(py, (py_bytes,)) {
+                    tracing::error!("Error calling handler: {e}");
+                }
             });
+        });
 
         let client =
             WebSocketClient::connect(config, Some(message_handler), None, None, vec![], None)
