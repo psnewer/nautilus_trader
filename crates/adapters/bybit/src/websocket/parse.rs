@@ -987,7 +987,9 @@ mod tests {
     }
 
     #[rstest]
-    fn parse_ws_kline_into_bar() {
+    #[case::timestamp_on_open(false, 1_672_324_800_000_000_000)]
+    #[case::timestamp_on_close(true, 1_672_325_100_000_000_000)]
+    fn parse_ws_kline_into_bar(#[case] timestamp_on_close: bool, #[case] expected_ts_event: u64) {
         use std::num::NonZero;
 
         let instrument = linear_instrument();
@@ -1002,7 +1004,7 @@ mod tests {
         };
         let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::External);
 
-        let bar = parse_ws_kline_bar(kline, &instrument, bar_type, false, TS).unwrap();
+        let bar = parse_ws_kline_bar(kline, &instrument, bar_type, timestamp_on_close, TS).unwrap();
 
         assert_eq!(bar.bar_type, bar_type);
         assert_eq!(bar.open, instrument.make_price(16649.5));
@@ -1010,7 +1012,7 @@ mod tests {
         assert_eq!(bar.low, instrument.make_price(16608.0));
         assert_eq!(bar.close, instrument.make_price(16677.0));
         assert_eq!(bar.volume, instrument.make_qty(2.081, None));
-        assert_eq!(bar.ts_event, UnixNanos::new(1_672_324_800_000_000_000));
+        assert_eq!(bar.ts_event, UnixNanos::new(expected_ts_event));
         assert_eq!(bar.ts_init, TS);
     }
 

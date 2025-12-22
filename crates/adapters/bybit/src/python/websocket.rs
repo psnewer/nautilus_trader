@@ -149,6 +149,11 @@ impl BybitWebSocketClient {
         self.set_mm_level(mm_level);
     }
 
+    #[pyo3(name = "set_bars_timestamp_on_close")]
+    fn py_set_bars_timestamp_on_close(&mut self, value: bool) {
+        self.set_bars_timestamp_on_close(value);
+    }
+
     #[pyo3(name = "connect")]
     fn py_connect<'py>(
         &mut self,

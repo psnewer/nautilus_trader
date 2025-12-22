@@ -100,6 +100,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed Binance ADL orders with TRADE execution type
 - Fixed Binance Futures Algo Order API for conditional orders (#3287), thanks for reporting @KaizynX
 - Fixed Bybit historical bars requests partial (unclosed) bar filtering
+- Fixed Bybit WebSocket bars to respect `timestamp_on_close` config
 - Fixed `BybitHttpClient` type stub pyi signatures (#3238), thanks @sunlei
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Databento Arrow serialization for `PRICE_UNDEF` (#3183), thanks for reporting @marloncalvo

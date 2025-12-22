@@ -170,6 +170,7 @@ pub(super) struct FeedHandler {
     account_id: Option<AccountId>,
     mm_level: Arc<AtomicU8>,
     product_type: Option<BybitProductType>,
+    bars_timestamp_on_close: bool,
     quote_cache: QuoteCache,
     funding_cache: FundingCache,
     retry_manager: RetryManager<BybitWsError>,
@@ -191,6 +192,7 @@ impl FeedHandler {
         out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
+        bars_timestamp_on_close: bool,
         mm_level: Arc<AtomicU8>,
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
@@ -208,6 +210,7 @@ impl FeedHandler {
             account_id,
             mm_level,
             product_type,
+            bars_timestamp_on_close,
             quote_cache: QuoteCache::new(),
             funding_cache,
             retry_manager: create_websocket_retry_manager(),
@@ -873,7 +876,13 @@ impl FeedHandler {
                             if !kline.confirm {
                                 continue;
                             }
-                            match parse_ws_kline_bar(kline, instrument, bar_type, false, ts_init) {
+                            match parse_ws_kline_bar(
+                                kline,
+                                instrument,
+                                bar_type,
+                                self.bars_timestamp_on_close,
+                                ts_init,
+                            ) {
                                 Ok(bar) => data_vec.push(Data::Bar(bar)),
                                 Err(e) => tracing::error!("Error parsing kline to bar: {e}"),
                             }
@@ -1562,6 +1571,7 @@ mod tests {
             out_tx,
             None,
             None,
+            true,
             Arc::new(AtomicU8::new(0)),
             auth_tracker,
             subscriptions,

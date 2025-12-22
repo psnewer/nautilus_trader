@@ -128,6 +128,7 @@ pub struct BybitWebSocketClient {
     is_authenticated: Arc<AtomicBool>,
     account_id: Option<AccountId>,
     mm_level: Arc<AtomicU8>,
+    bars_timestamp_on_close: bool,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     funding_cache: FundingCache,
     cancellation_token: CancellationToken,
@@ -165,6 +166,7 @@ impl Clone for BybitWebSocketClient {
             is_authenticated: Arc::clone(&self.is_authenticated),
             account_id: self.account_id,
             mm_level: Arc::clone(&self.mm_level),
+            bars_timestamp_on_close: self.bars_timestamp_on_close,
             instruments_cache: Arc::clone(&self.instruments_cache),
             funding_cache: Arc::clone(&self.funding_cache),
             cancellation_token: self.cancellation_token.clone(),
@@ -217,9 +219,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -265,9 +268,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -313,9 +317,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -467,6 +472,7 @@ impl BybitWebSocketClient {
         let funding_cache = Arc::clone(&self.funding_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
+        let bars_timestamp_on_close = self.bars_timestamp_on_close;
         let mm_level = Arc::clone(&self.mm_level);
         let cmd_tx_for_reconnect = cmd_tx.clone();
         let auth_tracker = self.auth_tracker.clone();
@@ -480,6 +486,7 @@ impl BybitWebSocketClient {
                 out_tx.clone(),
                 account_id,
                 product_type,
+                bars_timestamp_on_close,
                 mm_level.clone(),
                 auth_tracker,
                 subscriptions.clone(),
@@ -890,6 +897,14 @@ impl BybitWebSocketClient {
     /// Sets the account market maker level.
     pub fn set_mm_level(&self, mm_level: u8) {
         self.mm_level.store(mm_level, Ordering::Relaxed);
+    }
+
+    /// Sets whether bar timestamps should use the close time.
+    ///
+    /// When `true` (default), bar `ts_event` is set to the bar's close time.
+    /// When `false`, bar `ts_event` is set to the bar's open time.
+    pub fn set_bars_timestamp_on_close(&mut self, value: bool) {
+        self.bars_timestamp_on_close = value;
     }
 
     /// Returns a reference to the instruments cache.
