@@ -518,8 +518,6 @@ impl BitmexWebSocketClient {
             headers: vec![(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())],
             heartbeat: self.heartbeat,
             heartbeat_msg: None,
-            message_handler: Some(message_handler),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: None, // Use default
             reconnect_delay_max_ms: None,     // Use default
@@ -531,6 +529,8 @@ impl BitmexWebSocketClient {
         let keyed_quotas = vec![];
         let client = WebSocketClient::connect(
             config,
+            Some(message_handler),
+            Some(ping_handler),
             None, // post_reconnection
             keyed_quotas,
             None, // default_quota

@@ -4570,23 +4570,25 @@ class WebSocketConfig:
     def __init__(
         self,
         url: str,
-        handler: Callable[..., Any],
         headers: list[tuple[str, str]],
         heartbeat: int | None = None,
         heartbeat_msg: str | None = None,
-        ping_handler: Callable[..., Any] | None = None,
         reconnect_timeout_ms: int | None = 10_000,
         reconnect_delay_initial_ms: int | None = 2_000,
         reconnect_delay_max_ms: int | None = 30_000,
         reconnect_backoff_factor: float | None = 1.5,
         reconnect_jitter_ms: int | None = 100,
+        reconnect_max_attempts: int | None = None,
     ) -> None: ...
 
 class WebSocketClient:
     @classmethod
     def connect(
         cls,
+        loop_: Any,
         config: WebSocketConfig,
+        handler: Callable[..., Any],
+        ping_handler: Callable[..., Any] | None = None,
         post_reconnection: Callable[..., None] | None = None,
         keyed_quotas: list[tuple[str, Quota]] = [],
         default_quota: Quota | None = None,

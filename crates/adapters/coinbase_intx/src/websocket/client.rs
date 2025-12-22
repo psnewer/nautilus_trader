@@ -208,10 +208,8 @@ impl CoinbaseIntxWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())],
-            message_handler: None, // Will be handled by the returned reader
             heartbeat: self.heartbeat,
             heartbeat_msg: None,
-            ping_handler: None,
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: None, // Use default
             reconnect_delay_max_ms: None,     // Use default

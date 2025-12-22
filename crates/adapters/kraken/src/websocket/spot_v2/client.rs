@@ -139,8 +139,6 @@ impl KrakenSpotWebSocketClient {
         let ws_config = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![],
-            message_handler: Some(raw_handler),
-            ping_handler: None,
             heartbeat: self.config.heartbeat_interval_secs,
             heartbeat_msg: Some(WS_PING_MSG.to_string()),
             reconnect_timeout_ms: Some(5_000),
@@ -153,6 +151,8 @@ impl KrakenSpotWebSocketClient {
 
         let ws_client = WebSocketClient::connect(
             ws_config,
+            Some(raw_handler),
+            None,   // ping_handler
             None,   // post_reconnection
             vec![], // keyed_quotas
             None,   // default_quota

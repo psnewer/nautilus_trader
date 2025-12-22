@@ -344,10 +344,8 @@ impl BybitWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: Self::default_headers(),
-            message_handler: Some(raw_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: Some(ping_msg),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: Some(500),
             reconnect_delay_max_ms: Some(5_000),
@@ -378,7 +376,14 @@ impl BybitWebSocketClient {
 
             match tokio::time::timeout(
                 Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                WebSocketClient::connect(config.clone(), None, vec![], None),
+                WebSocketClient::connect(
+                    config.clone(),
+                    Some(raw_handler.clone()),
+                    Some(ping_handler.clone()),
+                    None,
+                    vec![],
+                    None,
+                ),
             )
             .await
             {

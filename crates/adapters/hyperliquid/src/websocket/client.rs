@@ -157,10 +157,8 @@ impl HyperliquidWebSocketClient {
         let cfg = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![],
-            message_handler: Some(message_handler),
             heartbeat: Some(30),
             heartbeat_msg: Some(HYPERLIQUID_HEARTBEAT_MSG.to_string()),
-            ping_handler: None,
             reconnect_timeout_ms: Some(15_000),
             reconnect_delay_initial_ms: Some(250),
             reconnect_delay_max_ms: Some(5_000),
@@ -168,7 +166,8 @@ impl HyperliquidWebSocketClient {
             reconnect_jitter_ms: Some(200),
             reconnect_max_attempts: None,
         };
-        let client = WebSocketClient::connect(cfg, None, vec![], None).await?;
+        let client =
+            WebSocketClient::connect(cfg, Some(message_handler), None, None, vec![], None).await?;
 
         // Atomically swap connection state to the client's atomic
         self.connection_mode.store(client.connection_mode_atomic());

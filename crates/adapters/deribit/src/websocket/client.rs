@@ -331,8 +331,6 @@ impl DeribitWebSocketClient {
             headers: vec![(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())],
             heartbeat: self.heartbeat_interval,
             heartbeat_msg: None, // Deribit uses JSON-RPC heartbeat, not text ping
-            message_handler: Some(message_handler),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: None,
             reconnect_delay_max_ms: None,
@@ -347,6 +345,8 @@ impl DeribitWebSocketClient {
         // Connect the WebSocket
         let ws_client = WebSocketClient::connect(
             config,
+            Some(message_handler),
+            Some(ping_handler),
             None, // post_reconnection
             keyed_quotas,
             Some(*DERIBIT_WS_SUBSCRIPTION_QUOTA), // Default quota

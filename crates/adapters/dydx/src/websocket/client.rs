@@ -330,10 +330,8 @@ impl DydxWebSocketClient {
         let cfg = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![],
-            message_handler: Some(message_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: None,
-            ping_handler: None,
             reconnect_timeout_ms: Some(15_000),
             reconnect_delay_initial_ms: Some(250),
             reconnect_delay_max_ms: Some(5_000),
@@ -342,9 +340,16 @@ impl DydxWebSocketClient {
             reconnect_max_attempts: None,
         };
 
-        let client = WebSocketClient::connect(cfg, None, vec![], Some(*DYDX_WS_SUBSCRIPTION_QUOTA))
-            .await
-            .map_err(|e| DydxWsError::Transport(e.to_string()))?;
+        let client = WebSocketClient::connect(
+            cfg,
+            Some(message_handler),
+            None,
+            None,
+            vec![],
+            Some(*DYDX_WS_SUBSCRIPTION_QUOTA),
+        )
+        .await
+        .map_err(|e| DydxWsError::Transport(e.to_string()))?;
 
         // Update connection state atomically
         self.connection_mode.store(client.connection_mode_atomic());
