@@ -11,6 +11,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Kraken integration adapter
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
 - Added initial backtest visualization tearsheets with plotly
+- Added theme support to `bars_with_fills` chart (#3329), thanks @faysou
 - Added price protection support for market orders (#3065), thanks @Antifrajz
 - Added `Quantity.from_decimal` constructor (#3189), thanks @faysou
 - Added `Price.from_decimal` constructor
