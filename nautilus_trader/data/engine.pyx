@@ -3122,7 +3122,7 @@ cdef class DataEngine(Component):
 
             aggregator.set_historical_mode(historical, self._handle_spread_quote)
 
-        # BSubscribe aggregator to message bus to receive underlying data
+        # Subscribe aggregator to message bus to receive underlying data
         for leg_id in aggregator._leg_ids:
             topic = self._topic_cache.get_quotes_topic(leg_id, historical)
             self._msgbus.subscribe(
