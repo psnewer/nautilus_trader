@@ -37,11 +37,11 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
 
-  # rsa crate timing sidechannel (Marvin Attack) - transitive via sqlx-mysql
-  # We only use PostgreSQL, not MySQL, so this advisory does not affect us
+  # ruint reciprocal_mg10 unsoundness - transitive via alloy/nybbles
+  # We do not use reciprocal_mg10 directly, and alloy only uses ruint for bigint operations
   # No fix available upstream
-  # TODO: Monitor https://github.com/RustCrypto/RSA for constant-time implementation
-  { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql, we use PostgreSQL only (not affected)" },
+  # TODO: Monitor https://github.com/recmo/uint/issues/550 for fix
+  { id = "RUSTSEC-2025-0137", reason = "ruint via alloy, we don't use reciprocal_mg10 (not affected)" },
 ]
 
 # =============================================================================

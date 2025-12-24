@@ -30,6 +30,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Bybit spot margin auto-borrow and auto-repay with `auto_repay_spot_borrows` config option
 - Added Bybit spot margin manual operations (`BybitMarginAction`) for strategy-controlled borrow/repay via `query_account`
 - Added Bybit HTTP request_tickers support (#3241), thanks @TaiShanQ
+- Added Databento subscription acknowledgement handling (#3337), thanks @shzhng
+- Added Databento historical client consolidated schema support (#3338), thanks @shzhng
 - Added Interactive Brokers optional exchange param for spread contracts (#3319), thanks @faysou
 - Added Polymarket Gamma API support for instrument loading (#3141), thanks @DeirhX
 - Added OKX historical trades requests

@@ -33,13 +33,12 @@ use nautilus_model::{
 use pyo3::prelude::*;
 use time::OffsetDateTime;
 
+use super::types::DatabentoSubscriptionAck;
 use crate::{
     live::{DatabentoFeedHandler, LiveCommand, LiveMessage},
     symbology::{check_consistent_symbology, infer_symbology_type, instrument_id_to_symbol_string},
     types::DatabentoPublisher,
 };
-
-use super::types::DatabentoSubscriptionAck;
 
 #[cfg_attr(
     feature = "python",
