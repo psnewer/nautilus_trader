@@ -326,7 +326,7 @@ impl DatabentoDataClient {
                                 // TODO: Forward to appropriate handler
                             }
                             Some(LiveMessage::SubscriptionAck(ack)) => {
-                                tracing::info!("Subscription acknowledged: {}", ack.message);
+                                tracing::debug!("Received subscription ack: {}", ack.message);
                             }
                             Some(LiveMessage::Error(error)) => {
                                 tracing::error!("Feed handler error: {error}");

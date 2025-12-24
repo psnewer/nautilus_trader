@@ -2638,7 +2638,7 @@ cdef class DataEngine(Component):
         # Aggregator exists but not running, start it
         if not (key not in self._bar_aggregators or not self._bar_aggregators[key].is_running):
             # Aggregator exists and is running
-            self._log.error(f"Aggregator for {command.bar_type} is currently in use, subscription can't be started.")
+            self._log.warning(f"Aggregator for {command.bar_type} is currently in use, subscription can't be started.")
             return
 
         self._create_bar_aggregator(command.bar_type, command.params)

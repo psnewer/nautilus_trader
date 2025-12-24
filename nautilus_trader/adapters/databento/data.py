@@ -1181,12 +1181,10 @@ class DatabentoDataClient(LiveMarketDataClient):
         self,
         record: object,
     ) -> None:
-        # Handle subscription acknowledgements
         if isinstance(record, DatabentoSubscriptionAck):
             self._handle_subscription_ack(record)
             return
 
-        # TODO: Improve the efficiency of this
         if isinstance(record, nautilus_pyo3.InstrumentStatus):
             data = InstrumentStatus.from_pyo3(record)
         elif isinstance(record, DatabentoImbalance):
@@ -1201,7 +1199,7 @@ class DatabentoDataClient(LiveMarketDataClient):
         self._handle_data(data)
 
     def _handle_subscription_ack(self, ack: DatabentoSubscriptionAck) -> None:
-        self._log.info(f"Subscription acknowledged: {ack.message}", LogColor.GREEN)
+        self._log.info(f"Subscription acknowledged: {ack.message}", LogColor.BLUE)
 
     def _handle_msg(
         self,
