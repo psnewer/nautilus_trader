@@ -21,6 +21,7 @@ import pytest
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MAX_PRICE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MIN_PRICE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderStatus
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderType
@@ -30,6 +31,8 @@ from nautilus_trader.adapters.polymarket.schemas.book import PolymarketBookSnaps
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuotes
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTickSizeChange
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTrade
+from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
+from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeReport
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketOpenOrder
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserOrder
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
@@ -622,6 +625,109 @@ def test_parse_empty_book_snapshot_in_backtest_engine():
 
     # Assert - should complete without crashing
     engine.run()
+
+
+def test_trade_report_get_asset_id_taker_returns_trade_asset_id() -> None:
+    """
+    Test that get_asset_id returns the trade's asset_id when the user is the taker.
+    """
+    # Arrange
+    taker_asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+    maker_asset_id = "48331043336612883890938759509493159234755048973500640148014422747788308965732"
+
+    trade_report = PolymarketTradeReport(
+        id="test-trade-id",
+        taker_order_id="taker-order-123",
+        market="0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        asset_id=taker_asset_id,
+        side=PolymarketOrderSide.BUY,
+        size="100",
+        fee_rate_bps="0",
+        price="0.5",
+        status="MINED",
+        match_time="1725868859",
+        last_update="1725868885",
+        outcome="Yes",
+        bucket_index=0,
+        owner="test-owner",
+        maker_address="0x1234",
+        transaction_hash="0xabcd",
+        maker_orders=[
+            PolymarketMakerOrder(
+                asset_id=maker_asset_id,
+                fee_rate_bps="0",
+                maker_address="0x5678",
+                matched_amount="100",
+                order_id="maker-order-456",
+                outcome="No",
+                owner="maker-owner",
+                price="0.5",
+            ),
+        ],
+        trader_side=PolymarketLiquiditySide.TAKER,
+    )
+
+    # Act
+    result = trade_report.get_asset_id("taker-order-123")
+
+    # Assert
+    assert result == taker_asset_id
+
+
+def test_trade_report_get_asset_id_maker_returns_maker_order_asset_id() -> None:
+    """
+    Test that get_asset_id returns the maker order's asset_id when the user is a maker.
+
+    This is critical for cross-asset matches where a YES maker order is matched against
+    a NO taker order (or vice versa). The maker's asset_id may differ from the trade's
+    asset_id (which represents the taker's asset).
+
+    Regression test for
+    https://github.com/nautechsystems/nautilus_trader/issues/3345
+
+    """
+    # Arrange
+    taker_asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+    maker_asset_id = "48331043336612883890938759509493159234755048973500640148014422747788308965732"
+
+    trade_report = PolymarketTradeReport(
+        id="test-trade-id",
+        taker_order_id="taker-order-123",
+        market="0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        asset_id=taker_asset_id,  # Taker was trading YES
+        side=PolymarketOrderSide.BUY,
+        size="100",
+        fee_rate_bps="0",
+        price="0.5",
+        status="MINED",
+        match_time="1725868859",
+        last_update="1725868885",
+        outcome="Yes",
+        bucket_index=0,
+        owner="test-owner",
+        maker_address="0x1234",
+        transaction_hash="0xabcd",
+        maker_orders=[
+            PolymarketMakerOrder(
+                asset_id=maker_asset_id,  # Maker was trading NO (different asset!)
+                fee_rate_bps="0",
+                maker_address="0x5678",
+                matched_amount="100",
+                order_id="maker-order-456",
+                outcome="No",
+                owner="maker-owner",
+                price="0.5",
+            ),
+        ],
+        trader_side=PolymarketLiquiditySide.MAKER,
+    )
+
+    # Act
+    result = trade_report.get_asset_id("maker-order-456")
+
+    # Assert
+    assert result == maker_asset_id
+    assert result != taker_asset_id
 
 
 def test_parse_open_order_to_order_status_report_ts_accepted():

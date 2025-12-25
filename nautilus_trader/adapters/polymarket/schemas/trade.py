@@ -87,6 +87,16 @@ class PolymarketTradeReport(msgspec.Struct, frozen=True):
 
         raise ValueError(f"Invalid maker order ID {filled_user_order_id}")
 
+    def get_asset_id(self, filled_user_order_id: str) -> str:
+        # - For taker fills, returns the taker's asset_id.
+        # - For maker fills, returns the maker order's asset_id (which may differ
+        # from the taker's asset_id in cross-asset matches).
+        if self.trader_side == PolymarketLiquiditySide.TAKER:
+            return self.asset_id
+        else:
+            order = self.get_maker_order(filled_user_order_id)
+            return order.asset_id
+
     def liquidity_side(self) -> LiquiditySide:
         if self.trader_side == PolymarketLiquiditySide.TAKER:
             return LiquiditySide.TAKER
