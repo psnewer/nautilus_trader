@@ -194,6 +194,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
 - Standardized dYdX per adapter guide conventions (#3267), thanks @nicolad
 - Changed Interactive Brokers default quote tick subscription to batch quotes (#3196), thanks @faysou
+- Removed redundant debug code for reconcile execution (#3344), thanks @TaiShanQ
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
 - Refined spread support (#3284), thanks @faysou
 - Refined support for monthly and yearly bars (#3166), thanks @faysou

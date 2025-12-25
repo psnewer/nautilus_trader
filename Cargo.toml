@@ -131,6 +131,7 @@ base64 = "0.22.1"
 binary-heap-plus = "0.5.0"
 bip32 = "0.5.3"
 bytes = { version = "1.11.0", features = ["serde"] }
+# Keep capnp in line with hypersync-client
 capnp = "0.23.2"
 chrono = { version = "0.4.42", default-features = false, features = [
   "serde",
@@ -191,6 +192,7 @@ log = { version = "0.4.29", features = [
 ] }
 memchr = "2.7.6"
 nonzero_ext = "0.3.0"
+# Keep object_store major version in line with datafusion
 object_store = { version = "0.12.4", default-features = false, features = [
   "fs",
 ] }
@@ -221,7 +223,7 @@ rand = { version = "0.9.2", default-features = false, features = [
   "std",
   "thread_rng",
 ] }
-redis = { version = "1.0.1", default-features = false, features = [
+redis = { version = "1.0.2", default-features = false, features = [
   "connection-manager",
   "sentinel",
   "streams",
@@ -359,6 +361,7 @@ turmoil = "0.7.0"
 # -----------------------------------------------------------------------------
 # Build dependencies
 # -----------------------------------------------------------------------------
+# Keep capnpc in line with capnp
 capnpc = "0.23.3"
 cbindgen = "0.29.2"
 walkdir = "2.5.0"

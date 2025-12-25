@@ -142,14 +142,9 @@ skip = [
   { crate = "darling_macro" },
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
-  { crate = "syn" },
 
   # Case conversion - version fragmentation via derive_more
   { crate = "convert_case" },
-
-  # Compression crates - version fragmentation between polars and parquet
-  { crate = "brotli" },
-  { crate = "brotli-decompressor" },
 
   # Common utility crates with version fragmentation across ecosystem
   { crate = "base64" },
