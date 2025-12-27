@@ -119,7 +119,7 @@ impl Display for FillModel {
 impl Default for FillModel {
     /// Creates a new default [`FillModel`] instance.
     fn default() -> Self {
-        Self::new(0.5, 0.5, 0.1, None).unwrap()
+        Self::new(1.0, 1.0, 0.0, None).unwrap()
     }
 }
 

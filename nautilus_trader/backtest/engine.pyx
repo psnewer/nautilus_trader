@@ -87,6 +87,7 @@ from nautilus_trader.core.rust.common cimport TimeEventHandler_t
 from nautilus_trader.core.rust.common cimport logging_is_colored
 from nautilus_trader.core.rust.common cimport vec_time_event_handlers_drop
 from nautilus_trader.core.rust.core cimport CVec
+from nautilus_trader.core.rust.model cimport FIXED_PRECISION
 from nautilus_trader.core.rust.model cimport AccountType
 from nautilus_trader.core.rust.model cimport AggregationSource
 from nautilus_trader.core.rust.model cimport AggressorSide
@@ -500,6 +501,7 @@ cdef class BacktestEngine:
         bar_execution: bool = True,
         bar_adaptive_high_low_ordering: bool = False,
         trade_execution: bool = False,
+        liquidity_consumption: bool = False,
         allow_cash_borrowing: bool = False,
         frozen_account: bool = False,
         price_protection_points=None,
@@ -567,6 +569,10 @@ cdef class BacktestEngine:
             - If Low is closer to Open than High then the processing order is Open, Low, High, Close.
         trade_execution : bool, default False
             If trades should be processed by the matching engine(s) (and move the market).
+        liquidity_consumption : bool, default False
+            If liquidity consumption should be tracked per price level. When enabled, fills
+            consume available liquidity which resets when fresh data arrives at that level.
+            When disabled, each iteration can fill against the full book liquidity independently.
         allow_cash_borrowing : bool, default False
             If cash accounts should allow borrowing (negative balances).
         frozen_account : bool, default False
@@ -638,6 +644,7 @@ cdef class BacktestEngine:
             bar_execution=bar_execution,
             bar_adaptive_high_low_ordering=bar_adaptive_high_low_ordering,
             trade_execution=trade_execution,
+            liquidity_consumption=liquidity_consumption,
             price_protection_points=normalized_price_protection,
         )
 
@@ -2424,6 +2431,10 @@ cdef class SimulatedExchange:
         marketable orders from executing at excessively aggressive prices.
     trade_execution : bool, default False
         If trades should be processed by the matching engine(s) (and move the market).
+    liquidity_consumption : bool, default False
+        If liquidity consumption should be tracked per price level. When enabled, fills
+        consume available liquidity which resets when fresh data arrives at that level.
+        When disabled, each iteration can fill against the full book liquidity independently.
 
     Raises
     ------
@@ -2472,6 +2483,7 @@ cdef class SimulatedExchange:
         bint bar_execution = True,
         bint bar_adaptive_high_low_ordering = False,
         bint trade_execution = False,
+        bint liquidity_consumption = False,
         price_protection_points=None,
     ) -> None:
         Condition.not_empty(starting_balances, "starting_balances")
@@ -2514,6 +2526,7 @@ cdef class SimulatedExchange:
         self.bar_execution = bar_execution
         self.bar_adaptive_high_low_ordering = bar_adaptive_high_low_ordering
         self.trade_execution = trade_execution
+        self.liquidity_consumption = liquidity_consumption
         self.price_protection_points = price_protection_points if price_protection_points is not None else 0
 
         # Execution models
@@ -2670,6 +2683,7 @@ cdef class SimulatedExchange:
             bar_execution=self.bar_execution,
             bar_adaptive_high_low_ordering=self.bar_adaptive_high_low_ordering,
             trade_execution=self.trade_execution,
+            liquidity_consumption=self.liquidity_consumption,
             price_protection_points=self.price_protection_points,
         )
 
@@ -3452,6 +3466,8 @@ cdef class OrderMatchingEngine:
         If bars should be processed by the matching engine (and move the market).
     trade_execution : bool, default False
         If trades should be processed by the matching engine (and move the market).
+    liquidity_consumption : bool, default False
+        If liquidity consumption should be tracked per price level.
     reject_stop_orders : bool, default True
         If stop orders are rejected if already in the market on submitting.
     support_gtd_orders : bool, default True
@@ -3496,6 +3512,7 @@ cdef class OrderMatchingEngine:
         bint bar_execution = True,
         bint bar_adaptive_high_low_ordering = False,
         bint trade_execution = False,
+        bint liquidity_consumption = False,
         price_protection_points=None,
     ) -> None:
         self._clock = clock
@@ -3522,6 +3539,7 @@ cdef class OrderMatchingEngine:
         self._bar_execution = bar_execution
         self._bar_adaptive_high_low_ordering = bar_adaptive_high_low_ordering
         self._trade_execution = trade_execution
+        self._liquidity_consumption = liquidity_consumption
         self._price_protection_points = price_protection_points if price_protection_points is not None else 0
 
         self._fill_model = fill_model
@@ -3555,6 +3573,9 @@ cdef class OrderMatchingEngine:
         self._last_ask_bar: Bar | None = None
         self._last_trade_size: Quantity | None = None
         self._fill_at_market = True  # Fill stop orders at market price vs trigger price
+        self._bid_consumption = {}
+        self._ask_consumption = {}
+        self._trade_consumption = 0
 
         self._position_count = 0
         self._order_count = 0
@@ -3584,6 +3605,9 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar = None
         self._last_ask_bar = None
         self._last_trade_size = None
+        self._bid_consumption.clear()
+        self._ask_consumption.clear()
+        self._trade_consumption = 0
 
         self._position_count = 0
         self._order_count = 0
@@ -3835,8 +3859,7 @@ cdef class OrderMatchingEngine:
 
         self.iterate(depth.ts_init)
 
-
-    cpdef void process_quote_tick(self, QuoteTick tick) :
+    cpdef void process_quote_tick(self, QuoteTick tick):
         """
         Process the exchanges market for the given quote tick.
 
@@ -3961,16 +3984,15 @@ cdef class OrderMatchingEngine:
             elif aggressor_side == AggressorSide.BUYER and price_raw > original_bid:
                 self._core.set_bid_raw(price_raw)
 
-            # Set last trade size for fill quantity capping
             self._last_trade_size = tick.size
+            self._trade_consumption = 0
 
         self.iterate(tick.ts_init, aggressor_side)
 
         if self._trade_execution:
-            # Reset trade size after matching
             self._last_trade_size = None
+            self._trade_consumption = 0
 
-            # Restore original state after matching
             if aggressor_side == AggressorSide.SELLER and price_raw < original_ask:
                 self._core.set_ask_raw(original_ask)
             elif aggressor_side == AggressorSide.BUYER and price_raw > original_bid:
@@ -4190,7 +4212,10 @@ cdef class OrderMatchingEngine:
             tick._mem.price = bar._mem.close
             if close_size is not None:
                 tick._mem.size = close_size._mem
-            tick._mem.aggressor_side = AggressorSide.BUYER if bar._mem.close.raw > self._core.last_raw else AggressorSide.SELLER
+            if bar._mem.close.raw > self._core.last_raw:
+                tick._mem.aggressor_side = AggressorSide.BUYER
+            else:
+                tick._mem.aggressor_side = AggressorSide.SELLER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
@@ -5129,6 +5154,70 @@ cdef class OrderMatchingEngine:
             # Fall back to standard logic
             return self.determine_market_price_and_volume(order)
 
+    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side):
+        if not self._liquidity_consumption:
+            return fills
+
+        cdef dict[PriceRaw, tuple[QuantityRaw, QuantityRaw]] consumption
+        if order_side == OrderSide.BUY:
+            consumption = self._ask_consumption
+        elif order_side == OrderSide.SELL:
+            consumption = self._bid_consumption
+        else:
+            return fills
+
+        cdef list adjusted_fills = []
+
+        cdef:
+            Price price
+            Quantity qty
+            PriceRaw price_raw
+            double book_size_f64
+            QuantityRaw book_size_raw
+            tuple level_state
+            QuantityRaw original_size
+            QuantityRaw consumed
+            QuantityRaw available
+            QuantityRaw adjusted_qty_raw
+            Quantity adjusted_qty
+
+        for fill in fills:
+            price = fill[0]
+            qty = fill[1]
+            price_raw = price._mem.raw
+
+            book_size_f64 = self._book.get_quantity_for_price(price, order_side)
+            book_size_raw = <QuantityRaw>(book_size_f64 * (10.0 ** FIXED_PRECISION))
+
+            level_state = consumption.get(price_raw)
+            if level_state is None:
+                original_size = book_size_raw
+                consumed = 0
+            else:
+                original_size = level_state[0]
+                consumed = level_state[1]
+
+            # Reset consumption when book size changes (fresh data)
+            if original_size != book_size_raw:
+                original_size = book_size_raw
+                consumed = 0
+
+            available = original_size - consumed if original_size > consumed else 0
+            if available == 0:
+                continue
+
+            adjusted_qty_raw = min(qty._mem.raw, available)
+            if adjusted_qty_raw == 0:
+                continue
+
+            consumed += adjusted_qty_raw
+            consumption[price_raw] = (original_size, consumed)
+
+            adjusted_qty = Quantity.from_raw_c(adjusted_qty_raw, qty.precision)
+            adjusted_fills.append((price, adjusted_qty))
+
+        return adjusted_fills
+
     cpdef list determine_market_price_and_volume(self, Order order):
         """
         Return the projected fills for the given *marketable* order filling
@@ -5166,7 +5255,7 @@ cdef class OrderMatchingEngine:
             if triggered_price is not None:
                 fills[0] = (triggered_price, fills[0][1])
 
-        return fills
+        return self._apply_liquidity_consumption(fills, order.side)
 
     cpdef void fill_limit_order(self, Order order):
         """
@@ -5185,6 +5274,7 @@ cdef class OrderMatchingEngine:
         """
         Condition.is_true(order.has_price_c(), "order has no limit `price`")
 
+        cdef Price price = order.price
         cdef Quantity cached_filled_qty = self._cached_filled_qty.get(order.client_order_id)
 
         if cached_filled_qty is not None and cached_filled_qty._mem.raw >= order.quantity._mem.raw:
@@ -5194,7 +5284,6 @@ cdef class OrderMatchingEngine:
             )
             return
 
-        cdef Price price = order.price
         if order.liquidity_side == LiquiditySide.MAKER and self._fill_model:
             if order.side == OrderSide.BUY and self._core.bid_raw == price._mem.raw and not self._fill_model.is_limit_filled():
                 return  # Not filled
@@ -5215,52 +5304,6 @@ cdef class OrderMatchingEngine:
             return  # Order canceled
 
         cdef list fills = self.determine_limit_fills_with_simulation(order)
-
-        cdef:
-            Price fill_px
-            Quantity fill_qty
-            QuantityRaw total_book_liquidity_raw
-
-        # Adjust fills to account for liquidity already consumed from the immutable book.
-        # The book doesn't change when we fill, so we track consumed liquidity via
-        # cached_filled_qty and subtract it from available book liquidity.
-        # NOTE: Only applies to L2/L3 book types where deltas are incremental updates.
-        # For L1 (quotes/bars), each update is a full state snapshot with fresh liquidity.
-        # Also skip during trade execution (_last_trade_size is set) as each trade is independent.
-        cdef QuantityRaw consumed_raw
-        cdef QuantityRaw adjusted_raw
-        cdef list adjusted_fills
-        if (
-            fills
-            and cached_filled_qty is not None
-            and self._last_trade_size is None
-            and self.book_type != BookType.L1_MBP
-        ):
-            total_book_liquidity_raw = 0
-
-            for fill_px, fill_qty in fills:
-                total_book_liquidity_raw += fill_qty._mem.raw
-
-            if total_book_liquidity_raw <= cached_filled_qty._mem.raw:
-                return
-
-            consumed_raw = cached_filled_qty._mem.raw
-            adjusted_fills = []
-
-            for fill_px, fill_qty in fills:
-                if consumed_raw >= fill_qty._mem.raw:
-                    consumed_raw -= fill_qty._mem.raw
-                elif consumed_raw > 0:
-                    adjusted_raw = fill_qty._mem.raw - consumed_raw
-                    adjusted_fills.append((
-                        fill_px,
-                        Quantity.from_raw_c(adjusted_raw, fill_qty._mem.precision),
-                    ))
-                    consumed_raw = 0
-                else:
-                    adjusted_fills.append((fill_px, fill_qty))
-
-            fills = adjusted_fills
 
         self.apply_fills(
             order=order,
@@ -5312,36 +5355,37 @@ cdef class OrderMatchingEngine:
         When trade execution mode triggers a match via the transient price override,
         this method calculates the fill quantity as the minimum of:
         - The order's remaining quantity (leaves_qty)
-        - The remaining trade tick size (if available)
-
-        The trade size is decremented after each fill to ensure total fills
-        across multiple orders do not exceed the trade tick's reported size.
+        - The remaining trade quantity (when consumption enabled) or trade tick size
 
         Returns None if there is no quantity available to fill.
         """
-        # Use instrument size precision as single source of truth
-        cdef uint8_t size_prec = self._size_prec
-
         cdef QuantityRaw leaves_raw = order.quantity._mem.raw - order.filled_qty._mem.raw if order.quantity._mem.raw > order.filled_qty._mem.raw else 0
+
         if leaves_raw == 0:
             return None
 
         cdef QuantityRaw fill_raw = leaves_raw
-        cdef QuantityRaw remaining_raw
+        cdef QuantityRaw available_raw
+        cdef QuantityRaw trade_size_raw
 
         if self._last_trade_size is not None:
-            if self._last_trade_size._mem.raw == 0:
+            trade_size_raw = self._last_trade_size._mem.raw
+
+            # Calculate available quantity from trade (minus any consumption)
+            if self._liquidity_consumption:
+                available_raw = trade_size_raw - self._trade_consumption
+            else:
+                available_raw = trade_size_raw
+
+            if available_raw == 0:
                 return None
-            fill_raw = min(leaves_raw, self._last_trade_size._mem.raw)
 
-            # Decrement remaining trade size for subsequent orders
-            remaining_raw = self._last_trade_size._mem.raw - fill_raw
-            self._last_trade_size = Quantity.from_raw_c(
-                remaining_raw,
-                size_prec,
-            )
+            fill_raw = min(leaves_raw, available_raw)
 
-        return Quantity.from_raw_c(fill_raw, size_prec)
+            if self._liquidity_consumption:
+                self._trade_consumption += fill_raw
+
+        return Quantity.from_raw_c(fill_raw, self._size_prec)
 
     cpdef list determine_limit_price_and_volume(self, Order order):
         """
@@ -5377,19 +5421,38 @@ cdef class OrderMatchingEngine:
         cdef Price triggered_price = order.get_triggered_price_c()
         cdef Price price = order.price
 
-        if (
-            not fills
-            and order.liquidity_side == LiquiditySide.MAKER
-            and self._core.is_limit_matched(order.side, order.price)
-        ):
-            fill_qty = self.determine_trade_fill_qty(order)
-            if fill_qty is not None:
-                fills = [(order.price, fill_qty)]
+        # Trade execution: use trade-driven fill when book doesn't reflect trade price
+        cdef:
+            Price trade_price
+            bint fills_at_trade_price
+            Quantity fill_qty
+            tuple fill[Price, Quantity]
+
+        if self._last_trade_size is not None and self._core.is_last_initialized:
+            trade_price = Price.from_raw_c(self._core.last_raw, self._price_prec)
+
+            fills_at_trade_price = False
+            for fill in fills:
+                if fill[0] == trade_price:
+                    fills_at_trade_price = True
+                    break
+
+            if (
+                not fills_at_trade_price
+                and self._core.is_limit_matched(order.side, order.price)
+            ):
+                fill_qty = self.determine_trade_fill_qty(order)
+                if fill_qty is not None:
+                    self._log.debug(
+                        f"Trade execution fill: {fill_qty} @ {trade_price} "
+                        f"(trade_size: {self._last_trade_size}, book had {len(fills)} fills)",
+                    )
+                    fills = [(trade_price, fill_qty)]
 
         if (
-                fills
-                and triggered_price is not None
-                and order.liquidity_side == LiquiditySide.TAKER
+            fills
+            and triggered_price is not None
+            and order.liquidity_side == LiquiditySide.TAKER
         ):
             ########################################################################
             # Filling as TAKER from a trigger
@@ -5411,12 +5474,9 @@ cdef class OrderMatchingEngine:
                 self._core.set_bid_raw(price._mem.raw)
                 self._core.set_last_raw(price._mem.raw)
 
-        cdef tuple[Price, Quantity] fill
         cdef Price last_px
-        if (
-                fills
-                and order.liquidity_side == LiquiditySide.MAKER
-        ):
+
+        if fills and order.liquidity_side == LiquiditySide.MAKER:
             ########################################################################
             # Filling as MAKER
             ########################################################################
@@ -5456,7 +5516,7 @@ cdef class OrderMatchingEngine:
             else:
                 raise RuntimeError(f"invalid `OrderSide`, was {order.side}")  # pragma: no cover (design-time error)
 
-        return fills
+        return self._apply_liquidity_consumption(fills, order.side)
 
     cpdef void apply_fills(
         self,
@@ -5516,14 +5576,37 @@ cdef class OrderMatchingEngine:
                 self.cancel_order(order)
                 return  # Cannot fill full size - so kill/cancel
 
+        cdef:
+            bint initial_market_to_limit_fill = False
+            Price last_fill_px = None
+
         if not fills:
-            if order.status_c() == OrderStatus.SUBMITTED:
-                self._generate_order_rejected(order, f"no market with no fills for {order.instrument_id}")
+            # For L1 with consumption tracking, empty fills means liquidity was consumed
+            # Allow orders to slip to next level (preserves L1 exhausted book behavior)
+            if self._liquidity_consumption and self.book_type == BookType.L1_MBP:
+                if order.side == OrderSide.BUY:
+                    if not self._core.is_ask_initialized:
+                        if order.status_c() == OrderStatus.SUBMITTED:
+                            self._generate_order_rejected(order, f"no market for {order.instrument_id}")
+                        return
+                    last_fill_px = Price.from_raw_c(self._core.ask_raw, self._price_prec)
+                elif order.side == OrderSide.SELL:
+                    if not self._core.is_bid_initialized:
+                        if order.status_c() == OrderStatus.SUBMITTED:
+                            self._generate_order_rejected(order, f"no market for {order.instrument_id}")
+                        return
+                    last_fill_px = Price.from_raw_c(self._core.bid_raw, self._price_prec)
+                else:
+                    raise ValueError(f"invalid `OrderSide`, was {order.side}")
+                # Fall through to slip logic below (gated by order type)
             else:
-                self._log.error(
-                    "Cannot fill order: no fills from book when fills were expected (check data)",
-                )
-            return  # No fills
+                if order.status_c() == OrderStatus.SUBMITTED:
+                    self._generate_order_rejected(order, f"no market with no fills for {order.instrument_id}")
+                else:
+                    self._log.error(
+                        "Cannot fill order: no fills from book when fills were expected (check data)",
+                    )
+                return  # No fills
 
         if self.oms_type == OmsType.NETTING:
             venue_position_id = None  # No position IDs generated by the venue
@@ -5542,9 +5625,6 @@ cdef class OrderMatchingEngine:
                 f"fills={fills}",
             )
 
-        cdef:
-            bint initial_market_to_limit_fill = False
-            Price last_fill_px = None
         for fill_px, fill_qty in fills:
             # Validate price precision
             if fill_px._mem.precision != self._price_prec:

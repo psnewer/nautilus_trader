@@ -11,6 +11,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Kraken integration adapter
 - Added Cap'n Proto (`capnp`) serialization for efficient zero-copy data interchange (opt-in via `capnp` feature flag in `nautilus-serialization` crate)
 - Added initial backtest visualization tearsheets with plotly
+- Added matching engine `liquidity_consumption` config option to track per-level consumption and prevent overfilling displayed book liquidity (default `False` to retain current behavior)
+- Added matching engine trade consumption tracking (when `liquidity_consumption=True` and `trade_execution=True`) to prevent multiple orders matching the same trade tick from collectively overfilling
 - Added theme support to `bars_with_fills` chart (#3329), thanks @faysou
 - Added price protection support for market orders (#3065), thanks @Antifrajz
 - Added `Quantity.from_decimal` constructor (#3189), thanks @faysou
@@ -47,7 +49,6 @@ This release adds support for Python 3.14 with the following limitations:
 - Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
 - Renamed `ExecTesterConfig.enable_buys` to `enable_limit_buys`
 - Renamed `ExecTesterConfig.enable_sells` to `enable_limit_sells`
-- Changed matching engine L2/L3 to track consumed liquidity per order (backtest results may differ)
 - Changed `ParquetDataCatalog.register_data` to now treat `files=[]` as registering no files; pass `files=None` (default) to include all files
 - **Standardized data catalog directory naming**: Order book data directory names now use plural forms to align with the Rust catalog and Tardis Machine conventions; this ensures data written by the Python `StreamingFeatherWriter` can be read by the Rust catalog
   - `order_book_delta/` → `order_book_deltas/`

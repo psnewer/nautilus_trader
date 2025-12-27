@@ -17,8 +17,9 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
+use ahash::AHashMap;
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
@@ -50,7 +51,7 @@ pub struct OrderManager {
     // submit_order_handler: Option<SubmitOrderHandlerAny>,
     // cancel_order_handler: Option<CancelOrderHandlerAny>,
     // modify_order_handler: Option<ModifyOrderHandlerAny>,
-    submit_order_commands: HashMap<ClientOrderId, SubmitOrder>,
+    submit_order_commands: AHashMap<ClientOrderId, SubmitOrder>,
 }
 
 impl Debug for OrderManager {
@@ -78,7 +79,7 @@ impl OrderManager {
             // submit_order_handler,
             // cancel_order_handler,
             // modify_order_handler,
-            submit_order_commands: HashMap::new(),
+            submit_order_commands: AHashMap::new(),
         }
     }
 
@@ -96,7 +97,7 @@ impl OrderManager {
 
     #[must_use]
     /// Returns a copy of all cached submit order commands.
-    pub fn get_submit_order_commands(&self) -> HashMap<ClientOrderId, SubmitOrder> {
+    pub fn get_submit_order_commands(&self) -> AHashMap<ClientOrderId, SubmitOrder> {
         self.submit_order_commands.clone()
     }
 

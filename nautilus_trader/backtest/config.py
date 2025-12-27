@@ -164,6 +164,10 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
         - If Low is closer to Open than High then the processing order is Open, Low, High, Close.
     trade_execution : bool, default False
         If trades should be processed by the matching engine(s) (and move the market).
+    liquidity_consumption : bool, default False
+        If liquidity consumption should be tracked per price level. When enabled, fills
+        consume available liquidity which resets when fresh data arrives at that level.
+        When disabled, each iteration can fill against the full book liquidity independently.
     allow_cash_borrowing : bool, default False
         If borrowing is allowed for cash accounts (negative balances).
     frozen_account : bool, default False
@@ -197,6 +201,7 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
     bar_execution: bool = True
     bar_adaptive_high_low_ordering: bool = False
     trade_execution: bool = False
+    liquidity_consumption: bool = False
     allow_cash_borrowing: bool = False
     frozen_account: bool = False
     price_protection_points: int = 0

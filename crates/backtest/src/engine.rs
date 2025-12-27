@@ -22,11 +22,12 @@
 use std::{
     any::Any,
     cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     fmt::Debug,
     rc::Rc,
 };
 
+use ahash::AHashMap;
 use nautilus_common::timer::TimeEventHandlerV2;
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_data::client::DataClientAdapter;
@@ -66,7 +67,7 @@ pub struct BacktestEngine {
     accumulator: TimeEventAccumulator,
     run_config_id: Option<UUID4>,
     run_id: Option<UUID4>,
-    venues: HashMap<Venue, Rc<RefCell<SimulatedExchange>>>,
+    venues: AHashMap<Venue, Rc<RefCell<SimulatedExchange>>>,
     has_data: HashSet<InstrumentId>,
     has_book_data: HashSet<InstrumentId>,
     data: VecDeque<Data>,
@@ -104,7 +105,7 @@ impl BacktestEngine {
             kernel,
             run_config_id: None,
             run_id: None,
-            venues: HashMap::new(),
+            venues: AHashMap::new(),
             has_data: HashSet::new(),
             has_book_data: HashSet::new(),
             data: VecDeque::new(),
@@ -130,7 +131,7 @@ impl BacktestEngine {
         starting_balances: Vec<Money>,
         base_currency: Option<Currency>,
         default_leverage: Option<Decimal>,
-        leverages: HashMap<InstrumentId, Decimal>,
+        leverages: AHashMap<InstrumentId, Decimal>,
         modules: Vec<Box<dyn SimulationModule>>,
         fill_model: FillModel,
         fee_model: FeeModelAny,
@@ -174,6 +175,8 @@ impl BacktestEngine {
             book_type,
             latency_model,
             bar_execution,
+            trade_execution,
+            None, // liquidity_consumption - use default (true)
             reject_stop_orders,
             support_gtd_orders,
             support_contingent_orders,
@@ -507,8 +510,7 @@ impl BacktestEngine {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
+    use ahash::AHashMap;
     use nautilus_execution::models::{fee::FeeModelAny, fill::FillModel};
     use nautilus_model::{
         enums::{AccountType, BookType, OmsType},
@@ -535,7 +537,7 @@ mod tests {
                 vec![Money::from("1_000_000 USD")],
                 None,
                 None,
-                HashMap::new(),
+                AHashMap::new(),
                 vec![],
                 FillModel::default(),
                 FeeModelAny::default(),
