@@ -1080,6 +1080,9 @@ impl ParquetDataCatalog {
     where
         T: DecodeDataFromRecordBatch + CatalogPathPrefix + TryFrom<Data>,
     {
+        // Reset session to allow repeated queries (streams are consumed on each query)
+        self.reset_session();
+
         let query_result = self.query::<T>(instrument_ids, start, end, where_clause, files)?;
         let all_data = query_result.collect();
 
