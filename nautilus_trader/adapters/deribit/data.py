@@ -28,8 +28,10 @@ from nautilus_trader.common.secure import mask_api_key
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import DeribitCurrency
+from nautilus_trader.data.messages import RequestBars
 from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import RequestInstruments
+from nautilus_trader.data.messages import RequestOrderBookSnapshot
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
@@ -40,9 +42,17 @@ from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOUT
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
+from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import RecordFlag
 from nautilus_trader.model.enums import book_type_to_str
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.instruments import Instrument
@@ -330,6 +340,127 @@ class DeribitDataClient(LiveMarketDataClient):
             request.start,
             request.end,
             request.params,
+        )
+
+    async def _request_bars(self, request: RequestBars) -> None:
+        bar_type = request.bar_type
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(bar_type))
+
+        try:
+            pyo3_bars = await self._http_client.request_bars(
+                bar_type=pyo3_bar_type,
+                start=ensure_pydatetime_utc(request.start),
+                end=ensure_pydatetime_utc(request.end),
+                limit=request.limit or None,
+            )
+        except Exception as e:
+            self._log.exception(f"Failed to request bars for {bar_type}", e)
+            return
+
+        bars = Bar.from_pyo3_list(pyo3_bars)
+
+        self._handle_bars(
+            bar_type,
+            bars,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    async def _request_order_book_snapshot(self, request: RequestOrderBookSnapshot) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
+        depth = request.limit if request.limit else None
+        try:
+            pyo3_book = await self._http_client.request_book_snapshot(
+                instrument_id=pyo3_instrument_id,
+                depth=depth,
+            )
+        except Exception as e:
+            self._log.exception(
+                f"Failed to request book snapshot for {request.instrument_id}",
+                e,
+            )
+            return
+
+        instrument = self._cache.instrument(request.instrument_id)
+        if instrument is None:
+            self._log.error(f"Cannot find instrument for {request.instrument_id}")
+            return
+
+        ts_event = pyo3_book.ts_last
+        ts_init = self._clock.timestamp_ns()
+        sequence = pyo3_book.sequence
+
+        # Build OrderBookDeltas from pyo3 book data
+        deltas: list[OrderBookDelta] = []
+        deltas.append(OrderBookDelta.clear(request.instrument_id, sequence, ts_event, ts_init))
+
+        bids = list(pyo3_book.bids())
+        asks = list(pyo3_book.asks())
+
+        for i, level in enumerate(bids):
+            order = BookOrder(
+                side=OrderSide.BUY,
+                price=instrument.make_price(level.price.as_double()),
+                size=instrument.make_qty(level.size()),
+                order_id=i,
+            )
+            delta = OrderBookDelta(
+                instrument_id=request.instrument_id,
+                action=BookAction.ADD,
+                order=order,
+                flags=0,
+                sequence=sequence,
+                ts_event=ts_event,
+                ts_init=ts_init,
+            )
+            deltas.append(delta)
+
+        for i, level in enumerate(asks):
+            order = BookOrder(
+                side=OrderSide.SELL,
+                price=instrument.make_price(level.price.as_double()),
+                size=instrument.make_qty(level.size()),
+                order_id=len(bids) + i,
+            )
+            delta = OrderBookDelta(
+                instrument_id=request.instrument_id,
+                action=BookAction.ADD,
+                order=order,
+                flags=0,
+                sequence=sequence,
+                ts_event=ts_event,
+                ts_init=ts_init,
+            )
+            deltas.append(delta)
+
+        # Set F_LAST flag on the actual last delta (after CLEAR + bids + asks)
+        if deltas:
+            last = deltas[-1]
+            deltas[-1] = OrderBookDelta(
+                instrument_id=last.instrument_id,
+                action=last.action,
+                order=last.order,
+                flags=RecordFlag.F_LAST,
+                sequence=last.sequence,
+                ts_event=last.ts_event,
+                ts_init=last.ts_init,
+            )
+
+        snapshot = OrderBookDeltas(instrument_id=request.instrument_id, deltas=deltas)
+
+        data_type = DataType(
+            OrderBookDeltas,
+            metadata={"instrument_id": request.instrument_id},
+        )
+        self._handle_data_response(
+            data_type=data_type,
+            data=[snapshot],
+            correlation_id=request.id,
+            start=None,
+            end=None,
+            params=request.params,
         )
 
     # -- WEBSOCKET HANDLERS -----------------------------------------------------------------------

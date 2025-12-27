@@ -24,10 +24,12 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{nanos::UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    data::TradeTick,
+    data::{Bar, BarType, TradeTick},
+    enums::{AggregationSource, BarAggregation},
     events::AccountState,
     identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
+    orderbook::OrderBook,
 };
 use nautilus_network::{
     http::{HttpClient, Method},
@@ -50,12 +52,18 @@ use crate::{
         consts::{DERIBIT_API_PATH, JSONRPC_VERSION, should_retry_error_code},
         credential::Credential,
         parse::{
-            extract_server_timestamp, parse_account_state, parse_deribit_instrument_any,
-            parse_trade_tick,
+            extract_server_timestamp, parse_account_state, parse_bars,
+            parse_deribit_instrument_any, parse_order_book, parse_trade_tick,
         },
         urls::get_http_base_url,
     },
-    http::{models::DeribitTradesResponse, query::GetLastTradesByInstrumentAndTimeParams},
+    http::{
+        models::{DeribitOrderBook, DeribitTradesResponse, DeribitTradingViewChartData},
+        query::{
+            GetLastTradesByInstrumentAndTimeParams, GetOrderBookParams,
+            GetTradingViewChartDataParams,
+        },
+    },
 };
 
 #[allow(dead_code)]
@@ -462,6 +470,19 @@ impl DeribitRawHttpClient {
         .await
     }
 
+    /// Gets TradingView chart data (OHLCV) for an instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_tradingview_chart_data(
+        &self,
+        params: GetTradingViewChartDataParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitTradingViewChartData>, DeribitHttpError> {
+        self.send_request("public/get_tradingview_chart_data", params, false)
+            .await
+    }
+
     /// Gets account summaries for all currencies.
     ///
     /// # Errors
@@ -475,6 +496,19 @@ impl DeribitRawHttpClient {
         params: GetAccountSummariesParams,
     ) -> Result<DeribitJsonRpcResponse<DeribitAccountSummariesResponse>, DeribitHttpError> {
         self.send_request("private/get_account_summaries", params, true)
+            .await
+    }
+
+    /// Gets order book for an instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_order_book(
+        &self,
+        params: GetOrderBookParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitOrderBook>, DeribitHttpError> {
+        self.send_request("public/get_order_book", params, false)
             .await
     }
 }
@@ -717,13 +751,11 @@ impl DeribitHttpClient {
             if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
                 (instrument.price_precision(), instrument.size_precision())
             } else {
-                // Default precisions if instrument not cached
-                // This is a fallback; ideally the instrument should be cached first
                 tracing::warn!(
-                    "Instrument {} not in cache, using default precisions",
+                    "Instrument {} not in cache, skipping trades request",
                     instrument_id
                 );
-                (8u8, 8u8)
+                anyhow::bail!("Instrument {instrument_id} not in cache");
             };
 
         // Convert timestamps to milliseconds
@@ -779,6 +811,172 @@ impl DeribitHttpClient {
         }
 
         Ok(trades)
+    }
+
+    /// Requests historical bars (OHLCV) for an instrument.
+    ///
+    /// Uses the `public/get_tradingview_chart_data` endpoint to fetch candlestick data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Aggregation source is not EXTERNAL
+    /// - Bar aggregation type is not supported by Deribit
+    /// - The request fails or response cannot be parsed
+    ///
+    /// # Supported Resolutions
+    ///
+    /// Deribit supports: 1, 3, 5, 10, 15, 30, 60, 120, 180, 360, 720 minutes, and 1D (daily)
+    pub async fn request_bars(
+        &self,
+        bar_type: BarType,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        _limit: Option<u32>,
+    ) -> anyhow::Result<Vec<Bar>> {
+        anyhow::ensure!(
+            bar_type.aggregation_source() == AggregationSource::External,
+            "Only EXTERNAL aggregation is supported"
+        );
+
+        let now = Utc::now();
+
+        // Default to last hour if no start/end provided
+        let end_dt = end.unwrap_or(now);
+        let start_dt = start.unwrap_or(end_dt - chrono::Duration::hours(1));
+
+        if let (Some(s), Some(e)) = (start, end) {
+            anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
+        }
+
+        // Convert BarType to Deribit resolution
+        let spec = bar_type.spec();
+        let step = spec.step.get();
+        let resolution = match spec.aggregation {
+            BarAggregation::Minute => format!("{step}"),
+            BarAggregation::Hour => format!("{}", step * 60),
+            BarAggregation::Day => "1D".to_string(),
+            a => anyhow::bail!("Deribit does not support {a:?} aggregation"),
+        };
+
+        // Validate resolution is supported by Deribit
+        let supported_resolutions = [
+            "1", "3", "5", "10", "15", "30", "60", "120", "180", "360", "720", "1D",
+        ];
+        if !supported_resolutions.contains(&resolution.as_str()) {
+            anyhow::bail!(
+                "Deribit does not support resolution '{resolution}'. Supported: {supported_resolutions:?}"
+            );
+        }
+
+        let instrument_name = bar_type.instrument_id().symbol.to_string();
+        let start_timestamp = start_dt.timestamp_millis();
+        let end_timestamp = end_dt.timestamp_millis();
+
+        let params = GetTradingViewChartDataParams::new(
+            instrument_name,
+            start_timestamp,
+            end_timestamp,
+            resolution,
+        );
+
+        let full_response = self.inner.get_tradingview_chart_data(params).await?;
+        let chart_data = full_response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
+
+        if chart_data.status == "no_data" {
+            tracing::debug!("No bar data returned for {}", bar_type);
+            return Ok(Vec::new());
+        }
+
+        // Get instrument from cache to determine precisions
+        let instrument_id = bar_type.instrument_id();
+        let (price_precision, size_precision) =
+            if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
+                (instrument.price_precision(), instrument.size_precision())
+            } else {
+                tracing::warn!(
+                    "Instrument {} not in cache, skipping bars request",
+                    instrument_id
+                );
+                anyhow::bail!("Instrument {instrument_id} not in cache");
+            };
+
+        let ts_init = self.generate_ts_init();
+        let bars = parse_bars(
+            &chart_data,
+            bar_type,
+            price_precision,
+            size_precision,
+            ts_init,
+        )?;
+
+        tracing::info!("Parsed {} bars for {}", bars.len(), bar_type);
+
+        Ok(bars)
+    }
+
+    /// Requests a snapshot of the order book for an instrument.
+    ///
+    /// Fetches the order book from Deribit and converts it to a Nautilus [`OrderBook`].
+    ///
+    /// # Arguments
+    ///
+    /// * `instrument_id` - The instrument to fetch the order book for
+    /// * `depth` - Optional depth limit (valid values: 1, 5, 10, 20, 50, 100, 1000, 10000)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The request fails
+    /// - Order book parsing fails
+    pub async fn request_book_snapshot(
+        &self,
+        instrument_id: InstrumentId,
+        depth: Option<u32>,
+    ) -> anyhow::Result<OrderBook> {
+        // Get instrument from cache to determine precisions
+        let (price_precision, size_precision) =
+            if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
+                (instrument.price_precision(), instrument.size_precision())
+            } else {
+                // Default precisions if instrument not cached
+                tracing::warn!(
+                    "Instrument {} not in cache, using default precisions",
+                    instrument_id
+                );
+                (8u8, 8u8)
+            };
+
+        let params = GetOrderBookParams::new(instrument_id.symbol.to_string(), depth);
+        let full_response = self
+            .inner
+            .get_order_book(params)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let order_book_data = full_response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
+
+        let ts_init = self.generate_ts_init();
+        let book = parse_order_book(
+            &order_book_data,
+            instrument_id,
+            price_precision,
+            size_precision,
+            ts_init,
+        )?;
+
+        tracing::info!(
+            "Fetched order book for {} with {} bids and {} asks",
+            instrument_id,
+            order_book_data.bids.len(),
+            order_book_data.asks.len()
+        );
+
+        Ok(book)
     }
 
     /// Requests account state for all currencies.

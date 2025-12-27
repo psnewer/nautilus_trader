@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut node = LiveNode::builder(trader_id, environment)?
         .with_name(node_name)
         .add_data_client(None, Box::new(client_factory), Box::new(deribit_config))?
+        .with_delay_post_stop_secs(5)
         .build()?;
 
     let tester_config = DataTesterConfig::new(client_id, instrument_ids)
