@@ -75,3 +75,13 @@ harness = false
 name = "uuid"
 path = "benches/uuid.rs"
 harness = false
+
+[[bench]]
+name = "stack_str"
+path = "benches/stack_str.rs"
+harness = false
+
+[[bench]]
+name = "stack_str_iai"
+path = "benches/stack_str_iai.rs"
+harness = false

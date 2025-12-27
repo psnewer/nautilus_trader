@@ -65,6 +65,7 @@ pub mod env;
 pub mod math;
 pub mod message;
 pub mod nanos;
+pub mod stack_str;
 
 pub mod parsing;
 pub mod paths;
@@ -88,6 +89,7 @@ pub use crate::{
     drop::CleanDrop,
     nanos::UnixNanos,
     shared::{SharedCell, WeakCell},
+    stack_str::StackStr,
     time::AtomicTime,
     uuid::UUID4,
 };

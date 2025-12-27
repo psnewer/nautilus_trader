@@ -16,6 +16,9 @@ cdef extern from "../includes/core.h":
     # Number of nanoseconds in one microsecond.
     const uint64_t NANOSECONDS_IN_MICROSECOND # = 1000
 
+    # Maximum capacity in characters for a [`StackStr`].
+    const uintptr_t STACKSTR_CAPACITY # = 36
+
     # `CVec` is a C compatible struct that stores an opaque pointer to a block of
     # memory, its length and the capacity of the vector it was allocated from.
     #
