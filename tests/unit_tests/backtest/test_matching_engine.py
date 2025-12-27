@@ -24,10 +24,15 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import ModifyOrder
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import BarSpecification
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import AggregationSource
 from nautilus_trader.model.enums import AggressorSide
+from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import InstrumentCloseType
@@ -35,6 +40,7 @@ from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import MarketStatusAction
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderModifyRejected
@@ -1878,3 +1884,80 @@ class TestOrderMatchingEngine:
         assert filled_events[0].last_qty == Quantity.from_str("30.000")
         assert filled_events[1].last_qty == Quantity.from_str("10.000")
         assert filled_events[2].last_qty == Quantity.from_str("20.000")
+
+
+def _create_bar_execution_matching_engine() -> OrderMatchingEngine:
+    clock = TestClock()
+    trader_id = TestIdStubs.trader_id()
+    msgbus = MessageBus(trader_id=trader_id, clock=clock)
+    instrument = _ETHUSDT_PERP_BINANCE
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+
+    return OrderMatchingEngine(
+        instrument=instrument,
+        raw_id=0,
+        fill_model=FillModel(),
+        fee_model=MakerTakerFeeModel(),
+        book_type=BookType.L1_MBP,
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        reject_stop_orders=True,
+        bar_execution=True,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+
+
+def _create_bar_with_volume(volume: str) -> Bar:
+    instrument = _ETHUSDT_PERP_BINANCE
+    bar_spec = BarSpecification(
+        step=1,
+        aggregation=BarAggregation.MINUTE,
+        price_type=PriceType.LAST,
+    )
+    bar_type = BarType(
+        instrument_id=instrument.id,
+        bar_spec=bar_spec,
+        aggregation_source=AggregationSource.EXTERNAL,
+    )
+    return Bar(
+        bar_type=bar_type,
+        open=Price.from_str("1000.00"),
+        high=Price.from_str("1001.00"),
+        low=Price.from_str("999.00"),
+        close=Price.from_str("1000.50"),
+        volume=Quantity.from_str(volume),
+        ts_event=0,
+        ts_init=0,
+    )
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        "0.001",  # Minimum volume equal to size_increment
+        "0.002",  # Quarter would round to 0, bumps to min
+        "0.003",  # Quarter rounds down
+        "0.005",  # Quarter = 0.00125, rounds to 0.001
+        "0.010",  # Quarter = 0.0025, rounds to 0.002
+        "0.150",  # Quarter = 0.0375, not multiple of size_increment
+        "1.000",  # Quarter = 0.25, exact
+        "1.234",  # Quarter = 0.3085, rounds to 0.308
+        "100.000",  # Large volume that divides evenly
+    ],
+)
+def test_bar_execution_respects_size_increment(volume: str) -> None:
+    """
+    Test bar execution quantity rounding respects instrument size_increment.
+
+    Related to fix in PR #3352 for fractional fill quantities.
+
+    """
+    # Arrange
+    matching_engine = _create_bar_execution_matching_engine()
+    bar = _create_bar_with_volume(volume)
+
+    # Act - Should not raise
+    matching_engine.process_bar(bar)
