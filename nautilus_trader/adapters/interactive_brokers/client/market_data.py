@@ -786,8 +786,10 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
 
         # Skip invalid price in most cases (IB uses -1.0 to indicate unavailable/invalid prices)
         # But option spreads can have negative prices, in this case the size of a quote will invalidate the quote
-        if price == -1.0 and self._subscription_tick_data[req_id].get(tick_type, 0.) > 0.:
-            self._log.warning(f"Ignoring invalid tick price: {price} for req_id={req_id}, tick_type={tick_type}")
+        if price == -1.0 and self._subscription_tick_data[req_id].get(tick_type, 0.0) > 0.0:
+            self._log.warning(
+                f"Ignoring invalid tick price: {price} for req_id={req_id}, tick_type={tick_type}",
+            )
             return
 
         # IB tick types: 0=BID_SIZE, 1=BID_PRICE, 2=ASK_PRICE, 3=ASK_SIZE
@@ -812,7 +814,9 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         # Skip invalid sizes (negative or extremely large values)
         # IB may send invalid sizes when prices are invalid
         if size < 0 or size > MAX_VALID_TICK_SIZE:
-            self._log.warning(f"Ignoring invalid tick size: {size} for req_id={req_id}, tick_type={tick_type}")
+            self._log.warning(
+                f"Ignoring invalid tick size: {size} for req_id={req_id}, tick_type={tick_type}",
+            )
             return
 
         # Store the size data for this subscription
@@ -845,7 +849,12 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         ask_size = tick_data.get(3)
 
         # Validate that both prices are present and valid (positive)
-        if bid_price is not None and ask_price is not None and bid_size is not None and ask_size is not None:
+        if (
+            bid_price is not None
+            and ask_price is not None
+            and bid_size is not None
+            and ask_size is not None
+        ):
             # Create quote tick
             instrument_id = InstrumentId.from_str(subscription.name[0])
             instrument = self._cache.instrument(instrument_id)
