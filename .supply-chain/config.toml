@@ -445,7 +445,7 @@ version = "0.8.8"
 criteria = "safe-to-run"
 
 [[exemptions.axum-core]]
-version = "0.5.5"
+version = "0.5.6"
 criteria = "safe-to-run"
 
 [[exemptions.backon]]
@@ -565,7 +565,7 @@ version = "0.29.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.cc]]
-version = "1.2.50"
+version = "1.2.51"
 criteria = "safe-to-deploy"
 
 [[exemptions.chrono]]
@@ -1061,7 +1061,7 @@ version = "0.13.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.find-msvc-tools]]
-version = "0.1.5"
+version = "0.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.fixed-hash]]
@@ -1317,7 +1317,7 @@ version = "0.13.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.itoa]]
-version = "1.0.16"
+version = "1.0.17"
 criteria = "safe-to-deploy"
 
 [[exemptions.jobserver]]
@@ -1381,7 +1381,7 @@ version = "0.2.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.libredox]]
-version = "0.1.11"
+version = "0.1.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.libsqlite3-sys]]
@@ -1749,7 +1749,7 @@ version = "0.3.32"
 criteria = "safe-to-deploy"
 
 [[exemptions.portable-atomic]]
-version = "1.12.0"
+version = "1.13.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.portable-atomic-util]]
@@ -1785,7 +1785,7 @@ version = "2.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro2]]
-version = "1.0.103"
+version = "1.0.104"
 criteria = "safe-to-deploy"
 
 [[exemptions.proptest]]
@@ -1901,7 +1901,7 @@ version = "0.5.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.redox_syscall]]
-version = "0.6.0"
+version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ref-cast]]
@@ -1981,7 +1981,7 @@ version = "0.26.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ruint]]
-version = "1.17.0"
+version = "1.17.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ruint-macro]]
@@ -2049,7 +2049,7 @@ version = "0.3.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ryu]]
-version = "1.0.21"
+version = "1.0.22"
 criteria = "safe-to-deploy"
 
 [[exemptions.same-file]]
@@ -2073,11 +2073,11 @@ version = "0.9.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.schemars]]
-version = "1.1.0"
+version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.schemars_derive]]
-version = "1.1.0"
+version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.scoped-tls]]
@@ -2145,7 +2145,7 @@ version = "0.29.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde_json]]
-version = "1.0.147"
+version = "1.0.148"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde_path_to_error]]
@@ -2189,7 +2189,7 @@ version = "0.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.signal-hook-registry]]
-version = "1.4.7"
+version = "1.4.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.simd-adler32]]
@@ -2869,7 +2869,7 @@ version = "0.5.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]
-version = "0.1.8"
+version = "1.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.zstd]]

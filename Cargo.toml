@@ -183,7 +183,7 @@ hypersync-schema = { version = "0.4.0" }
 implied-vol = { version = "2.0.0" }
 indexmap = { version = "2.12.1", features = ["serde"] }
 itertools = "0.14.0"
-itoa = "1.0.16"
+itoa = "1.0.17"
 log = { version = "0.4.29", features = [
   "std",
   "kv_unstable",
@@ -251,14 +251,14 @@ rustls = { version = "0.23.35", default-features = false, features = [
   "std",
 ] }
 rustls-pemfile = "2.2.0"
-ryu = "1.0.21"
+ryu = "1.0.22"
 semver = "1.0.27"
 serde = { version = "1.0.228", default-features = false, features = [
   "derive",
   "std",
   "rc",
 ] }
-serde_json = { version = "1.0.147", default-features = false, features = [
+serde_json = { version = "1.0.148", default-features = false, features = [
   "std",
 ] }
 serde_repr = "0.1.20"
@@ -375,7 +375,7 @@ cargo-deny = "0.18.9"
 cargo-edit = "0.13.8"
 cargo-llvm-cov = "0.6.21"
 cargo-machete = "0.9.1"
-cargo-nextest = "0.9.115"
+cargo-nextest = "0.9.116"
 cargo-vet = "0.10.1"
 lychee = "0.22.0"
 

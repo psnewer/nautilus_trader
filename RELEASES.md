@@ -83,6 +83,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed NETTING position flip snapshots and cache index cleanup (#3081), thanks @SarunasSS
 - Fixed incorrect handling of data responses in msgbus (#3310), thanks @filipmacek
 - Fixed data engine to use separate aggregators for historical data (#3326), thanks @faysou
+- Fixed bar execution generating fractional fill quantities (#3352), thanks @Johnkhk
 - Fixed `BacktestResult.total_positions` to match tearsheet count (#3148), thanks for reporting @2-5
 - Fixed risk engine negative price handling for spread instruments (#3136), thanks for reporting @q351941406
 - Fixed risk engine trailing stop order risk validations (#3160), thanks for reporting @GianC0
@@ -143,6 +144,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Deribit WebSocket auth and raw data stream support (#3304), thanks @filipmacek
 - Added Deribit data client in Rust (#3311), thanks @filipmacek
 - Added Deribit data client Python bindings (#3315), thanks @filipmacek
+- Added Deribit data client WebSocket handling and request methods (#3340), thanks @filipmacek
+- Added Deribit execution client scaffolding (#3350), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -155,6 +158,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added dYdX v4 batch cancel and expose missing Python bindings (#3282), thanks @nicolad
 - Added dYdX v4 HTTP data, execution, and WebSocket tests (#3290), thanks @nicolad
 - Added Kraken Futures demo support (#3262), thanks @nicolad
+- Added check before creation of bars in IB adapter (#3348), thanks @PJPRoche and @faysou
 - Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
 - Implemented size for impact bps `PoolProfiler` simulation (#3186), thanks @filipmacek
