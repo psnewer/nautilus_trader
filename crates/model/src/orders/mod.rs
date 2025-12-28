@@ -343,8 +343,10 @@ pub trait Order: 'static + Send {
     fn events(&self) -> Vec<&OrderEventAny>;
 
     fn last_event(&self) -> &OrderEventAny {
-        // SAFETY: Unwrap safe as `Order` specification guarantees at least one event (`OrderInitialized`)
-        self.events().last().unwrap()
+        // SAFETY: Order specification guarantees at least one event (OrderInitialized)
+        self.events()
+            .last()
+            .expect("Order invariant violated: no events")
     }
 
     fn event_count(&self) -> usize {
@@ -711,8 +713,8 @@ impl OrderCore {
             OrderEventAny::Accepted(event) => self.accepted(event),
             OrderEventAny::PendingUpdate(event) => self.pending_update(event),
             OrderEventAny::PendingCancel(event) => self.pending_cancel(event),
-            OrderEventAny::ModifyRejected(event) => self.modify_rejected(event),
-            OrderEventAny::CancelRejected(event) => self.cancel_rejected(event),
+            OrderEventAny::ModifyRejected(event) => self.modify_rejected(event)?,
+            OrderEventAny::CancelRejected(event) => self.cancel_rejected(event)?,
             OrderEventAny::Updated(event) => self.updated(event),
             OrderEventAny::Triggered(event) => self.triggered(event),
             OrderEventAny::Canceled(event) => self.canceled(event),
@@ -761,16 +763,14 @@ impl OrderCore {
         // Do nothing else
     }
 
-    fn modify_rejected(&mut self, _event: &OrderModifyRejected) {
-        self.status = self
-            .previous_status
-            .unwrap_or_else(|| panic!("{}", OrderError::NoPreviousState));
+    fn modify_rejected(&mut self, _event: &OrderModifyRejected) -> Result<(), OrderError> {
+        self.status = self.previous_status.ok_or(OrderError::NoPreviousState)?;
+        Ok(())
     }
 
-    fn cancel_rejected(&mut self, _event: &OrderCancelRejected) {
-        self.status = self
-            .previous_status
-            .unwrap_or_else(|| panic!("{}", OrderError::NoPreviousState));
+    fn cancel_rejected(&mut self, _event: &OrderCancelRejected) -> Result<(), OrderError> {
+        self.status = self.previous_status.ok_or(OrderError::NoPreviousState)?;
+        Ok(())
     }
 
     fn triggered(&mut self, _event: &OrderTriggered) {}

@@ -398,14 +398,8 @@ impl FromStr for Price {
                 .map_err(|e| format!("Error parsing `input` string '{value}' as Decimal: {e}"))?
         };
 
-        // Determine precision from the final decimal result
-        let decimal_str = decimal.to_string();
-        let precision = if let Some(dot_pos) = decimal_str.find('.') {
-            let decimal_part = &decimal_str[dot_pos + 1..];
-            decimal_part.len().min(u8::MAX as usize) as u8
-        } else {
-            0
-        };
+        // Use decimal scale to preserve caller-specified precision (including trailing zeros)
+        let precision = decimal.scale() as u8;
 
         Self::from_decimal_dp(decimal, precision).map_err(|e| e.to_string())
     }
@@ -492,6 +486,10 @@ impl Deref for Price {
 impl Neg for Price {
     type Output = Self;
     fn neg(self) -> Self::Output {
+        // Preserve sentinel values (negating PRICE_ERROR would also overflow)
+        if self.raw == PRICE_ERROR || self.raw == PRICE_UNDEF {
+            return self;
+        }
         Self {
             raw: -self.raw,
             precision: self.precision,
@@ -956,6 +954,18 @@ mod tests {
         assert_eq!(normalized.scale(), 2);
         let price_normalized = Price::from_decimal(normalized).unwrap();
         assert_eq!(price_normalized.precision, 2);
+    }
+
+    #[rstest]
+    #[case("1.00", 2)]
+    #[case("1.0", 1)]
+    #[case("1.000", 3)]
+    #[case("100.00", 2)]
+    #[case("0.10", 2)]
+    #[case("0.100", 3)]
+    fn test_from_str_preserves_trailing_zeros(#[case] input: &str, #[case] expected_precision: u8) {
+        let price = Price::from_str(input).unwrap();
+        assert_eq!(price.precision, expected_precision);
     }
 
     #[rstest]
