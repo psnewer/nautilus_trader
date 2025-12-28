@@ -45,6 +45,7 @@ This release adds support for Python 3.14 with the following limitations:
 
 ### Breaking Changes
 - Dropped support for Python 3.11
+- Removed `prob_fill_on_stop` parameter from `FillModel` and `FillModelConfig` (stop orders have no queue position to simulate as triggers are deterministic when price reaches the trigger level)
 - Removed `use_ws_trade_api` config option from Bybit execution client (using WebSocket trade API only)
 - Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
 - Renamed `ExecTesterConfig.enable_buys` to `enable_limit_buys`

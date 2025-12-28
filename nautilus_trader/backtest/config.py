@@ -410,8 +410,6 @@ class FillModelConfig(NautilusConfig, frozen=True):
     ----------
     prob_fill_on_limit : float, default 1.0
         The probability of limit order filling if the market rests on its price.
-    prob_fill_on_stop : float, default 1.0
-        The probability of stop orders filling if the market rests on its price.
     prob_slippage : float, default 0.0
         The probability of order fill prices slipping by one tick.
     random_seed : int, optional
@@ -420,7 +418,6 @@ class FillModelConfig(NautilusConfig, frozen=True):
     """
 
     prob_fill_on_limit: float = 1.0
-    prob_fill_on_stop: float = 1.0
     prob_slippage: float = 0.0
     random_seed: int | None = None
 

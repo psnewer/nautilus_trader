@@ -6431,12 +6431,6 @@ cdef class OrderMatchingEngine:
         cdef Price trigger_price = order.trigger_price
         cdef Price price = order.price
 
-        if self._fill_model:
-            if order.side == OrderSide.BUY and self._core.ask_raw == trigger_price._mem.raw and not self._fill_model.is_stop_filled():
-                return  # Not triggered
-            elif order.side == OrderSide.SELL and self._core.bid_raw == trigger_price._mem.raw and not self._fill_model.is_stop_filled():
-                return  # Not triggered
-
         self._generate_order_triggered(order)
 
         # Check for immediate fill (which would fill passively as a maker)
