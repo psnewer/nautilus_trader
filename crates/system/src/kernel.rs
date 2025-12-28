@@ -21,6 +21,7 @@ use std::{
     any::Any,
     cell::{Ref, RefCell},
     rc::Rc,
+    time::Duration,
 };
 
 #[cfg(feature = "live")]
@@ -392,6 +393,12 @@ impl NautilusKernel {
         self.instance_id
     }
 
+    /// Returns the delay after stopping the node to await residual events before final shutdown.
+    #[must_use]
+    pub fn delay_post_stop(&self) -> Duration {
+        self.config.delay_post_stop()
+    }
+
     /// Returns the UNIX timestamp (ns) when the kernel was created.
     #[must_use]
     pub const fn ts_created(&self) -> UnixNanos {
@@ -495,23 +502,25 @@ impl NautilusKernel {
         log::info!("Started");
     }
 
-    /// Stops the Nautilus system kernel.
-    pub async fn stop_async(&mut self) {
+    /// Stops the trader and its registered components.
+    ///
+    /// This method initiates a graceful shutdown of trading components (strategies, actors)
+    /// which may trigger residual events such as order cancellations. The caller should
+    /// continue processing events after calling this method to handle these residual events.
+    pub fn stop_trader(&mut self) {
         log::info!("Stopping");
 
         // Stop the trader (it will stop all registered components)
         if let Err(e) = self.trader.stop() {
             log::error!("Error stopping trader: {e:?}");
         }
+    }
 
-        // Wait for residual events to be processed (e.g., cancel orders on stop)
-        #[cfg(feature = "live")]
-        {
-            let delay = self.config.delay_post_stop();
-            log::info!("Awaiting residual events ({delay:?})...");
-            std::thread::sleep(delay);
-        }
-
+    /// Finalizes the kernel shutdown after the grace period.
+    ///
+    /// This method should be called after the residual events grace period has elapsed
+    /// and all remaining events have been processed. It disconnects clients and stops engines.
+    pub async fn finalize_stop(&mut self) {
         // Stop all adapter clients
         if let Err(e) = self.stop_all_clients() {
             log::error!("Error stopping clients: {e:?}");

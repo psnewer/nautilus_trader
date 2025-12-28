@@ -112,8 +112,9 @@ pub struct LiveNode {
     kernel: NautilusKernel,
     runner: Option<AsyncRunner>,
     config: LiveNodeConfig,
-    is_running: bool,
     handle: LiveNodeHandle,
+    is_running: bool,
+    shutdown_deadline: Option<tokio::time::Instant>,
     #[cfg(feature = "python")]
     #[allow(dead_code)] // TODO: Under development
     python_actors: Vec<pyo3::Py<pyo3::PyAny>>,
@@ -167,8 +168,9 @@ impl LiveNode {
             kernel,
             runner: Some(runner),
             config,
-            is_running: false,
             handle: LiveNodeHandle::new(),
+            is_running: false,
+            shutdown_deadline: None,
             #[cfg(feature = "python")]
             python_actors: Vec::new(),
         })
@@ -196,6 +198,9 @@ impl LiveNode {
 
     /// Stop the live node.
     ///
+    /// This method stops the trader, waits for the configured grace period to allow
+    /// residual events to be processed, then finalizes the shutdown sequence.
+    ///
     /// # Errors
     ///
     /// Returns an error if shutdown fails.
@@ -204,7 +209,20 @@ impl LiveNode {
             anyhow::bail!("Not running");
         }
 
-        self.kernel.stop_async().await;
+        self.kernel.stop_trader();
+        let delay = self.kernel.delay_post_stop();
+        log::info!("Awaiting residual events ({delay:?})...");
+        tokio::time::sleep(delay).await;
+        self.finalize_stop().await
+    }
+
+    /// Finalizes the shutdown after the residual events grace period.
+    ///
+    /// This completes the shutdown sequence by finalizing the kernel shutdown,
+    /// disconnecting clients, and updating the node state. Should be called after
+    /// the grace period for processing residual events has elapsed.
+    async fn finalize_stop(&mut self) -> anyhow::Result<()> {
+        self.kernel.finalize_stop().await;
         self.kernel.disconnect_clients().await?;
         self.await_engines_disconnected().await?;
 
@@ -212,6 +230,19 @@ impl LiveNode {
         self.handle.set_running(false);
 
         Ok(())
+    }
+
+    /// Initiates the shutdown sequence by stopping the trader and setting the grace period deadline.
+    fn initiate_shutdown(&mut self) {
+        self.kernel.stop_trader();
+        let delay = self.kernel.delay_post_stop();
+        log::info!("Awaiting residual events ({delay:?})...");
+        self.shutdown_deadline = Some(tokio::time::Instant::now() + delay);
+    }
+
+    /// Returns whether the node is currently shutting down.
+    const fn is_shutting_down(&self) -> bool {
+        self.shutdown_deadline.is_some()
     }
 
     /// Awaits engine clients to connect with timeout.
@@ -262,8 +293,9 @@ impl LiveNode {
     /// # Shutdown Sequence
     ///
     /// 1. Signal received (SIGINT or handle stop).
-    /// 2. Kernel shutdown begins.
-    /// 3. Remaining events are drained from channels.
+    /// 2. Trader components stopped (triggers order cancellations, etc.).
+    /// 3. Event loop continues processing residual events for the configured grace period.
+    /// 4. Kernel finalized, clients disconnected, remaining events drained.
     ///
     /// # Errors
     ///
@@ -292,27 +324,27 @@ impl LiveNode {
 
         loop {
             tokio::select! {
-                result = tokio::signal::ctrl_c() => {
-                    match result {
-                        Ok(()) => log::info!("Received SIGINT, shutting down"),
-                        Err(e) => log::error!("Failed to listen for SIGINT: {e}"),
-                    }
-                    break;
-                }
                 Some(handler) = time_evt_rx.recv() => {
                     AsyncRunner::handle_time_event(handler);
-                }
-                Some(cmd) = data_cmd_rx.recv() => {
-                    AsyncRunner::handle_data_command(cmd);
                 }
                 Some(evt) = data_evt_rx.recv() => {
                     AsyncRunner::handle_data_event(evt);
                 }
-                Some(cmd) = exec_cmd_rx.recv() => {
-                    AsyncRunner::handle_exec_command(cmd);
+                Some(cmd) = data_cmd_rx.recv() => {
+                    AsyncRunner::handle_data_command(cmd);
                 }
                 Some(evt) = exec_evt_rx.recv() => {
                     AsyncRunner::handle_exec_event(evt);
+                }
+                Some(cmd) = exec_cmd_rx.recv() => {
+                    AsyncRunner::handle_exec_command(cmd);
+                }
+                result = tokio::signal::ctrl_c(), if !self.is_shutting_down() => {
+                    match result {
+                        Ok(()) => log::info!("Received SIGINT, shutting down"),
+                        Err(e) => log::error!("Failed to listen for SIGINT: {e}"),
+                    }
+                    self.initiate_shutdown();
                 }
                 () = async {
                     loop {
@@ -322,14 +354,23 @@ impl LiveNode {
                             return;
                         }
                     }
+                }, if !self.is_shutting_down() => {
+                    self.initiate_shutdown();
+                }
+                () = async {
+                    match self.shutdown_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
                 } => {
                     break;
                 }
             }
         }
 
-        self.stop().await?;
+        self.finalize_stop().await?;
 
+        // Handle events that arrived during finalize_stop
         self.drain_channels(
             &mut time_evt_rx,
             &mut data_evt_rx,
@@ -728,8 +769,9 @@ impl LiveNodeBuilder {
             kernel,
             runner: Some(runner),
             config: self.config,
-            is_running: false,
             handle: LiveNodeHandle::new(),
+            is_running: false,
+            shutdown_deadline: None,
             #[cfg(feature = "python")]
             python_actors: Vec::new(),
         })
@@ -742,6 +784,45 @@ mod tests {
     use rstest::*;
 
     use super::*;
+
+    #[rstest]
+    fn test_handle_initial_state() {
+        let handle = LiveNodeHandle::new();
+
+        assert!(!handle.should_stop());
+        assert!(!handle.is_running());
+    }
+
+    #[rstest]
+    fn test_handle_stop_sets_flag() {
+        let handle = LiveNodeHandle::new();
+
+        handle.stop();
+
+        assert!(handle.should_stop());
+    }
+
+    #[rstest]
+    fn test_handle_set_running_clears_stop_flag() {
+        let handle = LiveNodeHandle::new();
+        handle.stop();
+        assert!(handle.should_stop());
+
+        handle.set_running(true);
+
+        assert!(!handle.should_stop());
+        assert!(handle.is_running());
+    }
+
+    #[rstest]
+    fn test_handle_clone_shares_state() {
+        let handle1 = LiveNodeHandle::new();
+        let handle2 = handle1.clone();
+
+        handle1.stop();
+
+        assert!(handle2.should_stop());
+    }
 
     #[rstest]
     fn test_trading_node_builder_creation() {
@@ -777,6 +858,19 @@ mod tests {
         // Should not panic and methods should chain
     }
 
+    #[rstest]
+    fn test_builder_rejects_backtest_environment() {
+        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Backtest);
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Backtest environment")
+        );
+    }
+
     #[cfg(feature = "python")]
     #[rstest]
     fn test_trading_node_build() {
@@ -789,18 +883,5 @@ mod tests {
         let node = build_result.unwrap();
         assert!(!node.is_running());
         assert_eq!(node.environment(), Environment::Sandbox);
-    }
-
-    #[rstest]
-    fn test_builder_rejects_backtest_environment() {
-        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Backtest);
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Backtest environment")
-        );
     }
 }

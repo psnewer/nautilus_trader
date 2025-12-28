@@ -1569,6 +1569,7 @@ mod tests {
         #[derive(Clone)]
         struct CaptureAndFailExecutor {
             captured_ids: Arc<Mutex<Vec<String>>>,
+            barrier: Arc<tokio::sync::Barrier>,
             should_succeed: bool,
         }
 
@@ -1603,8 +1604,12 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(client_order_id.as_str().to_string());
+                let barrier = Arc::clone(&self.barrier);
                 let should_succeed = self.should_succeed;
+                // Wait for all tasks to capture their IDs before any completes
+                // (with concurrent execution, first success aborts others)
                 Box::pin(async move {
+                    barrier.wait().await;
                     if should_succeed {
                         Ok(create_test_report("ORDER-1"))
                     } else {
@@ -1617,11 +1622,13 @@ mod tests {
         }
 
         let captured_ids = Arc::new(Mutex::new(Vec::new()));
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
 
         let transports = vec![
             TransportClient::new(
                 CaptureAndFailExecutor {
                     captured_ids: Arc::clone(&captured_ids),
+                    barrier: Arc::clone(&barrier),
                     should_succeed: false,
                 },
                 "client-0".to_string(),
@@ -1629,6 +1636,7 @@ mod tests {
             TransportClient::new(
                 CaptureAndFailExecutor {
                     captured_ids: Arc::clone(&captured_ids),
+                    barrier: Arc::clone(&barrier),
                     should_succeed: true,
                 },
                 "client-1".to_string(),
@@ -1661,12 +1669,11 @@ mod tests {
 
         assert!(result.is_ok());
 
-        // Check that both clients received unique client_order_ids
-        // Order is non-deterministic due to concurrent execution
+        // Check captured client_order_ids (order is non-deterministic with concurrent execution)
         let ids = captured_ids.lock().unwrap();
         assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"O-456".to_string()));
-        assert!(ids.contains(&"O-456-1".to_string()));
+        assert!(ids.contains(&"O-456".to_string())); // First client gets original ID
+        assert!(ids.contains(&"O-456-1".to_string())); // Second client gets suffix -1
     }
 
     #[tokio::test]
