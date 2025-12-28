@@ -185,6 +185,17 @@ class BinanceFuturesExecutionClient(BinanceCommonExecutionClient):
             margins=account_info.parse_to_margin_balances(),
             reported=True,
             ts_event=millis_to_nanos(account_info.updateTime),
+            info={
+                "total_wallet_balance": account_info.totalWalletBalance,
+                "total_margin_balance": account_info.totalMarginBalance,
+                "total_initial_margin": account_info.totalInitialMargin,
+                "total_maint_margin": account_info.totalMaintMargin,
+                "total_unrealized_profit": account_info.totalUnrealizedProfit,
+                "total_cross_wallet_balance": account_info.totalCrossWalletBalance,
+                "total_cross_unpnl": account_info.totalCrossUnPnl,
+                "available_balance": account_info.availableBalance,
+                "max_withdraw_amount": account_info.maxWithdrawAmount,
+            },
         )
 
         await self._await_account_registered(log_registered=False)

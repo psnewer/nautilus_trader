@@ -28,6 +28,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `ParquetDataCatalog.query_first_timestamp` (#3253), thanks @MK27MK
 - Added `PolymarketDataLoader` for loading historical data with docs and example
 - Added Binance accurate commission rates per symbol (#3208), thanks @delusionpig
+- Added Binance cross-margin info to `AccountState`
 - Added `BinanceInstrumentProviderConfig` to support the `query_commission_rates` config option
 - Added Bybit spot margin auto-borrow and auto-repay with `auto_repay_spot_borrows` config option
 - Added Bybit spot margin manual operations (`BybitMarginAction`) for strategy-controlled borrow/repay via `query_account`
