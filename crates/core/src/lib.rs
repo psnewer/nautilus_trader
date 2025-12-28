@@ -89,7 +89,7 @@ pub use crate::{
     drop::CleanDrop,
     nanos::UnixNanos,
     shared::{SharedCell, WeakCell},
-    stack_str::StackStr,
+    stack_str::{STACKSTR_CAPACITY, StackStr},
     time::AtomicTime,
     uuid::UUID4,
 };

@@ -41,6 +41,30 @@ cdef extern from "../includes/core.h":
         # The UUID v4 value as a fixed-length C string byte array (includes null terminator).
         uint8_t value[37];
 
+    # A stack-allocated ASCII string with a maximum capacity of 36 characters.
+    #
+    # Optimized for short identifier strings with:
+    # - Stack allocation (no heap).
+    # - `Copy` semantics.
+    # - O(1) length access.
+    # - C FFI compatibility (null-terminated).
+    #
+    # ASCII is required to guarantee 1 character == 1 byte, ensuring the buffer
+    # always holds exactly the capacity in characters. This aligns with identifier
+    # conventions which are inherently ASCII.
+    #
+    # # Memory layout
+    #
+    # The `value` field is placed first so the struct pointer equals the string
+    # pointer, making C FFI more natural: `(char*)&stack_str` works directly.
+    cdef struct StackStr:
+        # ASCII data with null terminator for C FFI.
+        uint8_t value[37];
+        # Length of the string in bytes (0-36).
+        uint8_t len;
+    # Maximum length in characters.
+    const uintptr_t StackStr_MAX_LEN # = STACKSTR_CAPACITY
+
     # Construct a new *empty* [`CVec`] value for use as initialiser/sentinel in foreign code.
     CVec cvec_new();
 

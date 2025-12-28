@@ -26,8 +26,8 @@
 //! # ASCII requirement
 //!
 //! `StackStr` only accepts ASCII strings. This guarantees that 1 character == 1 byte,
-//! ensuring the 36-byte buffer always holds exactly 36 characters. This aligns with
-//! identifier conventions which are inherently ASCII (e.g., `"BINANCE"`, `"ETH-PERP"`).
+//! ensuring the buffer always holds exactly the capacity in characters. This aligns
+//! with identifier conventions which are inherently ASCII.
 //!
 //! | Property              | ASCII    | UTF-8               |
 //! |-----------------------|----------|---------------------|
@@ -55,7 +55,7 @@ use crate::correctness::FAILED;
 /// Maximum capacity in characters for a [`StackStr`].
 pub const STACKSTR_CAPACITY: usize = 36;
 
-/// Fixed buffer size including null terminator.
+/// Fixed buffer size including null terminator (capacity + 1).
 const STACKSTR_BUFFER_SIZE: usize = STACKSTR_CAPACITY + 1;
 
 /// A stack-allocated ASCII string with a maximum capacity of 36 characters.
@@ -65,10 +65,9 @@ const STACKSTR_BUFFER_SIZE: usize = STACKSTR_CAPACITY + 1;
 /// - `Copy` semantics.
 /// - O(1) length access.
 /// - C FFI compatibility (null-terminated).
-/// - SIMD-accelerated ASCII validation.
 ///
-/// ASCII is required to guarantee 1 character == 1 byte, ensuring the 36-byte
-/// buffer always holds exactly 36 characters. This aligns with identifier
+/// ASCII is required to guarantee 1 character == 1 byte, ensuring the buffer
+/// always holds exactly the capacity in characters. This aligns with identifier
 /// conventions which are inherently ASCII.
 ///
 /// # Memory layout
@@ -79,7 +78,7 @@ const STACKSTR_BUFFER_SIZE: usize = STACKSTR_CAPACITY + 1;
 #[repr(C)]
 pub struct StackStr {
     /// ASCII data with null terminator for C FFI.
-    value: [u8; STACKSTR_BUFFER_SIZE],
+    value: [u8; 37], // STACKSTR_CAPACITY + 1
     /// Length of the string in bytes (0-36).
     len: u8,
 }
@@ -592,7 +591,7 @@ mod tests {
     #[case("BINANCE")]
     #[case("ETH-PERP")]
     #[case("O-20231215-001")]
-    #[case("123456789012345678901234567890123456")] // 36 chars
+    #[case("123456789012345678901234567890123456")] // 36 chars (max)
     fn test_valid_identifiers(#[case] s: &str) {
         let stack_str = StackStr::new(s);
         assert_eq!(stack_str.as_str(), s);
@@ -671,7 +670,7 @@ mod tests {
 
     #[rstest]
     fn test_from_bytes_too_long() {
-        let bytes = [b'x'; 37];
+        let bytes = [b'x'; 55];
         let result = StackStr::from_bytes(&bytes);
         assert!(result.is_err());
     }
@@ -722,7 +721,7 @@ mod tests {
 
     #[rstest]
     fn test_serde_deserialize_too_long() {
-        let long = format!("\"{}\"", "x".repeat(37));
+        let long = format!("\"{}\"", "x".repeat(55));
         let result: Result<StackStr, _> = serde_json::from_str(&long);
         assert!(result.is_err());
     }
@@ -796,7 +795,7 @@ mod tests {
 
     #[rstest]
     fn test_new_checked_error_too_long() {
-        let err = StackStr::new_checked(&"x".repeat(37)).unwrap_err();
+        let err = StackStr::new_checked(&"x".repeat(55)).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
     }
 

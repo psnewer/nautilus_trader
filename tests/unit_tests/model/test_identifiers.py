@@ -319,7 +319,7 @@ def test_exec_algorithm_id() -> None:
 def test_trade_id_maximum_length() -> None:
     # Arrange, Act, Assert
     with pytest.raises(ValueError):
-        TradeId("A" * 37)
+        TradeId("A" * 37)  # Max length is 36 characters
 
 
 def test_instrument_id_new_spread_single_positive_ratio() -> None:

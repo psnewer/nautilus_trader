@@ -2898,7 +2898,7 @@ class LiveExecutionEngine(ExecutionEngine):
 
             if client_order_id is None:
                 # Generate external client order ID
-                client_order_id = ClientOrderId(f"O-{UUID4().value}")
+                client_order_id = ClientOrderId(UUID4().value)
 
             # Assign to report
             report.client_order_id = client_order_id

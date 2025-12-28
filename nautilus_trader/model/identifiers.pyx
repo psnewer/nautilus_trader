@@ -13,11 +13,13 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from libc.string cimport memcmp
 from libc.string cimport strcmp
 
 from nautilus_trader.core import nautilus_pyo3
 
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.rust.core cimport STACKSTR_CAPACITY
 from nautilus_trader.core.rust.model cimport account_id_new
 from nautilus_trader.core.rust.model cimport client_id_new
 from nautilus_trader.core.rust.model cimport client_order_id_new
@@ -1209,8 +1211,8 @@ cdef class TradeId(Identifier):
 
     def __init__(self, str value not None) -> None:
         Condition.valid_string(value, "value")
-        if len(value) > 36:
-            Condition.in_range_int(len(value), 1, 36, "value")
+        if len(value) > STACKSTR_CAPACITY:
+            Condition.in_range_int(len(value), 1, STACKSTR_CAPACITY, "value")
 
         self._mem = trade_id_new(pystr_to_cstr(value))
 
@@ -1223,7 +1225,9 @@ cdef class TradeId(Identifier):
     def __eq__(self, TradeId other) -> bool:
         if other is None:
             return False
-        return strcmp(trade_id_to_cstr(&self._mem), trade_id_to_cstr(&other._mem)) == 0
+        if self._mem._0.len != other._mem._0.len:
+            return False
+        return memcmp(self._mem._0.value, other._mem._0.value, self._mem._0.len) == 0
 
     def __hash__(self) -> int:
         # A rare zero hash will cause frequent recomputations

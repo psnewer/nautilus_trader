@@ -2533,6 +2533,7 @@ mod tests {
     };
     use nautilus_network::websocket::{AuthTracker, SubscriptionState};
     use rstest::rstest;
+    use ustr::Ustr;
 
     use super::{NautilusWsMessage, OKXWsFeedHandler};
     use crate::websocket::parse::OrderStateSnapshot;
@@ -2667,8 +2668,8 @@ mod tests {
         let order_state_cache: AHashMap<ClientOrderId, u32> = AHashMap::new();
         let active_orders: DashMap<ClientOrderId, ()> = DashMap::new();
         let aliases: DashMap<ClientOrderId, ClientOrderId> = DashMap::new();
-        let fee_cache: AHashMap<ustr::Ustr, f64> = AHashMap::new();
-        let filled_qty_cache: AHashMap<ustr::Ustr, f64> = AHashMap::new();
+        let fee_cache: AHashMap<Ustr, f64> = AHashMap::new();
+        let filled_qty_cache: AHashMap<Ustr, f64> = AHashMap::new();
         let canonical = ClientOrderId::new("PARENT-001");
         let child = ClientOrderId::new("CHILD-001");
         let venue_id = VenueOrderId::new("VENUE-001");

@@ -19,11 +19,6 @@
 
 #define DEPTH10_LEN 10
 
-/**
- * The maximum length of ASCII characters for a `TradeId` string value (including null terminator).
- */
-#define TRADE_ID_LEN 37
-
 #if defined(HIGH_PRECISION)
 /**
  * The maximum fixed-point precision.
@@ -1216,10 +1211,7 @@ typedef struct QuoteTick_t {
  * Maximum length is 36 characters.
  */
 typedef struct TradeId_t {
-    /**
-     * The trade match ID value as a fixed-length C string byte array (includes null terminator).
-     */
-    uint8_t value[TRADE_ID_LEN];
+    StackStr _0;
 } TradeId_t;
 
 /**

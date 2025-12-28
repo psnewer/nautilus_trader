@@ -1290,7 +1290,7 @@ impl DydxHttpClient {
         for fill in fills_response.fills {
             // Get instrument by market ticker
             let market = &fill.market;
-            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let symbol = Ustr::from(&format!("{market}-PERP"));
             let instrument = match self.get_instrument(&symbol) {
                 Some(inst) => inst,
                 None => {
@@ -1345,7 +1345,7 @@ impl DydxHttpClient {
 
         for (market, position) in subaccount_response.subaccount.open_perpetual_positions {
             // Get instrument by market ticker
-            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let symbol = Ustr::from(&format!("{market}-PERP"));
             let instrument = match self.get_instrument(&symbol) {
                 Some(inst) => inst,
                 None => {

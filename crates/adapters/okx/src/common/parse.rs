@@ -2345,11 +2345,8 @@ mod tests {
     fn test_parse_place_order_response() {
         let json_data = load_test_json("http_place_order_response.json");
         let parsed: OKXPlaceOrderResponse = serde_json::from_str(&json_data).unwrap();
-        assert_eq!(
-            parsed.ord_id,
-            Some(ustr::Ustr::from("12345678901234567890"))
-        );
-        assert_eq!(parsed.cl_ord_id, Some(ustr::Ustr::from("client_order_123")));
+        assert_eq!(parsed.ord_id, Some(Ustr::from("12345678901234567890")));
+        assert_eq!(parsed.cl_ord_id, Some(Ustr::from("client_order_123")));
         assert_eq!(parsed.tag, Some(String::new()));
     }
 

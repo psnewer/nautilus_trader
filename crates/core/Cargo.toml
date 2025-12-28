@@ -85,3 +85,8 @@ harness = false
 name = "stack_str_iai"
 path = "benches/stack_str_iai.rs"
 harness = false
+
+[[bench]]
+name = "identifier_comparison"
+path = "benches/identifier_comparison.rs"
+harness = false
