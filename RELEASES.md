@@ -206,7 +206,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou
 - Refined adding files to catalog session (#3215), thanks @faysou
-- Refined loading of files in catalog (#3313), thanks @fayosu
+- Refined loading of files in catalog (#3313), thanks @faysou
 - Refined catalog file filter methods (#3318), thanks @faysou
 - Refined `HistoricInteractiveBrokersClient` (#3187), thanks @faysou
 - Refined `BacktestDataIterator` docstrings (#3264), thanks @faysou
@@ -215,6 +215,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Refined Interactive Brokers historical data request methods (#3279), thanks @faysou
 - Refined requests and aggregators (#3328), thanks @faysou
 - Refined parsing of IB expiries (#3332), thanks @faysou
+- Refined subscription to spread quotes (#3349), thanks @faysou
+- Refined data query and subscription (#3353), thanks @faysou
 - Optimized unnecessary string allocations and `Ustr` usage
 - Optimized build to prefer sccache when available (#3243), thanks @sunlei
 - Optimized execution reconciliation to avoid quadratic complexity (#3140), thanks @DeirhX

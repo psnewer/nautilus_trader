@@ -3857,17 +3857,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hostname"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
-dependencies = [
- "cfg-if",
- "libc",
- "windows-link 0.2.1",
-]
-
-[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4887,7 +4876,6 @@ dependencies = [
  "sqlx",
  "strum",
  "thiserror 2.0.17",
- "thousands",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -5034,7 +5022,6 @@ dependencies = [
  "strum",
  "sysinfo",
  "tempfile",
- "thousands",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5064,7 +5051,6 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
- "static_assertions",
  "strum",
  "toml",
  "ustr",
@@ -5489,7 +5475,6 @@ dependencies = [
  "strum",
  "tabled",
  "thiserror 2.0.17",
- "thousands",
  "tracing",
  "ustr",
 ]
@@ -5511,7 +5496,6 @@ dependencies = [
  "nautilus-common",
  "nautilus-core",
  "nautilus-cryptography",
- "nonzero_ext",
  "proptest",
  "pyo3",
  "pyo3-async-runtimes",
@@ -5724,7 +5708,6 @@ version = "0.52.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
- "hostname",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -5737,6 +5720,7 @@ dependencies = [
  "nautilus-trading",
  "pyo3",
  "rstest",
+ "sysinfo",
  "ustr",
 ]
 
@@ -5773,7 +5757,6 @@ dependencies = [
  "serde_json",
  "strum",
  "thiserror 2.0.17",
- "thousands",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -5870,12 +5853,6 @@ dependencies = [
  "memchr",
  "minimal-lexical",
 ]
-
-[[package]]
-name = "nonzero_ext"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
 
 [[package]]
 name = "ntapi"
@@ -8582,12 +8559,6 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
-
-[[package]]
-name = "thousands"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
 
 [[package]]
 name = "thread_local"

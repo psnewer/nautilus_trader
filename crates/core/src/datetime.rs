@@ -42,33 +42,16 @@ const MAX_MILLIS_FOR_NANOS: f64 = u64::MAX as f64 / NANOSECONDS_IN_MILLISECOND a
 const MAX_MICROS_FOR_NANOS: f64 = u64::MAX as f64 / NANOSECONDS_IN_MICROSECOND as f64;
 
 // Compile-time checks for time constants to prevent accidental modification
-#[cfg(test)]
-mod compile_time_checks {
-    use static_assertions::const_assert_eq;
-
-    use super::*;
-
-    // [STATIC_ASSERT] Core time constant relationships
-    const_assert_eq!(NANOSECONDS_IN_SECOND, 1_000_000_000);
-    const_assert_eq!(NANOSECONDS_IN_MILLISECOND, 1_000_000);
-    const_assert_eq!(NANOSECONDS_IN_MICROSECOND, 1_000);
-    const_assert_eq!(MILLISECONDS_IN_SECOND, 1_000);
-
-    // [STATIC_ASSERT] Mathematical relationships between constants
-    const_assert_eq!(
-        NANOSECONDS_IN_SECOND,
-        MILLISECONDS_IN_SECOND * NANOSECONDS_IN_MILLISECOND
-    );
-    const_assert_eq!(
-        NANOSECONDS_IN_MILLISECOND,
-        NANOSECONDS_IN_MICROSECOND * 1_000
-    );
-    const_assert_eq!(NANOSECONDS_IN_SECOND / NANOSECONDS_IN_MILLISECOND, 1_000);
-    const_assert_eq!(
-        NANOSECONDS_IN_SECOND / NANOSECONDS_IN_MICROSECOND,
-        1_000_000
-    );
-}
+const _: () = {
+    assert!(NANOSECONDS_IN_SECOND == 1_000_000_000);
+    assert!(NANOSECONDS_IN_MILLISECOND == 1_000_000);
+    assert!(NANOSECONDS_IN_MICROSECOND == 1_000);
+    assert!(MILLISECONDS_IN_SECOND == 1_000);
+    assert!(NANOSECONDS_IN_SECOND == MILLISECONDS_IN_SECOND * NANOSECONDS_IN_MILLISECOND);
+    assert!(NANOSECONDS_IN_MILLISECOND == NANOSECONDS_IN_MICROSECOND * 1_000);
+    assert!(NANOSECONDS_IN_SECOND / NANOSECONDS_IN_MILLISECOND == 1_000);
+    assert!(NANOSECONDS_IN_SECOND / NANOSECONDS_IN_MICROSECOND == 1_000_000);
+};
 
 /// List of weekdays (Monday to Friday).
 pub const WEEKDAYS: [Weekday; 5] = [

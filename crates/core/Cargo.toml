@@ -55,7 +55,6 @@ criterion = { workspace = true }
 iai = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
-static_assertions = { workspace = true }
 
 [build-dependencies]
 cbindgen = { workspace = true, optional = true }

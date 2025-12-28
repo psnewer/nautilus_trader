@@ -302,7 +302,7 @@ impl NautilusKernel {
     }
 
     fn determine_machine_id() -> anyhow::Result<String> {
-        Ok(hostname::get()?.to_string_lossy().into_owned())
+        sysinfo::System::host_name().ok_or_else(|| anyhow::anyhow!("Failed to determine hostname"))
     }
 
     fn initialize_logging(
