@@ -448,13 +448,17 @@ pub fn subtract_n_years_nanos(unix_nanos: UnixNanos, n: u32) -> anyhow::Result<U
 }
 
 /// Returns the last valid day of `(year, month)`.
+///
+/// Returns `None` if `month` is not in the range 1..=12.
 #[must_use]
-pub const fn last_day_of_month(year: i32, month: u32) -> u32 {
+pub const fn last_day_of_month(year: i32, month: u32) -> Option<u32> {
     // Validate month range 1-12
-    assert!(month >= 1 && month <= 12, "`month` must be in 1..=12");
+    if month < 1 || month > 12 {
+        return None;
+    }
 
     // February leap-year logic
-    match month {
+    Some(match month {
         2 => {
             if is_leap_year(year) {
                 29
@@ -464,7 +468,7 @@ pub const fn last_day_of_month(year: i32, month: u32) -> u32 {
         }
         4 | 6 | 9 | 11 => 30,
         _ => 31, // January, March, May, July, August, October, December
-    }
+    })
 }
 
 /// Basic leap-year check
@@ -573,9 +577,10 @@ mod tests {
     }
 
     #[rstest]
-    #[should_panic(expected = "`month` must be in 1..=12")]
-    fn test_last_day_of_month_invalid_month() {
-        let _ = last_day_of_month(2024, 0);
+    #[case(2024, 0)] // Month below range
+    #[case(2024, 13)] // Month above range
+    fn test_last_day_of_month_invalid_month(#[case] year: i32, #[case] month: u32) {
+        assert!(last_day_of_month(year, month).is_none());
     }
 
     #[rstest]
@@ -791,7 +796,7 @@ mod tests {
     #[case(2024, 12, 31)] // December
     #[case(2023, 11, 30)] // November
     fn test_last_day_of_month(#[case] year: i32, #[case] month: u32, #[case] expected: u32) {
-        let result = last_day_of_month(year, month);
+        let result = last_day_of_month(year, month).unwrap();
         assert_eq!(result, expected);
     }
 

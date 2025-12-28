@@ -338,6 +338,10 @@ impl Borrow<str> for StackStr {
 }
 
 impl Default for StackStr {
+    /// Creates an empty [`StackStr`] with length 0.
+    ///
+    /// Note: While [`StackStr::new`] rejects empty strings, `default()` creates
+    /// an empty placeholder. Use [`is_empty`](StackStr::is_empty) to check for this state.
     fn default() -> Self {
         Self {
             value: [0u8; STACKSTR_BUFFER_SIZE],

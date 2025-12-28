@@ -205,14 +205,22 @@ impl AtomicTime {
     /// sees all writes made before this call in the writing thread.
     ///
     /// Typically used in single-threaded scenarios or coordinated concurrency in **static mode**,
-    /// since there’s no global ordering across threads.
+    /// since there's no global ordering across threads.
     ///
     /// # Panics
     ///
     /// Panics if invoked when in real-time mode.
+    ///
+    /// # Thread Safety
+    ///
+    /// The mode check is not atomic with the subsequent store. If another thread calls
+    /// `make_realtime()` between the check and store, the invariant can be violated.
+    /// This is intentional: mode switching is a setup-time operation and should not
+    /// occur concurrently with time operations. Callers must ensure mode switches are
+    /// complete before resuming time operations.
     pub fn set_time(&self, time: UnixNanos) {
         assert!(
-            !self.realtime.load(Ordering::Acquire),
+            !self.realtime.load(Ordering::SeqCst),
             "Cannot set time while clock is in realtime mode"
         );
 
@@ -228,9 +236,17 @@ impl AtomicTime {
     ///
     /// Returns an error if the increment would overflow `u64::MAX` or if called
     /// while the clock is in real-time mode.
+    ///
+    /// # Thread Safety
+    ///
+    /// The mode check is not atomic with the subsequent update. If another thread calls
+    /// `make_realtime()` between the check and update, the invariant can be violated.
+    /// This is intentional: mode switching is a setup-time operation and should not
+    /// occur concurrently with time operations. Callers must ensure mode switches are
+    /// complete before resuming time operations.
     pub fn increment_time(&self, delta: u64) -> anyhow::Result<UnixNanos> {
         anyhow::ensure!(
-            !self.realtime.load(Ordering::Acquire),
+            !self.realtime.load(Ordering::SeqCst),
             "Cannot increment time while clock is in realtime mode"
         );
 

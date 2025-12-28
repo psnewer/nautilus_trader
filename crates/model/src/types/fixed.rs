@@ -663,7 +663,7 @@ mod tests {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_i128(value, precision);
             let result = fixed_i128_to_f64(fixed);
-            assert!(approx_eq!(f64, value, result, epsilon = 0.001, ulps = 16));
+            assert!(approx_eq!(f64, value, result, epsilon = 0.001));
         }
     }
 
@@ -711,7 +711,7 @@ mod tests {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_u128(value, precision);
             let result = fixed_u128_to_f64(fixed);
-            assert!(approx_eq!(f64, value, result, epsilon = 0.001, ulps = 16));
+            assert!(approx_eq!(f64, value, result, epsilon = 0.001));
         }
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_i64(value, precision);
             let result = fixed_i64_to_f64(fixed);
-            assert!(approx_eq!(f64, value, result, epsilon = 0.001, ulps = 16));
+            assert!(approx_eq!(f64, value, result, epsilon = 0.001));
         }
     }
 
@@ -1049,7 +1049,7 @@ mod tests {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_u64(value, precision);
             let result = fixed_u64_to_f64(fixed);
-            assert!(approx_eq!(f64, value, result, epsilon = 0.001, ulps = 16));
+            assert!(approx_eq!(f64, value, result, epsilon = 0.001));
         }
     }
 
