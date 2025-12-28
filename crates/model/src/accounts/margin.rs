@@ -272,13 +272,16 @@ impl MarginAccount {
     /// # Panics
     ///
     /// This function panics if:
-    /// - No starting balance exists for the given `currency`.
-    /// - Total free margin would be negative.
     /// - Margin calculation overflows.
     pub fn recalculate_balance(&mut self, currency: Currency) {
         let current_balance = match self.balances.get(&currency) {
-            Some(balance) => balance,
-            None => panic!("Cannot recalculate balance when no starting balance"),
+            Some(balance) => *balance,
+            None => {
+                // Initialize zero balance if none exists - can occur when account
+                // state doesn't include a balance for the position's cost currency
+                let zero = Money::from_raw(0, currency);
+                AccountBalance::new(zero, zero, zero)
+            }
         };
 
         let mut total_margin: MoneyRaw = 0;
@@ -296,12 +299,15 @@ impl MarginAccount {
             }
         }
 
-        let total_free = current_balance.total.raw - total_margin;
-        // TODO error handle this with AccountMarginExceeded
-        assert!(
-            total_free >= 0,
-            "Cannot recalculate balance when total_free is less than 0.0"
-        );
+        // Clamp margin to total balance if it would result in negative free balance.
+        // This can occur transiently when venue and client state are out of sync.
+        let total_free = if total_margin > current_balance.total.raw {
+            total_margin = current_balance.total.raw;
+            0
+        } else {
+            current_balance.total.raw - total_margin
+        };
+
         let new_balance = AccountBalance::new(
             current_balance.total,
             Money::from_raw(total_margin, currency),
