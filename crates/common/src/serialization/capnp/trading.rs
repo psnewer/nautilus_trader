@@ -296,6 +296,11 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
             let position_id_builder = builder.reborrow().init_position_id();
             position_id.to_capnp(position_id_builder);
         }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -611,6 +616,7 @@ mod tests {
             order_list,
             None,
             None,
+            None, // params
             command_id,
             ts_init,
         )

@@ -2446,6 +2446,7 @@ fn test_submit_order_list_buys_when_over_free_balance_then_denies(
         order_list,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )
@@ -2532,6 +2533,7 @@ fn test_submit_order_list_sells_when_over_free_balance_then_denies(
         order_list,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )
@@ -2751,6 +2753,7 @@ fn test_submit_order_list_when_trading_halted_then_denies_orders(
         bracket,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )
@@ -2891,6 +2894,7 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
         bracket,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )
@@ -3023,6 +3027,7 @@ fn test_submit_order_list_sells_when_trading_reducing_then_denies_orders(
         bracket,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )
@@ -3112,6 +3117,7 @@ fn test_submit_bracket_order_when_instrument_not_in_cache_then_denies(
         bracket,
         None,
         None,
+        None, // params
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
     )

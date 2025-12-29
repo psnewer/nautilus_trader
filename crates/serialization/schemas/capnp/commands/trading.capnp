@@ -179,6 +179,7 @@ struct SubmitOrderList {
     header @0 :TradingCommandHeader;
     orderInits @1 :List(OrderEvents.OrderInitialized);
     positionId @2 :Identifiers.PositionId;
+    params @3 :Base.StringMap;
 }
 
 struct ModifyOrder {

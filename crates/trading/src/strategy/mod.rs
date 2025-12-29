@@ -182,6 +182,9 @@ pub trait Strategy: DataActor {
             }
         }
 
+        let first_order = order_list.orders.first();
+        let exec_algorithm_id = first_order.and_then(|o| o.exec_algorithm_id());
+
         let command = SubmitOrderList::new(
             trader_id,
             client_id.unwrap_or_default(),
@@ -198,8 +201,9 @@ pub trait Strategy: DataActor {
                 .map(|o| o.venue_order_id().unwrap_or_default())
                 .unwrap_or_default(),
             order_list.clone(),
-            None,
+            exec_algorithm_id,
             position_id,
+            None, // params
             UUID4::new(),
             ts_init,
         )?;
@@ -209,8 +213,102 @@ pub trait Strategy: DataActor {
                 || o.is_emulated()
         });
 
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        if has_emulated_order {
+            manager.send_emulator_command(TradingCommand::SubmitOrderList(command));
+        } else if let Some(algo_id) = exec_algorithm_id {
+            let endpoint = format!("{algo_id}.execute");
+            msgbus::send_any(endpoint.into(), &TradingCommand::SubmitOrderList(command));
+        } else {
+            manager.send_risk_command(TradingCommand::SubmitOrderList(command));
+        }
+
+        for order in &order_list.orders {
+            self.set_gtd_expiry(order)?;
+        }
+
+        Ok(())
+    }
+
+    /// Submits an order list with adapter-specific parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered, the order list is invalid,
+    /// or order list submission fails.
+    fn submit_order_list_with_params(
+        &mut self,
+        order_list: OrderList,
+        position_id: Option<PositionId>,
+        client_id: Option<ClientId>,
+        params: IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
+        let core = self.core_mut();
+
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
+        let ts_init = core.clock().timestamp_ns();
+        {
+            let cache_rc = core.cache();
+            if cache_rc.order_list_exists(&order_list.id) {
+                anyhow::bail!("OrderList denied: duplicate {}", order_list.id);
+            }
+
+            for order in &order_list.orders {
+                if order.status() != OrderStatus::Initialized {
+                    anyhow::bail!(
+                        "Order in list denied: invalid status for {}, expected INITIALIZED",
+                        order.client_order_id()
+                    );
+                }
+                if cache_rc.order_exists(&order.client_order_id()) {
+                    anyhow::bail!(
+                        "Order in list denied: duplicate {}",
+                        order.client_order_id()
+                    );
+                }
+            }
+        }
+
+        let params_opt = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
+
         let first_order = order_list.orders.first();
         let exec_algorithm_id = first_order.and_then(|o| o.exec_algorithm_id());
+
+        let command = SubmitOrderList::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            strategy_id,
+            order_list.instrument_id,
+            order_list
+                .orders
+                .first()
+                .map(|o| o.client_order_id())
+                .unwrap_or_default(),
+            order_list
+                .orders
+                .first()
+                .map(|o| o.venue_order_id().unwrap_or_default())
+                .unwrap_or_default(),
+            order_list.clone(),
+            exec_algorithm_id,
+            position_id,
+            params_opt,
+            UUID4::new(),
+            ts_init,
+        )?;
+
+        let has_emulated_order = order_list.orders.iter().any(|o| {
+            matches!(o.emulation_trigger(), Some(trigger) if trigger != TriggerType::NoTrigger)
+                || o.is_emulated()
+        });
 
         let Some(manager) = &mut core.order_manager else {
             anyhow::bail!("Strategy not registered: OrderManager missing");

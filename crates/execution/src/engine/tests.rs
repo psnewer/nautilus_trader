@@ -616,6 +616,7 @@ fn test_submit_bracket_order_list_with_all_duplicate_client_order_id_logs_does_n
         order_list,
         exec_algorithm_id: None,
         position_id: None,
+        params: None,
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
     };
@@ -4295,6 +4296,7 @@ fn test_submit_bracket_order_with_quote_quantity_and_no_prices_denies(
         order_list: bracket,
         exec_algorithm_id: None,
         position_id: None,
+        params: None,
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
     };
@@ -4825,6 +4827,7 @@ fn test_submit_bracket_order_with_quote_quantity_and_ticks_converts_expected(
         order_list,
         exec_algorithm_id: None,
         position_id: None,
+        params: None,
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
     };

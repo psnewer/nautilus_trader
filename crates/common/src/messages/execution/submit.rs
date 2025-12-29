@@ -107,6 +107,7 @@ pub struct SubmitOrderList {
     pub order_list: OrderList,
     pub exec_algorithm_id: Option<ExecAlgorithmId>,
     pub position_id: Option<PositionId>,
+    pub params: Option<IndexMap<String, String>>,
     pub command_id: UUID4,
     pub ts_init: UnixNanos,
 }
@@ -128,6 +129,7 @@ impl SubmitOrderList {
         order_list: OrderList,
         exec_algorithm_id: Option<ExecAlgorithmId>,
         position_id: Option<PositionId>,
+        params: Option<IndexMap<String, String>>,
         command_id: UUID4,
         ts_init: UnixNanos,
     ) -> anyhow::Result<Self> {
@@ -141,6 +143,7 @@ impl SubmitOrderList {
             order_list,
             exec_algorithm_id,
             position_id,
+            params,
             command_id,
             ts_init,
         })
