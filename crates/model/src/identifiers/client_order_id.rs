@@ -78,7 +78,7 @@ impl ClientOrderId {
 
 impl Debug for ClientOrderId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
+        write!(f, "\"{}\"", self.0)
     }
 }
 

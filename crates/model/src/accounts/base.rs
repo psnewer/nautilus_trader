@@ -183,6 +183,23 @@ impl BaseAccount {
             .insert(currency, total_commissions + commission.as_f64());
     }
 
+    /// Returns the total commission for the specified currency.
+    #[must_use]
+    pub fn commission(&self, currency: &Currency) -> Option<Money> {
+        self.commissions
+            .get(currency)
+            .map(|&amount| Money::new(amount, *currency))
+    }
+
+    /// Returns a map of all commissions by currency.
+    #[must_use]
+    pub fn commissions(&self) -> AHashMap<Currency, Money> {
+        self.commissions
+            .iter()
+            .map(|(currency, &amount)| (*currency, Money::new(amount, *currency)))
+            .collect()
+    }
+
     pub fn base_apply(&mut self, event: AccountState) {
         self.update_balances(event.balances.clone());
         self.events.push(event);

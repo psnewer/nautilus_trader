@@ -407,7 +407,7 @@ pub trait Order: 'static + Send {
                 .is_some_and(|spawn_id| self.client_order_id() == spawn_id)
     }
 
-    fn is_secondary(&self) -> bool {
+    fn is_spawned(&self) -> bool {
         self.exec_algorithm_id().is_some()
             && self
                 .exec_spawn_id()
@@ -480,11 +480,6 @@ pub trait Order: 'static + Send {
 
     fn is_pending_cancel(&self) -> bool {
         self.status() == OrderStatus::PendingCancel
-    }
-
-    fn is_spawned(&self) -> bool {
-        self.exec_spawn_id()
-            .is_some_and(|exec_spawn_id| exec_spawn_id != self.client_order_id())
     }
 
     fn to_own_book_order(&self) -> OwnBookOrder {
@@ -1124,11 +1119,11 @@ mod tests {
             .into();
 
         assert!(order.is_primary());
-        assert!(!order.is_secondary());
+        assert!(!order.is_spawned());
     }
 
     #[rstest]
-    fn test_order_is_secondary() {
+    fn test_order_is_spawned() {
         let order: MarketOrder = OrderInitializedBuilder::default()
             .exec_algorithm_id(Some(ExecAlgorithmId::from("ALGO-001")))
             .exec_spawn_id(Some(ClientOrderId::from("O-002")))
@@ -1138,7 +1133,7 @@ mod tests {
             .into();
 
         assert!(!order.is_primary());
-        assert!(order.is_secondary());
+        assert!(order.is_spawned());
     }
 
     #[rstest]

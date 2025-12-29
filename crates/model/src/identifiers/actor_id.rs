@@ -78,7 +78,7 @@ impl ActorId {
 
 impl Debug for ActorId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
+        write!(f, "\"{}\"", self.0)
     }
 }
 

@@ -193,6 +193,26 @@ impl MarginAccount {
         margin_balance.unwrap().maintenance
     }
 
+    /// Returns the margin balance for the specified instrument.
+    #[must_use]
+    pub fn margin(&self, instrument_id: &InstrumentId) -> Option<MarginBalance> {
+        self.margins.get(instrument_id).copied()
+    }
+
+    /// Updates the margin balance for the specified instrument with both initial and maintenance.
+    pub fn update_margin(&mut self, margin_balance: MarginBalance) {
+        self.margins
+            .insert(margin_balance.instrument_id, margin_balance);
+        self.recalculate_balance(margin_balance.currency);
+    }
+
+    /// Clears the margin for the specified instrument.
+    pub fn clear_margin(&mut self, instrument_id: InstrumentId) {
+        if let Some(margin_balance) = self.margins.remove(&instrument_id) {
+            self.recalculate_balance(margin_balance.currency);
+        }
+    }
+
     /// Calculates the initial margin amount for the specified instrument and quantity.
     ///
     /// # Errors
@@ -517,7 +537,7 @@ mod tests {
         },
         instruments::{CryptoPerpetual, CurrencyPair, InstrumentAny, stubs::*},
         position::Position,
-        types::{Currency, Money, Price, Quantity},
+        types::{Currency, MarginBalance, Money, Price, Quantity},
     };
 
     #[rstest]
@@ -984,5 +1004,44 @@ mod tests {
 
         // Should return empty PnL list
         assert_eq!(pnls.len(), 0);
+    }
+
+    #[rstest]
+    fn test_margin_accessor(
+        mut margin_account: MarginAccount,
+        instrument_id_aud_usd_sim: InstrumentId,
+    ) {
+        let margin_balance = MarginBalance::new(
+            Money::from("1000 USD"),
+            Money::from("500 USD"),
+            instrument_id_aud_usd_sim,
+        );
+
+        margin_account.update_margin(margin_balance);
+
+        let retrieved = margin_account.margin(&instrument_id_aud_usd_sim);
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.initial, Money::from("1000 USD"));
+        assert_eq!(retrieved.maintenance, Money::from("500 USD"));
+        assert_eq!(retrieved.instrument_id, instrument_id_aud_usd_sim);
+    }
+
+    #[rstest]
+    fn test_clear_margin(
+        mut margin_account: MarginAccount,
+        instrument_id_aud_usd_sim: InstrumentId,
+    ) {
+        let margin_balance = MarginBalance::new(
+            Money::from("1000 USD"),
+            Money::from("500 USD"),
+            instrument_id_aud_usd_sim,
+        );
+
+        margin_account.update_margin(margin_balance);
+        assert!(margin_account.margin(&instrument_id_aud_usd_sim).is_some());
+
+        margin_account.clear_margin(instrument_id_aud_usd_sim);
+        assert!(margin_account.margin(&instrument_id_aud_usd_sim).is_none());
     }
 }
