@@ -1220,6 +1220,11 @@ impl WebSocketClient {
                     break; // Controller finished
                 }
 
+                if mode.is_closed() {
+                    tracing::debug!("Connection closed");
+                    break;
+                }
+
                 if mode.is_active() && !inner.is_alive() {
                     if connection_mode
                         .compare_exchange(

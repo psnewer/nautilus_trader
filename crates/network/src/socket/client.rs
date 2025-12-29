@@ -63,6 +63,9 @@ const GRACEFUL_SHUTDOWN_DELAY_MS: u64 = 100;
 const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
 const SEND_OPERATION_CHECK_INTERVAL_MS: u64 = 1;
 
+// Maximum buffer size for read operations (10 MB)
+const MAX_READ_BUFFER_BYTES: usize = 10 * 1024 * 1024;
+
 /// Creates a `TcpStream` with the server.
 ///
 /// The stream can be encrypted with TLS or Plain. The stream is split into
@@ -530,6 +533,14 @@ impl SocketClientInner {
                                     handler(&data);
                                 }
                             }
+                        }
+
+                        if buf.len() > MAX_READ_BUFFER_BYTES {
+                            tracing::error!(
+                                "Read buffer exceeded maximum size ({} bytes), closing connection",
+                                MAX_READ_BUFFER_BYTES
+                            );
+                            break;
                         }
                     }
                     Err(_) => {
@@ -1005,6 +1016,11 @@ impl SocketClient {
                         tracing::debug!("Called `post_disconnection` handler");
                     }
                     break; // Controller finished
+                }
+
+                if mode.is_closed() {
+                    tracing::debug!("Connection closed");
+                    break;
                 }
 
                 if mode.is_active() && !inner.is_alive() {
