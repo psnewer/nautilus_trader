@@ -13,15 +13,15 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Binance Spot WebSocket client for SBE market data streams.
+//! Binance Futures WebSocket client for JSON market data streams.
 //!
 //! ## Connection Details
 //!
-//! - Endpoint: `stream-sbe.binance.com` or `stream-sbe.binance.com:9443`
-//! - Authentication: Ed25519 API key in `X-MBX-APIKEY` header
-//! - Max streams: 1024 per connection
+//! - USD-M Endpoint: `wss://fstream.binance.com/ws`
+//! - COIN-M Endpoint: `wss://dstream.binance.com/ws`
+//! - Max streams: 200 per connection
 //! - Connection validity: 24 hours
-//! - Ping/pong: Every 20 seconds
+//! - Ping/pong: Every 3 minutes
 
 use std::{
     fmt::Debug,
@@ -42,39 +42,44 @@ use nautilus_network::{
         PingHandler, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
     },
 };
+use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use super::{
-    handler::BinanceSpotWsFeedHandler,
-    messages::{HandlerCommand, NautilusWsMessage},
-    streams::MAX_STREAMS_PER_CONNECTION,
+    handler::BinanceFuturesWsFeedHandler,
+    messages::{BinanceFuturesHandlerCommand, NautilusFuturesWsMessage},
 };
 use crate::{
-    common::credential::Ed25519Credential,
+    common::{
+        credential::Credential,
+        enums::{BinanceEnvironment, BinanceProductType},
+        urls::get_ws_base_url,
+    },
     websocket::error::{BinanceWsError, BinanceWsResult},
 };
 
-/// SBE stream endpoint.
-pub const SBE_STREAM_URL: &str = "wss://stream-sbe.binance.com/ws";
+/// Maximum streams per WebSocket connection for Futures.
+pub const MAX_STREAMS_PER_CONNECTION: usize = 200;
 
-/// SBE stream testnet endpoint.
-pub const SBE_STREAM_TESTNET_URL: &str = "wss://testnet.binance.vision/ws-api/v3";
-
-/// Binance Spot WebSocket client for SBE market data streams.
+/// Binance Futures WebSocket client for JSON market data streams.
 #[derive(Clone)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance")
 )]
-pub struct BinanceSpotWebSocketClient {
+pub struct BinanceFuturesWebSocketClient {
     url: String,
-    credential: Option<Arc<Ed25519Credential>>,
+    product_type: BinanceProductType,
+    credential: Option<Arc<Credential>>,
     heartbeat: Option<u64>,
     signal: Arc<AtomicBool>,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
-    cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<HandlerCommand>>>,
-    out_rx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>>,
+    cmd_tx:
+        Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<BinanceFuturesHandlerCommand>>>,
+    out_rx: Arc<
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<NautilusFuturesWsMessage>>>,
+    >,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions_state: SubscriptionState,
     request_id_counter: Arc<AtomicU64>,
@@ -82,10 +87,11 @@ pub struct BinanceSpotWebSocketClient {
     cancellation_token: CancellationToken,
 }
 
-impl Debug for BinanceSpotWebSocketClient {
+impl Debug for BinanceFuturesWebSocketClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct(stringify!(BinanceSpotWebSocketClient))
+        f.debug_struct(stringify!(BinanceFuturesWebSocketClient))
             .field("url", &self.url)
+            .field("product_type", &self.product_type)
             .field(
                 "credential",
                 &self.credential.as_ref().map(|_| "<redacted>"),
@@ -95,28 +101,44 @@ impl Debug for BinanceSpotWebSocketClient {
     }
 }
 
-impl Default for BinanceSpotWebSocketClient {
-    fn default() -> Self {
-        Self::new(None, None, None, None).unwrap()
-    }
-}
-
-impl BinanceSpotWebSocketClient {
-    /// Creates a new [`BinanceSpotWebSocketClient`] instance.
+impl BinanceFuturesWebSocketClient {
+    /// Creates a new [`BinanceFuturesWebSocketClient`] instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `product_type` - Must be `UsdM` or `CoinM`.
+    /// * `environment` - Mainnet or testnet.
+    /// * `api_key` - Optional API key for user data streams.
+    /// * `api_secret` - Optional API secret for signing.
+    /// * `heartbeat` - Optional heartbeat interval in milliseconds.
     ///
     /// # Errors
     ///
-    /// Returns an error if credential creation fails.
+    /// Returns an error if:
+    /// - `product_type` is not a futures type (UsdM or CoinM).
+    /// - Credential creation fails.
     pub fn new(
-        url: Option<String>,
+        product_type: BinanceProductType,
+        environment: BinanceEnvironment,
         api_key: Option<String>,
         api_secret: Option<String>,
+        url_override: Option<String>,
         heartbeat: Option<u64>,
     ) -> anyhow::Result<Self> {
-        let url = url.unwrap_or(SBE_STREAM_URL.to_string());
+        match product_type {
+            BinanceProductType::UsdM | BinanceProductType::CoinM => {}
+            _ => {
+                anyhow::bail!(
+                    "BinanceFuturesWebSocketClient requires UsdM or CoinM product type, got {product_type:?}"
+                );
+            }
+        }
+
+        let url =
+            url_override.unwrap_or_else(|| get_ws_base_url(product_type, environment).to_string());
 
         let credential = match (api_key, api_secret) {
-            (Some(key), Some(secret)) => Some(Arc::new(Ed25519Credential::new(key, &secret)?)),
+            (Some(key), Some(secret)) => Some(Arc::new(Credential::new(key, secret))),
             _ => None,
         };
 
@@ -124,6 +146,7 @@ impl BinanceSpotWebSocketClient {
 
         Ok(Self {
             url,
+            product_type,
             credential,
             heartbeat,
             signal: Arc::new(AtomicBool::new(false)),
@@ -138,6 +161,12 @@ impl BinanceSpotWebSocketClient {
             instruments_cache: Arc::new(DashMap::new()),
             cancellation_token: CancellationToken::new(),
         })
+    }
+
+    /// Returns the product type (UsdM or CoinM).
+    #[must_use]
+    pub const fn product_type(&self) -> BinanceProductType {
+        self.product_type
     }
 
     /// Returns whether the client is actively connected.
@@ -175,7 +204,7 @@ impl BinanceSpotWebSocketClient {
         let (raw_handler, raw_rx) = channel_message_handler();
         let ping_handler: PingHandler = Arc::new(move |_| {});
 
-        // Build headers for Ed25519 authentication
+        // Build headers for HMAC authentication (if needed for user data streams)
         let headers = if let Some(ref cred) = self.credential {
             vec![("X-MBX-APIKEY".to_string(), cred.api_key().to_string())]
         } else {
@@ -213,10 +242,27 @@ impl BinanceSpotWebSocketClient {
         *self.cmd_tx.write().await = cmd_tx;
         *self.out_rx.lock().expect("out_rx lock poisoned") = Some(out_rx);
 
-        let mut handler = BinanceSpotWsFeedHandler::new(
+        let (bytes_tx, bytes_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+        let bytes_task = get_runtime().spawn(async move {
+            let mut raw_rx = raw_rx;
+            while let Some(msg) = raw_rx.recv().await {
+                let data = match msg {
+                    Message::Binary(data) => data.to_vec(),
+                    Message::Text(text) => text.as_bytes().to_vec(),
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                };
+                if bytes_tx.send(data).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut handler = BinanceFuturesWsFeedHandler::new(
             self.signal.clone(),
             cmd_rx,
-            raw_rx,
+            bytes_rx,
             out_tx.clone(),
             self.subscriptions_state.clone(),
             self.request_id_counter.clone(),
@@ -225,7 +271,7 @@ impl BinanceSpotWebSocketClient {
         self.cmd_tx
             .read()
             .await
-            .send(HandlerCommand::SetClient(client))
+            .send(BinanceFuturesHandlerCommand::SetClient(client))
             .map_err(|e| BinanceWsError::ClientError(format!("Failed to set client: {e}")))?;
 
         let instruments: Vec<InstrumentAny> = self
@@ -238,7 +284,9 @@ impl BinanceSpotWebSocketClient {
             self.cmd_tx
                 .read()
                 .await
-                .send(HandlerCommand::InitializeInstruments(instruments))
+                .send(BinanceFuturesHandlerCommand::InitializeInstruments(
+                    instruments,
+                ))
                 .map_err(|e| {
                     BinanceWsError::ClientError(format!("Failed to initialize instruments: {e}"))
                 })?;
@@ -258,7 +306,7 @@ impl BinanceSpotWebSocketClient {
                     }
                     result = handler.next() => {
                         match result {
-                            Some(NautilusWsMessage::Reconnected) => {
+                            Some(NautilusFuturesWsMessage::Reconnected) => {
                                 tracing::info!("WebSocket reconnected, restoring subscriptions");
                                 // Mark all confirmed subscriptions as pending
                                 let all_topics = subscriptions_state.all_topics();
@@ -269,11 +317,11 @@ impl BinanceSpotWebSocketClient {
                                 // Resubscribe using tracked subscription state
                                 let streams = subscriptions_state.all_topics();
                                 if !streams.is_empty()
-                                    && let Err(e) = cmd_tx.read().await.send(HandlerCommand::Subscribe { streams }) {
+                                    && let Err(e) = cmd_tx.read().await.send(BinanceFuturesHandlerCommand::Subscribe { streams }) {
                                         tracing::error!(error = %e, "Failed to resubscribe after reconnect");
                                     }
 
-                                if out_tx.send(NautilusWsMessage::Reconnected).is_err() {
+                                if out_tx.send(NautilusFuturesWsMessage::Reconnected).is_err() {
                                     tracing::debug!("Output channel closed");
                                     break;
                                 }
@@ -296,11 +344,12 @@ impl BinanceSpotWebSocketClient {
                     }
                 }
             }
+            bytes_task.abort();
         });
 
         self.task_handle = Some(Arc::new(task_handle));
 
-        tracing::info!(url = %self.url, "Connected to Binance Spot SBE stream");
+        tracing::info!(url = %self.url, product_type = ?self.product_type, "Connected to Binance Futures stream");
         Ok(())
     }
 
@@ -317,7 +366,11 @@ impl BinanceSpotWebSocketClient {
         self.signal.store(true, Ordering::Relaxed);
         self.cancellation_token.cancel();
 
-        let _ = self.cmd_tx.read().await.send(HandlerCommand::Disconnect);
+        let _ = self
+            .cmd_tx
+            .read()
+            .await
+            .send(BinanceFuturesHandlerCommand::Disconnect);
 
         if let Some(handle) = self.task_handle.take()
             && let Ok(handle) = Arc::try_unwrap(handle)
@@ -327,7 +380,7 @@ impl BinanceSpotWebSocketClient {
 
         *self.out_rx.lock().expect("out_rx lock poisoned") = None;
 
-        tracing::info!("Disconnected from Binance Spot SBE stream");
+        tracing::info!("Disconnected from Binance Futures stream");
         Ok(())
     }
 
@@ -350,7 +403,7 @@ impl BinanceSpotWebSocketClient {
         self.cmd_tx
             .read()
             .await
-            .send(HandlerCommand::Subscribe { streams })
+            .send(BinanceFuturesHandlerCommand::Subscribe { streams })
             .map_err(|e| BinanceWsError::ClientError(format!("Handler not available: {e}")))?;
 
         Ok(())
@@ -365,7 +418,7 @@ impl BinanceSpotWebSocketClient {
         self.cmd_tx
             .read()
             .await
-            .send(HandlerCommand::Unsubscribe { streams })
+            .send(BinanceFuturesHandlerCommand::Unsubscribe { streams })
             .map_err(|e| BinanceWsError::ClientError(format!("Handler not available: {e}")))?;
 
         Ok(())
@@ -380,7 +433,7 @@ impl BinanceSpotWebSocketClient {
     /// # Panics
     ///
     /// Panics if the internal output receiver mutex is poisoned.
-    pub fn stream(&self) -> impl Stream<Item = NautilusWsMessage> + 'static {
+    pub fn stream(&self) -> impl Stream<Item = NautilusFuturesWsMessage> + 'static {
         let out_rx = self.out_rx.lock().expect("out_rx lock poisoned").take();
         async_stream::stream! {
             if let Some(mut rx) = out_rx {
@@ -392,28 +445,37 @@ impl BinanceSpotWebSocketClient {
     }
 
     /// Bulk initialize the instrument cache.
+    ///
+    /// Instruments are cached by their raw symbol (e.g., "BTCUSDT") to match
+    /// the symbol format sent in WebSocket messages.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for inst in &instruments {
             self.instruments_cache
-                .insert(inst.symbol().inner(), inst.clone());
+                .insert(inst.raw_symbol().inner(), inst.clone());
         }
 
         if self.is_active() {
             let cmd_tx = self.cmd_tx.clone();
             let instruments_clone = instruments;
             get_runtime().spawn(async move {
-                let _ = cmd_tx
-                    .read()
-                    .await
-                    .send(HandlerCommand::InitializeInstruments(instruments_clone));
+                let _ =
+                    cmd_tx
+                        .read()
+                        .await
+                        .send(BinanceFuturesHandlerCommand::InitializeInstruments(
+                            instruments_clone,
+                        ));
             });
         }
     }
 
     /// Update a single instrument in the cache.
+    ///
+    /// Instruments are cached by their raw symbol (e.g., "BTCUSDT") to match
+    /// the symbol format sent in WebSocket messages.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
-            .insert(instrument.symbol().inner(), instrument.clone());
+            .insert(instrument.raw_symbol().inner(), instrument.clone());
 
         if self.is_active() {
             let cmd_tx = self.cmd_tx.clone();
@@ -421,7 +483,7 @@ impl BinanceSpotWebSocketClient {
                 let _ = cmd_tx
                     .read()
                     .await
-                    .send(HandlerCommand::UpdateInstrument(instrument));
+                    .send(BinanceFuturesHandlerCommand::UpdateInstrument(instrument));
             });
         }
     }

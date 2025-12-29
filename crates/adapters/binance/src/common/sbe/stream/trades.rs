@@ -27,6 +27,8 @@
 //!   - isBuyerMaker: u8
 //! - symbol: varString8
 
+use ustr::Ustr;
+
 use super::{
     GroupSizeEncoding, MessageHeader, StreamDecodeError, decode_var_string8, read_i8, read_i64_le,
     read_u8,
@@ -85,7 +87,7 @@ pub struct TradesStreamEvent {
     /// Trades in this event.
     pub trades: Vec<Trade>,
     /// Trading symbol.
-    pub symbol: String,
+    pub symbol: Ustr,
 }
 
 impl TradesStreamEvent {
@@ -142,7 +144,7 @@ impl TradesStreamEvent {
             offset += trade_block_length;
         }
 
-        let (symbol, _) = decode_var_string8(&body[offset..])?;
+        let (symbol_str, _) = decode_var_string8(&body[offset..])?;
 
         Ok(Self {
             event_time_us,
@@ -150,7 +152,7 @@ impl TradesStreamEvent {
             price_exponent,
             qty_exponent,
             trades,
-            symbol,
+            symbol: Ustr::from(&symbol_str),
         })
     }
 

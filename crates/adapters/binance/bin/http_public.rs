@@ -21,7 +21,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --bin binance-spot-http-public
+//! cargo run --bin binance-spot-http-public --package nautilus-binance
 //! ```
 
 use nautilus_binance::{

@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 /// has distinct trading rules and instrument specifications.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", eq)
+)]
 pub enum BinanceProductType {
     /// Spot trading (api.binance.com).
     #[default]
@@ -101,6 +105,10 @@ impl std::fmt::Display for BinanceProductType {
 
 /// Binance environment type.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", eq)
+)]
 pub enum BinanceEnvironment {
     /// Production/mainnet environment.
     #[default]
@@ -350,6 +358,74 @@ pub enum BinanceContractStatus {
     /// Unknown or undocumented value.
     #[serde(other)]
     Unknown,
+}
+
+/// WebSocket stream event types.
+///
+/// These are the "e" field values in WebSocket JSON messages.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BinanceWsEventType {
+    /// Aggregate trade event.
+    AggTrade,
+    /// Individual trade event.
+    Trade,
+    /// Book ticker (best bid/ask) event.
+    BookTicker,
+    /// Depth update (order book delta) event.
+    DepthUpdate,
+    /// Mark price update event.
+    MarkPriceUpdate,
+    /// Kline/candlestick event.
+    Kline,
+    /// Forced liquidation order event.
+    ForceOrder,
+    /// 24-hour rolling ticker event.
+    #[serde(rename = "24hrTicker")]
+    Ticker24Hr,
+    /// 24-hour rolling mini ticker event.
+    #[serde(rename = "24hrMiniTicker")]
+    MiniTicker24Hr,
+    /// Unknown or undocumented event type.
+    #[serde(other)]
+    Unknown,
+}
+
+impl BinanceWsEventType {
+    /// Returns the wire format string for this event type.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AggTrade => "aggTrade",
+            Self::Trade => "trade",
+            Self::BookTicker => "bookTicker",
+            Self::DepthUpdate => "depthUpdate",
+            Self::MarkPriceUpdate => "markPriceUpdate",
+            Self::Kline => "kline",
+            Self::ForceOrder => "forceOrder",
+            Self::Ticker24Hr => "24hrTicker",
+            Self::MiniTicker24Hr => "24hrMiniTicker",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for BinanceWsEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// WebSocket request method (operation type).
+///
+/// Used for subscription requests on both Spot and Futures WebSocket APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum BinanceWsMethod {
+    /// Subscribe to streams.
+    Subscribe,
+    /// Unsubscribe from streams.
+    Unsubscribe,
 }
 
 /// Filter type identifiers returned in exchange info.

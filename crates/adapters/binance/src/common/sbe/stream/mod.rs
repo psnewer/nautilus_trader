@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Binance SBE market data stream decoders (schema 1:0).
+//! Binance SBE market data stream decoders (schema 2:0).
 //!
 //! These decoders are hand-written for the 4 market data stream message types:
 //! - [`TradesStreamEvent`] - Real-time trade data
@@ -35,7 +35,7 @@ pub use depth_snapshot::DepthSnapshotStreamEvent;
 pub use trades::{Trade, TradesStreamEvent};
 
 /// Stream schema ID.
-pub const STREAM_SCHEMA_ID: u16 = 1;
+pub const STREAM_SCHEMA_ID: u16 = 2;
 
 /// Stream schema version.
 pub const STREAM_SCHEMA_VERSION: u16 = 0;

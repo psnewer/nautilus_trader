@@ -29,6 +29,8 @@
 //!   - qty: i64 (mantissa)
 //! - symbol: varString8
 
+use ustr::Ustr;
+
 use super::{
     GroupSize16Encoding, MessageHeader, PriceLevel, StreamDecodeError, decode_var_string8, read_i8,
     read_i64_le,
@@ -52,7 +54,7 @@ pub struct DepthDiffStreamEvent {
     /// Ask level updates (qty=0 means remove level).
     pub asks: Vec<PriceLevel>,
     /// Trading symbol.
-    pub symbol: String,
+    pub symbol: Ustr,
 }
 
 impl DepthDiffStreamEvent {
@@ -129,7 +131,7 @@ impl DepthDiffStreamEvent {
             offset += ask_block_length;
         }
 
-        let (symbol, _) = decode_var_string8(&body[offset..])?;
+        let (symbol_str, _) = decode_var_string8(&body[offset..])?;
 
         Ok(Self {
             event_time_us,
@@ -139,7 +141,7 @@ impl DepthDiffStreamEvent {
             qty_exponent,
             bids,
             asks,
-            symbol,
+            symbol: Ustr::from(&symbol_str),
         })
     }
 

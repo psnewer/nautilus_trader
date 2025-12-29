@@ -163,6 +163,38 @@ impl BinanceRawHttpClient {
             .await
     }
 
+    /// Performs a PUT request with signed query.
+    pub async fn request_put<P, T>(
+        &self,
+        path: &str,
+        params: Option<&P>,
+        signed: bool,
+        use_order_quota: bool,
+    ) -> BinanceHttpResult<T>
+    where
+        P: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.request(Method::PUT, path, params, signed, use_order_quota, None)
+            .await
+    }
+
+    /// Performs a DELETE request with signed query.
+    pub async fn request_delete<P, T>(
+        &self,
+        path: &str,
+        params: Option<&P>,
+        signed: bool,
+        use_order_quota: bool,
+    ) -> BinanceHttpResult<T>
+    where
+        P: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.request(Method::DELETE, path, params, signed, use_order_quota, None)
+            .await
+    }
+
     async fn request<P, T>(
         &self,
         method: Method,

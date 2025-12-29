@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use arraydeque::{ArrayDeque, Wrapping};
 use nautilus_model::data::Bar;
@@ -107,7 +107,7 @@ pub struct Stochastics {
     d_ma: Option<Box<dyn MovingAverage + Send + Sync>>,
 }
 
-impl std::fmt::Debug for Stochastics {
+impl Debug for Stochastics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Stochastics")
             .field("period_k", &self.period_k)

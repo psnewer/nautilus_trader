@@ -13,19 +13,131 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Internal WebSocket message types.
+//! Binance Spot WebSocket message types.
 //!
-//! These types represent the internal message flow between the WebSocket client
-//! and handler, including subscription management and data events.
+//! This module defines:
+//! - [`NautilusWsMessage`]: Output messages emitted by the handler to the client.
+//! - [`HandlerCommand`]: Commands sent from the client to the handler.
+//! - Subscription request/response structures for the Binance WebSocket API.
 
+use nautilus_model::{
+    data::{Data, OrderBookDeltas},
+    instruments::InstrumentAny,
+};
+use nautilus_network::websocket::WebSocketClient;
+use serde::{Deserialize, Serialize};
+
+use crate::common::enums::BinanceWsMethod;
 // Re-export SBE stream types for convenience
 pub use crate::common::sbe::stream::{
     BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, PriceLevel, Trade,
     TradesStreamEvent,
 };
 
-// TODO: Add internal message types
-// - SubscriptionRequest
-// - UnsubscriptionRequest
-// - ConnectionState
-// - etc.
+/// Normalized output message from the WebSocket handler.
+///
+/// These messages are emitted by the handler and consumed by the client
+/// for routing to the data engine or other consumers.
+#[derive(Debug, Clone)]
+pub enum NautilusWsMessage {
+    /// Market data (trades, quotes, bars).
+    Data(Vec<Data>),
+    /// Order book deltas.
+    Deltas(OrderBookDeltas),
+    /// Instrument definition update.
+    Instrument(Box<InstrumentAny>),
+    /// WebSocket error from venue.
+    Error(BinanceWsErrorMsg),
+    /// Raw binary message (unhandled).
+    RawBinary(Vec<u8>),
+    /// Raw JSON message (unhandled).
+    RawJson(serde_json::Value),
+    /// Connection was re-established after disconnect.
+    Reconnected,
+}
+
+/// Binance WebSocket error message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceWsErrorMsg {
+    /// Error code from Binance.
+    pub code: i32,
+    /// Error message from Binance.
+    pub msg: String,
+}
+
+/// Commands sent from the outer client to the inner handler.
+///
+/// The handler runs in a dedicated Tokio task and processes these commands
+/// to perform WebSocket operations.
+#[allow(
+    missing_debug_implementations,
+    clippy::large_enum_variant,
+    reason = "Commands are ephemeral and immediately consumed"
+)]
+pub enum HandlerCommand {
+    /// Set the WebSocket client after connection.
+    SetClient(WebSocketClient),
+    /// Disconnect and clean up.
+    Disconnect,
+    /// Initialize instrument cache with bulk data.
+    InitializeInstruments(Vec<InstrumentAny>),
+    /// Update a single instrument in the cache.
+    UpdateInstrument(InstrumentAny),
+    /// Subscribe to streams.
+    Subscribe { streams: Vec<String> },
+    /// Unsubscribe from streams.
+    Unsubscribe { streams: Vec<String> },
+}
+
+/// Binance WebSocket subscription request.
+#[derive(Debug, Clone, Serialize)]
+pub struct BinanceWsSubscription {
+    /// Request method.
+    pub method: BinanceWsMethod,
+    /// Stream names to subscribe/unsubscribe.
+    pub params: Vec<String>,
+    /// Request ID for correlation.
+    pub id: u64,
+}
+
+impl BinanceWsSubscription {
+    /// Create a subscribe request.
+    #[must_use]
+    pub fn subscribe(streams: Vec<String>, id: u64) -> Self {
+        Self {
+            method: BinanceWsMethod::Subscribe,
+            params: streams,
+            id,
+        }
+    }
+
+    /// Create an unsubscribe request.
+    #[must_use]
+    pub fn unsubscribe(streams: Vec<String>, id: u64) -> Self {
+        Self {
+            method: BinanceWsMethod::Unsubscribe,
+            params: streams,
+            id,
+        }
+    }
+}
+
+/// Binance WebSocket subscription response.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BinanceWsResponse {
+    /// Result (null on success).
+    pub result: Option<serde_json::Value>,
+    /// Request ID for correlation.
+    pub id: u64,
+}
+
+/// Binance WebSocket error response.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BinanceWsErrorResponse {
+    /// Error code.
+    pub code: i32,
+    /// Error message.
+    pub msg: String,
+    /// Request ID if available.
+    pub id: Option<u64>,
+}

@@ -29,7 +29,7 @@
 //!
 //! All requests include:
 //! - `Accept: application/sbe`
-//! - `X-MBX-SBE: 3:1` (schema ID:version)
+//! - `X-MBX-SBE: 3:2` (schema ID:version)
 
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
@@ -57,7 +57,7 @@ use crate::common::{
 };
 
 /// SBE schema header value for Spot API.
-pub const SBE_SCHEMA_HEADER: &str = "3:1";
+pub const SBE_SCHEMA_HEADER: &str = "3:2";
 
 /// Binance Spot API path.
 const SPOT_API_PATH: &str = "/api/v3";
@@ -502,14 +502,14 @@ mod tests {
     #[rstest]
     fn test_schema_constants() {
         assert_eq!(BinanceRawSpotHttpClient::schema_id(), 3);
-        assert_eq!(BinanceRawSpotHttpClient::schema_version(), 1);
+        assert_eq!(BinanceRawSpotHttpClient::schema_version(), 2);
         assert_eq!(BinanceSpotHttpClient::schema_id(), 3);
-        assert_eq!(BinanceSpotHttpClient::schema_version(), 1);
+        assert_eq!(BinanceSpotHttpClient::schema_version(), 2);
     }
 
     #[rstest]
     fn test_sbe_schema_header() {
-        assert_eq!(SBE_SCHEMA_HEADER, "3:1");
+        assert_eq!(SBE_SCHEMA_HEADER, "3:2");
     }
 
     #[rstest]
@@ -517,7 +517,7 @@ mod tests {
         let headers = BinanceRawSpotHttpClient::default_headers(&None);
 
         assert_eq!(headers.get("Accept"), Some(&"application/sbe".to_string()));
-        assert_eq!(headers.get("X-MBX-SBE"), Some(&"3:1".to_string()));
+        assert_eq!(headers.get("X-MBX-SBE"), Some(&"3:2".to_string()));
     }
 
     #[rstest]

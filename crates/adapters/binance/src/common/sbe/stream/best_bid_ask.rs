@@ -26,6 +26,8 @@
 //! - askQty: i64 (mantissa)
 //! - symbol: varString8
 
+use ustr::Ustr;
+
 use super::{MessageHeader, StreamDecodeError, decode_var_string8, read_i8, read_i64_le};
 
 /// Best bid/ask stream event.
@@ -48,7 +50,7 @@ pub struct BestBidAskStreamEvent {
     /// Best ask quantity mantissa.
     pub ask_qty_mantissa: i64,
     /// Trading symbol.
-    pub symbol: String,
+    pub symbol: Ustr,
 }
 
 impl BestBidAskStreamEvent {
@@ -85,7 +87,7 @@ impl BestBidAskStreamEvent {
         let ask_price_mantissa = read_i64_le(body, 34)?;
         let ask_qty_mantissa = read_i64_le(body, 42)?;
 
-        let (symbol, _) = decode_var_string8(&body[50..])?;
+        let (symbol_str, _) = decode_var_string8(&body[50..])?;
 
         Ok(Self {
             event_time_us,
@@ -96,7 +98,7 @@ impl BestBidAskStreamEvent {
             bid_qty_mantissa,
             ask_price_mantissa,
             ask_qty_mantissa,
-            symbol,
+            symbol: Ustr::from(&symbol_str),
         })
     }
 
