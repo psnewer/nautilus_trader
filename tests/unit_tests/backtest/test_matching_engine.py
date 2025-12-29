@@ -23,6 +23,7 @@ from nautilus_trader.backtest.models import MakerTakerFeeModel
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.engine import ExecutionEngine
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarSpecification
@@ -1961,3 +1962,183 @@ def test_bar_execution_respects_size_increment(volume: str) -> None:
 
     # Act - Should not raise
     matching_engine.process_bar(bar)
+
+
+@pytest.mark.parametrize(
+    ("order_side", "opposite_side"),
+    [
+        (OrderSide.BUY, OrderSide.SELL),
+        (OrderSide.SELL, OrderSide.BUY),
+    ],
+    ids=["buy_partial_fill_then_modify", "sell_partial_fill_then_modify"],
+)
+def test_modify_partially_filled_limit_order_crosses_new_book_level(
+    order_side: OrderSide,
+    opposite_side: OrderSide,
+) -> None:
+    """
+    Test that modifying a partially filled limit order to a price that crosses a new
+    level in the book triggers an immediate fill.
+
+    Regression test for reported bug:
+    1. BUY LIMIT at 0.05458 (crosses ask, gets partial fill)
+    2. Partial fill consumes liquidity at that level
+    3. Modify to 0.05461 (should cross new ask at 0.05459)
+    4. BUY at 0.05461 should cross SELL at 0.05459, but NO FILL
+
+    """
+    # Arrange
+    clock = TestClock()
+    trader_id = TestIdStubs.trader_id()
+    msgbus = MessageBus(trader_id=trader_id, clock=clock)
+    instrument = TestInstrumentProvider.ethusdt_perp_binance()
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    account_id = TestIdStubs.account_id()
+
+    exec_engine = ExecutionEngine(
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+    _ = exec_engine  # Registers handlers on msgbus
+
+    matching_engine = OrderMatchingEngine(
+        instrument=instrument,
+        raw_id=0,
+        fill_model=FillModel(),
+        fee_model=MakerTakerFeeModel(),
+        book_type=BookType.L2_MBP,
+        oms_type=OmsType.NETTING,
+        account_type=AccountType.MARGIN,
+        reject_stop_orders=True,
+        trade_execution=False,
+        liquidity_consumption=True,  # Track consumed liquidity per level
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+
+    events: list[Any] = []
+    msgbus.subscribe("events*", events.append)
+
+    # Set up L2 book matching user's exact scenario:
+    # - First level is crossed by initial order → partial fill
+    # - Second level is BETWEEN initial order price and modified price
+    # - After modify, the new price should cross the second level
+    #
+    # User's scenario (BUY side):
+    # - BUY LIMIT at 0.05458 (crosses ASK at or below 0.05458)
+    # - Partial fill consumes first level
+    # - Modify to 0.05461
+    # - ASK at 0.05459 should be crossed, but NO FILL
+    #
+    # For BUY: ASK at 1498 (crossed by initial 1500), ASK at 1502 (not crossed by 1500, crossed by 1510)
+    # For SELL: BID at 1502 (crossed by initial 1500), BID at 1498 (not crossed by 1500, crossed by 1490)
+    if order_side == OrderSide.BUY:
+        first_level_price = "1498.00"   # ASK below initial order → crossed, partial fill
+        second_level_price = "1502.00"  # ASK above initial but below modified → should cross after modify
+        same_side_price = "1490.00"     # BID (same side) required by FillModel
+        order_initial_price = "1500.00"  # Crosses first level at 1498
+        order_modify_price = "1510.00"   # Should cross second level at 1502
+    else:
+        first_level_price = "1502.00"   # BID above initial order → crossed, partial fill
+        second_level_price = "1498.00"  # BID below initial but above modified → should cross after modify
+        same_side_price = "1510.00"     # ASK (same side) required by FillModel
+        order_initial_price = "1500.00"  # Crosses first level at 1502
+        order_modify_price = "1490.00"   # Should cross second level at 1498
+
+    # Add first level on opposite side (will be partially consumed)
+    delta1 = OrderBookDelta(
+        instrument_id=instrument.id,
+        action=BookAction.ADD,
+        order=BookOrder(
+            side=opposite_side,
+            price=Price.from_str(first_level_price),
+            size=Quantity.from_str("50.000"),
+            order_id=1,
+        ),
+        flags=0,
+        sequence=0,
+        ts_event=0,
+        ts_init=0,
+    )
+    matching_engine.process_order_book_delta(delta1)
+
+    # Add second level on opposite side
+    delta2 = OrderBookDelta(
+        instrument_id=instrument.id,
+        action=BookAction.ADD,
+        order=BookOrder(
+            side=opposite_side,
+            price=Price.from_str(second_level_price),
+            size=Quantity.from_str("50.000"),
+            order_id=2,
+        ),
+        flags=0,
+        sequence=1,
+        ts_event=0,
+        ts_init=0,
+    )
+    matching_engine.process_order_book_delta(delta2)
+
+    # Add same-side level (required by FillModel to determine fills)
+    delta3 = OrderBookDelta(
+        instrument_id=instrument.id,
+        action=BookAction.ADD,
+        order=BookOrder(
+            side=order_side,
+            price=Price.from_str(same_side_price),
+            size=Quantity.from_str("100.000"),
+            order_id=3,
+        ),
+        flags=0,
+        sequence=2,
+        ts_event=0,
+        ts_init=0,
+    )
+    matching_engine.process_order_book_delta(delta3)
+
+    # Step 1: Place limit order that crosses first level (partial fill)
+    # Order qty 100, but only 50 available at first level
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        order_side=order_side,
+        price=Price.from_str(order_initial_price),
+        quantity=instrument.make_qty(100.0),
+    )
+    cache.add_order(order)
+    matching_engine.process_order(order, account_id)
+
+    # Verify partial fill occurred
+    filled_events = [e for e in events if isinstance(e, OrderFilled)]
+    assert len(filled_events) == 1, f"Expected 1 partial fill, got {len(filled_events)}"
+    assert filled_events[0].last_qty == Quantity.from_str("50.000"), (
+        f"Expected partial fill of 50, got {filled_events[0].last_qty}"
+    )
+    events.clear()
+
+    # Step 2: Modify order to cross second level
+    modify_command = ModifyOrder(
+        trader_id=trader_id,
+        strategy_id=StrategyId("S-001"),
+        instrument_id=instrument.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId("V-001"),
+        quantity=None,
+        price=Price.from_str(order_modify_price),
+        trigger_price=None,
+        command_id=UUID4(),
+        ts_init=1,
+    )
+    matching_engine.process_modify(modify_command, account_id)
+
+    # Assert - remaining quantity should fill at second level
+    filled_events = [e for e in events if isinstance(e, OrderFilled)]
+    assert len(filled_events) >= 1, (
+        f"Expected fill after modifying partially filled order, "
+        f"got events: {[type(e).__name__ for e in events]}"
+    )
+    assert filled_events[0].last_px == Price.from_str(second_level_price), (
+        f"Fill price should be {second_level_price}, got {filled_events[0].last_px}"
+    )

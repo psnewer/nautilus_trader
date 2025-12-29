@@ -3145,6 +3145,11 @@ void orderbook_update_trade_tick(struct OrderBook_API *book, const struct TradeT
 
 CVec orderbook_simulate_fills(const struct OrderBook_API *book, struct BookOrder_t order);
 
+CVec orderbook_get_all_crossed_levels(const struct OrderBook_API *book,
+                                      enum OrderSide order_side,
+                                      struct Price_t price,
+                                      uint8_t size_precision);
+
 uint8_t orderbook_check_integrity(const struct OrderBook_API *book);
 
 void vec_drop_fills(CVec v);

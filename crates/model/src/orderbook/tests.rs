@@ -36,10 +36,6 @@ use crate::{
     types::{Price, Quantity},
 };
 
-////////////////////////////////////////////////////////////////////////////////
-// OrderBook
-////////////////////////////////////////////////////////////////////////////////
-
 #[rstest]
 #[case::valid_book(
     BookType::L2_MBP,
@@ -2895,10 +2891,6 @@ fn test_book_clear_stale_levels_l1_mbp() {
     // Verify update_count is unchanged (mirroring non-crossed test style)
     assert_eq!(book.update_count, initial_update_count);
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// OwnOrderBook
-////////////////////////////////////////////////////////////////////////////////
 
 #[fixture]
 fn own_order() -> OwnBookOrder {
@@ -6081,4 +6073,145 @@ fn test_l1_consecutive_snapshots_clear_between() {
         Some(Price::from("107.00")),
         "Second snapshot should clear first, best ask is 107"
     );
+}
+
+#[rstest]
+#[case::buy_crosses_all_asks(
+    OrderSide::Buy,
+    "2.020",  // price above all asks
+    vec![("2.000", 1.0), ("2.010", 2.0), ("2.011", 3.0)],  // expected: all 3 ask levels
+)]
+#[case::buy_crosses_some_asks(
+    OrderSide::Buy,
+    "2.010",  // price at middle ask
+    vec![("2.000", 1.0), ("2.010", 2.0)],  // expected: 2 ask levels
+)]
+#[case::buy_crosses_one_ask(
+    OrderSide::Buy,
+    "2.005",  // price between first and second ask
+    vec![("2.000", 1.0)],  // expected: 1 ask level
+)]
+#[case::buy_crosses_no_asks(
+    OrderSide::Buy,
+    "1.999",  // price below all asks
+    vec![],  // expected: no levels
+)]
+#[case::sell_crosses_all_bids(
+    OrderSide::Sell,
+    "0.980",  // price below all bids
+    vec![("1.000", 1.0), ("0.990", 2.0), ("0.989", 3.0)],  // expected: all 3 bid levels
+)]
+#[case::sell_crosses_some_bids(
+    OrderSide::Sell,
+    "0.990",  // price at middle bid
+    vec![("1.000", 1.0), ("0.990", 2.0)],  // expected: 2 bid levels
+)]
+#[case::sell_crosses_one_bid(
+    OrderSide::Sell,
+    "0.995",  // price between first and second bid
+    vec![("1.000", 1.0)],  // expected: 1 bid level
+)]
+#[case::sell_crosses_no_bids(
+    OrderSide::Sell,
+    "1.001",  // price above all bids
+    vec![],  // expected: no levels
+)]
+fn test_get_all_crossed_levels(
+    #[case] order_side: OrderSide,
+    #[case] price_str: &str,
+    #[case] expected: Vec<(&str, f64)>,
+) {
+    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+
+    // Add asks
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.011"),
+            Quantity::from("3.0"),
+            0,
+        ),
+        0,
+        0,
+        1.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.010"),
+            Quantity::from("2.0"),
+            0,
+        ),
+        0,
+        1,
+        2.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.000"),
+            Quantity::from("1.0"),
+            0,
+        ),
+        0,
+        2,
+        3.into(),
+    );
+
+    // Add bids
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("1.000"),
+            Quantity::from("1.0"),
+            0,
+        ),
+        0,
+        3,
+        4.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("0.990"),
+            Quantity::from("2.0"),
+            0,
+        ),
+        0,
+        4,
+        5.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("0.989"),
+            Quantity::from("3.0"),
+            0,
+        ),
+        0,
+        5,
+        6.into(),
+    );
+
+    let price = Price::from(price_str);
+    let size_precision = 1;
+    let levels = book.get_all_crossed_levels(order_side, price, size_precision);
+
+    assert_eq!(
+        levels.len(),
+        expected.len(),
+        "Expected {} levels, got {}",
+        expected.len(),
+        levels.len()
+    );
+
+    for (i, (exp_price, exp_size)) in expected.iter().enumerate() {
+        assert_eq!(
+            levels[i].0,
+            Price::from(*exp_price),
+            "Level {i} price mismatch"
+        );
+        assert_eq!(levels[i].1.as_f64(), *exp_size, "Level {i} size mismatch");
+    }
 }

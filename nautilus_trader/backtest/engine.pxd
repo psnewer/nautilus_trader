@@ -460,7 +460,7 @@ cdef class OrderMatchingEngine:
     cpdef list determine_market_price_and_volume(self, Order order)
     cdef list determine_market_fills_with_simulation(self, Order order)
     cdef list determine_limit_fills_with_simulation(self, Order order)
-    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side)
+    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side, QuantityRaw max_qty_raw=*)
     cdef Quantity determine_trade_fill_qty(self, Order order)
     cpdef void fill_market_order(self, Order order)
     cpdef void fill_limit_order(self, Order order)

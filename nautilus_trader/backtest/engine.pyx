@@ -3318,11 +3318,6 @@ cdef class SimulatedExchange:
             matching_engine.process_batch_cancel(command, self.exec_client.account_id)
 
     cdef void _process_modify_submitted_order(self, ModifyOrder command):
-        """
-        Process modification of an order that is in SUBMITTED status.
-
-        This handles bracket orders (TP/SL) that haven't been sent to the matching engine yet.
-        """
         cdef Order order = self.cache.order(command.client_order_id)
         if order is None:
             self._generate_order_modify_rejected(
@@ -3360,7 +3355,6 @@ cdef class SimulatedExchange:
         str reason,
         AccountId account_id,
     ):
-        """Generate an OrderModifyRejected event."""
         cdef uint64_t ts_now = self._clock.timestamp_ns()
         cdef OrderModifyRejected event = OrderModifyRejected(
             trader_id=trader_id,
@@ -3383,7 +3377,6 @@ cdef class SimulatedExchange:
         Price price,
         Price trigger_price,
     ):
-        """Generate an OrderUpdated event."""
         cdef uint64_t ts_now = self._clock.timestamp_ns()
         cdef OrderUpdated event = OrderUpdated(
             trader_id=order.trader_id,
@@ -4833,7 +4826,7 @@ cdef class OrderMatchingEngine:
                     )
                     return  # Cannot update order
                 else:
-                    self._generate_order_updated(order, qty, price, None)
+                    self._generate_order_updated(order, qty, price, trigger_price or order.trigger_price)
                     order.liquidity_side = LiquiditySide.TAKER
                     self.fill_limit_order(order)  # Immediate fill as TAKER
                     return  # Filled
@@ -4904,7 +4897,7 @@ cdef class OrderMatchingEngine:
                     )
                     return  # Cannot update order
                 else:
-                    self._generate_order_updated(order, qty, price, None)
+                    self._generate_order_updated(order, qty, price, trigger_price or order.trigger_price)
                     order.liquidity_side = LiquiditySide.TAKER
                     self.fill_limit_order(order)  # Immediate fill as TAKER
                     return  # Filled
@@ -5007,7 +5000,6 @@ cdef class OrderMatchingEngine:
 
         cdef Price_t bid
         cdef Price_t ask
-
         if orderbook_has_bid(&self._book._mem) and aggressor_side == AggressorSide.NO_AGGRESSOR:
             bid = orderbook_best_bid_price(&self._book._mem)
             self._core.set_bid_raw(bid.raw)
@@ -5157,7 +5149,7 @@ cdef class OrderMatchingEngine:
             # Fall back to standard logic
             return self.determine_market_price_and_volume(order)
 
-    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side):
+    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side, QuantityRaw max_qty_raw=0):
         if not self._liquidity_consumption:
             return fills
 
@@ -5170,6 +5162,7 @@ cdef class OrderMatchingEngine:
             return fills
 
         cdef list adjusted_fills = []
+        cdef QuantityRaw remaining_qty = max_qty_raw  # 0 means no limit
 
         cdef:
             Price price
@@ -5185,6 +5178,9 @@ cdef class OrderMatchingEngine:
             Quantity adjusted_qty
 
         for fill in fills:
+            if max_qty_raw > 0 and remaining_qty == 0:
+                break
+
             price = fill[0]
             qty = fill[1]
             price_raw = price._mem.raw
@@ -5210,6 +5206,11 @@ cdef class OrderMatchingEngine:
                 continue
 
             adjusted_qty_raw = min(qty._mem.raw, available)
+
+            if max_qty_raw > 0:
+                adjusted_qty_raw = min(adjusted_qty_raw, remaining_qty)
+                remaining_qty -= adjusted_qty_raw
+
             if adjusted_qty_raw == 0:
                 continue
 
@@ -5258,7 +5259,7 @@ cdef class OrderMatchingEngine:
             if triggered_price is not None:
                 fills[0] = (triggered_price, fills[0][1])
 
-        return self._apply_liquidity_consumption(fills, order.side)
+        return self._apply_liquidity_consumption(fills, order.side, order.leaves_qty._mem.raw)
 
     cpdef void fill_limit_order(self, Order order):
         """
@@ -5414,12 +5415,20 @@ cdef class OrderMatchingEngine:
         """
         Condition.is_true(order.has_price_c(), "order has no limit `price`")
 
-        cdef list fills = self._book.simulate_fills(
-            order,
-            price_prec=self._price_prec,
-            size_prec=self._size_prec,
-            is_aggressive=False,
-        )
+        cdef list fills
+
+        # When liquidity consumption is enabled, we need to consider ALL crossed
+        # price levels, not just enough to satisfy leaves_qty. This is because some
+        # levels may be consumed and we need to fill from subsequent levels.
+        if self._liquidity_consumption:
+            fills = self._book.get_all_crossed_levels(order.side, order.price, self._size_prec)
+        else:
+            fills = self._book.simulate_fills(
+                order,
+                price_prec=self._price_prec,
+                size_prec=self._size_prec,
+                is_aggressive=False,
+            )
 
         cdef Price triggered_price = order.get_triggered_price_c()
         cdef Price price = order.price
@@ -5519,7 +5528,7 @@ cdef class OrderMatchingEngine:
             else:
                 raise RuntimeError(f"invalid `OrderSide`, was {order.side}")  # pragma: no cover (design-time error)
 
-        return self._apply_liquidity_consumption(fills, order.side)
+        return self._apply_liquidity_consumption(fills, order.side, order.leaves_qty._mem.raw)
 
     cpdef void apply_fills(
         self,
@@ -6623,6 +6632,7 @@ cdef class OrderMatchingEngine:
             ts_event=ts_now,
             ts_init=ts_now,
         )
+
         self.msgbus.send(endpoint="ExecEngine.process", msg=event)
 
     cdef void _generate_order_canceled(self, Order order, VenueOrderId venue_order_id):

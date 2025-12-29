@@ -306,6 +306,18 @@ pub extern "C" fn orderbook_simulate_fills(book: &OrderBook_API, order: BookOrde
 }
 
 #[unsafe(no_mangle)]
+#[cfg_attr(feature = "high-precision", allow(improper_ctypes_definitions))]
+pub extern "C" fn orderbook_get_all_crossed_levels(
+    book: &OrderBook_API,
+    order_side: OrderSide,
+    price: Price,
+    size_precision: u8,
+) -> CVec {
+    book.get_all_crossed_levels(order_side, price, size_precision)
+        .into()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn orderbook_check_integrity(book: &OrderBook_API) -> u8 {
     u8::from(book_check_integrity(book).is_ok())
 }

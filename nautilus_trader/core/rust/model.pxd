@@ -2122,6 +2122,11 @@ cdef extern from "../includes/model.h":
 
     CVec orderbook_simulate_fills(const OrderBook_API *book, BookOrder_t order);
 
+    CVec orderbook_get_all_crossed_levels(const OrderBook_API *book,
+                                          OrderSide order_side,
+                                          Price_t price,
+                                          uint8_t size_precision);
+
     uint8_t orderbook_check_integrity(const OrderBook_API *book);
 
     void vec_drop_fills(CVec v);
