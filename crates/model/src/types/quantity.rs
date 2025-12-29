@@ -179,26 +179,8 @@ impl Quantity {
     ///
     /// # Panics
     ///
-    /// Panics if a correctness check fails. See [`Quantity::new_checked`] for more details.
+    /// Panics if a correctness check fails. See [`Quantity::from_raw_checked`] for more details.
     pub fn from_raw(raw: QuantityRaw, precision: u8) -> Self {
-        if raw == QUANTITY_UNDEF {
-            check_predicate_true(
-                precision == 0,
-                "`precision` must be 0 when `raw` is QUANTITY_UNDEF",
-            )
-            .expect(FAILED);
-        }
-        check_predicate_true(
-            raw == QUANTITY_UNDEF || raw <= QUANTITY_RAW_MAX,
-            &format!(
-                "Quantity::from_raw received raw={raw} (precision={precision}) exceeding QUANTITY_RAW_MAX={QUANTITY_RAW_MAX}. \
-                 Likely overflow/underflow upstream (e.g., leaves < 0 from unsigned subtraction). \
-                 Ensure fills never exceed order/position and prefer clamping/saturating deltas."
-            ),
-        )
-        .expect(FAILED);
-        check_fixed_precision(precision).expect(FAILED);
-
         // TODO: Enforce spurious bits validation in v2
         // Validate raw value has no spurious bits beyond the precision scale
         // if raw != QUANTITY_UNDEF && raw > 0 {
@@ -208,7 +190,32 @@ impl Quantity {
         //     super::fixed::check_fixed_raw_u64(raw, precision).expect(FAILED);
         // }
 
-        Self { raw, precision }
+        Self::from_raw_checked(raw, precision).expect(FAILED)
+    }
+
+    /// Creates a new [`Quantity`] instance from the given `raw` fixed-point value and `precision`
+    /// with correctness checking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `precision` exceeds the maximum fixed precision.
+    /// - `precision` is not 0 when `raw` is `QUANTITY_UNDEF`.
+    /// - `raw` exceeds `QUANTITY_RAW_MAX` and is not a sentinel value.
+    pub fn from_raw_checked(raw: QuantityRaw, precision: u8) -> anyhow::Result<Self> {
+        if raw == QUANTITY_UNDEF {
+            anyhow::ensure!(
+                precision == 0,
+                "`precision` must be 0 when `raw` is QUANTITY_UNDEF"
+            );
+        }
+        anyhow::ensure!(
+            raw == QUANTITY_UNDEF || raw <= QUANTITY_RAW_MAX,
+            "raw value {raw} exceeds QUANTITY_RAW_MAX={QUANTITY_RAW_MAX}"
+        );
+        check_fixed_precision(precision)?;
+
+        Ok(Self { raw, precision })
     }
 
     /// Computes a saturating subtraction between two quantities, logging when clamped.

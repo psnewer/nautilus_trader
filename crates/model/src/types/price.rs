@@ -185,39 +185,46 @@ impl Price {
     ///
     /// # Panics
     ///
-    /// Panics if a correctness check fails. See [`Price::new_checked`] for more details.
+    /// Panics if a correctness check fails. See [`Price::from_raw_checked`] for error conditions.
     pub fn from_raw(raw: PriceRaw, precision: u8) -> Self {
-        if raw == PRICE_UNDEF {
-            check_predicate_true(
-                precision == 0,
-                "`precision` must be 0 when `raw` is PRICE_UNDEF",
-            )
-            .expect(FAILED);
-        }
-        check_predicate_true(
-            raw == PRICE_ERROR
-                || raw == PRICE_UNDEF
-                || (raw >= PRICE_RAW_MIN && raw <= PRICE_RAW_MAX),
-            &format!("raw value outside valid range, was {raw}"),
-        )
-        .expect(FAILED);
-        check_fixed_precision(precision).expect(FAILED);
-
         // TODO: Enforce spurious bits validation in v2
         // Validate raw value has no spurious bits beyond the precision scale
-        // if raw != PRICE_UNDEF
-        //     && raw != PRICE_ERROR
-        //     && raw != PRICE_RAW_MAX
-        //     && raw != PRICE_RAW_MIN
-        //     && raw != 0
-        // {
+        // if !matches!(raw, PRICE_UNDEF | PRICE_ERROR) && raw != 0 {
         //     #[cfg(feature = "high-precision")]
         //     super::fixed::check_fixed_raw_i128(raw, precision).expect(FAILED);
         //     #[cfg(not(feature = "high-precision"))]
         //     super::fixed::check_fixed_raw_i64(raw, precision).expect(FAILED);
         // }
 
-        Self { raw, precision }
+        Self::from_raw_checked(raw, precision).expect(FAILED)
+    }
+
+    /// Creates a new [`Price`] instance from the given `raw` fixed-point value and `precision`
+    /// with correctness checking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `precision` exceeds the maximum fixed precision.
+    /// - `precision` is not 0 when `raw` is `PRICE_UNDEF`.
+    /// - `raw` is outside the valid range `[PRICE_RAW_MIN, PRICE_RAW_MAX]`
+    ///   and is not a sentinel value.
+    pub fn from_raw_checked(raw: PriceRaw, precision: u8) -> anyhow::Result<Self> {
+        if raw == PRICE_UNDEF {
+            anyhow::ensure!(
+                precision == 0,
+                "`precision` must be 0 when `raw` is PRICE_UNDEF"
+            );
+        }
+        anyhow::ensure!(
+            raw == PRICE_ERROR
+                || raw == PRICE_UNDEF
+                || (raw >= PRICE_RAW_MIN && raw <= PRICE_RAW_MAX),
+            "raw value {raw} outside valid range [{PRICE_RAW_MIN}, {PRICE_RAW_MAX}]"
+        );
+        check_fixed_precision(precision)?;
+
+        Ok(Self { raw, precision })
     }
 
     /// Creates a new [`Price`] instance with a value of zero with the given `precision`.
