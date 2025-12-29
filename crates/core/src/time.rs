@@ -225,6 +225,11 @@ impl AtomicTime {
         );
 
         self.store(time.into(), Ordering::Release);
+
+        debug_assert!(
+            !self.realtime.load(Ordering::SeqCst),
+            "Invariant violated: mode switched to realtime during set_time"
+        );
     }
 
     /// Increments the current (static-mode) time by `delta` nanoseconds and returns the updated value.
@@ -259,6 +264,11 @@ impl AtomicTime {
                 Ok(prev) => prev,
                 Err(_) => anyhow::bail!("Cannot increment time beyond u64::MAX"),
             };
+
+        debug_assert!(
+            !self.realtime.load(Ordering::SeqCst),
+            "Invariant violated: mode switched to realtime during increment_time"
+        );
 
         Ok(UnixNanos::from(previous + delta))
     }
