@@ -1,0 +1,20 @@
+﻿# OrbitExch 测试环境配置
+
+# 基础配置
+base_url: https://test.orbitexch.com  # 测试服务器
+headless: true
+browser_type: chromium
+
+# 浏览器设置
+user_data_dir: null  # 测试环境不持久化
+page_timeout: 10000
+
+# 数据抓取
+scrape_interval_ms: 2000
+
+# 执行配置
+max_bet_amount: 10.0  # 测试环境小额
+confirm_bet: false
+
+# 日志
+log_level: DEBUG

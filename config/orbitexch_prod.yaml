@@ -1,0 +1,20 @@
+﻿# OrbitExch 生产环境配置
+
+# 基础配置
+base_url: https://orbitexch.com
+headless: true  # 生产环境无头模式
+browser_type: chromium
+
+# 浏览器设置
+user_data_dir: ./browser_data/orbitexch_prod
+page_timeout: 30000
+
+# 数据抓取
+scrape_interval_ms: 500  # 生产环境更频繁
+
+# 执行配置
+max_bet_amount: 10000.0
+confirm_bet: true
+
+# 日志
+log_level: INFO
