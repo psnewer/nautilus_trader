@@ -1,0 +1,21 @@
+﻿# OrbitExch 开发环境配置
+# 非敏感配置，可以提交到 Git
+
+# 基础配置
+base_url: https://orbitexch.com
+headless: false  # 开发时显示浏览器，方便调试
+browser_type: chromium
+
+# 浏览器设置
+user_data_dir: ./browser_data/orbitexch_dev
+page_timeout: 30000
+
+# 数据抓取
+scrape_interval_ms: 1000
+
+# 执行配置
+max_bet_amount: 100.0  # 开发环境限制下注金额
+confirm_bet: true
+
+# 日志
+log_level: DEBUG
