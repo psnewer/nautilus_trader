@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from dotenv import load_dotenv
 
 
 def load_config(
@@ -34,8 +33,16 @@ def load_config(
     dict
         Complete configuration
     """
-    # Load .env file
-    load_dotenv()
+    # Load .env file with proper encoding
+    try:
+        from dotenv import load_dotenv
+        # Try UTF-8 first, fall back to system encoding
+        try:
+            load_dotenv(encoding='utf-8')
+        except UnicodeDecodeError:
+            load_dotenv()  # Use system default encoding
+    except ImportError:
+        pass  # dotenv not required if env vars are already set
     
     # Determine config directory
     if config_dir is None:
@@ -50,7 +57,7 @@ def load_config(
     if not config_file.exists():
         raise FileNotFoundError(f'Config file not found: {config_file}')
     
-    with open(config_file, 'r') as f:
+    with open(config_file, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # Override with environment variables
@@ -63,6 +70,13 @@ def load_config(
     
     if os.getenv('ORBITEXCH_HEADLESS'):
         config['headless'] = os.getenv('ORBITEXCH_HEADLESS').lower() == 'true'
+    
+    # Validate required fields
+    if not config.get('username'):
+        raise ValueError('Username not configured. Set ORBITEXCH_USERNAME in .env file')
+    
+    if not config.get('password'):
+        raise ValueError('Password not configured. Set ORBITEXCH_PASSWORD in .env file')
     
     return config
 
@@ -82,7 +96,7 @@ def create_data_client_config(env: str = 'dev'):
     """
     from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
     
-    config_dict = load_config(env)
+
     
     return OrbitExchDataClientConfig(
         username=config_dict['username'],
@@ -111,7 +125,7 @@ def create_exec_client_config(env: str = 'dev'):
     """
     from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
     
-    config_dict = load_config(env)
+
     
     return OrbitExchExecClientConfig(
         username=config_dict['username'],
@@ -124,3 +138,4 @@ def create_exec_client_config(env: str = 'dev'):
         max_bet_amount=config_dict.get('max_bet_amount', 10000.0),
         confirm_bet=config_dict.get('confirm_bet', True),
     )
+
