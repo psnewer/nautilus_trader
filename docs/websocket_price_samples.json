@@ -1,0 +1,1956 @@
+[
+  {
+    "id": "1.252123015",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "AU",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35093863",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767158100000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 61640820,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 61640820,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 37905964,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 37905964,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767158100000,
+      "marketTime": 1767158100000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 184.11,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 4.2,
+            "amount": 58.33
+          },
+          {
+            "index": 1,
+            "odds": 4.1,
+            "amount": 210.47
+          },
+          {
+            "index": 2,
+            "odds": 4.0,
+            "amount": 138.57
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.5,
+            "amount": 25.46
+          },
+          {
+            "index": 1,
+            "odds": 4.6,
+            "amount": 170.01
+          },
+          {
+            "index": 2,
+            "odds": 4.7,
+            "amount": 5.11
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 61640820,
+        "hc": null,
+        "tv": 422.21,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.26,
+            "amount": 61.35
+          },
+          {
+            "index": 1,
+            "odds": 2.24,
+            "amount": 58.79
+          },
+          {
+            "index": 2,
+            "odds": 2.22,
+            "amount": 22.95
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.34,
+            "amount": 28.22
+          },
+          {
+            "index": 1,
+            "odds": 2.36,
+            "amount": 356.76
+          },
+          {
+            "index": 2,
+            "odds": 2.38,
+            "amount": 43.45
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 37905964,
+        "hc": null,
+        "tv": 181.12,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.9,
+            "amount": 255.54
+          },
+          {
+            "index": 1,
+            "odds": 2.88,
+            "amount": 66.84
+          },
+          {
+            "index": 2,
+            "odds": 2.86,
+            "amount": 28.12
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 3.05,
+            "amount": 7.41
+          },
+          {
+            "index": 1,
+            "odds": 3.1,
+            "amount": 25.41
+          },
+          {
+            "index": 2,
+            "odds": 3.15,
+            "amount": 256.43
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "2012.79",
+    "con": true,
+    "overround": 102.5,
+    "underround": 97.7,
+    "apiPt": 1767152093479,
+    "ewlPt": 1767152110022,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35093863",
+    "mainEventName": "Central Coast Mariners (W) v Brisbane Roar FC (W)",
+    "mainEventStartTime": 1767158100000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.251962137",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "AU",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35078726",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767168000000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 1205126,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 1205126,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 3862627,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 3862627,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767168000000,
+      "marketTime": 1767168000000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 1205126,
+        "hc": null,
+        "tv": 3051.54,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.95,
+            "amount": 21.55
+          },
+          {
+            "index": 1,
+            "odds": 3.9,
+            "amount": 1173.72
+          },
+          {
+            "index": 2,
+            "odds": 3.85,
+            "amount": 224.68
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.0,
+            "amount": 51.91
+          },
+          {
+            "index": 1,
+            "odds": 4.1,
+            "amount": 1043.13
+          },
+          {
+            "index": 2,
+            "odds": 4.2,
+            "amount": 2358.38
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 2338.77,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.7,
+            "amount": 41.33
+          },
+          {
+            "index": 1,
+            "odds": 3.65,
+            "amount": 211.95
+          },
+          {
+            "index": 2,
+            "odds": 3.6,
+            "amount": 1474.75
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 3.75,
+            "amount": 441.9
+          },
+          {
+            "index": 1,
+            "odds": 3.8,
+            "amount": 729.16
+          },
+          {
+            "index": 2,
+            "odds": 3.85,
+            "amount": 786.98
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 3862627,
+        "hc": null,
+        "tv": 4825.76,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.08,
+            "amount": 416.98
+          },
+          {
+            "index": 1,
+            "odds": 2.06,
+            "amount": 1687.45
+          },
+          {
+            "index": 2,
+            "odds": 2.04,
+            "amount": 2025.9
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.1,
+            "amount": 41.79
+          },
+          {
+            "index": 1,
+            "odds": 2.12,
+            "amount": 446.99
+          },
+          {
+            "index": 2,
+            "odds": 2.14,
+            "amount": 930.73
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "26113.50",
+    "con": true,
+    "overround": 100.4,
+    "underround": 99.3,
+    "apiPt": 1767152108508,
+    "ewlPt": 1767152110023,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35078726",
+    "mainEventName": "Central Coast Mariners v Brisbane Roar",
+    "mainEventStartTime": 1767168000000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252210099",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "MM",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35101172",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767171600000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 16792091,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 16792091,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 10772958,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 10772958,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767171600000,
+      "marketTime": 1767171600000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 16792091,
+        "hc": null,
+        "tv": 34.03,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.06,
+            "amount": 5.62
+          },
+          {
+            "index": 1,
+            "odds": 2.04,
+            "amount": 48.23
+          },
+          {
+            "index": 2,
+            "odds": 2.02,
+            "amount": 3.81
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.52,
+            "amount": 13.11
+          },
+          {
+            "index": 1,
+            "odds": 2.94,
+            "amount": 4.06
+          },
+          {
+            "index": 2,
+            "odds": 3.05,
+            "amount": 8.03
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 10772958,
+        "hc": null,
+        "tv": 8.45,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.82,
+            "amount": 6.34
+          },
+          {
+            "index": 1,
+            "odds": 2.78,
+            "amount": 5.34
+          },
+          {
+            "index": 2,
+            "odds": 2.74,
+            "amount": 3.3
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.5,
+            "amount": 43.38
+          },
+          {
+            "index": 1,
+            "odds": 4.7,
+            "amount": 5.34
+          },
+          {
+            "index": 2,
+            "odds": 4.9,
+            "amount": 16.61
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 58.37,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.4,
+            "amount": 7.28
+          },
+          {
+            "index": 1,
+            "odds": 3.35,
+            "amount": 2.58
+          },
+          {
+            "index": 2,
+            "odds": 3.3,
+            "amount": 21.96
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.0,
+            "amount": 4.47
+          },
+          {
+            "index": 1,
+            "odds": 4.1,
+            "amount": 3.63
+          },
+          {
+            "index": 2,
+            "odds": 5.0,
+            "amount": 47.88
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "257.78",
+    "con": true,
+    "overround": 113.4,
+    "underround": 86.9,
+    "apiPt": 1767152058414,
+    "ewlPt": 1767152110023,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35101172",
+    "mainEventName": "Shan United v Yangon United",
+    "mainEventStartTime": 1767171600000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252210189",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "MM",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35101173",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767173400000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 47242034,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 47242034,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 20624128,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 20624128,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767173400000,
+      "marketTime": 1767173400000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 47242034,
+        "hc": null,
+        "tv": 3.26,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.72,
+            "amount": 7.75
+          },
+          {
+            "index": 1,
+            "odds": 1.71,
+            "amount": 3.81
+          },
+          {
+            "index": 2,
+            "odds": 1.7,
+            "amount": 66.46
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 6.0,
+            "amount": 33.61
+          },
+          {
+            "index": 1,
+            "odds": 25.0,
+            "amount": 7.49
+          },
+          {
+            "index": 2,
+            "odds": 980.0,
+            "amount": 7.03
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 20624128,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.62,
+            "amount": 2.63
+          },
+          {
+            "index": 1,
+            "odds": 1.61,
+            "amount": 7.13
+          },
+          {
+            "index": 2,
+            "odds": 1.6,
+            "amount": 3.81
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 5.0,
+            "amount": 47.65
+          },
+          {
+            "index": 1,
+            "odds": 6.0,
+            "amount": 33.43
+          },
+          {
+            "index": 2,
+            "odds": 7.0,
+            "amount": 2.89
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 2.97,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.7,
+            "amount": 11.17
+          },
+          {
+            "index": 1,
+            "odds": 3.65,
+            "amount": 41.31
+          },
+          {
+            "index": 2,
+            "odds": 3.5,
+            "amount": 2.56
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 5.2,
+            "amount": 10.68
+          },
+          {
+            "index": 1,
+            "odds": 5.3,
+            "amount": 44.78
+          },
+          {
+            "index": 2,
+            "odds": 5.6,
+            "amount": 33.43
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "15.92",
+    "con": true,
+    "overround": 146.8,
+    "underround": 55.9,
+    "apiPt": 1767152070937,
+    "ewlPt": 1767152110024,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35101173",
+    "mainEventName": "Mahar United FC v Hanthawaddy United FC",
+    "mainEventStartTime": 1767173400000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252201125",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "ET",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35100556",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767175200000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 93208478,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 93208478,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 93012188,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 93012188,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767175200000,
+      "marketTime": 1767175200000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 93012188,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.22,
+            "amount": 5.19
+          },
+          {
+            "index": 1,
+            "odds": 2.2,
+            "amount": 3.81
+          },
+          {
+            "index": 2,
+            "odds": 2.18,
+            "amount": 4.78
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 10.0,
+            "amount": 21.78
+          },
+          {
+            "index": 1,
+            "odds": 11.0,
+            "amount": 34.66
+          },
+          {
+            "index": 2,
+            "odds": 36.0,
+            "amount": 5.14
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 93208478,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.55,
+            "amount": 3.81
+          },
+          {
+            "index": 1,
+            "odds": 1.44,
+            "amount": 3.3
+          },
+          {
+            "index": 2,
+            "odds": 1.43,
+            "amount": 5.42
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.8,
+            "amount": 44.66
+          },
+          {
+            "index": 1,
+            "odds": 3.0,
+            "amount": 33.43
+          },
+          {
+            "index": 2,
+            "odds": 3.2,
+            "amount": 2.58
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 0.52,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.62,
+            "amount": 6.29
+          },
+          {
+            "index": 1,
+            "odds": 2.6,
+            "amount": 44.78
+          },
+          {
+            "index": 2,
+            "odds": 2.52,
+            "amount": 17.92
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 5.5,
+            "amount": 44.45
+          },
+          {
+            "index": 1,
+            "odds": 6.0,
+            "amount": 33.43
+          },
+          {
+            "index": 2,
+            "odds": 950.0,
+            "amount": 8.1
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "1.33",
+    "con": true,
+    "overround": 147.7,
+    "underround": 63.9,
+    "apiPt": 1767152091973,
+    "ewlPt": 1767152110025,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35100556",
+    "mainEventName": "Menge Besashangul v Addis Ketema SC",
+    "mainEventStartTime": 1767175200000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252207718",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "ET",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35100756",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767182400000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 8036565,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 8036565,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 6277353,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 6277353,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767182400000,
+      "marketTime": 1767182400000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 8036565,
+        "hc": null,
+        "tv": 19.14,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.74,
+            "amount": 6.9
+          },
+          {
+            "index": 1,
+            "odds": 2.72,
+            "amount": 29.63
+          },
+          {
+            "index": 2,
+            "odds": 2.7,
+            "amount": 54.57
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 3.15,
+            "amount": 6.9
+          },
+          {
+            "index": 1,
+            "odds": 3.25,
+            "amount": 50.56
+          },
+          {
+            "index": 2,
+            "odds": 3.3,
+            "amount": 53.73
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 6277353,
+        "hc": null,
+        "tv": 13.4,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.0,
+            "amount": 6.9
+          },
+          {
+            "index": 1,
+            "odds": 2.98,
+            "amount": 24.82
+          },
+          {
+            "index": 2,
+            "odds": 2.96,
+            "amount": 15.23
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 3.5,
+            "amount": 7.23
+          },
+          {
+            "index": 1,
+            "odds": 3.6,
+            "amount": 50.51
+          },
+          {
+            "index": 2,
+            "odds": 3.7,
+            "amount": 3.04
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 7.7,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.62,
+            "amount": 5.44
+          },
+          {
+            "index": 1,
+            "odds": 2.58,
+            "amount": 35.3
+          },
+          {
+            "index": 2,
+            "odds": 2.52,
+            "amount": 26.56
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.96,
+            "amount": 6.03
+          },
+          {
+            "index": 1,
+            "odds": 2.98,
+            "amount": 6.26
+          },
+          {
+            "index": 2,
+            "odds": 3.1,
+            "amount": 43.89
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "102.86",
+    "con": true,
+    "overround": 108.0,
+    "underround": 94.1,
+    "apiPt": 1767152026355,
+    "ewlPt": 1767152110025,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35100756",
+    "mainEventName": "Defence Force FC v Ethiopian Coffee",
+    "mainEventStartTime": 1767182400000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252204482",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "JO",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35100560",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767182400000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 91118972,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 91118972,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 89647040,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 89647040,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767182400000,
+      "marketTime": 1767182400000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 91118972,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.11,
+            "amount": 3.3
+          },
+          {
+            "index": 1,
+            "odds": 1.1,
+            "amount": 218.24
+          },
+          {
+            "index": 2,
+            "odds": 1.09,
+            "amount": 8.9
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.08,
+            "amount": 9.41
+          },
+          {
+            "index": 1,
+            "odds": 2.1,
+            "amount": 3.48
+          },
+          {
+            "index": 2,
+            "odds": 2.34,
+            "amount": 2.84
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 89647040,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.8,
+            "amount": 3.09
+          },
+          {
+            "index": 1,
+            "odds": 1.52,
+            "amount": 4.04
+          },
+          {
+            "index": 2,
+            "odds": 1.51,
+            "amount": 3.81
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 44.0,
+            "amount": 21.29
+          },
+          {
+            "index": 1,
+            "odds": 870.0,
+            "amount": 2.99
+          },
+          {
+            "index": 2,
+            "odds": 1000.0,
+            "amount": 0.28
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.5,
+            "amount": 2.56
+          },
+          {
+            "index": 1,
+            "odds": 2.62,
+            "amount": 5.21
+          },
+          {
+            "index": 2,
+            "odds": 2.6,
+            "amount": 44.78
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 32.0,
+            "amount": 23.11
+          },
+          {
+            "index": 1,
+            "odds": 950.0,
+            "amount": 8.1
+          },
+          {
+            "index": 2,
+            "odds": 980.0,
+            "amount": 0.13
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "0.00",
+    "con": true,
+    "overround": 154.4,
+    "underround": 53.5,
+    "apiPt": 1767152099987,
+    "ewlPt": 1767152110026,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35100560",
+    "mainEventName": "Al Hussein SC (Res) v Al Baqaa Club (Res)",
+    "mainEventStartTime": 1767182400000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252157668",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "SA",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35097412",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767183300000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 7857465,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 7857465,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 26543395,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 26543395,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767183300000,
+      "marketTime": 1767183300000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 26543395,
+        "hc": null,
+        "tv": 117.86,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 11.5,
+            "amount": 4.09
+          },
+          {
+            "index": 1,
+            "odds": 11.0,
+            "amount": 45.27
+          },
+          {
+            "index": 2,
+            "odds": 10.5,
+            "amount": 2.68
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 13.5,
+            "amount": 69.94
+          },
+          {
+            "index": 1,
+            "odds": 15.5,
+            "amount": 48.21
+          },
+          {
+            "index": 2,
+            "odds": 16.0,
+            "amount": 169.5
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 20.89,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 5.8,
+            "amount": 15.54
+          },
+          {
+            "index": 1,
+            "odds": 5.7,
+            "amount": 80.82
+          },
+          {
+            "index": 2,
+            "odds": 5.4,
+            "amount": 21.16
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 6.6,
+            "amount": 12.5
+          },
+          {
+            "index": 1,
+            "odds": 6.8,
+            "amount": 87.83
+          },
+          {
+            "index": 2,
+            "odds": 7.2,
+            "amount": 5.62
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 7857465,
+        "hc": null,
+        "tv": 194.43,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.31,
+            "amount": 5.11
+          },
+          {
+            "index": 1,
+            "odds": 1.29,
+            "amount": 580.39
+          },
+          {
+            "index": 2,
+            "odds": 1.28,
+            "amount": 538.57
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 1.35,
+            "amount": 85.91
+          },
+          {
+            "index": 1,
+            "odds": 1.36,
+            "amount": 803.08
+          },
+          {
+            "index": 2,
+            "odds": 1.37,
+            "amount": 362.79
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "851.65",
+    "con": true,
+    "overround": 102.2,
+    "underround": 96.7,
+    "apiPt": 1767151836093,
+    "ewlPt": 1767152110027,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35097412",
+    "mainEventName": "Al Draih v Al Jubail",
+    "mainEventStartTime": 1767183300000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252139765",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "SA",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35095954",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767183300000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 77353032,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 77353032,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 10732580,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 10732580,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767183300000,
+      "marketTime": 1767183300000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 77353032,
+        "hc": null,
+        "tv": 27.19,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 4.1,
+            "amount": 9.71
+          },
+          {
+            "index": 1,
+            "odds": 4.0,
+            "amount": 24.31
+          },
+          {
+            "index": 2,
+            "odds": 3.9,
+            "amount": 16.87
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.6,
+            "amount": 11.63
+          },
+          {
+            "index": 1,
+            "odds": 4.7,
+            "amount": 12.14
+          },
+          {
+            "index": 2,
+            "odds": 5.0,
+            "amount": 5.39
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 33.0,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 4.0,
+            "amount": 30.57
+          },
+          {
+            "index": 1,
+            "odds": 3.9,
+            "amount": 58.48
+          },
+          {
+            "index": 2,
+            "odds": 3.8,
+            "amount": 9.3
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.5,
+            "amount": 12.27
+          },
+          {
+            "index": 1,
+            "odds": 4.6,
+            "amount": 23.8
+          },
+          {
+            "index": 2,
+            "odds": 4.7,
+            "amount": 7.9
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 10732580,
+        "hc": null,
+        "tv": 224.46,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 1.82,
+            "amount": 14.83
+          },
+          {
+            "index": 1,
+            "odds": 1.81,
+            "amount": 7.9
+          },
+          {
+            "index": 2,
+            "odds": 1.78,
+            "amount": 30.06
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 1.89,
+            "amount": 12.14
+          },
+          {
+            "index": 1,
+            "odds": 1.9,
+            "amount": 34.66
+          },
+          {
+            "index": 2,
+            "odds": 1.95,
+            "amount": 13.45
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "727.60",
+    "con": true,
+    "overround": 104.3,
+    "underround": 96.8,
+    "apiPt": 1767151914188,
+    "ewlPt": 1767152110027,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35095954",
+    "mainEventName": "Al Batin v Abha",
+    "mainEventStartTime": 1767183300000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  },
+  {
+    "id": "1.252201485",
+    "marketDefinition": {
+      "marketType": "MATCH_ODDS",
+      "numberOfWinners": 1,
+      "countryCode": "EG",
+      "inPlay": false,
+      "betDelay": 1,
+      "bettingType": "ODDS",
+      "numberOfActiveRunners": 3,
+      "eventId": "35100547",
+      "crossMatching": true,
+      "runnersVoidable": false,
+      "turnInPlayEnabled": true,
+      "suspendTime": 1767184200000,
+      "persistenceEnabled": true,
+      "runners": [
+        {
+          "sortPriority": 1,
+          "removalDate": null,
+          "id": 75092177,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 75092177,
+          "handicap": null
+        },
+        {
+          "sortPriority": 2,
+          "removalDate": null,
+          "id": 15023787,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 15023787,
+          "handicap": null
+        },
+        {
+          "sortPriority": 3,
+          "removalDate": null,
+          "id": 58805,
+          "hc": null,
+          "adjustmentFactor": null,
+          "bsp": null,
+          "status": "ACTIVE",
+          "selectionId": 58805,
+          "handicap": null
+        }
+      ],
+      "eventTypeId": "1",
+      "complete": true,
+      "openDate": 1767184200000,
+      "marketTime": 1767184200000,
+      "status": "OPEN"
+    },
+    "rc": [
+      {
+        "id": 75092177,
+        "hc": null,
+        "tv": 4.0,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 3.55,
+            "amount": 5.04
+          },
+          {
+            "index": 1,
+            "odds": 3.5,
+            "amount": 10.68
+          },
+          {
+            "index": 2,
+            "odds": 3.45,
+            "amount": 58.08
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 4.2,
+            "amount": 3.94
+          },
+          {
+            "index": 1,
+            "odds": 4.3,
+            "amount": 15.29
+          },
+          {
+            "index": 2,
+            "odds": 4.4,
+            "amount": 36.27
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 15023787,
+        "hc": null,
+        "tv": 20.74,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.22,
+            "amount": 5.11
+          },
+          {
+            "index": 1,
+            "odds": 2.18,
+            "amount": 70.78
+          },
+          {
+            "index": 2,
+            "odds": 2.16,
+            "amount": 7.41
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 2.58,
+            "amount": 20.45
+          },
+          {
+            "index": 1,
+            "odds": 2.6,
+            "amount": 14.75
+          },
+          {
+            "index": 2,
+            "odds": 2.62,
+            "amount": 89.75
+          }
+        ],
+        "locked": false
+      },
+      {
+        "id": 58805,
+        "hc": null,
+        "tv": 15.5,
+        "bdatb": [
+          {
+            "index": 0,
+            "odds": 2.8,
+            "amount": 13.78
+          },
+          {
+            "index": 1,
+            "odds": 2.78,
+            "amount": 54.09
+          },
+          {
+            "index": 2,
+            "odds": 2.64,
+            "amount": 22.78
+          }
+        ],
+        "bdatl": [
+          {
+            "index": 0,
+            "odds": 3.3,
+            "amount": 4.86
+          },
+          {
+            "index": 1,
+            "odds": 3.35,
+            "amount": 9.71
+          },
+          {
+            "index": 2,
+            "odds": 3.4,
+            "amount": 12.12
+          }
+        ],
+        "locked": false
+      }
+    ],
+    "img": true,
+    "tv": "102.86",
+    "con": true,
+    "overround": 108.9,
+    "underround": 92.9,
+    "apiPt": 1767152104999,
+    "ewlPt": 1767152110028,
+    "bettingEnabled": true,
+    "disabledLayOdds": false,
+    "currency": "GBP",
+    "commission": 4.0,
+    "mainEventId": "35100547",
+    "mainEventName": "Horse Owners Club v El Olympi",
+    "mainEventStartTime": 1767184200000,
+    "marketNameWithParents": "Match Odds",
+    "enabled": true
+  }
+]
