@@ -6,7 +6,7 @@
     "competition_id": "12282733",
     "event": "Carolina Panthers @ Tampa Bay Buccaneers",
     "event_id": "35084980",
-    "discovered_at": "2025-12-31T17:43:05.378574"
+    "discovered_at": "2026-01-01T16:03:46.668335"
   },
   {
     "sport": "American Football",
@@ -15,7 +15,7 @@
     "competition_id": "12282733",
     "event": "Seattle Seahawks @ San Francisco 49ers",
     "event_id": "35084977",
-    "discovered_at": "2025-12-31T17:43:05.382601"
+    "discovered_at": "2026-01-01T16:03:46.677172"
   },
   {
     "sport": "American Football",
@@ -24,7 +24,7 @@
     "competition_id": "12282733",
     "event": "Arizona Cardinals @ Los Angeles Rams",
     "event_id": "35084978",
-    "discovered_at": "2025-12-31T17:43:05.387429"
+    "discovered_at": "2026-01-01T16:03:46.685985"
   },
   {
     "sport": "American Football",
@@ -33,7 +33,7 @@
     "competition_id": "12282733",
     "event": "Baltimore Ravens @ Pittsburgh Steelers",
     "event_id": "35084966",
-    "discovered_at": "2025-12-31T17:43:05.391701"
+    "discovered_at": "2026-01-01T16:03:46.696264"
   },
   {
     "sport": "American Football",
@@ -42,7 +42,7 @@
     "competition_id": "12282733",
     "event": "Cleveland Browns @ Cincinnati Bengals",
     "event_id": "35084969",
-    "discovered_at": "2025-12-31T17:43:05.395886"
+    "discovered_at": "2026-01-01T16:03:46.703776"
   },
   {
     "sport": "American Football",
@@ -51,7 +51,7 @@
     "competition_id": "12282733",
     "event": "Dallas Cowboys @ New York Giants",
     "event_id": "35084970",
-    "discovered_at": "2025-12-31T17:43:05.400237"
+    "discovered_at": "2026-01-01T16:03:46.715097"
   },
   {
     "sport": "American Football",
@@ -60,7 +60,7 @@
     "competition_id": "12282733",
     "event": "Detroit Lions @ Chicago Bears",
     "event_id": "35084968",
-    "discovered_at": "2025-12-31T17:43:05.405395"
+    "discovered_at": "2026-01-01T16:03:46.723152"
   },
   {
     "sport": "American Football",
@@ -69,7 +69,7 @@
     "competition_id": "12282733",
     "event": "Green Bay Packers @ Minnesota Vikings",
     "event_id": "35084971",
-    "discovered_at": "2025-12-31T17:43:05.409618"
+    "discovered_at": "2026-01-01T16:03:46.730924"
   },
   {
     "sport": "American Football",
@@ -78,7 +78,7 @@
     "competition_id": "12282733",
     "event": "Indianapolis Colts @ Houston Texans",
     "event_id": "35084973",
-    "discovered_at": "2025-12-31T17:43:05.413368"
+    "discovered_at": "2026-01-01T16:03:46.739991"
   },
   {
     "sport": "American Football",
@@ -87,7 +87,7 @@
     "competition_id": "12282733",
     "event": "Kansas City Chiefs @ Las Vegas Raiders",
     "event_id": "35084967",
-    "discovered_at": "2025-12-31T17:43:05.418081"
+    "discovered_at": "2026-01-01T16:03:46.748461"
   },
   {
     "sport": "American Football",
@@ -96,7 +96,7 @@
     "competition_id": "12282733",
     "event": "Los Angeles Chargers @ Denver Broncos",
     "event_id": "35084972",
-    "discovered_at": "2025-12-31T17:43:05.421993"
+    "discovered_at": "2026-01-01T16:03:46.760734"
   },
   {
     "sport": "American Football",
@@ -105,7 +105,7 @@
     "competition_id": "12282733",
     "event": "Miami Dolphins @ New England Patriots",
     "event_id": "35084974",
-    "discovered_at": "2025-12-31T17:43:05.425798"
+    "discovered_at": "2026-01-01T16:03:46.769032"
   },
   {
     "sport": "American Football",
@@ -114,7 +114,7 @@
     "competition_id": "12282733",
     "event": "New Orleans Saints @ Atlanta Falcons",
     "event_id": "35084965",
-    "discovered_at": "2025-12-31T17:43:05.429821"
+    "discovered_at": "2026-01-01T16:03:46.778194"
   },
   {
     "sport": "American Football",
@@ -123,7 +123,7 @@
     "competition_id": "12282733",
     "event": "New York Jets @ Buffalo Bills",
     "event_id": "35084979",
-    "discovered_at": "2025-12-31T17:43:05.434070"
+    "discovered_at": "2026-01-01T16:03:46.785381"
   },
   {
     "sport": "American Football",
@@ -132,7 +132,7 @@
     "competition_id": "12282733",
     "event": "Tennessee Titans @ Jacksonville Jaguars",
     "event_id": "35084976",
-    "discovered_at": "2025-12-31T17:43:05.438100"
+    "discovered_at": "2026-01-01T16:03:46.794306"
   },
   {
     "sport": "American Football",
@@ -141,52 +141,7 @@
     "competition_id": "12282733",
     "event": "Washington Commanders @ Philadelphia Eagles",
     "event_id": "35084975",
-    "discovered_at": "2025-12-31T17:43:05.442491"
-  },
-  {
-    "sport": "American Football",
-    "sport_id": "6423",
-    "competition": "NCAA Football Games",
-    "competition_id": "12529073",
-    "event": "Arizona State @ Duke",
-    "event_id": "35041143",
-    "discovered_at": "2025-12-31T17:43:12.436547"
-  },
-  {
-    "sport": "American Football",
-    "sport_id": "6423",
-    "competition": "NCAA Football Games",
-    "competition_id": "12529073",
-    "event": "Iowa @ Vanderbilt",
-    "event_id": "35040995",
-    "discovered_at": "2025-12-31T17:43:12.440309"
-  },
-  {
-    "sport": "American Football",
-    "sport_id": "6423",
-    "competition": "NCAA Football Games",
-    "competition_id": "12529073",
-    "event": "Miami Florida @ Ohio State",
-    "event_id": "35048998",
-    "discovered_at": "2025-12-31T17:43:12.443977"
-  },
-  {
-    "sport": "American Football",
-    "sport_id": "6423",
-    "competition": "NCAA Football Games",
-    "competition_id": "12529073",
-    "event": "Michigan @ Texas",
-    "event_id": "35040969",
-    "discovered_at": "2025-12-31T17:43:12.447702"
-  },
-  {
-    "sport": "American Football",
-    "sport_id": "6423",
-    "competition": "NCAA Football Games",
-    "competition_id": "12529073",
-    "event": "Nebraska @ Utah",
-    "event_id": "35040971",
-    "discovered_at": "2025-12-31T17:43:12.451500"
+    "discovered_at": "2026-01-01T16:03:46.802803"
   },
   {
     "sport": "American Football",
@@ -195,7 +150,7 @@
     "competition_id": "12529073",
     "event": "Alabama @ Indiana",
     "event_id": "35048997",
-    "discovered_at": "2025-12-31T17:43:12.454982"
+    "discovered_at": "2026-01-01T16:03:52.756198"
   },
   {
     "sport": "American Football",
@@ -204,7 +159,7 @@
     "competition_id": "12529073",
     "event": "Ole Miss @ Georgia",
     "event_id": "35048999",
-    "discovered_at": "2025-12-31T17:43:12.458502"
+    "discovered_at": "2026-01-01T16:03:52.764397"
   },
   {
     "sport": "American Football",
@@ -213,7 +168,7 @@
     "competition_id": "12529073",
     "event": "Oregon @ Texas Tech",
     "event_id": "35048994",
-    "discovered_at": "2025-12-31T17:43:12.462500"
+    "discovered_at": "2026-01-01T16:03:52.771609"
   },
   {
     "sport": "American Football",
@@ -222,7 +177,7 @@
     "competition_id": "12529073",
     "event": "Arizona @ SMU",
     "event_id": "35041151",
-    "discovered_at": "2025-12-31T17:43:12.466572"
+    "discovered_at": "2026-01-01T16:03:52.778770"
   },
   {
     "sport": "American Football",
@@ -231,7 +186,7 @@
     "competition_id": "12529073",
     "event": "Navy @ Cincinnati",
     "event_id": "35040972",
-    "discovered_at": "2025-12-31T17:43:12.470358"
+    "discovered_at": "2026-01-01T16:03:52.787934"
   },
   {
     "sport": "American Football",
@@ -240,7 +195,7 @@
     "competition_id": "12529073",
     "event": "Rice @ Texas State",
     "event_id": "35041150",
-    "discovered_at": "2025-12-31T17:43:12.474489"
+    "discovered_at": "2026-01-01T16:03:52.794653"
   },
   {
     "sport": "American Football",
@@ -249,7 +204,7 @@
     "competition_id": "12529073",
     "event": "Wake Forest @ Mississippi State",
     "event_id": "35041152",
-    "discovered_at": "2025-12-31T17:43:12.478886"
+    "discovered_at": "2026-01-01T16:03:52.803254"
   },
   {
     "sport": "American Football",
@@ -258,726 +213,268 @@
     "competition_id": "12529073",
     "event": "Illinois State @ Montana State",
     "event_id": "35079062",
-    "discovered_at": "2025-12-31T17:43:12.482639"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Brentford v Tottenham",
-    "event_id": "35078311",
-    "discovered_at": "2025-12-31T17:43:24.419403"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Crystal Palace v Fulham",
-    "event_id": "35078327",
-    "discovered_at": "2025-12-31T17:43:24.423888"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Liverpool v Leeds",
-    "event_id": "35078345",
-    "discovered_at": "2025-12-31T17:43:24.428078"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Sunderland v Man City",
-    "event_id": "35078389",
-    "discovered_at": "2025-12-31T17:43:24.435009"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Aston Villa v Nottm Forest",
-    "event_id": "35094810",
-    "discovered_at": "2025-12-31T17:43:24.440092"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Brighton v Burnley",
-    "event_id": "35094799",
-    "discovered_at": "2025-12-31T17:43:24.445138"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Wolves v West Ham",
-    "event_id": "35094815",
-    "discovered_at": "2025-12-31T17:43:24.452436"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Bournemouth v Arsenal",
-    "event_id": "35094794",
-    "discovered_at": "2025-12-31T17:43:24.457877"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Everton v Brentford",
-    "event_id": "35094801",
-    "discovered_at": "2025-12-31T17:43:24.462653"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Fulham v Liverpool",
-    "event_id": "35094805",
-    "discovered_at": "2025-12-31T17:43:24.467969"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Leeds v Man Utd",
-    "event_id": "35094796",
-    "discovered_at": "2025-12-31T17:43:24.472122"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Newcastle v Crystal Palace",
-    "event_id": "35094797",
-    "discovered_at": "2025-12-31T17:43:24.476263"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Tottenham v Sunderland",
-    "event_id": "35094814",
-    "discovered_at": "2025-12-31T17:43:24.483079"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Premier League",
-    "competition_id": "10932509",
-    "event": "Man City v Chelsea",
-    "event_id": "35094818",
-    "discovered_at": "2025-12-31T17:43:24.489447"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Blackburn v Wrexham",
-    "event_id": "35095653",
-    "discovered_at": "2025-12-31T17:43:32.869355"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Bristol City v Portsmouth",
-    "event_id": "35095660",
-    "discovered_at": "2025-12-31T17:43:32.873544"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Charlton v Coventry",
-    "event_id": "35095644",
-    "discovered_at": "2025-12-31T17:43:32.877994"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Derby v Middlesbrough",
-    "event_id": "35095658",
-    "discovered_at": "2025-12-31T17:43:32.883783"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Hull v Stoke",
-    "event_id": "35095668",
-    "discovered_at": "2025-12-31T17:43:32.889144"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Ipswich v Oxford Utd",
-    "event_id": "35095661",
-    "discovered_at": "2025-12-31T17:43:32.893519"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Preston v Sheff Wed",
-    "event_id": "35095659",
-    "discovered_at": "2025-12-31T17:43:32.898996"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "QPR v Norwich",
-    "event_id": "35095657",
-    "discovered_at": "2025-12-31T17:43:32.905871"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Southampton v Millwall",
-    "event_id": "35095654",
-    "discovered_at": "2025-12-31T17:43:32.912116"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Swansea v West Brom",
-    "event_id": "35095647",
-    "discovered_at": "2025-12-31T17:43:32.918113"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Watford v Birmingham",
-    "event_id": "35095645",
-    "discovered_at": "2025-12-31T17:43:32.924145"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Sheff Utd v Leicester",
-    "event_id": "35095649",
-    "discovered_at": "2025-12-31T17:43:32.928636"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Birmingham v Coventry",
-    "event_id": "35100485",
-    "discovered_at": "2025-12-31T17:43:32.943257"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Blackburn v Charlton",
-    "event_id": "35100496",
-    "discovered_at": "2025-12-31T17:43:32.948479"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Bristol City v Preston",
-    "event_id": "35100505",
-    "discovered_at": "2025-12-31T17:43:32.953315"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Derby v Wrexham",
-    "event_id": "35100509",
-    "discovered_at": "2025-12-31T17:43:32.957968"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Hull v Watford",
-    "event_id": "35100508",
-    "discovered_at": "2025-12-31T17:43:32.961997"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Middlesbrough v Southampton",
-    "event_id": "35100510",
-    "discovered_at": "2025-12-31T17:43:32.966279"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Millwall v Swansea",
-    "event_id": "35100516",
-    "discovered_at": "2025-12-31T17:43:32.970126"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Norwich v Stoke",
-    "event_id": "35100543",
-    "discovered_at": "2025-12-31T17:43:32.974510"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Portsmouth v Ipswich",
-    "event_id": "35100530",
-    "discovered_at": "2025-12-31T17:43:32.978454"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "QPR v Sheff Wed",
-    "event_id": "35100501",
-    "discovered_at": "2025-12-31T17:43:32.982754"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Sheff Utd v Oxford Utd",
-    "event_id": "35100500",
-    "discovered_at": "2025-12-31T17:43:32.987474"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "English Sky Bet Championship",
-    "competition_id": "7129730",
-    "event": "Leicester v West Brom",
-    "event_id": "35100528",
-    "discovered_at": "2025-12-31T17:43:32.991722"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Mexico v South Africa",
-    "event_id": "35035283",
-    "discovered_at": "2025-12-31T17:43:41.172666"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "USA v Paraguay",
-    "event_id": "35035290",
-    "discovered_at": "2025-12-31T17:43:41.176718"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Brazil v Morocco",
-    "event_id": "35035288",
-    "discovered_at": "2025-12-31T17:43:41.180810"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Haiti v Scotland",
-    "event_id": "35035300",
-    "discovered_at": "2025-12-31T17:43:41.185571"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Qatar v Switzerland",
-    "event_id": "35035298",
-    "discovered_at": "2025-12-31T17:43:41.190514"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Germany v Curacao",
-    "event_id": "35035284",
-    "discovered_at": "2025-12-31T17:43:41.194541"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Ivory Coast v Ecuador",
-    "event_id": "35035148",
-    "discovered_at": "2025-12-31T17:43:41.201587"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Netherlands v Japan",
-    "event_id": "35035312",
-    "discovered_at": "2025-12-31T17:43:41.206896"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Belgium v Egypt",
-    "event_id": "35035294",
-    "discovered_at": "2025-12-31T17:43:41.211170"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Saudi Arabia v Uruguay",
-    "event_id": "35035310",
-    "discovered_at": "2025-12-31T17:43:41.215527"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Spain v Cape Verde",
-    "event_id": "35035280",
-    "discovered_at": "2025-12-31T17:43:41.220043"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Argentina v Algeria",
-    "event_id": "35035311",
-    "discovered_at": "2025-12-31T17:43:41.224501"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Austria v Jordan",
-    "event_id": "35035286",
-    "discovered_at": "2025-12-31T17:43:41.228693"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "France v Senegal",
-    "event_id": "35035313",
-    "discovered_at": "2025-12-31T17:43:41.232767"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "England v Croatia",
-    "event_id": "35035302",
-    "discovered_at": "2025-12-31T17:43:41.236706"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Ghana v Panama",
-    "event_id": "35035303",
-    "discovered_at": "2025-12-31T17:43:41.240496"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "Uzbekistan v Colombia",
-    "event_id": "35035171",
-    "discovered_at": "2025-12-31T17:43:41.244698"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "FIFA World Cup",
-    "competition_id": "12469077",
-    "event": "USA v Australia",
-    "event_id": "35035353",
-    "discovered_at": "2025-12-31T17:43:41.249069"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Celtic v Rangers",
-    "event_id": "35096071",
-    "discovered_at": "2025-12-31T17:43:49.627415"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Dundee Utd v Dundee",
-    "event_id": "35096066",
-    "discovered_at": "2025-12-31T17:43:49.631146"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Falkirk v Aberdeen",
-    "event_id": "35096069",
-    "discovered_at": "2025-12-31T17:43:49.635336"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Hearts v Livingston",
-    "event_id": "35096070",
-    "discovered_at": "2025-12-31T17:43:49.639260"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Kilmarnock v Hibernian",
-    "event_id": "35096074",
-    "discovered_at": "2025-12-31T17:43:49.642876"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "Scottish Premiership",
-    "competition_id": "105",
-    "event": "Motherwell v St Mirren",
-    "event_id": "35096076",
-    "discovered_at": "2025-12-31T17:43:49.646741"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Kairat Almaty v Club Brugge",
-    "event_id": "35049412",
-    "discovered_at": "2025-12-31T17:43:58.541299"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Bodo Glimt v Man City",
-    "event_id": "35049415",
-    "discovered_at": "2025-12-31T17:43:58.545691"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "FC Copenhagen v Napoli",
-    "event_id": "35049430",
-    "discovered_at": "2025-12-31T17:43:58.550216"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Inter v Arsenal",
-    "event_id": "35049428",
-    "discovered_at": "2025-12-31T17:43:58.555117"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Olympiakos v Leverkusen",
-    "event_id": "35049407",
-    "discovered_at": "2025-12-31T17:43:58.559178"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Real Madrid v Monaco",
-    "event_id": "35049424",
-    "discovered_at": "2025-12-31T17:43:58.563756"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Sporting Lisbon v Paris St-G",
-    "event_id": "35049458",
-    "discovered_at": "2025-12-31T17:43:58.568240"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Tottenham v Dortmund",
-    "event_id": "35049439",
-    "discovered_at": "2025-12-31T17:43:58.572867"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Villarreal v Ajax",
-    "event_id": "35049459",
-    "discovered_at": "2025-12-31T17:43:58.576841"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Atalanta v Athletic Bilbao",
-    "event_id": "35049427",
-    "discovered_at": "2025-12-31T17:43:58.582180"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Bayern Munich v Union St Gilloise",
-    "event_id": "35049423",
-    "discovered_at": "2025-12-31T17:43:58.586839"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Chelsea v Pafos FC",
-    "event_id": "35049441",
-    "discovered_at": "2025-12-31T17:43:58.591816"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Galatasaray v Atletico Madrid",
-    "event_id": "35049431",
-    "discovered_at": "2025-12-31T17:43:58.596558"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Juventus v Benfica",
-    "event_id": "35049455",
-    "discovered_at": "2025-12-31T17:43:58.601816"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Marseille v Liverpool",
-    "event_id": "35049429",
-    "discovered_at": "2025-12-31T17:43:58.606964"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Newcastle v PSV",
-    "event_id": "35049437",
-    "discovered_at": "2025-12-31T17:43:58.611471"
-  },
-  {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Qarabag FK v Eintracht Frankfurt",
-    "event_id": "35049436",
-    "discovered_at": "2025-12-31T17:43:58.616017"
-  },
+    "discovered_at": "2026-01-01T16:03:52.811635"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Shaun Murphy v Wu Yize",
+    "event_id": "35068330",
+    "discovered_at": "2026-01-01T16:04:18.331309"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Mark Selby v Xiao Guodong",
+    "event_id": "35068336",
+    "discovered_at": "2026-01-01T16:04:18.342480"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Mark Williams v Mark Allen",
+    "event_id": "35068337",
+    "discovered_at": "2026-01-01T16:04:18.349223"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Kyren Wilson v Si Jiahui",
+    "event_id": "35068350",
+    "discovered_at": "2026-01-01T16:04:18.356197"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Zhao Xintong v Gary Wilson",
+    "event_id": "35068345",
+    "discovered_at": "2026-01-01T16:04:18.363658"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "John Higgins v Barry Hawkins",
+    "event_id": "35068362",
+    "discovered_at": "2026-01-01T16:04:18.370695"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Judd Trump v Ding Junhui",
+    "event_id": "35068365",
+    "discovered_at": "2026-01-01T16:04:18.378091"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "The  Masters",
+    "competition_id": "11709436",
+    "event": "Neil Robertson v Ronnie OSullivan",
+    "event_id": "35068529",
+    "discovered_at": "2026-01-01T16:04:18.386354"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Elliot Slessor",
+    "event_id": "35104703",
+    "discovered_at": "2026-01-01T16:04:27.138114"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Tom Ford",
+    "event_id": "35104705",
+    "discovered_at": "2026-01-01T16:04:27.146134"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Elliot Slessor v Joe OConnor",
+    "event_id": "35104709",
+    "discovered_at": "2026-01-01T16:04:27.155043"
+  },
   {
-    "sport": "Soccer",
-    "sport_id": "1",
-    "competition": "UEFA Champions League",
-    "competition_id": "228",
-    "event": "Slavia Prague v Barcelona",
-    "event_id": "35049462",
-    "discovered_at": "2025-12-31T17:43:58.621087"
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Hossein Vafaei v Jackson Page",
+    "event_id": "35104710",
+    "discovered_at": "2026-01-01T16:04:27.163076"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Joe OConnor v Hossein Vafaei",
+    "event_id": "35104704",
+    "discovered_at": "2026-01-01T16:04:27.170996"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Pang Junxu v Jackson Page",
+    "event_id": "35104707",
+    "discovered_at": "2026-01-01T16:04:27.179855"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Hossein Vafaei",
+    "event_id": "35104728",
+    "discovered_at": "2026-01-01T16:04:27.188747"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Jackson Page",
+    "event_id": "35104732",
+    "discovered_at": "2026-01-01T16:04:27.196694"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Joe OConnor",
+    "event_id": "35104712",
+    "discovered_at": "2026-01-01T16:04:27.205530"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Chris Wakelin v Pang Junxu",
+    "event_id": "35104721",
+    "discovered_at": "2026-01-01T16:04:27.214373"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Elliot Slessor v Hossein Vafaei",
+    "event_id": "35104716",
+    "discovered_at": "2026-01-01T16:04:27.223882"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Elliot Slessor v Jackson Page",
+    "event_id": "35104727",
+    "discovered_at": "2026-01-01T16:04:27.232204"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Elliot Slessor v Tom Ford",
+    "event_id": "35104731",
+    "discovered_at": "2026-01-01T16:04:27.241315"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Joe OConnor v Jackson Page",
+    "event_id": "35104718",
+    "discovered_at": "2026-01-01T16:04:27.249171"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Joe OConnor v Pang Junxu",
+    "event_id": "35104730",
+    "discovered_at": "2026-01-01T16:04:27.257286"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Pang Junxu v Hossein Vafaei",
+    "event_id": "35104733",
+    "discovered_at": "2026-01-01T16:04:27.265766"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Pang Junxu v Tom Ford",
+    "event_id": "35104711",
+    "discovered_at": "2026-01-01T16:04:27.273767"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Tom Ford v Hossein Vafaei",
+    "event_id": "35104729",
+    "discovered_at": "2026-01-01T16:04:27.282150"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Tom Ford v Jackson Page",
+    "event_id": "35104715",
+    "discovered_at": "2026-01-01T16:04:27.290450"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Elliot Slessor v Pang Junxu",
+    "event_id": "35104736",
+    "discovered_at": "2026-01-01T16:04:27.298419"
+  },
+  {
+    "sport": "Snooker",
+    "sport_id": "6422",
+    "competition": "Championship League",
+    "competition_id": "137635",
+    "event": "Joe OConnor v Tom Ford",
+    "event_id": "35104735",
+    "discovered_at": "2026-01-01T16:04:27.306342"
   }
 ]
+
