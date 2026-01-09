@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>市场匹配 - Nautilus Trader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        
+        .navbar {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .navbar h1 {
+            display: inline-block;
+            font-size: 1.5rem;
+            margin-right: 2rem;
+        }
+        
+        .navbar nav {
+            display: inline-block;
+        }
+        
+        .navbar a {
+            color: white;
+            text-decoration: none;
+            margin: 0 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .navbar a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        .navbar a.active {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        
+        .page-title {
+            font-size: 2rem;
+            margin-bottom: 2rem;
+            color: #2c3e50;
+        }
+        
+        .control-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        button:hover {
+            background: #2980b9;
+            transform: translateY(-1px);
+        }
+        
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.btn-success {
+            background: #27ae60;
+        }
+        
+        button.btn-success:hover {
+            background: #229954;
+        }
+        
+        button.btn-warning {
+            background: #e67e22;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            border-left: 4px solid #3498db;
+        }
+        
+        .stat-card h4 {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-card .value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .stat-card.success {
+            border-left-color: #27ae60;
+        }
+        
+        .stat-card.success .value {
+            color: #27ae60;
+        }
+        
+        .matches-section {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .matches-section h3 {
+            margin-bottom: 1.5rem;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 0.5rem;
+        }
+        
+        .filter-bar {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .filter-bar input {
+            flex: 1;
+            min-width: 200px;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.95rem;
+        }
+        
+        .filter-bar select {
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.95rem;
+        }
+        
+        .match-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid #27ae60;
+            transition: all 0.3s;
+        }
+        
+        .match-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transform: translateX(4px);
+        }
+        
+        .match-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .match-event {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .confidence {
+            background: #27ae60;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+        
+        .confidence.medium {
+            background: #f39c12;
+        }
+        
+        .confidence.low {
+            background: #e74c3c;
+        }
+        
+        .match-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        
+        .platform-info {
+            background: white;
+            padding: 1rem;
+            border-radius: 4px;
+        }
+        
+        .platform-name {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            margin-bottom: 0.5rem;
+        }
+        
+        .platform-details {
+            font-size: 0.9rem;
+        }
+        
+        .platform-details div {
+            margin: 0.25rem 0;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        
+        .badge-sport {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        
+        .badge-comp {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+        
+        .swap-indicator {
+            color: #e67e22;
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #95a5a6;
+        }
+        
+        .empty-state svg {
+            width: 100px;
+            height: 100px;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>Nautilus Trader</h1>
+        <nav>
+            <a href="/">首页</a>
+            <a href="/config">配置管理</a>
+            <a href="/discovery">市场发现</a>
+            <a href="/matching" class="active">市场匹配</a>
+        </nav>
+    </nav>
+    
+    <div class="container">
+        <h2 class="page-title">市场匹配</h2>
+        
+        <div id="alert-container"></div>
+        
+        <!-- 控制面板 -->
+        <div class="control-panel">
+            <h3 style="margin-bottom: 1rem;">匹配控制</h3>
+            <div class="button-group">
+                <button onclick="startMatching()" class="btn-success" id="btn-match">
+                    <span>⚡</span> 开始匹配
+                </button>
+                <button onclick="refreshMatches()" class="btn-warning">
+                    <span>↻</span> 刷新结果
+                </button>
+                <button onclick="exportMatches()">
+                    <span>⬇</span> 导出匹配结果
+                </button>
+            </div>
+        </div>
+        
+        <!-- 统计 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h4>Polymarket 事件</h4>
+                <div class="value" id="poly-count">0</div>
+            </div>
+            <div class="stat-card">
+                <h4>OrbitExch 事件</h4>
+                <div class="value" id="orbit-count">0</div>
+            </div>
+            <div class="stat-card success">
+                <h4>匹配成功</h4>
+                <div class="value" id="match-count">0</div>
+            </div>
+            <div class="stat-card">
+                <h4>匹配率</h4>
+                <div class="value" style="font-size: 1.8rem;" id="match-rate">0%</div>
+            </div>
+        </div>
+        
+        <!-- 匹配结果 -->
+        <div class="matches-section">
+            <h3>匹配结果</h3>
+            
+            <!-- 过滤器 -->
+            <div class="filter-bar">
+                <input type="text" id="search-input" placeholder="搜索事件名称..." 
+                       onkeyup="filterMatches()">
+                <select id="sport-filter" onchange="filterMatches()">
+                    <option value="">所有运动</option>
+                    <option value="Soccer">Soccer</option>
+                    <option value="Basketball">Basketball</option>
+                    <option value="Tennis">Tennis</option>
+                    <option value="American Football">American Football</option>
+                </select>
+                <select id="confidence-filter" onchange="filterMatches()">
+                    <option value="">所有置信度</option>
+                    <option value="high">高 (≥0.8)</option>
+                    <option value="medium">中 (0.6-0.8)</option>
+                    <option value="low">低 (<0.6)</option>
+                </select>
+            </div>
+            
+            <!-- 匹配列表 -->
+            <div id="matches-container">
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                    <h3>暂无匹配结果</h3>
+                    <p>点击"开始匹配"按钮来匹配市场事件</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let allMatches = [];
+        let filteredMatches = [];
+        
+        // 显示提示
+        function showAlert(message, type = 'info') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+        
+        // 开始匹配
+        async function startMatching() {
+            const btn = document.getElementById('btn-match');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 匹配中...';
+            
+            try {
+                const response = await fetch('/api/matching/start', {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert(`匹配完成！找到 ${result.match_count} 个匹配`, 'success');
+                    await loadMatches();
+                } else {
+                    throw new Error(result.error || '匹配失败');
+                }
+            } catch (error) {
+                showAlert('匹配失败: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>⚡</span> 开始匹配';
+            }
+        }
+        
+        // 加载匹配结果
+        async function loadMatches() {
+            try {
+                const response = await fetch('/api/matching/results');
+                const data = await response.json();
+                
+                allMatches = data.matches || [];
+                filteredMatches = allMatches;
+                
+                updateStats(data);
+                renderMatches();
+            } catch (error) {
+                showAlert('加载匹配结果失败: ' + error.message, 'error');
+            }
+        }
+        
+        // 更新统计
+        function updateStats(data) {
+            document.getElementById('poly-count').textContent = data.polymarket_count || 0;
+            document.getElementById('orbit-count').textContent = data.orbitexch_count || 0;
+            document.getElementById('match-count').textContent = data.match_count || 0;
+            
+            const rate = data.polymarket_count > 0 
+                ? Math.round((data.match_count / data.polymarket_count) * 100)
+                : 0;
+            document.getElementById('match-rate').textContent = rate + '%';
+        }
+        
+        // 渲染匹配结果
+        function renderMatches() {
+            const container = document.getElementById('matches-container');
+            
+            if (filteredMatches.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h3>没有符合条件的匹配</h3>
+                        <p>尝试调整过滤条件</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = filteredMatches.map(match => {
+                const confidence = match.confidence || 0;
+                const confidenceClass = confidence >= 0.8 ? 'high' 
+                    : confidence >= 0.6 ? 'medium' : 'low';
+                
+                const poly = match.polymarket_event || {};
+                const orbit = match.orbitexch_event || {};
+                const swapped = match.match_scores?.team_swapped || false;
+                
+                return `
+                    <div class="match-card">
+                        <div class="match-header">
+                            <div class="match-event">${poly.event || '未知事件'}</div>
+                            <div class="confidence ${confidenceClass}">
+                                ${(confidence * 100).toFixed(0)}% 匹配
+                            </div>
+                        </div>
+                        
+                        <div class="match-details">
+                            <div class="platform-info">
+                                <div class="platform-name">📊 Polymarket</div>
+                                <div class="platform-details">
+                                    <div>
+                                        <span class="badge badge-sport">${poly.sport || '-'}</span>
+                                        <span class="badge badge-comp">${poly.competition || '-'}</span>
+                                    </div>
+                                    <div><strong>主队:</strong> ${poly.home_team || '-'}</div>
+                                    <div><strong>客队:</strong> ${poly.away_team || '-'}</div>
+                                </div>
+                            </div>
+                            
+                            <div class="platform-info">
+                                <div class="platform-name">🎯 OrbitExch</div>
+                                <div class="platform-details">
+                                    <div>
+                                        <span class="badge badge-sport">${orbit.sport || '-'}</span>
+                                        <span class="badge badge-comp">${orbit.competition || '-'}</span>
+                                    </div>
+                                    <div><strong>主队:</strong> ${orbit.home_team || '-'}</div>
+                                    <div><strong>客队:</strong> ${orbit.away_team || '-'}</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        ${swapped ? '<div class="swap-indicator">⚠️ 主客队互换</div>' : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        // 过滤匹配结果
+        function filterMatches() {
+            const searchTerm = document.getElementById('search-input').value.toLowerCase();
+            const sportFilter = document.getElementById('sport-filter').value;
+            const confidenceFilter = document.getElementById('confidence-filter').value;
+            
+            filteredMatches = allMatches.filter(match => {
+                // 搜索过滤
+                const poly = match.polymarket_event || {};
+                const eventText = (poly.event || '').toLowerCase();
+                if (searchTerm && !eventText.includes(searchTerm)) {
+                    return false;
+                }
+                
+                // 运动过滤
+                if (sportFilter && poly.sport !== sportFilter) {
+                    return false;
+                }
+                
+                // 置信度过滤
+                const confidence = match.confidence || 0;
+                if (confidenceFilter === 'high' && confidence < 0.8) return false;
+                if (confidenceFilter === 'medium' && (confidence < 0.6 || confidence >= 0.8)) return false;
+                if (confidenceFilter === 'low' && confidence >= 0.6) return false;
+                
+                return true;
+            });
+            
+            renderMatches();
+        }
+        
+        // 刷新匹配
+        async function refreshMatches() {
+            showAlert('正在刷新...', 'info');
+            await loadMatches();
+            showAlert('已刷新', 'success');
+        }
+        
+        // 导出匹配结果
+        function exportMatches() {
+            const data = JSON.stringify(allMatches, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `matches_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showAlert('匹配结果已导出', 'success');
+        }
+        
+        // 页面加载时自动加载数据
+        window.addEventListener('DOMContentLoaded', () => {
+            loadMatches();
+        });
+    </script>
+</body>
+</html>

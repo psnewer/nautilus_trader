@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>市场发现 - Nautilus Trader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        
+        .navbar {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .navbar h1 {
+            display: inline-block;
+            font-size: 1.5rem;
+            margin-right: 2rem;
+        }
+        
+        .navbar nav {
+            display: inline-block;
+        }
+        
+        .navbar a {
+            color: white;
+            text-decoration: none;
+            margin: 0 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .navbar a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        .navbar a.active {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        
+        .page-title {
+            font-size: 2rem;
+            margin-bottom: 2rem;
+            color: #2c3e50;
+        }
+        
+        .control-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        button:hover {
+            background: #2980b9;
+            transform: translateY(-1px);
+        }
+        
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.btn-success {
+            background: #27ae60;
+        }
+        
+        button.btn-success:hover {
+            background: #229954;
+        }
+        
+        button.btn-warning {
+            background: #e67e22;
+        }
+        
+        button.btn-warning:hover {
+            background: #d35400;
+        }
+        
+        button.btn-danger {
+            background: #e74c3c;
+        }
+        
+        button.btn-danger:hover {
+            background: #c0392b;
+        }
+        
+        .status-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+        
+        .status-card {
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 1.5rem;
+            border-radius: 4px;
+        }
+        
+        .status-card h4 {
+            font-size: 0.9rem;
+            color: #7f8c8d;
+            margin-bottom: 0.5rem;
+        }
+        
+        .status-card .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .status-card .subtitle {
+            font-size: 0.85rem;
+            color: #95a5a6;
+            margin-top: 0.25rem;
+        }
+        
+        .events-section {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .events-section h3 {
+            margin-bottom: 1.5rem;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 0.5rem;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #ecf0f1;
+        }
+        
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #7f8c8d;
+            font-size: 1rem;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.3s;
+        }
+        
+        .tab:hover {
+            color: #2c3e50;
+            background: rgba(52, 152, 219, 0.05);
+        }
+        
+        .tab.active {
+            color: #3498db;
+            border-bottom-color: #3498db;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .event-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .event-table th {
+            background: #f8f9fa;
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+            color: #2c3e50;
+            border-bottom: 2px solid #ecf0f1;
+        }
+        
+        .event-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #ecf0f1;
+        }
+        
+        .event-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        
+        .badge-sport {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        
+        .badge-competition {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+        
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1.5rem;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 1rem;
+        }
+        
+        .log-entry {
+            margin-bottom: 0.5rem;
+            line-height: 1.6;
+        }
+        
+        .log-time {
+            color: #858585;
+        }
+        
+        .log-info {
+            color: #4ec9b0;
+        }
+        
+        .log-success {
+            color: #4ec9b0;
+        }
+        
+        .log-error {
+            color: #f48771;
+        }
+        
+        .log-warning {
+            color: #dcdcaa;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>Nautilus Trader</h1>
+        <nav>
+            <a href="/">首页</a>
+            <a href="/config">配置管理</a>
+            <a href="/discovery" class="active">市场发现</a>
+            <a href="/matching">市场匹配</a>
+        </nav>
+    </nav>
+    
+    <div class="container">
+        <h2 class="page-title">市场发现</h2>
+        
+        <div id="alert-container"></div>
+        
+        <!-- 控制面板 -->
+        <div class="control-panel">
+            <h3 style="margin-bottom: 1rem;">控制中心</h3>
+            <div class="button-group">
+                <button onclick="startPolymarket()" id="btn-poly">
+                    <span>▶</span> 启动 Polymarket 爬虫
+                </button>
+                <button onclick="startOrbitExch()" id="btn-orbit">
+                    <span>▶</span> 启动 OrbitExch 爬虫
+                </button>
+                <button onclick="startAll()" class="btn-success" id="btn-all">
+                    <span>▶▶</span> 启动所有爬虫
+                </button>
+                <button onclick="stopAll()" class="btn-danger" id="btn-stop" disabled>
+                    <span>■</span> 停止所有
+                </button>
+                <button onclick="refreshData()" class="btn-warning">
+                    <span>↻</span> 刷新数据
+                </button>
+            </div>
+        </div>
+        
+        <!-- 状态面板 -->
+        <div class="status-panel">
+            <h3>运行状态</h3>
+            <div class="status-grid">
+                <div class="status-card">
+                    <h4>Polymarket 状态</h4>
+                    <div class="value" id="poly-status">待启动</div>
+                    <div class="subtitle" id="poly-count">0 个事件</div>
+                </div>
+                <div class="status-card">
+                    <h4>OrbitExch 状态</h4>
+                    <div class="value" id="orbit-status">待启动</div>
+                    <div class="subtitle" id="orbit-count">0 个事件</div>
+                </div>
+                <div class="status-card">
+                    <h4>总事件数</h4>
+                    <div class="value" id="total-count">0</div>
+                    <div class="subtitle">已爬取的市场事件</div>
+                </div>
+                <div class="status-card">
+                    <h4>最后更新</h4>
+                    <div class="value" style="font-size: 1.2rem;" id="last-update">从未</div>
+                    <div class="subtitle">数据刷新时间</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 事件数据 -->
+        <div class="events-section">
+            <h3>爬取的事件</h3>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('polymarket')">
+                    Polymarket (<span id="poly-tab-count">0</span>)
+                </button>
+                <button class="tab" onclick="switchTab('orbitexch')">
+                    OrbitExch (<span id="orbit-tab-count">0</span>)
+                </button>
+                <button class="tab" onclick="switchTab('logs')">
+                    运行日志
+                </button>
+            </div>
+            
+            <!-- Polymarket 事件表 -->
+            <div id="tab-polymarket" class="tab-content active">
+                <table class="event-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>运动项目</th>
+                            <th>赛事</th>
+                            <th>事件</th>
+                            <th>主队</th>
+                            <th>客队</th>
+                        </tr>
+                    </thead>
+                    <tbody id="poly-events-tbody">
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: #95a5a6;">
+                                暂无数据，请启动爬虫
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- OrbitExch 事件表 -->
+            <div id="tab-orbitexch" class="tab-content">
+                <table class="event-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>运动项目</th>
+                            <th>赛事</th>
+                            <th>事件</th>
+                            <th>主队</th>
+                            <th>客队</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orbit-events-tbody">
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: #95a5a6;">
+                                暂无数据，请启动爬虫
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- 日志 -->
+            <div id="tab-logs" class="tab-content">
+                <div class="log-container" id="log-container">
+                    <div class="log-entry">
+                        <span class="log-time">[等待启动]</span>
+                        <span class="log-info">准备就绪，等待启动爬虫...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let polyEvents = [];
+        let orbitEvents = [];
+        let isRunning = false;
+        
+        // 显示提示
+        function showAlert(message, type = 'info') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+        
+        // 添加日志
+        function addLog(message, type = 'info') {
+            const container = document.getElementById('log-container');
+            const now = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `
+                <span class="log-time">[${now}]</span>
+                <span class="log-${type}">${message}</span>
+            `;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // 切换标签页
+        function switchTab(tab) {
+            // 更新标签样式
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // 显示对应内容
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+        }
+        
+        // 启动 Polymarket 爬虫
+        async function startPolymarket() {
+            const btn = document.getElementById('btn-poly');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 运行中...';
+            
+            document.getElementById('poly-status').textContent = '运行中';
+            addLog('启动 Polymarket 爬虫...', 'info');
+            
+            try {
+                const response = await fetch('/api/discovery/start-polymarket', {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    addLog(`Polymarket 爬虫启动成功`, 'success');
+                    showAlert('Polymarket 爬虫已启动', 'success');
+                    // 模拟加载数据
+                    setTimeout(loadPolymarketEvents, 2000);
+                } else {
+                    throw new Error(result.error || '启动失败');
+                }
+            } catch (error) {
+                addLog(`Polymarket 爬虫启动失败: ${error.message}`, 'error');
+                showAlert('启动失败: ' + error.message, 'error');
+                document.getElementById('poly-status').textContent = '错误';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>▶</span> 启动 Polymarket 爬虫';
+            }
+        }
+        
+        // 启动 OrbitExch 爬虫
+        async function startOrbitExch() {
+            const btn = document.getElementById('btn-orbit');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 运行中...';
+            
+            document.getElementById('orbit-status').textContent = '运行中';
+            addLog('启动 OrbitExch 爬虫...', 'info');
+            
+            try {
+                const response = await fetch('/api/discovery/start-orbitexch', {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    addLog(`OrbitExch 爬虫启动成功`, 'success');
+                    showAlert('OrbitExch 爬虫已启动', 'success');
+                    setTimeout(loadOrbitExchEvents, 2000);
+                } else {
+                    throw new Error(result.error || '启动失败');
+                }
+            } catch (error) {
+                addLog(`OrbitExch 爬虫启动失败: ${error.message}`, 'error');
+                showAlert('启动失败: ' + error.message, 'error');
+                document.getElementById('orbit-status').textContent = '错误';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>▶</span> 启动 OrbitExch 爬虫';
+            }
+        }
+        
+        // 启动所有爬虫
+        async function startAll() {
+            await startPolymarket();
+            await startOrbitExch();
+        }
+        
+        // 停止所有
+        function stopAll() {
+            addLog('停止所有爬虫...', 'warning');
+            showAlert('功能开发中', 'info');
+        }
+        
+        // 加载 Polymarket 事件
+        async function loadPolymarketEvents() {
+            try {
+                const response = await fetch('/api/discovery/polymarket-events');
+                const events = await response.json();
+                
+                polyEvents = events;
+                renderPolymarketEvents();
+                updateStats();
+                
+                document.getElementById('poly-status').textContent = '完成';
+                addLog(`Polymarket 爬取完成: ${events.length} 个事件`, 'success');
+            } catch (error) {
+                addLog(`加载 Polymarket 事件失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 加载 OrbitExch 事件
+        async function loadOrbitExchEvents() {
+            try {
+                const response = await fetch('/api/discovery/orbitexch-events');
+                const events = await response.json();
+                
+                orbitEvents = events;
+                renderOrbitExchEvents();
+                updateStats();
+                
+                document.getElementById('orbit-status').textContent = '完成';
+                addLog(`OrbitExch 爬取完成: ${events.length} 个事件`, 'success');
+            } catch (error) {
+                addLog(`加载 OrbitExch 事件失败: ${error.message}`, 'error');
+            }
+        }
+        
+        // 渲染 Polymarket 事件表
+        function renderPolymarketEvents() {
+            const tbody = document.getElementById('poly-events-tbody');
+            
+            if (polyEvents.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #95a5a6;">暂无数据</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = polyEvents.map((event, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td><span class="badge badge-sport">${event.sport || '-'}</span></td>
+                    <td><span class="badge badge-competition">${event.competition || '-'}</span></td>
+                    <td>${event.event || '-'}</td>
+                    <td>${event.home_team || '-'}</td>
+                    <td>${event.away_team || '-'}</td>
+                </tr>
+            `).join('');
+        }
+        
+        // 渲染 OrbitExch 事件表
+        function renderOrbitExchEvents() {
+            const tbody = document.getElementById('orbit-events-tbody');
+            
+            if (orbitEvents.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #95a5a6;">暂无数据</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = orbitEvents.map((event, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td><span class="badge badge-sport">${event.sport || '-'}</span></td>
+                    <td><span class="badge badge-competition">${event.competition || '-'}</span></td>
+                    <td>${event.event || '-'}</td>
+                    <td>${event.home_team || '-'}</td>
+                    <td>${event.away_team || '-'}</td>
+                </tr>
+            `).join('');
+        }
+        
+        // 更新统计
+        function updateStats() {
+            document.getElementById('poly-count').textContent = `${polyEvents.length} 个事件`;
+            document.getElementById('orbit-count').textContent = `${orbitEvents.length} 个事件`;
+            document.getElementById('total-count').textContent = polyEvents.length + orbitEvents.length;
+            document.getElementById('poly-tab-count').textContent = polyEvents.length;
+            document.getElementById('orbit-tab-count').textContent = orbitEvents.length;
+            document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+        }
+        
+        // 刷新数据
+        async function refreshData() {
+            addLog('刷新数据...', 'info');
+            await loadPolymarketEvents();
+            await loadOrbitExchEvents();
+            showAlert('数据已刷新', 'success');
+        }
+        
+        // 页面加载时自动加载数据
+        window.addEventListener('DOMContentLoaded', () => {
+            addLog('页面加载完成，准备就绪', 'success');
+            refreshData();
+        });
+    </script>
+</body>
+</html>
