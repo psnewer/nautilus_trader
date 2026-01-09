@@ -131,3 +131,11 @@ browser_data/
 # Screenshots (debug)
 *.png
 test_screenshot.png
+ 
+# Config System 
+config/config.yaml 
+output/ 
+ 
+# Config System 
+config/config.yaml 
+output/ 

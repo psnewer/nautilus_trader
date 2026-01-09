@@ -1,35 +1,35 @@
 ﻿# -------------------------------------------------------------------------------------------------
-#  OrbitExch 事件爬虫 - 完整版
+#  OrbitExch 事件爬虫 - 修复版
 # -------------------------------------------------------------------------------------------------
 
 """
-爬取逻辑:
-1. 点击 Sport
-2. 如果有 "All {Sport}" 链接:
-   - 点击进入，收集所有 Competition
-   - 逐个处理 Competition
-3. 如果没有 "All {Sport}" 链接:
-   - 直接在菜单中查找 Competition
-   - 逐个点击处理
+修复内容:
+1. 保存到 output/orbitexch_events.json
+2. 保持原始 event 不变，只在 home_team 和 away_team 中拆分
 """
 
 import asyncio
 import logging
-from typing import List
+import re
+from typing import List, Tuple
 from dataclasses import dataclass, asdict
 import json
 from datetime import datetime
+from pathlib import Path
 
 
 @dataclass
 class EventNode:
     """事件节点"""
+    platform: str
     sport: str
     sport_id: str
     competition: str
     competition_id: str
-    event: str
+    event: str           # 保持原始格式
     event_id: str
+    home_team: str       # 拆分后的主队
+    away_team: str       # 拆分后的客队
     discovered_at: str
     
     def to_dict(self):
@@ -46,6 +46,39 @@ class OrbitExchEventCrawler:
         self.page = page
         self._log = logging.getLogger('EventCrawler')
         self.events: List[EventNode] = []
+    
+    @staticmethod
+    def split_teams(event_str: str) -> Tuple[str, str]:
+        """
+        拆分 event 字符串为 home_team 和 away_team
+        不修改原始 event，只用于提取队伍信息
+        
+        支持的分隔符: vs, vs., @, -, v
+        示例:
+        - "Navy @ Cincinnati" -> ("Cincinnati", "Navy")  @ 表示客场
+        - "Team A vs Team B" -> ("Team A", "Team B")
+        - "Arsenal - Chelsea" -> ("Arsenal", "Chelsea")
+        """
+        # 按优先级尝试不同的分隔符
+        separators = [
+            (r'\s+@\s+', True),      # @ 表示客场，需要交换
+            (r'\s+vs\.?\s+', False), # vs 或 vs.
+            (r'\s+-\s+', False),     # -
+            (r'\s+v\s+', False),     # v
+        ]
+        
+        for pattern, should_swap in separators:
+            match = re.split(pattern, event_str, maxsplit=1, flags=re.IGNORECASE)
+            if len(match) == 2:
+                team1, team2 = match[0].strip(), match[1].strip()
+                if should_swap:
+                    # @ 表示 team1 @ team2，即 team1 是客队，team2 是主队
+                    return team2, team1
+                else:
+                    return team1, team2
+        
+        # 如果都不匹配，返回原字符串和空字符串
+        return event_str, ""
     
     async def crawl_sports(self, sport_indices: List[int]) -> List[EventNode]:
         """爬取指定的运动项目"""
@@ -323,14 +356,20 @@ class OrbitExchEventCrawler:
                 event_name = (await event_elem.text_content()).strip()
                 event_id = await event_elem.get_attribute('data-navigation-id')
                 
+                # 拆分队伍（不修改原始 event_name）
+                home_team, away_team = self.split_teams(event_name)
+                
                 # 创建事件节点
                 event_node = EventNode(
+                    platform="OrbitExch",
                     sport=sport_name,
                     sport_id=sport_id,
                     competition=comp_name,
                     competition_id=comp_id,
-                    event=event_name,
+                    event=event_name,  # 保持原始格式
                     event_id=event_id,
+                    home_team=home_team,
+                    away_team=away_team,
                     discovered_at=datetime.now().isoformat(),
                 )
                 
@@ -345,8 +384,6 @@ class OrbitExchEventCrawler:
 async def main():
     """主函数"""
     import logging
-    from dotenv import load_dotenv
-    import os
     from playwright.async_api import async_playwright
     
     logging.basicConfig(
@@ -354,60 +391,45 @@ async def main():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    load_dotenv(encoding='utf-8')
-    username = os.getenv('ORBITEXCH_USERNAME')
-    password = os.getenv('ORBITEXCH_PASSWORD')
-    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         page = await browser.new_page()
         
         try:
-            # 登录
-            print('1️⃣  登录...')
-            await page.goto('https://orbitexch.com/customer/login')
-            await page.fill('input[name="username"]', username)
-            await page.fill('input[name="password"]', password)
-            await page.click('button[type="submit"]:has-text("Log In")')
-            await asyncio.sleep(3)
-            
-            # 处理弹窗
-            try:
-                ok_button = page.locator('xpath=//button[normalize-space()="OK"]')
-                if await ok_button.is_visible(timeout=3000):
-                    await ok_button.click()
-                    await asyncio.sleep(1)
-            except:
-                pass
-            
-            print('2️⃣  导航到页面...')
-            await page.goto('https://orbitexch.com/customer/inplay/highlights')
+            # 直接访问公开页面（不需要登录）
+            print('1️⃣  访问 OrbitExch...')
+            await page.goto('https://orbitexch.com')
             await asyncio.sleep(3)
             
             # 创建爬虫
             print()
             print('=' * 70)
-            print('开始爬取事件')
+            print('2️⃣  开始爬取事件')
             print('=' * 70)
             print()
             
             crawler = OrbitExchEventCrawler(page)
             
-            # 爬取第1个和第23个运动项目
-            events = await crawler.crawl_sports([0, 21])
+            # 爬取第1个和第22个运动项目
+            events = await crawler.crawl_sports([0, 23])
             
-            # 保存结果
+            # 保存结果到 output 目录
             print()
             print('=' * 70)
-            print('保存结果')
+            print('3️⃣  保存结果')
             print('=' * 70)
+            
+            # 确保 output 目录存在
+            output_dir = Path('output')
+            output_dir.mkdir(exist_ok=True)
             
             events_dict = [e.to_dict() for e in events]
             
-            with open('orbitexch_events.json', 'w', encoding='utf-8') as f:
+            output_file = output_dir / 'orbitexch_events.json'
+            with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(events_dict, f, ensure_ascii=False, indent=2)
             
-            print(f'✅ 已保存 {len(events)} 个事件到 orbitexch_events.json')
+            print(f'✅ 已保存 {len(events)} 个事件到 {output_file}')
             
             # 统计
             if events:
@@ -421,9 +443,12 @@ async def main():
                 print(f'  比赛: {len(events)}')
                 
                 print()
-                print('示例事件:')
-                for event in events[:10]:
-                    print(f'  {event}')
+                print('示例事件 (前5个):')
+                for event in events[:5]:
+                    print(f'  原始: {event.event}')
+                    print(f'    主队: {event.home_team}')
+                    print(f'    客队: {event.away_team}')
+                    print()
             
             await asyncio.sleep(5)
         

@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>配置管理 - Nautilus Trader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        
+        .navbar {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .navbar h1 {
+            display: inline-block;
+            font-size: 1.5rem;
+            margin-right: 2rem;
+        }
+        
+        .navbar nav {
+            display: inline-block;
+        }
+        
+        .navbar a {
+            color: white;
+            text-decoration: none;
+            margin: 0 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .navbar a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        
+        .page-title {
+            font-size: 2rem;
+            margin-bottom: 2rem;
+            color: #2c3e50;
+        }
+        
+        .config-section {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .config-section h3 {
+            font-size: 1.3rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #3498db;
+            color: #2c3e50;
+        }
+        
+        .config-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .config-group h4 {
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            color: #555;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        
+        input[type="checkbox"] {
+            width: auto;
+            margin-right: 0.5rem;
+        }
+        
+        .checkbox-label {
+            display: inline-flex;
+            align-items: center;
+            font-weight: normal;
+        }
+        
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.3s;
+            margin-top: 1rem;
+        }
+        
+        button:hover {
+            background: #2980b9;
+        }
+        
+        button:active {
+            transform: translateY(1px);
+        }
+        
+        .btn-success {
+            background: #27ae60;
+        }
+        
+        .btn-success:hover {
+            background: #229954;
+        }
+        
+        .btn-warning {
+            background: #e67e22;
+        }
+        
+        .btn-warning:hover {
+            background: #d35400;
+        }
+        
+        .help-text {
+            font-size: 0.85rem;
+            color: #777;
+            margin-top: 0.25rem;
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>Nautilus Trader</h1>
+        <nav>
+            <a href="/">首页</a>
+            <a href="/config">配置管理</a>
+        </nav>
+    </nav>
+    
+    <div class="container">
+        <h2 class="page-title">系统配置</h2>
+        
+        <div id="alert-container"></div>
+        
+        <!-- 市场发现配置 -->
+        <div class="config-section">
+            <h3>市场发现配置</h3>
+            
+            <div class="config-group">
+                <h4>Polymarket 爬虫</h4>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="poly-enabled" checked>
+                    启用 Polymarket 爬虫
+                </label>
+                
+                <label>
+                    运动项目 (逗号分隔):
+                    <input type="text" id="poly-sports" value="Soccer, Basketball, Tennis" placeholder="例如: Soccer, Basketball">
+                    <span class="help-text">输入要爬取的运动项目名称，用逗号分隔</span>
+                </label>
+                
+                <label>
+                    每个运动最大事件数 (0=不限制):
+                    <input type="number" id="poly-max-events-sport" value="0" min="0">
+                </label>
+                
+                <label>
+                    每个赛事最大事件数:
+                    <input type="number" id="poly-max-events-comp" value="100" min="0">
+                </label>
+                
+                <label>
+                    总共最大事件数:
+                    <input type="number" id="poly-max-total" value="1000" min="0">
+                </label>
+                
+                <button onclick="savePolymarketConfig()">保存 Polymarket 配置</button>
+            </div>
+        </div>
+        
+        <div class="config-section">
+            <h3>OrbitExch 爬虫</h3>
+            
+            <div class="config-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="orbit-enabled" checked>
+                    启用 OrbitExch 爬虫
+                </label>
+                
+                <label>
+                    运动项目 (逗号分隔):
+                    <input type="text" id="orbit-sports" value="American Football, Soccer" placeholder="例如: Soccer, Basketball">
+                    <span class="help-text">输入要爬取的运动项目名称，用逗号分隔</span>
+                </label>
+                
+                <label>
+                    每个运动最多爬取几个赛事:
+                    <input type="number" id="orbit-max-comps" value="5" min="0">
+                </label>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="orbit-headless">
+                    无头模式 (后台运行，不显示浏览器)
+                </label>
+                
+                <button onclick="saveOrbitExchConfig()">保存 OrbitExch 配置</button>
+            </div>
+        </div>
+        
+        <!-- 市场匹配配置 -->
+        <div class="config-section">
+            <h3>市场匹配配置</h3>
+            
+            <div class="config-group">
+                <h4>预处理器设置</h4>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="preprocess-enabled" checked>
+                    启用预处理
+                </label>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="normalize-sport" checked>
+                    标准化运动名称
+                </label>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="normalize-comp" checked>
+                    标准化赛事名称
+                </label>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="normalize-team" checked>
+                    标准化队名
+                </label>
+            </div>
+            
+            <div class="config-group">
+                <h4>匹配器设置</h4>
+                
+                <label>
+                    最低匹配置信度 (0.0 - 1.0):
+                    <input type="number" id="min-confidence" value="0.6" min="0" max="1" step="0.1">
+                    <span class="help-text">推荐值: 0.6-0.7 (标准匹配)</span>
+                </label>
+                
+                <label class="checkbox-label">
+                    <input type="checkbox" id="allow-team-swap" checked>
+                    允许主客队互换
+                </label>
+                
+                <button onclick="saveMatchingConfig()">保存匹配配置</button>
+            </div>
+        </div>
+        
+        <!-- 全局操作 -->
+        <div class="config-section">
+            <h3>全局操作</h3>
+            
+            <div class="grid">
+                <button onclick="saveAllConfig()" class="btn-success">保存所有配置</button>
+                <button onclick="reloadConfig()" class="btn-warning">重新加载配置</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // 显示提示信息
+        function showAlert(message, type = 'success') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            
+            setTimeout(() => {
+                alert.remove();
+            }, 3000);
+        }
+        
+        // 更新配置项
+        async function updateConfig(path, value) {
+            try {
+                const response = await fetch('/api/config/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ path, value })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    return true;
+                } else {
+                    throw new Error(result.error || '更新失败');
+                }
+            } catch (error) {
+                showAlert('错误: ' + error.message, 'error');
+                return false;
+            }
+        }
+        
+        // 保存 Polymarket 配置
+        async function savePolymarketConfig() {
+            const enabled = document.getElementById('poly-enabled').checked;
+            const sports = document.getElementById('poly-sports').value
+                .split(',').map(s => s.trim()).filter(s => s);
+            const maxEventsSport = parseInt(document.getElementById('poly-max-events-sport').value);
+            const maxEventsComp = parseInt(document.getElementById('poly-max-events-comp').value);
+            const maxTotal = parseInt(document.getElementById('poly-max-total').value);
+            
+            let success = true;
+            success = await updateConfig('market_discovery.polymarket.enabled', enabled) && success;
+            success = await updateConfig('market_discovery.polymarket.sports', sports) && success;
+            success = await updateConfig('market_discovery.polymarket.max_events_per_sport', maxEventsSport) && success;
+            success = await updateConfig('market_discovery.polymarket.max_events_per_competition', maxEventsComp) && success;
+            success = await updateConfig('market_discovery.polymarket.max_total_events', maxTotal) && success;
+            
+            if (success) {
+                showAlert('Polymarket 配置已保存', 'success');
+            }
+        }
+        
+        // 保存 OrbitExch 配置
+        async function saveOrbitExchConfig() {
+            const enabled = document.getElementById('orbit-enabled').checked;
+            const sports = document.getElementById('orbit-sports').value
+                .split(',').map(s => s.trim()).filter(s => s);
+            const maxComps = parseInt(document.getElementById('orbit-max-comps').value);
+            const headless = document.getElementById('orbit-headless').checked;
+            
+            let success = true;
+            success = await updateConfig('market_discovery.orbitexch.enabled', enabled) && success;
+            success = await updateConfig('market_discovery.orbitexch.sports', sports) && success;
+            success = await updateConfig('market_discovery.orbitexch.max_competitions_per_sport', maxComps) && success;
+            success = await updateConfig('market_discovery.orbitexch.headless', headless) && success;
+            
+            if (success) {
+                showAlert('OrbitExch 配置已保存', 'success');
+            }
+        }
+        
+        // 保存匹配配置
+        async function saveMatchingConfig() {
+            const enabled = document.getElementById('preprocess-enabled').checked;
+            const normSport = document.getElementById('normalize-sport').checked;
+            const normComp = document.getElementById('normalize-comp').checked;
+            const normTeam = document.getElementById('normalize-team').checked;
+            const minConf = parseFloat(document.getElementById('min-confidence').value);
+            const allowSwap = document.getElementById('allow-team-swap').checked;
+            
+            let success = true;
+            success = await updateConfig('market_matching.preprocessor.enabled', enabled) && success;
+            success = await updateConfig('market_matching.preprocessor.normalize_sport', normSport) && success;
+            success = await updateConfig('market_matching.preprocessor.normalize_competition', normComp) && success;
+            success = await updateConfig('market_matching.preprocessor.normalize_team_names', normTeam) && success;
+            success = await updateConfig('market_matching.matcher.min_confidence', minConf) && success;
+            success = await updateConfig('market_matching.matcher.allow_team_swap', allowSwap) && success;
+            
+            if (success) {
+                showAlert('匹配配置已保存', 'success');
+            }
+        }
+        
+        // 保存所有配置
+        async function saveAllConfig() {
+            await savePolymarketConfig();
+            await saveOrbitExchConfig();
+            await saveMatchingConfig();
+            showAlert('所有配置已保存', 'success');
+        }
+        
+        // 重新加载配置
+        async function reloadConfig() {
+            try {
+                const response = await fetch('/api/config/reload', {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('配置已重新加载', 'success');
+                    location.reload();
+                }
+            } catch (error) {
+                showAlert('重新加载失败: ' + error.message, 'error');
+            }
+        }
+        
+        // 页面加载时从服务器加载当前配置
+        async function loadCurrentConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+                
+                // 加载 Polymarket 配置
+                if (config.market_discovery?.polymarket) {
+                    const poly = config.market_discovery.polymarket;
+                    document.getElementById('poly-enabled').checked = poly.enabled || false;
+                    document.getElementById('poly-sports').value = (poly.sports || []).join(', ');
+                    document.getElementById('poly-max-events-sport').value = poly.max_events_per_sport || 0;
+                    document.getElementById('poly-max-events-comp').value = poly.max_events_per_competition || 100;
+                    document.getElementById('poly-max-total').value = poly.max_total_events || 1000;
+                }
+                
+                // 加载 OrbitExch 配置
+                if (config.market_discovery?.orbitexch) {
+                    const orbit = config.market_discovery.orbitexch;
+                    document.getElementById('orbit-enabled').checked = orbit.enabled || false;
+                    document.getElementById('orbit-sports').value = (orbit.sports || []).join(', ');
+                    document.getElementById('orbit-max-comps').value = orbit.max_competitions_per_sport || 5;
+                    document.getElementById('orbit-headless').checked = orbit.headless || false;
+                }
+                
+                // 加载匹配配置
+                if (config.market_matching) {
+                    const matching = config.market_matching;
+                    if (matching.preprocessor) {
+                        document.getElementById('preprocess-enabled').checked = matching.preprocessor.enabled || false;
+                        document.getElementById('normalize-sport').checked = matching.preprocessor.normalize_sport || false;
+                        document.getElementById('normalize-comp').checked = matching.preprocessor.normalize_competition || false;
+                        document.getElementById('normalize-team').checked = matching.preprocessor.normalize_team_names || false;
+                    }
+                    if (matching.matcher) {
+                        document.getElementById('min-confidence').value = matching.matcher.min_confidence || 0.6;
+                        document.getElementById('allow-team-swap').checked = matching.matcher.allow_team_swap || false;
+                    }
+                }
+            } catch (error) {
+                console.error('加载配置失败:', error);
+            }
+        }
+        
+        // 页面加载时执行
+        window.addEventListener('DOMContentLoaded', loadCurrentConfig);
+    </script>
+</body>
+</html>
