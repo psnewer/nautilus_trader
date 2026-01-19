@@ -598,14 +598,14 @@
         async function loadPolymarketEvents() {
             try {
                 const response = await fetch('/api/discovery/polymarket-events');
-                const events = await response.json();
-                
-                polyEvents = events;
+                const data = await response.json();
+
+                polyEvents = data.events || [];
                 renderPolymarketEvents();
                 updateStats();
-                
+
                 document.getElementById('poly-status').textContent = '完成';
-                addLog(`Polymarket 爬取完成: ${events.length} 个事件`, 'success');
+                addLog(`Polymarket 爬取完成: ${polyEvents.length} 个事件`, 'success');
             } catch (error) {
                 addLog(`加载 Polymarket 事件失败: ${error.message}`, 'error');
             }
@@ -615,14 +615,14 @@
         async function loadOrbitExchEvents() {
             try {
                 const response = await fetch('/api/discovery/orbitexch-events');
-                const events = await response.json();
-                
-                orbitEvents = events;
+                const data = await response.json();
+
+                orbitEvents = data.events || [];
                 renderOrbitExchEvents();
                 updateStats();
-                
+
                 document.getElementById('orbit-status').textContent = '完成';
-                addLog(`OrbitExch 爬取完成: ${events.length} 个事件`, 'success');
+                addLog(`OrbitExch 爬取完成: ${orbitEvents.length} 个事件`, 'success');
             } catch (error) {
                 addLog(`加载 OrbitExch 事件失败: ${error.message}`, 'error');
             }

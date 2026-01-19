@@ -451,7 +451,7 @@
                 const result = await response.json();
                 
                 if (result.success) {
-                    showAlert(`匹配完成！找到 ${result.match_count} 个匹配`, 'success');
+                    showAlert(`匹配完成！找到 ${result.count || 0} 个匹配`, 'success');
                     await loadMatches();
                 } else {
                     throw new Error(result.error || '匹配失败');
