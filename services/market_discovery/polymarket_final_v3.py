@@ -11,6 +11,15 @@ from dataclasses import dataclass, asdict, field
 from collections import Counter
 from bs4 import BeautifulSoup
 import re
+import sys
+from pathlib import Path
+import yaml
+
+# 添加项目根目录到路径
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils import get_similar_for_discovery
 
 
 @dataclass
@@ -31,12 +40,17 @@ class MarketEvent:
 
 class PolymarketV3:
     """Polymarket V3"""
-    
-    def __init__(self):
+
+    def __init__(self, config: Optional[Dict] = None):
         self._log = logging.getLogger('Polymarket')
         self.gamma_api = 'https://gamma-api.polymarket.com'
         self.session = requests.Session()
         self.web_competition_to_sport = {}
+        self.config = config or {}
+
+        # 从配置读取运动和赛事过滤
+        self.allowed_sports = self.config.get('sports', [])
+        self.allowed_competitions = self.config.get('competitions', {})
     
     def discover_markets(self, active_only = True):
         """发现市场"""
@@ -169,45 +183,67 @@ class PolymarketV3:
             self._log.error(f'获取失败: {e}')
             return []
     
+    def _should_include_event(self, sport: str, competition: str) -> bool:
+        """检查是否应该包含该事件"""
+        # 如果配置了 allowed_sports，只包含列表中的运动
+        if self.allowed_sports and sport not in self.allowed_sports:
+            return False
+
+        # 如果配置了 allowed_competitions，检查赛事列表
+        if self.allowed_competitions:
+            if sport in self.allowed_competitions:
+                allowed_comps = self.allowed_competitions[sport]
+                # 如果该运动的赛事列表为空，包含所有
+                if not allowed_comps:
+                    return True
+                # 否则只包含列表中的赛事
+                return competition in allowed_comps
+
+        return True
+
     def _parse_event(self, data):
         """解析事件"""
-        
+
         title = data.get('title', '')
-        
+
         if not title or 'More Markets' in title:
             return None
-        
+
         home_team, away_team = self._extract_teams(title)
-        
+
         if not home_team or not away_team:
             return None
-        
+
         # 清理主客队名称
         home_team = self._clean_team_name(home_team, is_home=True)
         away_team = self._clean_team_name(away_team, is_home=False)
-        
+
         series = data.get('series', [])
         if not series or len(series) == 0:
             return None
-        
+
         event_tags = data.get('tags', [])
         api_competition = self._find_competition_from_tags(event_tags)
-        
+
         if not api_competition:
             first_series = series[0]
             if isinstance(first_series, dict):
                 api_competition = first_series.get('title', '')
-        
+
         if not api_competition:
             return None
-        
+
         web_competition = self._match_web_competition(api_competition)
-        
+
         if not web_competition:
             return None
-        
+
         sport = self.web_competition_to_sport.get(web_competition, 'Unknown')
         competition = web_competition
+
+        # 检查是否应该包含该事件
+        if not self._should_include_event(sport, competition):
+            return None
         
         return MarketEvent(
             platform='Polymarket',
@@ -309,132 +345,37 @@ class PolymarketV3:
         # 2. 相似度匹配
         best_match = None
         best_score = (0, 0)
-        
+
         for web_comp in self.web_competition_to_sport.keys():
-            match_count, char_count = self._get_similar(api_competition, web_comp)
-            
+            match_count, char_count = get_similar_for_discovery(api_competition, web_comp)
+
             if (match_count, char_count) > best_score:
                 best_score = (match_count, char_count)
                 best_match = web_comp
-        
+
         if best_score[0] > 0:
             return best_match
-        
+
         return None
-    
-    def _split_elements(self, text):
-        """拆分字符串为元素"""
-        
-        parts = re.split(r'[^a-zA-Z0-9]', text)
-        elements = []
-        
-        for part in parts:
-            if not part:
-                continue
-            
-            upper_count = sum(1 for c in part if c.isupper())
-            
-            if upper_count >= 2:
-                elements.extend(list(part))
-            else:
-                elements.append(part)
-        
-        return elements
-    
-    def _get_similar(self, str1, str2) -> Tuple[int, int]:
-        """相似度计算 (返回匹配数和字符数)"""
-        
-        elements1 = self._split_elements(str1)
-        elements2 = self._split_elements(str2)
-        
-        if not elements1 or not elements2:
-            return (0, 0)
-        
-        upper_letters1 = [e for e in elements1 if len(e) == 1 and e.isupper()]
-        upper_letters2 = [e for e in elements2 if len(e) == 1 and e.isupper()]
-        
-        if upper_letters1:
-            for letter in upper_letters1:
-                matched = False
-                for e2 in elements2:
-                    if len(e2) == 1 and e2.isupper():
-                        if letter == e2:
-                            matched = True
-                            break
-                    else:
-                        if e2 and e2[0] == letter:
-                            matched = True
-                            break
-                if not matched:
-                    return (0, 0)
-        
-        if upper_letters2:
-            for letter in upper_letters2:
-                matched = False
-                for e1 in elements1:
-                    if len(e1) == 1 and e1.isupper():
-                        if letter == e1:
-                            matched = True
-                            break
-                    else:
-                        if e1 and e1[0] == letter:
-                            matched = True
-                            break
-                if not matched:
-                    return (0, 0)
-        
-        matches = 0
-        char_count = 0
-        used_indices2 = set()
-        
-        for e1 in elements1:
-            for idx2, e2 in enumerate(elements2):
-                if idx2 in used_indices2:
-                    continue
-                
-                matched = False
-                matched_chars = 0
-                
-                if len(e1) == 1 and e1.isupper():
-                    if len(e2) == 1 and e1 == e2:
-                        matched = True
-                        matched_chars = 1
-                    elif len(e2) > 1 and e2[0] == e1:
-                        matched = True
-                        matched_chars = 1
-                elif len(e2) == 1 and e2.isupper():
-                    if len(e1) > 1 and e1[0] == e2:
-                        matched = True
-                        matched_chars = 1
-                else:
-                    if self._is_subsequence(e1, e2):
-                        matched = True
-                        matched_chars = len(e1)
-                    elif self._is_subsequence(e2, e1):
-                        matched = True
-                        matched_chars = len(e2)
-                
-                if matched:
-                    matches += 1
-                    char_count += matched_chars
-                    used_indices2.add(idx2)
-                    break
-        
-        return (matches, char_count)
-    
-    def _is_subsequence(self, s, t):
-        """子序列"""
-        it = iter(t)
-        return all(c in it for c in s)
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(message)s')
-    
+
     print('Polymarket 市场发现 V3')
     print('=' * 70)
-    
-    client = PolymarketV3()
+
+    # 读取配置文件
+    config_path = Path(__file__).parent.parent.parent / 'config' / 'config.yaml'
+    config = {}
+
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            full_config = yaml.safe_load(f)
+            if full_config and 'market_discovery' in full_config:
+                config = full_config['market_discovery'].get('polymarket', {})
+
+    client = PolymarketV3(config)
     events = client.discover_markets(active_only=True)
     
     print(f'\n发现 {len(events)} 个事件')
@@ -453,10 +394,16 @@ def main():
         for sport, count in sorted(sports.items(), key=lambda x: -x[1]):
             print(f'   {sport}: {count}')
         
-        with open('polymarket_events.json', 'w', encoding='utf-8') as f:
+        # 保存到项目 output 目录
+        from pathlib import Path
+        output_dir = Path(__file__).parent.parent.parent / 'output'
+        output_dir.mkdir(exist_ok=True)
+        output_file = output_dir / 'polymarket_events.json'
+
+        with open(output_file, 'w', encoding='utf-8') as f:
             json.dump([e.to_dict() for e in events], f, indent=2, ensure_ascii=False)
-        
-        print('\n保存到 polymarket_events.json')
+
+        print(f'\n保存到 {output_file}')
 
 
 if __name__ == '__main__':

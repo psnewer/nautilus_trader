@@ -105,23 +105,38 @@ class MarketMatchingService:
     def _calculate_confidence(self, scores: Dict) -> float:
         if not scores:
             return 0.0
-        total_match = total_char = field_count = 0
+
+        total_score = 0
+        field_count = 0
         all_matched = True
+
         for field, value in scores.items():
-            if field == 'team_swapped' or not isinstance(value, tuple):
+            if field == 'team_swapped':
                 continue
-            match_count, char_count = value
-            if match_count == 0:
+
+            # Handle both integer scores (new matcher) and tuple scores (old matcher)
+            if isinstance(value, tuple):
+                match_count, char_count = value
+                score = match_count
+            elif isinstance(value, (int, float)):
+                score = value
+            else:
+                continue
+
+            if score == 0:
                 all_matched = False
-            total_match += match_count
-            total_char += char_count
+
+            total_score += score
             field_count += 1
+
         if field_count == 0 or not all_matched:
             return 0.0
-        base_confidence = 0.6
-        avg_char = total_char / field_count
-        char_bonus = min(0.4, (avg_char - 2) / 20)
-        return min(1.0, base_confidence + char_bonus)
+
+        # Calculate confidence: base 0.6 + bonus based on total score
+        # Max score assumed to be 10 (sport:2 + comp:3 + home:2.5 + away:2.5)
+        max_score = 10.0
+        confidence = min(1.0, 0.5 + (total_score / max_score) * 0.5)
+        return round(confidence, 4)
     
     def match_events(self) -> List[MatchedPair]:
         matches = []
@@ -130,10 +145,18 @@ class MarketMatchingService:
         print(f"{'='*60}")
         print(f"开始匹配 {len(self.polymarket_events)} x {len(self.orbitexch_events)} 个事件...")
         print(f"匹配器: {self.config.matcher_class}")
-        print(f"最低置信度: {self.config.min_confidence}\n")
-        
+        print(f"最低置信度: {self.config.min_confidence}")
+        if self.config.max_matches > 0:
+            print(f"最大匹配数: {self.config.max_matches}")
+        print()
+
         match_count = 0
         for poly_event in self.polymarket_events:
+            # 检查是否达到最大匹配数
+            if self.config.max_matches > 0 and match_count >= self.config.max_matches:
+                print(f"\n⚠ 已达到最大匹配数限制 ({self.config.max_matches})")
+                break
+
             for orbit_event in self.orbitexch_events:
                 poly_dict = asdict(poly_event)
                 orbit_dict = asdict(orbit_event)
@@ -152,7 +175,12 @@ class MarketMatchingService:
                     print(f"[{match_count}] {poly_event.event}")
                     print(f"     <-> {orbit_event.event}{swapped}")
                     print(f"     置信度: {confidence:.2f}")
-        
+
+                # 检查是否达到最大匹配数
+                if self.config.max_matches > 0 and match_count >= self.config.max_matches:
+                    print(f"\n⚠ 已达到最大匹配数限制 ({self.config.max_matches})")
+                    break
+
         print(f"\n✓ 找到 {len(matches)} 个匹配")
         return matches
     

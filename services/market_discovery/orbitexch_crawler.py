@@ -11,11 +11,12 @@
 import asyncio
 import logging
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, asdict
 import json
 from datetime import datetime
 from pathlib import Path
+import yaml
 
 
 @dataclass
@@ -41,11 +42,16 @@ class EventNode:
 
 class OrbitExchEventCrawler:
     """OrbitExch 事件爬虫"""
-    
-    def __init__(self, page):
+
+    def __init__(self, page, config: Optional[Dict] = None):
         self.page = page
         self._log = logging.getLogger('EventCrawler')
         self.events: List[EventNode] = []
+        self.config = config or {}
+
+        # 从配置读取运动和赛事过滤
+        self.allowed_sports = self.config.get('sports', [])
+        self.allowed_competitions = self.config.get('competitions', {})
     
     @staticmethod
     def split_teams(event_str: str) -> Tuple[str, str]:
@@ -80,48 +86,71 @@ class OrbitExchEventCrawler:
         # 如果都不匹配，返回原字符串和空字符串
         return event_str, ""
     
-    async def crawl_sports(self, sport_indices: List[int]) -> List[EventNode]:
-        """爬取指定的运动项目"""
-        self._log.info(f'🔍 开始爬取 {len(sport_indices)} 个运动项目...')
-        
+    async def crawl_sports(self, sport_indices: Optional[List[int]] = None) -> List[EventNode]:
+        """
+        爬取运动项目
+
+        Args:
+            sport_indices: 要爬取的运动项目索引列表。如果为 None，则根据配置决定
+        """
         # 记住初始 URL
         self.initial_url = self.page.url
-        
+
         # 确保 Sports 区域展开
         await self._ensure_sports_expanded()
-        
+
         # 获取所有 sport
         all_sports = await self.page.locator('li[datatype="sport"]').all()
         self._log.info(f'   找到 {len(all_sports)} 个运动项目')
-        
-        # 收集指定索引的 sport 信息
+
+        # 收集 sport 信息
         sport_infos = []
-        for idx in sport_indices:
-            if idx >= len(all_sports):
-                continue
-            
-            sport_elem = all_sports[idx]
-            sport_name = (await sport_elem.text_content()).strip()
-            sport_id = await sport_elem.get_attribute('data-navigation-id')
-            
-            sport_infos.append({
-                'index': idx,
-                'name': sport_name,
-                'id': sport_id,
-            })
-        
+
+        if sport_indices is not None:
+            # 使用指定索引
+            for idx in sport_indices:
+                if idx >= len(all_sports):
+                    continue
+
+                sport_elem = all_sports[idx]
+                sport_name = (await sport_elem.text_content()).strip()
+                sport_id = await sport_elem.get_attribute('data-navigation-id')
+
+                sport_infos.append({
+                    'index': idx,
+                    'name': sport_name,
+                    'id': sport_id,
+                })
+        else:
+            # 根据配置过滤
+            for idx, sport_elem in enumerate(all_sports):
+                sport_name = (await sport_elem.text_content()).strip()
+                sport_id = await sport_elem.get_attribute('data-navigation-id')
+
+                # 如果配置了 allowed_sports，只爬取列表中的运动
+                if self.allowed_sports and sport_name not in self.allowed_sports:
+                    continue
+
+                sport_infos.append({
+                    'index': idx,
+                    'name': sport_name,
+                    'id': sport_id,
+                })
+
+        self._log.info(f'🔍 开始爬取 {len(sport_infos)} 个运动项目...')
+
         # 爬取每个 sport
         for i, sport_info in enumerate(sport_infos, 1):
             self._log.info(f'[{i}/{len(sport_infos)}] 爬取: {sport_info["name"]}')
-            
+
             # 确保在初始页面
             if self.page.url != self.initial_url:
                 await self.page.goto(self.initial_url)
                 await asyncio.sleep(2)
                 await self._ensure_sports_expanded()
-            
+
             await self._crawl_sport(sport_info['index'], sport_info['name'], sport_info['id'])
-        
+
         self._log.info(f'✅ 爬取完成，共 {len(self.events)} 个事件')
         return self.events
     
@@ -173,7 +202,7 @@ class OrbitExchEventCrawler:
             await asyncio.sleep(1)
             
             # 收集所有 competition 信息
-            comp_infos = await self._collect_competition_infos()
+            comp_infos = await self._collect_competition_infos(sport_name)
             self._log.info(f'   收集到 {len(comp_infos)} 个 Competitions')
             
             # 后退到初始页面
@@ -208,18 +237,26 @@ class OrbitExchEventCrawler:
             try:
                 comp_name = (await comp_elem.text_content()).strip()
                 comp_id = await comp_elem.get_attribute('data-navigation-id')
-                comp_infos.append({'name': comp_name, 'id': comp_id})
+
+                # 检查是否应该包含该赛事
+                if self._should_include_competition(sport_name, comp_name):
+                    comp_infos.append({'name': comp_name, 'id': comp_id})
             except:
                 pass
-        
+
+        # 应用限制
+        max_comps = self.config.get('max_competitions_per_sport', 5)
+        if max_comps > 0:
+            comp_infos = comp_infos[:max_comps]
+
         self._log.info(f'   找到 {len(comp_infos)} 个 Competitions')
-        
+
         # 逐个处理 competition
         await self._process_competitions_without_all_link(
             sport_index,
             sport_name,
             sport_id,
-            comp_infos[:5]  # 限制最多5个
+            comp_infos
         )
     
     async def _process_competitions_with_all_link(
@@ -321,20 +358,43 @@ class OrbitExchEventCrawler:
                 comp_info['id']
             )
     
-    async def _collect_competition_infos(self) -> List[dict]:
+    def _should_include_competition(self, sport_name: str, comp_name: str) -> bool:
+        """检查是否应该包含该赛事"""
+        # 如果没有配置 allowed_competitions，包含所有
+        if not self.allowed_competitions:
+            return True
+
+        # 如果该运动在配置中，检查赛事列表
+        if sport_name in self.allowed_competitions:
+            allowed_comps = self.allowed_competitions[sport_name]
+            # 如果该运动的赛事列表为空，包含所有
+            if not allowed_comps:
+                return True
+            # 否则只包含列表中的赛事
+            return comp_name in allowed_comps
+
+        # 运动不在配置中，包含所有赛事
+        return True
+
+    async def _collect_competition_infos(self, sport_name: str) -> List[dict]:
         """收集当前页面所有 competition 信息"""
         comp_elems = await self.page.locator('li[datatype="competition"]:visible').all()
-        
+
         comp_infos = []
         for comp_elem in comp_elems:
             try:
                 comp_name = (await comp_elem.text_content()).strip()
                 comp_id = await comp_elem.get_attribute('data-navigation-id')
-                comp_infos.append({'name': comp_name, 'id': comp_id})
+
+                # 检查是否应该包含该赛事
+                if self._should_include_competition(sport_name, comp_name):
+                    comp_infos.append({'name': comp_name, 'id': comp_id})
             except:
                 pass
-        
-        return comp_infos[:5]  # 限制最多5个
+
+        # 如果配置了限制，应用限制；否则最多5个
+        max_comps = self.config.get('max_competitions_per_sport', 5)
+        return comp_infos[:max_comps] if max_comps > 0 else comp_infos
     
     async def _collect_events_from_current_page(
         self,
@@ -385,33 +445,43 @@ async def main():
     """主函数"""
     import logging
     from playwright.async_api import async_playwright
-    
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
-    
+
+    # 读取配置文件
+    config_path = Path(__file__).parent.parent.parent / 'config' / 'config.yaml'
+    config = {}
+
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            full_config = yaml.safe_load(f)
+            if full_config and 'market_discovery' in full_config:
+                config = full_config['market_discovery'].get('orbitexch', {})
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         page = await browser.new_page()
-        
+
         try:
             # 直接访问公开页面（不需要登录）
             print('1️⃣  访问 OrbitExch...')
-            await page.goto('https://orbitexch.com')
-            await asyncio.sleep(3)
-            
+            await page.goto('https://orbitexch.com',timeout=20000)
+            await asyncio.sleep(20)
+
             # 创建爬虫
             print()
             print('=' * 70)
             print('2️⃣  开始爬取事件')
             print('=' * 70)
             print()
-            
-            crawler = OrbitExchEventCrawler(page)
-            
-            # 爬取第1个和第22个运动项目
-            events = await crawler.crawl_sports([0, 23])
+
+            crawler = OrbitExchEventCrawler(page, config)
+
+            # 根据配置爬取（如果未配置，使用默认索引）
+            events = await crawler.crawl_sports()
             
             # 保存结果到 output 目录
             print()

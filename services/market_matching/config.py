@@ -24,17 +24,18 @@ class MatchConfig:
     match_competition: bool = True
     match_home_team: bool = True
     match_away_team: bool = True
-    
+
     # 匹配选项
     allow_team_swap: bool = True          # 允许主客队交换
     min_confidence: float = 0.6           # 最低置信度阈值
-    
+    max_matches: int = 0                  # 最大匹配数量 (0 = 无限制)
+
     # 输出选项
     verbose: bool = False                 # 详细输出
-    
+
     # 匹配器选择
     matcher_class: str = "DefaultMatcher" # 使用的匹配器
-    
+
     # 预处理配置
     enable_preprocess: bool = True        # 启用预处理
     preprocess_config: PreprocessConfig = None  # 预处理配置
