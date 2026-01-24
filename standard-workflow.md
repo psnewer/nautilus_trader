@@ -17,8 +17,8 @@ tips: /standard-workflow <task_description>
 # ⚡ 4步执行流程
 
 ## ```
-1. sequential-thinking           → 理解目标/风险/验证
-2. Codex 收集上下文              → .claude/context-*.json
+1. Codex 收集上下文              → .claude/context-*.json
+2. sequential-thinking           → 理解需求/风险/验证
 3. shrimp-task-manager 规划     → 任务拆解
 4. 主AI 编码 + Codex 审查        → 小步实现 + 质量验证
 ## ```
@@ -37,7 +37,7 @@ tips: /standard-workflow <task_description>
 **首次调用**：
 ## ```
 mcp__codex__codex(
-  model="gpt-5.2-codex",
+  model="gpt-5-codex",
   sandbox="danger-full-access",
   approval-policy="on-failure",
   prompt="
