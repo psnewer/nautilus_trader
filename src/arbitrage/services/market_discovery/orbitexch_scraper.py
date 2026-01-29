@@ -135,39 +135,53 @@ class OrbitExchScraper:
         await self._page.goto(self.BASE_URL, wait_until="networkidle")
         await asyncio.sleep(2)  # 等待动态内容加载
 
-    async def find_sport_id(self, sport_name: str) -> str | None:
+    async def find_and_click_sport(self, sport_name: str) -> bool:
         """
-        在左侧菜单中查找 sport 的 data-sport-id
+        在左侧菜单中查找并点击 sport，然后点击 "All {Sport}" 展开所有 competitions
 
         Args:
             sport_name: sport 名称（如 "soccer"）
 
         Returns:
-            sport_id 或 None
+            是否成功点击
         """
         self._log.info(f"Looking for sport: {sport_name}")
 
         try:
-            # 查找左侧 sport 下拉菜单
-            sport_items = await self._page.query_selector_all('[data-sport-id]')
+            # 使用文本定位器查找 sport
+            sport_locator = self._page.locator(f'text="{sport_name.title()}"').first
+            if await sport_locator.count() > 0:
+                await sport_locator.click()
+                await asyncio.sleep(2)
+                self._log.info(f"Clicked sport: {sport_name}")
 
+                # 查找并点击 "All {Sport}" 以展开所有 competitions
+                await self._click_all_sport(sport_name)
+                return True
+
+            # 备用：查找包含 sport 名称的元素
+            sport_items = await self._page.query_selector_all('[data-sport-id]')
             for item in sport_items:
                 text = await item.text_content()
                 if text and sport_name.lower() in text.lower():
-                    sport_id = await item.get_attribute("data-sport-id")
-                    self._log.info(f"Found sport {sport_name} with ID: {sport_id}")
-                    return sport_id
+                    await item.click()
+                    await asyncio.sleep(2)
+                    self._log.info(f"Clicked sport: {sport_name}")
+
+                    # 查找并点击 "All {Sport}"
+                    await self._click_all_sport(sport_name)
+                    return True
 
             self._log.warning(f"Sport {sport_name} not found")
-            return None
+            return False
 
         except Exception as e:
             self._log.error(f"Error finding sport {sport_name}: {e}")
-            return None
+            return False
 
-    async def click_all_sport(self, sport_name: str) -> bool:
+    async def _click_all_sport(self, sport_name: str) -> bool:
         """
-        点击 "All {Sport}" 条目
+        点击 "All {Sport}" 条目以展开所有 competitions
 
         Args:
             sport_name: sport 名称
@@ -176,15 +190,20 @@ class OrbitExchScraper:
             是否成功点击
         """
         try:
-            # 尝试找到 "All {Sport}" 按钮
-            all_sport_selector = f'text="All {sport_name.title()}"'
-            all_sport_button = self._page.locator(all_sport_selector)
+            # 尝试多种格式：All Soccer, All Football 等
+            all_sport_variants = [
+                f'All {sport_name.title()}',
+                f'All {sport_name}',
+                f'All {sport_name.upper()}',
+            ]
 
-            if await all_sport_button.count() > 0:
-                await all_sport_button.click()
-                await asyncio.sleep(1)
-                self._log.info(f"Clicked 'All {sport_name.title()}'")
-                return True
+            for variant in all_sport_variants:
+                all_sport_locator = self._page.locator(f'text="{variant}"').first
+                if await all_sport_locator.count() > 0:
+                    await all_sport_locator.click()
+                    await asyncio.sleep(2)
+                    self._log.info(f"Clicked '{variant}' to expand all competitions")
+                    return True
 
             self._log.debug(f"'All {sport_name}' button not found, continuing...")
             return False
@@ -193,20 +212,28 @@ class OrbitExchScraper:
             self._log.debug(f"Failed to click 'All {sport_name}': {e}")
             return False
 
-    async def find_competition_id(self, competition_name: str) -> str | None:
+    async def find_and_click_competition(self, competition_name: str) -> bool:
         """
-        查找 competition 的 data-sport-id（作为 competition_id）
+        查找并点击 competition
 
         Args:
             competition_name: competition 名称
 
         Returns:
-            competition_id 或 None
+            是否成功点击
         """
         self._log.info(f"Looking for competition: {competition_name}")
 
         try:
-            # 查找 datatype="competition" 的条目（兼容拼写错误 competiton）
+            # 使用文本定位器查找 competition
+            comp_locator = self._page.locator(f'text="{competition_name}"').first
+            if await comp_locator.count() > 0:
+                await comp_locator.click()
+                await asyncio.sleep(3)
+                self._log.info(f"Clicked competition: {competition_name}")
+                return True
+
+            # 备用：查找 datatype="competition" 的条目
             competition_items = await self._page.query_selector_all(
                 '[datatype="competition"], [datatype="competiton"], [data-type="competition"]'
             )
@@ -214,18 +241,17 @@ class OrbitExchScraper:
             for item in competition_items:
                 text = await item.text_content()
                 if text and competition_name.lower() in text.lower():
-                    competition_id = await item.get_attribute("data-sport-id")
-                    if not competition_id:
-                        competition_id = await item.get_attribute("data-competition-id")
-                    self._log.info(f"Found competition {competition_name} with ID: {competition_id}")
-                    return competition_id
+                    await item.click()
+                    await asyncio.sleep(3)
+                    self._log.info(f"Clicked competition: {competition_name}")
+                    return True
 
             self._log.warning(f"Competition {competition_name} not found")
-            return None
+            return False
 
         except Exception as e:
             self._log.error(f"Error finding competition {competition_name}: {e}")
-            return None
+            return False
 
     async def navigate_to_competition_page(
         self,
@@ -371,49 +397,32 @@ class OrbitExchScraper:
 
         all_events: list[MatchEvent] = []
 
-        # 导航到首页
-        await self.navigate_to_homepage()
-
         for sport_config in sport_configs:
             sport_name = sport_config.sport
-            self._log.info(f"Processing sport: {sport_name}")
 
-            # 查找 sport ID
-            sport_id = await self.find_sport_id(sport_name)
-            if not sport_id:
-                continue
-
-            # 点击 "All {Sport}"
-            await self.click_all_sport(sport_name)
-
-            # 遍历 competitions
+            # 遍历 competitions，每个都从首页开始
             for competition_name in sport_config.competitions:
-                self._log.info(f"Processing competition: {competition_name}")
+                self._log.info(f"Processing {sport_name} > {competition_name}")
 
-                # 查找 competition ID
-                competition_id = await self.find_competition_id(competition_name)
-                if not competition_id:
+                # 每次都从首页开始，确保菜单状态正确
+                await self.navigate_to_homepage()
+
+                # 点击 sport 展开
+                if not await self.find_and_click_sport(sport_name):
                     continue
 
-                # 导航到 competition 页面
-                success = await self.navigate_to_competition_page(sport_id, competition_id)
-                if not success:
+                # 点击 competition
+                if not await self.find_and_click_competition(competition_name):
                     continue
 
                 # 提取比赛信息
                 events = await self.extract_matches(
                     sport=sport_name,
                     competition=competition_name,
-                    sport_id=sport_id,
-                    competition_id=competition_id,
+                    sport_id="",
+                    competition_id="",
                 )
                 all_events.extend(events)
-
-                # 回退以继续下一个 competition
-                await self.go_back()
-
-            # 回退到首页以继续下一个 sport
-            await self.navigate_to_homepage()
 
         self._log.info(f"Discovered {len(all_events)} total match events from OrbitExch")
         return all_events

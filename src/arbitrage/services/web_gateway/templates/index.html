@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arbitrage Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .navbar { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card { border: none; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .card-header { background-color: #fff; border-bottom: 2px solid #667eea; font-weight: 600; }
+        .nav-pills .nav-link.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .nav-pills .nav-link { color: #667eea; }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; }
+        .btn-primary:hover { background: linear-gradient(135deg, #5a6fd6 0%, #6a4190 100%); }
+        .table th { background-color: #f8f9fa; }
+        .status-badge { font-size: 0.85em; }
+        .config-editor { font-family: monospace; font-size: 0.9em; }
+        .loading { display: none; }
+        .loading.show { display: inline-block; }
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1">
+                <i class="bi bi-graph-up-arrow me-2"></i>Arbitrage Dashboard
+            </span>
+            <span class="text-white">
+                <i class="bi bi-clock me-1"></i>
+                <span id="current-time"></span>
+            </span>
+        </div>
+    </nav>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Navigation Tabs -->
+        <ul class="nav nav-pills mb-4" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="discovery-tab" data-bs-toggle="pill"
+                        data-bs-target="#discovery" type="button" role="tab">
+                    <i class="bi bi-search me-1"></i>Market Discovery
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="matching-tab" data-bs-toggle="pill"
+                        data-bs-target="#matching" type="button" role="tab">
+                    <i class="bi bi-link-45deg me-1"></i>Market Matching
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="odds-tab" data-bs-toggle="pill"
+                        data-bs-target="#odds" type="button" role="tab">
+                    <i class="bi bi-graph-up me-1"></i>Odds Monitor
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="config-tab" data-bs-toggle="pill"
+                        data-bs-target="#config" type="button" role="tab">
+                    <i class="bi bi-gear me-1"></i>Configuration
+                </button>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content" id="mainTabContent">
+            <!-- Discovery Tab -->
+            <div class="tab-pane fade show active" id="discovery" role="tabpanel">
+                <div class="row">
+                    <!-- Actions Card -->
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-lightning me-1"></i>Actions
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-primary" onclick="runDiscovery()">
+                                        <span class="loading spinner-border spinner-border-sm me-1"></span>
+                                        <i class="bi bi-play-fill me-1"></i>Run Discovery
+                                    </button>
+                                    <button class="btn btn-outline-secondary" onclick="refreshDiscoveryResults()">
+                                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh Results
+                                    </button>
+                                </div>
+                                <hr>
+                                <div id="discovery-status">
+                                    <p class="mb-1"><strong>Status:</strong> <span id="discovery-status-text">Idle</span></p>
+                                    <p class="mb-1"><strong>Polymarket:</strong> <span id="poly-count">0</span> events</p>
+                                    <p class="mb-0"><strong>OrbitExch:</strong> <span id="orbit-count">0</span> events</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Results Card -->
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-table me-1"></i>Discovery Results</span>
+                                <select class="form-select form-select-sm w-auto" id="discovery-venue-filter" onchange="filterDiscoveryResults()">
+                                    <option value="all">All Venues</option>
+                                    <option value="polymarket">Polymarket</option>
+                                    <option value="orbitexch">OrbitExch</option>
+                                </select>
+                            </div>
+                            <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+                                <table class="table table-sm table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Venue</th>
+                                            <th>Sport</th>
+                                            <th>Competition</th>
+                                            <th>Home</th>
+                                            <th>Away</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="discovery-results-table">
+                                        <tr><td colspan="5" class="text-center text-muted">No data</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Matching Tab -->
+            <div class="tab-pane fade" id="matching" role="tabpanel">
+                <div class="row">
+                    <!-- Actions Card -->
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-lightning me-1"></i>Actions
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-primary" onclick="runMatching()">
+                                        <span class="loading spinner-border spinner-border-sm me-1"></span>
+                                        <i class="bi bi-link me-1"></i>Run Matching
+                                    </button>
+                                    <button class="btn btn-outline-secondary" onclick="refreshMatchingResults()">
+                                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh Results
+                                    </button>
+                                </div>
+                                <hr>
+                                <div id="matching-status">
+                                    <p class="mb-1"><strong>Status:</strong> <span id="matching-status-text">Idle</span></p>
+                                    <p class="mb-0"><strong>Matched Pairs:</strong> <span id="pairs-count">0</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Results Card -->
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-table me-1"></i>Matched Pairs
+                            </div>
+                            <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+                                <table class="table table-sm table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Sport</th>
+                                            <th>Competition</th>
+                                            <th>Polymarket</th>
+                                            <th>OrbitExch</th>
+                                            <th>Confidence</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="matching-results-table">
+                                        <tr><td colspan="5" class="text-center text-muted">No data</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Odds Monitor Tab -->
+            <div class="tab-pane fade" id="odds" role="tabpanel">
+                <div class="row">
+                    <!-- Actions Card -->
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-lightning me-1"></i>Actions
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-primary" onclick="subscribeOdds()">
+                                        <span class="loading spinner-border spinner-border-sm me-1"></span>
+                                        <i class="bi bi-play-fill me-1"></i>Subscribe to Odds
+                                    </button>
+                                    <button class="btn btn-outline-danger" onclick="unsubscribeOdds()">
+                                        <i class="bi bi-stop-fill me-1"></i>Stop Subscription
+                                    </button>
+                                    <button class="btn btn-outline-secondary" onclick="refreshOddsData()">
+                                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh Data
+                                    </button>
+                                </div>
+                                <hr>
+                                <div id="odds-status">
+                                    <p class="mb-1"><strong>Status:</strong> <span id="odds-status-text">Not Running</span></p>
+                                    <p class="mb-0"><strong>Subscriptions:</strong> <span id="subscriptions-count">0</span></p>
+                                </div>
+                                <hr>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="auto-refresh-odds" checked>
+                                    <label class="form-check-label" for="auto-refresh-odds">
+                                        Auto-refresh (5s)
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Odds Data Card -->
+                    <div class="col-md-8">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-table me-1"></i>Live Odds</span>
+                                <span class="badge bg-info" id="last-update-time">Never</span>
+                            </div>
+                            <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                                <table class="table table-sm table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Match</th>
+                                            <th>Market</th>
+                                            <th>Polymarket</th>
+                                            <th>OrbitExch</th>
+                                            <th>Updated</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="odds-data-table">
+                                        <tr><td colspan="5" class="text-center text-muted">No data - Subscribe to start</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Config Tab -->
+            <div class="tab-pane fade" id="config" role="tabpanel">
+                <div class="row">
+                    <!-- Discovery Config -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-sliders me-1"></i>Discovery Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveDiscoveryConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Polymarket Sports</label>
+                                    <textarea class="form-control config-editor" id="poly-sports-config" rows="6"></textarea>
+                                    <small class="text-muted">JSON format: [{"sport": "Soccer", "competitions": ["EPL"]}]</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">OrbitExch Sports</label>
+                                    <textarea class="form-control config-editor" id="orbit-sports-config" rows="6"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Matching Config -->
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-sliders me-1"></i>Matching Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveMatchingConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Min Similarity</label>
+                                    <input type="number" class="form-control" id="min-similarity" value="1">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Sport Aliases</label>
+                                    <textarea class="form-control config-editor" id="sport-aliases-config" rows="4"></textarea>
+                                    <small class="text-muted">JSON format: {"Football": "Soccer"}</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Competition Aliases</label>
+                                    <textarea class="form-control config-editor" id="competition-aliases-config" rows="4"></textarea>
+                                    <small class="text-muted">JSON format: {"epl": "English Premier League"}</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Competition Max Matches</label>
+                                    <textarea class="form-control config-editor" id="competition-max-matches-config" rows="4"></textarea>
+                                    <small class="text-muted">JSON format: {"English Premier League": 10, "atp": 20}</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Global data
+        let discoveryResults = { polymarket: [], orbitexch: [] };
+        let matchingResults = { pairs: [] };
+        let oddsData = {};
+        let oddsAutoRefreshInterval = null;
+
+        // Update time
+        function updateTime() {
+            document.getElementById('current-time').textContent = new Date().toLocaleTimeString();
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        // Toast notification
+        function showToast(message, type = 'success') {
+            const toastId = 'toast-' + Date.now();
+            const bgClass = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : 'bg-info';
+            const html = `
+                <div id="${toastId}" class="toast ${bgClass} text-white" role="alert">
+                    <div class="toast-body d-flex justify-content-between align-items-center">
+                        ${message}
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+                    </div>
+                </div>
+            `;
+            document.getElementById('toast-container').insertAdjacentHTML('beforeend', html);
+            const toast = new bootstrap.Toast(document.getElementById(toastId));
+            toast.show();
+        }
+
+        // API calls
+        async function api(url, method = 'GET', data = null) {
+            const options = { method, headers: { 'Content-Type': 'application/json' } };
+            if (data) options.body = JSON.stringify(data);
+            const response = await fetch(url, options);
+            if (!response.ok) throw new Error(await response.text());
+            return response.json();
+        }
+
+        // Discovery
+        async function runDiscovery() {
+            try {
+                document.querySelector('#discovery .loading').classList.add('show');
+                await api('/api/discovery/run', 'POST', {});
+                showToast('Discovery started');
+                pollDiscoveryStatus();
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            } finally {
+                document.querySelector('#discovery .loading').classList.remove('show');
+            }
+        }
+
+        async function pollDiscoveryStatus() {
+            const check = async () => {
+                const status = await api('/api/discovery/status');
+                document.getElementById('discovery-status-text').textContent = status.running ? 'Running...' : 'Idle';
+                document.getElementById('poly-count').textContent = status.polymarket_count;
+                document.getElementById('orbit-count').textContent = status.orbitexch_count;
+                if (status.running) {
+                    setTimeout(check, 2000);
+                } else {
+                    refreshDiscoveryResults();
+                }
+            };
+            check();
+        }
+
+        async function refreshDiscoveryResults() {
+            try {
+                discoveryResults = await api('/api/discovery/results');
+                document.getElementById('poly-count').textContent = discoveryResults.summary.polymarket_count;
+                document.getElementById('orbit-count').textContent = discoveryResults.summary.orbitexch_count;
+                filterDiscoveryResults();
+            } catch (e) {
+                showToast('Error loading results: ' + e.message, 'error');
+            }
+        }
+
+        function filterDiscoveryResults() {
+            const filter = document.getElementById('discovery-venue-filter').value;
+            let data = [];
+            if (filter === 'all' || filter === 'polymarket') {
+                data = data.concat(discoveryResults.polymarket || []);
+            }
+            if (filter === 'all' || filter === 'orbitexch') {
+                data = data.concat(discoveryResults.orbitexch || []);
+            }
+            renderDiscoveryTable(data);
+        }
+
+        function renderDiscoveryTable(data) {
+            const tbody = document.getElementById('discovery-results-table');
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No data</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(e => `
+                <tr>
+                    <td><span class="badge ${e.venue === 'polymarket' ? 'bg-primary' : 'bg-success'}">${e.venue}</span></td>
+                    <td>${e.sport}</td>
+                    <td>${e.competition}</td>
+                    <td>${e.home_team}</td>
+                    <td>${e.away_team}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Matching
+        async function runMatching() {
+            try {
+                document.querySelector('#matching .loading').classList.add('show');
+                await api('/api/matching/run', 'POST');
+                showToast('Matching started');
+                pollMatchingStatus();
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            } finally {
+                document.querySelector('#matching .loading').classList.remove('show');
+            }
+        }
+
+        async function pollMatchingStatus() {
+            const check = async () => {
+                const status = await api('/api/matching/status');
+                document.getElementById('matching-status-text').textContent = status.running ? 'Running...' : 'Idle';
+                document.getElementById('pairs-count').textContent = status.pairs_count;
+                if (status.running) {
+                    setTimeout(check, 1000);
+                } else {
+                    refreshMatchingResults();
+                }
+            };
+            check();
+        }
+
+        async function refreshMatchingResults() {
+            try {
+                matchingResults = await api('/api/matching/results');
+                document.getElementById('pairs-count').textContent = matchingResults.summary.total_pairs;
+                renderMatchingTable(matchingResults.pairs);
+            } catch (e) {
+                showToast('Error loading results: ' + e.message, 'error');
+            }
+        }
+
+        function renderMatchingTable(data) {
+            const tbody = document.getElementById('matching-results-table');
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No data</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(p => `
+                <tr>
+                    <td>${p.sport}</td>
+                    <td>${p.competition}</td>
+                    <td>${p.polymarket.home_team} vs ${p.polymarket.away_team}</td>
+                    <td>${p.orbitexch.home_team} vs ${p.orbitexch.away_team}</td>
+                    <td><span class="badge bg-${p.confidence > 0.7 ? 'success' : p.confidence > 0.4 ? 'warning' : 'danger'}">${(p.confidence * 100).toFixed(0)}%</span></td>
+                </tr>
+            `).join('');
+        }
+
+        // Config
+        async function loadConfig() {
+            try {
+                const config = await api('/api/config');
+                // Discovery config
+                const polyS = config.discovery.venues.polymarket.sports || [];
+                const orbitS = config.discovery.venues.orbitexch.sports || [];
+                document.getElementById('poly-sports-config').value = JSON.stringify(polyS, null, 2);
+                document.getElementById('orbit-sports-config').value = JSON.stringify(orbitS, null, 2);
+                // Matching config
+                document.getElementById('min-similarity').value = config.matching.min_similarity || 1;
+                document.getElementById('sport-aliases-config').value = JSON.stringify(config.matching.sport_aliases || {}, null, 2);
+                document.getElementById('competition-aliases-config').value = JSON.stringify(config.matching.competition_aliases || {}, null, 2);
+                document.getElementById('competition-max-matches-config').value = JSON.stringify(config.matching.competition_max_matches || {}, null, 2);
+            } catch (e) {
+                showToast('Error loading config: ' + e.message, 'error');
+            }
+        }
+
+        async function saveDiscoveryConfig() {
+            try {
+                const polySports = JSON.parse(document.getElementById('poly-sports-config').value);
+                const orbitSports = JSON.parse(document.getElementById('orbit-sports-config').value);
+                await api('/api/discovery/config/venues/polymarket/sports', 'PUT', { sports: polySports });
+                await api('/api/discovery/config/venues/orbitexch/sports', 'PUT', { sports: orbitSports });
+                showToast('Discovery config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function saveMatchingConfig() {
+            try {
+                const data = {
+                    min_similarity: parseInt(document.getElementById('min-similarity').value),
+                    sport_aliases: JSON.parse(document.getElementById('sport-aliases-config').value),
+                    competition_aliases: JSON.parse(document.getElementById('competition-aliases-config').value),
+                    competition_max_matches: JSON.parse(document.getElementById('competition-max-matches-config').value),
+                };
+                await api('/api/matching/config', 'PUT', data);
+                showToast('Matching config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        // Odds Monitor
+        async function subscribeOdds() {
+            try {
+                document.querySelector('#odds .loading').classList.add('show');
+                const result = await api('/api/odds/subscribe', 'POST');
+                showToast(`Subscription started for ${result.pairs_count} pairs`);
+                await refreshOddsStatus();
+                startAutoRefresh();
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            } finally {
+                document.querySelector('#odds .loading').classList.remove('show');
+            }
+        }
+
+        async function unsubscribeOdds() {
+            try {
+                await api('/api/odds/unsubscribe', 'POST');
+                showToast('Subscription stopped');
+                stopAutoRefresh();
+                await refreshOddsStatus();
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function refreshOddsStatus() {
+            try {
+                const status = await api('/api/odds/status');
+                document.getElementById('odds-status-text').textContent = status.running ? 'Running' : 'Not Running';
+                document.getElementById('subscriptions-count').textContent = status.subscriptions_count;
+            } catch (e) {
+                console.error('Error refreshing odds status:', e);
+            }
+        }
+
+        async function refreshOddsData() {
+            try {
+                const result = await api('/api/odds/latest');
+                oddsData = result.odds || {};
+                renderOddsTable();
+                document.getElementById('last-update-time').textContent = new Date().toLocaleTimeString();
+            } catch (e) {
+                console.error('Error refreshing odds data:', e);
+            }
+        }
+
+        function renderOddsTable() {
+            const tbody = document.getElementById('odds-data-table');
+
+            if (!oddsData || Object.keys(oddsData).length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No odds data available</td></tr>';
+                return;
+            }
+
+            const rows = [];
+
+            for (const [pairId, pairOdds] of Object.entries(oddsData)) {
+                const polyOdds = pairOdds.polymarket || {};
+                const orbitOdds = pairOdds.orbitexch || {};
+
+                // 为每个市场类型创建一行
+                const marketTypes = new Set([
+                    ...Object.keys(polyOdds),
+                    ...Object.keys(orbitOdds)
+                ]);
+
+                marketTypes.forEach(marketType => {
+                    const poly = polyOdds[marketType] || {};
+                    const orbit = orbitOdds[marketType] || {};
+
+                    const polyBid = poly.bid ? poly.bid.toFixed(3) : '-';
+                    const polyAsk = poly.ask ? poly.ask.toFixed(3) : '-';
+                    const orbitBack = orbit.back ? orbit.back.toFixed(2) : '-';
+                    const orbitLay = orbit.lay ? orbit.lay.toFixed(2) : '-';
+
+                    // 计算数据新鲜度
+                    const polyTime = poly.timestamp ? Date.now() - poly.timestamp : null;
+                    const orbitTime = orbit.timestamp ? Date.now() - orbit.timestamp : null;
+                    const maxAge = Math.max(polyTime || 0, orbitTime || 0);
+                    const ageClass = maxAge > 300000 ? 'bg-danger' : maxAge > 120000 ? 'bg-warning' : 'bg-success';
+                    const ageSec = maxAge > 0 ? Math.floor(maxAge / 1000) + 's' : '-';
+
+                    rows.push(`
+                        <tr>
+                            <td><small>${pairId}</small></td>
+                            <td><span class="badge bg-secondary">${marketType}</span></td>
+                            <td>
+                                <span class="text-success">${polyBid}</span> /
+                                <span class="text-danger">${polyAsk}</span>
+                            </td>
+                            <td>
+                                <span class="text-primary">${orbitBack}</span> /
+                                <span class="text-warning">${orbitLay}</span>
+                            </td>
+                            <td><span class="badge ${ageClass}">${ageSec}</span></td>
+                        </tr>
+                    `);
+                });
+            }
+
+            tbody.innerHTML = rows.join('');
+        }
+
+        function startAutoRefresh() {
+            stopAutoRefresh(); // 清除旧的
+            if (document.getElementById('auto-refresh-odds').checked) {
+                oddsAutoRefreshInterval = setInterval(refreshOddsData, 5000);
+            }
+        }
+
+        function stopAutoRefresh() {
+            if (oddsAutoRefreshInterval) {
+                clearInterval(oddsAutoRefreshInterval);
+                oddsAutoRefreshInterval = null;
+            }
+        }
+
+        // 切换到 Odds 标签页时启动自动刷新
+        document.getElementById('odds-tab')?.addEventListener('shown.bs.tab', () => {
+            refreshOddsStatus();
+            refreshOddsData();
+            startAutoRefresh();
+        });
+
+        // 离开 Odds 标签页时停止自动刷新
+        document.getElementById('odds-tab')?.addEventListener('hidden.bs.tab', () => {
+            stopAutoRefresh();
+        });
+
+        // 监听 auto-refresh checkbox
+        document.getElementById('auto-refresh-odds')?.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+
+        // Init
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConfig();
+            refreshDiscoveryResults();
+            refreshMatchingResults();
+        });
+    </script>
+</body>
+</html>

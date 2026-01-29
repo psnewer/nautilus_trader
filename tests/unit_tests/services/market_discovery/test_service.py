@@ -8,182 +8,341 @@ from dataclasses import asdict
 from datetime import datetime
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src" / "arbitrage"))
 
-from services.market_discovery.service import StandardMarket, PlatformAdapter, MarketDiscoveryService
+from services.market_discovery.service import (
+    MarketDiscoveredEvent,
+    DiscoveryService,
+)
+from services.market_discovery.config import (
+    MarketDiscoveryConfig,
+    VenueConfig,
+    PolymarketVenueConfig,
+    OrbitExchVenueConfig,
+    SportConfig,
+)
 
 
-class TestStandardMarket:
-    """Tests for StandardMarket dataclass"""
+class TestMarketDiscoveredEvent:
+    """Tests for MarketDiscoveredEvent dataclass"""
 
-    def test_create_standard_market(self):
-        """Test creating a StandardMarket instance"""
-        market = StandardMarket(
-            platform="POLYMARKET",
-            market_id="market_123",
-            event_id="event_456",
-            event_name="Team A vs Team B",
-            market_type="MATCH_ODDS",
-            sport="Soccer",
-            start_time="2024-01-15T15:00:00Z",
-            discovered_at=datetime.now().isoformat(),
-            status="OPEN",
-            in_play=False,
-            outcomes=[
-                {"id": "1", "name": "Team A", "odds": 1.5},
-                {"id": "2", "name": "Team B", "odds": 2.5},
-            ],
-            metadata={"source": "api"}
+    def test_create_event(self):
+        """Test creating a MarketDiscoveredEvent instance"""
+        event = MarketDiscoveredEvent(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="English Premier League",
+            home_team="Manchester United",
+            away_team="Liverpool",
+            event_id="event_123",
+            action="ADDED",
         )
 
-        assert market.platform == "POLYMARKET"
-        assert market.market_id == "market_123"
-        assert market.sport == "Soccer"
-        assert len(market.outcomes) == 2
+        assert event.venue_id == "POLYMARKET"
+        assert event.sport == "soccer"
+        assert event.competition == "English Premier League"
+        assert event.home_team == "Manchester United"
+        assert event.away_team == "Liverpool"
+        assert event.action == "ADDED"
+        assert isinstance(event.timestamp, datetime)
 
-    def test_standard_market_to_dict(self):
-        """Test converting StandardMarket to dict"""
-        market = StandardMarket(
-            platform="ORBITEXCH",
-            market_id="m1",
-            event_id="e1",
-            event_name="Test Event",
-            market_type="MATCH_ODDS",
-            sport="Basketball",
-            start_time="2024-01-15T15:00:00Z",
-            discovered_at="2024-01-15T10:00:00Z",
-            status="OPEN",
-            in_play=False,
-            outcomes=[],
-            metadata={}
+    def test_event_with_metadata(self):
+        """Test event with metadata"""
+        event = MarketDiscoveredEvent(
+            venue_id="ORBITEXCH",
+            sport="basketball",
+            competition="NBA",
+            home_team="Lakers",
+            away_team="Celtics",
+            event_id="nba_123",
+            action="UPDATED",
+            metadata={"source": "scraper", "odds": 1.5},
         )
 
-        data = market.to_dict()
+        assert event.metadata["source"] == "scraper"
+        assert event.metadata["odds"] == 1.5
 
-        assert isinstance(data, dict)
-        assert data["platform"] == "ORBITEXCH"
-        assert data["sport"] == "Basketball"
 
-    def test_standard_market_to_json(self):
-        """Test converting StandardMarket to JSON"""
-        market = StandardMarket(
-            platform="POLYMARKET",
-            market_id="m1",
-            event_id="e1",
-            event_name="Test",
-            market_type="MATCH_ODDS",
-            sport="Soccer",
-            start_time="2024-01-15T15:00:00Z",
-            discovered_at="2024-01-15T10:00:00Z",
-            status="OPEN",
-            in_play=False,
-            outcomes=[],
-            metadata={}
+class TestMarketDiscoveryConfig:
+    """Tests for MarketDiscoveryConfig"""
+
+    def test_default_config(self):
+        """Test default configuration"""
+        config = MarketDiscoveryConfig()
+
+        assert config.enabled is True
+        assert config.poll_interval_sec == 60
+        assert isinstance(config.venues, VenueConfig)
+
+    def test_from_dict(self):
+        """Test creating config from dict"""
+        data = {
+            "enabled": True,
+            "poll_interval_sec": 120,
+            "venues": {
+                "polymarket": {
+                    "enabled": True,
+                    "sports": [
+                        {"sport": "soccer", "competitions": ["EPL", "La Liga"]}
+                    ],
+                },
+                "orbitexch": {
+                    "enabled": False,
+                    "sports": [],
+                },
+            },
+        }
+
+        config = MarketDiscoveryConfig.from_dict(data)
+
+        assert config.enabled is True
+        assert config.poll_interval_sec == 120
+        assert config.venues.polymarket.enabled is True
+        assert config.venues.orbitexch.enabled is False
+        assert len(config.venues.polymarket.sports) == 1
+        assert config.venues.polymarket.sports[0].sport == "soccer"
+        assert "EPL" in config.venues.polymarket.sports[0].competitions
+
+
+class TestDiscoveryService:
+    """Tests for DiscoveryService"""
+
+    def _create_test_config(self, polymarket_enabled=False, orbitexch_enabled=False):
+        """Helper to create test configuration"""
+        return MarketDiscoveryConfig(
+            enabled=True,
+            poll_interval_sec=10,
+            venues=VenueConfig(
+                polymarket=PolymarketVenueConfig(
+                    enabled=polymarket_enabled,
+                    sports=[SportConfig(sport="soccer", competitions=["EPL"])],
+                ),
+                orbitexch=OrbitExchVenueConfig(
+                    enabled=orbitexch_enabled,
+                    sports=[SportConfig(sport="soccer", competitions=["EPL"])],
+                ),
+            ),
         )
 
-        json_str = market.to_json()
+    def test_service_init(self):
+        """Test DiscoveryService initialization"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
 
-        assert isinstance(json_str, str)
-        assert "POLYMARKET" in json_str
+        assert service.config == config
+        assert len(service._event_handlers) == 0
+        assert len(service._discovered_markets) == 0
+        assert service._running is False
 
+    def test_register_event_handler(self):
+        """Test registering an event handler"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
 
-class TestPlatformAdapter:
-    """Tests for PlatformAdapter base class"""
+        handler = MagicMock()
+        service.on_market_discovered(handler)
 
-    def test_platform_adapter_init(self):
-        """Test PlatformAdapter initialization"""
-        adapter = PlatformAdapter("TEST_PLATFORM")
+        assert len(service._event_handlers) == 1
+        assert service._event_handlers[0] == handler
 
-        assert adapter.platform_name == "TEST_PLATFORM"
+    def test_generate_market_key(self):
+        """Test market key generation"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
 
-    def test_discover_markets_not_implemented(self):
-        """Test that discover_markets raises NotImplementedError"""
-        adapter = PlatformAdapter("TEST")
+        key = service._generate_market_key(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="EPL",
+            home_team="Man United",
+            away_team="Liverpool",
+        )
 
-        with pytest.raises(NotImplementedError):
-            import asyncio
-            asyncio.run(adapter.discover_markets())
+        assert key == "POLYMARKET:soccer:EPL:Man United:Liverpool"
 
+    def test_process_discovered_match_new(self):
+        """Test processing a newly discovered match"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
 
-class TestMarketDiscoveryService:
-    """Tests for MarketDiscoveryService"""
+        handler = MagicMock()
+        service.on_market_discovered(handler)
 
-    def test_service_init(self, tmp_path):
-        """Test MarketDiscoveryService initialization"""
-        output_dir = tmp_path / "markets"
-        service = MarketDiscoveryService(output_dir=str(output_dir))
+        service._process_discovered_match(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="EPL",
+            home_team="Arsenal",
+            away_team="Chelsea",
+            event_id="match_1",
+        )
 
-        assert service.output_dir.exists()
-        assert len(service.adapters) == 0
+        # Check that market was added
+        assert len(service._discovered_markets) == 1
 
-    def test_register_adapter(self, tmp_path):
-        """Test registering a platform adapter"""
-        output_dir = tmp_path / "markets"
-        service = MarketDiscoveryService(output_dir=str(output_dir))
+        # Check that handler was called
+        handler.assert_called_once()
+        event = handler.call_args[0][0]
+        assert isinstance(event, MarketDiscoveredEvent)
+        assert event.venue_id == "POLYMARKET"
+        assert event.home_team == "Arsenal"
+        assert event.action == "ADDED"
 
-        adapter = PlatformAdapter("TEST_PLATFORM")
-        service.register_adapter(adapter)
+    def test_process_discovered_match_duplicate(self):
+        """Test that duplicate matches are not re-added"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
 
-        assert "TEST_PLATFORM" in service.adapters
-        assert service.adapters["TEST_PLATFORM"] == adapter
+        handler = MagicMock()
+        service.on_market_discovered(handler)
 
-    def test_register_multiple_adapters(self, tmp_path):
-        """Test registering multiple adapters"""
-        output_dir = tmp_path / "markets"
-        service = MarketDiscoveryService(output_dir=str(output_dir))
-
-        adapter1 = PlatformAdapter("PLATFORM_A")
-        adapter2 = PlatformAdapter("PLATFORM_B")
-
-        service.register_adapter(adapter1)
-        service.register_adapter(adapter2)
-
-        assert len(service.adapters) == 2
-        assert "PLATFORM_A" in service.adapters
-        assert "PLATFORM_B" in service.adapters
-
-
-class MockAdapter(PlatformAdapter):
-    """Mock adapter for testing"""
-
-    def __init__(self, platform_name: str, markets: list = None):
-        super().__init__(platform_name)
-        self._markets = markets or []
-
-    async def discover_markets(self):
-        return self._markets
-
-
-class TestMarketDiscoveryServiceWithMock:
-    """Tests for MarketDiscoveryService with mock adapters"""
-
-    def test_save_markets(self, tmp_path):
-        """Test saving discovered markets"""
-        output_dir = tmp_path / "markets"
-        service = MarketDiscoveryService(output_dir=str(output_dir))
-
-        markets = [
-            StandardMarket(
-                platform="TEST",
-                market_id="m1",
-                event_id="e1",
-                event_name="Test Event",
-                market_type="MATCH_ODDS",
-                sport="Soccer",
-                start_time="2024-01-15T15:00:00Z",
-                discovered_at="2024-01-15T10:00:00Z",
-                status="OPEN",
-                in_play=False,
-                outcomes=[],
-                metadata={}
+        # Add the same match twice
+        for _ in range(2):
+            service._process_discovered_match(
+                venue_id="POLYMARKET",
+                sport="soccer",
+                competition="EPL",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                event_id="match_1",
             )
-        ]
 
-        service._save_markets(markets)
+        # Should only be added once
+        assert len(service._discovered_markets) == 1
+        assert handler.call_count == 1
 
-        # Check that files were created
-        latest_file = output_dir / "latest_markets.json"
-        assert latest_file.exists()
+    def test_get_active_markets(self):
+        """Test getting active markets grouped by venue"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
+
+        # Add markets from different venues
+        service._process_discovered_match(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="EPL",
+            home_team="Arsenal",
+            away_team="Chelsea",
+        )
+        service._process_discovered_match(
+            venue_id="ORBITEXCH",
+            sport="soccer",
+            competition="EPL",
+            home_team="Man City",
+            away_team="Tottenham",
+        )
+
+        markets = service.get_active_markets()
+
+        assert "POLYMARKET" in markets
+        assert "ORBITEXCH" in markets
+        assert len(markets["POLYMARKET"]) == 1
+        assert len(markets["ORBITEXCH"]) == 1
+
+    def test_get_markets_by_venue(self):
+        """Test filtering markets by venue"""
+        config = self._create_test_config()
+        service = DiscoveryService(config)
+
+        # Add markets from different venues
+        service._process_discovered_match(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="EPL",
+            home_team="Arsenal",
+            away_team="Chelsea",
+        )
+        service._process_discovered_match(
+            venue_id="POLYMARKET",
+            sport="soccer",
+            competition="La Liga",
+            home_team="Barcelona",
+            away_team="Real Madrid",
+        )
+        service._process_discovered_match(
+            venue_id="ORBITEXCH",
+            sport="soccer",
+            competition="EPL",
+            home_team="Man City",
+            away_team="Tottenham",
+        )
+
+        poly_markets = service.get_markets_by_venue("POLYMARKET")
+        orbit_markets = service.get_markets_by_venue("ORBITEXCH")
+
+        assert len(poly_markets) == 2
+        assert len(orbit_markets) == 1
+
+    def test_disabled_service_does_not_start(self):
+        """Test that disabled service doesn't start"""
+        config = MarketDiscoveryConfig(enabled=False)
+        service = DiscoveryService(config)
+
+        import asyncio
+
+        async def run_test():
+            await service.start()
+            return service._running
+
+        result = asyncio.get_event_loop().run_until_complete(run_test())
+        assert result is False
+
+
+@pytest.mark.asyncio(loop_scope="function")
+class TestDiscoveryServiceAsync:
+    """Async tests for DiscoveryService"""
+
+    @pytest.fixture
+    def config(self):
+        """Test configuration fixture"""
+        return MarketDiscoveryConfig(
+            enabled=True,
+            poll_interval_sec=10,
+            venues=VenueConfig(
+                polymarket=PolymarketVenueConfig(enabled=False),
+                orbitexch=OrbitExchVenueConfig(enabled=False),
+            ),
+        )
+
+    async def test_start_stop_service(self, config):
+        """Test starting and stopping the service"""
+        service = DiscoveryService(config)
+
+        await service.start()
+        assert service._running is True
+
+        await service.stop()
+        assert service._running is False
+
+    async def test_discover_all_empty(self, config):
+        """Test discover_all with no scrapers enabled"""
+        service = DiscoveryService(config)
+        await service.start()
+
+        events = await service.discover_all()
+
+        # No scrapers enabled, so no events
+        assert events == []
+
+        await service.stop()
+
+    async def test_update_config(self, config):
+        """Test updating service configuration"""
+        service = DiscoveryService(config)
+
+        new_config = MarketDiscoveryConfig(
+            enabled=True,
+            poll_interval_sec=30,
+            venues=VenueConfig(
+                polymarket=PolymarketVenueConfig(enabled=False),
+                orbitexch=OrbitExchVenueConfig(enabled=False),
+            ),
+        )
+
+        await service.update_config(new_config)
+
+        assert service.config.poll_interval_sec == 30

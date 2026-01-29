@@ -35,7 +35,7 @@
 | 层级 | 文档位置 | 作用 |
 |------|----------|------|
 | **整体** | `docs/project/*.md` | 系统级需求、架构、数据库设计 |
-| **局部** | `src/*/requirements.md`、`src/*/architeture.md` | 模块级需求和设计 |
+| **局部** | `src/*/requirements.md`、`src/*/architecture.md` | 模块级需求和设计 |
 
 在分析各模块下的需求或设计文件时，应联系 `docs/project/` 下的整体说明文件和关联模块下的各说明文件。
 

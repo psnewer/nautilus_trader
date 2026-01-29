@@ -1,0 +1,204 @@
+{
+  "tasks": [
+    {
+      "id": "abb85c7f-d919-455b-b93a-3919e9793124",
+      "name": "创建 odds_subscription 服务基础结构",
+      "description": "创建赔率订阅服务的目录结构、配置文件和需求说明文档",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/odds_subscription/",
+          "type": "CREATE",
+          "description": "新建服务目录"
+        },
+        {
+          "path": "src/arbitrage/services/market_matching/config.py",
+          "type": "REFERENCE",
+          "description": "参考现有配置结构"
+        }
+      ],
+      "implementationGuide": "1. 创建目录 src/arbitrage/services/odds_subscription/\\n2. 创建 __init__.py\\n3. 创建 config.py 定义 OddsSubscriptionConfig:\\n   - staleness_timeout_sec: int = 300\\n   - orbitexch_zoom_level: float = 0.8\\n4. 创建 requirements.md 记录需求",
+      "verificationCriteria": "1. 目录结构创建正确\\n2. config.py 包含必要的配置字段\\n3. requirements.md 清晰记录功能需求",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680",
+      "name": "实现 Polymarket 赔率客户端",
+      "description": "实现 Polymarket 赔率数据获取客户端，使用 py_clob_client 和 WebSocket 订阅赔率变化",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "nautilus_trader/adapters/polymarket/data.py",
+          "type": "REFERENCE",
+          "description": "参考 Polymarket DataClient 实现",
+          "lineStart": 1,
+          "lineEnd": 100
+        },
+        {
+          "path": "nautilus_trader/adapters/polymarket/providers.py",
+          "type": "REFERENCE",
+          "description": "参考 InstrumentProvider 如何加载 markets",
+          "lineStart": 90,
+          "lineEnd": 150
+        }
+      ],
+      "implementationGuide": "1. 创建 polymarket_client.py\\n2. 定义 PolymarketOddsClient 类\\n3. 使用 py_clob_client.client.ClobClient 获取 market 信息\\n4. 使用 Polymarket WebSocket 订阅 token 价格变化\\n5. 实现方法：\\n   - async def subscribe_event(event_id: str) -> 获取 event 的所有 tokens 并订阅\\n   - async def get_latest_odds(event_id: str) -> dict: 返回最新赔率\\n   - on_price_update(callback): WebSocket 回调处理\\n6. 数据格式：{\\\"token_id\\\": str, \\\"market_type\\\": \\\"home/draw/away\\\", \\\"bid\\\": float, \\\"ask\\\": float, \\\"timestamp\\\": int}",
+      "verificationCriteria": "1. 能够查询 event 的所有 tokens (home/draw/away)\\n2. WebSocket 订阅成功并接收价格更新\\n3. 数据格式正确包含 bid/ask 价格",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "d1c566e6-110b-4c0b-8559-2a95abb264eb",
+      "name": "实现 OrbitExch 赔率客户端",
+      "description": "实现 OrbitExch 赔率数据抓取客户端，使用 Playwright 抓取页面赔率，支持页面缩放",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "nautilus_trader/adapters/orbitexch/scraper.py",
+          "type": "REFERENCE",
+          "description": "参考页面抓取逻辑",
+          "lineStart": 1,
+          "lineEnd": 150
+        },
+        {
+          "path": "nautilus_trader/adapters/orbitexch/websocket_handler.py",
+          "type": "REFERENCE",
+          "description": "参考 WebSocket 监听逻辑"
+        }
+      ],
+      "implementationGuide": "1. 创建 orbitexch_client.py\\n2. 定义 OrbitExchOddsClient 类\\n3. 复用 nautilus_trader/adapters/orbitexch/scraper.py 的功能\\n4. 实现方法：\\n   - async def subscribe_competition(sport_id, competition_id, event_ids): 导航到页面并设置缩放\\n   - async def set_page_zoom(zoom_level): 设置页面缩放比例\\n   - async def extract_odds(event_id): 从页面提取赔率数据\\n5. 页面缩放实现：await page.evaluate('document.body.style.zoom = \\\"0.8\\\"')\\n6. 监听 WebSocket 更新（复用 OrbitExchWebSocketHandler）\\n7. 数据格式：{\\\"event_id\\\": str, \\\"market_type\\\": \\\"home/draw/away\\\", \\\"back\\\": float, \\\"lay\\\": float, \\\"timestamp\\\": int}",
+      "verificationCriteria": "1. 页面缩放功能正常工作\\n2. 能够提取页面上的赔率数据（胜平负）\\n3. WebSocket 监听价格变化",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "e9d3cde7-e178-46eb-b368-86fd029c0a6e",
+      "name": "实现超时监控机制",
+      "description": "实现数据超时监控，当赔率数据长时间未更新时触发刷新或重连",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680"
+        },
+        {
+          "taskId": "d1c566e6-110b-4c0b-8559-2a95abb264eb"
+        }
+      ],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/odds_subscription/service.py",
+          "type": "TO_MODIFY",
+          "description": "添加超时监控逻辑"
+        }
+      ],
+      "implementationGuide": "1. 在 service.py 中实现 HeartbeatMonitor 类\\n2. 维护字典 last_updates: {event_id: timestamp}\\n3. 使用 asyncio.create_task 定期检查（每30秒）\\n4. 检查逻辑：\\n   - 如果 now - last_update > staleness_timeout_sec:\\n     - Polymarket: 重新订阅 WebSocket\\n     - OrbitExch: 刷新页面 (page.reload())\\n5. 在接收到赔率数据时更新 last_updates\\n6. 记录超时日志并触发刷新动作",
+      "verificationCriteria": "1. 定时检查任务正常运行\\n2. 检测到超时时能触发刷新\\n3. 刷新后数据恢复正常",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "62a6ce41-893e-418c-bd5e-75a648b84c64",
+      "name": "实现 OddsSubscriptionService 主服务",
+      "description": "实现主服务类，协调 Polymarket 和 OrbitExch 客户端，管理订阅生命周期",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680"
+        },
+        {
+          "taskId": "d1c566e6-110b-4c0b-8559-2a95abb264eb"
+        },
+        {
+          "taskId": "e9d3cde7-e178-46eb-b368-86fd029c0a6e"
+        }
+      ],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/market_matching/service.py",
+          "type": "REFERENCE",
+          "description": "参考服务类实现模式",
+          "lineStart": 1,
+          "lineEnd": 100
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/state.py",
+          "type": "REFERENCE",
+          "description": "参考如何与 app_state 集成"
+        }
+      ],
+      "implementationGuide": "1. 在 service.py 中实现 OddsSubscriptionService 类\\n2. 初始化：\\n   - PolymarketOddsClient\\n   - OrbitExchOddsClient\\n   - HeartbeatMonitor\\n3. 实现 async def subscribe_matched_pairs(matched_pairs: list[MatchedPair]):\\n   - 遍历 matched_pairs\\n   - 对每个 pair，订阅 Polymarket 和 OrbitExch 的赔率\\n4. 维护内存缓存 latest_odds: {pair_id: {polymarket: {...}, orbitexch: {...}}}\\n5. 实现 get_latest_odds(pair_id) 方法\\n6. 实现 get_all_subscriptions() 方法返回订阅状态\\n7. 实现 async def start() 和 async def stop() 管理生命周期",
+      "verificationCriteria": "1. 能够基于 matched_pairs 批量订阅\\n2. 内存缓存正确更新\\n3. 生命周期管理（start/stop）正常",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "147a09b2-091f-4397-88ab-40ad73677e68",
+      "name": "Web Gateway 路由集成",
+      "description": "在 Web Gateway 中添加赔率订阅相关的 API 路由",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "62a6ce41-893e-418c-bd5e-75a648b84c64"
+        }
+      ],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/web_gateway/routes/matching.py",
+          "type": "REFERENCE",
+          "description": "参考路由实现模式",
+          "lineStart": 1,
+          "lineEnd": 100
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/app.py",
+          "type": "TO_MODIFY",
+          "description": "添加 odds_router"
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/state.py",
+          "type": "TO_MODIFY",
+          "description": "添加 odds_service 实例"
+        }
+      ],
+      "implementationGuide": "1. 创建 src/arbitrage/services/web_gateway/routes/odds.py\\n2. 定义路由：\\n   - POST /api/odds/subscribe: 基于当前 matched_pairs 启动订阅\\n   - GET /api/odds/latest: 获取最新赔率数据\\n   - GET /api/odds/subscriptions: 获取订阅状态\\n   - DELETE /api/odds/unsubscribe: 停止订阅\\n3. 在 app.py 中引入 odds_router\\n4. 在 state.py 中初始化 OddsSubscriptionService 实例\\n5. 返回数据格式：{\\\"pairs\\\": [{\\\"pair_id\\\": str, \\\"polymarket\\\": {...}, \\\"orbitexch\\\": {...}}]}",
+      "verificationCriteria": "1. API 路由正常工作\\n2. 能够触发订阅并获取数据\\n3. 错误处理完善",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    },
+    {
+      "id": "c9eb7a41-275d-4165-a579-21a65b830f4c",
+      "name": "前端 UI 集成 - Odds Monitor 面板",
+      "description": "在 Web UI 中添加赔率监控面板，实时显示订阅的赔率数据",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "147a09b2-091f-4397-88ab-40ad73677e68"
+        }
+      ],
+      "createdAt": "2026-01-28T11:14:25.838Z",
+      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/web_gateway/templates/index.html",
+          "type": "TO_MODIFY",
+          "description": "添加 Odds Monitor 标签页和逻辑",
+          "lineStart": 100,
+          "lineEnd": 450
+        }
+      ],
+      "implementationGuide": "1. 在 index.html 中添加第四个标签页 \\\"Odds Monitor\\\"\\n2. 添加订阅按钮和数据表格\\n3. 实现 JavaScript 函数：\\n   - async function subscribeOdds(): 调用 POST /api/odds/subscribe\\n   - async function refreshOdds(): 轮询 GET /api/odds/latest（每2秒）\\n   - function renderOddsTable(data): 渲染赔率表格\\n4. 表格列：Pair ID | Sport | Competition | Polymarket (Home/Draw/Away) | OrbitExch (Home/Draw/Away) | Update Time\\n5. 使用不同颜色标识超时数据（红色警告）\\n6. 可选：实现 WebSocket 实时推送（避免轮询）",
+      "verificationCriteria": "1. Odds Monitor 标签页正常显示\\n2. 点击订阅按钮能触发订阅\\n3. 赔率数据实时更新显示\\n4. UI 布局美观清晰",
+      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+    }
+  ]
+}
