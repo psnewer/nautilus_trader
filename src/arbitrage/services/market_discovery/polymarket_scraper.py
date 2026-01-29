@@ -241,6 +241,30 @@ class PolymarketScraper:
             resp.raise_for_status()
             return resp.json()
 
+    async def fetch_series_events(self, series_id: str) -> list[dict[str, Any]]:
+        """
+        根据 series_id 获取 events
+
+        Args:
+            series_id: series ID
+
+        Returns:
+            events 列表
+        """
+        url = f"{self.config.api.base_url}/series/{series_id}"
+        # 添加 closed 参数过滤（只取 closed=false 的 events）
+        params = {
+            "closed": "false",
+        }
+        self._log.debug(f"Fetching series {series_id} (closed=false)...")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            # series API 返回 {"events": [...], ...}
+            return data.get("events", [])
+
     def _count_tag_occurrences(self, sports_data: list[dict]) -> dict[str, int]:
         """统计每个 tag 在 sports_data 中出现的次数"""
         tag_counts: dict[str, int] = {}
@@ -270,16 +294,34 @@ class PolymarketScraper:
         Returns:
             (home_team, away_team) 或 None（如果无法解析）
         """
+        # 预处理：去掉常见前缀
+        cleaned_title = title
+        prefixes_to_remove = [
+            "Who will win ",
+            "Who will win the ",
+            "draft ",
+        ]
+        for prefix in prefixes_to_remove:
+            if cleaned_title.startswith(prefix):
+                cleaned_title = cleaned_title[len(prefix):]
+                break
+
+        # 预处理：去掉 ", scheduled for..." 及之后的内容
+        if ", scheduled for" in cleaned_title:
+            cleaned_title = cleaned_title.split(", scheduled for")[0]
+
+        # 预处理：去掉 "?" 结尾
+        cleaned_title = cleaned_title.rstrip("?").strip()
+
         # 尝试多种 vs 格式拆分
         # 优先级：vs. > " vs " > "vs"（无空格）
-        if "vs." in title:
-            parts = title.split("vs.", 1)
-        elif " vs " in title:
-            parts = title.split(" vs ", 1)
-        elif "vs" in title.lower():
+        if "vs." in cleaned_title:
+            parts = cleaned_title.split("vs.", 1)
+        elif " vs " in cleaned_title:
+            parts = cleaned_title.split(" vs ", 1)
+        elif "vs" in cleaned_title.lower():
             # 使用正则处理 vs 无空格情况（大小写不敏感）
-            import re
-            match = re.split(r'\bvs\b', title, maxsplit=1, flags=re.IGNORECASE)
+            match = re.split(r'\bvs\b', cleaned_title, maxsplit=1, flags=re.IGNORECASE)
             if len(match) == 2:
                 parts = match
             else:
@@ -338,64 +380,97 @@ class PolymarketScraper:
         """
         发现比赛事件
 
-        规则（来自 requirements.md）：
-        1. 遍历 /sports 返回的 tags
-        2. 按重复次数 <=2 的 tag 从小到大遍历
-        3. 访问 /events?tag_id={tag}
-        4. 解析 title 获取队名
-        5. 找到 event 后停止遍历该 tag
+        使用 /sports 获取 series ID，然后从 /series/{id} 获取比赛事件。
+
+        注意：API 返回的 "sport" 字段实际上是 competition 的缩写（如 epl, lal）
 
         Args:
-            target_sports: 目标 sport 列表（可选过滤）
-            target_competitions: 目标 competition 列表（可选过滤）
+            target_sports: 目标 sport 列表（用于最终赋值）
+            target_competitions: 目标 competition 列表（用于过滤 API 返回的数据）
 
         Returns:
             发现的比赛事件列表
         """
-        # 确保 mapping 缓存已加载
-        if not self._mapping_cache:
-            await self.scrape_sport_competition_mapping()
-
-        # 获取 sports 数据
+        # 获取 sports 数据（包含 series ID）
+        # 注意：API 返回的 "sport" 字段实际是 competition 缩写
         sports_data = await self.fetch_sports_tags()
-        tag_counts = self._count_tag_occurrences(sports_data)
+        self._log.info(f"Fetched {len(sports_data)} competitions from API")
 
-        # 筛选重复次数 <=2 的 tags，按 tag_id 从小到大排序
-        eligible_tags = [
-            (tag_id, count)
-            for tag_id, count in tag_counts.items()
-            if count <= 2
-        ]
-        # 按 tag_id 数值排序（如果是数字字符串则转换）
-        def sort_key(item):
-            try:
-                return int(item[0])
-            except (ValueError, TypeError):
-                return item[0]
-        eligible_tags.sort(key=sort_key)
+        # 从配置构建 competition -> sport 映射
+        competition_to_sport: dict[str, str] = {}
+        if self.config.sports:
+            for sport_config in self.config.sports:
+                for comp in sport_config.competitions:
+                    # 支持大小写不敏感的匹配
+                    competition_to_sport[comp.lower()] = sport_config.sport
 
-        self._log.info(f"Found {len(eligible_tags)} eligible tags (count <= 2)")
+        self._log.debug(f"Competition-to-sport mapping: {competition_to_sport}")
 
         events: list[MatchEvent] = []
         processed_events: set[str] = set()
 
-        found_valid_event = False
-        for tag_id, _ in eligible_tags:
-            if found_valid_event:
-                break
+        # 遍历每个 competition，获取其 series 中的比赛
+        for comp_info in sports_data:
+            competition_name = comp_info.get("sport", "")  # API 字段名是 sport，但实际是 competition
+            series_id = comp_info.get("series")
 
-            events_count_before = len(events)
+            self._log.debug(f"Processing competition: {competition_name} (series_id={series_id})")
+
+            if not series_id:
+                self._log.debug(f"Skipping {competition_name}: no series_id")
+                continue
+
+            # 过滤 competition
+            if target_competitions:
+                # 大小写不敏感匹配
+                comp_match = any(
+                    tc.lower() == competition_name.lower()
+                    for tc in target_competitions
+                )
+                if not comp_match:
+                    self._log.debug(f"Skipping {competition_name}: not in target_competitions {target_competitions}")
+                    continue
+
+            # 查找对应的 sport
+            sport_name = competition_to_sport.get(competition_name.lower())
+            if not sport_name:
+                self._log.warning(f"Competition {competition_name} not found in config, skipping")
+                continue
+
+            self._log.info(f"Matched competition: {competition_name} -> sport: {sport_name}, fetching series {series_id}...")
+
+            self._log.debug(f"Fetching series {series_id} for sport {sport_name}...")
 
             try:
-                tag_events = await self.fetch_events_by_tag(tag_id)
+                series_events = await self.fetch_series_events(str(series_id))
+                self._log.debug(f"Series {series_id} returned {len(series_events)} events")
 
-                for event_data in tag_events:
-                    event_id = event_data.get("id", "")
+                for event_data in series_events:
+                    event_id = str(event_data.get("id", ""))
+                    is_closed = event_data.get("closed", False)
+                    is_active = event_data.get("active", False)
+                    title = event_data.get("title", "")
 
                     if event_id in processed_events:
                         continue
 
-                    title = event_data.get("title", "")
+                    # 只取 closed=false 且 active=true 的事件
+                    if is_closed:
+                        self._log.debug(f"Skipping closed event {event_id}: {title}")
+                        continue
+
+                    if not is_active:
+                        self._log.debug(f"Skipping inactive event {event_id}: {title}")
+                        continue
+
+                    # 跳过 "More Markets" 类型的事件
+                    if "More Markets" in title:
+                        continue
+
+                    # 跳过 draft 事件
+                    if title.lower().startswith("draft "):
+                        continue
+
                     team_names = self._parse_team_names(title)
 
                     if not team_names:
@@ -403,33 +478,16 @@ class PolymarketScraper:
 
                     home_team, away_team = team_names
 
-                    # 确定 competition
-                    tags = event_data.get("tags", [])
-                    series = event_data.get("series")
-
-                    competition = self._find_competition(tags, series)
-                    if not competition:
-                        continue  # 没有 series 则跳过
-
-                    # 确定 sport
-                    sport = self.get_sport_for_competition(competition)
-                    if not sport:
-                        sport = "Unknown"
-
-                    # 过滤
-                    if target_sports and sport not in target_sports:
-                        continue
-                    if target_competitions and competition not in target_competitions:
-                        continue
-
+                    # 直接使用原始 competition 名称（如 "epl"）
+                    # matching 阶段会通过 competition_aliases 标准化
                     match_event = MatchEvent(
-                        sport=sport,
-                        competition=competition,
+                        sport=sport_name,
+                        competition=competition_name,
                         home_team=home_team,
                         away_team=away_team,
                         event_id=event_id,
                         title=title,
-                        tags=[str(t) for t in tags],
+                        tags=[],
                     )
 
                     events.append(match_event)
@@ -437,16 +495,11 @@ class PolymarketScraper:
 
                     self._log.debug(
                         f"Found event: {home_team} vs {away_team} "
-                        f"({competition}, {sport})"
+                        f"({competition_name}, {sport_name})"
                     )
 
-                # 检查此 tag 是否产生了有效事件
-                if len(events) > events_count_before:
-                    self._log.info(f"Found valid events from tag {tag_id}, stopping tag iteration")
-                    found_valid_event = True
-
             except Exception as e:
-                self._log.warning(f"Failed to fetch events for tag {tag_id}: {e}")
+                self._log.warning(f"Failed to fetch series {series_id}: {e}")
                 continue
 
         self._log.info(f"Discovered {len(events)} match events from Polymarket")

@@ -1,0 +1,55 @@
+{
+  "discovery": {
+    "enabled": true,
+    "poll_interval_sec": 60,
+    "venues": {
+      "polymarket": {
+        "enabled": true,
+        "sports": [
+          {
+            "sport": "Soccer",
+            "competitions": [
+              "epl"
+            ]
+          },
+          {
+            "sport": "Tennis",
+            "competitions": [
+              "atp"
+            ]
+          }
+        ]
+      },
+      "orbitexch": {
+        "enabled": true,
+        "sports": [
+          {
+            "sport": "Soccer",
+            "competitions": [
+              "English Premier League"
+            ]
+          },
+          {
+            "sport": "Tennis",
+            "competitions": [
+              "Men's Australian Open 2026"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "matching": {
+    "enabled": true,
+    "min_similarity": 1,
+    "sport_aliases": {},
+    "competition_aliases": {
+      "epl": "English Premier League",
+      "atp": "ATP",
+      "Men's Australian Open 2026": "ATP"
+    },
+    "competition_max_matches": {
+      "English Premier League": 1
+    }
+  }
+}
