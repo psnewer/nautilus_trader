@@ -29,6 +29,10 @@ class MatchEvent:
     away_team: str
     sport_id: str = ""
     competition_id: str = ""
+    # OrbitExch selection IDs (用于 WebSocket 赔率匹配)
+    home_selection_id: str = ""
+    draw_selection_id: str = ""
+    away_selection_id: str = ""
 
 
 class OrbitExchScraper:
@@ -253,6 +257,31 @@ class OrbitExchScraper:
             self._log.error(f"Error finding competition {competition_name}: {e}")
             return False
 
+    def _extract_ids_from_url(self, url: str) -> tuple[str, str]:
+        """
+        从 URL 中提取 sport_id 和 competition_id
+
+        URL 格式: https://www.orbitexch.com/customer/sport/{sport_id}/competition/{competition_id}
+
+        Args:
+            url: 当前页面 URL
+
+        Returns:
+            (sport_id, competition_id) 元组
+        """
+        import re
+
+        sport_id = ""
+        competition_id = ""
+
+        # 匹配 /sport/{sport_id}/competition/{competition_id}
+        match = re.search(r'/sport/(\d+)/competition/(\d+)', url)
+        if match:
+            sport_id = match.group(1)
+            competition_id = match.group(2)
+
+        return sport_id, competition_id
+
     async def navigate_to_competition_page(
         self,
         sport_id: str,
@@ -289,10 +318,10 @@ class OrbitExchScraper:
         """
         从当前页面提取比赛信息
 
-        规则（来自 requirements.md）：
+        规则：
         - 遍历 role="row" 的 div
-        - 找到并列的两个 p 元素
-        - 第一个为 home_team，第二个为 away_team
+        - 找到并列的两个 p 元素（主客队名）
+        - 同时提取 data-selection-id（用于 WebSocket 匹配）
 
         Returns:
             比赛事件列表
@@ -307,7 +336,7 @@ class OrbitExchScraper:
                 const rows = document.querySelectorAll('[role="row"]');
 
                 rows.forEach(row => {
-                    // 查找并列的两个 p 元素
+                    // 查找并列的两个 p 元素（队名）
                     const pElements = row.querySelectorAll('p');
 
                     if (pElements.length >= 2) {
@@ -315,26 +344,34 @@ class OrbitExchScraper:
                         const awayTeam = pElements[1].textContent?.trim() || '';
 
                         if (homeTeam && awayTeam) {
+                            // 提取 data-selection-id
+                            // 通常有 3 个选项：主胜、平局、客胜
+                            const selectionElements = row.querySelectorAll('[data-selection-id]');
+                            let homeSelectionId = '';
+                            let drawSelectionId = '';
+                            let awaySelectionId = '';
+
+                            // 按顺序：第1个=主胜，第2个=平局，第3个=客胜
+                            if (selectionElements.length >= 3) {
+                                homeSelectionId = selectionElements[0].getAttribute('data-selection-id') || '';
+                                drawSelectionId = selectionElements[1].getAttribute('data-selection-id') || '';
+                                awaySelectionId = selectionElements[2].getAttribute('data-selection-id') || '';
+                            } else if (selectionElements.length === 2) {
+                                // Tennis 等只有两个选项
+                                homeSelectionId = selectionElements[0].getAttribute('data-selection-id') || '';
+                                awaySelectionId = selectionElements[1].getAttribute('data-selection-id') || '';
+                            }
+
                             results.push({
                                 home_team: homeTeam,
-                                away_team: awayTeam
+                                away_team: awayTeam,
+                                home_selection_id: homeSelectionId,
+                                draw_selection_id: drawSelectionId,
+                                away_selection_id: awaySelectionId
                             });
                         }
                     }
                 });
-
-                // 备用方案：查找其他可能的结构
-                if (results.length === 0) {
-                    document.querySelectorAll('[class*="match"], [class*="event"]').forEach(el => {
-                        const teams = el.querySelectorAll('[class*="team"], [class*="name"]');
-                        if (teams.length >= 2) {
-                            results.push({
-                                home_team: teams[0].textContent?.trim() || '',
-                                away_team: teams[1].textContent?.trim() || ''
-                            });
-                        }
-                    });
-                }
 
                 return results;
             }""")
@@ -347,12 +384,21 @@ class OrbitExchScraper:
                     away_team=m["away_team"],
                     sport_id=sport_id,
                     competition_id=competition_id,
+                    home_selection_id=m.get("home_selection_id", ""),
+                    draw_selection_id=m.get("draw_selection_id", ""),
+                    away_selection_id=m.get("away_selection_id", ""),
                 )
                 for m in matches_data
                 if m["home_team"] and m["away_team"]
             ]
 
-            self._log.info(f"Extracted {len(events)} matches")
+            self._log.info(f"Extracted {len(events)} matches with selection IDs")
+            for e in events:
+                self._log.debug(
+                    f"  {e.home_team} vs {e.away_team}: "
+                    f"home={e.home_selection_id}, draw={e.draw_selection_id}, away={e.away_selection_id}"
+                )
+
             return events
 
         except Exception as e:
@@ -415,12 +461,20 @@ class OrbitExchScraper:
                 if not await self.find_and_click_competition(competition_name):
                     continue
 
+                # 从当前 URL 提取 sport_id 和 competition_id
+                current_url = self._page.url
+                sport_id, competition_id = self._extract_ids_from_url(current_url)
+                self._log.info(
+                    f"Extracted IDs from URL: sport_id='{sport_id}', "
+                    f"competition_id='{competition_id}' (URL: {current_url})"
+                )
+
                 # 提取比赛信息
                 events = await self.extract_matches(
                     sport=sport_name,
                     competition=competition_name,
-                    sport_id="",
-                    competition_id="",
+                    sport_id=sport_id,
+                    competition_id=competition_id,
                 )
                 all_events.extend(events)
 
