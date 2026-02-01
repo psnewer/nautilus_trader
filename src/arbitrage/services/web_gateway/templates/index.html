@@ -235,10 +235,10 @@
                                     <thead>
                                         <tr>
                                             <th>Match</th>
-                                            <th>Market</th>
-                                            <th>Polymarket</th>
-                                            <th>OrbitExch</th>
-                                            <th>Updated</th>
+                                            <th>Team</th>
+                                            <th>Polymarket (bid/ask)</th>
+                                            <th>OrbitExch (back/lay)</th>
+                                            <th>Age</th>
                                         </tr>
                                     </thead>
                                     <tbody id="odds-data-table">
@@ -319,6 +319,7 @@
         let discoveryResults = { polymarket: [], orbitexch: [] };
         let matchingResults = { pairs: [] };
         let oddsData = {};
+        let pairsInfo = {};  // 存储 pairs 的队名等信息
         let oddsAutoRefreshInterval = null;
 
         // Update time
@@ -564,6 +565,7 @@
             try {
                 const result = await api('/api/odds/latest');
                 oddsData = result.odds || {};
+                pairsInfo = result.pairs_info || {};
                 renderOddsTable();
                 document.getElementById('last-update-time').textContent = new Date().toLocaleTimeString();
             } catch (e) {
@@ -582,18 +584,54 @@
             const rows = [];
 
             for (const [pairId, pairOdds] of Object.entries(oddsData)) {
+                // 跳过未匹配的数据
+                if (pairId === '_unmatched') continue;
+
                 const polyOdds = pairOdds.polymarket || {};
                 const orbitOdds = pairOdds.orbitexch || {};
 
-                // 为每个市场类型创建一行
-                const marketTypes = new Set([
-                    ...Object.keys(polyOdds),
-                    ...Object.keys(orbitOdds)
-                ]);
+                // 获取 pair 信息（队名等）
+                const info = pairsInfo[pairId] || {};
+                const homeTeam = info.polymarket_home || info.orbitexch_home || 'Home';
+                const awayTeam = info.polymarket_away || info.orbitexch_away || 'Away';
+                const matchName = `${homeTeam} vs ${awayTeam}`;
+                const competition = info.competition || '';
 
-                marketTypes.forEach(marketType => {
+                // 固定顺序：home, draw, away
+                const marketOrder = ['home', 'draw', 'away'];
+                const teamNames = {
+                    'home': homeTeam,
+                    'draw': 'Draw',
+                    'away': awayTeam
+                };
+
+                // 统计有数据的行数（用于 rowspan）
+                let rowCount = 0;
+                marketOrder.forEach(mt => {
+                    if (polyOdds[mt] || orbitOdds[mt]) rowCount++;
+                });
+
+                if (rowCount === 0) {
+                    // 没有数据，显示一行空数据
+                    rows.push(`
+                        <tr>
+                            <td><strong>${matchName}</strong><br><small class="text-muted">${competition}</small></td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>-</td>
+                        </tr>
+                    `);
+                    continue;
+                }
+
+                let isFirstRow = true;
+                marketOrder.forEach(marketType => {
                     const poly = polyOdds[marketType] || {};
                     const orbit = orbitOdds[marketType] || {};
+
+                    // 跳过没有数据的行
+                    if (!poly.bid && !poly.ask && !orbit.back && !orbit.lay) return;
 
                     const polyBid = poly.bid ? poly.bid.toFixed(3) : '-';
                     const polyAsk = poly.ask ? poly.ask.toFixed(3) : '-';
@@ -607,10 +645,20 @@
                     const ageClass = maxAge > 300000 ? 'bg-danger' : maxAge > 120000 ? 'bg-warning' : 'bg-success';
                     const ageSec = maxAge > 0 ? Math.floor(maxAge / 1000) + 's' : '-';
 
+                    // 只在第一行显示比赛名称
+                    const matchCell = isFirstRow
+                        ? `<td rowspan="${rowCount}">
+                            <strong>${matchName}</strong><br>
+                            <small class="text-muted">${competition}</small>
+                           </td>`
+                        : '';
+
+                    const teamName = teamNames[marketType] || marketType;
+
                     rows.push(`
                         <tr>
-                            <td><small>${pairId}</small></td>
-                            <td><span class="badge bg-secondary">${marketType}</span></td>
+                            ${matchCell}
+                            <td>${teamName}</td>
                             <td>
                                 <span class="text-success">${polyBid}</span> /
                                 <span class="text-danger">${polyAsk}</span>
@@ -622,10 +670,11 @@
                             <td><span class="badge ${ageClass}">${ageSec}</span></td>
                         </tr>
                     `);
+                    isFirstRow = false;
                 });
             }
 
-            tbody.innerHTML = rows.join('');
+            tbody.innerHTML = rows.length > 0 ? rows.join('') : '<tr><td colspan="5" class="text-center text-muted">No odds data available</td></tr>';
         }
 
         function startAutoRefresh() {

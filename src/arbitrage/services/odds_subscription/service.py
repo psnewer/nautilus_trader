@@ -118,7 +118,7 @@ class OddsSubscriptionService:
 
     async def subscribe_matched_pairs(self, matched_pairs: list[MatchedPair]) -> None:
         """
-        订阅 matched pairs 的赔率
+        订阅 matched pairs 的赔率（并行处理）
 
         Args:
             matched_pairs: 匹配的市场对列表
@@ -126,15 +126,23 @@ class OddsSubscriptionService:
         if not self._running:
             await self.start()
 
-        self._log.info(f"Subscribing to {len(matched_pairs)} matched pairs")
+        self._log.info(f"Subscribing to {len(matched_pairs)} matched pairs in parallel")
 
-        for pair in matched_pairs:
-            try:
-                await self._subscribe_single_pair(pair)
-            except Exception as e:
-                self._log.error(f"Failed to subscribe pair {pair.pair_id}: {e}")
+        # 并行订阅所有 pairs
+        tasks = [
+            self._subscribe_single_pair_safe(pair)
+            for pair in matched_pairs
+        ]
+        await asyncio.gather(*tasks)
 
         self._log.info(f"Subscription complete: {len(self._subscribed_pairs)} pairs")
+
+    async def _subscribe_single_pair_safe(self, pair: MatchedPair) -> None:
+        """安全地订阅单个 pair（捕获异常）"""
+        try:
+            await self._subscribe_single_pair(pair)
+        except Exception as e:
+            self._log.error(f"Failed to subscribe pair {pair.pair_id}: {e}")
 
     async def _subscribe_single_pair(self, pair: MatchedPair) -> None:
         """
@@ -157,19 +165,46 @@ class OddsSubscriptionService:
         # 订阅 OrbitExch
         # 从 orbitexch_data 提取 sport_id 和 competition_id
         orbitexch_data = pair.orbitexch_data
-        sport_id = orbitexch_data.get("sport_id")
-        competition_id = orbitexch_data.get("competition_id")
+        sport_id = orbitexch_data.get("sport_id", "")
+        competition_id = orbitexch_data.get("competition_id", "")
+
+        self._log.info(
+            f"OrbitExch data for pair {pair_id}: "
+            f"sport_id='{sport_id}', competition_id='{competition_id}', "
+            f"full_data={orbitexch_data}"
+        )
 
         if sport_id and competition_id and self._orbitexch_client:
+            # 注册 selection_id -> (pair_id, market_type) 映射
+            home_sel_id = orbitexch_data.get("home_selection_id", "")
+            draw_sel_id = orbitexch_data.get("draw_selection_id", "")
+            away_sel_id = orbitexch_data.get("away_selection_id", "")
+
+            if home_sel_id:
+                self._orbitexch_client.register_selection(home_sel_id, pair_id, "home")
+            if draw_sel_id:
+                self._orbitexch_client.register_selection(draw_sel_id, pair_id, "draw")
+            if away_sel_id:
+                self._orbitexch_client.register_selection(away_sel_id, pair_id, "away")
+
+            self._log.info(
+                f"Registered OrbitExch selections for {pair_id}: "
+                f"home={home_sel_id}, draw={draw_sel_id}, away={away_sel_id}"
+            )
+
             # 为这个 pair 订阅 OrbitExch
-            # 注意：OrbitExch 是按 competition 订阅的，多个 pairs 可能共享同一个 competition
             await self._orbitexch_client.subscribe_competition(
                 sport_id=sport_id,
                 competition_id=competition_id,
-                event_ids=[pair_id],  # 使用 pair_id 作为标识
+                event_ids=[pair_id],
+            )
+        else:
+            self._log.warning(
+                f"Cannot subscribe OrbitExch for pair {pair_id}: "
+                f"missing sport_id='{sport_id}' or competition_id='{competition_id}'"
             )
 
-        self._log.debug(f"Subscribed pair {pair_id}: {pair.sport} - {pair.competition}")
+        self._log.info(f"Subscribed pair {pair_id}: {pair.sport} - {pair.competition}")
 
     # =========================================================================
     # 数据回调
@@ -207,32 +242,39 @@ class OddsSubscriptionService:
         """
         OrbitExch 价格更新回调
 
-        Args:
-            odds_data: 赔率数据
+        新数据格式（使用 selection_id 映射）:
+        {
+            "pair_id": "pair-xxx",
+            "selection_id": "39674645",
+            "market_type": "home",  # home/draw/away
+            "back": 2.06,
+            "lay": 2.10,
+            "timestamp": 1234567890
+        }
         """
-        home_team = odds_data.get("home_team")
-        away_team = odds_data.get("away_team")
-        market_type = odds_data.get("market_type")
+        pair_id = odds_data.get("pair_id")
+        market_type = odds_data.get("market_type", "")
+        back = odds_data.get("back", 0)
+        lay = odds_data.get("lay", 0)
 
-        # 通过队名匹配 pair
-        for pair_id, pair in self._subscribed_pairs.items():
-            # 简化匹配：检查队名是否包含
-            if (home_team and home_team in pair.orbitexch_home_team) or \
-               (away_team and away_team in pair.orbitexch_away_team):
-                # 更新缓存
-                if pair_id not in self._latest_odds:
-                    self._latest_odds[pair_id] = {"polymarket": {}, "orbitexch": {}}
+        if pair_id and pair_id in self._subscribed_pairs:
+            # 更新缓存
+            if pair_id not in self._latest_odds:
+                self._latest_odds[pair_id] = {"polymarket": {}, "orbitexch": {}}
 
-                self._latest_odds[pair_id]["orbitexch"][market_type] = odds_data
+            self._latest_odds[pair_id]["orbitexch"][market_type] = {
+                "market_type": market_type,
+                "back": back,
+                "lay": lay,
+                "timestamp": odds_data.get("timestamp"),
+            }
 
-                # 更新时间戳
-                self._last_updates[pair_id] = time.time()
+            # 更新时间戳
+            self._last_updates[pair_id] = time.time()
 
-                self._log.debug(
-                    f"OrbitExch update: {pair_id} {market_type} "
-                    f"back={odds_data.get('back')} lay={odds_data.get('lay')}"
-                )
-                break
+            self._log.debug(
+                f"OrbitExch: {pair_id} {market_type} back={back} lay={lay}"
+            )
 
     # =========================================================================
     # 超时监控

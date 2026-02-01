@@ -154,6 +154,9 @@ class EventNormalizer:
             original_data={
                 "sport_id": getattr(event, "sport_id", ""),
                 "competition_id": getattr(event, "competition_id", ""),
+                "home_selection_id": getattr(event, "home_selection_id", ""),
+                "draw_selection_id": getattr(event, "draw_selection_id", ""),
+                "away_selection_id": getattr(event, "away_selection_id", ""),
             },
         )
 

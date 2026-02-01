@@ -62,12 +62,25 @@ async def get_latest_odds(pair_id: str | None = None):
     service = app_state.get_odds_service()
 
     if not service:
-        return {"odds": {}}
+        return {"odds": {}, "pairs_info": {}}
 
     odds = service.get_latest_odds(pair_id)
 
+    # 获取 pairs 信息（包含队名等）
+    pairs_info = {}
+    for pair_result in app_state.matched_pairs:
+        pairs_info[pair_result.pair_id] = {
+            "sport": pair_result.sport,
+            "competition": pair_result.competition,
+            "polymarket_home": pair_result.polymarket_home,
+            "polymarket_away": pair_result.polymarket_away,
+            "orbitexch_home": pair_result.orbitexch_home,
+            "orbitexch_away": pair_result.orbitexch_away,
+        }
+
     return {
         "odds": odds,
+        "pairs_info": pairs_info,
         "pair_id": pair_id,
     }
 
@@ -136,3 +149,48 @@ async def unsubscribe_odds():
     await service.stop()
 
     return {"status": "stopped"}
+
+
+@router.get("/debug/orbitexch-markets")
+async def get_orbitexch_market_info():
+    """
+    获取 OrbitExch 市场映射信息（用于调试）
+
+    返回解析出的 market_id -> event_name + selections 映射
+    """
+    service = app_state.get_odds_service()
+
+    if not service or not service._orbitexch_client:
+        return {"markets": {}, "message": "OrbitExch client not running"}
+
+    market_info = service._orbitexch_client.get_market_info()
+
+    return {
+        "markets": market_info,
+        "total": len(market_info),
+    }
+
+
+@router.get("/debug/raw-odds")
+async def get_raw_odds():
+    """
+    获取原始赔率数据（用于调试）
+
+    包括所有缓存的赔率数据和未匹配的数据
+    """
+    service = app_state.get_odds_service()
+
+    if not service:
+        return {"odds": {}}
+
+    return {
+        "latest_odds": service._latest_odds,
+        "subscribed_pairs": {
+            pair_id: {
+                "polymarket_event_id": pair.polymarket_event_id,
+                "orbitexch_home": pair.orbitexch_home_team,
+                "orbitexch_away": pair.orbitexch_away_team,
+            }
+            for pair_id, pair in service._subscribed_pairs.items()
+        },
+    }

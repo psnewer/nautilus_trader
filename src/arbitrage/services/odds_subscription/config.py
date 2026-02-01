@@ -29,8 +29,9 @@ class OddsSubscriptionConfig:
     staleness_timeout_sec: int = 300  # 5分钟无数据更新则刷新
 
     # Polymarket 配置
-    polymarket_api_key: str | None = None  # 公开数据不需要
-    polymarket_api_secret: str | None = None
+    polymarket_api_key: str = ""
+    polymarket_api_secret: str = ""
+    polymarket_passphrase: str = ""
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
     # OrbitExch 配置
@@ -55,8 +56,9 @@ class OddsSubscriptionConfig:
         return cls(
             enabled=data.get("enabled", True),
             staleness_timeout_sec=data.get("staleness_timeout_sec", 300),
-            polymarket_api_key=data.get("polymarket_api_key"),
-            polymarket_api_secret=data.get("polymarket_api_secret"),
+            polymarket_api_key=data.get("polymarket_api_key", ""),
+            polymarket_api_secret=data.get("polymarket_api_secret", ""),
+            polymarket_passphrase=data.get("polymarket_passphrase", ""),
             polymarket_ws_url=data.get(
                 "polymarket_ws_url",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
