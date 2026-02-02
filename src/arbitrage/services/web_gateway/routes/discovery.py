@@ -173,7 +173,7 @@ async def _discover_orbitexch(config):
     try:
         events = await scraper.discover_events(config.venues.orbitexch.sports)
 
-        # 转换为 DiscoveryResult（保存 sport_id 和 competition_id 到 extra）
+        # 转换为 DiscoveryResult（保存 sport_id, competition_id 和 selection_ids 到 extra）
         results = [
             DiscoveryResult(
                 venue="orbitexch",
@@ -185,6 +185,10 @@ async def _discover_orbitexch(config):
                 extra={
                     "sport_id": e.sport_id,
                     "competition_id": e.competition_id,
+                    "market_id": e.market_id,
+                    "home_selection_id": e.home_selection_id,
+                    "draw_selection_id": e.draw_selection_id,
+                    "away_selection_id": e.away_selection_id,
                 },
             )
             for e in events

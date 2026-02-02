@@ -38,8 +38,11 @@ class OddsSubscriptionConfig:
     orbitexch_base_url: str = "https://www.orbitexch.com"
     orbitexch_zoom_level: float = 0.8  # 页面缩放比例
     orbitexch_page_refresh_sec: int = 600  # 10分钟刷新页面一次
+    orbitexch_staleness_timeout_sec: int = 60  # 赔率超时时间，超过该时间无更新则刷新页面
     orbitexch_username: str = ""
     orbitexch_password: str = ""
+    orbitexch_user_data_dir: str = ""  # 浏览器用户数据目录（用于持久化登录状态）
+    orbitexch_cdp_url: str = ""  # 连接到已存在的 Chrome（如 http://localhost:9222）
 
     # 支持的市场类型
     supported_market_types: list[str] = field(
@@ -68,7 +71,10 @@ class OddsSubscriptionConfig:
             ),
             orbitexch_zoom_level=data.get("orbitexch_zoom_level", 0.8),
             orbitexch_page_refresh_sec=data.get("orbitexch_page_refresh_sec", 600),
+            orbitexch_staleness_timeout_sec=data.get("orbitexch_staleness_timeout_sec", 60),
             orbitexch_username=data.get("orbitexch_username", ""),
             orbitexch_password=data.get("orbitexch_password", ""),
+            orbitexch_user_data_dir=data.get("orbitexch_user_data_dir", ""),
+            orbitexch_cdp_url=data.get("orbitexch_cdp_url", ""),
             supported_market_types=supported_market_types,
         )

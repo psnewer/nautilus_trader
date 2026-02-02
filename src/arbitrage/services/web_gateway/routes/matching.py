@@ -103,6 +103,11 @@ async def _run_matching():
                 self.away_team = r.away_team
                 self.sport_id = r.extra.get("sport_id", "")
                 self.competition_id = r.extra.get("competition_id", "")
+                # Market ID (unique per match) and Selection IDs for odds matching
+                self.market_id = r.extra.get("market_id", "")
+                self.home_selection_id = r.extra.get("home_selection_id", "")
+                self.draw_selection_id = r.extra.get("draw_selection_id", "")
+                self.away_selection_id = r.extra.get("away_selection_id", "")
 
         poly_mock = [MockPolyEvent(e) for e in poly_events]
         orbit_mock = [MockOrbitEvent(e) for e in orbit_events]

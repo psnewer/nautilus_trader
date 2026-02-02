@@ -15,7 +15,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "atp"
+              "wta"
             ]
           }
         ]
@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "Men's Australian Open 2026"
+              "WTA Abu Dhabi 2026"
             ]
           }
         ]
@@ -45,11 +45,12 @@
     "sport_aliases": {},
     "competition_aliases": {
       "epl": "English Premier League",
-      "atp": "ATP",
-      "Men's Australian Open 2026": "ATP"
+      "wta": "WTA",
+      "WTA Abu Dhabi 2026": "WTA"
     },
     "competition_max_matches": {
-      "English Premier League": 1
+      "English Premier League": 1,
+      "WTA": 15
     }
   }
 }
