@@ -349,8 +349,14 @@ class AppState:
             from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
             from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 
-            # 创建服务（使用默认配置）
-            config = OddsSubscriptionConfig()
+            # 创建服务配置
+            # 使用 Playwright 启动浏览器（带反检测）
+            import os
+            config = OddsSubscriptionConfig(
+                # TODO: 从环境变量读取，或临时填入测试
+                orbitexch_username=os.getenv("ORBITEXCH_USERNAME", ""),  # 填入用户名
+                orbitexch_password=os.getenv("ORBITEXCH_PASSWORD", ""),  # 填入密码
+            )
             self._odds_service = OddsSubscriptionService(
                 config=config,
                 logger=logging.getLogger("OddsSubscription"),

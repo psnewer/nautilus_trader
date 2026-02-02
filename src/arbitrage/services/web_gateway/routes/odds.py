@@ -151,24 +151,41 @@ async def unsubscribe_odds():
     return {"status": "stopped"}
 
 
-@router.get("/debug/orbitexch-markets")
-async def get_orbitexch_market_info():
+@router.get("/debug/orbitexch-selections")
+async def get_orbitexch_selections():
     """
-    获取 OrbitExch 市场映射信息（用于调试）
+    获取 OrbitExch selection 映射信息（用于调试）
 
-    返回解析出的 market_id -> event_name + selections 映射
+    返回已注册的 market_id:selection_id -> pair_id/market_type 映射
     """
     service = app_state.get_odds_service()
 
     if not service or not service._orbitexch_client:
-        return {"markets": {}, "message": "OrbitExch client not running"}
+        return {"selections": {}, "message": "OrbitExch client not running"}
 
-    market_info = service._orbitexch_client.get_market_info()
+    selections = service._orbitexch_client.get_all_registered_selections()
 
     return {
-        "markets": market_info,
-        "total": len(market_info),
+        "selections": selections,
+        "total": len(selections),
     }
+
+
+@router.get("/debug/websocket-analysis")
+async def get_websocket_analysis():
+    """
+    获取 WebSocket 消息分析（用于调试）
+
+    返回捕获的 WebSocket 发送和接收的消息，帮助分析订阅机制
+    """
+    service = app_state.get_odds_service()
+
+    if not service or not service._orbitexch_client:
+        return {"error": "OrbitExch client not running"}
+
+    analysis = await service._orbitexch_client.get_websocket_analysis()
+
+    return analysis
 
 
 @router.get("/debug/raw-odds")
@@ -183,6 +200,15 @@ async def get_raw_odds():
     if not service:
         return {"odds": {}}
 
+    # OrbitExch 已注册的 selections 和未匹配的 selections
+    orbitexch_registered = {}
+    orbitexch_unmatched = {}
+    orbitexch_pair_info = {}
+    if service._orbitexch_client:
+        orbitexch_registered = service._orbitexch_client.get_all_registered_selections()
+        orbitexch_unmatched = service._orbitexch_client.get_unmatched_selections()
+        orbitexch_pair_info = service._orbitexch_client.get_pair_info()
+
     return {
         "latest_odds": service._latest_odds,
         "subscribed_pairs": {
@@ -190,7 +216,11 @@ async def get_raw_odds():
                 "polymarket_event_id": pair.polymarket_event_id,
                 "orbitexch_home": pair.orbitexch_home_team,
                 "orbitexch_away": pair.orbitexch_away_team,
+                "orbitexch_data": pair.orbitexch_data,
             }
             for pair_id, pair in service._subscribed_pairs.items()
         },
+        "orbitexch_pair_info": orbitexch_pair_info,
+        "orbitexch_registered_selections": orbitexch_registered,
+        "orbitexch_unmatched_selections": orbitexch_unmatched,
     }

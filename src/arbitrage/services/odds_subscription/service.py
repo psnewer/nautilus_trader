@@ -175,21 +175,35 @@ class OddsSubscriptionService:
         )
 
         if sport_id and competition_id and self._orbitexch_client:
-            # 注册 selection_id -> (pair_id, market_type) 映射
+            # 首先注册 pair 信息（队名），用于在订阅时通过队名重新匹配
+            self._orbitexch_client.register_pair_info(
+                pair_id=pair_id,
+                home_team=pair.orbitexch_home_team,
+                away_team=pair.orbitexch_away_team,
+            )
+
+            # 注册 (market_id, selection_id) -> (pair_id, market_type) 映射
+            # 注意：这些 market_id 可能在订阅时被更新（因为页面内容可能变化）
+            market_id = orbitexch_data.get("market_id", "")
             home_sel_id = orbitexch_data.get("home_selection_id", "")
             draw_sel_id = orbitexch_data.get("draw_selection_id", "")
             away_sel_id = orbitexch_data.get("away_selection_id", "")
 
-            if home_sel_id:
-                self._orbitexch_client.register_selection(home_sel_id, pair_id, "home")
-            if draw_sel_id:
-                self._orbitexch_client.register_selection(draw_sel_id, pair_id, "draw")
-            if away_sel_id:
-                self._orbitexch_client.register_selection(away_sel_id, pair_id, "away")
+            if not market_id:
+                self._log.warning(
+                    f"Missing market_id for pair {pair_id}, will try to match by team names during subscription"
+                )
+
+            if market_id and home_sel_id:
+                self._orbitexch_client.register_selection(market_id, home_sel_id, pair_id, "home")
+            if market_id and draw_sel_id:
+                self._orbitexch_client.register_selection(market_id, draw_sel_id, pair_id, "draw")
+            if market_id and away_sel_id:
+                self._orbitexch_client.register_selection(market_id, away_sel_id, pair_id, "away")
 
             self._log.info(
                 f"Registered OrbitExch selections for {pair_id}: "
-                f"home={home_sel_id}, draw={draw_sel_id}, away={away_sel_id}"
+                f"market_id={market_id}, home={home_sel_id}, draw={draw_sel_id}, away={away_sel_id}"
             )
 
             # 为这个 pair 订阅 OrbitExch

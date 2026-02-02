@@ -29,7 +29,9 @@ class MatchEvent:
     away_team: str
     sport_id: str = ""
     competition_id: str = ""
-    # OrbitExch selection IDs (用于 WebSocket 赔率匹配)
+    # OrbitExch market_id (唯一标识每场比赛)
+    market_id: str = ""
+    # OrbitExch selection IDs (用于赔率匹配，需要与 market_id 组合使用)
     home_selection_id: str = ""
     draw_selection_id: str = ""
     away_selection_id: str = ""
@@ -344,12 +346,19 @@ class OrbitExchScraper:
                         const awayTeam = pElements[1].textContent?.trim() || '';
 
                         if (homeTeam && awayTeam) {
-                            // 提取 data-selection-id
+                            // 提取 data-selection-id 和 data-market-id
                             // 通常有 3 个选项：主胜、平局、客胜
                             const selectionElements = row.querySelectorAll('[data-selection-id]');
+                            let marketId = '';
                             let homeSelectionId = '';
                             let drawSelectionId = '';
                             let awaySelectionId = '';
+
+                            // 获取 market_id（从第一个 selection 元素向上查找）
+                            if (selectionElements.length > 0) {
+                                const firstSel = selectionElements[0];
+                                marketId = firstSel.closest('[data-market-id]')?.getAttribute('data-market-id') || '';
+                            }
 
                             // 按顺序：第1个=主胜，第2个=平局，第3个=客胜
                             if (selectionElements.length >= 3) {
@@ -365,6 +374,7 @@ class OrbitExchScraper:
                             results.push({
                                 home_team: homeTeam,
                                 away_team: awayTeam,
+                                market_id: marketId,
                                 home_selection_id: homeSelectionId,
                                 draw_selection_id: drawSelectionId,
                                 away_selection_id: awaySelectionId
@@ -384,6 +394,7 @@ class OrbitExchScraper:
                     away_team=m["away_team"],
                     sport_id=sport_id,
                     competition_id=competition_id,
+                    market_id=m.get("market_id", ""),
                     home_selection_id=m.get("home_selection_id", ""),
                     draw_selection_id=m.get("draw_selection_id", ""),
                     away_selection_id=m.get("away_selection_id", ""),
@@ -392,10 +403,10 @@ class OrbitExchScraper:
                 if m["home_team"] and m["away_team"]
             ]
 
-            self._log.info(f"Extracted {len(events)} matches with selection IDs")
+            self._log.info(f"Extracted {len(events)} matches with market_id and selection IDs")
             for e in events:
                 self._log.debug(
-                    f"  {e.home_team} vs {e.away_team}: "
+                    f"  {e.home_team} vs {e.away_team}: market={e.market_id}, "
                     f"home={e.home_selection_id}, draw={e.draw_selection_id}, away={e.away_selection_id}"
                 )
 
