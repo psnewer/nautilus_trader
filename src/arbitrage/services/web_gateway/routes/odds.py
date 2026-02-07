@@ -28,10 +28,14 @@ async def get_subscription_status():
         }
 
     subscriptions = service.get_subscriptions()
+    subscriptions_count = len(subscriptions)
+
+    # 判断运行状态：有活跃订阅即认为运行中
+    is_running = subscriptions_count > 0
 
     return {
-        "running": service._running,
-        "subscriptions_count": len(subscriptions),
+        "running": is_running,
+        "subscriptions_count": subscriptions_count,
     }
 
 
@@ -186,6 +190,47 @@ async def get_websocket_analysis():
     analysis = await service._orbitexch_client.get_websocket_analysis()
 
     return analysis
+
+
+@router.get("/debug/polymarket-tokens")
+async def get_polymarket_tokens():
+    """
+    获取 Polymarket 已订阅的 tokens（用于调试）
+    """
+    service = app_state.get_odds_service()
+
+    if not service or not service._polymarket_client:
+        return {"error": "Polymarket client not running"}
+
+    subscribed_tokens = service._polymarket_client._subscribed_tokens
+    latest_odds = service._polymarket_client._latest_odds
+
+    # Group by event_id
+    events_summary = {}
+    for token_id, info in subscribed_tokens.items():
+        event_id = info.get("event_id", "unknown")
+        if event_id not in events_summary:
+            events_summary[event_id] = {"tokens": [], "has_data": False}
+        events_summary[event_id]["tokens"].append({
+            "token_id": token_id[:30] + "...",
+            "market_type": info.get("market_type"),
+            "outcome": info.get("outcome"),
+            "has_data": token_id in latest_odds,
+        })
+        if token_id in latest_odds:
+            events_summary[event_id]["has_data"] = True
+
+    # Events with data vs without
+    events_with_data = [eid for eid, info in events_summary.items() if info["has_data"]]
+    events_without_data = [eid for eid, info in events_summary.items() if not info["has_data"]]
+
+    return {
+        "events_summary": events_summary,
+        "events_with_data": events_with_data,
+        "events_without_data": events_without_data,
+        "total_subscribed": len(subscribed_tokens),
+        "tokens_with_data": len(latest_odds),
+    }
 
 
 @router.get("/debug/raw-odds")

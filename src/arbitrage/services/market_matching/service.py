@@ -51,8 +51,13 @@ class MatchedPair:
         max_possible_similarity = 10  # 假设最大可能相似度
         confidence = min(result.total_similarity / max_possible_similarity, 1.0)
 
+        # 生成稳定的 pair_id（基于 polymarket_event_id）
+        # 这样重新匹配时 pair_id 不会改变
+        polymarket_event_id = poly.original_data.get("event_id", "")
+        stable_pair_id = f"pair-{polymarket_event_id}" if polymarket_event_id else generate_id("pair")
+
         return cls(
-            pair_id=generate_id("pair"),
+            pair_id=stable_pair_id,
             sport=poly.sport,
             competition=poly.competition,
             polymarket_home_team=poly.home_team,

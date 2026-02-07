@@ -1,20 +1,22 @@
 """
 OrbitExch 赔率客户端
 
-使用 Playwright + MutationObserver 监控 DOM 变化获取实时赔率数据。
+使用 Playwright + CDP WebSocket 拦截获取实时赔率数据。
 
 关键特性：
 - 直接访问 competition 页面（无需从首页导航）
-- 使用 MutationObserver 监控赔率 DOM 变化
-- 支持页面缩放以显示更多比赛
+- 使用 CDP (Chrome DevTools Protocol) 拦截 WebSocket 消息
+- 支持 SockJS 格式的消息解析
+- 使用 market_id:selection_id 复合键映射
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Callable
 
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import async_playwright, Page, Browser, CDPSession
 
 
 from .config import OddsSubscriptionConfig
@@ -24,10 +26,10 @@ class OrbitExchOddsClient:
     """
     OrbitExch 赔率客户端
 
-    使用 Playwright + MutationObserver 监控 DOM 变化：
-    1. 打开浏览器并登录 OrbitExch
+    使用 Playwright + CDP WebSocket 拦截：
+    1. 打开浏览器并登录 OrbitExch（共享会话）
     2. 直接导航到指定 competition 页面
-    3. 注入 MutationObserver 监控赔率 DOM 变化
+    3. 使用 CDP 拦截 WebSocket 帧获取实时赔率
     4. 浏览器保持打开状态
     """
 
@@ -71,9 +73,18 @@ class OrbitExchOddsClient:
         # 状态
         self._running = False
 
-        # 超时监控任务（替代轮询）
+        # CDP 会话管理
+        self._cdp_sessions: dict[str, CDPSession] = {}  # page_key -> CDPSession
+
+        # WebSocket 连接追踪
+        self._ws_request_ids: dict[str, str] = {}  # requestId -> url
+
+        # 最后数据更新时间（毫秒时间戳）
+        self._last_data_update: float = 0
+
+        # 超时监控任务
         self._staleness_monitor_task: asyncio.Task | None = None
-        self._staleness_check_interval = 10  # 每 10 秒检查一次数据是否过时
+        self._staleness_check_interval = 30  # 每 30 秒检查一次数据是否过时
 
         # 订阅锁（防止并行创建重复标签页）
         self._subscribe_lock = asyncio.Lock()
@@ -454,16 +465,44 @@ class OrbitExchOddsClient:
             page: 浏览器页面
         """
         try:
-            await asyncio.sleep(2)
-            ok_button = page.locator('xpath=//button[normalize-space()="OK"]')
+            # 等待弹窗出现
+            await asyncio.sleep(3)
 
-            if await ok_button.is_visible(timeout=5000):
-                await ok_button.click()
-                await asyncio.sleep(1)
-                self._log.info("Popup dismissed")
+            # 直接使用已知有效的选择器
+            selector = 'xpath=//button[normalize-space()="OK"]'
+            try:
+                button = page.locator(selector)
+                # 等待按钮可见，最多等待 5 秒
+                await button.wait_for(state="visible", timeout=5000)
+                await button.click()
+                self._log.info("Popup dismissed (OK button)")
+                await asyncio.sleep(0.5)
+                return
+            except Exception as e:
+                self._log.debug(f"OK button not found or not clickable: {e}")
 
-        except Exception:
-            pass  # 没有弹窗
+            # 备用选择器
+            backup_selectors = [
+                'button:has-text("OK")',
+                'button:has-text("Close")',
+                '[aria-label="Close"]',
+            ]
+
+            for sel in backup_selectors:
+                try:
+                    btn = page.locator(sel).first
+                    if await btn.is_visible(timeout=2000):
+                        await btn.click()
+                        self._log.info(f"Popup dismissed using: {sel}")
+                        await asyncio.sleep(0.5)
+                        return
+                except Exception:
+                    continue
+
+            self._log.debug("No popup found to dismiss")
+
+        except Exception as e:
+            self._log.debug(f"Error dismissing popup: {e}")
 
     async def stop(self) -> None:
         """
@@ -482,8 +521,18 @@ class OrbitExchOddsClient:
             except asyncio.CancelledError:
                 pass
 
+        # 断开 CDP 会话
+        for page_key, cdp_session in list(self._cdp_sessions.items()):
+            try:
+                await cdp_session.detach()
+                self._log.debug(f"Detached CDP session for {page_key}")
+            except Exception:
+                pass
+        self._cdp_sessions.clear()
+
         self._pages.clear()
         self._subscribed_competitions.clear()
+        self._ws_request_ids.clear()
 
         # 关闭浏览器
         if self._browser:
@@ -508,7 +557,8 @@ class OrbitExchOddsClient:
         """
         订阅 competition 的赔率
 
-        直接导航到 competition 页面，无需从首页开始
+        使用 CDP WebSocket 拦截获取实时赔率数据。
+        关键：必须在登录后（共享会话）才能接收到 WebSocket 数据。
 
         Args:
             sport_id: sport ID
@@ -534,47 +584,33 @@ class OrbitExchOddsClient:
 
         url = f"{self.config.orbitexch_base_url}/customer/sport/{sport_id}/competition/{competition_id}"
 
-        # 1. CDP 模式：优先查找已存在的匹配标签页
-        page = None
-        if self.config.orbitexch_cdp_url:
-            for existing_page in self._context.pages:
-                if f"/competition/{competition_id}" in existing_page.url:
-                    page = existing_page
-                    self._log.info(f"Found existing tab for competition {competition_id}")
-                    break
-
-        # 2. 如果没有找到现有标签页，创建新的
-        if page is None:
-            page = await self._context.new_page()
-            self._log.info(f"Created new tab, navigating to: {url}")
-
+        # 1. 创建新标签页
+        page = await self._context.new_page()
         self._pages[page_key] = page
+        self._log.info(f"Created new tab for competition {competition_id}")
 
-        # 4. 导航到 competition 页面
+        # 2. 【关键】在导航之前设置 CDP WebSocket 拦截
+        await self._setup_websocket_interception(page, page_key)
+
+        # 3. 导航到 competition 页面
+        self._log.info(f"Navigating to: {url}")
         await page.goto(url, wait_until="networkidle")
 
-        # 5. 等待页面加载
-        await asyncio.sleep(2)
+        # 4. 等待页面加载和 WebSocket 连接
+        await asyncio.sleep(3)
 
-        # 6. 注入可见性欺骗脚本（后备，因为 init_script 应该已经注入）
+        # 5. 注入可见性欺骗脚本（让所有比赛都接收 WebSocket 数据）
         await self._setup_visibility_spoof(page)
 
-        # 7. 注入 WebSocket 监控脚本
-        await self._setup_websocket_monitor(page)
-
-        # 8. 重新抓取页面上的比赛并更新 selection 映射
+        # 6. 抓取页面上的比赛信息并更新 selection 映射
         await self._refresh_selection_mapping_from_page(page)
 
-        # 9. 设置 MutationObserver
-        await self._expose_odds_callback(page)
-        await self._setup_mutation_observer(page, page_key)
-
-        # 10. 启动超时监控任务（检查数据是否过时，过时则刷新页面）
+        # 7. 启动超时监控任务
         if self._staleness_monitor_task is None or self._staleness_monitor_task.done():
             self._staleness_monitor_task = asyncio.create_task(self._staleness_monitor_loop())
             self._log.info("Started staleness monitor task")
 
-        # 11. 记录订阅的 events
+        # 8. 记录订阅的 events
         for event_id in event_ids:
             self._subscribed_events[event_id] = {
                 "sport_id": sport_id,
@@ -583,6 +619,308 @@ class OrbitExchOddsClient:
 
         self._log.info(f"Subscribed to {len(event_ids)} events in competition {competition_id}")
         self._log.info(f"Total open tabs: {len(self._pages)}")
+
+    # =========================================================================
+    # CDP WebSocket 拦截
+    # =========================================================================
+
+    async def _setup_websocket_interception(self, page: Page, page_key: str) -> None:
+        """
+        设置 CDP WebSocket 拦截
+
+        使用 Chrome DevTools Protocol 拦截浏览器级别的 WebSocket 消息，
+        这比 JavaScript 拦截更可靠。
+
+        Args:
+            page: 浏览器页面
+            page_key: 页面键（用于标识）
+        """
+        self._log.info(f"Setting up CDP WebSocket interception for {page_key}...")
+
+        try:
+            # 创建 CDP 会话
+            cdp_session = await self._context.new_cdp_session(page)
+            self._cdp_sessions[page_key] = cdp_session
+
+            # 启用网络监控
+            await cdp_session.send("Network.enable")
+
+            # 注册 WebSocket 事件处理
+            cdp_session.on("Network.webSocketCreated", self._on_websocket_created)
+            cdp_session.on("Network.webSocketFrameReceived", self._on_websocket_frame)
+            cdp_session.on("Network.webSocketClosed", self._on_websocket_closed)
+
+            self._log.info(f"CDP WebSocket interception ready for {page_key}")
+
+        except Exception as e:
+            self._log.error(f"Failed to setup CDP interception for {page_key}: {e}")
+            raise
+
+    def _on_websocket_created(self, event: dict) -> None:
+        """
+        WebSocket 连接创建回调
+
+        Args:
+            event: CDP 事件数据 {"requestId": str, "url": str}
+        """
+        request_id = event.get("requestId", "")
+        url = event.get("url", "")
+        self._log.info(f"WebSocket created: {url} (requestId={request_id})")
+
+        # 追踪 WebSocket 连接
+        self._ws_request_ids[request_id] = url
+
+    def _on_websocket_closed(self, event: dict) -> None:
+        """
+        WebSocket 连接关闭回调
+
+        Args:
+            event: CDP 事件数据 {"requestId": str}
+        """
+        request_id = event.get("requestId", "")
+        url = self._ws_request_ids.pop(request_id, "unknown")
+        self._log.info(f"WebSocket closed: {url} (requestId={request_id})")
+
+    def _on_websocket_frame(self, event: dict) -> None:
+        """
+        WebSocket 帧接收回调
+
+        OrbitExch 使用 SockJS 协议，消息格式为 a["..."]
+
+        Args:
+            event: CDP 事件数据 {"requestId": str, "timestamp": float, "response": {"payloadData": str}}
+        """
+        try:
+            payload_data = event.get("response", {}).get("payloadData", "")
+
+            # 跳过空消息
+            if not payload_data:
+                return
+
+            # 更新最后数据更新时间
+            self._last_data_update = time.time() * 1000
+
+            # 解析 SockJS 格式: a["..."]
+            if payload_data.startswith('a['):
+                try:
+                    # 去掉开头的 'a' 得到 JSON 数组
+                    inner_data = json.loads(payload_data[1:])
+
+                    for item in inner_data:
+                        # 每个 item 是一个 JSON 字符串
+                        try:
+                            data = json.loads(item)
+                            # 异步处理消息
+                            asyncio.create_task(self._process_websocket_message(data))
+                        except json.JSONDecodeError:
+                            pass
+
+                except json.JSONDecodeError as e:
+                    self._log.debug(f"Failed to parse SockJS message: {e}")
+
+            # 心跳消息 'h'
+            elif payload_data == 'h':
+                pass  # 忽略心跳
+
+            # 打开消息 'o'
+            elif payload_data == 'o':
+                self._log.debug("WebSocket SockJS opened")
+
+        except Exception as e:
+            self._log.error(f"Error processing WebSocket frame: {e}")
+
+    async def _process_websocket_message(self, data: dict) -> None:
+        """
+        处理 WebSocket 消息
+
+        OrbitExch WebSocket 消息格式（非标准 MCM）:
+        - 市场数据消息: {"id": "market_id", "rc": [...], "marketDefinition": {...}, ...}
+        - 事件信息消息: {"EVENT_INFO_UPDATES": [...]}
+        - 其他消息: {"PROPERTIES": {...}}, {"OPEN_BETS_COUNTER": ...}
+
+        Args:
+            data: 解析后的 JSON 数据
+        """
+        try:
+            # 检查是否是市场数据消息（包含 id 和 rc 字段）
+            if "id" in data and "rc" in data:
+                await self._process_market_data(data)
+            # 跳过其他消息类型（EVENT_INFO_UPDATES, PROPERTIES, OPEN_BETS_COUNTER）
+
+        except Exception as e:
+            self._log.error(f"Error processing WebSocket message: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _process_market_data(self, data: dict) -> None:
+        """
+        处理 OrbitExch 市场数据消息
+
+        消息格式：
+        {
+            "id": "1.253525959",  # market_id
+            "marketDefinition": {
+                "runners": [
+                    {"id": 6390244, "name": "Belinda Bencic", "sortPriority": 1},
+                    {"id": 26309908, "name": "Sonay Kartal", "sortPriority": 2}
+                ],
+                ...
+            },
+            "rc": [  # runner changes
+                {
+                    "id": 6390244,
+                    "batb": [[0, 1.35, 100], ...],  # best available to back
+                    "batl": [[0, 1.36, 50], ...],   # best available to lay
+                },
+                ...
+            ],
+            "apiPt": 1770042012345,  # timestamp
+            ...
+        }
+
+        Args:
+            data: 市场数据
+        """
+        market_id = str(data.get("id", ""))
+        timestamp = data.get("apiPt", int(time.time() * 1000))
+
+        # 处理 runner changes
+        rc_list = data.get("rc", [])
+
+        for rc in rc_list:
+            selection_id = str(rc.get("id", ""))
+
+            # 提取 best back price
+            # OrbitExch 使用 bdatb (best display available to back)
+            # 格式: [{"index": 0, "odds": 3.05, "amount": 53.1}, ...]
+            back_price = 0.0
+            bdatb = rc.get("bdatb") or rc.get("batb", [])
+            if bdatb and len(bdatb) > 0:
+                first_back = bdatb[0]
+                if isinstance(first_back, dict):
+                    back_price = float(first_back.get("odds", 0))
+                elif isinstance(first_back, list) and len(first_back) > 1:
+                    back_price = float(first_back[1])
+
+            # 提取 best lay price
+            # OrbitExch 使用 bdatl (best display available to lay)
+            # 格式: [{"index": 0, "odds": 3.1, "amount": 5.55}, ...]
+            lay_price = 0.0
+            bdatl = rc.get("bdatl") or rc.get("batl", [])
+            if bdatl and len(bdatl) > 0:
+                first_lay = bdatl[0]
+                if isinstance(first_lay, dict):
+                    lay_price = float(first_lay.get("odds", 0))
+                elif isinstance(first_lay, list) and len(first_lay) > 1:
+                    lay_price = float(first_lay[1])
+
+            # 跳过无价格数据
+            if not back_price and not lay_price:
+                continue
+            await self._process_odds_update({
+                "marketId": market_id,
+                "selectionId": selection_id,
+                "back": back_price,
+                "lay": lay_price,
+                "timestamp": timestamp,
+            })
+
+    async def _process_mcm_message(self, data: dict) -> None:
+        """
+        处理 MCM (Market Change Message) 消息（备用，MCM 格式）
+
+        MCM 消息格式：
+        {
+            "op": "mcm",
+            "clk": "...",
+            "pt": timestamp,
+            "mc": [
+                {
+                    "id": "market_id",
+                    "marketDefinition": {...},  # 可选，包含 selection 定义
+                    "rc": [  # runner changes
+                        {
+                            "id": selection_id,
+                            "batb": [[price_idx, price, size], ...],  # best available to back
+                            "batl": [[price_idx, price, size], ...],  # best available to lay
+                        }
+                    ]
+                }
+            ]
+        }
+
+        Args:
+            data: MCM 消息数据
+        """
+        mc_list = data.get("mc", [])
+        timestamp = data.get("pt", int(time.time() * 1000))
+
+        # 调试：记录 MCM 消息
+        if mc_list:
+            self._log.debug(f"MCM message: {len(mc_list)} market changes")
+
+        for mc in mc_list:
+            market_id = mc.get("id", "")
+
+            # 处理 marketDefinition（包含 selection 信息）
+            market_def = mc.get("marketDefinition")
+            if market_def:
+                await self._process_market_definition(market_id, market_def)
+
+            # 处理 runner changes（赔率变化）
+            rc_list = mc.get("rc", [])
+            for rc in rc_list:
+                selection_id = str(rc.get("id", ""))
+
+                # 提取 best back price (batb)
+                back_price = 0.0
+                batb = rc.get("batb", [])
+                if batb and len(batb) > 0:
+                    # batb 格式: [[price_idx, price, size], ...]
+                    # 取第一个（最佳价格）
+                    back_price = float(batb[0][1]) if len(batb[0]) > 1 else 0.0
+
+                # 提取 best lay price (batl)
+                lay_price = 0.0
+                batl = rc.get("batl", [])
+                if batl and len(batl) > 0:
+                    lay_price = float(batl[0][1]) if len(batl[0]) > 1 else 0.0
+
+                # 跳过无价格数据
+                if not back_price and not lay_price:
+                    continue
+
+                # 处理赔率更新
+                await self._process_odds_update({
+                    "marketId": market_id,
+                    "selectionId": selection_id,
+                    "back": back_price,
+                    "lay": lay_price,
+                    "timestamp": timestamp,
+                })
+
+    async def _process_market_definition(self, market_id: str, market_def: dict) -> None:
+        """
+        处理市场定义消息
+
+        marketDefinition 包含 runners（selections）信息，可用于建立映射
+
+        Args:
+            market_id: 市场 ID
+            market_def: 市场定义数据
+        """
+        runners = market_def.get("runners", [])
+
+        for runner in runners:
+            selection_id = str(runner.get("id", ""))
+            name = runner.get("name", "")
+            sort_priority = runner.get("sortPriority", 0)
+
+            # 日志记录（用于调试映射关系）
+            self._log.debug(
+                f"Market definition: market={market_id}, "
+                f"selection={selection_id}, name={name}, sort={sort_priority}"
+            )
 
     async def _setup_visibility_spoof(self, page: Page) -> None:
         """
@@ -699,102 +1037,6 @@ class OrbitExchOddsClient:
         """)
         self._log.info("Visibility spoof installed")
 
-    async def _setup_websocket_monitor(self, page: Page) -> None:
-        """
-        注入 WebSocket 监控和分析脚本
-
-        监控 WebSocket 连接状态，并分析消息格式以了解订阅机制
-        """
-        await page.evaluate("""
-            () => {
-                if (window.__wsMonitorInstalled) return;
-                window.__wsMonitorInstalled = true;
-
-                // 记录上次数据更新时间
-                window.__lastDataUpdate = Date.now();
-
-                // 保存所有 WebSocket 实例，便于分析
-                window.__webSockets = [];
-
-                // 拦截 WebSocket 以监控和分析
-                const OriginalWebSocket = window.WebSocket;
-                window.WebSocket = function(url, protocols) {
-                    const ws = new OriginalWebSocket(url, protocols);
-                    window.__webSockets.push(ws);
-
-                    // 保存原始 send 方法
-                    const originalSend = ws.send.bind(ws);
-
-                    // 拦截 send 方法以分析发送的消息
-                    ws.send = function(data) {
-                        try {
-                            let parsed = data;
-                            if (typeof data === 'string') {
-                                try {
-                                    parsed = JSON.parse(data);
-                                } catch(e) {}
-                            }
-                            console.log('[WS Monitor] Sending:', parsed);
-
-                            // 保存发送的消息用于分析
-                            if (!window.__wsSentMessages) window.__wsSentMessages = [];
-                            window.__wsSentMessages.push({
-                                timestamp: Date.now(),
-                                data: parsed
-                            });
-                        } catch(e) {}
-
-                        return originalSend(data);
-                    };
-
-                    ws.addEventListener('open', () => {
-                        console.log('[WS Monitor] WebSocket connected:', url);
-                        window.__wsConnected = true;
-                        window.__wsUrl = url;
-                    });
-
-                    ws.addEventListener('close', (event) => {
-                        console.log('[WS Monitor] WebSocket closed:', event.code, event.reason);
-                        window.__wsConnected = false;
-                    });
-
-                    ws.addEventListener('message', (event) => {
-                        window.__lastDataUpdate = Date.now();
-
-                        // 分析接收的消息（只记录前几条用于调试）
-                        if (!window.__wsReceivedMessages) window.__wsReceivedMessages = [];
-                        if (window.__wsReceivedMessages.length < 50) {
-                            try {
-                                let parsed = event.data;
-                                if (typeof event.data === 'string') {
-                                    try {
-                                        parsed = JSON.parse(event.data);
-                                    } catch(e) {}
-                                }
-                                window.__wsReceivedMessages.push({
-                                    timestamp: Date.now(),
-                                    data: parsed
-                                });
-                            } catch(e) {}
-                        }
-                    });
-
-                    ws.addEventListener('error', (error) => {
-                        console.log('[WS Monitor] WebSocket error:', error);
-                    });
-
-                    return ws;
-                };
-                window.WebSocket.prototype = OriginalWebSocket.prototype;
-                window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-                window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-                window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-                window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-
-                console.log('[WS Monitor] WebSocket monitor installed');
-            }
-        """)
-        self._log.info("WebSocket monitor installed")
 
     async def _refresh_selection_mapping_from_page(self, page: Page) -> None:
         """
@@ -929,196 +1171,12 @@ class OrbitExchOddsClient:
             import traceback
             traceback.print_exc()
 
-    async def _expose_odds_callback(self, page: Page) -> None:
-        """
-        暴露 Python 回调函数给 JavaScript
-
-        这样 MutationObserver 可以直接调用 Python 函数，无需轮询
-        """
-        # 检查是否已经暴露过
-        already_exposed = await page.evaluate("() => typeof window.__onOrbitOddsChange === 'function'")
-        if already_exposed:
-            self._log.debug("Callback already exposed, skipping")
-            return
-
-        async def on_odds_change(market_id: str, selection_id: str, back: float, lay: float, timestamp: int):
-            """JavaScript 调用的回调函数"""
-            await self._process_odds_update({
-                "marketId": market_id,
-                "selectionId": selection_id,
-                "back": back,
-                "lay": lay,
-                "timestamp": timestamp,
-            })
-
-        # 暴露函数给 JavaScript
-        try:
-            await page.expose_function("__onOrbitOddsChange", on_odds_change)
-            self._log.info("Exposed __onOrbitOddsChange callback to JavaScript")
-        except Exception as e:
-            # 可能函数已经存在
-            self._log.debug(f"Could not expose function (may already exist): {e}")
-
-    async def _setup_mutation_observer(self, page: Page, page_key: str) -> None:
-        """
-        注入 MutationObserver 脚本监控赔率 DOM 变化
-
-        DOM 结构：
-        - div.betContentContainer[data-selection-id] 包含每个选项的赔率
-        - .biab_back-cell .biab_bet-odds 包含 back 价格
-        - .biab_lay-cell .biab_bet-odds 包含 lay 价格
-
-        当赔率变化时，直接调用暴露的 Python 回调函数
-        """
-        self._log.info(f"Setting up MutationObserver for {page_key}...")
-
-        # 注入监控脚本
-        await page.evaluate("""
-            () => {
-                // 防止重复安装
-                if (window.__orbitObserverInstalled) return;
-                window.__orbitObserverInstalled = true;
-
-                // 去重：记录最近发送的赔率，避免重复触发
-                const lastSent = new Map();
-
-                // 创建 MutationObserver
-                const observer = new MutationObserver((mutations) => {
-                    mutations.forEach(mutation => {
-                        // 检查是否是赔率文本变化
-                        if (mutation.type === 'characterData' || mutation.type === 'childList') {
-                            const target = mutation.target;
-
-                            // 向上查找 selection 容器
-                            const container = target.closest?.('[data-selection-id]') ||
-                                             target.parentElement?.closest?.('[data-selection-id]');
-
-                            if (container) {
-                                const selectionId = container.getAttribute('data-selection-id');
-
-                                // 查找 market_id（向上查找包含 data-market-id 的元素）
-                                const marketContainer = container.closest('[data-market-id]');
-                                const marketId = marketContainer?.getAttribute('data-market-id') || '';
-
-                                // 提取 back 和 lay 价格
-                                const backEl = container.querySelector('.biab_back-cell .biab_bet-odds, .back-cell .biab_bet-odds');
-                                const layEl = container.querySelector('.biab_lay-cell .biab_bet-odds, .lay-cell .biab_bet-odds');
-
-                                const backPrice = parseFloat(backEl?.textContent?.trim()) || 0;
-                                const layPrice = parseFloat(layEl?.textContent?.trim()) || 0;
-
-                                // 调试日志
-                                console.log('[MutationObserver] Detected change:', {
-                                    selectionId, marketId, backPrice, layPrice,
-                                    hasMarketId: !!marketId,
-                                    targetNodeType: target.nodeType,
-                                    targetNodeName: target.nodeName
-                                });
-
-                                if (selectionId && marketId && (backPrice || layPrice)) {
-                                    // 去重检查（使用 market_id:selection_id 作为键）
-                                    const key = `${marketId}:${selectionId}_${backPrice}_${layPrice}`;
-                                    const now = Date.now();
-                                    const lastTime = lastSent.get(key);
-
-                                    // 同样的赔率 500ms 内不重复发送
-                                    if (!lastTime || now - lastTime > 500) {
-                                        lastSent.set(key, now);
-
-                                        // 更新数据更新时间戳（供超时监控使用）
-                                        window.__lastDataUpdate = now;
-
-                                        console.log('[MutationObserver] Calling Python callback:', marketId, selectionId, backPrice, layPrice);
-
-                                        // 直接调用 Python 回调（传入 marketId）
-                                        window.__onOrbitOddsChange(marketId, selectionId, backPrice, layPrice, now);
-                                    }
-                                } else {
-                                    console.log('[MutationObserver] Skipped - missing data:', {selectionId, marketId, backPrice, layPrice});
-                                }
-                            }
-                        }
-                    });
-                });
-
-                // 监控整个文档
-                observer.observe(document.body, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true,
-                    characterDataOldValue: true
-                });
-
-                console.log('OrbitExch MutationObserver installed (callback mode)');
-            }
-        """)
-
-        # 做一次初始抓取
-        await self._scrape_current_odds(page)
-
-        self._log.info(f"MutationObserver setup complete for {page_key}")
-
-    async def _scrape_current_odds(self, page: Page) -> None:
-        """
-        抓取当前页面上的所有赔率
-
-        Args:
-            page: 浏览器页面
-        """
-        # 静默抓取，不输出日志（轮询模式下会频繁调用）
-
-        try:
-            odds_data = await page.evaluate("""
-                () => {
-                    const results = [];
-
-                    // 查找所有 selection 容器
-                    const containers = document.querySelectorAll('[data-selection-id]');
-
-                    containers.forEach(container => {
-                        const selectionId = container.getAttribute('data-selection-id');
-
-                        // 查找 market_id（向上查找包含 data-market-id 的元素）
-                        const marketContainer = container.closest('[data-market-id]');
-                        const marketId = marketContainer?.getAttribute('data-market-id') || '';
-
-                        // 提取 back 和 lay 价格
-                        const backEl = container.querySelector('.biab_back-cell .biab_bet-odds, .back-cell .biab_bet-odds');
-                        const layEl = container.querySelector('.biab_lay-cell .biab_bet-odds, .lay-cell .biab_bet-odds');
-
-                        const backPrice = backEl?.textContent?.trim() || '';
-                        const layPrice = layEl?.textContent?.trim() || '';
-
-                        if (selectionId && marketId && (backPrice || layPrice)) {
-                            results.push({
-                                marketId,
-                                selectionId,
-                                back: parseFloat(backPrice) || 0,
-                                lay: parseFloat(layPrice) || 0,
-                                timestamp: Date.now()
-                            });
-                        }
-                    });
-
-                    return results;
-                }
-            """)
-
-            self._log.debug(f"Scraped {len(odds_data)} odds entries")
-
-            # 处理抓取的赔率
-            for item in odds_data:
-                await self._process_odds_update(item)
-
-        except Exception as e:
-            self._log.error(f"Error scraping odds: {e}")
-
     async def _staleness_monitor_loop(self) -> None:
         """
-        超时监控循环：定期检查页面数据是否过时
+        超时监控循环：定期检查 WebSocket 数据是否过时
 
-        如果页面在配置的超时时间内没有收到任何赔率更新，则刷新页面。
-        不进行轮询抓取数据，完全依赖 MutationObserver。
+        如果在配置的超时时间内没有收到任何赔率更新，则刷新页面。
+        完全依赖 CDP WebSocket 拦截获取数据。
         """
         timeout_sec = self.config.orbitexch_staleness_timeout_sec
         self._log.info(
@@ -1132,28 +1190,25 @@ class OrbitExchOddsClient:
                 await asyncio.sleep(self._staleness_check_interval)
                 check_count += 1
 
-                # 遍历所有订阅的页面
-                for page_key, page in list(self._pages.items()):
-                    if page_key == "main":
-                        continue  # 跳过主登录页
+                # 检查数据是否过时
+                await self._check_and_refresh_if_stale()
 
-                    try:
-                        # 检查页面数据是否过时
-                        await self._check_and_refresh_if_stale(page, page_key)
-
-                        # 每 30 次检查模拟一次人类行为（约 5 分钟一次）
-                        if check_count % 30 == 0:
+                # 每 10 次检查模拟一次人类行为（约 5 分钟一次）
+                if check_count % 10 == 0:
+                    for page_key, page in list(self._pages.items()):
+                        if page_key == "main":
+                            continue
+                        try:
                             await self._simulate_human_behavior(page)
-
-                    except Exception as e:
-                        self._log.debug(f"Error checking page {page_key}: {e}")
+                        except Exception:
+                            pass
 
             except asyncio.CancelledError:
                 self._log.info("Staleness monitor cancelled")
                 break
             except Exception as e:
                 self._log.error(f"Error in staleness monitor: {e}")
-                await asyncio.sleep(5)  # 出错后等待一会再继续
+                await asyncio.sleep(5)
 
         self._log.info("Staleness monitor stopped")
 
@@ -1178,60 +1233,53 @@ class OrbitExchOddsClient:
         except Exception:
             pass  # 忽略错误
 
-    async def _reinstall_mutation_observer(self, page: Page, page_key: str) -> None:
+    async def _check_and_refresh_if_stale(self) -> None:
         """
-        重新安装 MutationObserver（确保始终有效）
-
-        先断开旧的 observer，再创建新的
-        """
-        try:
-            # 断开旧的 observer 并重新安装
-            await page.evaluate("""
-                () => {
-                    // 断开旧的 observer
-                    if (window.__orbitObserver) {
-                        window.__orbitObserver.disconnect();
-                    }
-                    // 重置安装标志，允许重新安装
-                    window.__orbitObserverInstalled = false;
-                }
-            """)
-
-            # 重新设置 MutationObserver
-            await self._setup_mutation_observer(page, page_key)
-
-        except Exception as e:
-            self._log.debug(f"Error reinstalling MutationObserver: {e}")
-
-    async def _check_and_refresh_if_stale(self, page: Page, page_key: str) -> None:
-        """
-        检查页面数据是否过时，如果超过配置的超时时间无更新则刷新页面
+        检查 WebSocket 数据是否过时，如果超时则刷新所有页面
         """
         timeout_sec = self.config.orbitexch_staleness_timeout_sec
+        now = time.time() * 1000
+        stale_seconds = (now - self._last_data_update) / 1000 if self._last_data_update else 0
 
-        try:
-            # 获取上次数据更新时间
-            last_update = await page.evaluate("() => window.__lastDataUpdate || 0")
-            now = await page.evaluate("() => Date.now()")
+        # 如果从未收到过数据，给更多时间（初始化阶段）
+        if self._last_data_update == 0:
+            return
 
-            stale_seconds = (now - last_update) / 1000
+        if stale_seconds > timeout_sec:
+            self._log.warning(
+                f"WebSocket data is stale ({stale_seconds:.0f}s), refreshing pages..."
+            )
 
-            if stale_seconds > timeout_sec:
-                self._log.warning(
-                    f"Page {page_key} data is stale ({stale_seconds:.0f}s), refreshing..."
-                )
-                await page.reload(wait_until="networkidle")
-                await asyncio.sleep(2)
+            for page_key, page in list(self._pages.items()):
+                if page_key == "main":
+                    continue
 
-                # 重新设置监控
-                await self._setup_websocket_monitor(page)
-                await self._expose_odds_callback(page)
-                await self._setup_mutation_observer(page, page_key)
+                try:
+                    # 断开旧的 CDP 会话
+                    old_cdp = self._cdp_sessions.pop(page_key, None)
+                    if old_cdp:
+                        try:
+                            await old_cdp.detach()
+                        except Exception:
+                            pass
 
-                self._log.info(f"Page {page_key} refreshed")
+                    # 刷新页面
+                    await page.reload(wait_until="networkidle")
+                    await asyncio.sleep(2)
 
-        except Exception as e:
-            self._log.debug(f"Error checking staleness for {page_key}: {e}")
+                    # 重新设置 CDP 拦截
+                    await self._setup_websocket_interception(page, page_key)
+
+                    # 重新设置可见性欺骗
+                    await self._setup_visibility_spoof(page)
+
+                    # 重新抓取 selection 映射
+                    await self._refresh_selection_mapping_from_page(page)
+
+                    self._log.info(f"Page {page_key} refreshed")
+
+                except Exception as e:
+                    self._log.error(f"Error refreshing page {page_key}: {e}")
 
     async def _process_odds_update(self, data: dict) -> None:
         """
@@ -1302,6 +1350,17 @@ class OrbitExchOddsClient:
     # =========================================================================
     # Selection ID 映射管理
     # =========================================================================
+
+    def clear_mappings(self) -> None:
+        """
+        清除所有映射数据（用于重新订阅前）
+        """
+        old_count = len(self._selection_mapping)
+        self._selection_mapping.clear()
+        self._pair_info.clear()
+        self._latest_odds.clear()
+        self._unmatched_selections.clear()
+        self._log.info(f"Cleared {old_count} selection mappings")
 
     def register_pair_info(
         self,
@@ -1440,17 +1499,31 @@ class OrbitExchOddsClient:
         """
         self._log.info(f"Refreshing {len(self._pages)} pages...")
 
-        for page_key, page in self._pages.items():
+        for page_key, page in list(self._pages.items()):
             if page_key == "main":
                 continue  # 跳过主登录页
 
             try:
-                await page.reload(wait_until="networkidle")
-                await asyncio.sleep(1)
+                # 断开旧的 CDP 会话
+                old_cdp = self._cdp_sessions.pop(page_key, None)
+                if old_cdp:
+                    try:
+                        await old_cdp.detach()
+                    except Exception:
+                        pass
 
-                # 重新暴露回调函数并设置 MutationObserver
-                await self._expose_odds_callback(page)
-                await self._setup_mutation_observer(page, page_key)
+                # 刷新页面
+                await page.reload(wait_until="networkidle")
+                await asyncio.sleep(2)
+
+                # 重新设置 CDP 拦截
+                await self._setup_websocket_interception(page, page_key)
+
+                # 重新设置可见性欺骗
+                await self._setup_visibility_spoof(page)
+
+                # 重新抓取 selection 映射
+                await self._refresh_selection_mapping_from_page(page)
 
                 self._log.info(f"Page {page_key} refreshed")
             except Exception as e:
@@ -1458,55 +1531,41 @@ class OrbitExchOddsClient:
 
         self._log.info("All pages refreshed")
 
-    async def get_websocket_analysis(self) -> dict:
+    async def close_main_page(self) -> None:
         """
-        获取 WebSocket 消息分析（用于调试）
+        关闭主登录页面
 
-        返回捕获的 WebSocket 发送和接收的消息，帮助分析订阅机制
+        在所有 competition 订阅完成后调用，释放资源。
+        登录会话已保存在浏览器上下文中，关闭主页面不影响其他页面。
+        """
+        main_page = self._pages.pop("main", None)
+        if main_page:
+            try:
+                await main_page.close()
+                self._log.info("Main page closed")
+            except Exception as e:
+                self._log.debug(f"Error closing main page: {e}")
+        else:
+            self._log.debug("Main page already closed or not exists")
+
+    def get_cdp_status(self) -> dict:
+        """
+        获取 CDP WebSocket 拦截状态（用于调试）
 
         Returns:
             {
-                "sent_messages": [...],
-                "received_messages": [...],
-                "ws_url": str,
-                "ws_connected": bool
+                "cdp_sessions": list of page_keys with active CDP sessions,
+                "ws_connections": dict of tracked WebSocket connections,
+                "last_data_update": float timestamp of last data update,
+                "last_data_update_age_sec": float seconds since last update
             }
         """
-        result = {
-            "sent_messages": [],
-            "received_messages": [],
-            "ws_url": "",
-            "ws_connected": False,
-            "pages": {}
+        now = time.time() * 1000
+        age_sec = (now - self._last_data_update) / 1000 if self._last_data_update else -1
+
+        return {
+            "cdp_sessions": list(self._cdp_sessions.keys()),
+            "ws_connections": self._ws_request_ids.copy(),
+            "last_data_update": self._last_data_update,
+            "last_data_update_age_sec": age_sec,
         }
-
-        for page_key, page in self._pages.items():
-            if page_key == "main":
-                continue
-
-            try:
-                page_data = await page.evaluate("""
-                    () => {
-                        return {
-                            sent_messages: window.__wsSentMessages || [],
-                            received_messages: window.__wsReceivedMessages || [],
-                            ws_url: window.__wsUrl || '',
-                            ws_connected: window.__wsConnected || false,
-                            last_data_update: window.__lastDataUpdate || 0
-                        };
-                    }
-                """)
-                result["pages"][page_key] = page_data
-
-                # 汇总
-                if page_data["ws_url"]:
-                    result["ws_url"] = page_data["ws_url"]
-                if page_data["ws_connected"]:
-                    result["ws_connected"] = True
-                result["sent_messages"].extend(page_data["sent_messages"])
-                result["received_messages"].extend(page_data["received_messages"])
-
-            except Exception as e:
-                self._log.debug(f"Error getting WS analysis for {page_key}: {e}")
-
-        return result

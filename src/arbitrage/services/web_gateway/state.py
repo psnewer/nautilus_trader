@@ -6,9 +6,22 @@
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+# 自动加载 .env 文件
+try:
+    from dotenv import load_dotenv
+    # 从项目根目录加载 .env
+    project_root = Path(__file__).parent.parent.parent.parent.parent
+    env_path = project_root / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        logging.getLogger(__name__).info(f"Loaded .env from {env_path}")
+except ImportError:
+    pass  # python-dotenv 未安装，跳过
 
 from src.arbitrage.services.market_discovery.config import (
     MarketDiscoveryConfig,
@@ -349,13 +362,10 @@ class AppState:
             from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
             from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 
-            # 创建服务配置
-            # 使用 Playwright 启动浏览器（带反检测）
-            import os
+            # 创建服务配置（从环境变量或 .env 文件读取凭据）
             config = OddsSubscriptionConfig(
-                # TODO: 从环境变量读取，或临时填入测试
-                orbitexch_username=os.getenv("ORBITEXCH_USERNAME", ""),  # 填入用户名
-                orbitexch_password=os.getenv("ORBITEXCH_PASSWORD", ""),  # 填入密码
+                orbitexch_username=os.getenv("ORBITEXCH_USERNAME", ""),
+                orbitexch_password=os.getenv("ORBITEXCH_PASSWORD", ""),
             )
             self._odds_service = OddsSubscriptionService(
                 config=config,

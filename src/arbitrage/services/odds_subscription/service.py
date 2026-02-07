@@ -120,6 +120,8 @@ class OddsSubscriptionService:
         """
         订阅 matched pairs 的赔率（并行处理）
 
+        使用稳定的 pair_id（基于 polymarket_event_id），重新订阅不会导致 ID 不匹配。
+
         Args:
             matched_pairs: 匹配的市场对列表
         """
@@ -136,6 +138,10 @@ class OddsSubscriptionService:
         await asyncio.gather(*tasks)
 
         self._log.info(f"Subscription complete: {len(self._subscribed_pairs)} pairs")
+
+        # 关闭 OrbitExch 主页面（释放资源）
+        if self._orbitexch_client:
+            await self._orbitexch_client.close_main_page()
 
     async def _subscribe_single_pair_safe(self, pair: MatchedPair) -> None:
         """安全地订阅单个 pair（捕获异常）"""
