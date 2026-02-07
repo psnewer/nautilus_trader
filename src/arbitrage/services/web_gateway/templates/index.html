@@ -197,11 +197,11 @@
                             </div>
                             <div class="card-body">
                                 <div class="d-grid gap-2">
-                                    <button class="btn btn-primary" onclick="subscribeOdds()">
+                                    <button id="btn-subscribe" class="btn btn-success" onclick="subscribeOdds()">
                                         <span class="loading spinner-border spinner-border-sm me-1"></span>
                                         <i class="bi bi-play-fill me-1"></i>Subscribe to Odds
                                     </button>
-                                    <button class="btn btn-outline-danger" onclick="unsubscribeOdds()">
+                                    <button id="btn-unsubscribe" class="btn btn-danger" onclick="unsubscribeOdds()" disabled>
                                         <i class="bi bi-stop-fill me-1"></i>Stop Subscription
                                     </button>
                                     <button class="btn btn-outline-secondary" onclick="refreshOddsData()">
@@ -527,27 +527,43 @@
 
         // Odds Monitor
         async function subscribeOdds() {
+            const btnSubscribe = document.getElementById('btn-subscribe');
+            const btnUnsubscribe = document.getElementById('btn-unsubscribe');
             try {
+                btnSubscribe.disabled = true;
                 document.querySelector('#odds .loading').classList.add('show');
                 const result = await api('/api/odds/subscribe', 'POST');
                 showToast(`Subscription started for ${result.pairs_count} pairs`);
-                await refreshOddsStatus();
+                // 订阅成功，设置按钮状态
+                btnUnsubscribe.disabled = false;
+                // 更新状态文本（不调用 refreshOddsStatus 避免覆盖按钮状态）
+                document.getElementById('odds-status-text').textContent = 'Running';
+                document.getElementById('subscriptions-count').textContent = result.pairs_count;
                 startAutoRefresh();
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
+                btnSubscribe.disabled = false;
             } finally {
                 document.querySelector('#odds .loading').classList.remove('show');
             }
         }
 
         async function unsubscribeOdds() {
+            const btnSubscribe = document.getElementById('btn-subscribe');
+            const btnUnsubscribe = document.getElementById('btn-unsubscribe');
             try {
+                btnUnsubscribe.disabled = true;
                 await api('/api/odds/unsubscribe', 'POST');
                 showToast('Subscription stopped');
+                // 停止成功，设置按钮状态
+                btnSubscribe.disabled = false;
+                // 更新状态文本
+                document.getElementById('odds-status-text').textContent = 'Not Running';
+                document.getElementById('subscriptions-count').textContent = '0';
                 stopAutoRefresh();
-                await refreshOddsStatus();
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
+                btnUnsubscribe.disabled = false;
             }
         }
 
@@ -556,6 +572,17 @@
                 const status = await api('/api/odds/status');
                 document.getElementById('odds-status-text').textContent = status.running ? 'Running' : 'Not Running';
                 document.getElementById('subscriptions-count').textContent = status.subscriptions_count;
+
+                // 更新按钮状态
+                const btnSubscribe = document.getElementById('btn-subscribe');
+                const btnUnsubscribe = document.getElementById('btn-unsubscribe');
+                if (status.running) {
+                    btnSubscribe.disabled = true;
+                    btnUnsubscribe.disabled = false;
+                } else {
+                    btnSubscribe.disabled = false;
+                    btnUnsubscribe.disabled = true;
+                }
             } catch (e) {
                 console.error('Error refreshing odds status:', e);
             }

@@ -305,8 +305,11 @@ class PolymarketOddsClient:
 
             # 订阅待订阅的 tokens
             if self._pending_subscribe:
+                self._log.info(f"Sending {len(self._pending_subscribe)} pending token subscriptions")
                 await self._send_subscribe(self._pending_subscribe)
                 self._pending_subscribe = []
+            else:
+                self._log.info("No pending subscriptions to send")
 
         except Exception as e:
             self._log.error(f"WebSocket connection failed: {e}")
@@ -328,6 +331,14 @@ class PolymarketOddsClient:
 
         await self._ws.send(json.dumps(subscribe_msg))
         self._log.info(f"Sent subscription for {len(token_ids)} tokens")
+
+        # Debug: log the actual token IDs being subscribed
+        for token_id in token_ids:
+            token_info = self._subscribed_tokens.get(token_id, {})
+            self._log.debug(
+                f"  Subscribed token: event={token_info.get('event_id')}, "
+                f"type={token_info.get('market_type')}, outcome={token_info.get('outcome')}"
+            )
 
     async def _run_websocket(self) -> None:
         """WebSocket 主循环"""
@@ -396,6 +407,7 @@ class PolymarketOddsClient:
         if "bids" in data and "asks" in data:
             asset_id = data.get("asset_id", "")
             if asset_id not in self._subscribed_tokens:
+                self._log.debug(f"Book message for unsubscribed token: {asset_id[:30]}...")
                 return
 
             token_info = self._subscribed_tokens[asset_id]
@@ -432,6 +444,7 @@ class PolymarketOddsClient:
             for change in price_changes:
                 asset_id = change.get("asset_id", "")
                 if asset_id not in self._subscribed_tokens:
+                    self._log.debug(f"Price change for unsubscribed token: {asset_id[:30]}...")
                     continue
 
                 token_info = self._subscribed_tokens[asset_id]
@@ -506,12 +519,18 @@ class PolymarketOddsClient:
         Args:
             event_id: Polymarket event ID
         """
+        self._log.info(f"Starting subscription for event {event_id}")
+
         # 1. 获取 tokens（可以并行执行，不需要锁）
         tokens = await self.get_event_tokens(event_id)
 
         if not tokens:
             self._log.warning(f"No tokens to subscribe for event {event_id}")
             return
+
+        self._log.info(f"Got {len(tokens)} tokens for event {event_id}")
+        for t in tokens:
+            self._log.info(f"  Token: type={t['market_type']}, outcome={t['outcome']}, id={t['token_id'][:20]}...")
 
         # 2. 使用锁保护订阅和 WebSocket 启动
         async with self._ws_lock:
@@ -522,11 +541,14 @@ class PolymarketOddsClient:
                 self._subscribed_tokens[token_id] = token_info
                 token_ids.append(token_id)
 
+            self._log.info(f"Total subscribed tokens now: {len(self._subscribed_tokens)}")
+
             # 发送订阅
             await self._send_subscribe(token_ids)
 
             # 启动 WebSocket（如果还未启动）
             if not self._ws_task or self._ws_task.done():
+                self._log.info("Starting WebSocket task")
                 self._ws_task = asyncio.create_task(self._run_websocket())
 
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
@@ -542,6 +564,16 @@ class PolymarketOddsClient:
     # =========================================================================
     # 数据访问
     # =========================================================================
+
+    def clear_subscriptions(self) -> None:
+        """
+        清除所有订阅数据（用于重新订阅前）
+        """
+        old_count = len(self._subscribed_tokens)
+        self._subscribed_tokens.clear()
+        self._latest_odds.clear()
+        self._pending_subscribe.clear()
+        self._log.info(f"Cleared {old_count} token subscriptions")
 
     def get_latest_odds(self, event_id: str) -> dict[str, dict]:
         """获取 event 的最新赔率"""
