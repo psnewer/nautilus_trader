@@ -822,9 +822,9 @@ ExecutionService 同时订阅 StrategyService 和 RiskService，综合判断后�
 
 | 文档位置 | 内容 | 作用 |
 |----------|------|------|
-| `docs/project/requirements.md` | 整体需求 | 定义系统级功能需求 |
-| `docs/project/architecture.md` | 整体架构 | 定义服务边界和交互 |
-| `docs/project/database-schema.md` | 整体数据设计 | 定义共享数据结构 |
+| `docs/arbitrage/requirements.md` | 整体需求 | 定义系统级功能需求 |
+| `docs/arbitrage/architecture.md` | 整体架构 | 定义服务边界和交互 |
+| `docs/arbitrage/database-schema.md` | 整体数据设计 | 定义共享数据结构 |
 | `src/*/requirements.md` | 模块需求 | 定义模块详细需求 |
 | `src/*/design.md` | 模块设计 | 定义模块内部设计 |
 

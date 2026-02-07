@@ -10,10 +10,10 @@
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| 需求说明 | [docs/project/requirements.md](docs/project/requirements.md) | 系统功能需求定义 |
-| 架构设计 | [docs/project/architecture.md](docs/project/architecture.md) | 微服务架构、事件定义、API设计、目录结构 |
-| 数据库设计 | [docs/project/database-schema.md](docs/project/database-schema.md) | PostgreSQL表设计、Redis数据结构 |
-| NautilusTrader | [docs/project/NautilusTrader.md](docs/project/NautilusTrader.md) | 框架说明、组件职责、适配器开发 |
+| 需求说明 | [docs/arbitrage/requirements.md](docs/arbitrage/requirements.md) | 系统功能需求定义 |
+| 架构设计 | [docs/arbitrage/architecture.md](docs/arbitrage/architecture.md) | 微服务架构、事件定义、API设计、目录结构 |
+| 数据库设计 | [docs/arbitrage/database-schema.md](docs/arbitrage/database-schema.md) | PostgreSQL表设计、Redis数据结构 |
+| NautilusTrader | [docs/arbitrage/NautilusTrader.md](docs/arbitrage/NautilusTrader.md) | 框架说明、组件职责、适配器开发 |
 
 ## 🤝 工作协作规范
 
@@ -34,10 +34,10 @@
 
 | 层级 | 文档位置 | 作用 |
 |------|----------|------|
-| **整体** | `docs/project/*.md` | 系统级需求、架构、数据库设计 |
+| **整体** | `docs/arbitrage/*.md` | 系统级需求、架构、数据库设计 |
 | **局部** | `src/*/requirements.md`、`src/*/architecture.md` | 模块级需求和设计 |
 
-在分析各模块下的需求或设计文件时，应联系 `docs/project/` 下的整体说明文件和关联模块下的各说明文件。
+在分析各模块下的需求或设计文件时，应联系 `docs/arbitrage/` 下的整体说明文件和关联模块下的各说明文件。
 
 
 ## 🚀 标准工作流程
