@@ -74,6 +74,7 @@ class OrbitExchScraper:
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=self.config.browser.user_data_dir,
                 headless=self.config.browser.headless,
+                channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
@@ -87,6 +88,7 @@ class OrbitExchScraper:
         else:
             self._browser = await self._playwright.chromium.launch(
                 headless=self.config.browser.headless,
+                channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",

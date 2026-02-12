@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import WebGatewayConfig
-from .routes import config_router, discovery_router, matching_router, odds_router
+from .routes import config_router, discovery_router, matching_router, odds_router, strategy_router
 
 # 模板目录
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -43,6 +43,7 @@ def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
     app.include_router(matching_router)
     app.include_router(config_router)
     app.include_router(odds_router)
+    app.include_router(strategy_router)
 
     # 静态文件
     if STATIC_DIR.exists():

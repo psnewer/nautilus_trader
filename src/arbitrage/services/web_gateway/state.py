@@ -28,6 +28,7 @@ from src.arbitrage.services.market_discovery.config import (
     SportConfig,
 )
 from src.arbitrage.services.market_matching.config import MarketMatchingConfig
+from src.arbitrage.services.strategy.config import StrategyServiceConfig
 
 
 # 默认配置文件路径
@@ -86,6 +87,7 @@ class AppState:
         # 配置
         self._discovery_config = MarketDiscoveryConfig()
         self._matching_config = MarketMatchingConfig()
+        self._strategy_config = StrategyServiceConfig()
 
         # 运行时数据
         self._polymarket_events: list[DiscoveryResult] = []
@@ -95,6 +97,9 @@ class AppState:
 
         # 赔率订阅服务
         self._odds_service = None  # 延迟初始化
+
+        # 策略服务
+        self._strategy_service = None  # 延迟初始化
 
         # 加载保存的配置
         self._load_saved_config()
@@ -116,6 +121,10 @@ class AppState:
                     self._matching_config = MarketMatchingConfig.from_dict(
                         data["matching"]
                     )
+                if "strategy" in data:
+                    self._strategy_config = StrategyServiceConfig.from_dict(
+                        data["strategy"]
+                    )
 
                 self._log.info(f"Loaded config from {DEFAULT_CONFIG_PATH}")
             except Exception as e:
@@ -127,6 +136,7 @@ class AppState:
             data = {
                 "discovery": self._discovery_config_to_dict(),
                 "matching": self._matching_config_to_dict(),
+                "strategy": self._strategy_config.to_dict(),
             }
             with open(DEFAULT_CONFIG_PATH, "w") as f:
                 json.dump(data, f, indent=2)
@@ -373,6 +383,114 @@ class AppState:
             )
 
         return self._odds_service
+
+    # =========================================================================
+    # 策略服务
+    # =========================================================================
+
+    def get_strategy_config(self) -> dict:
+        """获取策略配置"""
+        return self._strategy_config.to_dict()
+
+    def update_strategy_config(self, data: dict) -> dict:
+        """更新策略配置"""
+        self._strategy_config = StrategyServiceConfig.from_dict(data)
+        self._save_config()
+
+        # 如果策略服务已创建，更新其配置
+        if self._strategy_service is not None:
+            self._strategy_service.update_config(self._strategy_config)
+
+        return self.get_strategy_config()
+
+    @property
+    def strategy_config_obj(self) -> StrategyServiceConfig:
+        """获取策略配置对象"""
+        return self._strategy_config
+
+    def get_strategy_service(self):
+        """
+        获取策略服务实例
+
+        延迟初始化，只在首次调用时创建，并注册到赔率服务。
+        """
+        if self._strategy_service is None:
+            from src.arbitrage.services.strategy.service import StrategyService
+
+            self._strategy_service = StrategyService(
+                config=self._strategy_config,
+                logger=logging.getLogger("StrategyService"),
+            )
+
+            # 注册到赔率服务（如果赔率服务已创建）
+            if self._odds_service is not None:
+                self._odds_service.register_strategy_callback(
+                    self._strategy_service.on_odds_update
+                )
+                self._log.info("Strategy service registered to odds service")
+
+        return self._strategy_service
+
+    def ensure_strategy_registered(self) -> None:
+        """
+        确保策略服务已注册到赔率服务
+
+        在赔率订阅开始前调用，确保策略服务能接收赔率更新。
+        """
+        odds_service = self.get_odds_service()
+        strategy_service = self.get_strategy_service()
+
+        # 检查是否已注册（通过回调列表长度判断）
+        if strategy_service.on_odds_update not in []:
+            odds_service.register_strategy_callback(strategy_service.on_odds_update)
+
+    def register_matches_to_strategy(self) -> None:
+        """
+        将匹配的比赛注册到策略服务
+
+        在赔率订阅之后调用，将比赛信息和状态同步到策略服务。
+        """
+        strategy_service = self.get_strategy_service()
+        odds_service = self.get_odds_service()
+
+        # 获取所有比赛状态
+        match_statuses = odds_service.get_all_match_statuses()
+
+        # 为每个匹配的比赛注册信息
+        for pair in self._matched_pairs:
+            is_live = match_statuses.get(pair.pair_id, False)
+            strategy_service.register_match(
+                pair_id=pair.pair_id,
+                competition=pair.competition,
+                home_team=pair.polymarket_home,  # 使用 Polymarket 队名作为标准
+                away_team=pair.polymarket_away,
+                is_live=is_live,
+            )
+            self._log.debug(
+                f"Registered match {pair.pair_id}: {pair.polymarket_home} vs {pair.polymarket_away}, "
+                f"is_live={is_live}"
+            )
+
+        self._log.info(f"Registered {len(self._matched_pairs)} matches to strategy service")
+
+    def update_match_statuses(self) -> dict[str, bool]:
+        """
+        从赔率服务获取比赛状态并更新策略服务
+
+        Returns:
+            {pair_id: is_live}
+        """
+        odds_service = self.get_odds_service()
+        strategy_service = self.get_strategy_service()
+
+        # 获取最新比赛状态
+        match_statuses = odds_service.get_all_match_statuses()
+
+        # 更新策略服务中的比赛状态
+        for pair_id, is_live in match_statuses.items():
+            strategy_service.update_match_status(pair_id, is_live)
+
+        return match_statuses
 
 
 # 全局状态实例

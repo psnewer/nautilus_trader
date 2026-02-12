@@ -45,7 +45,7 @@ class EventNormalizer:
     def __init__(self, config: MarketMatchingConfig):
         self.config = config
 
-    def normalize_sport(self, sport: str) -> str:
+    def normalize_sport(self, sport: str | None) -> str:
         """
         标准化 sport 名称
 
@@ -55,6 +55,9 @@ class EventNormalizer:
         Returns:
             标准化后的 sport 名称
         """
+        if not sport:
+            return ""
+
         # 先查找别名映射
         if sport in self.config.sport_aliases:
             return self.config.sport_aliases[sport]
@@ -62,7 +65,7 @@ class EventNormalizer:
         # 如果没有别名，返回首字母大写形式
         return sport.strip().title()
 
-    def normalize_competition(self, competition: str) -> str:
+    def normalize_competition(self, competition: str | None) -> str:
         """
         标准化 competition 名称
 
@@ -72,6 +75,9 @@ class EventNormalizer:
         Returns:
             标准化后的 competition 名称
         """
+        if not competition:
+            return ""
+
         # 先查找别名映射
         if competition in self.config.competition_aliases:
             return self.config.competition_aliases[competition]
@@ -79,7 +85,7 @@ class EventNormalizer:
         # 如果没有别名，返回原值（去掉首尾空格）
         return competition.strip()
 
-    def normalize_team_name(self, team_name: str) -> str:
+    def normalize_team_name(self, team_name: str | None) -> str:
         """
         预处理队名用于匹配
 
@@ -93,6 +99,9 @@ class EventNormalizer:
         Returns:
             预处理后的队名
         """
+        if not team_name:
+            return ""
+
         # 去掉 / 符号
         normalized = team_name.replace("/", "")
         # 去掉首尾空格

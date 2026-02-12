@@ -7,7 +7,7 @@
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from src.arbitrage.services.market_matching.service import MatchedPair
 
@@ -49,6 +49,9 @@ class OddsSubscriptionService:
 
         # 运行状态
         self._running = False
+
+        # 策略回调
+        self._strategy_callbacks: list[Callable[[str, str, dict], None]] = []
 
     # =========================================================================
     # 生命周期
@@ -256,6 +259,9 @@ class OddsSubscriptionService:
                     f"Polymarket update: {pair_id} {market_type} "
                     f"bid={odds_data.get('bid')} ask={odds_data.get('ask')}"
                 )
+
+                # 触发策略回调
+                self._notify_strategy_callbacks(pair_id, "polymarket", odds_data)
                 break
 
     def _on_orbitexch_update(self, odds_data: dict) -> None:
@@ -295,6 +301,52 @@ class OddsSubscriptionService:
             self._log.debug(
                 f"OrbitExch: {pair_id} {market_type} back={back} lay={lay}"
             )
+
+            # 触发策略回调
+            self._notify_strategy_callbacks(
+                pair_id,
+                "orbitexch",
+                self._latest_odds[pair_id]["orbitexch"][market_type],
+            )
+
+    # =========================================================================
+    # 策略回调
+    # =========================================================================
+
+    def register_strategy_callback(
+        self,
+        callback: Callable[[str, str, dict], None],
+    ) -> None:
+        """
+        注册策略回调
+
+        当赔率更新时，触发回调通知策略服务。
+
+        Args:
+            callback: 回调函数，签名为 callback(pair_id, venue, odds_data)
+        """
+        self._strategy_callbacks.append(callback)
+        self._log.info(f"Strategy callback registered (total: {len(self._strategy_callbacks)})")
+
+    def _notify_strategy_callbacks(
+        self,
+        pair_id: str,
+        venue: str,
+        odds_data: dict,
+    ) -> None:
+        """
+        通知所有策略回调
+
+        Args:
+            pair_id: 比赛 ID
+            venue: 平台 ("polymarket" | "orbitexch")
+            odds_data: 赔率数据
+        """
+        for callback in self._strategy_callbacks:
+            try:
+                callback(pair_id, venue, odds_data)
+            except Exception as e:
+                self._log.error(f"Strategy callback error: {e}")
 
     # =========================================================================
     # 超时监控
@@ -401,3 +453,59 @@ class OddsSubscriptionService:
             })
 
         return subscriptions
+
+    def get_match_status(self, pair_id: str) -> bool | None:
+        """
+        获取比赛状态（是否为赛中盘）
+
+        通过 OrbitExch 页面的 data-time-section 属性判断:
+        - inPlay: 赛中盘 (is_live=True)
+        - comingUp: 赛前盘 (is_live=False)
+
+        Args:
+            pair_id: 比赛 ID
+
+        Returns:
+            True=赛中盘, False=赛前盘, None=未知
+        """
+        if self._orbitexch_client:
+            return self._orbitexch_client.get_match_status(pair_id)
+        return None
+
+    def get_all_match_statuses(self) -> dict[str, bool]:
+        """
+        获取所有比赛的状态
+
+        Returns:
+            {pair_id: is_live}
+        """
+        if self._orbitexch_client:
+            return self._orbitexch_client.get_all_match_statuses()
+        return {}
+
+    def get_pairs_info(self) -> dict[str, dict]:
+        """
+        获取所有订阅的 pairs 信息（包括队名等）
+
+        Returns:
+            {pair_id: {
+                "polymarket_home": str,
+                "polymarket_away": str,
+                "orbitexch_home": str,
+                "orbitexch_away": str,
+                "competition": str,
+                "is_live": bool | None,
+            }}
+        """
+        result = {}
+        for pair_id, pair in self._subscribed_pairs.items():
+            is_live = self.get_match_status(pair_id)
+            result[pair_id] = {
+                "polymarket_home": pair.polymarket_home_team,
+                "polymarket_away": pair.polymarket_away_team,
+                "orbitexch_home": pair.orbitexch_home_team,
+                "orbitexch_away": pair.orbitexch_away_team,
+                "competition": pair.competition,
+                "is_live": is_live,
+            }
+        return result
