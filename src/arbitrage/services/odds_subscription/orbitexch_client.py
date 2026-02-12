@@ -67,6 +67,13 @@ class OrbitExchOddsClient:
         # composite_key -> {"back": float, "lay": float, "count": int}
         self._unmatched_selections: dict[str, dict] = {}
 
+        # 当前订单（CURRENT_BETS）
+        # market_id -> [bet_dict, ...]
+        self._current_bets: dict[str, list[dict]] = {}
+
+        # 订单更新回调
+        self._bets_update_callback: Callable[[dict], None] | None = None
+
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
 
@@ -317,6 +324,7 @@ class OrbitExchOddsClient:
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=self.config.orbitexch_user_data_dir,
                 headless=False,
+                channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
                 args=browser_args,
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -331,6 +339,7 @@ class OrbitExchOddsClient:
         else:
             self._browser = await self._playwright.chromium.launch(
                 headless=False,
+                channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
                 args=browser_args,
             )
             self._context = await self._browser.new_context(
@@ -584,41 +593,54 @@ class OrbitExchOddsClient:
 
         url = f"{self.config.orbitexch_base_url}/customer/sport/{sport_id}/competition/{competition_id}"
 
-        # 1. 创建新标签页
-        page = await self._context.new_page()
-        self._pages[page_key] = page
-        self._log.info(f"Created new tab for competition {competition_id}")
+        try:
+            # 1. 创建新标签页
+            page = await self._context.new_page()
+            self._pages[page_key] = page
+            self._log.info(f"Created new tab for competition {competition_id}")
 
-        # 2. 【关键】在导航之前设置 CDP WebSocket 拦截
-        await self._setup_websocket_interception(page, page_key)
+            # 2. 【关键】在导航之前设置 CDP WebSocket 拦截
+            await self._setup_websocket_interception(page, page_key)
 
-        # 3. 导航到 competition 页面
-        self._log.info(f"Navigating to: {url}")
-        await page.goto(url, wait_until="networkidle")
+            # 3. 导航到 competition 页面
+            self._log.info(f"Navigating to: {url}")
+            await page.goto(url, wait_until="networkidle")
 
-        # 4. 等待页面加载和 WebSocket 连接
-        await asyncio.sleep(3)
+            # 4. 等待页面加载和 WebSocket 连接
+            await asyncio.sleep(3)
 
-        # 5. 注入可见性欺骗脚本（让所有比赛都接收 WebSocket 数据）
-        await self._setup_visibility_spoof(page)
+            # 5. 注入可见性欺骗脚本（让所有比赛都接收 WebSocket 数据）
+            await self._setup_visibility_spoof(page)
 
-        # 6. 抓取页面上的比赛信息并更新 selection 映射
-        await self._refresh_selection_mapping_from_page(page)
+            # 6. 抓取页面上的比赛信息并更新 selection 映射
+            await self._refresh_selection_mapping_from_page(page)
 
-        # 7. 启动超时监控任务
-        if self._staleness_monitor_task is None or self._staleness_monitor_task.done():
-            self._staleness_monitor_task = asyncio.create_task(self._staleness_monitor_loop())
-            self._log.info("Started staleness monitor task")
+            # 7. 启动超时监控任务
+            if self._staleness_monitor_task is None or self._staleness_monitor_task.done():
+                self._staleness_monitor_task = asyncio.create_task(self._staleness_monitor_loop())
+                self._log.info("Started staleness monitor task")
 
-        # 8. 记录订阅的 events
-        for event_id in event_ids:
-            self._subscribed_events[event_id] = {
-                "sport_id": sport_id,
-                "competition_id": competition_id,
-            }
+            # 8. 记录订阅的 events
+            for event_id in event_ids:
+                self._subscribed_events[event_id] = {
+                    "sport_id": sport_id,
+                    "competition_id": competition_id,
+                }
 
-        self._log.info(f"Subscribed to {len(event_ids)} events in competition {competition_id}")
-        self._log.info(f"Total open tabs: {len(self._pages)}")
+            self._log.info(f"Subscribed to {len(event_ids)} events in competition {competition_id}")
+            self._log.info(f"Total open tabs: {len(self._pages)}")
+
+        except Exception as e:
+            # 订阅失败，清理状态以允许重试
+            self._log.error(f"Failed to subscribe competition {competition_id}: {e}")
+            self._subscribed_competitions.discard(page_key)
+            if page_key in self._pages:
+                try:
+                    await self._pages[page_key].close()
+                except Exception:
+                    pass
+                del self._pages[page_key]
+            raise
 
     # =========================================================================
     # CDP WebSocket 拦截
@@ -736,6 +758,7 @@ class OrbitExchOddsClient:
         OrbitExch WebSocket 消息格式（非标准 MCM）:
         - 市场数据消息: {"id": "market_id", "rc": [...], "marketDefinition": {...}, ...}
         - 事件信息消息: {"EVENT_INFO_UPDATES": [...]}
+        - 当前订单消息: {"CURRENT_BETS": [...]}
         - 其他消息: {"PROPERTIES": {...}}, {"OPEN_BETS_COUNTER": ...}
 
         Args:
@@ -745,6 +768,9 @@ class OrbitExchOddsClient:
             # 检查是否是市场数据消息（包含 id 和 rc 字段）
             if "id" in data and "rc" in data:
                 await self._process_market_data(data)
+            # 处理 CURRENT_BETS 消息（用户订单数据）
+            elif "CURRENT_BETS" in data:
+                await self._process_current_bets(data)
             # 跳过其他消息类型（EVENT_INFO_UPDATES, PROPERTIES, OPEN_BETS_COUNTER）
 
         except Exception as e:
@@ -760,6 +786,7 @@ class OrbitExchOddsClient:
         {
             "id": "1.253525959",  # market_id
             "marketDefinition": {
+                "inplay": true,  # 比赛是否已开始
                 "runners": [
                     {"id": 6390244, "name": "Belinda Bencic", "sortPriority": 1},
                     {"id": 26309908, "name": "Sonay Kartal", "sortPriority": 2}
@@ -783,6 +810,14 @@ class OrbitExchOddsClient:
         """
         market_id = str(data.get("id", ""))
         timestamp = data.get("apiPt", int(time.time() * 1000))
+
+        # 从 marketDefinition 获取 inplay 状态
+        market_def = data.get("marketDefinition", {})
+        inplay = market_def.get("inplay", None)
+
+        # 如果有 inplay 信息，更新对应 pair 的状态
+        if inplay is not None:
+            self._update_inplay_status(market_id, inplay)
 
         # 处理 runner changes
         rc_list = data.get("rc", [])
@@ -824,6 +859,114 @@ class OrbitExchOddsClient:
                 "lay": lay_price,
                 "timestamp": timestamp,
             })
+
+    async def _process_current_bets(self, data: dict) -> None:
+        """
+        处理 CURRENT_BETS 消息（用户订单数据）
+
+        消息格式：
+        {
+            "CURRENT_BETS": [
+                {
+                    "offerId": 212257822,
+                    "marketId": "1.253930426",
+                    "selectionId": 8827537,
+                    "selectionName": "Team A",
+                    "side": "BACK",  # "BACK" or "LAY"
+                    "price": 10.00,
+                    "sizePlaced": "7.00",
+                    "sizeMatched": "0.00",
+                    "sizeRemaining": "7.00",
+                    "marketProfit": 63.00,  # 如果 selection 赢时的盈利
+                    "marketLiability": 7.00,  # 如果 selection 输时的亏损
+                    "eventName": "Team A v Team B",
+                    "competitionName": "Premier League",
+                    ...
+                }
+            ]
+        }
+
+        Args:
+            data: 解析后的 JSON 数据
+        """
+        try:
+            bets = data.get("CURRENT_BETS", [])
+            if not bets:
+                return
+
+            self._log.debug(f"Received CURRENT_BETS update: {len(bets)} bets")
+
+            # 按 market_id 分组
+            bets_by_market: dict[str, list[dict]] = {}
+            for bet in bets:
+                market_id = str(bet.get("marketId", ""))
+                if market_id:
+                    if market_id not in bets_by_market:
+                        bets_by_market[market_id] = []
+                    bets_by_market[market_id].append(bet)
+
+            # 更新缓存
+            self._current_bets = bets_by_market
+
+            # 触发回调
+            if self._bets_update_callback:
+                try:
+                    self._bets_update_callback({
+                        "bets": bets,
+                        "bets_by_market": bets_by_market,
+                        "timestamp": int(time.time() * 1000),
+                    })
+                except Exception as e:
+                    self._log.error(f"Bets update callback error: {e}")
+
+        except Exception as e:
+            self._log.error(f"Error processing CURRENT_BETS: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def get_current_bets(self, market_id: str | None = None) -> list[dict]:
+        """
+        获取当前订单
+
+        Args:
+            market_id: 可选，指定 market_id 返回该市场的订单
+
+        Returns:
+            订单列表
+        """
+        if market_id:
+            return self._current_bets.get(market_id, [])
+        else:
+            # 返回所有订单
+            all_bets = []
+            for bets in self._current_bets.values():
+                all_bets.extend(bets)
+            return all_bets
+
+    def get_bets_by_pair(self, pair_id: str) -> list[dict]:
+        """
+        获取指定比赛的订单
+
+        Args:
+            pair_id: 比赛 ID
+
+        Returns:
+            订单列表
+        """
+        result = []
+
+        # 从 pair_info 获取 market_id
+        pair_info = self._pair_info.get(pair_id, {})
+        market_id = pair_info.get("market_id")
+
+        if market_id:
+            result = self._current_bets.get(market_id, [])
+
+        return result
+
+    def register_bets_callback(self, callback: Callable[[dict], None]) -> None:
+        """注册订单更新回调"""
+        self._bets_update_callback = callback
 
     async def _process_mcm_message(self, data: dict) -> None:
         """
@@ -1044,11 +1187,15 @@ class OrbitExchOddsClient:
 
         这是必要的，因为 market_id 可能在 discovery 和 subscription 之间发生变化
         （页面上的比赛排序、新增/删除等）
+
+        同时检测比赛状态：
+        - data-time-section="inPlay" -> is_live=True
+        - data-time-section="comingUp" -> is_live=False
         """
         self._log.info("Refreshing selection mapping from live page...")
 
         try:
-            # 抓取页面上所有比赛的信息
+            # 抓取页面上所有比赛的信息（包括比赛状态）
             matches_data = await page.evaluate("""
                 () => {
                     const results = [];
@@ -1088,6 +1235,8 @@ class OrbitExchOddsClient:
                                     awaySelectionId = selectionElements[1].getAttribute('data-selection-id') || '';
                                 }
 
+                                // 注意：比赛状态 (is_live) 将从 WebSocket 的 inplay 字段获取
+                                // 这里默认为 false，等待 WebSocket 数据更新
                                 if (marketId) {
                                     results.push({
                                         home_team: homeTeam,
@@ -1123,6 +1272,10 @@ class OrbitExchOddsClient:
                     if registered_home == page_home and registered_away == page_away:
                         new_market_id = match["market_id"]
 
+                        # 比赛状态默认为 False（未开始），将由 WebSocket inplay 字段更新
+                        if "is_live" not in pair_info:
+                            pair_info["is_live"] = False
+
                         self._log.info(
                             f"Found match for {pair_id}: {match['home_team']} vs {match['away_team']} "
                             f"-> market_id={new_market_id}"
@@ -1143,7 +1296,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "home",
                             }
-                            self._log.info(f"Re-registered: {new_key} -> {pair_id}/home")
+                            self._log.debug(f"Re-registered: {new_key} -> {pair_id}/home")
 
                         if match["draw_selection_id"]:
                             new_key = f"{new_market_id}:{match['draw_selection_id']}"
@@ -1151,7 +1304,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "draw",
                             }
-                            self._log.info(f"Re-registered: {new_key} -> {pair_id}/draw")
+                            self._log.debug(f"Re-registered: {new_key} -> {pair_id}/draw")
 
                         if match["away_selection_id"]:
                             new_key = f"{new_market_id}:{match['away_selection_id']}"
@@ -1159,7 +1312,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "away",
                             }
-                            self._log.info(f"Re-registered: {new_key} -> {pair_id}/away")
+                            self._log.debug(f"Re-registered: {new_key} -> {pair_id}/away")
 
                         updated_count += 1
                         break
@@ -1347,6 +1500,37 @@ class OrbitExchOddsClient:
                 self._unmatched_selections[composite_key]["lay"] = lay_price
                 self._unmatched_selections[composite_key]["count"] += 1
 
+    def _update_inplay_status(self, market_id: str, inplay: bool) -> None:
+        """
+        根据 WebSocket 数据更新比赛的 inplay 状态
+
+        Args:
+            market_id: 市场 ID
+            inplay: 是否为赛中盘
+        """
+        # 查找该 market_id 对应的 pair_id
+        pair_id = None
+        for key, info in self._selection_mapping.items():
+            if key.startswith(f"{market_id}:"):
+                pair_id = info["pair_id"]
+                break
+
+        if pair_id and pair_id in self._pair_info:
+            old_status = self._pair_info[pair_id].get("is_live")
+            self._pair_info[pair_id]["is_live"] = inplay
+
+            # 状态变化时记录日志
+            if old_status is not None and old_status != inplay:
+                status_str = "IN-PLAY" if inplay else "PRE-MATCH"
+                self._log.info(
+                    f"Match status changed: {pair_id} -> {status_str}"
+                )
+            elif old_status is None:
+                status_str = "IN-PLAY" if inplay else "PRE-MATCH"
+                self._log.debug(
+                    f"Match status set: {pair_id} -> {status_str}"
+                )
+
     # =========================================================================
     # Selection ID 映射管理
     # =========================================================================
@@ -1486,6 +1670,34 @@ class OrbitExchOddsClient:
     def get_all_odds(self) -> dict[str, dict]:
         """获取所有赔率数据"""
         return self._latest_odds.copy()
+
+    def get_match_status(self, pair_id: str) -> bool | None:
+        """
+        获取比赛状态（是否为赛中盘）
+
+        Args:
+            pair_id: 匹配的 pair ID
+
+        Returns:
+            True=赛中盘(in-play), False=赛前盘(pre-match), None=未知
+        """
+        pair_info = self._pair_info.get(pair_id)
+        if pair_info:
+            return pair_info.get("is_live")
+        return None
+
+    def get_all_match_statuses(self) -> dict[str, bool]:
+        """
+        获取所有比赛的状态
+
+        Returns:
+            {pair_id: is_live}
+        """
+        return {
+            pair_id: info.get("is_live", False)
+            for pair_id, info in self._pair_info.items()
+            if "is_live" in info
+        }
 
     # =========================================================================
     # 页面刷新

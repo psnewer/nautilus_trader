@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "WTA Abu Dhabi 2026"
+              "WTA Doha 2026"
             ]
           }
         ]
@@ -46,11 +46,57 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "wta": "WTA",
-      "WTA Abu Dhabi 2026": "WTA"
+      "WTA Doha 2026": "WTA"
     },
     "competition_max_matches": {
       "English Premier League": 1,
       "WTA": 15
     }
+  },
+  "strategy": {
+    "enabled": true,
+    "default_strategies": [
+      "default"
+    ],
+    "signals": {
+      "rebate": {
+        "params": {
+          "rate": 0.03
+        },
+        "description": "\u5957\u5229\u8fd4\u6c34\u7387\u4fe1\u53f7\uff0c\u5f53\u8fd4\u6c34\u7387 > rate \u65f6\u4e3a True"
+      },
+      "pre-match": {
+        "params": {},
+        "description": "\u8d5b\u524d\u76d8\u4fe1\u53f7\uff0c\u6bd4\u8d5b\u672a\u5f00\u59cb\u65f6\u4e3a True"
+      },
+      "live": {
+        "params": {},
+        "description": "\u8d5b\u4e2d\u76d8\u4fe1\u53f7\uff0c\u6bd4\u8d5b\u8fdb\u884c\u4e2d\u65f6\u4e3a True"
+      }
+    },
+    "strategies": {
+      "strategy_1": {
+        "signals": [
+          "rebate",
+          "pre-match"
+        ],
+        "description": "\u8d5b\u524d\u5957\u5229\u7b56\u7565"
+      },
+      "strategy_2": {
+        "signals": [
+          "rebate",
+          "live"
+        ],
+        "description": "\u8d5b\u4e2d\u5957\u5229\u7b56\u7565"
+      },
+      "default": {
+        "signals": [
+          "rebate"
+        ],
+        "description": "\u9ed8\u8ba4\u7b56\u7565\uff08\u4ec5\u68c0\u67e5\u8fd4\u6c34\u7387\uff09"
+      }
+    },
+    "competition_config": {},
+    "match_config": []
   }
 }

@@ -63,6 +63,12 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="strategy-tab" data-bs-toggle="pill"
+                        data-bs-target="#strategy" type="button" role="tab">
+                    <i class="bi bi-bullseye me-1"></i>Strategy
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="config-tab" data-bs-toggle="pill"
                         data-bs-target="#config" type="button" role="tab">
                     <i class="bi bi-gear me-1"></i>Configuration
@@ -236,8 +242,8 @@
                                         <tr>
                                             <th>Match</th>
                                             <th>Team</th>
-                                            <th>Polymarket (bid/ask)</th>
-                                            <th>OrbitExch (back/lay)</th>
+                                            <th>Polymarket (bid/ask %)</th>
+                                            <th>OrbitExch (bid/ask %)</th>
                                             <th>Age</th>
                                         </tr>
                                     </thead>
@@ -246,6 +252,229 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Strategy Tab -->
+            <div class="tab-pane fade" id="strategy" role="tabpanel">
+                <div class="row">
+                    <!-- Left Panel: Signals & Strategies -->
+                    <div class="col-md-6">
+                        <!-- Basic Config -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-bullseye me-1"></i>Strategy Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveStrategyConfig()">
+                                    <i class="bi bi-save me-1"></i>Save All
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-6">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="strategy-enabled" checked>
+                                            <label class="form-check-label" for="strategy-enabled">Enabled</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <small class="text-muted">Status: <span id="strategy-status-text">Idle</span></small>
+                                    </div>
+                                </div>
+                                <hr class="my-2">
+                                <label class="form-label small">Default Strategies</label>
+                                <div id="default-strategies-checkboxes"></div>
+                            </div>
+                        </div>
+
+                        <!-- Signal Definitions -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-broadcast me-1"></i>Signals</span>
+                                <button class="btn btn-sm btn-outline-success" onclick="showAddSignalModal()">
+                                    <i class="bi bi-plus me-1"></i>Add
+                                </button>
+                            </div>
+                            <div class="card-body" style="max-height: 180px; overflow-y: auto;">
+                                <div id="signals-list"></div>
+                            </div>
+                        </div>
+
+                        <!-- Strategy Definitions -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-diagram-3 me-1"></i>Strategies</span>
+                                <button class="btn btn-sm btn-outline-success" onclick="showAddStrategyModal()">
+                                    <i class="bi bi-plus me-1"></i>Add
+                                </button>
+                            </div>
+                            <div class="card-body" style="max-height: 180px; overflow-y: auto;">
+                                <div id="strategies-list"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right Panel: Competition & Match Config -->
+                    <div class="col-md-6">
+                        <!-- Competition Config -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-trophy me-1"></i>Competition Config</span>
+                                <button class="btn btn-sm btn-outline-success" onclick="showAddCompetitionConfigModal()">
+                                    <i class="bi bi-plus me-1"></i>Add
+                                </button>
+                            </div>
+                            <div class="card-body" style="max-height: 200px; overflow-y: auto;">
+                                <div id="competition-config-list"></div>
+                            </div>
+                        </div>
+
+                        <!-- Match Config -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-people me-1"></i>Match Config</span>
+                                <button class="btn btn-sm btn-outline-success" onclick="showAddMatchConfigModal()">
+                                    <i class="bi bi-plus me-1"></i>Add
+                                </button>
+                            </div>
+                            <div class="card-body" style="max-height: 350px; overflow-y: auto;">
+                                <small class="text-muted d-block mb-2">Override competition config for specific matches</small>
+                                <div id="match-config-list"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add Signal Modal -->
+            <div class="modal fade" id="addSignalModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add/Edit Signal</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Signal Name</label>
+                                <input type="text" class="form-control" id="modal-signal-name" placeholder="e.g., rebate">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Parameters (JSON)</label>
+                                <textarea class="form-control config-editor" id="modal-signal-params" rows="3" placeholder='{"rate": 0.03}'></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Description</label>
+                                <input type="text" class="form-control" id="modal-signal-description" placeholder="Signal description">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveSignal()">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add Strategy Modal -->
+            <div class="modal fade" id="addStrategyModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add/Edit Strategy</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Strategy Name</label>
+                                <input type="text" class="form-control" id="modal-strategy-name" placeholder="e.g., strategy_1">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Signals (select multiple)</label>
+                                <div id="modal-strategy-signals"></div>
+                                <small class="text-muted">Strategy triggers when ALL selected signals are satisfied</small>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Description</label>
+                                <input type="text" class="form-control" id="modal-strategy-description" placeholder="Strategy description">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveStrategy()">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add Competition Config Modal -->
+            <div class="modal fade" id="addCompetitionConfigModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add Competition Config</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Competition Name</label>
+                                <input type="text" class="form-control" id="modal-competition-name" placeholder="e.g., English Premier League">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Strategies</label>
+                                <div id="modal-competition-strategies"></div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveCompetitionConfig()">Save</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Add Match Config Modal -->
+            <div class="modal fade" id="addMatchConfigModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add Match Config</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Competition</label>
+                                        <input type="text" class="form-control" id="modal-match-competition" placeholder="e.g., English Premier League">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Home Team</label>
+                                        <input type="text" class="form-control" id="modal-match-home" placeholder="e.g., Tottenham Hotspur FC">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Away Team</label>
+                                        <input type="text" class="form-control" id="modal-match-away" placeholder="e.g., Newcastle United FC">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Strategies (override competition config)</label>
+                                        <div id="modal-match-strategies"></div>
+                                        <small class="text-muted">Leave unchecked to use competition default</small>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Signal Overrides (JSON)</label>
+                                        <textarea class="form-control config-editor" id="modal-match-signal-overrides" rows="4" placeholder='{"rebate": {"rate": 0.1}}'></textarea>
+                                        <small class="text-muted">Override signal parameters for this match</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveMatchConfig()">Save</button>
                         </div>
                     </div>
                 </div>
@@ -660,10 +889,14 @@
                     // 跳过没有数据的行
                     if (!poly.bid && !poly.ask && !orbit.back && !orbit.lay) return;
 
-                    const polyBid = poly.bid ? poly.bid.toFixed(3) : '-';
-                    const polyAsk = poly.ask ? poly.ask.toFixed(3) : '-';
-                    const orbitBack = orbit.back ? orbit.back.toFixed(2) : '-';
-                    const orbitLay = orbit.lay ? orbit.lay.toFixed(2) : '-';
+                    // 转换为概率格式 (0-100%)
+                    // Polymarket: 已经是概率 (0-1), 乘以 100
+                    // OrbitExch: 十进制赔率, 概率 = 100 / odds
+                    // back = ask (买入价), lay = bid (卖出价)
+                    const polyBidProb = poly.bid ? (poly.bid * 100).toFixed(1) : '-';
+                    const polyAskProb = poly.ask ? (poly.ask * 100).toFixed(1) : '-';
+                    const orbitAskProb = orbit.back ? (100 / orbit.back).toFixed(1) : '-';  // back = ask
+                    const orbitBidProb = orbit.lay ? (100 / orbit.lay).toFixed(1) : '-';    // lay = bid
 
                     // 计算数据新鲜度
                     const polyTime = poly.timestamp ? Date.now() - poly.timestamp : null;
@@ -687,12 +920,12 @@
                             ${matchCell}
                             <td>${teamName}</td>
                             <td>
-                                <span class="text-success">${polyBid}</span> /
-                                <span class="text-danger">${polyAsk}</span>
+                                <span class="text-success">${polyBidProb}</span> /
+                                <span class="text-danger">${polyAskProb}</span>
                             </td>
                             <td>
-                                <span class="text-primary">${orbitBack}</span> /
-                                <span class="text-warning">${orbitLay}</span>
+                                <span class="text-success">${orbitBidProb}</span> /
+                                <span class="text-danger">${orbitAskProb}</span>
                             </td>
                             <td><span class="badge ${ageClass}">${ageSec}</span></td>
                         </tr>
@@ -737,6 +970,430 @@
             } else {
                 stopAutoRefresh();
             }
+        });
+
+        // ==============================
+        // Strategy Functions
+        // ==============================
+
+        let strategyConfig = {
+            enabled: true,
+            default_strategies: ['default'],
+            signals: {},
+            strategies: {},
+            competition_config: {},
+            match_config: []
+        };
+
+        async function loadStrategyConfig() {
+            try {
+                strategyConfig = await api('/api/strategy/config');
+                document.getElementById('strategy-enabled').checked = strategyConfig.enabled;
+                renderSignalsList();
+                renderStrategiesList();
+                renderDefaultStrategiesCheckboxes();
+                renderCompetitionConfigList();
+                renderMatchConfigList();
+            } catch (e) {
+                console.error('Error loading strategy config:', e);
+            }
+        }
+
+        function renderSignalsList() {
+            const container = document.getElementById('signals-list');
+            const signals = strategyConfig.signals || {};
+
+            if (Object.keys(signals).length === 0) {
+                container.innerHTML = '<p class="text-muted small">No signals defined</p>';
+                return;
+            }
+
+            container.innerHTML = Object.entries(signals).map(([name, sig]) => {
+                const paramsStr = sig.params && Object.keys(sig.params).length > 0
+                    ? Object.entries(sig.params).map(([k, v]) => `${k}=${v}`).join(', ')
+                    : 'no params';
+                return `
+                    <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light rounded">
+                        <div>
+                            <strong>${name}</strong>
+                            <small class="text-muted d-block">${paramsStr}</small>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" onclick="editSignal('${name}')">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderStrategiesList() {
+            const container = document.getElementById('strategies-list');
+            const strategies = strategyConfig.strategies || {};
+
+            if (Object.keys(strategies).length === 0) {
+                container.innerHTML = '<p class="text-muted small">No strategies defined</p>';
+                return;
+            }
+
+            container.innerHTML = Object.entries(strategies).map(([name, strat]) => {
+                const signalsStr = (strat.signals || []).join(' + ');
+                return `
+                    <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light rounded">
+                        <div>
+                            <strong>${name}</strong>
+                            <small class="text-muted d-block">${signalsStr || 'no signals'}</small>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" onclick="editStrategy('${name}')">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderDefaultStrategiesCheckboxes() {
+            const container = document.getElementById('default-strategies-checkboxes');
+            const strategies = strategyConfig.strategies || {};
+            const defaultStrategies = strategyConfig.default_strategies || [];
+
+            if (Object.keys(strategies).length === 0) {
+                container.innerHTML = '<p class="text-muted small">Define strategies first</p>';
+                return;
+            }
+
+            container.innerHTML = Object.keys(strategies).map(name => `
+                <div class="form-check">
+                    <input class="form-check-input default-strategy-checkbox" type="checkbox"
+                           value="${name}" id="default-strat-${name}"
+                           ${defaultStrategies.includes(name) ? 'checked' : ''}>
+                    <label class="form-check-label" for="default-strat-${name}">${name}</label>
+                </div>
+            `).join('');
+        }
+
+        function renderCompetitionConfigList() {
+            const container = document.getElementById('competition-config-list');
+            const config = strategyConfig.competition_config || {};
+
+            if (Object.keys(config).length === 0) {
+                container.innerHTML = '<p class="text-muted small">No competition config (using defaults)</p>';
+                return;
+            }
+
+            container.innerHTML = Object.entries(config).map(([comp, strats]) => `
+                <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light rounded">
+                    <div>
+                        <strong>${comp}</strong>
+                        <small class="text-muted d-block">${strats.join(', ')}</small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteCompetitionConfig('${comp}')">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        function renderMatchConfigList() {
+            const container = document.getElementById('match-config-list');
+            const matchConfigs = strategyConfig.match_config || [];
+
+            if (matchConfigs.length === 0) {
+                container.innerHTML = '<p class="text-muted small">No match-specific config (using competition defaults)</p>';
+                return;
+            }
+
+            container.innerHTML = matchConfigs.map((m, idx) => {
+                const strategies = (m.strategies || []).join(', ') || 'default';
+                const overrides = m.signal_overrides || {};
+                const overridesStr = Object.keys(overrides).length > 0
+                    ? Object.entries(overrides).map(([sig, params]) =>
+                        `${sig}: ${Object.entries(params).map(([k,v]) => `${k}=${v}`).join(', ')}`
+                      ).join('; ')
+                    : '';
+                return `
+                    <div class="mb-2 p-2 bg-light rounded">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <strong>${m.home} vs ${m.away}</strong>
+                                <small class="text-muted d-block">${m.competition}</small>
+                                <small class="text-primary d-block">Strategies: ${strategies}</small>
+                                ${overridesStr ? `<small class="text-warning d-block">Overrides: ${overridesStr}</small>` : ''}
+                            </div>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteMatchConfig('${m.competition}', '${m.home}', '${m.away}')">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Match Config Modal
+        function showAddMatchConfigModal() {
+            document.getElementById('modal-match-competition').value = '';
+            document.getElementById('modal-match-home').value = '';
+            document.getElementById('modal-match-away').value = '';
+            document.getElementById('modal-match-signal-overrides').value = '{}';
+            renderMatchStrategiesCheckboxes([]);
+            new bootstrap.Modal(document.getElementById('addMatchConfigModal')).show();
+        }
+
+        function renderMatchStrategiesCheckboxes(selectedStrategies) {
+            const container = document.getElementById('modal-match-strategies');
+            const strategies = strategyConfig.strategies || {};
+
+            if (Object.keys(strategies).length === 0) {
+                container.innerHTML = '<p class="text-muted small">Define strategies first</p>';
+                return;
+            }
+
+            container.innerHTML = Object.keys(strategies).map(name => `
+                <div class="form-check">
+                    <input class="form-check-input match-strategy-checkbox" type="checkbox"
+                           value="${name}" id="match-strat-${name}"
+                           ${selectedStrategies.includes(name) ? 'checked' : ''}>
+                    <label class="form-check-label" for="match-strat-${name}">${name}</label>
+                </div>
+            `).join('');
+        }
+
+        async function saveMatchConfig() {
+            try {
+                const competition = document.getElementById('modal-match-competition').value.trim();
+                const home = document.getElementById('modal-match-home').value.trim();
+                const away = document.getElementById('modal-match-away').value.trim();
+                const signalOverrides = JSON.parse(document.getElementById('modal-match-signal-overrides').value || '{}');
+
+                const strategies = [];
+                document.querySelectorAll('.match-strategy-checkbox:checked').forEach(cb => {
+                    strategies.push(cb.value);
+                });
+
+                if (!competition || !home || !away) {
+                    showToast('Competition, Home and Away are required', 'error');
+                    return;
+                }
+
+                await api('/api/strategy/match-config', 'POST', {
+                    competition,
+                    home,
+                    away,
+                    strategies,
+                    signal_overrides: signalOverrides
+                });
+                bootstrap.Modal.getInstance(document.getElementById('addMatchConfigModal')).hide();
+                showToast(`Match config for "${home} vs ${away}" saved`, 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to save match config: ' + e.message, 'error');
+            }
+        }
+
+        async function deleteMatchConfig(competition, home, away) {
+            if (!confirm(`Remove config for "${home} vs ${away}"?`)) return;
+            try {
+                await api(`/api/strategy/match-config?competition=${encodeURIComponent(competition)}&home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`, 'DELETE');
+                showToast('Match config removed', 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to delete: ' + e.message, 'error');
+            }
+        }
+
+        async function saveStrategyConfig() {
+            try {
+                // Collect default strategies from checkboxes
+                const defaultStrategies = [];
+                document.querySelectorAll('.default-strategy-checkbox:checked').forEach(cb => {
+                    defaultStrategies.push(cb.value);
+                });
+
+                const config = {
+                    enabled: document.getElementById('strategy-enabled').checked,
+                    default_strategies: defaultStrategies,
+                    signals: strategyConfig.signals,
+                    strategies: strategyConfig.strategies,
+                    competition_config: strategyConfig.competition_config,
+                    match_config: strategyConfig.match_config
+                };
+
+                await api('/api/strategy/config', 'PUT', config);
+                showToast('Strategy configuration saved!', 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to save: ' + e.message, 'error');
+            }
+        }
+
+        // Signal Modal
+        function showAddSignalModal() {
+            document.getElementById('modal-signal-name').value = '';
+            document.getElementById('modal-signal-params').value = '{}';
+            document.getElementById('modal-signal-description').value = '';
+            new bootstrap.Modal(document.getElementById('addSignalModal')).show();
+        }
+
+        function editSignal(name) {
+            const sig = strategyConfig.signals[name] || {};
+            document.getElementById('modal-signal-name').value = name;
+            document.getElementById('modal-signal-params').value = JSON.stringify(sig.params || {}, null, 2);
+            document.getElementById('modal-signal-description').value = sig.description || '';
+            new bootstrap.Modal(document.getElementById('addSignalModal')).show();
+        }
+
+        async function saveSignal() {
+            try {
+                const name = document.getElementById('modal-signal-name').value.trim();
+                const params = JSON.parse(document.getElementById('modal-signal-params').value || '{}');
+                const description = document.getElementById('modal-signal-description').value.trim();
+
+                if (!name) {
+                    showToast('Signal name is required', 'error');
+                    return;
+                }
+
+                await api(`/api/strategy/signals/${name}`, 'PUT', { params, description });
+                bootstrap.Modal.getInstance(document.getElementById('addSignalModal')).hide();
+                showToast(`Signal "${name}" saved`, 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to save signal: ' + e.message, 'error');
+            }
+        }
+
+        // Strategy Modal
+        function showAddStrategyModal() {
+            document.getElementById('modal-strategy-name').value = '';
+            document.getElementById('modal-strategy-description').value = '';
+            renderStrategySignalsCheckboxes([]);
+            new bootstrap.Modal(document.getElementById('addStrategyModal')).show();
+        }
+
+        function editStrategy(name) {
+            const strat = strategyConfig.strategies[name] || {};
+            document.getElementById('modal-strategy-name').value = name;
+            document.getElementById('modal-strategy-description').value = strat.description || '';
+            renderStrategySignalsCheckboxes(strat.signals || []);
+            new bootstrap.Modal(document.getElementById('addStrategyModal')).show();
+        }
+
+        function renderStrategySignalsCheckboxes(selectedSignals) {
+            const container = document.getElementById('modal-strategy-signals');
+            const signals = strategyConfig.signals || {};
+
+            if (Object.keys(signals).length === 0) {
+                container.innerHTML = '<p class="text-muted small">Define signals first</p>';
+                return;
+            }
+
+            container.innerHTML = Object.keys(signals).map(name => `
+                <div class="form-check">
+                    <input class="form-check-input strategy-signal-checkbox" type="checkbox"
+                           value="${name}" id="strat-sig-${name}"
+                           ${selectedSignals.includes(name) ? 'checked' : ''}>
+                    <label class="form-check-label" for="strat-sig-${name}">${name}</label>
+                </div>
+            `).join('');
+        }
+
+        async function saveStrategy() {
+            try {
+                const name = document.getElementById('modal-strategy-name').value.trim();
+                const description = document.getElementById('modal-strategy-description').value.trim();
+                const signals = [];
+                document.querySelectorAll('.strategy-signal-checkbox:checked').forEach(cb => {
+                    signals.push(cb.value);
+                });
+
+                if (!name) {
+                    showToast('Strategy name is required', 'error');
+                    return;
+                }
+
+                await api(`/api/strategy/strategies/${name}`, 'PUT', { signals, description });
+                bootstrap.Modal.getInstance(document.getElementById('addStrategyModal')).hide();
+                showToast(`Strategy "${name}" saved`, 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to save strategy: ' + e.message, 'error');
+            }
+        }
+
+        // Competition Config Modal
+        function showAddCompetitionConfigModal() {
+            document.getElementById('modal-competition-name').value = '';
+            renderCompetitionStrategiesCheckboxes([]);
+            new bootstrap.Modal(document.getElementById('addCompetitionConfigModal')).show();
+        }
+
+        function renderCompetitionStrategiesCheckboxes(selectedStrategies) {
+            const container = document.getElementById('modal-competition-strategies');
+            const strategies = strategyConfig.strategies || {};
+
+            if (Object.keys(strategies).length === 0) {
+                container.innerHTML = '<p class="text-muted small">Define strategies first</p>';
+                return;
+            }
+
+            container.innerHTML = Object.keys(strategies).map(name => `
+                <div class="form-check">
+                    <input class="form-check-input competition-strategy-checkbox" type="checkbox"
+                           value="${name}" id="comp-strat-${name}"
+                           ${selectedStrategies.includes(name) ? 'checked' : ''}>
+                    <label class="form-check-label" for="comp-strat-${name}">${name}</label>
+                </div>
+            `).join('');
+        }
+
+        async function saveCompetitionConfig() {
+            try {
+                const competition = document.getElementById('modal-competition-name').value.trim();
+                const strategies = [];
+                document.querySelectorAll('.competition-strategy-checkbox:checked').forEach(cb => {
+                    strategies.push(cb.value);
+                });
+
+                if (!competition) {
+                    showToast('Competition name is required', 'error');
+                    return;
+                }
+
+                await api(`/api/strategy/competition-config/${encodeURIComponent(competition)}`, 'PUT', {
+                    competition,
+                    strategies
+                });
+                bootstrap.Modal.getInstance(document.getElementById('addCompetitionConfigModal')).hide();
+                showToast(`Competition config for "${competition}" saved`, 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to save competition config: ' + e.message, 'error');
+            }
+        }
+
+        async function deleteCompetitionConfig(competition) {
+            if (!confirm(`Remove config for "${competition}"?`)) return;
+            try {
+                await api(`/api/strategy/competition-config/${encodeURIComponent(competition)}`, 'DELETE');
+                showToast(`Competition config removed`, 'success');
+                await loadStrategyConfig();
+            } catch (e) {
+                showToast('Failed to delete: ' + e.message, 'error');
+            }
+        }
+
+        async function refreshStrategyStatus() {
+            try {
+                const status = await api('/api/strategy/status');
+                document.getElementById('strategy-status-text').textContent = status.enabled ? 'Active' : 'Disabled';
+            } catch (e) {
+                console.error('Error refreshing strategy status:', e);
+            }
+        }
+
+        // 切换到 Strategy 标签页时刷新数据
+        document.getElementById('strategy-tab')?.addEventListener('shown.bs.tab', () => {
+            loadStrategyConfig();
+            refreshStrategyStatus();
         });
 
         // Init

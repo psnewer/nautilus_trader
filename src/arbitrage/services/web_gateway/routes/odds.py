@@ -70,9 +70,13 @@ async def get_latest_odds(pair_id: str | None = None):
 
     odds = service.get_latest_odds(pair_id)
 
-    # 获取 pairs 信息（包含队名等）
+    # 获取比赛状态（in-play / pre-match）
+    match_statuses = service.get_all_match_statuses()
+
+    # 获取 pairs 信息（包含队名、比赛状态等）
     pairs_info = {}
     for pair_result in app_state.matched_pairs:
+        is_live = match_statuses.get(pair_result.pair_id)
         pairs_info[pair_result.pair_id] = {
             "sport": pair_result.sport,
             "competition": pair_result.competition,
@@ -80,6 +84,8 @@ async def get_latest_odds(pair_id: str | None = None):
             "polymarket_away": pair_result.polymarket_away,
             "orbitexch_home": pair_result.orbitexch_home,
             "orbitexch_away": pair_result.orbitexch_away,
+            "is_live": is_live,
+            "status": "IN-PLAY" if is_live else ("PRE-MATCH" if is_live is False else "UNKNOWN"),
         }
 
     return {
@@ -104,6 +110,9 @@ async def _run_subscription():
             _log.warning("No matched pairs found. Run matching first.")
             return
 
+        # 确保策略服务已注册
+        app_state.ensure_strategy_registered()
+
         # 获取或创建服务
         service = app_state.get_odds_service()
 
@@ -111,6 +120,10 @@ async def _run_subscription():
         await service.subscribe_matched_pairs(matched_pairs_full)
 
         _log.info(f"Subscribed to {len(matched_pairs_full)} pairs")
+
+        # 注册比赛到策略服务（包含比赛状态：in-play 或 pre-match）
+        app_state.register_matches_to_strategy()
+        _log.info("Registered matches to strategy service with status")
 
     except Exception as e:
         _log.error(f"Odds subscription failed: {e}")

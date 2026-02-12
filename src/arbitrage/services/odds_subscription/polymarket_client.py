@@ -3,15 +3,24 @@ Polymarket 赔率客户端
 
 使用 Polymarket CLOB WebSocket 获取实时赔率数据。
 
-WebSocket URL: wss://ws-subscriptions-clob.polymarket.com/ws/market
-参考文档: https://docs.polymarket.com/developers/CLOB/websocket/market-channel
+WebSocket URLs:
+- Market Channel: wss://ws-subscriptions-clob.polymarket.com/ws/market (公开)
+- User Channel: wss://ws-subscriptions-clob.polymarket.com/ws/user (需认证)
+
+参考文档:
+- https://docs.polymarket.com/developers/CLOB/websocket/market-channel
+- https://docs.polymarket.com/developers/CLOB/websocket/user-channel
 """
 
 import asyncio
 import logging
 import json
 import time
+import hmac
+import hashlib
+import base64
 from typing import Any, Callable
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -24,17 +33,81 @@ except ImportError:
 from .config import OddsSubscriptionConfig
 
 
+@dataclass
+class PolymarketOrder:
+    """
+    Polymarket 订单数据
+
+    从 User Channel WebSocket 消息解析
+    """
+    order_id: str
+    market: str  # condition_id
+    asset_id: str  # token_id
+    side: str  # "BUY" or "SELL"
+    price: float
+    original_size: float
+    size_matched: float
+    status: str  # "LIVE", "MATCHED", "CANCELLED"
+    outcome: str = ""  # "Yes" or "No"
+    event_id: str = ""
+    timestamp: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PolymarketOrder":
+        """从 User Channel 消息解析"""
+        return cls(
+            order_id=data.get("id", ""),
+            market=data.get("market", ""),
+            asset_id=data.get("asset_id", ""),
+            side=data.get("side", ""),
+            price=float(data.get("price", 0)),
+            original_size=float(data.get("original_size", 0)),
+            size_matched=float(data.get("size_matched", 0)),
+            status=data.get("status", ""),
+            outcome=data.get("outcome", ""),
+            timestamp=int(data.get("timestamp", 0)),
+        )
+
+
+@dataclass
+class PolymarketPosition:
+    """
+    Polymarket 持仓数据
+
+    从持仓汇总计算得出
+    """
+    asset_id: str  # token_id
+    outcome: str  # "Yes" or "No"
+    market_type: str  # "home", "away", "draw"
+    size: float  # 持仓数量
+    avg_price: float  # 平均成本
+    current_price: float  # 当前价格
+    event_id: str = ""
+
+    @property
+    def profit_if_win(self) -> float:
+        """如果该 outcome 赢时的盈利"""
+        # 赢时获得 size * 1.0，减去成本
+        return self.size * (1.0 - self.avg_price)
+
+    @property
+    def loss_if_lose(self) -> float:
+        """如果该 outcome 输时的亏损"""
+        # 输时获得 0，损失成本
+        return self.size * self.avg_price
+
+
 class PolymarketOddsClient:
     """
     Polymarket 赔率客户端
 
     使用 WebSocket 实时接收赔率更新：
-    - book: 订单簿快照
-    - price_change: 价格变化
-    - last_trade_price: 最新成交价
+    - Market Channel: 订单簿快照、价格变化
+    - User Channel: 订单更新、成交更新（需认证）
     """
 
-    WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    WS_MARKET_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    WS_USER_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 
     def __init__(
         self,
@@ -44,10 +117,14 @@ class PolymarketOddsClient:
         self.config = config
         self._log = logger or logging.getLogger(self.__class__.__name__)
 
-        # WebSocket 连接
+        # Market Channel WebSocket 连接
         self._ws = None
         self._ws_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
+
+        # User Channel WebSocket 连接
+        self._user_ws = None
+        self._user_ws_task: asyncio.Task | None = None
 
         # 订阅管理
         self._subscribed_tokens: dict[str, dict] = {}  # token_id -> token_info
@@ -56,8 +133,13 @@ class PolymarketOddsClient:
         # 数据缓存
         self._latest_odds: dict[str, dict] = {}  # token_id -> odds_data
 
+        # 订单数据（来自 User Channel）
+        self._current_orders: dict[str, PolymarketOrder] = {}  # order_id -> order
+        self._positions: dict[str, PolymarketPosition] = {}  # asset_id -> position
+
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
+        self._orders_update_callback: Callable[[dict], None] | None = None
 
         # 状态
         self._running = False
@@ -288,20 +370,20 @@ class PolymarketOddsClient:
     # =========================================================================
 
     async def _connect_websocket(self) -> None:
-        """连接 WebSocket"""
+        """连接 Market Channel WebSocket"""
         if websockets is None:
             self._log.error("websockets library not installed. Install with: pip install websockets")
             return
 
-        self._log.info(f"Connecting to WebSocket: {self.WS_URL}")
+        self._log.info(f"Connecting to Market Channel WebSocket: {self.WS_MARKET_URL}")
 
         try:
             self._ws = await websockets.connect(
-                self.WS_URL,
+                self.WS_MARKET_URL,
                 ping_interval=30,
                 ping_timeout=10,
             )
-            self._log.info("WebSocket connected")
+            self._log.info("Market Channel WebSocket connected")
 
             # 订阅待订阅的 tokens
             if self._pending_subscribe:
@@ -324,13 +406,16 @@ class PolymarketOddsClient:
             return
 
         # 订阅消息格式
+        # custom_feature_enabled=true 启用 best_bid_ask 消息，减少不必要的消息量
+        # 参考: https://docs.polymarket.com/developers/CLOB/websocket/wss-overview
         subscribe_msg = {
             "assets_ids": token_ids,
             "type": "market",
+            "custom_feature_enabled": True,  # 启用 best_bid_ask 消息
         }
 
         await self._ws.send(json.dumps(subscribe_msg))
-        self._log.info(f"Sent subscription for {len(token_ids)} tokens")
+        self._log.info(f"Sent subscription for {len(token_ids)} tokens (custom_feature_enabled=true)")
 
         # Debug: log the actual token IDs being subscribed
         for token_id in token_ids:
@@ -473,7 +558,7 @@ class PolymarketOddsClient:
                 self._update_odds(asset_id, odds_data)
             return
 
-        # 类型3：传统 event_type 格式（兼容旧格式）
+        # 类型3：event_type 格式（best_bid_ask, last_trade_price 等）
         event_type = data.get("event_type")
         asset_id = data.get("asset_id")
 
@@ -485,7 +570,30 @@ class PolymarketOddsClient:
 
         token_info = self._subscribed_tokens[asset_id]
 
-        if event_type == "last_trade_price":
+        # best_bid_ask: 最优价格变化（启用 custom_feature_enabled 后收到）
+        # 这是最高效的消息类型，只在最优价格变化时触发
+        if event_type == "best_bid_ask":
+            best_bid = float(data.get("best_bid", 0))
+            best_ask = float(data.get("best_ask", 0))
+
+            odds_data = {
+                "event_id": token_info["event_id"],
+                "token_id": asset_id,
+                "outcome": token_info["outcome"],
+                "market_type": token_info["market_type"],
+                "home_team": token_info.get("home_team", ""),
+                "away_team": token_info.get("away_team", ""),
+                "bid": best_bid,
+                "ask": best_ask,
+                "spread": float(data.get("spread", 0)),
+                "last": (best_bid + best_ask) / 2 if best_bid and best_ask else 0,
+                "timestamp": int(data.get("timestamp", timestamp)),
+                "source": "best_bid_ask",
+            }
+
+            self._update_odds(asset_id, odds_data)
+
+        elif event_type == "last_trade_price":
             price = float(data.get("price", 0))
 
             existing = self._latest_odds.get(asset_id, {})
@@ -507,6 +615,365 @@ class PolymarketOddsClient:
 
         if self._price_update_callback:
             self._price_update_callback(odds_data)
+
+    # =========================================================================
+    # User Channel WebSocket (订单更新) + REST API (持仓查询)
+    # =========================================================================
+
+    # Polymarket API 架构：
+    # - Market Channel WebSocket: 赔率数据（公开）
+    # - User Channel WebSocket: 订单/成交实时更新（需认证）
+    # - Data API REST: 持仓查询（需认证）
+    #
+    # 参考: https://docs.polymarket.com/developers/CLOB/websocket
+
+    DATA_API_URL = "https://data-api.polymarket.com"
+
+    def _generate_l1_auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
+        """
+        生成 Polymarket L1 认证 headers (用于 REST API)
+
+        Polymarket 使用 HMAC-SHA256 签名认证
+        参考: https://docs.polymarket.com/developers/CLOB/auth/l1-auth
+        """
+        if not self.config.polymarket_api_key or not self.config.polymarket_api_secret:
+            return {}
+
+        timestamp = str(int(time.time() * 1000))
+
+        # 构造签名消息: timestamp + method + path + body
+        message = f"{timestamp}{method}{path}{body}"
+
+        # HMAC-SHA256 签名
+        try:
+            secret = base64.b64decode(self.config.polymarket_api_secret)
+            signature = hmac.new(secret, message.encode(), hashlib.sha256)
+            signature_b64 = base64.b64encode(signature.digest()).decode()
+        except Exception as e:
+            self._log.error(f"Failed to generate signature: {e}")
+            return {}
+
+        return {
+            "POLY_ADDRESS": self.config.polymarket_api_key,
+            "POLY_SIGNATURE": signature_b64,
+            "POLY_TIMESTAMP": timestamp,
+            "POLY_PASSPHRASE": self.config.polymarket_passphrase,
+        }
+
+    async def fetch_positions(self) -> list[PolymarketPosition]:
+        """
+        从 Data API 获取用户持仓
+
+        Returns:
+            持仓列表
+        """
+        if not self.config.polymarket_api_key:
+            self._log.debug("No API key configured, skipping position fetch")
+            return []
+
+        path = "/positions"
+        headers = self._generate_l1_auth_headers("GET", path)
+
+        if not headers:
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{self.DATA_API_URL}{path}",
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                positions = []
+                for item in data:
+                    asset_id = item.get("asset_id", "")
+                    token_info = self._subscribed_tokens.get(asset_id, {})
+
+                    # 获取当前价格
+                    current_price = 0.0
+                    if asset_id in self._latest_odds:
+                        current_price = self._latest_odds[asset_id].get("bid", 0)
+
+                    pos = PolymarketPosition(
+                        asset_id=asset_id,
+                        outcome=token_info.get("outcome", item.get("outcome", "")),
+                        market_type=token_info.get("market_type", ""),
+                        size=float(item.get("size", 0)),
+                        avg_price=float(item.get("avg_price", 0)),
+                        current_price=current_price,
+                        event_id=token_info.get("event_id", ""),
+                    )
+                    positions.append(pos)
+
+                    # 更新缓存
+                    if pos.size > 0:
+                        self._positions[asset_id] = pos
+
+                self._log.info(f"Fetched {len(positions)} positions from Data API")
+                return positions
+
+        except Exception as e:
+            self._log.error(f"Failed to fetch positions: {e}")
+            return []
+
+    async def _connect_user_websocket(self) -> None:
+        """连接 User Channel WebSocket"""
+        if websockets is None:
+            self._log.error("websockets library not installed")
+            return
+
+        if not self.config.polymarket_api_key:
+            self._log.warning("Polymarket API key not configured, skipping User Channel")
+            return
+
+        self._log.info(f"Connecting to User Channel WebSocket: {self.WS_USER_URL}")
+
+        try:
+            # User Channel 使用 L1 认证
+            auth_headers = self._generate_l1_auth_headers("GET", "/ws/user")
+
+            self._user_ws = await websockets.connect(
+                self.WS_USER_URL,
+                additional_headers=auth_headers,
+                ping_interval=30,
+                ping_timeout=10,
+            )
+            self._log.info("User Channel WebSocket connected")
+
+            # 连接成功后获取初始持仓
+            await self.fetch_positions()
+
+        except Exception as e:
+            self._log.error(f"User Channel WebSocket connection failed: {e}")
+            self._user_ws = None
+            raise
+
+    async def _run_user_websocket(self) -> None:
+        """User Channel WebSocket 主循环"""
+        while self._running:
+            try:
+                await self._connect_user_websocket()
+
+                if not self._user_ws:
+                    self._log.warning("User Channel not available, stopping loop")
+                    break
+
+                async for message in self._user_ws:
+                    if not self._running:
+                        break
+
+                    try:
+                        data = json.loads(message)
+                        await self._handle_user_message(data)
+                    except json.JSONDecodeError:
+                        self._log.warning(f"Invalid User Channel message: {message[:100]}")
+                    except Exception as e:
+                        self._log.error(f"Error handling User Channel message: {e}")
+
+            except websockets.exceptions.ConnectionClosed as e:
+                self._log.warning(f"User Channel connection closed: {e}")
+            except Exception as e:
+                self._log.error(f"User Channel error: {e}")
+
+            # 重连
+            if self._running:
+                self._log.info("Reconnecting User Channel in 5 seconds...")
+                await asyncio.sleep(5)
+
+    async def _handle_user_message(self, data: Any) -> None:
+        """
+        处理 User Channel 消息
+
+        消息类型:
+        - order: 订单更新
+        - trade: 成交更新
+        """
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    await self._handle_single_user_message(item)
+            return
+
+        if isinstance(data, dict):
+            await self._handle_single_user_message(data)
+
+    async def _handle_single_user_message(self, data: dict) -> None:
+        """
+        处理单个 User Channel 消息
+
+        订单消息格式:
+        {
+            "event_type": "order",
+            "order": {
+                "id": "order_id",
+                "market": "condition_id",
+                "asset_id": "token_id",
+                "side": "BUY",
+                "price": "0.55",
+                "original_size": "100",
+                "size_matched": "50",
+                "status": "LIVE"
+            }
+        }
+
+        成交消息格式:
+        {
+            "event_type": "trade",
+            "trade": {
+                "id": "trade_id",
+                "taker_order_id": "order_id",
+                "market": "condition_id",
+                "asset_id": "token_id",
+                "side": "BUY",
+                "price": "0.55",
+                "size": "50",
+                "status": "MATCHED"
+            }
+        }
+        """
+        event_type = data.get("event_type")
+
+        if event_type == "order":
+            order_data = data.get("order", {})
+            await self._process_order_update(order_data)
+
+        elif event_type == "trade":
+            trade_data = data.get("trade", {})
+            await self._process_trade_update(trade_data)
+
+        # 批量订单更新（初始连接时推送所有活跃订单）
+        elif "orders" in data:
+            orders = data.get("orders", [])
+            self._log.info(f"Received {len(orders)} initial orders")
+            for order_data in orders:
+                await self._process_order_update(order_data)
+
+    async def _process_order_update(self, order_data: dict) -> None:
+        """
+        处理订单更新
+
+        Args:
+            order_data: 订单数据
+        """
+        try:
+            order_id = order_data.get("id", "")
+            if not order_id:
+                return
+
+            # 查找 token 信息以获取 market_type
+            asset_id = order_data.get("asset_id", "")
+            token_info = self._subscribed_tokens.get(asset_id, {})
+
+            order = PolymarketOrder(
+                order_id=order_id,
+                market=order_data.get("market", ""),
+                asset_id=asset_id,
+                side=order_data.get("side", ""),
+                price=float(order_data.get("price", 0)),
+                original_size=float(order_data.get("original_size", 0)),
+                size_matched=float(order_data.get("size_matched", 0)),
+                status=order_data.get("status", ""),
+                outcome=token_info.get("outcome", ""),
+                event_id=token_info.get("event_id", ""),
+                timestamp=int(time.time() * 1000),
+            )
+
+            # 根据状态更新或移除订单
+            if order.status in ("CANCELLED", "MATCHED"):
+                self._current_orders.pop(order_id, None)
+                self._log.debug(f"Order removed: {order_id} ({order.status})")
+            else:
+                self._current_orders[order_id] = order
+                self._log.debug(f"Order updated: {order_id} ({order.status})")
+
+            # 成交后刷新持仓
+            if order.status == "MATCHED":
+                await self.fetch_positions()
+
+            # 触发回调
+            if self._orders_update_callback:
+                self._orders_update_callback({
+                    "type": "order",
+                    "order": order,
+                    "orders": list(self._current_orders.values()),
+                    "positions": list(self._positions.values()),
+                })
+
+        except Exception as e:
+            self._log.error(f"Error processing order update: {e}")
+
+    async def _process_trade_update(self, trade_data: dict) -> None:
+        """
+        处理成交更新
+
+        成交后刷新持仓数据
+
+        Args:
+            trade_data: 成交数据
+        """
+        try:
+            self._log.debug(f"Trade processed: {trade_data.get('id', '')}")
+
+            # 成交后刷新持仓
+            await self.fetch_positions()
+
+            # 触发回调
+            if self._orders_update_callback:
+                self._orders_update_callback({
+                    "type": "trade",
+                    "trade": trade_data,
+                    "positions": list(self._positions.values()),
+                })
+
+        except Exception as e:
+            self._log.error(f"Error processing trade update: {e}")
+
+    def get_current_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
+        """
+        获取当前订单
+
+        Args:
+            asset_id: 可选，指定 asset_id
+
+        Returns:
+            订单列表
+        """
+        if asset_id:
+            return [o for o in self._current_orders.values() if o.asset_id == asset_id]
+        return list(self._current_orders.values())
+
+    def get_positions(self, event_id: str | None = None) -> list[PolymarketPosition]:
+        """
+        获取持仓
+
+        Args:
+            event_id: 可选，指定 event_id
+
+        Returns:
+            持仓列表
+        """
+        if event_id:
+            return [p for p in self._positions.values() if p.event_id == event_id]
+        return list(self._positions.values())
+
+    def get_positions_by_pair(self, pair_id: str) -> list[PolymarketPosition]:
+        """
+        获取指定比赛的持仓（通过 event_id 匹配）
+
+        Args:
+            pair_id: 比赛 ID（通常等于 event_id）
+
+        Returns:
+            持仓列表
+        """
+        # pair_id 通常与 event_id 相同或有映射关系
+        return [p for p in self._positions.values() if p.event_id == pair_id]
+
+    def register_orders_callback(self, callback: Callable[[dict], None]) -> None:
+        """注册订单更新回调"""
+        self._orders_update_callback = callback
 
     # =========================================================================
     # 订阅管理
@@ -573,6 +1040,8 @@ class PolymarketOddsClient:
         self._subscribed_tokens.clear()
         self._latest_odds.clear()
         self._pending_subscribe.clear()
+        self._current_orders.clear()
+        self._positions.clear()
         self._log.info(f"Cleared {old_count} token subscriptions")
 
     def get_latest_odds(self, event_id: str) -> dict[str, dict]:
@@ -595,10 +1064,18 @@ class PolymarketOddsClient:
         self._running = True
         self._log.info("Polymarket odds client started")
 
+        # 启动 User Channel WebSocket（如果配置了 API key）
+        if self.config.polymarket_api_key:
+            self._log.info("Starting User Channel WebSocket for order tracking")
+            self._user_ws_task = asyncio.create_task(self._run_user_websocket())
+        else:
+            self._log.info("No API key configured, User Channel disabled")
+
     async def stop(self) -> None:
         """停止客户端"""
         self._running = False
 
+        # 停止 Market Channel
         if self._ws_task and not self._ws_task.done():
             self._ws_task.cancel()
             try:
@@ -609,5 +1086,17 @@ class PolymarketOddsClient:
         if self._ws:
             await self._ws.close()
             self._ws = None
+
+        # 停止 User Channel
+        if self._user_ws_task and not self._user_ws_task.done():
+            self._user_ws_task.cancel()
+            try:
+                await self._user_ws_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._user_ws:
+            await self._user_ws.close()
+            self._user_ws = None
 
         self._log.info("Polymarket odds client stopped")

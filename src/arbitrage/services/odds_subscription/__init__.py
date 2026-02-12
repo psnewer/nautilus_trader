@@ -6,8 +6,14 @@
 
 from .config import OddsSubscriptionConfig
 from .service import OddsSubscriptionService
+from .polymarket_client import PolymarketOddsClient, PolymarketPosition, PolymarketOrder
+from .orbitexch_client import OrbitExchOddsClient
 
 __all__ = [
     "OddsSubscriptionConfig",
     "OddsSubscriptionService",
+    "PolymarketOddsClient",
+    "PolymarketPosition",
+    "PolymarketOrder",
+    "OrbitExchOddsClient",
 ]

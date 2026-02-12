@@ -1,204 +1,217 @@
 {
   "tasks": [
     {
-      "id": "abb85c7f-d919-455b-b93a-3919e9793124",
-      "name": "创建 odds_subscription 服务基础结构",
-      "description": "创建赔率订阅服务的目录结构、配置文件和需求说明文档",
+      "id": "9ee9506b-2e40-4a99-9336-680be59b6669",
+      "name": "创建策略配置模块",
+      "description": "创建 src/arbitrage/services/strategy/config.py，定义策略服务的配置数据类，包括 SignalConfig（信号量配置）、StrategyConfig（单个策略配置）、StrategyServiceConfig（服务配置）。",
+      "notes": "参照 src/arbitrage/services/market_matching/config.py 的模式",
       "status": "pending",
       "dependencies": [],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
       "relatedFiles": [
         {
-          "path": "src/arbitrage/services/odds_subscription/",
+          "path": "src/arbitrage/services/strategy/config.py",
           "type": "CREATE",
-          "description": "新建服务目录"
+          "description": "策略配置模块"
         },
         {
           "path": "src/arbitrage/services/market_matching/config.py",
           "type": "REFERENCE",
-          "description": "参考现有配置结构"
+          "description": "参考现有配置模式"
         }
       ],
-      "implementationGuide": "1. 创建目录 src/arbitrage/services/odds_subscription/\\n2. 创建 __init__.py\\n3. 创建 config.py 定义 OddsSubscriptionConfig:\\n   - staleness_timeout_sec: int = 300\\n   - orbitexch_zoom_level: float = 0.8\\n4. 创建 requirements.md 记录需求",
-      "verificationCriteria": "1. 目录结构创建正确\\n2. config.py 包含必要的配置字段\\n3. requirements.md 清晰记录功能需求",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+      "implementationGuide": "1. 创建 config.py 文件\\n2. 定义 SignalConfig dataclass：signal_type(str), params(dict)\\n3. 定义 StrategyConfig dataclass：name(str), enabled(bool), signals(list[SignalConfig]), trigger_mode(str)\\n4. 定义 StrategyServiceConfig dataclass：enabled(bool), default_strategy(StrategyConfig), pair_overrides(dict[str, StrategyConfig])\\n5. 实现 from_dict 类方法\\n\\nPseudocode:\\n@dataclass\\nclass SignalConfig:\\n    signal_type: str  # spread, arbitrage\\n    params: dict = field(default_factory=dict)\\n\\n@dataclass\\nclass StrategyConfig:\\n    name: str = 'default'\\n    enabled: bool = True\\n    signals: list[SignalConfig] = field(default_factory=list)\\n    trigger_mode: str = 'all'  # all=AND, any=OR\\n\\n@dataclass\\nclass StrategyServiceConfig:\\n    enabled: bool = True\\n    default_strategy: StrategyConfig\\n    pair_overrides: dict[str, StrategyConfig]\\n    @classmethod\\n    def from_dict(cls, data): ...",
+      "verificationCriteria": "1. config.py 可正常导入\\n2. from_dict 方法能正确解析配置字典\\n3. 默认值设置合理",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
     },
     {
-      "id": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680",
-      "name": "实现 Polymarket 赔率客户端",
-      "description": "实现 Polymarket 赔率数据获取客户端，使用 py_clob_client 和 WebSocket 订阅赔率变化",
-      "status": "pending",
-      "dependencies": [],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
-      "relatedFiles": [
-        {
-          "path": "nautilus_trader/adapters/polymarket/data.py",
-          "type": "REFERENCE",
-          "description": "参考 Polymarket DataClient 实现",
-          "lineStart": 1,
-          "lineEnd": 100
-        },
-        {
-          "path": "nautilus_trader/adapters/polymarket/providers.py",
-          "type": "REFERENCE",
-          "description": "参考 InstrumentProvider 如何加载 markets",
-          "lineStart": 90,
-          "lineEnd": 150
-        }
-      ],
-      "implementationGuide": "1. 创建 polymarket_client.py\\n2. 定义 PolymarketOddsClient 类\\n3. 使用 py_clob_client.client.ClobClient 获取 market 信息\\n4. 使用 Polymarket WebSocket 订阅 token 价格变化\\n5. 实现方法：\\n   - async def subscribe_event(event_id: str) -> 获取 event 的所有 tokens 并订阅\\n   - async def get_latest_odds(event_id: str) -> dict: 返回最新赔率\\n   - on_price_update(callback): WebSocket 回调处理\\n6. 数据格式：{\\\"token_id\\\": str, \\\"market_type\\\": \\\"home/draw/away\\\", \\\"bid\\\": float, \\\"ask\\\": float, \\\"timestamp\\\": int}",
-      "verificationCriteria": "1. 能够查询 event 的所有 tokens (home/draw/away)\\n2. WebSocket 订阅成功并接收价格更新\\n3. 数据格式正确包含 bid/ask 价格",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
-    },
-    {
-      "id": "d1c566e6-110b-4c0b-8559-2a95abb264eb",
-      "name": "实现 OrbitExch 赔率客户端",
-      "description": "实现 OrbitExch 赔率数据抓取客户端，使用 Playwright 抓取页面赔率，支持页面缩放",
-      "status": "pending",
-      "dependencies": [],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
-      "relatedFiles": [
-        {
-          "path": "nautilus_trader/adapters/orbitexch/scraper.py",
-          "type": "REFERENCE",
-          "description": "参考页面抓取逻辑",
-          "lineStart": 1,
-          "lineEnd": 150
-        },
-        {
-          "path": "nautilus_trader/adapters/orbitexch/websocket_handler.py",
-          "type": "REFERENCE",
-          "description": "参考 WebSocket 监听逻辑"
-        }
-      ],
-      "implementationGuide": "1. 创建 orbitexch_client.py\\n2. 定义 OrbitExchOddsClient 类\\n3. 复用 nautilus_trader/adapters/orbitexch/scraper.py 的功能\\n4. 实现方法：\\n   - async def subscribe_competition(sport_id, competition_id, event_ids): 导航到页面并设置缩放\\n   - async def set_page_zoom(zoom_level): 设置页面缩放比例\\n   - async def extract_odds(event_id): 从页面提取赔率数据\\n5. 页面缩放实现：await page.evaluate('document.body.style.zoom = \\\"0.8\\\"')\\n6. 监听 WebSocket 更新（复用 OrbitExchWebSocketHandler）\\n7. 数据格式：{\\\"event_id\\\": str, \\\"market_type\\\": \\\"home/draw/away\\\", \\\"back\\\": float, \\\"lay\\\": float, \\\"timestamp\\\": int}",
-      "verificationCriteria": "1. 页面缩放功能正常工作\\n2. 能够提取页面上的赔率数据（胜平负）\\n3. WebSocket 监听价格变化",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
-    },
-    {
-      "id": "e9d3cde7-e178-46eb-b368-86fd029c0a6e",
-      "name": "实现超时监控机制",
-      "description": "实现数据超时监控，当赔率数据长时间未更新时触发刷新或重连",
+      "id": "b17fb680-adf4-4ced-934e-1f07d38e5510",
+      "name": "创建信号量基类和实现",
+      "description": "创建 signals/ 子模块，包含 Signal 抽象基类、SpreadSignal（价差信号）、ArbitrageSignal（套利信号）实现。",
+      "notes": "信号量系统需可扩展，新增信号类型只需继承 Signal 基类",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680"
-        },
-        {
-          "taskId": "d1c566e6-110b-4c0b-8559-2a95abb264eb"
+          "taskId": "9ee9506b-2e40-4a99-9336-680be59b6669"
         }
       ],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/strategy/signals/__init__.py",
+          "type": "CREATE",
+          "description": "信号量模块入口"
+        },
+        {
+          "path": "src/arbitrage/services/strategy/signals/base.py",
+          "type": "CREATE",
+          "description": "Signal 抽象基类"
+        },
+        {
+          "path": "src/arbitrage/services/strategy/signals/spread.py",
+          "type": "CREATE",
+          "description": "价差信号"
+        },
+        {
+          "path": "src/arbitrage/services/strategy/signals/arbitrage.py",
+          "type": "CREATE",
+          "description": "套利信号"
+        }
+      ],
+      "implementationGuide": "1. 创建 signals/__init__.py\\n2. 创建 signals/base.py - Signal 抽象基类\\n3. 创建 signals/spread.py - SpreadSignal\\n4. 创建 signals/arbitrage.py - ArbitrageSignal\\n\\nPseudocode:\\n# base.py\\n@dataclass\\nclass SignalResult:\\n    signal_name: str\\n    value: float\\n    satisfied: bool\\n    details: dict\\n\\nclass Signal(ABC):\\n    name: str\\n    @abstractmethod\\n    def calculate(self, polymarket_odds: dict, orbitexch_odds: dict) -> SignalResult\\n\\n# spread.py\\nclass SpreadSignal(Signal):\\n    name = 'spread'\\n    def __init__(self, threshold: float = 0.02)\\n    def calculate(self, poly_odds, orbit_odds) -> SignalResult:\\n        # 计算 poly_bid vs orbit_back 价差\\n        spread = (orbit_back - poly_bid) / poly_bid\\n        return SignalResult(satisfied=spread > threshold)\\n\\n# arbitrage.py\\nclass ArbitrageSignal(Signal):\\n    name = 'arbitrage'\\n    def __init__(self, min_profit: float = 0.01)\\n    def calculate(self, poly_odds, orbit_odds) -> SignalResult:\\n        # 套利计算: poly买入 + orbit卖出(lay)\\n        profit = 1/poly_ask - 1/orbit_lay\\n        return SignalResult(satisfied=profit > min_profit)",
+      "verificationCriteria": "1. 所有信号类可正常导入\\n2. calculate 方法返回正确的 SignalResult\\n3. 参数配置生效",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+    },
+    {
+      "id": "e8beea92-e0fe-4ca1-ac71-e624e791a512",
+      "name": "创建策略服务主模块",
+      "description": "创建 src/arbitrage/services/strategy/service.py，实现 StrategyService 主服务，负责信号量计算、策略评估、机会检测。",
+      "notes": "服务需与 OddsSubscriptionService 集成，通过回调接收赔率更新",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "9ee9506b-2e40-4a99-9336-680be59b6669"
+        },
+        {
+          "taskId": "b17fb680-adf4-4ced-934e-1f07d38e5510"
+        }
+      ],
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/strategy/service.py",
+          "type": "CREATE",
+          "description": "策略服务主模块"
+        },
+        {
+          "path": "src/arbitrage/services/strategy/__init__.py",
+          "type": "CREATE",
+          "description": "模块入口"
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/service.py",
+          "type": "REFERENCE",
+          "description": "参考赔率服务模式"
+        }
+      ],
+      "implementationGuide": "1. 创建 service.py\\n2. 实现 StrategyService 类\\n3. 实现生命周期方法 start/stop\\n4. 实现赔率更新回调处理\\n5. 实现信号量计算和策略评估\\n\\nPseudocode:\\nclass StrategyService:\\n    def __init__(self, config: StrategyServiceConfig):\\n        self._config = config\\n        self._signal_cache: dict[str, dict] = {}  # pair_id -> signals\\n        self._opportunities: list[dict] = []\\n    \\n    def on_odds_update(self, pair_id: str, venue: str, odds_data: dict):\\n        # 更新缓存并触发计算\\n        self._calculate_signals(pair_id)\\n        self._evaluate_strategy(pair_id)\\n    \\n    def _calculate_signals(self, pair_id: str):\\n        strategy = self._get_strategy_for_pair(pair_id)\\n        for signal_config in strategy.signals:\\n            signal = self._create_signal(signal_config)\\n            result = signal.calculate(poly_odds, orbit_odds)\\n            self._signal_cache[pair_id][signal.name] = result\\n    \\n    def _evaluate_strategy(self, pair_id: str):\\n        strategy = self._get_strategy_for_pair(pair_id)\\n        signals = self._signal_cache[pair_id]\\n        if strategy.trigger_mode == 'all':\\n            satisfied = all(s.satisfied for s in signals.values())\\n        else:\\n            satisfied = any(s.satisfied for s in signals.values())\\n        if satisfied:\\n            self._create_opportunity(pair_id)\\n    \\n    def get_signals(self, pair_id: str) -> dict\\n    def get_opportunities(self) -> list",
+      "verificationCriteria": "1. StrategyService 可正常实例化\\n2. on_odds_update 回调正确触发计算\\n3. get_signals/get_opportunities 返回正确数据",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+    },
+    {
+      "id": "ab9a248c-db95-4947-baa5-0c9ce219f8c4",
+      "name": "修改赔率服务添加回调接口",
+      "description": "修改 OddsSubscriptionService，添加策略回调注册接口，在赔率更新时触发策略计算。",
+      "notes": "保持向后兼容，回调是可选的",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
       "relatedFiles": [
         {
           "path": "src/arbitrage/services/odds_subscription/service.py",
           "type": "TO_MODIFY",
-          "description": "添加超时监控逻辑"
+          "description": "添加策略回调接口",
+          "lineStart": 1,
+          "lineEnd": 50
         }
       ],
-      "implementationGuide": "1. 在 service.py 中实现 HeartbeatMonitor 类\\n2. 维护字典 last_updates: {event_id: timestamp}\\n3. 使用 asyncio.create_task 定期检查（每30秒）\\n4. 检查逻辑：\\n   - 如果 now - last_update > staleness_timeout_sec:\\n     - Polymarket: 重新订阅 WebSocket\\n     - OrbitExch: 刷新页面 (page.reload())\\n5. 在接收到赔率数据时更新 last_updates\\n6. 记录超时日志并触发刷新动作",
-      "verificationCriteria": "1. 定时检查任务正常运行\\n2. 检测到超时时能触发刷新\\n3. 刷新后数据恢复正常",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+      "implementationGuide": "1. 在 OddsSubscriptionService 添加 _strategy_callbacks 列表\\n2. 添加 register_strategy_callback(callback) 方法\\n3. 在 _on_polymarket_update 和 _on_orbitexch_update 中触发回调\\n\\nPseudocode:\\nclass OddsSubscriptionService:\\n    def __init__(self):\\n        ...\\n        self._strategy_callbacks: list[Callable] = []\\n    \\n    def register_strategy_callback(self, callback: Callable[[str, str, dict], None]):\\n        '''注册策略回调，callback(pair_id, venue, odds_data)'''\\n        self._strategy_callbacks.append(callback)\\n    \\n    def _notify_strategy_callbacks(self, pair_id: str, venue: str, odds_data: dict):\\n        for callback in self._strategy_callbacks:\\n            try:\\n                callback(pair_id, venue, odds_data)\\n            except Exception as e:\\n                self._log.error(f'Strategy callback error: {e}')\\n    \\n    def _on_polymarket_update(self, odds_data: dict):\\n        ...existing code...\\n        self._notify_strategy_callbacks(pair_id, 'polymarket', odds_data)\\n    \\n    def _on_orbitexch_update(self, odds_data: dict):\\n        ...existing code...\\n        self._notify_strategy_callbacks(pair_id, 'orbitexch', odds_data)",
+      "verificationCriteria": "1. register_strategy_callback 方法可用\\n2. 赔率更新时回调被正确触发\\n3. 回调异常不影响主流程",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
     },
     {
-      "id": "62a6ce41-893e-418c-bd5e-75a648b84c64",
-      "name": "实现 OddsSubscriptionService 主服务",
-      "description": "实现主服务类，协调 Polymarket 和 OrbitExch 客户端，管理订阅生命周期",
+      "id": "8e976ba2-a020-43ca-8460-40d6dce4da1d",
+      "name": "扩展 AppState 支持策略管理",
+      "description": "修改 web_gateway/state.py，添加策略配置和策略服务实例管理。",
+      "notes": "保持与现有 discovery/matching 配置一致的模式",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "da62d4c1-75b9-4bd8-9fc8-6ae50da22680"
+          "taskId": "e8beea92-e0fe-4ca1-ac71-e624e791a512"
         },
         {
-          "taskId": "d1c566e6-110b-4c0b-8559-2a95abb264eb"
-        },
-        {
-          "taskId": "e9d3cde7-e178-46eb-b368-86fd029c0a6e"
+          "taskId": "ab9a248c-db95-4947-baa5-0c9ce219f8c4"
         }
       ],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
       "relatedFiles": [
-        {
-          "path": "src/arbitrage/services/market_matching/service.py",
-          "type": "REFERENCE",
-          "description": "参考服务类实现模式",
-          "lineStart": 1,
-          "lineEnd": 100
-        },
         {
           "path": "src/arbitrage/services/web_gateway/state.py",
-          "type": "REFERENCE",
-          "description": "参考如何与 app_state 集成"
+          "type": "TO_MODIFY",
+          "description": "添加策略管理"
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/default_config.json",
+          "type": "TO_MODIFY",
+          "description": "添加策略配置项"
         }
       ],
-      "implementationGuide": "1. 在 service.py 中实现 OddsSubscriptionService 类\\n2. 初始化：\\n   - PolymarketOddsClient\\n   - OrbitExchOddsClient\\n   - HeartbeatMonitor\\n3. 实现 async def subscribe_matched_pairs(matched_pairs: list[MatchedPair]):\\n   - 遍历 matched_pairs\\n   - 对每个 pair，订阅 Polymarket 和 OrbitExch 的赔率\\n4. 维护内存缓存 latest_odds: {pair_id: {polymarket: {...}, orbitexch: {...}}}\\n5. 实现 get_latest_odds(pair_id) 方法\\n6. 实现 get_all_subscriptions() 方法返回订阅状态\\n7. 实现 async def start() 和 async def stop() 管理生命周期",
-      "verificationCriteria": "1. 能够基于 matched_pairs 批量订阅\\n2. 内存缓存正确更新\\n3. 生命周期管理（start/stop）正常",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+      "implementationGuide": "1. 添加 _strategy_config 属性\\n2. 添加 _strategy_service 延迟初始化\\n3. 添加策略配置的 get/update 方法\\n4. 在 get_odds_service 中注册策略回调\\n\\nPseudocode:\\nclass AppState:\\n    def __init__(self):\\n        ...\\n        self._strategy_config = StrategyServiceConfig(...)\\n        self._strategy_service = None\\n    \\n    def get_strategy_config(self) -> dict\\n    def update_strategy_config(self, data: dict) -> dict\\n    \\n    def get_strategy_service(self):\\n        if self._strategy_service is None:\\n            from ...strategy.service import StrategyService\\n            self._strategy_service = StrategyService(self._strategy_config)\\n            # 注册到赔率服务\\n            odds_service = self.get_odds_service()\\n            odds_service.register_strategy_callback(self._strategy_service.on_odds_update)\\n        return self._strategy_service",
+      "verificationCriteria": "1. get_strategy_service 正确返回服务实例\\n2. 策略配置可正确保存/加载\\n3. 回调正确注册",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
     },
     {
-      "id": "147a09b2-091f-4397-88ab-40ad73677e68",
-      "name": "Web Gateway 路由集成",
-      "description": "在 Web Gateway 中添加赔率订阅相关的 API 路由",
+      "id": "0575830e-0aa4-4347-bd15-6c6bc0f6d4fc",
+      "name": "创建策略 Web API 路由",
+      "description": "创建 src/arbitrage/services/web_gateway/routes/strategy.py，提供策略配置和状态查询的 REST API。",
+      "notes": "参照 discovery.py 路由模式",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "62a6ce41-893e-418c-bd5e-75a648b84c64"
+          "taskId": "8e976ba2-a020-43ca-8460-40d6dce4da1d"
         }
       ],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
       "relatedFiles": [
         {
-          "path": "src/arbitrage/services/web_gateway/routes/matching.py",
-          "type": "REFERENCE",
-          "description": "参考路由实现模式",
-          "lineStart": 1,
-          "lineEnd": 100
+          "path": "src/arbitrage/services/web_gateway/routes/strategy.py",
+          "type": "CREATE",
+          "description": "策略 API 路由"
         },
         {
           "path": "src/arbitrage/services/web_gateway/app.py",
           "type": "TO_MODIFY",
-          "description": "添加 odds_router"
+          "description": "注册路由"
         },
         {
-          "path": "src/arbitrage/services/web_gateway/state.py",
-          "type": "TO_MODIFY",
-          "description": "添加 odds_service 实例"
+          "path": "src/arbitrage/services/web_gateway/routes/discovery.py",
+          "type": "REFERENCE",
+          "description": "参考路由模式"
         }
       ],
-      "implementationGuide": "1. 创建 src/arbitrage/services/web_gateway/routes/odds.py\\n2. 定义路由：\\n   - POST /api/odds/subscribe: 基于当前 matched_pairs 启动订阅\\n   - GET /api/odds/latest: 获取最新赔率数据\\n   - GET /api/odds/subscriptions: 获取订阅状态\\n   - DELETE /api/odds/unsubscribe: 停止订阅\\n3. 在 app.py 中引入 odds_router\\n4. 在 state.py 中初始化 OddsSubscriptionService 实例\\n5. 返回数据格式：{\\\"pairs\\\": [{\\\"pair_id\\\": str, \\\"polymarket\\\": {...}, \\\"orbitexch\\\": {...}}]}",
-      "verificationCriteria": "1. API 路由正常工作\\n2. 能够触发订阅并获取数据\\n3. 错误处理完善",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+      "implementationGuide": "1. 创建 strategy.py 路由文件\\n2. 实现 GET/PUT /api/strategy/config\\n3. 实现 GET /api/strategy/signals/{pair_id}\\n4. 实现 GET /api/strategy/opportunities\\n5. 在 app.py 中注册路由\\n\\nPseudocode:\\nrouter = APIRouter(prefix='/api/strategy', tags=['strategy'])\\n\\n@router.get('/config')\\nasync def get_strategy_config():\\n    return app_state.get_strategy_config()\\n\\n@router.put('/config')\\nasync def update_strategy_config(body: StrategyConfigUpdate):\\n    return app_state.update_strategy_config(body.dict())\\n\\n@router.get('/signals/{pair_id}')\\nasync def get_signals(pair_id: str):\\n    service = app_state.get_strategy_service()\\n    return service.get_signals(pair_id)\\n\\n@router.get('/opportunities')\\nasync def get_opportunities():\\n    service = app_state.get_strategy_service()\\n    return {'opportunities': service.get_opportunities()}",
+      "verificationCriteria": "1. 所有 API 端点可访问\\n2. 配置更新正确保存\\n3. 信号量和机会数据正确返回",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
     },
     {
-      "id": "c9eb7a41-275d-4165-a579-21a65b830f4c",
-      "name": "前端 UI 集成 - Odds Monitor 面板",
-      "description": "在 Web UI 中添加赔率监控面板，实时显示订阅的赔率数据",
+      "id": "cefb590e-3f81-4e46-a7d4-37b3116f72ad",
+      "name": "更新前端支持策略配置",
+      "description": "修改 index.html，添加策略配置区域，显示信号量状态和机会列表。",
+      "notes": "保持与现有前端风格一致",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "147a09b2-091f-4397-88ab-40ad73677e68"
+          "taskId": "0575830e-0aa4-4347-bd15-6c6bc0f6d4fc"
         }
       ],
-      "createdAt": "2026-01-28T11:14:25.838Z",
-      "updatedAt": "2026-01-28T11:14:25.838Z",
+      "createdAt": "2026-02-08T04:00:38.084Z",
+      "updatedAt": "2026-02-08T04:00:38.084Z",
       "relatedFiles": [
         {
           "path": "src/arbitrage/services/web_gateway/templates/index.html",
           "type": "TO_MODIFY",
-          "description": "添加 Odds Monitor 标签页和逻辑",
-          "lineStart": 100,
-          "lineEnd": 450
+          "description": "添加策略 UI"
         }
       ],
-      "implementationGuide": "1. 在 index.html 中添加第四个标签页 \\\"Odds Monitor\\\"\\n2. 添加订阅按钮和数据表格\\n3. 实现 JavaScript 函数：\\n   - async function subscribeOdds(): 调用 POST /api/odds/subscribe\\n   - async function refreshOdds(): 轮询 GET /api/odds/latest（每2秒）\\n   - function renderOddsTable(data): 渲染赔率表格\\n4. 表格列：Pair ID | Sport | Competition | Polymarket (Home/Draw/Away) | OrbitExch (Home/Draw/Away) | Update Time\\n5. 使用不同颜色标识超时数据（红色警告）\\n6. 可选：实现 WebSocket 实时推送（避免轮询）",
-      "verificationCriteria": "1. Odds Monitor 标签页正常显示\\n2. 点击订阅按钮能触发订阅\\n3. 赔率数据实时更新显示\\n4. UI 布局美观清晰",
-      "analysisResult": "## 最终设计方案（简化版）\n\n### 核心理念\n当前阶段专注于**基础赔率数据获取和显示**，不过度集成 NautilusTrader 框架。后续可根据需要逐步集成到 TradingNode。\n\n### 架构设计\n\n```\nWebGateway (用户点击订阅)\n    ↓\nOddsSubscriptionService\n    ├── PolymarketOddsClient (直接调用 HTTP API + WebSocket)\n    └── OrbitExchOddsClient (Playwright 抓取)\n            ↓ 获取赔率数据\n            ↓ 存储到内存缓存\n            ↓ 推送到 Web UI (REST API 轮询或 WebSocket)\nWebGateway (显示赔率)\n```\n\n### 服务结构\n\n```\nsrc/arbitrage/services/odds_subscription/\n├── __init__.py\n├── config.py                    # 配置\n├── service.py                   # 主服务类\n├── polymarket_client.py         # Polymarket HTTP API + WebSocket\n├── orbitexch_client.py          # OrbitExch Playwright 抓取\n└── requirements.md\n```\n\n### 关键技术选择\n\n1. **Polymarket**: 使用官方 py_clob_client + WebSocket 订阅\n2. **OrbitExch**: 复用现有 scraper 和 websocket_handler\n3. **数据存储**: 内存字典 (pair_id -> latest_odds)\n4. **超时监控**: asyncio 定时任务检查\n5. **Web UI**: REST API 轮询或 WebSocket 推送"
+      "implementationGuide": "1. 添加 Strategy 配置区域 HTML\\n2. 添加信号量状态显示表格\\n3. 添加机会列表显示\\n4. 实现 JavaScript 函数调用 API\\n\\nPseudocode:\\n<!-- HTML -->\\n<div class='card'>\\n  <h3>Strategy Configuration</h3>\\n  <div>Default Strategy: <select id='default-strategy'>...</select></div>\\n  <div>Min Spread: <input id='min-spread' type='number'/></div>\\n  <button onclick='updateStrategyConfig()'>Update</button>\\n</div>\\n\\n<div class='card'>\\n  <h3>Signals & Opportunities</h3>\\n  <table id='signals-table'>...</table>\\n  <table id='opportunities-table'>...</table>\\n</div>\\n\\n<!-- JavaScript -->\\nasync function loadStrategyConfig() {\\n  const resp = await fetch('/api/strategy/config');\\n  const data = await resp.json();\\n  // 填充表单\\n}\\n\\nasync function loadOpportunities() {\\n  const resp = await fetch('/api/strategy/opportunities');\\n  const data = await resp.json();\\n  // 更新表格\\n}",
+      "verificationCriteria": "1. 策略配置界面正常显示\\n2. 配置修改功能正常\\n3. 信号量和机会实时更新",
+      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
     }
   ]
 }

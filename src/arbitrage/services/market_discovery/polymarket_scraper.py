@@ -80,6 +80,7 @@ class PolymarketScraper:
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self.config.browser.headless,
+            channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
