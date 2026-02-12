@@ -46,17 +46,30 @@ class MultiWaySignal(Signal):
                 - threshold: 非严格模式下的阈值，默认 0
 
         Returns:
-            计算结果
+            计算结果（satisfied=False 如果执行前或执行后套利数组为空）
         """
         strict = params.get("strict", True)
         threshold = params.get("threshold", 0.0)
 
-        # 如果没有 way_rebate 数据，直接通过（不过滤）
+        # 如果执行前套利数组为空，返回 False
+        if not context.arbitrage_directions:
+            return SignalResult(
+                signal_name=self.name,
+                satisfied=False,
+                value=0,
+                details={
+                    "message": "No arbitrage directions before filtering",
+                    "original_count": 0,
+                    "remaining_count": 0,
+                },
+            )
+
+        # 如果没有 way_rebate 数据，检查是否有套利方向
         if not context.way_rebate:
             return SignalResult(
                 signal_name=self.name,
-                satisfied=True,
-                value=None,
+                satisfied=len(context.arbitrage_directions) > 0,
+                value=len(context.arbitrage_directions),
                 details={
                     "message": "No way_rebate data, skipping filter",
                     "directions_count": len(context.arbitrage_directions),

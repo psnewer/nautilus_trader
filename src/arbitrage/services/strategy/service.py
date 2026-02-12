@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
+from .strategies import Strategy, StrategyResult, DefaultStrategy, get_strategy_class
 
 
 class StrategyService:
@@ -208,8 +209,9 @@ class StrategyService:
         """
         顺序评估策略中的信号
 
-        策略中的信号按顺序执行，每个信号可以读写 context.arbitrage_directions。
-        所有信号都必须满足条件，策略才算触发。
+        使用 Strategy 类执行策略，支持自定义方向选择逻辑。
+        策略中的信号按顺序执行，任意信号返回 satisfied=False 则停止。
+        所有信号满足后，调用策略的 select_direction 方法选择最优方向。
 
         Args:
             pair_id: 比赛 ID
@@ -219,29 +221,63 @@ class StrategyService:
         Returns:
             策略是否触发
         """
+        # 获取策略定义
         strategy_def = self._config.get_strategy(strategy_name)
         if not strategy_def:
-            self._log.warning(f"Unknown strategy: {strategy_name}")
+            self._log.warning(f"Unknown strategy config: {strategy_name}")
             return False
 
-        # 顺序执行每个信号
-        all_satisfied = True
-        for signal_name in strategy_def.signals:
-            result = self._calculate_signal(pair_id, signal_name, context)
-            if not result or not result.satisfied:
-                all_satisfied = False
-                # 不要 break，继续计算其他信号以便调试
-                # 但结果已经确定为不满足
+        # 获取策略类实例
+        strategy = self._get_strategy_instance(strategy_name, strategy_def.signals)
 
-        self._strategy_results[pair_id][strategy_name] = all_satisfied
+        # 创建信号计算器
+        def signal_calculator(signal_name: str, ctx: MatchContext) -> SignalResult | None:
+            return self._calculate_signal(pair_id, signal_name, ctx)
 
-        if all_satisfied:
+        # 执行策略
+        result = strategy.execute(context, signal_calculator)
+
+        # 缓存信号结果
+        for name, sig_result in result.signal_results.items():
+            self._signal_results[pair_id][name] = sig_result
+
+        self._strategy_results[pair_id][strategy_name] = result.triggered
+
+        if result.triggered:
             self._log.info(
                 f"Strategy {strategy_name} triggered for {pair_id}, "
-                f"directions={len(context.arbitrage_directions)}"
+                f"selected_direction={result.selected_direction.direction_id if result.selected_direction else None}"
             )
+        else:
+            self._log.debug(f"Strategy {strategy_name} not triggered for {pair_id}")
 
-        return all_satisfied
+        return result.triggered
+
+    def _get_strategy_instance(
+        self,
+        strategy_name: str,
+        signals: list[str],
+    ) -> Strategy:
+        """
+        获取策略实例
+
+        优先从注册表查找策略类，未找到则使用 DefaultStrategy。
+
+        Args:
+            strategy_name: 策略名称
+            signals: 信号列表
+
+        Returns:
+            策略实例
+        """
+        # 尝试从注册表获取策略类
+        strategy_class = get_strategy_class(strategy_name)
+
+        if strategy_class:
+            return strategy_class(name=strategy_name, signals=signals)
+        else:
+            # 使用默认策略
+            return DefaultStrategy(name=strategy_name, signals=signals)
 
     def _calculate_signal(
         self,
