@@ -482,9 +482,37 @@
 
             <!-- Config Tab -->
             <div class="tab-pane fade" id="config" role="tabpanel">
-                <div class="row">
-                    <!-- Discovery Config -->
-                    <div class="col-md-6">
+                <!-- Config Sub-tabs -->
+                <ul class="nav nav-tabs mb-3" id="configSubTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="config-discovery-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-discovery" type="button" role="tab">
+                            <i class="bi bi-search me-1"></i>Market Discovery
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-matching-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-matching" type="button" role="tab">
+                            <i class="bi bi-link-45deg me-1"></i>Market Matching
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-odds-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-odds" type="button" role="tab">
+                            <i class="bi bi-graph-up me-1"></i>Odds Monitor
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-arbitrage-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-arbitrage" type="button" role="tab">
+                            <i class="bi bi-calculator me-1"></i>Arbitrage
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="configSubTabsContent">
+                    <!-- Market Discovery Config -->
+                    <div class="tab-pane fade show active" id="config-discovery" role="tabpanel">
                         <div class="card">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <span><i class="bi bi-sliders me-1"></i>Discovery Config</span>
@@ -493,20 +521,27 @@
                                 </button>
                             </div>
                             <div class="card-body">
-                                <div class="mb-3">
-                                    <label class="form-label">Polymarket Sports</label>
-                                    <textarea class="form-control config-editor" id="poly-sports-config" rows="6"></textarea>
-                                    <small class="text-muted">JSON format: [{"sport": "Soccer", "competitions": ["EPL"]}]</small>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">OrbitExch Sports</label>
-                                    <textarea class="form-control config-editor" id="orbit-sports-config" rows="6"></textarea>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Polymarket Sports</label>
+                                            <textarea class="form-control config-editor" id="poly-sports-config" rows="8"></textarea>
+                                            <small class="text-muted">JSON format: [{"sport": "Soccer", "competitions": ["EPL"]}]</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">OrbitExch Sports</label>
+                                            <textarea class="form-control config-editor" id="orbit-sports-config" rows="8"></textarea>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                    <!-- Matching Config -->
-                    <div class="col-md-6">
+
+                    <!-- Market Matching Config -->
+                    <div class="tab-pane fade" id="config-matching" role="tabpanel">
                         <div class="card">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <span><i class="bi bi-sliders me-1"></i>Matching Config</span>
@@ -515,24 +550,82 @@
                                 </button>
                             </div>
                             <div class="card-body">
-                                <div class="mb-3">
-                                    <label class="form-label">Min Similarity</label>
-                                    <input type="number" class="form-control" id="min-similarity" value="1">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Min Similarity</label>
+                                            <input type="number" class="form-control" id="min-similarity" value="1" step="0.1" min="0" max="1">
+                                            <small class="text-muted">0-1, higher means stricter matching</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Sport Aliases</label>
+                                            <textarea class="form-control config-editor" id="sport-aliases-config" rows="4"></textarea>
+                                            <small class="text-muted">JSON format: {"Football": "Soccer"}</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Competition Aliases</label>
+                                            <textarea class="form-control config-editor" id="competition-aliases-config" rows="4"></textarea>
+                                            <small class="text-muted">JSON format: {"epl": "English Premier League"}</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Competition Max Matches</label>
+                                            <textarea class="form-control config-editor" id="competition-max-matches-config" rows="4"></textarea>
+                                            <small class="text-muted">JSON format: {"English Premier League": 10}</small>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Sport Aliases</label>
-                                    <textarea class="form-control config-editor" id="sport-aliases-config" rows="4"></textarea>
-                                    <small class="text-muted">JSON format: {"Football": "Soccer"}</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Odds Monitor Config -->
+                    <div class="tab-pane fade" id="config-odds" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-sliders me-1"></i>Odds Monitor Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveOddsConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <h6 class="text-muted mb-3">Polymarket</h6>
+                                        <div class="mb-3">
+                                            <label class="form-label">Staleness Timeout (seconds)</label>
+                                            <input type="number" class="form-control" id="poly-staleness-timeout" value="60" min="10">
+                                            <small class="text-muted">If no price update within this time, refresh WebSocket connections (market + user channels)</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6 class="text-muted mb-3">OrbitExch</h6>
+                                        <div class="mb-3">
+                                            <label class="form-label">Staleness Timeout (seconds)</label>
+                                            <input type="number" class="form-control" id="orbit-staleness-timeout" value="60" min="10">
+                                            <small class="text-muted">If no price update within this time, refresh competition page</small>
+                                        </div>
+                                    </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Arbitrage Config -->
+                    <div class="tab-pane fade" id="config-arbitrage" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-sliders me-1"></i>Arbitrage Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveArbitrageConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
                                 <div class="mb-3">
-                                    <label class="form-label">Competition Aliases</label>
-                                    <textarea class="form-control config-editor" id="competition-aliases-config" rows="4"></textarea>
-                                    <small class="text-muted">JSON format: {"epl": "English Premier League"}</small>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Competition Max Matches</label>
-                                    <textarea class="form-control config-editor" id="competition-max-matches-config" rows="4"></textarea>
-                                    <small class="text-muted">JSON format: {"English Premier League": 10, "atp": 20}</small>
+                                    <label class="form-label">Share</label>
+                                    <input type="number" class="form-control" id="arbitrage-share" value="1.0" min="0.01" step="0.01" style="max-width: 200px;">
+                                    <small class="text-muted">持仓份额系数，用于计算当前持仓返水率 (way_rebate)</small>
                                 </div>
                             </div>
                         </div>
@@ -712,16 +805,25 @@
         async function loadConfig() {
             try {
                 const config = await api('/api/config');
+
                 // Discovery config
-                const polyS = config.discovery.venues.polymarket.sports || [];
-                const orbitS = config.discovery.venues.orbitexch.sports || [];
+                const polyS = config.discovery?.venues?.polymarket?.sports || [];
+                const orbitS = config.discovery?.venues?.orbitexch?.sports || [];
                 document.getElementById('poly-sports-config').value = JSON.stringify(polyS, null, 2);
                 document.getElementById('orbit-sports-config').value = JSON.stringify(orbitS, null, 2);
+
                 // Matching config
-                document.getElementById('min-similarity').value = config.matching.min_similarity || 1;
-                document.getElementById('sport-aliases-config').value = JSON.stringify(config.matching.sport_aliases || {}, null, 2);
-                document.getElementById('competition-aliases-config').value = JSON.stringify(config.matching.competition_aliases || {}, null, 2);
-                document.getElementById('competition-max-matches-config').value = JSON.stringify(config.matching.competition_max_matches || {}, null, 2);
+                document.getElementById('min-similarity').value = config.matching?.min_similarity || 1;
+                document.getElementById('sport-aliases-config').value = JSON.stringify(config.matching?.sport_aliases || {}, null, 2);
+                document.getElementById('competition-aliases-config').value = JSON.stringify(config.matching?.competition_aliases || {}, null, 2);
+                document.getElementById('competition-max-matches-config').value = JSON.stringify(config.matching?.competition_max_matches || {}, null, 2);
+
+                // Odds Monitor config
+                document.getElementById('poly-staleness-timeout').value = config.odds?.staleness_timeout_sec || 300;
+                document.getElementById('orbit-staleness-timeout').value = config.odds?.orbitexch_staleness_timeout_sec || 60;
+
+                // Arbitrage config
+                document.getElementById('arbitrage-share').value = config.arbitrage?.share || 1.0;
             } catch (e) {
                 showToast('Error loading config: ' + e.message, 'error');
             }
@@ -742,13 +844,38 @@
         async function saveMatchingConfig() {
             try {
                 const data = {
-                    min_similarity: parseInt(document.getElementById('min-similarity').value),
+                    min_similarity: parseFloat(document.getElementById('min-similarity').value),
                     sport_aliases: JSON.parse(document.getElementById('sport-aliases-config').value),
                     competition_aliases: JSON.parse(document.getElementById('competition-aliases-config').value),
                     competition_max_matches: JSON.parse(document.getElementById('competition-max-matches-config').value),
                 };
                 await api('/api/matching/config', 'PUT', data);
                 showToast('Matching config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function saveOddsConfig() {
+            try {
+                const data = {
+                    staleness_timeout_sec: parseInt(document.getElementById('poly-staleness-timeout').value),
+                    orbitexch_staleness_timeout_sec: parseInt(document.getElementById('orbit-staleness-timeout').value),
+                };
+                await api('/api/odds/config', 'PUT', data);
+                showToast('Odds monitor config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function saveArbitrageConfig() {
+            try {
+                const data = {
+                    share: parseFloat(document.getElementById('arbitrage-share').value),
+                };
+                await api('/api/strategy/arbitrage-config', 'PUT', data);
+                showToast('Arbitrage config saved');
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
             }

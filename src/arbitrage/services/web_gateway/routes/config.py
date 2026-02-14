@@ -17,6 +17,8 @@ async def get_all_config():
     return {
         "discovery": app_state.get_discovery_config(),
         "matching": app_state.get_matching_config(),
+        "odds": app_state.get_odds_config(),
+        "arbitrage": app_state.get_arbitrage_config(),
     }
 
 
@@ -42,3 +44,27 @@ async def get_matching_config():
 async def update_matching_config(data: dict[str, Any]):
     """更新市场匹配配置"""
     return app_state.update_matching_config(data)
+
+
+@router.get("/odds")
+async def get_odds_config():
+    """获取赔率订阅配置"""
+    return app_state.get_odds_config()
+
+
+@router.put("/odds")
+async def update_odds_config(data: dict[str, Any]):
+    """更新赔率订阅配置"""
+    return app_state.update_odds_config(data)
+
+
+@router.get("/arbitrage")
+async def get_arbitrage_config():
+    """获取套利配置"""
+    return app_state.get_arbitrage_config()
+
+
+@router.put("/arbitrage")
+async def update_arbitrage_config(data: dict[str, Any]):
+    """更新套利配置"""
+    return app_state.update_arbitrage_config(data)

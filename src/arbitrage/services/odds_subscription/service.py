@@ -115,6 +115,22 @@ class OddsSubscriptionService:
         self._running = False
         self._log.info("Odds subscription service stopped")
 
+    def update_config(self, config: OddsSubscriptionConfig) -> None:
+        """
+        更新服务配置
+
+        注意：部分配置（如凭据）可能需要重启服务才能生效。
+        超时相关配置会立即生效。
+
+        Args:
+            config: 新的配置
+        """
+        self.config = config
+        self._log.info(
+            f"Odds config updated: staleness_timeout={config.staleness_timeout_sec}s, "
+            f"orbitexch_staleness_timeout={config.orbitexch_staleness_timeout_sec}s"
+        )
+
     # =========================================================================
     # 订阅管理
     # =========================================================================

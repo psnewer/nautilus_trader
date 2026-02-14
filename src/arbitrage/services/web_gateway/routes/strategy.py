@@ -67,6 +67,18 @@ async def get_strategy_config():
     return app_state.get_strategy_config()
 
 
+@router.get("/arbitrage-config")
+async def get_arbitrage_config():
+    """获取套利配置"""
+    return app_state.get_arbitrage_config()
+
+
+@router.put("/arbitrage-config")
+async def update_arbitrage_config(data: dict[str, Any]):
+    """更新套利配置"""
+    return app_state.update_arbitrage_config(data)
+
+
 @router.put("/config")
 async def update_strategy_config(body: FullConfigUpdate):
     """更新完整策略配置"""
