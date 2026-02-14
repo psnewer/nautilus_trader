@@ -28,7 +28,27 @@ from src.arbitrage.services.market_discovery.config import (
     SportConfig,
 )
 from src.arbitrage.services.market_matching.config import MarketMatchingConfig
+from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.strategy.config import StrategyServiceConfig
+
+
+@dataclass
+class ArbitrageConfig:
+    """套利配置"""
+    share: float = 1.0  # 持仓份额系数，用于计算当前持仓返水
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ArbitrageConfig":
+        """从字典创建配置实例"""
+        return cls(
+            share=data.get("share", 1.0),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为字典"""
+        return {
+            "share": self.share,
+        }
 
 
 # 默认配置文件路径
@@ -87,6 +107,8 @@ class AppState:
         # 配置
         self._discovery_config = MarketDiscoveryConfig()
         self._matching_config = MarketMatchingConfig()
+        self._odds_config = OddsSubscriptionConfig()
+        self._arbitrage_config = ArbitrageConfig()
         self._strategy_config = StrategyServiceConfig()
 
         # 运行时数据
@@ -100,6 +122,9 @@ class AppState:
 
         # 策略服务
         self._strategy_service = None  # 延迟初始化
+
+        # 执行服务
+        self._execution_service = None  # 延迟初始化
 
         # 加载保存的配置
         self._load_saved_config()
@@ -121,6 +146,14 @@ class AppState:
                     self._matching_config = MarketMatchingConfig.from_dict(
                         data["matching"]
                     )
+                if "odds" in data:
+                    self._odds_config = OddsSubscriptionConfig.from_dict(
+                        data["odds"]
+                    )
+                if "arbitrage" in data:
+                    self._arbitrage_config = ArbitrageConfig.from_dict(
+                        data["arbitrage"]
+                    )
                 if "strategy" in data:
                     self._strategy_config = StrategyServiceConfig.from_dict(
                         data["strategy"]
@@ -136,6 +169,8 @@ class AppState:
             data = {
                 "discovery": self._discovery_config_to_dict(),
                 "matching": self._matching_config_to_dict(),
+                "odds": self._odds_config.to_dict(),
+                "arbitrage": self._arbitrage_config.to_dict(),
                 "strategy": self._strategy_config.to_dict(),
             }
             with open(DEFAULT_CONFIG_PATH, "w") as f:
@@ -239,6 +274,49 @@ class AppState:
         self._matching_config.competition_aliases[alias] = standard
         self._save_config()
         return self.get_matching_config()
+
+    # =========================================================================
+    # Odds 配置
+    # =========================================================================
+
+    def get_odds_config(self) -> dict:
+        """获取赔率订阅配置"""
+        return self._odds_config.to_dict()
+
+    def update_odds_config(self, data: dict) -> dict:
+        """更新赔率订阅配置"""
+        self._odds_config = OddsSubscriptionConfig.from_dict(data)
+        self._save_config()
+
+        # 如果赔率服务已创建，更新其配置
+        if self._odds_service is not None:
+            self._odds_service.update_config(self._odds_config)
+
+        return self.get_odds_config()
+
+    @property
+    def odds_config_obj(self) -> OddsSubscriptionConfig:
+        """获取赔率订阅配置对象"""
+        return self._odds_config
+
+    # =========================================================================
+    # Arbitrage 配置
+    # =========================================================================
+
+    def get_arbitrage_config(self) -> dict:
+        """获取套利配置"""
+        return self._arbitrage_config.to_dict()
+
+    def update_arbitrage_config(self, data: dict) -> dict:
+        """更新套利配置"""
+        self._arbitrage_config = ArbitrageConfig.from_dict(data)
+        self._save_config()
+        return self.get_arbitrage_config()
+
+    @property
+    def arbitrage_config_obj(self) -> ArbitrageConfig:
+        """获取套利配置对象"""
+        return self._arbitrage_config
 
     # =========================================================================
     # Discovery 数据
@@ -370,13 +448,14 @@ class AppState:
         """
         if self._odds_service is None:
             from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
-            from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 
-            # 创建服务配置（从环境变量或 .env 文件读取凭据）
-            config = OddsSubscriptionConfig(
-                orbitexch_username=os.getenv("ORBITEXCH_USERNAME", ""),
-                orbitexch_password=os.getenv("ORBITEXCH_PASSWORD", ""),
-            )
+            # 使用存储的配置，并从环境变量补充凭据（如果配置中没有设置）
+            config = self._odds_config
+            if not config.orbitexch_username:
+                config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", "")
+            if not config.orbitexch_password:
+                config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
+
             self._odds_service = OddsSubscriptionService(
                 config=config,
                 logger=logging.getLogger("OddsSubscription"),
@@ -491,6 +570,36 @@ class AppState:
             strategy_service.update_match_status(pair_id, is_live)
 
         return match_statuses
+
+    # =========================================================================
+    # 执行服务
+    # =========================================================================
+
+    def get_execution_service(self):
+        """
+        获取执行服务实例
+
+        延迟初始化，只在首次调用时创建。
+        """
+        if self._execution_service is None:
+            from src.arbitrage.services.execution.service import ExecutionService
+            from src.arbitrage.services.execution.config import ExecutionConfig
+
+            # 从环境变量读取配置
+            config = ExecutionConfig(
+                polymarket_api_key=os.getenv("POLYMARKET_API_KEY", ""),
+                polymarket_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
+                polymarket_passphrase=os.getenv("POLYMARKET_PASSPHRASE", ""),
+                polymarket_private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
+                polymarket_funder=os.getenv("POLYMARKET_FUNDER", ""),
+            )
+
+            self._execution_service = ExecutionService(
+                config=config,
+                logger=logging.getLogger("ExecutionService"),
+            )
+
+        return self._execution_service
 
 
 # 全局状态实例

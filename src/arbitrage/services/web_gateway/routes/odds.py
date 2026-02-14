@@ -16,6 +16,18 @@ _log = logging.getLogger(__name__)
 _subscription_running = False
 
 
+@router.get("/config")
+async def get_odds_config():
+    """获取赔率订阅配置"""
+    return app_state.get_odds_config()
+
+
+@router.put("/config")
+async def update_odds_config(data: dict[str, Any]):
+    """更新赔率订阅配置"""
+    return app_state.update_odds_config(data)
+
+
 @router.get("/status")
 async def get_subscription_status():
     """获取订阅状态"""

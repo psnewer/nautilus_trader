@@ -7,6 +7,7 @@ from .matching import router as matching_router
 from .config import router as config_router
 from .odds import router as odds_router
 from .strategy import router as strategy_router
+from .execution import router as execution_router
 
 __all__ = [
     "discovery_router",
@@ -14,4 +15,5 @@ __all__ = [
     "config_router",
     "odds_router",
     "strategy_router",
+    "execution_router",
 ]

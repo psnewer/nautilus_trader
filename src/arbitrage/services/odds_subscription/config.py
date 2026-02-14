@@ -78,3 +78,23 @@ class OddsSubscriptionConfig:
             orbitexch_cdp_url=data.get("orbitexch_cdp_url", ""),
             supported_market_types=supported_market_types,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为字典"""
+        return {
+            "enabled": self.enabled,
+            "staleness_timeout_sec": self.staleness_timeout_sec,
+            "polymarket_api_key": self.polymarket_api_key,
+            "polymarket_api_secret": self.polymarket_api_secret,
+            "polymarket_passphrase": self.polymarket_passphrase,
+            "polymarket_ws_url": self.polymarket_ws_url,
+            "orbitexch_base_url": self.orbitexch_base_url,
+            "orbitexch_zoom_level": self.orbitexch_zoom_level,
+            "orbitexch_page_refresh_sec": self.orbitexch_page_refresh_sec,
+            "orbitexch_staleness_timeout_sec": self.orbitexch_staleness_timeout_sec,
+            "orbitexch_username": self.orbitexch_username,
+            "orbitexch_password": self.orbitexch_password,
+            "orbitexch_user_data_dir": self.orbitexch_user_data_dir,
+            "orbitexch_cdp_url": self.orbitexch_cdp_url,
+            "supported_market_types": self.supported_market_types,
+        }
