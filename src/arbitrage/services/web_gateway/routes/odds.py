@@ -125,6 +125,9 @@ async def _run_subscription():
         # 确保策略服务已注册
         app_state.ensure_strategy_registered()
 
+        # 确保执行服务已注册（接收策略机会回调）
+        await app_state.ensure_execution_registered()
+
         # 获取或创建服务
         service = app_state.get_odds_service()
 
@@ -136,6 +139,15 @@ async def _run_subscription():
         # 注册比赛到策略服务（包含比赛状态：in-play 或 pre-match）
         app_state.register_matches_to_strategy()
         _log.info("Registered matches to strategy service with status")
+
+        # 加载历史持仓到风控服务
+        app_state.ensure_risk_registered()
+        position_counts = app_state.load_risk_historical_positions()
+        _log.info(f"Loaded historical positions: {position_counts}")
+
+        # 更新执行服务的 OrbitExch 页面引用（订阅后页面才可用）
+        app_state.update_execution_pages()
+        _log.info("Updated execution service with OrbitExch pages")
 
     except Exception as e:
         _log.error(f"Odds subscription failed: {e}")

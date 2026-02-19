@@ -53,6 +53,9 @@ class OddsSubscriptionService:
         # 策略回调
         self._strategy_callbacks: list[Callable[[str, str, dict], None]] = []
 
+        # 仓位变化回调
+        self._position_callbacks: list[Callable[[str], None]] = []
+
     # =========================================================================
     # 生命周期
     # =========================================================================
@@ -79,6 +82,10 @@ class OddsSubscriptionService:
         # 设置回调
         self._polymarket_client.on_price_update(self._on_polymarket_update)
         self._orbitexch_client.on_price_update(self._on_orbitexch_update)
+
+        # 设置仓位变化回调
+        self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
+        self._polymarket_client.register_positions_callback(self._on_polymarket_position_update)
 
         # 启动客户端
         await self._polymarket_client.start()
@@ -365,6 +372,69 @@ class OddsSubscriptionService:
                 self._log.error(f"Strategy callback error: {e}")
 
     # =========================================================================
+    # 仓位变化回调
+    # =========================================================================
+
+    def register_position_callback(
+        self,
+        callback: Callable[[str], None],
+    ) -> None:
+        """
+        注册仓位变化回调
+
+        当 Polymarket 或 OrbitExch 仓位变化时触发。
+
+        Args:
+            callback: 回调函数，签名为 callback(pair_id)
+        """
+        self._position_callbacks.append(callback)
+        self._log.info(f"Position callback registered (total: {len(self._position_callbacks)})")
+
+    def _notify_position_callbacks(self, pair_id: str) -> None:
+        """
+        通知所有仓位变化回调
+
+        Args:
+            pair_id: 比赛 ID
+        """
+        for callback in self._position_callbacks:
+            try:
+                callback(pair_id)
+            except Exception as e:
+                self._log.error(f"Position callback error: {e}")
+
+    def _on_orbitexch_bets_update(self, bets_data: dict) -> None:
+        """
+        OrbitExch 订单更新回调
+
+        Args:
+            bets_data: {"market_id": str, "bets": list}
+        """
+        market_id = bets_data.get("market_id", "")
+
+        # 查找对应的 pair_id
+        for pair_id, pair in self._subscribed_pairs.items():
+            orbitexch_data = pair.orbitexch_data
+            if orbitexch_data.get("market_id") == market_id:
+                self._log.debug(f"OrbitExch bets update for {pair_id}")
+                self._notify_position_callbacks(pair_id)
+                break
+
+    def _on_polymarket_position_update(self, event_id: str) -> None:
+        """
+        Polymarket 仓位更新回调
+
+        Args:
+            event_id: Polymarket event ID
+        """
+        # 查找对应的 pair_id
+        for pair_id, pair in self._subscribed_pairs.items():
+            if pair.polymarket_event_id == event_id:
+                self._log.debug(f"Polymarket position update for {pair_id}")
+                self._notify_position_callbacks(pair_id)
+                break
+
+    # =========================================================================
     # 超时监控
     # =========================================================================
 
@@ -525,3 +595,172 @@ class OddsSubscriptionService:
                 "is_live": is_live,
             }
         return result
+
+    # =========================================================================
+    # 持仓查询
+    # =========================================================================
+
+    def get_polymarket_positions(self, pair_id: str | None = None) -> list:
+        """
+        获取 Polymarket 持仓
+
+        Args:
+            pair_id: 比赛 ID，None 表示获取所有
+
+        Returns:
+            PolymarketPosition 列表
+        """
+        if not self._polymarket_client:
+            return []
+        return self._polymarket_client.get_positions_by_pair(pair_id) if pair_id else self._polymarket_client.get_positions()
+
+    def get_orbitexch_bets(self, pair_id: str | None = None) -> list:
+        """
+        获取 OrbitExch 当前订单
+
+        Args:
+            pair_id: 比赛 ID，None 表示获取所有
+
+        Returns:
+            OrbitExch bet 数据列表
+        """
+        if not self._orbitexch_client:
+            return []
+        if pair_id:
+            return self._orbitexch_client.get_bets_by_pair(pair_id)
+        return self._orbitexch_client.get_current_bets()
+
+    def get_selection_mapping(self, pair_id: str) -> dict[int, str]:
+        """
+        获取 OrbitExch selection_id -> outcome 映射
+
+        Args:
+            pair_id: 比赛 ID
+
+        Returns:
+            {selection_id: outcome} 例: {123: "home", 456: "away"}
+        """
+        if not self._orbitexch_client:
+            return {}
+        return self._orbitexch_client.get_selection_mapping(pair_id)
+
+    def get_position_mappings(self) -> dict:
+        """
+        获取持仓数据加载所需的映射
+
+        用于 RiskService 加载历史持仓。
+
+        Returns:
+            {
+                "polymarket_pair_mapping": {event_id: pair_id},
+                "orbitexch_pair_mapping": {market_id: pair_id},
+                "selection_mappings": {pair_id: {selection_id: market_type}},
+            }
+        """
+        polymarket_pair_mapping = {}  # event_id -> pair_id
+        orbitexch_pair_mapping = {}   # market_id -> pair_id
+        selection_mappings = {}       # pair_id -> {selection_id: market_type}
+
+        for pair_id, pair in self._subscribed_pairs.items():
+            # Polymarket: event_id -> pair_id
+            if pair.polymarket_event_id:
+                polymarket_pair_mapping[pair.polymarket_event_id] = pair_id
+
+            # OrbitExch: market_id -> pair_id
+            orbitexch_data = pair.orbitexch_data
+            market_id = orbitexch_data.get("market_id", "")
+            if market_id:
+                orbitexch_pair_mapping[market_id] = pair_id
+
+            # Selection mapping: pair_id -> {selection_id: market_type}
+            if self._orbitexch_client:
+                selection_mappings[pair_id] = self._orbitexch_client.get_selection_mapping(pair_id)
+
+        return {
+            "polymarket_pair_mapping": polymarket_pair_mapping,
+            "orbitexch_pair_mapping": orbitexch_pair_mapping,
+            "selection_mappings": selection_mappings,
+        }
+
+    def get_order_info(self, pair_id: str, market_type: str) -> dict | None:
+        """
+        获取创建订单所需的市场信息
+
+        Args:
+            pair_id: 比赛 ID
+            market_type: 市场类型 (home/draw/away)
+
+        Returns:
+            {
+                "polymarket": {
+                    "token_id": str,
+                    "condition_id": str,
+                },
+                "orbitexch": {
+                    "market_id": str,
+                    "selection_id": str,
+                },
+            }
+            如果找不到返回 None
+        """
+        pair = self._subscribed_pairs.get(pair_id)
+        if not pair:
+            self._log.warning(f"get_order_info: Pair {pair_id} not found in subscribed pairs")
+            return None
+
+        result = {"polymarket": {}, "orbitexch": {}}
+
+        # 从 Polymarket client 获取 token_id
+        if self._polymarket_client:
+            for token_id, token_info in self._polymarket_client._subscribed_tokens.items():
+                if (token_info.get("event_id") == pair.polymarket_event_id and
+                    token_info.get("market_type") == market_type):
+                    result["polymarket"]["token_id"] = token_id
+                    result["polymarket"]["condition_id"] = pair.polymarket_data.get("condition_id", "")
+                    break
+
+        # 从 OrbitExch data 获取 market_id 和 selection_id
+        orbitexch_data = pair.orbitexch_data
+        market_id = orbitexch_data.get("market_id", "")
+        selection_id = orbitexch_data.get(f"{market_type}_selection_id", "")
+
+        if market_id and selection_id:
+            result["orbitexch"]["market_id"] = market_id
+            result["orbitexch"]["selection_id"] = selection_id
+        else:
+            # 从 orbitexch_client 的 pair_info 获取
+            if self._orbitexch_client:
+                pair_info = self._orbitexch_client._pair_info.get(pair_id, {})
+                result["orbitexch"]["market_id"] = pair_info.get("market_id", "")
+                selections = pair_info.get("selections", {})
+                result["orbitexch"]["selection_id"] = selections.get(market_type, "")
+
+        # 记录缺失的数据以便调试
+        poly_token = result["polymarket"].get("token_id", "")
+        orbit_market = result["orbitexch"].get("market_id", "")
+        orbit_selection = result["orbitexch"].get("selection_id", "")
+
+        if not poly_token:
+            self._log.warning(
+                f"get_order_info: Missing Polymarket token_id for {pair_id}/{market_type}"
+            )
+        if not orbit_market or not orbit_selection:
+            self._log.warning(
+                f"get_order_info: Missing OrbitExch data for {pair_id}/{market_type}: "
+                f"market_id={orbit_market}, selection_id={orbit_selection}"
+            )
+
+        return result
+
+    def get_orbitexch_pages(self) -> dict:
+        """
+        获取 OrbitExch 的 Playwright 页面引用
+
+        用于执行服务共享浏览器页面进行下单。
+
+        Returns:
+            {competition_id: Page}
+        """
+        if self._orbitexch_client:
+            return self._orbitexch_client._pages
+        return {}

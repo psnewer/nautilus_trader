@@ -1,0 +1,34 @@
+{
+  "enabled": true,
+  "overrides": {
+    "min_rebate_rate": {
+      "enabled": true,
+      "value": -10.0
+    },
+    "polymarket_price": {
+      "enabled": true,
+      "value": 0.01
+    },
+    "orbitexch_price": {
+      "enabled": true,
+      "value": 10.0
+    },
+    "polymarket_size": {
+      "enabled": true,
+      "value": 5
+    },
+    "orbitexch_size": {
+      "enabled": true,
+      "value": 10.0
+    },
+    "order_size": {
+      "enabled": false,
+      "value": 1.0
+    },
+    "skip_execution": {
+      "enabled": false,
+      "value": true
+    }
+  },
+  "mock_data": {}
+}

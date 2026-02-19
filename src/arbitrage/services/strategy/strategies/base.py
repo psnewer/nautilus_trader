@@ -150,11 +150,10 @@ class Strategy(ABC):
 
             返回元组：(priority_level, secondary_key, -rebate_rate)
             """
-            venue = direction.rebate_venue.value
             market_type = direction.rebate_market
 
-            # 获取该方向的 way_rebate（当前持仓返水率）
-            way_rebate = context.get_way_rebate(venue, market_type)
+            # 获取该方向的 way_rebate（当前持仓返水率，合并两平台）
+            way_rebate = context.get_way_rebate(market_type)
 
             if way_rebate is not None:
                 if way_rebate < 0:

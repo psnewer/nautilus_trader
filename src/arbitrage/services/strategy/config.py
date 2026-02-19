@@ -148,8 +148,12 @@ class MatchConfig:
 
 DEFAULT_SIGNALS: dict[str, dict] = {
     "rebate": {
-        "params": {"rate": 0.03},
-        "description": "套利返水率信号，当返水率 > rate 时为 True",
+        "params": {"rate": 0.03, "discount": 1.0, "take_off": 0.0},
+        "description": "套利返水率信号，当返水率 > rate 时为 True。discount: 返水折扣系数，take_off: 从其他方向持仓返水中拿走的比例",
+    },
+    "mean_rebate": {
+        "params": {"rate": 0.03, "discount": 0.0, "take_off": 0.0},
+        "description": "平均返水信号，各方向取最优价格，返水平均分配到所有方向。discount 和 take_off 默认为 0",
     },
     "pre-match": {
         "params": {},
@@ -173,6 +177,10 @@ DEFAULT_STRATEGIES: dict[str, dict] = {
     "default": {
         "signals": ["rebate"],
         "description": "默认策略（仅检查返水率）",
+    },
+    "mean": {
+        "signals": ["mean_rebate"],
+        "description": "平均返水策略，返水平均分配到所有方向",
     },
 }
 

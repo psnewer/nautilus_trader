@@ -1,7 +1,7 @@
 """
 返水率信号 (Rebate Signal)
 
-计算双边市场的套利返水率。
+计算跨平台套利返水率。
 
 套利计算逻辑：
 1. 转换赔率为概率：
@@ -12,12 +12,24 @@
      - bid = 卖出价
      - ask = 买入价
 
-2. 计算互斥概率和（不同平台的 ask 相加）：
-   - 2-outcome: OrbitExch home ask + Polymarket away ask
-   - 3-outcome: 覆盖所有结果的组合
+2. 返水方向组合：
+   - 返水到某个方向（如 home），而非某个平台
+   - 非返水方向选最优价格：min(Polymarket ask, OrbitExch ask)
+   - 返水方向决定返水平台：选哪个平台的 ask，就返水到哪个平台
 
-3. 如果概率和 < 100，存在套利空间：
-   - rebate_rate = (100 - sum) / stake_probability
+3. 2-way 市场（4 种组合）：
+   - 返水到 home (OrbitExch): Orbit home + min(P/O away)
+   - 返水到 home (Polymarket): Poly home + min(P/O away)
+   - 返水到 away (OrbitExch): Orbit away + min(P/O home)
+   - 返水到 away (Polymarket): Poly away + min(P/O home)
+
+4. 3-way 市场（6 种组合）：
+   - 返水到 home (OrbitExch): Orbit home + min(P/O draw) + min(P/O away)
+   - 返水到 home (Polymarket): Poly home + min(P/O draw) + min(P/O away)
+   - 返水到 draw/away 同理...
+
+5. 如果概率和 < 100，存在套利空间：
+   - rebate_rate = (100 - total_prob) / rebate_direction_ask
 """
 
 from typing import Any
@@ -74,7 +86,9 @@ class RebateSignal(Signal):
         }
 
         # 检测市场类型（2-outcome 或 3-outcome）
-        available_markets = set(poly_probs.keys()) & set(orbit_probs.keys())
+        poly_markets = set(poly_probs.keys())
+        orbit_markets = set(orbit_probs.keys())
+        available_markets = poly_markets & orbit_markets
 
         if not available_markets:
             return SignalResult(
@@ -84,27 +98,60 @@ class RebateSignal(Signal):
                 details={"error": "No matching markets", **details},
             )
 
-        has_draw = "draw" in available_markets
+        # 判断是否为 3-outcome 市场
+        # 如果任一平台有 draw，说明是 3-outcome 市场，必须等待两边都有 draw
+        poly_has_draw = "draw" in poly_markets
+        orbit_has_draw = "draw" in orbit_markets
+
+        if poly_has_draw or orbit_has_draw:
+            # 3-outcome 市场：必须两边都有 draw 才能计算
+            if not (poly_has_draw and orbit_has_draw):
+                return SignalResult(
+                    signal_name=self.name,
+                    satisfied=False,
+                    value=None,
+                    details={
+                        "error": "3-outcome market incomplete, waiting for all odds",
+                        "poly_has_draw": poly_has_draw,
+                        "orbit_has_draw": orbit_has_draw,
+                        **details,
+                    },
+                )
+            has_draw = True
+        else:
+            has_draw = False
+
+        # 检查是否为 debug 模式（跳过 total_prob < 100 检查）
+        skip_prob_check = False
+        try:
+            from src.arbitrage.services.debug import debug_manager
+            if debug_manager.is_override_active("min_rebate_rate"):
+                skip_prob_check = True
+                details["debug_skip_prob_check"] = True
+        except ImportError:
+            pass
 
         # 计算套利方向
         if has_draw:
             self._calculate_3way_arbitrage(
-                context, poly_probs, orbit_probs, rate_threshold, details
+                context, poly_probs, orbit_probs, rate_threshold, details, skip_prob_check
             )
         else:
             self._calculate_2way_arbitrage(
-                context, poly_probs, orbit_probs, rate_threshold, details
+                context, poly_probs, orbit_probs, rate_threshold, details, skip_prob_check
             )
 
         # 获取最佳方向
         best_direction = context.get_best_direction()
-        max_rebate = best_direction.rebate_rate if best_direction else 0.0
-        satisfied = max_rebate >= rate_threshold
+        max_rebate = best_direction.rebate_rate if best_direction else None
+
+        # 必须有至少一个方向，且返水率 >= 阈值
+        satisfied = best_direction is not None and max_rebate >= rate_threshold
 
         return SignalResult(
             signal_name=self.name,
             satisfied=satisfied,
-            value=round(max_rebate, 4) if best_direction else None,
+            value=round(max_rebate, 4) if max_rebate is not None else None,
             details=details,
         )
 
@@ -165,92 +212,114 @@ class RebateSignal(Signal):
         orbit_probs: dict,
         rate_threshold: float,
         details: dict,
+        skip_prob_check: bool = False,
     ) -> None:
         """
         计算 2-outcome 市场的套利方向
 
-        套利组合（使用 ask 价格买入互斥结果）：
-        1. OrbitExch home ask + Polymarket away ask
-        2. OrbitExch away ask + Polymarket home ask
+        套利组合（返水到某个方向，非返水方向选最优价格）：
+        - 返水到 home (OrbitExch): Orbit home + min(Poly away, Orbit away)
+        - 返水到 home (Polymarket): Poly home + min(Poly away, Orbit away)
+        - 返水到 away (OrbitExch): Orbit away + min(Poly home, Orbit home)
+        - 返水到 away (Polymarket): Poly away + min(Poly home, Orbit home)
+
+        Args:
+            skip_prob_check: Debug 模式下跳过 total_prob < 100 检查
         """
         directions_info = []
+        outcomes = ["home", "away"]
 
         # 检查必要数据
-        if "home" not in poly_probs or "away" not in poly_probs:
-            return
-        if "home" not in orbit_probs or "away" not in orbit_probs:
-            return
+        for outcome in outcomes:
+            if outcome not in poly_probs or outcome not in orbit_probs:
+                return
 
-        # 方向 1: OrbitExch buy home (ask) + Polymarket buy away (ask)
-        # 如果 home 赢，OrbitExch 赚；如果 away 赢，Polymarket 赚
-        orbit_home_ask = orbit_probs["home"].get("ask", 0)
-        poly_away_ask = poly_probs["away"].get("ask", 0)
+        # 遍历每个返水方向
+        for rebate_outcome in outcomes:
+            other_outcome = "away" if rebate_outcome == "home" else "home"
 
-        if orbit_home_ask > 0 and poly_away_ask > 0:
-            total_prob_1 = orbit_home_ask + poly_away_ask
-            if total_prob_1 < 100:
-                rebate_rate_1 = (100 - total_prob_1) / poly_away_ask
-                direction_1 = ArbitrageDirection(
-                    direction_id=f"{context.pair_id}_orbit_home_poly_away",
-                    legs=[
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.ORBITEXCH,
-                            market_type="home",
-                            action=ArbitrageAction.BUY,
-                            probability=orbit_home_ask,
-                            raw_odds=orbit_probs["home"].get("raw_ask", 0),
-                        ),
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.POLYMARKET,
-                            market_type="away",
-                            action=ArbitrageAction.BUY,
-                            probability=poly_away_ask,
-                            raw_odds=poly_away_ask / 100,
-                        ),
-                    ],
-                    total_probability=total_prob_1,
-                    rebate_rate=rebate_rate_1,
-                    rebate_venue=ArbitrageVenue.POLYMARKET,
-                    rebate_market="away",
-                    description=f"Buy OrbitExch home + Polymarket away",
-                )
-                context.add_direction(direction_1)
-                directions_info.append(direction_1.to_dict())
+            # 获取非返水方向的最优价格
+            poly_other_ask = poly_probs[other_outcome].get("ask", 0)
+            orbit_other_ask = orbit_probs[other_outcome].get("ask", 0)
 
-        # 方向 2: OrbitExch buy away (ask) + Polymarket buy home (ask)
-        orbit_away_ask = orbit_probs["away"].get("ask", 0)
-        poly_home_ask = poly_probs["home"].get("ask", 0)
+            if poly_other_ask <= 0 or orbit_other_ask <= 0:
+                continue
 
-        if orbit_away_ask > 0 and poly_home_ask > 0:
-            total_prob_2 = orbit_away_ask + poly_home_ask
-            if total_prob_2 < 100:
-                rebate_rate_2 = (100 - total_prob_2) / poly_home_ask
-                direction_2 = ArbitrageDirection(
-                    direction_id=f"{context.pair_id}_orbit_away_poly_home",
-                    legs=[
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.ORBITEXCH,
-                            market_type="away",
-                            action=ArbitrageAction.BUY,
-                            probability=orbit_away_ask,
-                            raw_odds=orbit_probs["away"].get("raw_ask", 0),
-                        ),
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.POLYMARKET,
-                            market_type="home",
-                            action=ArbitrageAction.BUY,
-                            probability=poly_home_ask,
-                            raw_odds=poly_home_ask / 100,
-                        ),
-                    ],
-                    total_probability=total_prob_2,
-                    rebate_rate=rebate_rate_2,
-                    rebate_venue=ArbitrageVenue.POLYMARKET,
-                    rebate_market="home",
-                    description=f"Buy OrbitExch away + Polymarket home",
-                )
-                context.add_direction(direction_2)
-                directions_info.append(direction_2.to_dict())
+            # 选择最优价格（最低概率 = 最低成本）
+            if poly_other_ask <= orbit_other_ask:
+                best_other_ask = poly_other_ask
+                best_other_venue = ArbitrageVenue.POLYMARKET
+                best_other_raw_odds = poly_other_ask / 100
+            else:
+                best_other_ask = orbit_other_ask
+                best_other_venue = ArbitrageVenue.ORBITEXCH
+                best_other_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
+
+            # 返水到 OrbitExch
+            orbit_rebate_ask = orbit_probs[rebate_outcome].get("ask", 0)
+            if orbit_rebate_ask > 0:
+                total_prob = orbit_rebate_ask + best_other_ask
+                if skip_prob_check or total_prob < 100:
+                    rebate_rate = (100 - total_prob) / orbit_rebate_ask
+                    direction = ArbitrageDirection(
+                        direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_orbit",
+                        legs=[
+                            ArbitrageLeg(
+                                venue=ArbitrageVenue.ORBITEXCH,
+                                market_type=rebate_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=orbit_rebate_ask,
+                                raw_odds=orbit_probs[rebate_outcome].get("raw_ask", 0),
+                            ),
+                            ArbitrageLeg(
+                                venue=best_other_venue,
+                                market_type=other_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=best_other_ask,
+                                raw_odds=best_other_raw_odds,
+                            ),
+                        ],
+                        total_probability=total_prob,
+                        rebate_rate=rebate_rate,
+                        rebate_venue=ArbitrageVenue.ORBITEXCH,
+                        rebate_market=rebate_outcome,
+                        description=f"Rebate to OrbitExch {rebate_outcome}",
+                    )
+                    context.add_direction(direction)
+                    directions_info.append(direction.to_dict())
+
+            # 返水到 Polymarket
+            poly_rebate_ask = poly_probs[rebate_outcome].get("ask", 0)
+            if poly_rebate_ask > 0:
+                total_prob = poly_rebate_ask + best_other_ask
+                if skip_prob_check or total_prob < 100:
+                    rebate_rate = (100 - total_prob) / poly_rebate_ask
+                    direction = ArbitrageDirection(
+                        direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_poly",
+                        legs=[
+                            ArbitrageLeg(
+                                venue=ArbitrageVenue.POLYMARKET,
+                                market_type=rebate_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=poly_rebate_ask,
+                                raw_odds=poly_rebate_ask / 100,
+                            ),
+                            ArbitrageLeg(
+                                venue=best_other_venue,
+                                market_type=other_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=best_other_ask,
+                                raw_odds=best_other_raw_odds,
+                            ),
+                        ],
+                        total_probability=total_prob,
+                        rebate_rate=rebate_rate,
+                        rebate_venue=ArbitrageVenue.POLYMARKET,
+                        rebate_market=rebate_outcome,
+                        description=f"Rebate to Polymarket {rebate_outcome}",
+                    )
+                    context.add_direction(direction)
+                    directions_info.append(direction.to_dict())
 
         details["directions"] = directions_info
 
@@ -261,12 +330,21 @@ class RebateSignal(Signal):
         orbit_probs: dict,
         rate_threshold: float,
         details: dict,
+        skip_prob_check: bool = False,
     ) -> None:
         """
         计算 3-outcome 市场的套利方向
 
-        每个组合必须覆盖所有三个结果 (home, draw, away)。
-        组合策略：从一个平台选一个结果的 ask，从另一个平台选另外两个结果的 ask。
+        套利组合（返水到某个方向，非返水方向选最优价格）：
+        - 返水到 home (OrbitExch): Orbit home + min(P/O draw) + min(P/O away)
+        - 返水到 home (Polymarket): Poly home + min(P/O draw) + min(P/O away)
+        - 返水到 draw (OrbitExch): Orbit draw + min(P/O home) + min(P/O away)
+        - 返水到 draw (Polymarket): Poly draw + min(P/O home) + min(P/O away)
+        - 返水到 away (OrbitExch): Orbit away + min(P/O home) + min(P/O draw)
+        - 返水到 away (Polymarket): Poly away + min(P/O home) + min(P/O draw)
+
+        Args:
+            skip_prob_check: Debug 模式下跳过 total_prob < 100 检查
         """
         directions_info = []
         outcomes = ["home", "draw", "away"]
@@ -276,126 +354,101 @@ class RebateSignal(Signal):
             if outcome not in poly_probs or outcome not in orbit_probs:
                 return
 
-        # 策略：OrbitExch 买一个 (ask)，Polymarket 买其余两个 (ask)
-        for orbit_outcome in outcomes:
-            other_outcomes = [o for o in outcomes if o != orbit_outcome]
+        # 遍历每个返水方向
+        for rebate_outcome in outcomes:
+            other_outcomes = [o for o in outcomes if o != rebate_outcome]
 
-            # OrbitExch buy outcome (ask) + Polymarket buy other two (ask)
-            orbit_ask = orbit_probs[orbit_outcome].get("ask", 0)
-            if orbit_ask <= 0:
-                continue
-
-            poly_asks_sum = 0
-            poly_legs = []
+            # 获取非返水方向的最优价格
+            best_others = []
+            other_legs = []
             valid = True
 
-            for poly_outcome in other_outcomes:
-                poly_ask = poly_probs[poly_outcome].get("ask", 0)
-                if poly_ask <= 0:
+            for other_outcome in other_outcomes:
+                poly_other_ask = poly_probs[other_outcome].get("ask", 0)
+                orbit_other_ask = orbit_probs[other_outcome].get("ask", 0)
+
+                if poly_other_ask <= 0 or orbit_other_ask <= 0:
                     valid = False
                     break
-                poly_asks_sum += poly_ask
-                poly_legs.append(
+
+                # 选择最优价格（最低概率 = 最低成本）
+                if poly_other_ask <= orbit_other_ask:
+                    best_ask = poly_other_ask
+                    best_venue = ArbitrageVenue.POLYMARKET
+                    best_raw_odds = poly_other_ask / 100
+                else:
+                    best_ask = orbit_other_ask
+                    best_venue = ArbitrageVenue.ORBITEXCH
+                    best_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
+
+                best_others.append(best_ask)
+                other_legs.append(
                     ArbitrageLeg(
-                        venue=ArbitrageVenue.POLYMARKET,
-                        market_type=poly_outcome,
+                        venue=best_venue,
+                        market_type=other_outcome,
                         action=ArbitrageAction.BUY,
-                        probability=poly_ask,
-                        raw_odds=poly_ask / 100,
+                        probability=best_ask,
+                        raw_odds=best_raw_odds,
                     )
                 )
 
             if not valid:
                 continue
 
-            total_prob = orbit_ask + poly_asks_sum
-            if total_prob < 100:
-                # 返水率计算：按 Polymarket 投入比例
-                rebate_rate = (100 - total_prob) / poly_asks_sum
+            best_others_sum = sum(best_others)
 
-                # 确定主要返水市场（概率较高的 Polymarket 市场）
-                main_poly_market = max(
-                    other_outcomes,
-                    key=lambda o: poly_probs[o].get("ask", 0)
-                )
-
-                direction = ArbitrageDirection(
-                    direction_id=f"{context.pair_id}_orbit_{orbit_outcome}_poly_others",
-                    legs=[
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.ORBITEXCH,
-                            market_type=orbit_outcome,
-                            action=ArbitrageAction.BUY,
-                            probability=orbit_ask,
-                            raw_odds=orbit_probs[orbit_outcome].get("raw_ask", 0),
-                        ),
-                        *poly_legs,
-                    ],
-                    total_probability=total_prob,
-                    rebate_rate=rebate_rate,
-                    rebate_venue=ArbitrageVenue.POLYMARKET,
-                    rebate_market=main_poly_market,
-                    description=f"Buy OrbitExch {orbit_outcome} + Polymarket {'+'.join(other_outcomes)}",
-                )
-                context.add_direction(direction)
-                directions_info.append(direction.to_dict())
-
-        # 策略：Polymarket 买一个 (ask)，OrbitExch 买其余两个 (ask)
-        for poly_outcome in outcomes:
-            other_outcomes = [o for o in outcomes if o != poly_outcome]
-
-            # Polymarket buy outcome (ask) + OrbitExch buy other two (ask)
-            poly_ask = poly_probs[poly_outcome].get("ask", 0)
-            if poly_ask <= 0:
-                continue
-
-            orbit_asks_sum = 0
-            orbit_legs = []
-            valid = True
-
-            for orbit_outcome in other_outcomes:
-                orbit_ask = orbit_probs[orbit_outcome].get("ask", 0)
-                if orbit_ask <= 0:
-                    valid = False
-                    break
-                orbit_asks_sum += orbit_ask
-                orbit_legs.append(
-                    ArbitrageLeg(
-                        venue=ArbitrageVenue.ORBITEXCH,
-                        market_type=orbit_outcome,
-                        action=ArbitrageAction.BUY,
-                        probability=orbit_ask,
-                        raw_odds=orbit_probs[orbit_outcome].get("raw_ask", 0),
+            # 返水到 OrbitExch
+            orbit_rebate_ask = orbit_probs[rebate_outcome].get("ask", 0)
+            if orbit_rebate_ask > 0:
+                total_prob = orbit_rebate_ask + best_others_sum
+                if skip_prob_check or total_prob < 100:
+                    rebate_rate = (100 - total_prob) / orbit_rebate_ask
+                    direction = ArbitrageDirection(
+                        direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_orbit",
+                        legs=[
+                            ArbitrageLeg(
+                                venue=ArbitrageVenue.ORBITEXCH,
+                                market_type=rebate_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=orbit_rebate_ask,
+                                raw_odds=orbit_probs[rebate_outcome].get("raw_ask", 0),
+                            ),
+                            *other_legs,
+                        ],
+                        total_probability=total_prob,
+                        rebate_rate=rebate_rate,
+                        rebate_venue=ArbitrageVenue.ORBITEXCH,
+                        rebate_market=rebate_outcome,
+                        description=f"Rebate to OrbitExch {rebate_outcome}",
                     )
-                )
+                    context.add_direction(direction)
+                    directions_info.append(direction.to_dict())
 
-            if not valid:
-                continue
-
-            total_prob = poly_ask + orbit_asks_sum
-            if total_prob < 100:
-                # 返水到 Polymarket
-                rebate_rate = (100 - total_prob) / poly_ask
-
-                direction = ArbitrageDirection(
-                    direction_id=f"{context.pair_id}_poly_{poly_outcome}_orbit_others",
-                    legs=[
-                        ArbitrageLeg(
-                            venue=ArbitrageVenue.POLYMARKET,
-                            market_type=poly_outcome,
-                            action=ArbitrageAction.BUY,
-                            probability=poly_ask,
-                            raw_odds=poly_ask / 100,
-                        ),
-                        *orbit_legs,
-                    ],
-                    total_probability=total_prob,
-                    rebate_rate=rebate_rate,
-                    rebate_venue=ArbitrageVenue.POLYMARKET,
-                    rebate_market=poly_outcome,
-                    description=f"Buy Polymarket {poly_outcome} + OrbitExch {'+'.join(other_outcomes)}",
-                )
-                context.add_direction(direction)
-                directions_info.append(direction.to_dict())
+            # 返水到 Polymarket
+            poly_rebate_ask = poly_probs[rebate_outcome].get("ask", 0)
+            if poly_rebate_ask > 0:
+                total_prob = poly_rebate_ask + best_others_sum
+                if skip_prob_check or total_prob < 100:
+                    rebate_rate = (100 - total_prob) / poly_rebate_ask
+                    direction = ArbitrageDirection(
+                        direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_poly",
+                        legs=[
+                            ArbitrageLeg(
+                                venue=ArbitrageVenue.POLYMARKET,
+                                market_type=rebate_outcome,
+                                action=ArbitrageAction.BUY,
+                                probability=poly_rebate_ask,
+                                raw_odds=poly_rebate_ask / 100,
+                            ),
+                            *other_legs,
+                        ],
+                        total_probability=total_prob,
+                        rebate_rate=rebate_rate,
+                        rebate_venue=ArbitrageVenue.POLYMARKET,
+                        rebate_market=rebate_outcome,
+                        description=f"Rebate to Polymarket {rebate_outcome}",
+                    )
+                    context.add_direction(direction)
+                    directions_info.append(direction.to_dict())
 
         details["directions"] = directions_info

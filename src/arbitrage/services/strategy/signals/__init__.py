@@ -14,20 +14,17 @@ from .base import (
     ArbitrageAction,
 )
 from .rebate import RebateSignal
+from .mean_rebate import MeanRebateSignal
 from .match_status import PreMatchSignal, LiveSignal
 from .multi_way import MultiWaySignal
-from .way_rebate import WayRebateSignal, OrbitExchBet, MatchPositions
-
-# PolymarketPosition 从 odds_subscription 模块导入
-from src.arbitrage.services.odds_subscription.polymarket_client import PolymarketPosition
 
 # 信号类型注册表
 SIGNAL_REGISTRY: dict[str, type[Signal]] = {
     "rebate": RebateSignal,
+    "mean_rebate": MeanRebateSignal,
     "pre-match": PreMatchSignal,
     "live": LiveSignal,
     "multi-way": MultiWaySignal,
-    "way-rebate": WayRebateSignal,
 }
 
 
@@ -61,13 +58,10 @@ __all__ = [
     "ArbitrageVenue",
     "ArbitrageAction",
     "RebateSignal",
+    "MeanRebateSignal",
     "PreMatchSignal",
     "LiveSignal",
     "MultiWaySignal",
-    "WayRebateSignal",
-    "OrbitExchBet",
-    "PolymarketPosition",
-    "MatchPositions",
     "SIGNAL_REGISTRY",
     "get_signal",
     "get_all_signal_names",

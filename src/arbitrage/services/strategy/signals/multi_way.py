@@ -1,20 +1,23 @@
 """
 Multi-Way 信号
 
-过滤套利方向，确保不在某平台某方向返水率为负时继续买入。
+过滤套利方向，确保不在某方向持仓返水率为负时继续买入。
 
-依赖：
-- way_rebate: 各平台各结果的当前返水率（由 way_rebate 信号计算，基于已有订单）
+数据来源：
+- context.way_rebate 由 StrategyService 在 _evaluate_match 时从 RiskService 获取
+- RiskService 在服务启动时加载历史持仓，之后通过 add_fill + on_execution_complete 更新
+- 格式: {outcome: rebate_rate}
+- 例: {"home": 0.05, "draw": -0.02, "away": 0.03}
 
 逻辑：
 - 遍历当前所有可执行套利方向
-- 对于每个方向中的每条腿（leg），检查该平台该结果的 way_rebate
+- 对于每个方向中的每条腿（leg），检查该结果的 way_rebate
 - 如果 way_rebate < 0（负返水），则该方向不允许执行，从列表中移除
 
 示例：
-- 假设 Polymarket 主胜 way_rebate = 0.05（正），主不胜 way_rebate = -0.02（负）
-- 那么所有包含 "Polymarket 买 主胜" 的套利方向都应被移除
-- 因为当前持仓在主不胜时亏损，不应继续加仓主胜方向
+- 假设 way_rebate = {"home": 0.05, "draw": -0.02, "away": 0.03}
+- draw 的持仓返水率为负（-2%），意味着当前持仓在 draw 发生时亏损
+- 那么所有包含 "买 draw" 的套利方向都应被移除
 """
 
 from typing import Any
@@ -26,7 +29,7 @@ class MultiWaySignal(Signal):
     """
     Multi-Way 信号
 
-    过滤套利方向，移除那些在某平台某结果 way_rebate 为负时仍要买入的方向。
+    过滤套利方向，移除那些在某结果 way_rebate 为负时仍要买入的方向。
     """
 
     @property
@@ -82,25 +85,25 @@ class MultiWaySignal(Signal):
         def should_keep(direction: ArbitrageDirection) -> bool:
             """检查方向是否应保留"""
             for leg in direction.legs:
-                venue = leg.venue.value  # "polymarket" or "orbitexch"
                 outcome = leg.market_type  # "home", "draw", or "away"
 
-                way_rebate = context.get_way_rebate(venue, outcome)
+                # 获取该方向的持仓返水率（合并两平台）
+                outcome_way_rebate = context.get_way_rebate(outcome)
 
-                if way_rebate is not None:
+                if outcome_way_rebate is not None:
                     # 检查是否违反规则
                     if strict:
-                        if way_rebate < 0:
+                        if outcome_way_rebate < 0:
                             removed_directions.append({
                                 "direction_id": direction.direction_id,
-                                "reason": f"{venue} {outcome} way_rebate={way_rebate:.4f} < 0",
+                                "reason": f"{outcome} way_rebate={outcome_way_rebate:.4f} < 0",
                             })
                             return False
                     else:
-                        if way_rebate <= threshold:
+                        if outcome_way_rebate <= threshold:
                             removed_directions.append({
                                 "direction_id": direction.direction_id,
-                                "reason": f"{venue} {outcome} way_rebate={way_rebate:.4f} <= {threshold}",
+                                "reason": f"{outcome} way_rebate={outcome_way_rebate:.4f} <= {threshold}",
                             })
                             return False
 

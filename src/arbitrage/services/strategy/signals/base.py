@@ -129,9 +129,10 @@ class MatchContext:
         polymarket_odds: Polymarket 赔率
         orbitexch_odds: OrbitExch 赔率
         arbitrage_directions: 可执行套利方向列表（由信号写入）
-        way_rebate: 各平台各结果的当前返水率（基于已有订单计算）
-                    格式: {venue: {outcome: rebate_rate}}
-                    例: {"polymarket": {"home": 0.05, "away": -0.02}}
+        way_rebate: 各方向的持仓返水率（合并两平台，基于已有订单计算）
+                    格式: {outcome: rebate_rate}
+                    例: {"home": 0.05, "draw": -0.02, "away": 0.03}
+                    计算方式: way_rebate[outcome] = (该方向profit - 其他方向liability之和) / share
     """
     pair_id: str
     competition: str = ""
@@ -141,7 +142,7 @@ class MatchContext:
     polymarket_odds: dict[str, Any] = field(default_factory=dict)
     orbitexch_odds: dict[str, Any] = field(default_factory=dict)
     arbitrage_directions: list[ArbitrageDirection] = field(default_factory=list)
-    way_rebate: dict[str, dict[str, float]] = field(default_factory=dict)
+    way_rebate: dict[str, float] = field(default_factory=dict)
 
     def clear_directions(self) -> None:
         """清空套利方向列表"""
@@ -179,25 +180,21 @@ class MatchContext:
             return None
         return max(self.arbitrage_directions, key=lambda d: d.rebate_rate)
 
-    def get_way_rebate(self, venue: str, outcome: str) -> float | None:
+    def get_way_rebate(self, outcome: str) -> float | None:
         """
-        获取指定平台指定结果的当前返水率
+        获取指定方向的持仓返水率
 
         Args:
-            venue: 平台 ("polymarket" | "orbitexch")
             outcome: 结果 ("home" | "draw" | "away")
 
         Returns:
             返水率，如果没有数据返回 None
         """
-        venue_data = self.way_rebate.get(venue, {})
-        return venue_data.get(outcome)
+        return self.way_rebate.get(outcome)
 
-    def set_way_rebate(self, venue: str, outcome: str, rebate: float) -> None:
-        """设置指定平台指定结果的返水率"""
-        if venue not in self.way_rebate:
-            self.way_rebate[venue] = {}
-        self.way_rebate[venue][outcome] = rebate
+    def set_way_rebate(self, outcome: str, rebate: float) -> None:
+        """设置指定方向的持仓返水率"""
+        self.way_rebate[outcome] = rebate
 
 
 class Signal(ABC):

@@ -50,8 +50,33 @@
     },
     "competition_max_matches": {
       "English Premier League": 1,
-      "WTA": 15
+      "WTA": 0
     }
+  },
+  "odds": {
+    "enabled": true,
+    "staleness_timeout_sec": 300,
+    "polymarket_api_key": "",
+    "polymarket_api_secret": "",
+    "polymarket_passphrase": "",
+    "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    "orbitexch_base_url": "https://www.orbitexch.com",
+    "orbitexch_zoom_level": 0.8,
+    "orbitexch_page_refresh_sec": 600,
+    "orbitexch_staleness_timeout_sec": 60,
+    "orbitexch_username": "",
+    "orbitexch_password": "",
+    "orbitexch_user_data_dir": "",
+    "orbitexch_cdp_url": "",
+    "supported_market_types": [
+      "home",
+      "draw",
+      "away"
+    ]
+  },
+  "arbitrage": {
+    "share": 30.0,
+    "tp": 0.1
   },
   "strategy": {
     "enabled": true,
