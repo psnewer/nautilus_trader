@@ -1289,6 +1289,10 @@ class OrbitExchOddsClient:
                         for k in keys_to_remove:
                             del self._selection_mapping[k]
 
+                        # 更新 pair_info 中的 market_id 和 selections
+                        pair_info["market_id"] = new_market_id
+                        pair_info["selections"] = {}
+
                         # 重新注册新的 market_id:selection_id
                         if match["home_selection_id"]:
                             new_key = f"{new_market_id}:{match['home_selection_id']}"
@@ -1296,6 +1300,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "home",
                             }
+                            pair_info["selections"]["home"] = match["home_selection_id"]
                             self._log.debug(f"Re-registered: {new_key} -> {pair_id}/home")
 
                         if match["draw_selection_id"]:
@@ -1304,6 +1309,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "draw",
                             }
+                            pair_info["selections"]["draw"] = match["draw_selection_id"]
                             self._log.debug(f"Re-registered: {new_key} -> {pair_id}/draw")
 
                         if match["away_selection_id"]:
@@ -1312,6 +1318,7 @@ class OrbitExchOddsClient:
                                 "pair_id": pair_id,
                                 "market_type": "away",
                             }
+                            pair_info["selections"]["away"] = match["away_selection_id"]
                             self._log.debug(f"Re-registered: {new_key} -> {pair_id}/away")
 
                         updated_count += 1
@@ -1591,9 +1598,11 @@ class OrbitExchOddsClient:
             "market_type": market_type,
         }
 
-        # 同时保存到 pair_info 的 selections 中
+        # 同时保存到 pair_info 的 selections 和 market_id 中
         if pair_id in self._pair_info:
             self._pair_info[pair_id]["selections"][market_type] = selection_id
+            # 保存 market_id（所有 selections 共享同一个 market_id）
+            self._pair_info[pair_id]["market_id"] = market_id
 
         self._log.info(f"Registered selection: {key} -> {pair_id}/{market_type}")
 
@@ -1637,6 +1646,30 @@ class OrbitExchOddsClient:
             {pair_id: {"home_team": str, "away_team": str, "selections": dict}}
         """
         return self._pair_info.copy()
+
+    def get_selection_mapping(self, pair_id: str) -> dict[int, str]:
+        """
+        获取指定 pair 的 selection_id -> outcome 映射
+
+        Args:
+            pair_id: 比赛 ID
+
+        Returns:
+            {selection_id: outcome}
+            例: {39674645: "home", 39674646: "away", 39674647: "draw"}
+        """
+        result = {}
+        for key, info in self._selection_mapping.items():
+            if info.get("pair_id") == pair_id:
+                # key 格式: "market_id:selection_id"
+                parts = key.split(":")
+                if len(parts) == 2:
+                    try:
+                        selection_id = int(parts[1])
+                        result[selection_id] = info.get("market_type", "unknown")
+                    except ValueError:
+                        pass
+        return result
 
     # =========================================================================
     # 回调管理

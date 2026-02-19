@@ -19,6 +19,8 @@ from .routes import (
     odds_router,
     strategy_router,
     execution_router,
+    debug_router,
+    risk_router,
 )
 
 # 模板目录
@@ -52,6 +54,8 @@ def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
     app.include_router(odds_router)
     app.include_router(strategy_router)
     app.include_router(execution_router)
+    app.include_router(debug_router)
+    app.include_router(risk_router)
 
     # 静态文件
     if STATIC_DIR.exists():
@@ -122,7 +126,12 @@ def main():
     parser = argparse.ArgumentParser(description="Arbitrage Web Gateway")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind")
-    parser.add_argument("--debug", action="store_true", help="Debug mode")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--debug-config",
+        metavar="PATH",
+        help="Load debug config from JSON file (启用 debug 模式)"
+    )
     args = parser.parse_args()
 
     # 配置日志
@@ -130,6 +139,26 @@ def main():
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+    # 加载 debug 配置
+    if args.debug_config:
+        from src.arbitrage.services.debug import debug_manager
+
+        if debug_manager.load(args.debug_config):
+            status = debug_manager.get_status()
+            print("\n" + "=" * 60)
+            print("DEBUG MODE STATUS")
+            print("=" * 60)
+            print(f"Enabled: {status['enabled']}")
+            print(f"Config file: {status['config_file']}")
+            print(f"Active overrides: {status['active_overrides']}")
+            print(f"Enabled mocks: {status['enabled_mocks']}")
+            print("=" * 60 + "\n")
+
+            if status['enabled']:
+                logging.warning("⚠️  DEBUG MODE ENABLED - Orders will use override prices!")
+        else:
+            logging.error(f"Failed to load debug config from: {args.debug_config}")
 
     config = WebGatewayConfig(
         host=args.host,

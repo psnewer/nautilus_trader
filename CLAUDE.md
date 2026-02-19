@@ -83,6 +83,7 @@ make purge-services    # 清除所有服务和数据
 | 架构设计 | [docs/arbitrage/architecture.md](docs/arbitrage/architecture.md) | 微服务架构、事件定义、API设计 |
 | 数据库设计 | [docs/arbitrage/database-schema.md](docs/arbitrage/database-schema.md) | PostgreSQL表设计、Redis数据结构 |
 | NautilusTrader | [docs/arbitrage/NautilusTrader.md](docs/arbitrage/NautilusTrader.md) | 框架说明、组件职责、适配器开发 |
+| 测试架构设计 | [docs/arbitrage/debug-framework.md](docs/arbitrage/debug-framework.md) | 实盘测试、模拟盘测试架构说明 |
 
 ---
 

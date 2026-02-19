@@ -7,11 +7,14 @@
 
 import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
 from .strategies import Strategy, StrategyResult, DefaultStrategy, get_strategy_class
+
+if TYPE_CHECKING:
+    from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
 
 
 class StrategyService:
@@ -29,9 +32,21 @@ class StrategyService:
         self,
         config: StrategyServiceConfig | None = None,
         logger: logging.Logger | None = None,
+        odds_service: "OddsSubscriptionService | None" = None,
+        risk_service: "Any | None" = None,
+        share: float = 100.0,
     ):
         self._config = config or StrategyServiceConfig()
         self._log = logger or logging.getLogger(self.__class__.__name__)
+
+        # 赔率服务引用（用于获取持仓数据）
+        self._odds_service = odds_service
+
+        # 风控服务引用
+        self._risk_service = risk_service
+
+        # 套利参数
+        self._share = share
 
         # 比赛信息缓存：pair_id -> MatchContext
         self._match_contexts: dict[str, MatchContext] = {}
@@ -65,6 +80,26 @@ class StrategyService:
         """更新配置"""
         self._config = config
         self._log.info("Strategy config updated")
+
+    def set_odds_service(self, odds_service: "OddsSubscriptionService") -> None:
+        """设置赔率服务引用"""
+        self._odds_service = odds_service
+        self._log.info("Odds service reference set")
+
+    def set_risk_service(self, risk_service) -> None:
+        """设置风控服务引用"""
+        self._risk_service = risk_service
+        self._log.info("Risk service reference set")
+
+    def set_arbitrage_params(self, share: float) -> None:
+        """
+        设置套利参数
+
+        Args:
+            share: 用于计算 way_rebate 的基数
+        """
+        self._share = share
+        self._log.info(f"Arbitrage params updated: share={share}")
 
     # =========================================================================
     # 比赛上下文管理
@@ -175,6 +210,11 @@ class StrategyService:
 
         # 清空上一次的套利方向
         context.clear_directions()
+
+        # 从风控服务获取 way_rebate 并注入到 context
+        if self._risk_service:
+            way_rebate = self._risk_service.get_way_rebate(pair_id)
+            context.way_rebate = way_rebate
 
         # 获取该比赛应使用的策略列表
         strategies = self._config.get_strategies_for_match(
@@ -309,6 +349,9 @@ class StrategyService:
             context.away_team,
         )
 
+        # 为特定信号注入额外参数
+        params = self._inject_signal_params(pair_id, signal_name, params)
+
         try:
             result = signal.calculate(context, params)
             self._signal_results[pair_id][signal_name] = result
@@ -323,6 +366,35 @@ class StrategyService:
         except Exception as e:
             self._log.error(f"Failed to calculate signal {signal_name} for {pair_id}: {e}")
             return None
+
+    def _inject_signal_params(
+        self,
+        pair_id: str,
+        signal_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        为特定信号注入运行时参数
+
+        Args:
+            pair_id: 比赛 ID
+            signal_name: 信号名称
+            params: 原始参数
+
+        Returns:
+            增强后的参数
+        """
+        # rebate 信号：检查 debug 覆盖
+        if signal_name == "rebate":
+            try:
+                from src.arbitrage.services.debug import debug_manager
+                if debug_manager.is_override_active("min_rebate_rate"):
+                    params["rate"] = debug_manager.get_override("min_rebate_rate", params.get("rate", 0.01))
+                    self._log.warning(f"[DEBUG] rebate rate override: {params['rate']}")
+            except ImportError:
+                pass
+
+        return params
 
     def _create_opportunity(
         self,
@@ -349,13 +421,45 @@ class StrategyService:
         if not triggered_strategies:
             return
 
-        # 获取 rebate 信号的值（如果有）
+        # 风控检查
+        if self._risk_service:
+            risk_result = self._risk_service.check_risk(pair_id)
+            if not risk_result.allowed:
+                self._log.warning(
+                    f"Opportunity blocked by risk control for {pair_id}: {risk_result.reason}"
+                )
+                return
+
+        # 获取 rebate 信号的值（优先 mean_rebate，其次 rebate）
+        mean_rebate_signal = signals.get("mean_rebate")
         rebate_signal = signals.get("rebate")
-        rebate_value = rebate_signal.value if rebate_signal else None
+
+        if mean_rebate_signal and mean_rebate_signal.satisfied:
+            rebate_value = mean_rebate_signal.value
+            signal_name = "mean_rebate"
+        elif rebate_signal:
+            rebate_value = rebate_signal.value
+            signal_name = "rebate"
+        else:
+            rebate_value = None
+            signal_name = "rebate"
+
+        # 获取 discount 和 take_off 参数（从对应信号获取）
+        signal_params = self._config.get_signal_params(
+            signal_name,
+            context.competition if context else None,
+            context.home_team if context else None,
+            context.away_team if context else None,
+        )
+        discount = signal_params.get("discount", 1.0 if signal_name == "rebate" else 0.0)
+        take_off = signal_params.get("take_off", 0.0)
 
         # 获取最佳套利方向
         best_direction = context.get_best_direction() if context else None
         all_directions = [d.to_dict() for d in context.arbitrage_directions] if context else []
+
+        # 获取各方向的持仓返水率（用于 take_off 计算）
+        way_rebate = context.way_rebate if context else {}
 
         opportunity = {
             "opportunity_id": f"opp-{pair_id}-{int(time.time() * 1000)}",
@@ -367,6 +471,9 @@ class StrategyService:
             "detected_at": time.time(),
             "triggered_strategies": triggered_strategies,
             "rebate_value": rebate_value,
+            "discount": discount,
+            "take_off": take_off,
+            "way_rebate": way_rebate,
             "best_direction": best_direction.to_dict() if best_direction else None,
             "all_directions": all_directions,
             "signals": {name: result.to_dict() for name, result in signals.items()},

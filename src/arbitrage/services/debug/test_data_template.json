@@ -1,0 +1,210 @@
+{
+  "enabled": false,
+  "config_file": "",
+  "items": {
+    "mock_polymarket_odds_1": {
+      "id": "mock_polymarket_odds_1",
+      "category": "odds",
+      "name": "Polymarket 模拟赔率 - 主队有利",
+      "enabled": false,
+      "data": {
+        "home": {
+          "back": 0.55,
+          "lay": 0.56
+        },
+        "away": {
+          "back": 0.44,
+          "lay": 0.45
+        }
+      },
+      "conditions": {
+        "venue": "polymarket"
+      },
+      "priority": 0
+    },
+    "mock_orbitexch_odds_1": {
+      "id": "mock_orbitexch_odds_1",
+      "category": "odds",
+      "name": "OrbitExch 模拟赔率 - 对应套利机会",
+      "enabled": false,
+      "data": {
+        "home": {
+          "back": 1.9,
+          "lay": 1.95
+        },
+        "away": {
+          "back": 2.3,
+          "lay": 2.35
+        }
+      },
+      "conditions": {
+        "venue": "orbitexch"
+      },
+      "priority": 0
+    },
+    "mock_opportunity_1": {
+      "id": "mock_opportunity_1",
+      "category": "opportunities",
+      "name": "模拟套利机会 - 5% rebate",
+      "enabled": false,
+      "data": {
+        "pair_id": "test-pair-001",
+        "market_type": "home",
+        "rebate_rate": 0.05,
+        "polymarket": {
+          "side": "BUY",
+          "price": 0.55,
+          "token_id": "mock_token_id"
+        },
+        "orbitexch": {
+          "side": "LAY",
+          "price": 1.9,
+          "market_id": "1.234567890",
+          "selection_id": "12345678"
+        },
+        "recommended_size": 100
+      },
+      "conditions": {},
+      "priority": 0
+    },
+    "mock_polymarket_orders": {
+      "id": "mock_polymarket_orders",
+      "category": "orders",
+      "name": "Polymarket 模拟挂单",
+      "enabled": false,
+      "data": [
+        {
+          "order_id": "mock-poly-order-001",
+          "venue": "polymarket",
+          "status": "live",
+          "side": "BUY",
+          "price": 0.55,
+          "size": 100,
+          "filled_size": 0,
+          "token_id": "mock_token_id",
+          "created_at": 1700000000
+        }
+      ],
+      "conditions": {
+        "venue": "polymarket"
+      },
+      "priority": 0
+    },
+    "mock_orbitexch_orders": {
+      "id": "mock_orbitexch_orders",
+      "category": "orders",
+      "name": "OrbitExch 模拟挂单",
+      "enabled": false,
+      "data": [
+        {
+          "order_id": "mock-orbit-order-001",
+          "venue": "orbitexch",
+          "status": "live",
+          "side": "LAY",
+          "price": 1.9,
+          "size": 100,
+          "filled_size": 50,
+          "market_id": "1.234567890",
+          "selection_id": "12345678",
+          "venue_order_id": "212345678",
+          "created_at": 1700000000
+        }
+      ],
+      "conditions": {
+        "venue": "orbitexch"
+      },
+      "priority": 0
+    },
+    "mock_polymarket_positions": {
+      "id": "mock_polymarket_positions",
+      "category": "positions",
+      "name": "Polymarket 模拟持仓",
+      "enabled": false,
+      "data": [
+        {
+          "token_id": "mock_token_id",
+          "condition_id": "mock_condition_id",
+          "outcome": "Yes",
+          "size": 200,
+          "avg_price": 0.52,
+          "current_price": 0.55,
+          "unrealized_pnl": 6.0
+        }
+      ],
+      "conditions": {
+        "venue": "polymarket"
+      },
+      "priority": 0
+    },
+    "mock_orbitexch_positions": {
+      "id": "mock_orbitexch_positions",
+      "category": "positions",
+      "name": "OrbitExch 模拟持仓",
+      "enabled": false,
+      "data": [
+        {
+          "market_id": "1.234567890",
+          "selection_id": "12345678",
+          "selection_name": "Team A",
+          "side": "LAY",
+          "size": 100,
+          "avg_price": 1.85,
+          "matched_date": "2024-01-15"
+        }
+      ],
+      "conditions": {
+        "venue": "orbitexch"
+      },
+      "priority": 0
+    },
+    "mock_execution_success": {
+      "id": "mock_execution_success",
+      "category": "execution",
+      "name": "模拟执行成功",
+      "enabled": false,
+      "data": {
+        "success": true,
+        "status": "live",
+        "venue_order_id": "mock_venue_order_123",
+        "message": "[MOCK] Order placed successfully"
+      },
+      "conditions": {},
+      "priority": 0
+    },
+    "mock_execution_reject": {
+      "id": "mock_execution_reject",
+      "category": "execution",
+      "name": "模拟执行拒绝",
+      "enabled": false,
+      "data": {
+        "success": false,
+        "status": "rejected",
+        "message": "[MOCK] Insufficient balance"
+      },
+      "conditions": {
+        "test_scenario": "reject"
+      },
+      "priority": 10
+    },
+    "mock_account_balance": {
+      "id": "mock_account_balance",
+      "category": "account",
+      "name": "模拟账户余额",
+      "enabled": false,
+      "data": {
+        "polymarket": {
+          "balance": 1000.0,
+          "available": 800.0,
+          "in_orders": 200.0
+        },
+        "orbitexch": {
+          "balance": 500.0,
+          "available": 450.0,
+          "exposure": 50.0
+        }
+      },
+      "conditions": {},
+      "priority": 0
+    }
+  }
+}

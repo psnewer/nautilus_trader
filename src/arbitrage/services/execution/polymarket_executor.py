@@ -8,6 +8,7 @@ Polymarket 订单执行器
 - https://github.com/Polymarket/py-clob-client
 """
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -38,7 +39,8 @@ class PolymarketExecutor:
     Polymarket 订单执行器
 
     使用 py-clob-client 官方客户端执行订单。
-    所有订单默认使用 GTC (Good-Til-Cancelled) 类型，等同于 POC。
+    所有订单强制使用 FOK (Fill-Or-Kill) 类型，确保全部成交或全部取消，
+    避免部分成交后需要撤单的情况。
     """
 
     def __init__(
@@ -76,21 +78,20 @@ class PolymarketExecutor:
 
         try:
             # 初始化 CLOB 客户端
-            # 使用 L2 方式（需要私钥签名）
+            # 参考: https://github.com/Polymarket/py-clob-client
             self._client = ClobClient(
                 host=self.config.polymarket_clob_url,
-                key=self.config.polymarket_api_key,
-                secret=self.config.polymarket_api_secret,
-                passphrase=self.config.polymarket_passphrase,
-                signature_type=2,  # POLY_GNOSIS_SAFE
-                funder=self.config.polymarket_funder or None,
+                key=self.config.polymarket_private_key,
                 chain_id=137,  # Polygon mainnet
+                signature_type=1,  # 1 for email/Magic wallet signatures
+                funder=self.config.polymarket_funder or None,
             )
 
-            # 设置私钥
-            self._client.set_api_creds(
-                self._client.derive_api_key(self.config.polymarket_private_key)
+            # 设置 API credentials（使用线程池避免阻塞）
+            api_creds = await asyncio.to_thread(
+                self._client.create_or_derive_api_creds
             )
+            self._client.set_api_creds(api_creds)
 
             self._log.info("Polymarket executor initialized")
             return True
@@ -110,6 +111,7 @@ class PolymarketExecutor:
             执行结果
         """
         if not self._client:
+            self._log.error(f"Order {order.order_id} failed: Polymarket client not initialized")
             return ExecutionResult(
                 success=False,
                 order=order,
@@ -123,9 +125,20 @@ class PolymarketExecutor:
                 message=f"Invalid venue: {order.venue}",
             )
 
+        # 验证订单数据
+        if not order.token_id:
+            self._log.error(f"Order {order.order_id} failed: missing token_id")
+            return ExecutionResult(
+                success=False,
+                order=order,
+                message="Missing token_id",
+            )
+
         try:
-            # 转换订单类型
-            clob_order_type = self._convert_order_type(order.order_type)
+            # 强制使用 FOK 订单类型，确保全部成交或全部取消
+            # 这样可以避免部分成交后需要撤单的情况
+            clob_order_type = self._convert_order_type(OrderType.FOK)
+            self._log.info(f"Using FOK order type (forced)")
 
             # 转换订单方向
             side = "BUY" if order.side in (OrderSide.BUY, OrderSide.BACK) else "SELL"
@@ -143,11 +156,15 @@ class PolymarketExecutor:
                 f"side={side}, price={order.price}, size={order.size}"
             )
 
-            # 创建并签名订单
-            signed_order = self._client.create_order(order_args)
+            # 创建并签名订单（使用线程池避免阻塞 event loop）
+            signed_order = await asyncio.to_thread(
+                self._client.create_order, order_args
+            )
 
-            # 提交订单
-            response = self._client.post_order(signed_order, clob_order_type)
+            # 提交订单（使用线程池避免阻塞 event loop）
+            response = await asyncio.to_thread(
+                self._client.post_order, signed_order, clob_order_type
+            )
 
             # 更新订单状态
             order.submitted_at = time.time()
@@ -226,7 +243,9 @@ class PolymarketExecutor:
         try:
             self._log.info(f"Cancelling order: {order.venue_order_id}")
 
-            response = self._client.cancel(order.venue_order_id)
+            response = await asyncio.to_thread(
+                self._client.cancel, order.venue_order_id
+            )
 
             if response.get("success") or response.get("canceled"):
                 order.status = OrderStatus.CANCELLED

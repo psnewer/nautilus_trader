@@ -242,8 +242,8 @@
                                         <tr>
                                             <th>Match</th>
                                             <th>Team</th>
-                                            <th>Polymarket (bid/ask %)</th>
-                                            <th>OrbitExch (bid/ask %)</th>
+                                            <th>Polymarket (bid/ask)</th>
+                                            <th>OrbitExch (bid/ask)</th>
                                             <th>Age</th>
                                         </tr>
                                     </thead>
@@ -508,6 +508,12 @@
                             <i class="bi bi-calculator me-1"></i>Arbitrage
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-risk-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-risk" type="button" role="tab">
+                            <i class="bi bi-shield-exclamation me-1"></i>Risk
+                        </button>
+                    </li>
                 </ul>
 
                 <div class="tab-content" id="configSubTabsContent">
@@ -622,10 +628,89 @@
                                 </button>
                             </div>
                             <div class="card-body">
-                                <div class="mb-3">
-                                    <label class="form-label">Share</label>
-                                    <input type="number" class="form-control" id="arbitrage-share" value="1.0" min="0.01" step="0.01" style="max-width: 200px;">
-                                    <small class="text-muted">持仓份额系数，用于计算当前持仓返水率 (way_rebate)</small>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Share (USDC)</label>
+                                            <input type="number" class="form-control" id="arbitrage-share" value="30" min="1" step="1" style="max-width: 200px;">
+                                            <small class="text-muted">持仓份额，用于计算订单大小</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="alert alert-info mb-0">
+                                    <strong>订单计算示例 (Share=30):</strong><br>
+                                    <code>Polymarket: size = share = 30 (直接购买 30 份)</code><br>
+                                    <code>OrbitExch: size = share / odds = 30 / 2.0 = 15 (投入 15，赢得 30)</code>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Risk Config -->
+                    <div class="tab-pane fade" id="config-risk" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-shield-exclamation me-1"></i>Risk Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveRiskConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="risk-enabled" checked>
+                                                <label class="form-check-label" for="risk-enabled">启用风控</label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">单场止损 (Match SL)</label>
+                                            <div class="input-group" style="max-width: 200px;">
+                                                <input type="number" class="form-control" id="risk-match-sl" value="-10" min="-100" max="0" step="1">
+                                                <span class="input-group-text">%</span>
+                                            </div>
+                                            <small class="text-muted">当某场比赛任一方向持仓返水率低于此值时，停止该场下注</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">全局累计止损 (Global SL)</label>
+                                            <div class="input-group" style="max-width: 200px;">
+                                                <input type="number" class="form-control" id="risk-global-sl" value="-50" min="-1000" max="0" step="1">
+                                                <span class="input-group-text">%</span>
+                                            </div>
+                                            <small class="text-muted">所有比赛的最低方向返水率之和低于此值时，停止所有下注</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">单场止盈 (Match TP)</label>
+                                            <div class="input-group" style="max-width: 200px;">
+                                                <input type="number" class="form-control" id="risk-match-tp" value="10" min="0" max="100" step="1">
+                                                <span class="input-group-text">%</span>
+                                            </div>
+                                            <small class="text-muted">当某场比赛所有方向持仓返水率都 ≥ 此值时，停止该场下注</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">风控状态</label>
+                                            <div id="risk-status-panel" class="p-3 bg-light rounded">
+                                                <p class="mb-1"><strong>全局累计:</strong> <span id="risk-global-sum">0%</span></p>
+                                                <p class="mb-1"><strong>活跃持仓:</strong> <span id="risk-active-positions">0</span></p>
+                                                <p class="mb-1"><strong>止损比赛:</strong> <span id="risk-blocked-matches">无</span></p>
+                                                <p class="mb-1"><strong>止盈比赛:</strong> <span id="risk-tp-matches">无</span></p>
+                                                <p class="mb-0">
+                                                    <span id="risk-global-status" class="badge bg-success">正常</span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button class="btn btn-outline-secondary btn-sm" onclick="refreshRiskStatus()">
+                                            <i class="bi bi-arrow-clockwise me-1"></i>刷新状态
+                                        </button>
+                                    </div>
+                                </div>
+                                <hr>
+                                <h6>持仓概览</h6>
+                                <div id="positions-list" style="max-height: 300px; overflow-y: auto;">
+                                    <p class="text-muted">暂无持仓数据</p>
                                 </div>
                             </div>
                         </div>
@@ -823,9 +908,123 @@
                 document.getElementById('orbit-staleness-timeout').value = config.odds?.orbitexch_staleness_timeout_sec || 60;
 
                 // Arbitrage config
-                document.getElementById('arbitrage-share').value = config.arbitrage?.share || 1.0;
+                document.getElementById('arbitrage-share').value = config.arbitrage?.share || 30;
+
+                // Risk config
+                await loadRiskConfig();
             } catch (e) {
                 showToast('Error loading config: ' + e.message, 'error');
+            }
+        }
+
+        // ==============================
+        // Risk Functions
+        // ==============================
+
+        async function loadRiskConfig() {
+            try {
+                const config = await api('/api/risk/config');
+                document.getElementById('risk-enabled').checked = config.enabled;
+                document.getElementById('risk-match-sl').value = (config.match_sl || -0.10) * 100;
+                document.getElementById('risk-global-sl').value = (config.global_sl || -0.50) * 100;
+                document.getElementById('risk-match-tp').value = (config.match_tp || 0.10) * 100;
+                await refreshRiskStatus();
+            } catch (e) {
+                console.error('Error loading risk config:', e);
+            }
+        }
+
+        async function saveRiskConfig() {
+            try {
+                const data = {
+                    enabled: document.getElementById('risk-enabled').checked,
+                    match_sl: parseFloat(document.getElementById('risk-match-sl').value) / 100,
+                    global_sl: parseFloat(document.getElementById('risk-global-sl').value) / 100,
+                    match_tp: parseFloat(document.getElementById('risk-match-tp').value) / 100,
+                    match_overrides: {}
+                };
+                await api('/api/risk/config', 'PUT', data);
+                showToast('Risk config saved');
+                await refreshRiskStatus();
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function refreshRiskStatus() {
+            try {
+                const status = await api('/api/risk/status');
+
+                // Update status panel
+                const globalSum = (status.global_min_sum || 0) * 100;
+                document.getElementById('risk-global-sum').textContent = globalSum.toFixed(2) + '%';
+                document.getElementById('risk-active-positions').textContent = status.active_positions || 0;
+
+                const blockedMatches = status.blocked_matches || [];
+                document.getElementById('risk-blocked-matches').textContent =
+                    blockedMatches.length > 0 ? blockedMatches.join(', ') : '无';
+
+                const tpMatches = status.tp_matches || [];
+                document.getElementById('risk-tp-matches').textContent =
+                    tpMatches.length > 0 ? tpMatches.join(', ') : '无';
+
+                const statusBadge = document.getElementById('risk-global-status');
+                if (status.global_blocked) {
+                    statusBadge.className = 'badge bg-danger';
+                    statusBadge.textContent = '全局止损触发';
+                } else if (blockedMatches.length > 0) {
+                    statusBadge.className = 'badge bg-warning';
+                    statusBadge.textContent = `${blockedMatches.length}场比赛止损`;
+                } else if (tpMatches.length > 0) {
+                    statusBadge.className = 'badge bg-info';
+                    statusBadge.textContent = `${tpMatches.length}场比赛止盈`;
+                } else {
+                    statusBadge.className = 'badge bg-success';
+                    statusBadge.textContent = '正常';
+                }
+
+                // Load positions
+                await loadPositions();
+            } catch (e) {
+                console.error('Error refreshing risk status:', e);
+            }
+        }
+
+        async function loadPositions() {
+            try {
+                const data = await api('/api/risk/positions');
+                const container = document.getElementById('positions-list');
+
+                const positions = data.positions || {};
+                if (Object.keys(positions).length === 0) {
+                    container.innerHTML = '<p class="text-muted">暂无持仓数据</p>';
+                    return;
+                }
+
+                container.innerHTML = Object.entries(positions).map(([pairId, pos]) => {
+                    const wayRebate = pos.way_rebate || {};
+                    const minRebate = pos.min_way_rebate;
+                    const rebateStr = Object.entries(wayRebate)
+                        .map(([k, v]) => `${k}: ${(v * 100).toFixed(2)}%`)
+                        .join(', ');
+
+                    const statusClass = pos.closed ? 'text-muted' :
+                        (minRebate !== null && minRebate < -0.10 ? 'text-danger' : 'text-success');
+
+                    return `
+                        <div class="p-2 mb-2 bg-light rounded ${statusClass}">
+                            <div class="d-flex justify-content-between">
+                                <strong>${pos.home_team || 'Home'} vs ${pos.away_team || 'Away'}</strong>
+                                ${pos.closed ? '<span class="badge bg-secondary">已结束</span>' : ''}
+                            </div>
+                            <small class="d-block">方向返水率: ${rebateStr || '无'}</small>
+                            <small class="d-block">最低: ${minRebate !== null ? (minRebate * 100).toFixed(2) + '%' : 'N/A'}</small>
+                            <small class="d-block text-muted">总成本: ${pos.total_cost?.toFixed(2) || 0}</small>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Error loading positions:', e);
             }
         }
 
@@ -1016,14 +1215,14 @@
                     // 跳过没有数据的行
                     if (!poly.bid && !poly.ask && !orbit.back && !orbit.lay) return;
 
-                    // 转换为概率格式 (0-100%)
-                    // Polymarket: 已经是概率 (0-1), 乘以 100
-                    // OrbitExch: 十进制赔率, 概率 = 100 / odds
+                    // 转换为概率格式 (0-1)
+                    // Polymarket: 已经是概率 (0-1), 直接使用
+                    // OrbitExch: 十进制赔率, 概率 = 1 / odds
                     // back = ask (买入价), lay = bid (卖出价)
-                    const polyBidProb = poly.bid ? (poly.bid * 100).toFixed(1) : '-';
-                    const polyAskProb = poly.ask ? (poly.ask * 100).toFixed(1) : '-';
-                    const orbitAskProb = orbit.back ? (100 / orbit.back).toFixed(1) : '-';  // back = ask
-                    const orbitBidProb = orbit.lay ? (100 / orbit.lay).toFixed(1) : '-';    // lay = bid
+                    const polyBidProb = poly.bid ? poly.bid.toFixed(2) : '-';
+                    const polyAskProb = poly.ask ? poly.ask.toFixed(2) : '-';
+                    const orbitAskProb = orbit.back ? (1 / orbit.back).toFixed(2) : '-';  // back = ask
+                    const orbitBidProb = orbit.lay ? (1 / orbit.lay).toFixed(2) : '-';    // lay = bid
 
                     // 计算数据新鲜度
                     const polyTime = poly.timestamp ? Date.now() - poly.timestamp : null;

@@ -30,18 +30,24 @@ from src.arbitrage.services.market_discovery.config import (
 from src.arbitrage.services.market_matching.config import MarketMatchingConfig
 from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.strategy.config import StrategyServiceConfig
+from src.arbitrage.services.risk.config import RiskConfig
 
 
 @dataclass
 class ArbitrageConfig:
-    """套利配置"""
-    share: float = 1.0  # 持仓份额系数，用于计算当前持仓返水
+    """
+    套利配置
+
+    Attributes:
+        share: 持仓份额系数 (USDC)，用于计算订单大小
+    """
+    share: float = 30.0  # 持仓份额系数 (USDC)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ArbitrageConfig":
         """从字典创建配置实例"""
         return cls(
-            share=data.get("share", 1.0),
+            share=data.get("share", 30.0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +55,40 @@ class ArbitrageConfig:
         return {
             "share": self.share,
         }
+
+    def calculate_polymarket_size(self, probability: float) -> float:
+        """
+        计算 Polymarket 订单大小
+
+        Polymarket 的 size 参数是 share 数量，直接使用配置的 share 值。
+
+        Args:
+            probability: 概率值 (0-100 scale，未使用，保留参数兼容性)
+
+        Returns:
+            订单大小 (share 数量)
+        """
+        return self.share
+
+    def calculate_orbitexch_size(self, odds: float) -> float:
+        """
+        计算 OrbitExch 订单大小
+
+        OrbitExch 的 size 参数是 stake（投入金额）。
+        公式: stake = share / odds
+        - share: 30 (目标 share 数量)
+        - odds: 2.0 (十进制赔率)
+        - stake = 30 / 2.0 = 15 (投入 15，如果赢得 share=15*2=30)
+
+        Args:
+            odds: 十进制赔率 (如 2.0)
+
+        Returns:
+            订单大小 (stake，投入金额)
+        """
+        if odds <= 0:
+            return 0.0
+        return self.share / odds
 
 
 # 默认配置文件路径
@@ -110,6 +150,7 @@ class AppState:
         self._odds_config = OddsSubscriptionConfig()
         self._arbitrage_config = ArbitrageConfig()
         self._strategy_config = StrategyServiceConfig()
+        self._risk_config = RiskConfig()
 
         # 运行时数据
         self._polymarket_events: list[DiscoveryResult] = []
@@ -122,9 +163,14 @@ class AppState:
 
         # 策略服务
         self._strategy_service = None  # 延迟初始化
+        self._strategy_callback_registered = False  # 防止重复注册回调
 
         # 执行服务
         self._execution_service = None  # 延迟初始化
+        self._execution_callback_registered = False  # 防止重复注册回调
+
+        # 风控服务
+        self._risk_service = None  # 延迟初始化
 
         # 加载保存的配置
         self._load_saved_config()
@@ -158,6 +204,8 @@ class AppState:
                     self._strategy_config = StrategyServiceConfig.from_dict(
                         data["strategy"]
                     )
+                if "risk" in data:
+                    self._risk_config = RiskConfig.from_dict(data["risk"])
 
                 self._log.info(f"Loaded config from {DEFAULT_CONFIG_PATH}")
             except Exception as e:
@@ -172,6 +220,7 @@ class AppState:
                 "odds": self._odds_config.to_dict(),
                 "arbitrage": self._arbitrage_config.to_dict(),
                 "strategy": self._strategy_config.to_dict(),
+                "risk": self._risk_config.to_dict(),
             }
             with open(DEFAULT_CONFIG_PATH, "w") as f:
                 json.dump(data, f, indent=2)
@@ -311,6 +360,13 @@ class AppState:
         """更新套利配置"""
         self._arbitrage_config = ArbitrageConfig.from_dict(data)
         self._save_config()
+
+        # 同步更新策略服务的参数
+        if self._strategy_service is not None:
+            self._strategy_service.set_arbitrage_params(
+                share=self._arbitrage_config.share,
+            )
+
         return self.get_arbitrage_config()
 
     @property
@@ -456,6 +512,14 @@ class AppState:
             if not config.orbitexch_password:
                 config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
 
+            # Polymarket 凭据（用于 User Channel 订单追踪）
+            if not config.polymarket_api_key:
+                config.polymarket_api_key = os.getenv("POLYMARKET_API_KEY", "")
+            if not config.polymarket_api_secret:
+                config.polymarket_api_secret = os.getenv("POLYMARKET_API_SECRET", "")
+            if not config.polymarket_passphrase:
+                config.polymarket_passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
+
             self._odds_service = OddsSubscriptionService(
                 config=config,
                 logger=logging.getLogger("OddsSubscription"),
@@ -491,7 +555,8 @@ class AppState:
         """
         获取策略服务实例
 
-        延迟初始化，只在首次调用时创建，并注册到赔率服务。
+        延迟初始化，只在首次调用时创建。
+        回调注册由 ensure_strategy_registered() 统一处理。
         """
         if self._strategy_service is None:
             from src.arbitrage.services.strategy.service import StrategyService
@@ -499,14 +564,9 @@ class AppState:
             self._strategy_service = StrategyService(
                 config=self._strategy_config,
                 logger=logging.getLogger("StrategyService"),
+                odds_service=self._odds_service,
+                share=self._arbitrage_config.share,
             )
-
-            # 注册到赔率服务（如果赔率服务已创建）
-            if self._odds_service is not None:
-                self._odds_service.register_strategy_callback(
-                    self._strategy_service.on_odds_update
-                )
-                self._log.info("Strategy service registered to odds service")
 
         return self._strategy_service
 
@@ -515,13 +575,27 @@ class AppState:
         确保策略服务已注册到赔率服务
 
         在赔率订阅开始前调用，确保策略服务能接收赔率更新。
+        使用标志位防止重复注册回调。
         """
         odds_service = self.get_odds_service()
         strategy_service = self.get_strategy_service()
 
-        # 检查是否已注册（通过回调列表长度判断）
-        if strategy_service.on_odds_update not in []:
+        # 确保策略服务有赔率服务的引用
+        strategy_service.set_odds_service(odds_service)
+
+        # 同步套利参数
+        strategy_service.set_arbitrage_params(
+            share=self._arbitrage_config.share,
+        )
+
+        # 注册赔率更新回调（只注册一次）
+        if not self._strategy_callback_registered:
             odds_service.register_strategy_callback(strategy_service.on_odds_update)
+            self._strategy_callback_registered = True
+            self._log.info("Strategy callback registered to odds service")
+
+        # 注意：way_rebate 数据由 RiskService 计算，在 _evaluate_match 时注入到 context
+        # 不需要注册 position_callback
 
     def register_matches_to_strategy(self) -> None:
         """
@@ -601,6 +675,189 @@ class AppState:
 
         return self._execution_service
 
+    async def ensure_execution_registered(self) -> bool:
+        """
+        确保执行服务已注册到策略服务
+
+        在赔率订阅开始前调用，确保执行服务能接收套利机会。
+        使用标志位防止重复注册回调。
+
+        Returns:
+            是否初始化成功
+        """
+        import asyncio
+
+        # 检查是否已经注册过
+        if self._execution_callback_registered:
+            self._log.debug("Execution callback already registered, skipping")
+            return True
+
+        odds_service = self.get_odds_service()
+        strategy_service = self.get_strategy_service()
+        execution_service = self.get_execution_service()
+
+        # 初始化执行服务
+        success = await execution_service.initialize()
+        if not success:
+            self._log.warning("Execution service initialization failed (may be disabled)")
+
+        # 设置执行服务的依赖
+        execution_service.set_odds_service(odds_service)
+        execution_service.set_arbitrage_config(self._arbitrage_config)
+        execution_service.set_risk_service(self.get_risk_service())
+
+        # 传递 OrbitExch 页面引用（用于下单）
+        orbitexch_pages = odds_service.get_orbitexch_pages()
+        for competition_id, page in orbitexch_pages.items():
+            if competition_id != "main":  # 跳过主登录页
+                execution_service.set_orbitexch_page(competition_id, page)
+                self._log.info(f"OrbitExch page set for competition: {competition_id}")
+
+        # 注册执行服务到策略服务的机会回调
+        # 使用异步包装器，因为 on_opportunity 是 async
+        def opportunity_callback(opportunity: dict) -> None:
+            """同步包装器，将异步 on_opportunity 调度到事件循环"""
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(execution_service.on_opportunity(opportunity))
+            except RuntimeError:
+                # 没有运行的事件循环，创建新的 task
+                asyncio.create_task(execution_service.on_opportunity(opportunity))
+
+        strategy_service.register_opportunity_callback(opportunity_callback)
+        self._execution_callback_registered = True
+
+        self._log.info("Execution service registered to strategy service")
+        return success
+
+    def update_execution_pages(self) -> None:
+        """
+        更新执行服务的 OrbitExch 页面引用
+
+        在赔率订阅完成后调用，确保执行服务有最新的页面引用。
+        """
+        if not self._execution_service or not self._odds_service:
+            self._log.warning(
+                f"Cannot update execution pages: "
+                f"execution_service={bool(self._execution_service)}, "
+                f"odds_service={bool(self._odds_service)}"
+            )
+            return
+
+        orbitexch_pages = self._odds_service.get_orbitexch_pages()
+        self._log.info(f"Found {len(orbitexch_pages)} OrbitExch pages to update")
+
+        page_count = 0
+        for competition_id, page in orbitexch_pages.items():
+            if competition_id != "main":
+                self._execution_service.set_orbitexch_page(competition_id, page)
+                page_count += 1
+
+        self._log.info(f"Updated {page_count} OrbitExch pages for execution service")
+
+    # =========================================================================
+    # 风控服务
+    # =========================================================================
+
+    def get_risk_config(self) -> dict:
+        """获取风控配置"""
+        return self._risk_config.to_dict()
+
+    def update_risk_config(self, data: dict) -> dict:
+        """更新风控配置"""
+        self._risk_config = RiskConfig.from_dict(data)
+        self._save_config()
+
+        # 如果风控服务已创建，更新其配置
+        if self._risk_service is not None:
+            self._risk_service.update_config(self._risk_config)
+
+        return self.get_risk_config()
+
+    @property
+    def risk_config_obj(self) -> RiskConfig:
+        """获取风控配置对象"""
+        return self._risk_config
+
+    def get_risk_service(self):
+        """
+        获取风控服务实例
+
+        延迟初始化，只在首次调用时创建。
+        """
+        if self._risk_service is None:
+            from src.arbitrage.services.risk.service import RiskService
+
+            self._risk_service = RiskService(
+                config=self._risk_config,
+                logger=logging.getLogger("RiskService"),
+                share=self._arbitrage_config.share,
+            )
+
+        return self._risk_service
+
+    def ensure_risk_registered(self) -> None:
+        """
+        确保风控服务已集成到执行流程
+
+        在赔率订阅开始前调用，确保风控服务能接收持仓更新。
+        """
+        risk_service = self.get_risk_service()
+        strategy_service = self.get_strategy_service()
+
+        # 同步 share 参数
+        risk_service.set_share(self._arbitrage_config.share)
+
+        # 设置策略服务的风控服务引用
+        strategy_service.set_risk_service(risk_service)
+
+        self._log.info("Risk service integrated with strategy service")
+
+    def load_risk_historical_positions(self) -> dict[str, int]:
+        """
+        加载历史持仓到风控服务
+
+        在赔率订阅完成后调用，从 API 获取历史持仓数据。
+
+        Returns:
+            {"polymarket": count, "orbitexch": count}
+        """
+        odds_service = self.get_odds_service()
+        risk_service = self.get_risk_service()
+
+        # 获取映射数据
+        mappings = odds_service.get_position_mappings()
+
+        # 获取持仓数据
+        polymarket_positions = odds_service.get_polymarket_positions()
+        orbitexch_bets = odds_service.get_orbitexch_bets()
+
+        # 加载历史持仓
+        result = risk_service.load_historical_positions(
+            polymarket_positions=polymarket_positions,
+            orbitexch_bets=orbitexch_bets,
+            polymarket_pair_mapping=mappings["polymarket_pair_mapping"],
+            orbitexch_pair_mapping=mappings["orbitexch_pair_mapping"],
+            selection_mappings=mappings["selection_mappings"],
+        )
+
+        self._log.info(
+            f"Loaded historical positions: Polymarket={result['polymarket']}, "
+            f"OrbitExch={result['orbitexch']}"
+        )
+
+        return result
+
 
 # 全局状态实例
 app_state = AppState()
+
+
+def get_risk_service():
+    """全局获取风控服务（供路由使用）"""
+    return app_state.get_risk_service()
+
+
+def get_arbitrage_config():
+    """全局获取套利配置（供路由使用）"""
+    return app_state.arbitrage_config_obj

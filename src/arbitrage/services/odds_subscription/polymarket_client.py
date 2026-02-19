@@ -140,6 +140,7 @@ class PolymarketOddsClient:
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
         self._orders_update_callback: Callable[[dict], None] | None = None
+        self._positions_update_callback: Callable[[str], None] | None = None  # event_id
 
         # 状态
         self._running = False
@@ -712,10 +713,70 @@ class PolymarketOddsClient:
                         self._positions[asset_id] = pos
 
                 self._log.info(f"Fetched {len(positions)} positions from Data API")
+
+                # 触发仓位更新回调
+                if self._positions_update_callback:
+                    updated_events = set(p.event_id for p in positions if p.event_id)
+                    for event_id in updated_events:
+                        try:
+                            self._positions_update_callback(event_id)
+                        except Exception as e:
+                            self._log.error(f"Positions callback error for {event_id}: {e}")
+
                 return positions
 
         except Exception as e:
             self._log.error(f"Failed to fetch positions: {e}")
+            return []
+
+    async def fetch_open_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
+        """
+        从 Data API 获取当前活跃订单
+
+        调用 REST API 获取最新订单状态，不依赖 WebSocket 缓存。
+
+        Args:
+            asset_id: 可选，按 asset_id 过滤
+
+        Returns:
+            订单列表
+        """
+        if not self.config.polymarket_api_key:
+            self._log.debug("No API key configured, skipping orders fetch")
+            return []
+
+        path = "/orders"
+        if asset_id:
+            path = f"/orders?asset_id={asset_id}"
+        headers = self._generate_l1_auth_headers("GET", path.split("?")[0])
+
+        if not headers:
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    f"{self.DATA_API_URL}{path}",
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                orders = []
+                for item in data:
+                    order = PolymarketOrder.from_dict(item)
+                    orders.append(order)
+                    # 同步更新缓存
+                    if order.status in ("CANCELLED", "MATCHED"):
+                        self._current_orders.pop(order.order_id, None)
+                    else:
+                        self._current_orders[order.order_id] = order
+
+                self._log.info(f"Fetched {len(orders)} orders from Data API")
+                return orders
+
+        except Exception as e:
+            self._log.error(f"Failed to fetch open orders: {e}")
             return []
 
     async def _connect_user_websocket(self) -> None:
@@ -930,16 +991,23 @@ class PolymarketOddsClient:
         except Exception as e:
             self._log.error(f"Error processing trade update: {e}")
 
-    def get_current_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
+    def get_current_orders(
+        self,
+        asset_id: str | None = None,
+        condition_id: str | None = None,
+    ) -> list[PolymarketOrder]:
         """
         获取当前订单
 
         Args:
-            asset_id: 可选，指定 asset_id
+            asset_id: 可选，指定 asset_id (token_id)
+            condition_id: 可选，指定 condition_id (market)
 
         Returns:
             订单列表
         """
+        if condition_id:
+            return [o for o in self._current_orders.values() if o.market == condition_id]
         if asset_id:
             return [o for o in self._current_orders.values() if o.asset_id == asset_id]
         return list(self._current_orders.values())
@@ -1027,6 +1095,10 @@ class PolymarketOddsClient:
     def on_price_update(self, callback: Callable[[dict], None]) -> None:
         """设置价格更新回调"""
         self._price_update_callback = callback
+
+    def register_positions_callback(self, callback: Callable[[str], None]) -> None:
+        """注册仓位更新回调（参数为 event_id）"""
+        self._positions_update_callback = callback
 
     # =========================================================================
     # 数据访问
