@@ -68,7 +68,7 @@ class MultiWaySignal(Signal):
             )
 
         # 如果没有 way_rebate 数据，检查是否有套利方向
-        if not context.way_rebate:
+        if not context.way_rebate_by_venue:
             return SignalResult(
                 signal_name=self.name,
                 satisfied=len(context.arbitrage_directions) > 0,
@@ -81,29 +81,48 @@ class MultiWaySignal(Signal):
 
         original_count = len(context.arbitrage_directions)
         removed_directions = []
+        venue_has_negative: dict[str, bool] = {}
+
+        for venue, outcomes in context.way_rebate_by_venue.items():
+            if isinstance(outcomes, dict):
+                venue_has_negative[venue] = any(
+                    rebate < 0 for rebate in outcomes.values()
+                )
 
         def should_keep(direction: ArbitrageDirection) -> bool:
             """检查方向是否应保留"""
             for leg in direction.legs:
                 outcome = leg.market_type  # "home", "draw", or "away"
+                venue = leg.venue.value if hasattr(leg.venue, "value") else str(leg.venue)
 
-                # 获取该方向的持仓返水率（合并两平台）
-                outcome_way_rebate = context.get_way_rebate(outcome)
+                # 获取该平台的持仓返水率
+                venue_way_rebate = context.way_rebate_by_venue.get(venue, {})
+                outcome_way_rebate = venue_way_rebate.get(outcome)
 
                 if outcome_way_rebate is not None:
-                    # 检查是否违反规则
+                    if venue_has_negative.get(venue):
+                        if outcome_way_rebate >= 0:
+                            removed_directions.append({
+                                "direction_id": direction.direction_id,
+                                "reason": f"{venue}:{outcome} way_rebate={outcome_way_rebate:.4f} >= 0",
+                            })
+                            return False
+                        # 有负向时，允许买负向 outcome
+                        return True
+
+                    # 没有负向时，按 strict/threshold 过滤
                     if strict:
                         if outcome_way_rebate < 0:
                             removed_directions.append({
                                 "direction_id": direction.direction_id,
-                                "reason": f"{outcome} way_rebate={outcome_way_rebate:.4f} < 0",
+                                "reason": f"{venue}:{outcome} way_rebate={outcome_way_rebate:.4f} < 0",
                             })
                             return False
                     else:
                         if outcome_way_rebate <= threshold:
                             removed_directions.append({
                                 "direction_id": direction.direction_id,
-                                "reason": f"{outcome} way_rebate={outcome_way_rebate:.4f} <= {threshold}",
+                                "reason": f"{venue}:{outcome} way_rebate={outcome_way_rebate:.4f} <= {threshold}",
                             })
                             return False
 
@@ -124,6 +143,6 @@ class MultiWaySignal(Signal):
                 "remaining_count": len(context.arbitrage_directions),
                 "removed_count": removed_count,
                 "removed_directions": removed_directions,
-                "way_rebate": context.way_rebate,
+                "way_rebate": context.way_rebate_by_venue,
             },
         )

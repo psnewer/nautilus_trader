@@ -1,0 +1,589 @@
+{
+  "case_1": {
+    "pair": {
+      "pair_id": "pair-1",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-1"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-1",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        }
+      ],
+      "orbitexch": []
+    }
+  },
+  "case_2": {
+    "pair": {
+      "pair_id": "pair-2",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-2"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-2",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-2",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-2",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000000
+        },
+        {
+          "pair_id": "pair-2",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000001
+        }
+      ]
+    }
+  },
+  "case_3": {
+    "pair": {
+      "pair_id": "pair-3",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-3"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-3",
+          "market_type": "home",
+          "bid": 0.45,
+          "ask": 0.46
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-3",
+          "market_type": "home",
+          "back": 2.2,
+          "lay": 2.3,
+          "timestamp": 1700000002
+        }
+      ]
+    }
+  },
+  "case_4": {
+    "pair": {
+      "pair_id": "pair-4",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-4"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-4",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-4",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-4",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000003
+        },
+        {
+          "pair_id": "pair-4",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000004
+        }
+      ]
+    },
+    "risk": {
+      "way_rebate_combined": {
+        "home": -0.02,
+        "away": 0.05
+      },
+      "way_rebate_by_venue": {
+        "polymarket": {
+          "home": -0.02,
+          "away": 0.03
+        },
+        "orbitexch": {
+          "home": 0.01,
+          "away": 0.02
+        }
+      }
+    }
+  },
+  "case_5": {
+    "pair": {
+      "pair_id": "pair-5",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-5"
+    },
+    "match_config": {
+      "signal_overrides": {
+        "rebate": {
+          "rate": 0.1
+        }
+      }
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-5",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-5",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000005
+        }
+      ]
+    }
+  },
+  "case_6": {
+    "pair": {
+      "pair_id": "pair-6",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-6"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-6",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-6",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000006
+        }
+      ]
+    }
+  },
+  "case_7": {
+    "pair": {
+      "pair_id": "pair-7",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-7"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-7",
+          "market_type": "home",
+          "bid": 0.43,
+          "ask": 0.44
+        },
+        {
+          "event_id": "event-7",
+          "market_type": "away",
+          "bid": 0.52,
+          "ask": 0.53
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-7",
+          "market_type": "home",
+          "back": 2.35,
+          "lay": 2.45,
+          "timestamp": 1700000007
+        },
+        {
+          "pair_id": "pair-7",
+          "market_type": "away",
+          "back": 2.95,
+          "lay": 3.05,
+          "timestamp": 1700000008
+        }
+      ]
+    }
+  },
+  "case_8": {
+    "pair": {
+      "pair_id": "pair-8",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-8"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-8",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-8",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-8",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000009
+        },
+        {
+          "pair_id": "pair-8",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000010
+        }
+      ]
+    }
+  },
+  "case_9": {
+    "pair": {
+      "pair_id": "pair-9",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-9"
+    },
+    "match_config": {
+      "signal_overrides_high": {
+        "rebate": {
+          "rate": 10.0
+        }
+      },
+      "signal_overrides_low": {
+        "rebate": {
+          "rate": 0.1
+        }
+      }
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-9",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-9",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-9",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000014
+        },
+        {
+          "pair_id": "pair-9",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000015
+        }
+      ]
+    }
+  },
+  "case_10": {
+    "pair": {
+      "pair_id": "pair-10",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-10"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-10",
+          "market_type": "home",
+          "bid": 0.23,
+          "ask": 0.24
+        },
+        {
+          "event_id": "event-10",
+          "market_type": "draw",
+          "bid": 0.23,
+          "ask": 0.24
+        },
+        {
+          "event_id": "event-10",
+          "market_type": "away",
+          "bid": 0.23,
+          "ask": 0.24
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-10",
+          "market_type": "home",
+          "back": 5.0,
+          "lay": 5.1,
+          "timestamp": 1700000011
+        },
+        {
+          "pair_id": "pair-10",
+          "market_type": "draw",
+          "back": 5.0,
+          "lay": 5.1,
+          "timestamp": 1700000012
+        },
+        {
+          "pair_id": "pair-10",
+          "market_type": "away",
+          "back": 5.0,
+          "lay": 5.1,
+          "timestamp": 1700000013
+        }
+      ]
+    }
+  },
+  "case_11": {
+    "pair": {
+      "pair_id": "pair-11",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-11"
+    },
+    "risk": {
+      "way_rebate_combined": {
+        "home": -0.05,
+        "away": 0.02
+      },
+      "way_rebate_by_venue": {
+        "polymarket": {
+          "home": -0.05,
+          "away": 0.02
+        },
+        "orbitexch": {
+          "home": 0.01,
+          "away": 0.02
+        }
+      }
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-11",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-11",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-11",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000016
+        },
+        {
+          "pair_id": "pair-11",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000017
+        }
+      ]
+    }
+  },
+  "case_12": {
+    "pair": {
+      "pair_id": "pair-12",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-12"
+    },
+    "risk": {
+      "way_rebate_combined": {
+        "home": 0.01,
+        "away": 0.05
+      }
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-12",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-12",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-12",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000018
+        },
+        {
+          "pair_id": "pair-12",
+          "market_type": "away",
+          "back": 3.2,
+          "lay": 3.3,
+          "timestamp": 1700000019
+        }
+      ]
+    }
+  },
+  "case_13": {
+    "pair": {
+      "pair_id": "pair-13",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-13"
+    },
+    "risk": {
+      "way_rebate_combined": {}
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-13",
+          "market_type": "home",
+          "bid": 0.45,
+          "ask": 0.46
+        },
+        {
+          "event_id": "event-13",
+          "market_type": "away",
+          "bid": 0.5,
+          "ask": 0.51
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-13",
+          "market_type": "home",
+          "back": 2.2,
+          "lay": 2.3,
+          "timestamp": 1700000020
+        },
+        {
+          "pair_id": "pair-13",
+          "market_type": "away",
+          "back": 2.9,
+          "lay": 3.0,
+          "timestamp": 1700000021
+        }
+      ]
+    }
+  },
+  "case_14": {
+    "pair": {
+      "pair_id": "pair-14",
+      "competition": "Test League",
+      "home_team": "Team A",
+      "away_team": "Team B",
+      "polymarket_event_id": "event-14"
+    },
+    "odds": {
+      "polymarket": [
+        {
+          "event_id": "event-14",
+          "market_type": "home",
+          "bid": 0.4,
+          "ask": 0.41
+        },
+        {
+          "event_id": "event-14",
+          "market_type": "away",
+          "bid": 0.55,
+          "ask": 0.56
+        }
+      ],
+      "orbitexch": [
+        {
+          "pair_id": "pair-14",
+          "market_type": "home",
+          "back": 2.5,
+          "lay": 2.6,
+          "timestamp": 1700000022
+        },
+        {
+          "pair_id": "pair-14",
+          "market_type": "away",
+          "back": 0.0,
+          "lay": 0.0,
+          "timestamp": 1700000023
+        }
+      ]
+    }
+  }
+}

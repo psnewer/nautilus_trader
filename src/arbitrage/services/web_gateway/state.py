@@ -31,6 +31,8 @@ from src.arbitrage.services.market_matching.config import MarketMatchingConfig
 from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.strategy.config import StrategyServiceConfig
 from src.arbitrage.services.risk.config import RiskConfig
+from nautilus_trader.common.component import MessageBus, LiveClock
+from nautilus_trader.model.identifiers import TraderId
 
 
 @dataclass
@@ -163,7 +165,6 @@ class AppState:
 
         # 策略服务
         self._strategy_service = None  # 延迟初始化
-        self._strategy_callback_registered = False  # 防止重复注册回调
 
         # 执行服务
         self._execution_service = None  # 延迟初始化
@@ -171,6 +172,9 @@ class AppState:
 
         # 风控服务
         self._risk_service = None  # 延迟初始化
+
+        # 消息总线
+        self._msgbus = None
 
         # 加载保存的配置
         self._load_saved_config()
@@ -523,6 +527,7 @@ class AppState:
             self._odds_service = OddsSubscriptionService(
                 config=config,
                 logger=logging.getLogger("OddsSubscription"),
+                msgbus=self.get_msgbus(),
             )
 
         return self._odds_service
@@ -566,9 +571,20 @@ class AppState:
                 logger=logging.getLogger("StrategyService"),
                 odds_service=self._odds_service,
                 share=self._arbitrage_config.share,
+                msgbus=self.get_msgbus(),
             )
 
         return self._strategy_service
+
+    def get_msgbus(self):
+        """获取消息总线"""
+        if self._msgbus is None:
+            self._msgbus = MessageBus(
+                trader_id=TraderId("ARBITRAGE-001"),
+                clock=LiveClock(),
+                name="ArbitrageMessageBus",
+            )
+        return self._msgbus
 
     def ensure_strategy_registered(self) -> None:
         """
@@ -588,11 +604,7 @@ class AppState:
             share=self._arbitrage_config.share,
         )
 
-        # 注册赔率更新回调（只注册一次）
-        if not self._strategy_callback_registered:
-            odds_service.register_strategy_callback(strategy_service.on_odds_update)
-            self._strategy_callback_registered = True
-            self._log.info("Strategy callback registered to odds service")
+        # StrategyService 已在初始化时订阅消息总线
 
         # 注意：way_rebate 数据由 RiskService 计算，在 _evaluate_match 时注入到 context
         # 不需要注册 position_callback
@@ -639,9 +651,9 @@ class AppState:
         # 获取最新比赛状态
         match_statuses = odds_service.get_all_match_statuses()
 
-        # 更新策略服务中的比赛状态
+        # 通过消息总线广播比赛状态
         for pair_id, is_live in match_statuses.items():
-            strategy_service.update_match_status(pair_id, is_live)
+            odds_service._on_match_status_update(pair_id, is_live)
 
         return match_statuses
 
