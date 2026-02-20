@@ -12,6 +12,11 @@ from typing import Any, Callable, TYPE_CHECKING
 from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
 from .strategies import Strategy, StrategyResult, DefaultStrategy, get_strategy_class
+from src.arbitrage.services.odds_subscription.messages import OddsUpdateMessage, MatchStatusMessage
+from src.arbitrage.services.odds_subscription.topics import (
+    ODDS_TOPIC_PATTERN,
+    MATCH_STATUS_TOPIC_PATTERN,
+)
 
 if TYPE_CHECKING:
     from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
@@ -35,6 +40,7 @@ class StrategyService:
         odds_service: "OddsSubscriptionService | None" = None,
         risk_service: "Any | None" = None,
         share: float = 100.0,
+        msgbus=None,
     ):
         self._config = config or StrategyServiceConfig()
         self._log = logger or logging.getLogger(self.__class__.__name__)
@@ -67,6 +73,15 @@ class StrategyService:
         # 回调
         self._opportunity_callbacks: list[Callable[[dict], None]] = []
 
+        # 信号分类
+        self._odds_signals = {"rebate", "mean_rebate", "multi-way"}
+        self._status_signals = {"live", "pre-match"}
+
+        # 消息总线
+        self._msgbus = None
+        if msgbus is not None:
+            self.set_msgbus(msgbus)
+
     # =========================================================================
     # 配置管理
     # =========================================================================
@@ -85,6 +100,36 @@ class StrategyService:
         """设置赔率服务引用"""
         self._odds_service = odds_service
         self._log.info("Odds service reference set")
+
+    def set_msgbus(self, msgbus) -> None:
+        """设置消息总线并订阅主题"""
+        if self._msgbus is msgbus:
+            return
+        self._msgbus = msgbus
+        if not self._msgbus:
+            return
+        self._msgbus.subscribe(ODDS_TOPIC_PATTERN, self._on_odds_message)
+        self._msgbus.subscribe(MATCH_STATUS_TOPIC_PATTERN, self._on_match_status_message)
+
+    def _on_odds_message(self, msg: Any) -> None:
+        """处理赔率更新消息"""
+        if isinstance(msg, OddsUpdateMessage):
+            self.on_odds_update(msg.pair_id, msg.venue, msg.odds_data)
+        elif isinstance(msg, dict):
+            pair_id = msg.get("pair_id", "")
+            venue = msg.get("venue", "")
+            odds_data = msg.get("odds_data", {})
+            if pair_id and venue and odds_data:
+                self.on_odds_update(pair_id, venue, odds_data)
+
+    def _on_match_status_message(self, msg: Any) -> None:
+        """处理比赛状态消息"""
+        if isinstance(msg, MatchStatusMessage):
+            self.update_match_status(msg.pair_id, msg.is_live)
+        elif isinstance(msg, dict):
+            pair_id = msg.get("pair_id", "")
+            if pair_id and "is_live" in msg:
+                self.update_match_status(pair_id, bool(msg.get("is_live")))
 
     def set_risk_service(self, risk_service) -> None:
         """设置风控服务引用"""
@@ -145,6 +190,8 @@ class StrategyService:
         if pair_id in self._match_contexts:
             self._match_contexts[pair_id].is_live = is_live
             self._log.debug(f"Match {pair_id} status: {'live' if is_live else 'pre-match'}")
+            # 状态变化触发状态信号计算
+            self._evaluate_match(pair_id, triggered_signals=self._status_signals)
 
     # =========================================================================
     # 赔率更新回调
@@ -179,18 +226,15 @@ class StrategyService:
             ctx.polymarket_odds = self._odds_cache[pair_id].get("polymarket", {})
             ctx.orbitexch_odds = self._odds_cache[pair_id].get("orbitexch", {})
 
-        # 只有两个平台都有数据时才计算
-        poly_odds = self._odds_cache[pair_id].get("polymarket", {})
-        orbit_odds = self._odds_cache[pair_id].get("orbitexch", {})
-
-        if poly_odds and orbit_odds:
-            self._evaluate_match(pair_id)
+        # 赔率更新只触发赔率相关信号计算
+        if pair_id in self._match_contexts:
+            self._evaluate_match(pair_id, triggered_signals=self._odds_signals)
 
     # =========================================================================
     # 策略评估
     # =========================================================================
 
-    def _evaluate_match(self, pair_id: str) -> None:
+    def _evaluate_match(self, pair_id: str, triggered_signals: set[str] | None = None) -> None:
         """
         评估比赛的所有策略
 
@@ -213,8 +257,18 @@ class StrategyService:
 
         # 从风控服务获取 way_rebate 并注入到 context
         if self._risk_service:
-            way_rebate = self._risk_service.get_way_rebate(pair_id)
+            way_rebate = (
+                self._risk_service.get_way_rebate(pair_id)
+                if hasattr(self._risk_service, "get_way_rebate")
+                else {}
+            )
+            way_rebate_by_venue = (
+                self._risk_service.get_way_rebate_by_venue(pair_id)
+                if hasattr(self._risk_service, "get_way_rebate_by_venue")
+                else {}
+            )
             context.way_rebate = way_rebate
+            context.way_rebate_by_venue = way_rebate_by_venue
 
         # 获取该比赛应使用的策略列表
         strategies = self._config.get_strategies_for_match(
@@ -232,7 +286,9 @@ class StrategyService:
         # 评估每个策略（信号顺序执行）
         any_triggered = False
         for strategy_name in strategies:
-            triggered = self._evaluate_strategy_sequential(pair_id, strategy_name, context)
+            triggered = self._evaluate_strategy_sequential(
+                pair_id, strategy_name, context, triggered_signals
+            )
             if triggered:
                 any_triggered = True
 
@@ -245,6 +301,7 @@ class StrategyService:
         pair_id: str,
         strategy_name: str,
         context: MatchContext,
+        triggered_signals: set[str] | None = None,
     ) -> bool:
         """
         顺序评估策略中的信号
@@ -272,6 +329,11 @@ class StrategyService:
 
         # 创建信号计算器
         def signal_calculator(signal_name: str, ctx: MatchContext) -> SignalResult | None:
+            # 非本次触发的信号优先复用缓存
+            if triggered_signals is not None and signal_name not in triggered_signals:
+                cached = self._signal_results.get(pair_id, {}).get(signal_name)
+                if cached is not None:
+                    return cached
             return self._calculate_signal(pair_id, signal_name, ctx)
 
         # 执行策略

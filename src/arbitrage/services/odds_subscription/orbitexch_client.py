@@ -76,6 +76,7 @@ class OrbitExchOddsClient:
 
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
+        self._status_callbacks: list[Callable[[str, bool], None]] = []
 
         # 状态
         self._running = False
@@ -1538,6 +1539,13 @@ class OrbitExchOddsClient:
                     f"Match status set: {pair_id} -> {status_str}"
                 )
 
+            if old_status is None or old_status != inplay:
+                for callback in self._status_callbacks:
+                    try:
+                        callback(pair_id, inplay)
+                    except Exception as e:
+                        self._log.error(f"Status callback error for {pair_id}: {e}")
+
     # =========================================================================
     # Selection ID 映射管理
     # =========================================================================
@@ -1552,6 +1560,12 @@ class OrbitExchOddsClient:
         self._latest_odds.clear()
         self._unmatched_selections.clear()
         self._log.info(f"Cleared {old_count} selection mappings")
+
+    def register_status_callback(self, callback: Callable[[str, bool], None]) -> None:
+        """注册比赛状态更新回调"""
+        if callback in self._status_callbacks:
+            return
+        self._status_callbacks.append(callback)
 
     def register_pair_info(
         self,

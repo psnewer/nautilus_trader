@@ -12,8 +12,10 @@ from typing import Any, Callable
 from src.arbitrage.services.market_matching.service import MatchedPair
 
 from .config import OddsSubscriptionConfig
-from .polymarket_client import PolymarketOddsClient
+from .messages import OddsUpdateMessage, MatchStatusMessage
 from .orbitexch_client import OrbitExchOddsClient
+from .polymarket_client import PolymarketOddsClient
+from .topics import odds_topic, match_status_topic
 
 
 class OddsSubscriptionService:
@@ -31,9 +33,11 @@ class OddsSubscriptionService:
         self,
         config: OddsSubscriptionConfig | None = None,
         logger: logging.Logger | None = None,
+        msgbus=None,
     ):
         self.config = config or OddsSubscriptionConfig()
         self._log = logger or logging.getLogger(self.__class__.__name__)
+        self._msgbus = msgbus
 
         # 客户端
         self._polymarket_client: PolymarketOddsClient | None = None
@@ -49,9 +53,6 @@ class OddsSubscriptionService:
 
         # 运行状态
         self._running = False
-
-        # 策略回调
-        self._strategy_callbacks: list[Callable[[str, str, dict], None]] = []
 
         # 仓位变化回调
         self._position_callbacks: list[Callable[[str], None]] = []
@@ -82,6 +83,7 @@ class OddsSubscriptionService:
         # 设置回调
         self._polymarket_client.on_price_update(self._on_polymarket_update)
         self._orbitexch_client.on_price_update(self._on_orbitexch_update)
+        self._orbitexch_client.register_status_callback(self._on_match_status_update)
 
         # 设置仓位变化回调
         self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
@@ -283,8 +285,8 @@ class OddsSubscriptionService:
                     f"bid={odds_data.get('bid')} ask={odds_data.get('ask')}"
                 )
 
-                # 触发策略回调
-                self._notify_strategy_callbacks(pair_id, "polymarket", odds_data)
+                # 发布赔率更新
+                self._publish_odds_update(pair_id, "polymarket", odds_data)
                 break
 
     def _on_orbitexch_update(self, odds_data: dict) -> None:
@@ -325,51 +327,42 @@ class OddsSubscriptionService:
                 f"OrbitExch: {pair_id} {market_type} back={back} lay={lay}"
             )
 
-            # 触发策略回调
-            self._notify_strategy_callbacks(
+            # 发布赔率更新
+            self._publish_odds_update(
                 pair_id,
                 "orbitexch",
                 self._latest_odds[pair_id]["orbitexch"][market_type],
             )
 
     # =========================================================================
-    # 策略回调
+    # 消息总线
     # =========================================================================
 
-    def register_strategy_callback(
-        self,
-        callback: Callable[[str, str, dict], None],
-    ) -> None:
-        """
-        注册策略回调
+    def set_msgbus(self, msgbus) -> None:
+        """设置消息总线"""
+        self._msgbus = msgbus
 
-        当赔率更新时，触发回调通知策略服务。
+    def _publish_odds_update(self, pair_id: str, venue: str, odds_data: dict) -> None:
+        """发布赔率更新"""
+        if not self._msgbus:
+            return
+        market_type = odds_data.get("market_type", "")
+        if not market_type:
+            return
+        msg = OddsUpdateMessage(
+            pair_id=pair_id,
+            venue=venue,
+            market_type=market_type,
+            odds_data=odds_data,
+        )
+        self._msgbus.publish(odds_topic(venue, pair_id, market_type), msg, external_pub=False)
 
-        Args:
-            callback: 回调函数，签名为 callback(pair_id, venue, odds_data)
-        """
-        self._strategy_callbacks.append(callback)
-        self._log.info(f"Strategy callback registered (total: {len(self._strategy_callbacks)})")
-
-    def _notify_strategy_callbacks(
-        self,
-        pair_id: str,
-        venue: str,
-        odds_data: dict,
-    ) -> None:
-        """
-        通知所有策略回调
-
-        Args:
-            pair_id: 比赛 ID
-            venue: 平台 ("polymarket" | "orbitexch")
-            odds_data: 赔率数据
-        """
-        for callback in self._strategy_callbacks:
-            try:
-                callback(pair_id, venue, odds_data)
-            except Exception as e:
-                self._log.error(f"Strategy callback error: {e}")
+    def _on_match_status_update(self, pair_id: str, is_live: bool) -> None:
+        """发布比赛状态更新"""
+        if not self._msgbus:
+            return
+        msg = MatchStatusMessage(pair_id=pair_id, is_live=is_live, source="orbitexch")
+        self._msgbus.publish(match_status_topic(pair_id), msg, external_pub=False)
 
     # =========================================================================
     # 仓位变化回调
@@ -610,6 +603,13 @@ class OddsSubscriptionService:
         Returns:
             PolymarketPosition 列表
         """
+        if self._use_mock_exchange():
+            from src.arbitrage.services.debug import debug_manager, MockCategory
+            context = {"venue": "polymarket"}
+            if pair_id:
+                context["pair_id"] = pair_id
+            return debug_manager.get_mock_data(MockCategory.POSITIONS, context) or []
+
         if not self._polymarket_client:
             return []
         return self._polymarket_client.get_positions_by_pair(pair_id) if pair_id else self._polymarket_client.get_positions()
@@ -624,11 +624,27 @@ class OddsSubscriptionService:
         Returns:
             OrbitExch bet 数据列表
         """
+        if self._use_mock_exchange():
+            from src.arbitrage.services.debug import debug_manager, MockCategory
+            context = {"venue": "orbitexch"}
+            if pair_id:
+                context["pair_id"] = pair_id
+            return debug_manager.get_mock_data(MockCategory.ORDERS, context) or []
+
         if not self._orbitexch_client:
             return []
         if pair_id:
             return self._orbitexch_client.get_bets_by_pair(pair_id)
         return self._orbitexch_client.get_current_bets()
+
+    @staticmethod
+    def _use_mock_exchange() -> bool:
+        """判断是否启用模拟交易所"""
+        try:
+            from src.arbitrage.services.debug import debug_manager
+            return debug_manager.enabled and debug_manager.is_override_active("use_mock_exchange")
+        except ImportError:
+            return False
 
     def get_selection_mapping(self, pair_id: str) -> dict[int, str]:
         """

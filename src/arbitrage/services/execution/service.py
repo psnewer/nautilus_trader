@@ -31,6 +31,7 @@ from .polymarket_executor import PolymarketExecutor
 from .orbitexch_executor import OrbitExchExecutor
 from .orchestrator import ExecutionOrchestrator
 from .session import ExecutionSession
+from .mock_exchange import MockExchange
 
 # Debug 管理器 (延迟导入避免循环依赖)
 def _get_debug_manager():
@@ -76,6 +77,12 @@ class ExecutionService:
 
         # 回调
         self._order_update_callbacks: list[Callable[[Order], None]] = []
+
+        # 模拟交易所
+        self._mock_exchange = MockExchange(
+            order_update_callback=self._on_mock_order_update,
+            logger=logging.getLogger("MockExchange"),
+        )
 
         # 外部服务引用
         self._odds_service = None  # OddsSubscriptionService
@@ -180,6 +187,12 @@ class ExecutionService:
 
         # 应用 debug 覆盖
         order = self._apply_debug_overrides(order)
+
+        # 模拟交易所模式
+        if self._use_mock_exchange():
+            # 保存订单
+            self._orders[order.order_id] = order
+            return await self._mock_exchange.place_order(order)
 
         # 保存订单
         self._orders[order.order_id] = order
@@ -472,6 +485,27 @@ class ExecutionService:
 
         return order
 
+    def _use_mock_exchange(self) -> bool:
+        """判断是否启用模拟交易所"""
+        debug_mgr = _get_debug_manager()
+        return bool(
+            debug_mgr
+            and debug_mgr.enabled
+            and debug_mgr.is_override_active("use_mock_exchange")
+        )
+
+    def _on_mock_order_update(self, order: Order) -> None:
+        """处理模拟交易所的订单状态更新"""
+        if order.is_active:
+            self._active_orders[order.order_id] = order
+        elif order.order_id in self._active_orders:
+            del self._active_orders[order.order_id]
+
+        if order.filled_size > 0:
+            self._notify_risk_service(order)
+
+        self._notify_order_update(order)
+
     async def cancel_order(self, order_id: str) -> CancelResult:
         """
         撤销订单
@@ -489,6 +523,9 @@ class ExecutionService:
                 order_id=order_id,
                 message="Order not found",
             )
+
+        if self._use_mock_exchange():
+            return await self._mock_exchange.cancel_order(order)
 
         # 分发到对应执行器
         if order.venue == Venue.POLYMARKET:
@@ -528,6 +565,9 @@ class ExecutionService:
                 order=Order(order_id=order_id),
                 message="Order not found",
             )
+
+        if self._use_mock_exchange():
+            return await self._mock_exchange.take_remaining_at_market(order)
 
         # 分发到对应执行器
         if order.venue == Venue.POLYMARKET:
@@ -643,6 +683,13 @@ class ExecutionService:
             撤单结果
         """
         self._log.info("Cancelling all OrbitExch unmatched orders")
+
+        if self._use_mock_exchange():
+            orbit_orders = [
+                order for order in self._active_orders.values()
+                if order.venue == Venue.ORBITEXCH
+            ]
+            return await self._mock_exchange.cancel_all_unmatched(orbit_orders)
 
         result = await self._orbitexch_executor.cancel_all_unmatched()
 

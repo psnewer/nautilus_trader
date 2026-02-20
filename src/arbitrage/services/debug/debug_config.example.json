@@ -20,6 +20,10 @@
     "skip_execution": {
       "enabled": false,
       "value": true
+    },
+    "use_mock_exchange": {
+      "enabled": false,
+      "value": false
     }
   },
   "mock_data": {

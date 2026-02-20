@@ -133,6 +133,8 @@ class MatchContext:
                     格式: {outcome: rebate_rate}
                     例: {"home": 0.05, "draw": -0.02, "away": 0.03}
                     计算方式: way_rebate[outcome] = (该方向profit - 其他方向liability之和) / share
+        way_rebate_by_venue: 各平台分开计算的持仓返水率
+                    格式: {venue: {outcome: rebate_rate}}
     """
     pair_id: str
     competition: str = ""
@@ -143,6 +145,7 @@ class MatchContext:
     orbitexch_odds: dict[str, Any] = field(default_factory=dict)
     arbitrage_directions: list[ArbitrageDirection] = field(default_factory=list)
     way_rebate: dict[str, float] = field(default_factory=dict)
+    way_rebate_by_venue: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def clear_directions(self) -> None:
         """清空套利方向列表"""

@@ -187,6 +187,34 @@ class MatchPosition:
 
         return way_rebate
 
+    def calculate_way_rebate_by_venue(self) -> dict[str, dict[str, float]]:
+        """
+        按平台计算各方向的持仓返水率
+
+        Returns:
+            {venue: {outcome: rebate_rate}}
+        """
+        if not self.legs:
+            return {}
+
+        venues = {leg.venue for leg in self.legs}
+        result: dict[str, dict[str, float]] = {}
+        for venue in venues:
+            venue_legs = [leg for leg in self.legs if leg.venue == venue]
+            if not venue_legs:
+                continue
+            temp = MatchPosition(
+                pair_id=self.pair_id,
+                competition=self.competition,
+                home_team=self.home_team,
+                away_team=self.away_team,
+                legs=venue_legs,
+                closed=self.closed,
+                share=self.share,
+            )
+            result[venue] = temp.calculate_way_rebate()
+        return result
+
     def get_min_way_rebate(self) -> float | None:
         """
         获取最低方向的持仓返水率
@@ -217,6 +245,7 @@ class MatchPosition:
             "closed": self.closed,
             "share": self.share,
             "way_rebate": way_rebate,
+            "way_rebate_by_venue": self.calculate_way_rebate_by_venue(),
             "min_way_rebate": min(way_rebate.values()) if way_rebate else None,
             "total_cost": self.get_total_cost(),
         }

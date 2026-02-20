@@ -55,6 +55,7 @@ from .tracker import (
 )
 from .recovery import RecoveryCalculator, RecoveryResult
 from .orchestrator import ExecutionOrchestrator
+from .mock_exchange import MockExchange
 
 __all__ = [
     # Config
@@ -94,4 +95,6 @@ __all__ = [
     # Executors
     "PolymarketExecutor",
     "OrbitExchExecutor",
+    # Mock
+    "MockExchange",
 ]

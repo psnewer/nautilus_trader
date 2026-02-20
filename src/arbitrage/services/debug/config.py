@@ -203,6 +203,12 @@ class DebugConfig:
                 target=OverrideTarget.EXECUTION,
                 value=True,
             ),
+            "use_mock_exchange": DebugOverride(
+                name="use_mock_exchange",
+                description="使用模拟交易所（仅在 Debug 模式下生效）",
+                target=OverrideTarget.EXECUTION,
+                value=False,
+            ),
         }
 
     # =========================================================================

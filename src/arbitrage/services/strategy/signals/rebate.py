@@ -229,9 +229,9 @@ class RebateSignal(Signal):
         directions_info = []
         outcomes = ["home", "away"]
 
-        # 检查必要数据
+        # 检查必要数据（每个方向至少在一边存在）
         for outcome in outcomes:
-            if outcome not in poly_probs or outcome not in orbit_probs:
+            if outcome not in poly_probs and outcome not in orbit_probs:
                 return
 
         # 遍历每个返水方向
@@ -239,27 +239,40 @@ class RebateSignal(Signal):
             other_outcome = "away" if rebate_outcome == "home" else "home"
 
             # 获取非返水方向的最优价格
-            poly_other_ask = poly_probs[other_outcome].get("ask", 0)
-            orbit_other_ask = orbit_probs[other_outcome].get("ask", 0)
+            poly_other_ask = poly_probs.get(other_outcome, {}).get("ask", 0)
+            orbit_other_ask = orbit_probs.get(other_outcome, {}).get("ask", 0)
 
-            if poly_other_ask <= 0 or orbit_other_ask <= 0:
+            missing_other = False
+            if poly_other_ask <= 0 and orbit_other_ask <= 0:
                 continue
-
-            # 选择最优价格（最低概率 = 最低成本）
-            if poly_other_ask <= orbit_other_ask:
-                best_other_ask = poly_other_ask
-                best_other_venue = ArbitrageVenue.POLYMARKET
-                best_other_raw_odds = poly_other_ask / 100
-            else:
+            elif poly_other_ask <= 0:
+                # 仅 OrbitExch 有价格
                 best_other_ask = orbit_other_ask
                 best_other_venue = ArbitrageVenue.ORBITEXCH
                 best_other_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
+                missing_other = True
+            elif orbit_other_ask <= 0:
+                # 仅 Polymarket 有价格
+                best_other_ask = poly_other_ask
+                best_other_venue = ArbitrageVenue.POLYMARKET
+                best_other_raw_odds = poly_other_ask / 100
+                missing_other = True
+            else:
+                # 选择最优价格（最低概率 = 最低成本）
+                if poly_other_ask <= orbit_other_ask:
+                    best_other_ask = poly_other_ask
+                    best_other_venue = ArbitrageVenue.POLYMARKET
+                    best_other_raw_odds = poly_other_ask / 100
+                else:
+                    best_other_ask = orbit_other_ask
+                    best_other_venue = ArbitrageVenue.ORBITEXCH
+                    best_other_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
 
             # 返水到 OrbitExch
-            orbit_rebate_ask = orbit_probs[rebate_outcome].get("ask", 0)
+            orbit_rebate_ask = orbit_probs.get(rebate_outcome, {}).get("ask", 0)
             if orbit_rebate_ask > 0:
                 total_prob = orbit_rebate_ask + best_other_ask
-                if skip_prob_check or total_prob < 100:
+                if skip_prob_check or total_prob < 100 or missing_other:
                     rebate_rate = (100 - total_prob) / orbit_rebate_ask
                     direction = ArbitrageDirection(
                         direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_orbit",
@@ -289,10 +302,10 @@ class RebateSignal(Signal):
                     directions_info.append(direction.to_dict())
 
             # 返水到 Polymarket
-            poly_rebate_ask = poly_probs[rebate_outcome].get("ask", 0)
+            poly_rebate_ask = poly_probs.get(rebate_outcome, {}).get("ask", 0)
             if poly_rebate_ask > 0:
                 total_prob = poly_rebate_ask + best_other_ask
-                if skip_prob_check or total_prob < 100:
+                if skip_prob_check or total_prob < 100 or missing_other:
                     rebate_rate = (100 - total_prob) / poly_rebate_ask
                     direction = ArbitrageDirection(
                         direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_poly",
@@ -349,9 +362,9 @@ class RebateSignal(Signal):
         directions_info = []
         outcomes = ["home", "draw", "away"]
 
-        # 检查必要数据
+        # 检查必要数据（每个方向至少在一边存在）
         for outcome in outcomes:
-            if outcome not in poly_probs or outcome not in orbit_probs:
+            if outcome not in poly_probs and outcome not in orbit_probs:
                 return
 
         # 遍历每个返水方向
@@ -362,24 +375,35 @@ class RebateSignal(Signal):
             best_others = []
             other_legs = []
             valid = True
+            missing_other = False
 
             for other_outcome in other_outcomes:
-                poly_other_ask = poly_probs[other_outcome].get("ask", 0)
-                orbit_other_ask = orbit_probs[other_outcome].get("ask", 0)
+                poly_other_ask = poly_probs.get(other_outcome, {}).get("ask", 0)
+                orbit_other_ask = orbit_probs.get(other_outcome, {}).get("ask", 0)
 
-                if poly_other_ask <= 0 or orbit_other_ask <= 0:
+                if poly_other_ask <= 0 and orbit_other_ask <= 0:
                     valid = False
                     break
-
-                # 选择最优价格（最低概率 = 最低成本）
-                if poly_other_ask <= orbit_other_ask:
-                    best_ask = poly_other_ask
-                    best_venue = ArbitrageVenue.POLYMARKET
-                    best_raw_odds = poly_other_ask / 100
-                else:
+                elif poly_other_ask <= 0:
                     best_ask = orbit_other_ask
                     best_venue = ArbitrageVenue.ORBITEXCH
                     best_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
+                    missing_other = True
+                elif orbit_other_ask <= 0:
+                    best_ask = poly_other_ask
+                    best_venue = ArbitrageVenue.POLYMARKET
+                    best_raw_odds = poly_other_ask / 100
+                    missing_other = True
+                else:
+                    # 选择最优价格（最低概率 = 最低成本）
+                    if poly_other_ask <= orbit_other_ask:
+                        best_ask = poly_other_ask
+                        best_venue = ArbitrageVenue.POLYMARKET
+                        best_raw_odds = poly_other_ask / 100
+                    else:
+                        best_ask = orbit_other_ask
+                        best_venue = ArbitrageVenue.ORBITEXCH
+                        best_raw_odds = orbit_probs[other_outcome].get("raw_ask", 0)
 
                 best_others.append(best_ask)
                 other_legs.append(
@@ -398,10 +422,10 @@ class RebateSignal(Signal):
             best_others_sum = sum(best_others)
 
             # 返水到 OrbitExch
-            orbit_rebate_ask = orbit_probs[rebate_outcome].get("ask", 0)
+            orbit_rebate_ask = orbit_probs.get(rebate_outcome, {}).get("ask", 0)
             if orbit_rebate_ask > 0:
                 total_prob = orbit_rebate_ask + best_others_sum
-                if skip_prob_check or total_prob < 100:
+                if skip_prob_check or total_prob < 100 or missing_other:
                     rebate_rate = (100 - total_prob) / orbit_rebate_ask
                     direction = ArbitrageDirection(
                         direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_orbit",
@@ -425,10 +449,10 @@ class RebateSignal(Signal):
                     directions_info.append(direction.to_dict())
 
             # 返水到 Polymarket
-            poly_rebate_ask = poly_probs[rebate_outcome].get("ask", 0)
+            poly_rebate_ask = poly_probs.get(rebate_outcome, {}).get("ask", 0)
             if poly_rebate_ask > 0:
                 total_prob = poly_rebate_ask + best_others_sum
-                if skip_prob_check or total_prob < 100:
+                if skip_prob_check or total_prob < 100 or missing_other:
                     rebate_rate = (100 - total_prob) / poly_rebate_ask
                     direction = ArbitrageDirection(
                         direction_id=f"{context.pair_id}_rebate_{rebate_outcome}_poly",

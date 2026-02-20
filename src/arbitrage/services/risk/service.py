@@ -335,6 +335,13 @@ class RiskService:
         """获取比赛各方向返水率"""
         return self._position_manager.get_way_rebate(pair_id)
 
+    def get_way_rebate_by_venue(self, pair_id: str) -> dict[str, dict[str, float]]:
+        """获取比赛按平台拆分的返水率"""
+        position = self._position_manager.get_position(pair_id)
+        if not position:
+            return {}
+        return position.calculate_way_rebate_by_venue()
+
     def get_all_way_rebates(self) -> dict[str, dict[str, float]]:
         """获取所有比赛的返水率"""
         result = {}
