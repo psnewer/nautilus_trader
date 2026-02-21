@@ -52,7 +52,7 @@ class ExecutionConfig:
     # 订单追踪参数
     tracking_timeout_sec: float = 30.0       # 追踪超时时间
     tracking_check_interval_sec: float = 5.0  # 追踪检查间隔
-    max_recovery_retries: int = 3            # 最大补救重试次数
+    max_failure_retries: int = 3             # 失败重试次数上限
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExecutionConfig":
@@ -78,7 +78,7 @@ class ExecutionConfig:
             retry_delay_sec=data.get("retry_delay_sec", 1.0),
             tracking_timeout_sec=data.get("tracking_timeout_sec", 30.0),
             tracking_check_interval_sec=data.get("tracking_check_interval_sec", 5.0),
-            max_recovery_retries=data.get("max_recovery_retries", 3),
+            max_failure_retries=data.get("max_failure_retries", 3),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,5 +98,5 @@ class ExecutionConfig:
             "retry_delay_sec": self.retry_delay_sec,
             "tracking_timeout_sec": self.tracking_timeout_sec,
             "tracking_check_interval_sec": self.tracking_check_interval_sec,
-            "max_recovery_retries": self.max_recovery_retries,
+            "max_failure_retries": self.max_failure_retries,
         }

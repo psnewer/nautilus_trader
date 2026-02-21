@@ -164,7 +164,7 @@ class ExecutionOrchestrator:
             opportunity_id=opportunity_id,
             target_shares=target_shares,
             probabilities=probabilities,
-            max_retries=self._config.max_recovery_retries,
+            max_failure_retries=self._config.max_failure_retries,
         )
         self._sessions[session.session_id] = session
 
@@ -239,9 +239,17 @@ class ExecutionOrchestrator:
 
         all_tracking_results.extend(tracking_result.results)
         self._update_session_filled(session, all_tracking_results)
+        if self._should_fail_for_tracking(session, operation_results, tracking_result):
+            session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+            return
 
-        if session.is_target_met():
-            self._log.info(f"Session {session.session_id}: target met")
+        initial_plan_operations = [
+            op for op in initial_plan.operations
+            if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+        ]
+
+        if self._is_plan_operations_filled(all_tracking_results, initial_plan_operations):
+            self._log.info(f"Session {session.session_id}: initial plan operations filled")
             session.complete(SessionEndReason.TARGET_MET)
             return
 
@@ -257,6 +265,8 @@ class ExecutionOrchestrator:
             session, all_tracking_results, session_start_ms,
             last_plan_target=initial_target,
             current_plan_target=initial_target,
+            last_plan_operations=initial_plan_operations,
+            current_plan_operations=initial_plan_operations,
         )
 
     async def _execute_operations(
@@ -434,6 +444,8 @@ class ExecutionOrchestrator:
         session_start_ms: int,
         last_plan_target: OutcomeShares,
         current_plan_target: OutcomeShares,
+        last_plan_operations: list[OrderOperation],
+        current_plan_operations: list[OrderOperation],
     ) -> None:
         """
         Recovery 循环
@@ -441,15 +453,19 @@ class ExecutionOrchestrator:
         两个规划目标同时存在：
         - last_plan_target: 上一轮规划目标（循环顶部检查：上轮订单可能在间隙成交）
         - current_plan_target: 本轮规划目标（执行后检查）
+        两个规划操作列表同时存在：
+        - last_plan_operations: 上一轮规划的下单/修改操作（判断是否全部成交）
+        - current_plan_operations: 本轮规划的下单/修改操作（执行后检查）
         新规划时：last = current（旧的"新"变"旧"），current = 新目标
+        新规划时：last_ops = current_ops，current_ops = 新规划的下单/修改操作
 
         每轮流程：
-        1. 刷新成交 → 检查 last_plan_target 是否已达标 → 是则结束
+        1. 刷新成交 → 检查 last_plan_operations 是否全部成交 → 是则结束
         2. 检查挂单 → 有挂单则先撤单
-        3. 无挂单 → 规划新订单 → last = current, current = 新目标
+        3. 无挂单 → 规划新订单 → last = current, current = 新目标，更新对应操作列表
         4. 操作前新成交检查 → 有变化则回到步骤 1（检查 last）
         5. 执行 → 追踪
-        6. 撤单轮：回到步骤 1；下单轮：检查 current 是否达标
+        6. 撤单轮：回到步骤 1；下单轮：检查 current 是否全部成交
 
         Args:
             session: 执行会话
@@ -457,27 +473,24 @@ class ExecutionOrchestrator:
             session_start_ms: session 开始时间戳（毫秒）
             last_plan_target: 上一轮规划目标
             current_plan_target: 本轮规划目标
+            last_plan_operations: 上一轮规划的下单/修改操作
+            current_plan_operations: 本轮规划的下单/修改操作
         """
-        while session.needs_recovery() and session.can_retry():
-            if not session.increment_retry():
-                self._log.warning(f"Session {session.session_id}: max retries reached")
-                session.fail(SessionEndReason.MAX_RETRIES)
-                return
-
+        while session.needs_recovery():
+            session.increment_retry()
             self._log.info(
                 f"Session {session.session_id}: recovery round {session.retry_count}"
             )
 
             # =============================================
-            # 1. 刷新成交，检查上一轮规划目标是否已达标
+            # 1. 刷新成交，检查上一轮规划是否全部成交
             # =============================================
             await self._refresh_tracking_results(all_tracking_results, session_start_ms)
             self._update_session_filled(session, all_tracking_results)
 
-            if self._is_plan_target_met(session.filled, last_plan_target):
+            if self._is_plan_operations_filled(all_tracking_results, last_plan_operations):
                 self._log.info(
-                    f"Session {session.session_id}: last plan target met, "
-                    f"filled={session.filled.to_dict()}, target={last_plan_target.to_dict()}"
+                    f"Session {session.session_id}: last plan operations filled"
                 )
                 session.complete(SessionEndReason.TARGET_MET)
                 return
@@ -516,6 +529,11 @@ class ExecutionOrchestrator:
                 # 旧的 current 变成 last，新规划变成 current
                 last_plan_target = current_plan_target
                 current_plan_target = OutcomeShares.from_dict(session.adjusted_target.to_dict())
+                last_plan_operations = current_plan_operations
+                current_plan_operations = [
+                    op for op in plan.operations
+                    if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+                ]
 
             # =============================================
             # 3. 操作前新成交检查
@@ -529,7 +547,7 @@ class ExecutionOrchestrator:
                     f"Session {session.session_id}: new fills during planning, "
                     f"old={old_filled}, new={session.filled.to_dict()}, re-planning"
                 )
-                # 回到循环顶部，检查 last_plan_target 是否已达标
+                # 回到循环顶部，检查 last_plan_operations 是否全部成交
                 continue
 
             # =============================================
@@ -547,6 +565,9 @@ class ExecutionOrchestrator:
                 plan.operations,
                 operation_results,
             )
+            if self._should_fail_for_tracking(session, operation_results, tracking_result):
+                session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+                return
 
             # =============================================
             # 6. 根据操作类型处理结果
@@ -561,10 +582,9 @@ class ExecutionOrchestrator:
             all_tracking_results.extend(tracking_result.results)
             self._update_session_filled(session, all_tracking_results)
 
-            if self._is_plan_target_met(session.filled, current_plan_target):
+            if self._is_plan_operations_filled(all_tracking_results, current_plan_operations):
                 self._log.info(
-                    f"Session {session.session_id}: current plan target met, "
-                    f"filled={session.filled.to_dict()}, target={current_plan_target.to_dict()}"
+                    f"Session {session.session_id}: current plan operations filled"
                 )
                 session.complete(SessionEndReason.TARGET_MET)
                 return
@@ -572,29 +592,74 @@ class ExecutionOrchestrator:
         # 循环结束
         if session.needs_recovery():
             self._log.warning(f"Session {session.session_id}: recovery incomplete")
-            session.fail(SessionEndReason.MAX_RETRIES)
+            session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
         else:
             session.complete(SessionEndReason.TARGET_MET)
 
-    def _is_plan_target_met(
+    def _is_plan_operations_filled(
         self,
-        filled: OutcomeShares,
-        plan_target: OutcomeShares,
+        all_results: list[TrackingResult],
+        plan_operations: list[OrderOperation],
     ) -> bool:
         """
-        检查已成交量是否满足规划目标
+        检查规划中的下单/修改操作是否全部成交
 
-        对每个有目标的方向，检查 filled >= target（允许小误差）。
+        以 size_matched >= 操作 size 为准（允许小误差），撤单不参与判断。
 
         Args:
-            filled: 当前已成交
-            plan_target: 规划目标
+            all_results: 全 session 的追踪结果
+            plan_operations: 规划的下单/修改操作列表
         """
+        if not plan_operations:
+            return True
+
+        result_by_op_id = {id(r.operation): r for r in all_results}
         epsilon = 0.01
-        for key in ("home", "draw", "away"):
-            target_val = plan_target[key]
-            if target_val > epsilon and filled[key] < target_val - epsilon:
+
+        for op in plan_operations:
+            result = result_by_op_id.get(id(op))
+            if not result:
                 return False
+            if result.status in {TrackingStatus.FAILED, TrackingStatus.TIMEOUT}:
+                return False
+            if op.size > epsilon and result.size_matched < op.size - epsilon:
+                return False
+
+        return True
+
+    def _should_fail_for_tracking(
+        self,
+        session: ExecutionSession,
+        operation_results: list[dict],
+        tracking_result: BatchTrackingResult,
+    ) -> bool:
+        """
+        根据操作反馈与追踪结果判断是否累计失败次数
+
+        失败条件：
+        - 操作结果中存在 success=False
+        - 追踪结果中存在 FAILED/TIMEOUT
+        """
+        has_failure = any(
+            not result.get("success", True)
+            for result in operation_results
+        )
+        has_failure = has_failure or any(
+            result.status in {TrackingStatus.FAILED, TrackingStatus.TIMEOUT}
+            for result in tracking_result.results
+        )
+
+        if not has_failure:
+            return False
+
+        if session.increment_failure():
+            self._log.warning(
+                f"Session {session.session_id}: failure retry "
+                f"{session.failure_count}/{session.max_failure_retries}"
+            )
+            return False
+
+        self._log.warning(f"Session {session.session_id}: max failure retries reached")
         return True
 
     def _update_session_filled(
