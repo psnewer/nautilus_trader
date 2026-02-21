@@ -22,11 +22,14 @@
    - 比赛状态消息触发信号：`live`、`pre-match`
    - 订阅位置：`src/arbitrage/services/strategy/service.py::set_msgbus`
 
-2. 其他订阅者
-   - 当前暂无其他订阅者
-   - 如后续新增风控或监控模块，可订阅同主题复用消息流
+## 数据查询接口
+
+- `get_polymarket_positions()` / `get_orbitexch_bets()` — 被 RiskService 调用，用于刷新持仓
+- `get_position_mappings()` — 被 RiskService 调用，用于持仓映射
+- `get_order_info()` — 被 ExecutionService 调用，用于获取下单信息
 
 ## 说明
 
 - OddsSubscriptionService 仅负责发布消息，不再保留回调注册方式。
 - StrategyService 通过订阅消息触发信号计算与策略评估。
+- OddsSubscriptionService 同时作为数据源，被 RiskService 和 ExecutionService 通过 DI 查询持仓和下单信息。

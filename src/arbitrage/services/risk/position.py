@@ -319,6 +319,19 @@ class PositionManager:
             order_id=order_id,
         ))
 
+    def refresh_position(self, pair_id: str) -> None:
+        """
+        清除指定 pair 的持仓腿，保留 pair 元信息（competition/teams 等）
+
+        用于从 API 数据重建该 pair 的持仓。
+
+        Args:
+            pair_id: 比赛 ID
+        """
+        position = self._positions.get(pair_id)
+        if position:
+            position.legs.clear()
+
     def close_match(self, pair_id: str) -> None:
         """标记比赛已结束"""
         if pair_id in self._positions:

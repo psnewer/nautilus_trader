@@ -163,6 +163,10 @@ DEFAULT_SIGNALS: dict[str, dict] = {
         "params": {},
         "description": "赛中盘信号，比赛进行中时为 True",
     },
+    "multi-way": {
+        "params": {},
+        "description": "多方向过滤信号，移除持仓返水率为负的方向",
+    },
 }
 
 DEFAULT_STRATEGIES: dict[str, dict] = {
@@ -244,12 +248,18 @@ class StrategyServiceConfig:
     match_config: list[MatchConfig] = field(default_factory=list)
 
     def __post_init__(self):
-        """初始化默认 signals 和 strategies"""
+        """初始化默认 signals 和 strategies，并补齐新增的默认项"""
         if not self.signals:
             self.signals = {
                 name: SignalDefinition.from_dict(name, data)
                 for name, data in DEFAULT_SIGNALS.items()
             }
+        else:
+            # 补齐新增的默认 signal（已持久化的配置可能缺少后续新增的 signal）
+            for name, data in DEFAULT_SIGNALS.items():
+                if name not in self.signals:
+                    self.signals[name] = SignalDefinition.from_dict(name, data)
+
         if not self.strategies:
             self.strategies = {
                 name: StrategyDefinition.from_dict(name, data)
