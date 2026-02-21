@@ -19,6 +19,7 @@ async def get_all_config():
         "matching": app_state.get_matching_config(),
         "odds": app_state.get_odds_config(),
         "arbitrage": app_state.get_arbitrage_config(),
+        "execution": app_state.get_execution_config(),
     }
 
 

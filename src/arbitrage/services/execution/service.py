@@ -142,6 +142,12 @@ class ExecutionService:
 
         return True
 
+    def update_config(self, config: ExecutionConfig) -> None:
+        """更新执行服务配置"""
+        self.config = config
+        if self._orchestrator:
+            self._orchestrator.update_config(config)
+
     def set_orbitexch_page(self, competition_id: str, page: Page) -> None:
         """
         设置 OrbitExch 页面引用
@@ -187,6 +193,8 @@ class ExecutionService:
 
         # 应用 debug 覆盖
         order = self._apply_debug_overrides(order)
+        # 应用市价开关（全局）
+        order = self._apply_market_overrides(order)
 
         # 模拟交易所模式
         if self._use_mock_exchange():
@@ -251,6 +259,23 @@ class ExecutionService:
         self._notify_order_update(order)
 
         return result
+
+    def _apply_market_overrides(self, order: Order) -> Order:
+        """应用市价单覆盖配置"""
+        if not self.config.market_order_enabled:
+            return order
+
+        if order.venue == Venue.POLYMARKET:
+            order.order_type = OrderType.FOK
+            order.metadata["market_order"] = True
+        elif order.venue == Venue.ORBITEXCH:
+            order.order_type = OrderType.FOK
+            if order.side in (OrderSide.BUY, OrderSide.BACK):
+                order.price = 1.01
+            else:
+                order.price = 1000.0
+
+        return order
 
     def _notify_risk_service(self, order: Order) -> None:
         """
@@ -849,8 +874,8 @@ class ExecutionService:
         )
 
         # 获取 size 计算参数
-        discount = opportunity.get("discount", 1.0)
-        take_off = opportunity.get("take_off", 0.0)
+        discount = self.config.discount
+        take_off = self.config.take_off
         way_rebate = opportunity.get("way_rebate", {})
 
         await self._process_opportunity(

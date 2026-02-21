@@ -506,21 +506,11 @@ class StrategyService:
             rebate_value = None
             signal_name = "rebate"
 
-        # 获取 discount 和 take_off 参数（从对应信号获取）
-        signal_params = self._config.get_signal_params(
-            signal_name,
-            context.competition if context else None,
-            context.home_team if context else None,
-            context.away_team if context else None,
-        )
-        discount = signal_params.get("discount", 1.0 if signal_name == "rebate" else 0.0)
-        take_off = signal_params.get("take_off", 0.0)
-
         # 获取最佳套利方向
         best_direction = context.get_best_direction() if context else None
         all_directions = [d.to_dict() for d in context.arbitrage_directions] if context else []
 
-        # 获取各方向的持仓返水率（用于 take_off 计算）
+        # 获取各方向的持仓返水率（执行侧用于 size 调整）
         way_rebate = context.way_rebate if context else {}
 
         opportunity = {
@@ -533,8 +523,6 @@ class StrategyService:
             "detected_at": time.time(),
             "triggered_strategies": triggered_strategies,
             "rebate_value": rebate_value,
-            "discount": discount,
-            "take_off": take_off,
             "way_rebate": way_rebate,
             "best_direction": best_direction.to_dict() if best_direction else None,
             "all_directions": all_directions,
