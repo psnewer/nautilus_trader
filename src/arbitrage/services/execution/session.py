@@ -24,7 +24,7 @@ class SessionEndReason(Enum):
     """会话结束原因"""
     TARGET_MET = "target_met"           # 目标达成
     ZERO_FILL = "zero_fill"             # 全部未成交（最小损失）
-    MAX_RETRIES = "max_retries"         # 达到最大重试次数
+    MAX_FAILURE_RETRIES = "max_failure_retries"  # 达到失败重试次数上限
     MARKET_CLOSED = "market_closed"     # 市场关闭
     MANUAL_STOP = "manual_stop"         # 手动停止
     ERROR = "error"                     # 错误
@@ -124,7 +124,8 @@ class ExecutionSession:
 
     # 重试
     retry_count: int = 0
-    max_retries: int = 3
+    failure_count: int = 0
+    max_failure_retries: int = 3
 
     # 当前操作
     pending_operations: list = field(default_factory=list)
@@ -144,7 +145,7 @@ class ExecutionSession:
         opportunity_id: str,
         target_shares: dict[str, float],
         probabilities: dict[str, float],
-        max_retries: int = 3,
+        max_failure_retries: int = 3,
     ) -> "ExecutionSession":
         """
         创建新会话
@@ -154,7 +155,7 @@ class ExecutionSession:
             opportunity_id: 机会 ID
             target_shares: 目标 share {home, draw, away}
             probabilities: 概率 {home, draw, away}
-            max_retries: 最大重试次数
+            max_failure_retries: 最大失败重试次数
         """
         initial_target = OutcomeShares.from_dict(target_shares)
         return cls(
@@ -165,7 +166,7 @@ class ExecutionSession:
             adjusted_target=OutcomeShares.from_dict(target_shares),  # 初始时等于目标
             filled=OutcomeShares(),
             initial_probabilities=OutcomeProbabilities.from_dict(probabilities),
-            max_retries=max_retries,
+            max_failure_retries=max_failure_retries,
         )
 
     def update_phase(self, phase: SessionPhase) -> None:
@@ -200,12 +201,9 @@ class ExecutionSession:
             "timestamp": self.updated_at,
         })
 
-    def increment_retry(self) -> bool:
+    def increment_retry(self) -> None:
         """
         增加重试次数
-
-        Returns:
-            是否还可以重试
         """
         self.retry_count += 1
         self.updated_at = time.time()
@@ -214,7 +212,6 @@ class ExecutionSession:
             "count": self.retry_count,
             "timestamp": self.updated_at,
         })
-        return self.retry_count < self.max_retries
 
     def complete(self, reason: SessionEndReason) -> None:
         """完成会话"""
@@ -263,9 +260,21 @@ class ExecutionSession:
         # 部分成交，需要补救
         return True
 
-    def can_retry(self) -> bool:
-        """检查是否可以重试"""
-        return self.retry_count < self.max_retries
+    def increment_failure(self) -> bool:
+        """
+        增加失败次数
+
+        Returns:
+            是否还可以继续失败重试
+        """
+        self.failure_count += 1
+        self.updated_at = time.time()
+        self.history.append({
+            "event": "failure_retry",
+            "count": self.failure_count,
+            "timestamp": self.updated_at,
+        })
+        return self.failure_count < self.max_failure_retries
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
@@ -280,7 +289,8 @@ class ExecutionSession:
             "phase": self.phase.value,
             "end_reason": self.end_reason.value if self.end_reason else None,
             "retry_count": self.retry_count,
-            "max_retries": self.max_retries,
+            "failure_count": self.failure_count,
+            "max_failure_retries": self.max_failure_retries,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "history_count": len(self.history),
