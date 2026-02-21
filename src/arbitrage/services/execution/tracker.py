@@ -111,6 +111,10 @@ class OrderTracker:
         """设置 OrbitExch 客户端"""
         self._orbitexch_client = client
 
+    def update_timeout(self, timeout: float) -> None:
+        """更新追踪超时配置"""
+        self._timeout = timeout
+
     def _generate_operation_key(self, operation: OrderOperation) -> str:
         """生成操作唯一键"""
         return f"{operation.venue.value}_{operation.market_type}_{operation.operation_type.value}_{id(operation)}"

@@ -75,8 +75,25 @@
     ]
   },
   "arbitrage": {
-    "share": 30.0,
-    "tp": 0.1
+    "share": 30.0
+  },
+  "execution": {
+    "enabled": true,
+    "polymarket_api_key": "",
+    "polymarket_api_secret": "",
+    "polymarket_passphrase": "",
+    "polymarket_private_key": "",
+    "polymarket_funder": "",
+    "polymarket_clob_url": "https://clob.polymarket.com",
+    "orbitexch_api_url": "https://www.orbitexch.com/customer/api",
+    "orbitexch_default_persistence": "LAPSE",
+    "default_order_type": "GTC",
+    "discount": 1.0,
+    "take_off": 0.0,
+    "market_order_enabled": false,
+    "tracking_timeout_sec": 20.0,
+    "tracking_check_interval_sec": 5.0,
+    "max_failure_retries": 5
   },
   "strategy": {
     "enabled": true,
@@ -123,5 +140,12 @@
     },
     "competition_config": {},
     "match_config": []
+  },
+  "risk": {
+    "enabled": true,
+    "match_sl": -0.1,
+    "global_sl": -0.5,
+    "match_tp": 0.1,
+    "match_overrides": {}
   }
 }

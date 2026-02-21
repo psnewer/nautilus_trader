@@ -1,0 +1,63 @@
+{"ts_ms": 1700000000000, "session_id": "session-01", "type": "session_start", "payload": {"scenario": "place_success"}}
+{"ts_ms": 1700000000050, "session_id": "session-01", "type": "plan_generated", "payload": {"plan_id": "plan-1", "operations": [{"op_id": "op-1", "type": "place", "venue": "polymarket", "market_type": "home"}]}}
+{"ts_ms": 1700000000100, "session_id": "session-01", "type": "operation_submitted", "payload": {"op_id": "op-1"}}
+{"ts_ms": 1700000000150, "session_id": "session-01", "type": "operation_feedback", "payload": {"op_id": "op-1", "success": true}}
+{"ts_ms": 1700000000200, "session_id": "session-01", "type": "tracking_update", "payload": {"op_id": "op-1", "status": "confirmed", "size_matched": 10.0, "size_remaining": 0.0}}
+{"ts_ms": 1700000000250, "session_id": "session-01", "type": "session_end", "payload": {"reason": "target_met"}}
+{"ts_ms": 1700000001000, "session_id": "session-02", "type": "session_start", "payload": {"scenario": "place_failed"}}
+{"ts_ms": 1700000001050, "session_id": "session-02", "type": "plan_generated", "payload": {"plan_id": "plan-2", "operations": [{"op_id": "op-2", "type": "place", "venue": "orbitexch", "market_type": "away"}]}}
+{"ts_ms": 1700000001100, "session_id": "session-02", "type": "operation_submitted", "payload": {"op_id": "op-2"}}
+{"ts_ms": 1700000001150, "session_id": "session-02", "type": "operation_feedback", "payload": {"op_id": "op-2", "success": false, "message": "rejected"}}
+{"ts_ms": 1700000001200, "session_id": "session-02", "type": "session_end", "payload": {"reason": "max_failure_retries"}}
+{"ts_ms": 1700000002000, "session_id": "session-03", "type": "session_start", "payload": {"scenario": "cancel_success"}}
+{"ts_ms": 1700000002050, "session_id": "session-03", "type": "plan_generated", "payload": {"plan_id": "plan-3", "operations": [{"op_id": "op-3", "type": "cancel", "venue": "orbitexch", "market_type": "draw"}]}}
+{"ts_ms": 1700000002100, "session_id": "session-03", "type": "operation_submitted", "payload": {"op_id": "op-3"}}
+{"ts_ms": 1700000002150, "session_id": "session-03", "type": "tracking_timeout", "payload": {"plan_id": "plan-3"}}
+{"ts_ms": 1700000002200, "session_id": "session-03", "type": "refresh_result", "payload": {"op_id": "op-3", "status": "confirmed"}}
+{"ts_ms": 1700000002250, "session_id": "session-03", "type": "session_end", "payload": {"reason": "target_met"}}
+{"ts_ms": 1700000003000, "session_id": "session-04", "type": "session_start", "payload": {"scenario": "cancel_failed"}}
+{"ts_ms": 1700000003050, "session_id": "session-04", "type": "plan_generated", "payload": {"plan_id": "plan-4", "operations": [{"op_id": "op-4", "type": "cancel", "venue": "polymarket", "market_type": "home"}]}}
+{"ts_ms": 1700000003100, "session_id": "session-04", "type": "operation_submitted", "payload": {"op_id": "op-4"}}
+{"ts_ms": 1700000003150, "session_id": "session-04", "type": "tracking_timeout", "payload": {"plan_id": "plan-4"}}
+{"ts_ms": 1700000003200, "session_id": "session-04", "type": "refresh_result", "payload": {"op_id": "op-4", "status": "failed", "message": "order_still_exists"}}
+{"ts_ms": 1700000003250, "session_id": "session-04", "type": "session_end", "payload": {"reason": "max_failure_retries"}}
+{"ts_ms": 1700000004000, "session_id": "session-05", "type": "session_start", "payload": {"scenario": "modify_success"}}
+{"ts_ms": 1700000004050, "session_id": "session-05", "type": "plan_generated", "payload": {"plan_id": "plan-5", "operations": [{"op_id": "op-5", "type": "modify", "venue": "orbitexch", "market_type": "home"}]}}
+{"ts_ms": 1700000004100, "session_id": "session-05", "type": "operation_submitted", "payload": {"op_id": "op-5"}}
+{"ts_ms": 1700000004150, "session_id": "session-05", "type": "tracking_timeout", "payload": {"plan_id": "plan-5"}}
+{"ts_ms": 1700000004200, "session_id": "session-05", "type": "refresh_result", "payload": {"op_id": "op-5", "status": "confirmed", "size_matched": 2.0}}
+{"ts_ms": 1700000004250, "session_id": "session-05", "type": "session_end", "payload": {"reason": "target_met"}}
+{"ts_ms": 1700000005000, "session_id": "session-06", "type": "session_start", "payload": {"scenario": "modify_failed"}}
+{"ts_ms": 1700000005050, "session_id": "session-06", "type": "plan_generated", "payload": {"plan_id": "plan-6", "operations": [{"op_id": "op-6", "type": "modify", "venue": "orbitexch", "market_type": "away"}]}}
+{"ts_ms": 1700000005100, "session_id": "session-06", "type": "operation_submitted", "payload": {"op_id": "op-6"}}
+{"ts_ms": 1700000005150, "session_id": "session-06", "type": "tracking_timeout", "payload": {"plan_id": "plan-6"}}
+{"ts_ms": 1700000005200, "session_id": "session-06", "type": "refresh_result", "payload": {"op_id": "op-6", "status": "failed", "message": "no_fill_update"}}
+{"ts_ms": 1700000005250, "session_id": "session-06", "type": "session_end", "payload": {"reason": "max_failure_retries"}}
+{"ts_ms": 1700000006000, "session_id": "session-07", "type": "session_start", "payload": {"scenario": "multi_recovery"}}
+{"ts_ms": 1700000006050, "session_id": "session-07", "type": "plan_generated", "payload": {"plan_id": "plan-7", "operations": [{"op_id": "op-7", "type": "place", "venue": "polymarket", "market_type": "home"}]}}
+{"ts_ms": 1700000006100, "session_id": "session-07", "type": "operation_submitted", "payload": {"op_id": "op-7"}}
+{"ts_ms": 1700000006150, "session_id": "session-07", "type": "operation_feedback", "payload": {"op_id": "op-7", "success": true}}
+{"ts_ms": 1700000006200, "session_id": "session-07", "type": "tracking_update", "payload": {"op_id": "op-7", "status": "confirmed", "size_matched": 5.0, "size_remaining": 5.0}}
+{"ts_ms": 1700000006250, "session_id": "session-07", "type": "plan_generated", "payload": {"plan_id": "plan-8", "operations": [{"op_id": "op-8", "type": "cancel", "venue": "polymarket", "market_type": "home"}]}}
+{"ts_ms": 1700000006300, "session_id": "session-07", "type": "operation_submitted", "payload": {"op_id": "op-8"}}
+{"ts_ms": 1700000006350, "session_id": "session-07", "type": "tracking_timeout", "payload": {"plan_id": "plan-8"}}
+{"ts_ms": 1700000006400, "session_id": "session-07", "type": "refresh_result", "payload": {"op_id": "op-8", "status": "confirmed"}}
+{"ts_ms": 1700000006450, "session_id": "session-07", "type": "plan_generated", "payload": {"plan_id": "plan-9", "operations": [{"op_id": "op-9", "type": "modify", "venue": "orbitexch", "market_type": "home"}]}}
+{"ts_ms": 1700000006500, "session_id": "session-07", "type": "operation_submitted", "payload": {"op_id": "op-9"}}
+{"ts_ms": 1700000006550, "session_id": "session-07", "type": "operation_feedback", "payload": {"op_id": "op-9", "success": true}}
+{"ts_ms": 1700000006600, "session_id": "session-07", "type": "tracking_update", "payload": {"op_id": "op-9", "status": "confirmed", "size_matched": 5.0, "size_remaining": 0.0}}
+{"ts_ms": 1700000006650, "session_id": "session-07", "type": "session_end", "payload": {"reason": "target_met"}}
+{"ts_ms": 1700000007000, "session_id": "session-08", "type": "session_start", "payload": {"scenario": "failure_accumulate"}}
+{"ts_ms": 1700000007050, "session_id": "session-08", "type": "plan_generated", "payload": {"plan_id": "plan-f1", "operations": [{"op_id": "op-f1", "type": "place", "venue": "orbitexch", "market_type": "away"}]}}
+{"ts_ms": 1700000007100, "session_id": "session-08", "type": "operation_submitted", "payload": {"op_id": "op-f1"}}
+{"ts_ms": 1700000007150, "session_id": "session-08", "type": "operation_feedback", "payload": {"op_id": "op-f1", "success": false, "message": "rejected", "failure_count": 1}}
+{"ts_ms": 1700000007200, "session_id": "session-08", "type": "failure_count_update", "payload": {"count": 1}}
+{"ts_ms": 1700000007250, "session_id": "session-08", "type": "plan_generated", "payload": {"plan_id": "plan-f2", "operations": [{"op_id": "op-f2", "type": "place", "venue": "orbitexch", "market_type": "away"}]}}
+{"ts_ms": 1700000007300, "session_id": "session-08", "type": "operation_submitted", "payload": {"op_id": "op-f2"}}
+{"ts_ms": 1700000007350, "session_id": "session-08", "type": "operation_feedback", "payload": {"op_id": "op-f2", "success": false, "message": "rejected", "failure_count": 2}}
+{"ts_ms": 1700000007400, "session_id": "session-08", "type": "failure_count_update", "payload": {"count": 2}}
+{"ts_ms": 1700000007450, "session_id": "session-08", "type": "plan_generated", "payload": {"plan_id": "plan-f3", "operations": [{"op_id": "op-f3", "type": "place", "venue": "orbitexch", "market_type": "away"}]}}
+{"ts_ms": 1700000007500, "session_id": "session-08", "type": "operation_submitted", "payload": {"op_id": "op-f3"}}
+{"ts_ms": 1700000007550, "session_id": "session-08", "type": "operation_feedback", "payload": {"op_id": "op-f3", "success": false, "message": "rejected", "failure_count": 3}}
+{"ts_ms": 1700000007600, "session_id": "session-08", "type": "failure_count_update", "payload": {"count": 3}}
+{"ts_ms": 1700000007650, "session_id": "session-08", "type": "session_end", "payload": {"reason": "max_failure_retries"}}

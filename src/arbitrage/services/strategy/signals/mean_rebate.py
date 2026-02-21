@@ -13,7 +13,7 @@ Mean Rebate 信号（平均返水）
 - Size 计算简单：Polymarket = share, OrbitExch = share / odds
 
 Size 计算（由执行服务处理）：
-- discount = 0, take_off = 0（不加额外调整）
+        - discount/take_off 已由执行服务统一配置
 - Polymarket: size = share
 - OrbitExch: size = share / odds
 """

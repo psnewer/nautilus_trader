@@ -136,30 +136,49 @@ class PolymarketExecutor:
 
         try:
             # 强制使用 FOK 订单类型，确保全部成交或全部取消
-            # 这样可以避免部分成交后需要撤单的情况
             clob_order_type = self._convert_order_type(OrderType.FOK)
-            self._log.info(f"Using FOK order type (forced)")
+            self._log.info("Using FOK order type (forced)")
 
             # 转换订单方向
             side = "BUY" if order.side in (OrderSide.BUY, OrderSide.BACK) else "SELL"
 
-            # 创建订单参数
-            order_args = OrderArgs(
-                token_id=order.token_id,
-                price=order.price,
-                size=order.size,
-                side=side,
-            )
+            if order.metadata.get("market_order"):
+                # 市价单：BUY 用金额，SELL 用份额，price 作为最差成交价限制
+                amount = order.size
+                if side == "BUY":
+                    amount = order.size * order.price
 
-            self._log.info(
-                f"Placing Polymarket order: token={order.token_id[:20]}..., "
-                f"side={side}, price={order.price}, size={order.size}"
-            )
+                self._log.info(
+                    f"Placing Polymarket market order: token={order.token_id[:20]}..., "
+                    f"side={side}, amount={amount:.4f}, price={order.price}"
+                )
 
-            # 创建并签名订单（使用线程池避免阻塞 event loop）
-            signed_order = await asyncio.to_thread(
-                self._client.create_order, order_args
-            )
+                # 创建并签名市价订单（使用线程池避免阻塞 event loop）
+                signed_order = await asyncio.to_thread(
+                    self._client.create_market_order,
+                    token_id=order.token_id,
+                    side=side,
+                    amount=amount,
+                    price=order.price,
+                )
+            else:
+                # 创建订单参数
+                order_args = OrderArgs(
+                    token_id=order.token_id,
+                    price=order.price,
+                    size=order.size,
+                    side=side,
+                )
+
+                self._log.info(
+                    f"Placing Polymarket order: token={order.token_id[:20]}..., "
+                    f"side={side}, price={order.price}, size={order.size}"
+                )
+
+                # 创建并签名订单（使用线程池避免阻塞 event loop）
+                signed_order = await asyncio.to_thread(
+                    self._client.create_order, order_args
+                )
 
             # 提交订单（使用线程池避免阻塞 event loop）
             response = await asyncio.to_thread(

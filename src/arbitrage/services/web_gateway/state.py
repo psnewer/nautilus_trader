@@ -29,6 +29,7 @@ from src.arbitrage.services.market_discovery.config import (
 )
 from src.arbitrage.services.market_matching.config import MarketMatchingConfig
 from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
+from src.arbitrage.services.execution.config import ExecutionConfig
 from src.arbitrage.services.strategy.config import StrategyServiceConfig
 from src.arbitrage.services.risk.config import RiskConfig
 from nautilus_trader.common.component import MessageBus, LiveClock
@@ -151,6 +152,7 @@ class AppState:
         self._matching_config = MarketMatchingConfig()
         self._odds_config = OddsSubscriptionConfig()
         self._arbitrage_config = ArbitrageConfig()
+        self._execution_config = ExecutionConfig()
         self._strategy_config = StrategyServiceConfig()
         self._risk_config = RiskConfig()
 
@@ -204,6 +206,10 @@ class AppState:
                     self._arbitrage_config = ArbitrageConfig.from_dict(
                         data["arbitrage"]
                     )
+                if "execution" in data:
+                    self._execution_config = ExecutionConfig.from_dict(
+                        data["execution"]
+                    )
                 if "strategy" in data:
                     self._strategy_config = StrategyServiceConfig.from_dict(
                         data["strategy"]
@@ -223,6 +229,7 @@ class AppState:
                 "matching": self._matching_config_to_dict(),
                 "odds": self._odds_config.to_dict(),
                 "arbitrage": self._arbitrage_config.to_dict(),
+                "execution": self._execution_config.to_dict(),
                 "strategy": self._strategy_config.to_dict(),
                 "risk": self._risk_config.to_dict(),
             }
@@ -377,6 +384,66 @@ class AppState:
     def arbitrage_config_obj(self) -> ArbitrageConfig:
         """获取套利配置对象"""
         return self._arbitrage_config
+
+    # =========================================================================
+    # Execution 配置
+    # =========================================================================
+
+    def get_execution_config(self) -> dict:
+        """获取执行配置"""
+        return self._execution_config.to_dict()
+
+    def update_execution_config(self, data: dict) -> dict:
+        """更新执行配置"""
+        if "tracking_timeout_sec" in data:
+            if data["tracking_timeout_sec"] is None:
+                pass
+            else:
+                self._execution_config.tracking_timeout_sec = float(
+                    data["tracking_timeout_sec"]
+                )
+        if "max_failure_retries" in data:
+            if data["max_failure_retries"] is None:
+                pass
+            else:
+                self._execution_config.max_failure_retries = int(
+                    data["max_failure_retries"]
+                )
+        if "discount" in data and data["discount"] is not None:
+            self._execution_config.discount = float(data["discount"])
+        if "take_off" in data and data["take_off"] is not None:
+            self._execution_config.take_off = float(data["take_off"])
+        if "market_order_enabled" in data and data["market_order_enabled"] is not None:
+            self._execution_config.market_order_enabled = bool(data["market_order_enabled"])
+
+        self._save_config()
+
+        if self._execution_service is not None:
+            self._execution_service.update_config(self._build_execution_config())
+
+        return self.get_execution_config()
+
+    def _build_execution_config(self) -> ExecutionConfig:
+        """构建执行配置（合并环境变量）"""
+        base = self._execution_config
+        return ExecutionConfig(
+            enabled=base.enabled,
+            polymarket_api_key=os.getenv("POLYMARKET_API_KEY", ""),
+            polymarket_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
+            polymarket_passphrase=os.getenv("POLYMARKET_PASSPHRASE", ""),
+            polymarket_private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
+            polymarket_funder=os.getenv("POLYMARKET_FUNDER", ""),
+            polymarket_clob_url=base.polymarket_clob_url,
+            orbitexch_api_url=base.orbitexch_api_url,
+            orbitexch_default_persistence=base.orbitexch_default_persistence,
+            default_order_type=base.default_order_type,
+            discount=base.discount,
+            take_off=base.take_off,
+            market_order_enabled=base.market_order_enabled,
+            tracking_timeout_sec=base.tracking_timeout_sec,
+            tracking_check_interval_sec=base.tracking_check_interval_sec,
+            max_failure_retries=base.max_failure_retries,
+        )
 
     # =========================================================================
     # Discovery 数据
@@ -669,16 +736,9 @@ class AppState:
         """
         if self._execution_service is None:
             from src.arbitrage.services.execution.service import ExecutionService
-            from src.arbitrage.services.execution.config import ExecutionConfig
 
             # 从环境变量读取配置
-            config = ExecutionConfig(
-                polymarket_api_key=os.getenv("POLYMARKET_API_KEY", ""),
-                polymarket_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
-                polymarket_passphrase=os.getenv("POLYMARKET_PASSPHRASE", ""),
-                polymarket_private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
-                polymarket_funder=os.getenv("POLYMARKET_FUNDER", ""),
-            )
+            config = self._build_execution_config()
 
             self._execution_service = ExecutionService(
                 config=config,

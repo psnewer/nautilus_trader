@@ -4,8 +4,8 @@
 
 - 执行命令：`pytest tests/arbitrage/services/execution/test_execution_service.py -q`
 - 执行结果：通过
-- 用例数：24
-- 通过数：24
+- 用例数：27
+- 通过数：27
 - 失败数：0
 
 ## 用例结果
@@ -58,3 +58,9 @@
 - 用例 23 结果：修改状态判定为失败
 - 用例 24：超出失败重试次数 — 通过
 - 用例 24 结果：会话结束 reason=max_failure_retries
+- 用例 25：执行事件流生成 — 通过
+- 用例 25 结果：已生成 execution_event_stream.jsonl（63 行）
+- 用例 26：执行事件流包含多轮补救 — 通过
+- 用例 26 结果：multi_recovery 场景包含多轮计划与撤单/修改序列
+- 用例 27：执行事件流包含失败次数累计 — 通过
+- 用例 27 结果：failure_accumulate 场景 failure_count 递增到 3

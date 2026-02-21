@@ -121,3 +121,18 @@
 前置条件：max_failure_retries=1，补救阶段出现失败  
 步骤：执行机会  
 预期：会话结束 reason=max_failure_retries
+
+用例 25：执行事件流生成  
+前置条件：运行事件流生成脚本  
+步骤：执行 `python tests/arbitrage/services/execution/fixtures/execution_event_stream_generator.py`  
+预期：生成 `tests/arbitrage/services/execution/fixtures/execution_event_stream.jsonl`
+
+用例 26：执行事件流包含多轮补救  
+前置条件：事件流生成完成  
+步骤：检查场景 multi_recovery  
+预期：包含多轮计划与撤单/修改序列，最终 session_end=target_met
+
+用例 27：执行事件流包含失败次数累计  
+前置条件：事件流生成完成  
+步骤：检查场景 failure_accumulate  
+预期：failure_count 递增到 3，最终 session_end=max_failure_retries

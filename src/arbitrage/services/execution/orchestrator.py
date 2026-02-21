@@ -76,6 +76,11 @@ class ExecutionOrchestrator:
         # 回调
         self._session_callbacks: list[Callable[[ExecutionSession], None]] = []
 
+    def update_config(self, config: ExecutionConfig) -> None:
+        """更新执行配置"""
+        self._config = config
+        self._tracker.update_timeout(config.tracking_timeout_sec)
+
     def set_polymarket_client(self, client) -> None:
         """设置 Polymarket 客户端（用于追踪）"""
         self._tracker.set_polymarket_client(client)

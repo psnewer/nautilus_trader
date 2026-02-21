@@ -47,6 +47,15 @@ class TakeAtMarketRequest(BaseModel):
     order_id: str
 
 
+class ExecutionConfigRequest(BaseModel):
+    """执行配置更新请求"""
+    tracking_timeout_sec: float | None = None
+    max_failure_retries: int | None = None
+    discount: float | None = None
+    take_off: float | None = None
+    market_order_enabled: bool | None = None
+
+
 # =============================================================================
 # API 端点
 # =============================================================================
@@ -69,6 +78,18 @@ async def get_execution_status():
         "enabled": service.config.enabled,
         **summary,
     }
+
+
+@router.get("/config")
+async def get_execution_config():
+    """获取执行配置"""
+    return app_state.get_execution_config()
+
+
+@router.put("/config")
+async def update_execution_config(request: ExecutionConfigRequest):
+    """更新执行配置"""
+    return app_state.update_execution_config(request.dict())
 
 
 @router.post("/orders")

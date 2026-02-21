@@ -509,6 +509,12 @@
                         </button>
                     </li>
                     <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-execution-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-execution" type="button" role="tab">
+                            <i class="bi bi-lightning-charge me-1"></i>Execution
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
                         <button class="nav-link" id="config-risk-tab" data-bs-toggle="tab"
                                 data-bs-target="#config-risk" type="button" role="tab">
                             <i class="bi bi-shield-exclamation me-1"></i>Risk
@@ -641,6 +647,53 @@
                                     <strong>订单计算示例 (Share=30):</strong><br>
                                     <code>Polymarket: size = share = 30 (直接购买 30 份)</code><br>
                                     <code>OrbitExch: size = share / odds = 30 / 2.0 = 15 (投入 15，赢得 30)</code>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Execution Config -->
+                    <div class="tab-pane fade" id="config-execution" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-sliders me-1"></i>Execution Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveExecutionConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Tracking Timeout (seconds)</label>
+                                            <input type="number" class="form-control" id="execution-tracking-timeout" value="30" min="1" step="1" style="max-width: 200px;">
+                                            <small class="text-muted">下单后等待确认的超时</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="execution-market-order">
+                                                <label class="form-check-label" for="execution-market-order">市价开关</label>
+                                            </div>
+                                            <small class="text-muted">开启后 Polymarket 使用 FOK 市价执行；OrbitExch BACK 价格固定为 1.01</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Discount</label>
+                                            <input type="number" class="form-control" id="execution-discount" value="1" min="0" step="0.01" style="max-width: 200px;">
+                                            <small class="text-muted">size 调整折扣系数</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Max Failure Retries</label>
+                                            <input type="number" class="form-control" id="execution-max-failure-retries" value="3" min="0" step="1" style="max-width: 200px;">
+                                            <small class="text-muted">错误重试次数上限</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Take Off</label>
+                                            <input type="number" class="form-control" id="execution-take-off" value="0" min="0" max="1" step="0.01" style="max-width: 200px;">
+                                            <small class="text-muted">从其他方向持仓中拿走的比例</small>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -910,6 +963,13 @@
                 // Arbitrage config
                 document.getElementById('arbitrage-share').value = config.arbitrage?.share || 30;
 
+                // Execution config
+                document.getElementById('execution-tracking-timeout').value = config.execution?.tracking_timeout_sec || 30;
+                document.getElementById('execution-max-failure-retries').value = config.execution?.max_failure_retries || 3;
+                document.getElementById('execution-discount').value = config.execution?.discount ?? 1;
+                document.getElementById('execution-take-off').value = config.execution?.take_off ?? 0;
+                document.getElementById('execution-market-order').checked = config.execution?.market_order_enabled || false;
+
                 // Risk config
                 await loadRiskConfig();
             } catch (e) {
@@ -1075,6 +1135,22 @@
                 };
                 await api('/api/strategy/arbitrage-config', 'PUT', data);
                 showToast('Arbitrage config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function saveExecutionConfig() {
+            try {
+                const data = {
+                    tracking_timeout_sec: parseFloat(document.getElementById('execution-tracking-timeout').value),
+                    max_failure_retries: parseInt(document.getElementById('execution-max-failure-retries').value),
+                    discount: parseFloat(document.getElementById('execution-discount').value),
+                    take_off: parseFloat(document.getElementById('execution-take-off').value),
+                    market_order_enabled: document.getElementById('execution-market-order').checked,
+                };
+                await api('/api/execution/config', 'PUT', data);
+                showToast('Execution config saved');
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
             }
