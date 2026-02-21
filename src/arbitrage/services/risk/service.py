@@ -10,6 +10,10 @@ from typing import Any
 
 from .config import RiskConfig
 from .position import PositionManager, MatchPosition
+from .messages import WayRebateMessage
+from .topics import way_rebate_topic
+from src.arbitrage.services.execution.messages import SessionCompleteMessage
+from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTERN
 
 
 @dataclass
@@ -70,6 +74,10 @@ class RiskService:
         self._log = logger or logging.getLogger(self.__class__.__name__)
         self._position_manager = PositionManager(default_share=share)
 
+        # 消息总线和外部服务
+        self._msgbus = None
+        self._odds_service = None
+
     @property
     def config(self) -> RiskConfig:
         return self._config
@@ -83,6 +91,72 @@ class RiskService:
         """设置 share 参数"""
         self._position_manager.set_share(share)
         self._log.info(f"Share updated: {share}")
+
+    def set_msgbus(self, msgbus) -> None:
+        """设置消息总线并订阅主题"""
+        if self._msgbus is msgbus:
+            return
+        self._msgbus = msgbus
+        if not self._msgbus:
+            return
+        self._msgbus.subscribe(SESSION_COMPLETE_TOPIC_PATTERN, self._on_session_complete_message)
+        self._log.info("Subscribed to session_complete messages")
+
+    def set_odds_service(self, odds_service) -> None:
+        """设置赔率服务引用（用于查询持仓数据）"""
+        self._odds_service = odds_service
+        self._log.info("Odds service reference set")
+
+    def _on_session_complete_message(self, msg: Any) -> None:
+        """
+        处理会话完成消息
+
+        查询 odds_service 获取该 pair 的持仓数据，刷新持仓，然后发布 way_rebate。
+        """
+        if not isinstance(msg, SessionCompleteMessage):
+            return
+
+        pair_id = msg.pair_id
+
+        if not self._odds_service:
+            self._log.warning(f"Cannot process session_complete for {pair_id}: odds_service not set")
+            return
+
+        # 从 API 查询该 pair 的当前持仓
+        polymarket_positions = self._odds_service.get_polymarket_positions(pair_id)
+        orbitexch_bets = self._odds_service.get_orbitexch_bets(pair_id)
+        mappings = self._odds_service.get_position_mappings()
+
+        # 刷新持仓
+        self.refresh_pair_position(
+            pair_id=pair_id,
+            polymarket_positions=polymarket_positions,
+            orbitexch_bets=orbitexch_bets,
+            mappings=mappings,
+        )
+
+        # 发布 way_rebate
+        self._publish_way_rebate(pair_id)
+
+    def _publish_way_rebate(self, pair_id: str) -> None:
+        """发布指定 pair 的 way_rebate 到消息总线"""
+        if not self._msgbus:
+            return
+
+        way_rebate = self._position_manager.get_way_rebate(pair_id)
+        position = self._position_manager.get_position(pair_id)
+        way_rebate_by_venue = position.calculate_way_rebate_by_venue() if position else {}
+        min_rebate = min(way_rebate.values()) if way_rebate else None
+
+        msg = WayRebateMessage(
+            pair_id=pair_id,
+            way_rebate=way_rebate,
+            way_rebate_by_venue=way_rebate_by_venue,
+            min_way_rebate=min_rebate,
+        )
+        topic = way_rebate_topic(pair_id)
+        self._msgbus.publish(topic, msg)
+        self._log.debug(f"Published way_rebate to {topic}: {way_rebate}")
 
     # =========================================================================
     # 历史持仓加载
@@ -131,13 +205,14 @@ class RiskService:
             f"Loaded historical positions: Polymarket={pm_count}, OrbitExch={oe_count}"
         )
 
-        # 记录各比赛的 way_rebate
+        # 记录各比赛的 way_rebate 并发布到消息总线
         for position in self._position_manager.get_all_positions():
             way_rebate = position.calculate_way_rebate()
             if way_rebate:
                 self._log.debug(
                     f"Position {position.pair_id}: way_rebate={way_rebate}"
                 )
+                self._publish_way_rebate(position.pair_id)
 
         return {"polymarket": pm_count, "orbitexch": oe_count}
 
@@ -145,69 +220,47 @@ class RiskService:
     # 持仓管理
     # =========================================================================
 
-    def add_fill(
+    def refresh_pair_position(
         self,
         pair_id: str,
-        venue: str,
-        market_type: str,
-        size: float,
-        price: float,
-        order_id: str = "",
-        competition: str = "",
-        home_team: str = "",
-        away_team: str = "",
+        polymarket_positions: list,
+        orbitexch_bets: list[dict],
+        mappings: dict,
     ) -> None:
         """
-        记录订单成交（仅记录，不触发返水率计算）
+        从 API 数据刷新指定 pair 的持仓
 
-        在套利机会执行过程中，每笔订单成交时调用。
-        不立即计算 way_rebate，避免一方先成交、对手盘未成交时触发假止损。
-
-        通过 order_id 去重：同一订单多次调用时更新 size 而非新增 leg。
+        在执行会话完成后调用，用 API 返回的实际持仓数据替换该 pair 的持仓 legs。
+        数据比逐笔 add_fill 更准确，且与执行服务松耦合。
 
         Args:
             pair_id: 比赛 ID
-            venue: 平台 (polymarket/orbitexch)
-            market_type: 方向 (home/draw/away)
-            size: 成交数量
-            price: 成交价格
-            order_id: 订单 ID（用于去重）
-            competition: 联赛名称
-            home_team: 主队
-            away_team: 客队
+            polymarket_positions: 该 pair 的 Polymarket 持仓列表
+            orbitexch_bets: 该 pair 的 OrbitExch bet 列表
+            mappings: 持仓映射 {polymarket_pair_mapping, orbitexch_pair_mapping, selection_mappings}
         """
-        self._position_manager.add_fill(
-            pair_id=pair_id,
-            venue=venue,
-            market_type=market_type,
-            size=size,
-            price=price,
-            order_id=order_id,
-            competition=competition,
-            home_team=home_team,
-            away_team=away_team,
+        # 清除该 pair 的现有 legs（保留元信息）
+        self._position_manager.refresh_position(pair_id)
+
+        # 用 API 数据重建 legs
+        pm_count = self._position_manager.load_polymarket_positions(
+            positions=polymarket_positions,
+            pair_mapping=mappings.get("polymarket_pair_mapping", {}),
         )
 
-        self._log.debug(
-            f"Fill recorded: {pair_id} {venue}/{market_type}, "
-            f"order_id={order_id}, size={size}, price={price}"
+        oe_count = self._position_manager.load_orbitexch_bets(
+            bets=orbitexch_bets,
+            pair_mapping=mappings.get("orbitexch_pair_mapping", {}),
+            selection_mappings=mappings.get("selection_mappings", {}),
         )
 
-    def on_execution_complete(self, pair_id: str) -> None:
-        """
-        套利机会执行完成回调
-
-        在一次套利机会的所有订单执行完成后调用。
-        此时才重新计算 way_rebate，避免单腿成交期间的假止损。
-
-        Args:
-            pair_id: 比赛 ID
-        """
+        # 输出刷新后的 way_rebate
         way_rebate = self._position_manager.get_way_rebate(pair_id)
         min_rebate = min(way_rebate.values()) if way_rebate else None
 
         self._log.info(
-            f"Execution complete, position recalculated: {pair_id}, "
+            f"Position refreshed: {pair_id}, "
+            f"loaded Polymarket={pm_count}, OrbitExch={oe_count}, "
             f"way_rebate={way_rebate}, min={min_rebate}"
         )
 

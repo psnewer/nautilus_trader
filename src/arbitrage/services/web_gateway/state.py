@@ -170,7 +170,6 @@ class AppState:
 
         # 执行服务
         self._execution_service = None  # 延迟初始化
-        self._execution_callback_registered = False  # 防止重复注册回调
 
         # 风控服务
         self._risk_service = None  # 延迟初始化
@@ -749,23 +748,14 @@ class AppState:
 
     async def ensure_execution_registered(self) -> bool:
         """
-        确保执行服务已注册到策略服务
+        确保执行服务已初始化并连接到消息总线
 
         在赔率订阅开始前调用，确保执行服务能接收套利机会。
-        使用标志位防止重复注册回调。
 
         Returns:
             是否初始化成功
         """
-        import asyncio
-
-        # 检查是否已经注册过
-        if self._execution_callback_registered:
-            self._log.debug("Execution callback already registered, skipping")
-            return True
-
         odds_service = self.get_odds_service()
-        strategy_service = self.get_strategy_service()
         execution_service = self.get_execution_service()
 
         # 初始化执行服务
@@ -776,7 +766,7 @@ class AppState:
         # 设置执行服务的依赖
         execution_service.set_odds_service(odds_service)
         execution_service.set_arbitrage_config(self._arbitrage_config)
-        execution_service.set_risk_service(self.get_risk_service())
+        execution_service.set_msgbus(self.get_msgbus())
 
         # 传递 OrbitExch 页面引用（用于下单）
         orbitexch_pages = odds_service.get_orbitexch_pages()
@@ -785,21 +775,7 @@ class AppState:
                 execution_service.set_orbitexch_page(competition_id, page)
                 self._log.info(f"OrbitExch page set for competition: {competition_id}")
 
-        # 注册执行服务到策略服务的机会回调
-        # 使用异步包装器，因为 on_opportunity 是 async
-        def opportunity_callback(opportunity: dict) -> None:
-            """同步包装器，将异步 on_opportunity 调度到事件循环"""
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(execution_service.on_opportunity(opportunity))
-            except RuntimeError:
-                # 没有运行的事件循环，创建新的 task
-                asyncio.create_task(execution_service.on_opportunity(opportunity))
-
-        strategy_service.register_opportunity_callback(opportunity_callback)
-        self._execution_callback_registered = True
-
-        self._log.info("Execution service registered to strategy service")
+        self._log.info("Execution service registered to message bus")
         return success
 
     def update_execution_pages(self) -> None:
@@ -870,7 +846,7 @@ class AppState:
 
     def ensure_risk_registered(self) -> None:
         """
-        确保风控服务已集成到执行流程
+        确保风控服务已集成到消息总线
 
         在赔率订阅开始前调用，确保风控服务能接收持仓更新。
         """
@@ -880,10 +856,14 @@ class AppState:
         # 同步 share 参数
         risk_service.set_share(self._arbitrage_config.share)
 
-        # 设置策略服务的风控服务引用
+        # 设置策略服务的风控服务引用（check_risk 同步门控保留 DI）
         strategy_service.set_risk_service(risk_service)
 
-        self._log.info("Risk service integrated with strategy service")
+        # 连接消息总线
+        risk_service.set_msgbus(self.get_msgbus())
+        risk_service.set_odds_service(self.get_odds_service())
+
+        self._log.info("Risk service integrated with message bus")
 
     def load_risk_historical_positions(self) -> dict[str, int]:
         """

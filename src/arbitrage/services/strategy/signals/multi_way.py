@@ -5,7 +5,7 @@ Multi-Way 信号
 
 数据来源：
 - context.way_rebate 由 StrategyService 在 _evaluate_match 时从 RiskService 获取
-- RiskService 在服务启动时加载历史持仓，之后通过 add_fill + on_execution_complete 更新
+- RiskService 在服务启动时加载历史持仓，之后通过 refresh_pair_position 从 API 数据刷新
 - 格式: {outcome: rebate_rate}
 - 例: {"home": 0.05, "draw": -0.02, "away": 0.03}
 

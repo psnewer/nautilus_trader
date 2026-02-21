@@ -15,6 +15,11 @@ import logging
 import time
 from typing import Any, Callable
 
+from src.arbitrage.services.strategy.messages import OpportunityMessage
+from src.arbitrage.services.strategy.topics import OPPORTUNITY_TOPIC_PATTERN
+from src.arbitrage.services.execution.messages import SessionCompleteMessage
+from src.arbitrage.services.execution.topics import session_complete_topic
+
 from playwright.async_api import Page
 
 from .config import ExecutionConfig
@@ -87,7 +92,9 @@ class ExecutionService:
         # 外部服务引用
         self._odds_service = None  # OddsSubscriptionService
         self._arbitrage_config = None  # ArbitrageConfig
-        self._risk_service = None  # RiskService
+
+        # 消息总线
+        self._msgbus = None
 
         # 执行编排器（用于会话式执行）
         self._orchestrator: ExecutionOrchestrator | None = None
@@ -244,10 +251,6 @@ class ExecutionService:
         # 记录执行结果
         if result.success:
             self._log.info(f"Order {order.order_id} executed successfully")
-
-            # 记录成交到风控服务（仅记录，不触发返水率计算）
-            if self._risk_service and order.filled_size > 0:
-                self._notify_risk_service(order)
         else:
             self._log.error(f"Order {order.order_id} failed: {result.message}")
 
@@ -277,63 +280,34 @@ class ExecutionService:
 
         return order
 
-    def _notify_risk_service(self, order: Order) -> None:
-        """
-        通知风控服务订单成交
-
-        Args:
-            order: 成交的订单
-        """
-        if not self._risk_service:
-            return
-
-        # 获取比赛信息
-        context = None
-        if self._odds_service:
-            # 从 odds_service 获取 pair 信息
-            pair_info = self._odds_service.get_pair_info(order.pair_id)
-            if pair_info:
-                competition = pair_info.get("competition", "")
-                home_team = pair_info.get("polymarket_home", pair_info.get("home_team", ""))
-                away_team = pair_info.get("polymarket_away", pair_info.get("away_team", ""))
-            else:
-                competition = ""
-                home_team = ""
-                away_team = ""
-        else:
-            competition = ""
-            home_team = ""
-            away_team = ""
-
-        self._risk_service.add_fill(
-            pair_id=order.pair_id,
-            venue=order.venue.value,
-            market_type=order.market_type,
-            size=order.filled_size if order.filled_size > 0 else order.size,
-            price=order.price,
-            order_id=order.order_id,
-            competition=competition,
-            home_team=home_team,
-            away_team=away_team,
-        )
-
-        self._log.debug(
-            f"Recorded fill to risk service: {order.pair_id}/{order.market_type}, "
-            f"size={order.filled_size or order.size}, price={order.price}"
-        )
-
     def _on_session_complete(self, session) -> None:
         """
         会话完成回调
 
         由 ExecutionOrchestrator 在会话结束时调用。
-        触发风控服务重新计算持仓返水率。
+        通过消息总线发布 SessionCompleteMessage。
 
         Args:
             session: ExecutionSession
         """
-        if self._risk_service:
-            self._risk_service.on_execution_complete(session.pair_id)
+        self._publish_session_complete(session)
+
+    def _publish_session_complete(self, session) -> None:
+        """通过消息总线发布会话完成消息"""
+        if not self._msgbus:
+            self._log.warning("Cannot publish session_complete: msgbus not set")
+            return
+
+        msg = SessionCompleteMessage(
+            session_id=session.session_id,
+            pair_id=session.pair_id,
+            opportunity_id=getattr(session, "opportunity_id", ""),
+            phase=getattr(session, "phase", ""),
+            end_reason=getattr(session, "end_reason", ""),
+        )
+        topic = session_complete_topic(session.pair_id)
+        self._msgbus.publish(topic, msg)
+        self._log.info(f"Published session_complete to {topic}")
 
     def _has_incomplete_orders(self, pair_id: str) -> bool:
         """
@@ -525,9 +499,6 @@ class ExecutionService:
             self._active_orders[order.order_id] = order
         elif order.order_id in self._active_orders:
             del self._active_orders[order.order_id]
-
-        if order.filled_size > 0:
-            self._notify_risk_service(order)
 
         self._notify_order_update(order)
 
@@ -829,17 +800,40 @@ class ExecutionService:
         self._arbitrage_config = arbitrage_config
         self._log.info("Arbitrage config set")
 
-    def set_risk_service(self, risk_service) -> None:
-        """
-        设置风控服务引用
+    def set_msgbus(self, msgbus) -> None:
+        """设置消息总线并订阅主题"""
+        if self._msgbus is msgbus:
+            return
+        self._msgbus = msgbus
+        if not self._msgbus:
+            return
+        self._msgbus.subscribe(OPPORTUNITY_TOPIC_PATTERN, self._on_opportunity_message)
+        self._log.info("Subscribed to opportunity messages")
 
-        用于在订单成交时通知风控服务更新持仓。
-
-        Args:
-            risk_service: RiskService 实例
-        """
-        self._risk_service = risk_service
-        self._log.info("Risk service reference set")
+    def _on_opportunity_message(self, msg: Any) -> None:
+        """处理套利机会消息"""
+        if isinstance(msg, OpportunityMessage):
+            opportunity = {
+                "opportunity_id": msg.opportunity_id,
+                "pair_id": msg.pair_id,
+                "competition": msg.competition,
+                "home_team": msg.home_team,
+                "away_team": msg.away_team,
+                "is_live": msg.is_live,
+                "detected_at": msg.detected_at,
+                "triggered_strategies": msg.triggered_strategies,
+                "rebate_value": msg.rebate_value,
+                "way_rebate": msg.way_rebate,
+                "best_direction": msg.best_direction,
+                "all_directions": msg.all_directions,
+                "signals": msg.signals,
+                "status": msg.status,
+            }
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.on_opportunity(opportunity))
+            except RuntimeError:
+                asyncio.create_task(self.on_opportunity(opportunity))
 
     async def on_opportunity(self, opportunity: dict) -> None:
         """
@@ -1020,7 +1014,6 @@ class ExecutionService:
 
         # 记录结果（包括详细错误信息）
         success_count = 0
-        has_fills = False
         for i, r in enumerate(results):
             order = orders[i]
             if isinstance(r, Exception):
@@ -1030,8 +1023,6 @@ class ExecutionService:
                 )
             elif r.success:
                 success_count += 1
-                if order.filled_size > 0:
-                    has_fills = True
             else:
                 self._log.error(
                     f"Order {order.order_id} ({order.venue.value}/{order.market_type}) "
@@ -1042,11 +1033,6 @@ class ExecutionService:
             f"Opportunity {opportunity_id} execution: "
             f"{success_count}/{len(orders)} orders successful"
         )
-
-        # 所有订单执行完毕后，触发返水率重新计算
-        # （各订单成交已在 execute_order 中通过 add_fill 记录）
-        if self._risk_service and has_fills:
-            self._risk_service.on_execution_complete(pair_id)
 
     async def _create_order_from_leg(
         self,
@@ -1196,8 +1182,6 @@ class ExecutionService:
         """
         OrbitExch 修改 size 并按市价执行（编排器回调）
 
-        执行后通知 risk service 记录成交（与 execute_order 路径一致）。
-
         Args:
             order: 订单
             new_size: 新的 size
@@ -1205,13 +1189,7 @@ class ExecutionService:
         Returns:
             执行结果
         """
-        result = await self._orbitexch_executor.modify_size_and_take(order, new_size)
-
-        # 记录成交到风控服务
-        if result.success and self._risk_service and order.filled_size > 0:
-            self._notify_risk_service(order)
-
-        return result
+        return await self._orbitexch_executor.modify_size_and_take(order, new_size)
 
     def _get_probabilities_wrapper(self, pair_id: str) -> dict[str, float] | None:
         """

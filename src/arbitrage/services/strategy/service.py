@@ -7,7 +7,7 @@
 
 import logging
 import time
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
@@ -17,6 +17,10 @@ from src.arbitrage.services.odds_subscription.topics import (
     ODDS_TOPIC_PATTERN,
     MATCH_STATUS_TOPIC_PATTERN,
 )
+from src.arbitrage.services.strategy.messages import OpportunityMessage
+from src.arbitrage.services.strategy.topics import opportunity_topic
+from src.arbitrage.services.risk.messages import WayRebateMessage
+from src.arbitrage.services.risk.topics import WAY_REBATE_TOPIC_PATTERN
 
 if TYPE_CHECKING:
     from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
@@ -70,8 +74,9 @@ class StrategyService:
         self._opportunities: list[dict[str, Any]] = []
         self._max_opportunities = 100
 
-        # 回调
-        self._opportunity_callbacks: list[Callable[[dict], None]] = []
+        # way_rebate 缓存（由 RiskService 推送更新）
+        self._way_rebate_cache: dict[str, dict[str, float]] = {}  # pair_id -> {outcome: rebate_rate}
+        self._way_rebate_by_venue_cache: dict[str, dict[str, dict[str, float]]] = {}  # pair_id -> {venue: {outcome: rate}}
 
         # 信号分类
         self._odds_signals = {"rebate", "mean_rebate", "multi-way"}
@@ -110,6 +115,7 @@ class StrategyService:
             return
         self._msgbus.subscribe(ODDS_TOPIC_PATTERN, self._on_odds_message)
         self._msgbus.subscribe(MATCH_STATUS_TOPIC_PATTERN, self._on_match_status_message)
+        self._msgbus.subscribe(WAY_REBATE_TOPIC_PATTERN, self._on_way_rebate_message)
 
     def _on_odds_message(self, msg: Any) -> None:
         """处理赔率更新消息"""
@@ -130,6 +136,15 @@ class StrategyService:
             pair_id = msg.get("pair_id", "")
             if pair_id and "is_live" in msg:
                 self.update_match_status(pair_id, bool(msg.get("is_live")))
+
+    def _on_way_rebate_message(self, msg: Any) -> None:
+        """处理 way_rebate 推送消息（由 RiskService 发布）"""
+        if isinstance(msg, WayRebateMessage):
+            self._way_rebate_cache[msg.pair_id] = msg.way_rebate
+            self._way_rebate_by_venue_cache[msg.pair_id] = msg.way_rebate_by_venue
+            self._log.debug(
+                f"Way rebate cache updated for {msg.pair_id}: {msg.way_rebate}"
+            )
 
     def set_risk_service(self, risk_service) -> None:
         """设置风控服务引用"""
@@ -255,20 +270,9 @@ class StrategyService:
         # 清空上一次的套利方向
         context.clear_directions()
 
-        # 从风控服务获取 way_rebate 并注入到 context
-        if self._risk_service:
-            way_rebate = (
-                self._risk_service.get_way_rebate(pair_id)
-                if hasattr(self._risk_service, "get_way_rebate")
-                else {}
-            )
-            way_rebate_by_venue = (
-                self._risk_service.get_way_rebate_by_venue(pair_id)
-                if hasattr(self._risk_service, "get_way_rebate_by_venue")
-                else {}
-            )
-            context.way_rebate = way_rebate
-            context.way_rebate_by_venue = way_rebate_by_venue
+        # 从缓存读取 way_rebate（由 RiskService 通过 MessageBus 推送）
+        context.way_rebate = self._way_rebate_cache.get(pair_id, {})
+        context.way_rebate_by_venue = self._way_rebate_by_venue_cache.get(pair_id, {})
 
         # 获取该比赛应使用的策略列表
         strategies = self._config.get_strategies_for_match(
@@ -541,23 +545,35 @@ class StrategyService:
             f"directions={len(all_directions)}"
         )
 
-        # 触发回调
-        for callback in self._opportunity_callbacks:
-            try:
-                callback(opportunity)
-            except Exception as e:
-                self._log.error(f"Opportunity callback error: {e}")
+        # 通过消息总线发布
+        self._publish_opportunity(opportunity)
 
-    # =========================================================================
-    # 回调注册
-    # =========================================================================
+    def _publish_opportunity(self, opportunity: dict) -> None:
+        """通过消息总线发布套利机会"""
+        if not self._msgbus:
+            self._log.warning("Cannot publish opportunity: msgbus not set")
+            return
 
-    def register_opportunity_callback(
-        self,
-        callback: Callable[[dict], None],
-    ) -> None:
-        """注册机会检测回调"""
-        self._opportunity_callbacks.append(callback)
+        pair_id = opportunity.get("pair_id", "")
+        msg = OpportunityMessage(
+            opportunity_id=opportunity["opportunity_id"],
+            pair_id=pair_id,
+            competition=opportunity.get("competition", ""),
+            home_team=opportunity.get("home_team", ""),
+            away_team=opportunity.get("away_team", ""),
+            is_live=opportunity.get("is_live", False),
+            detected_at=opportunity.get("detected_at", 0),
+            triggered_strategies=opportunity.get("triggered_strategies", []),
+            rebate_value=opportunity.get("rebate_value"),
+            way_rebate=opportunity.get("way_rebate", {}),
+            best_direction=opportunity.get("best_direction"),
+            all_directions=opportunity.get("all_directions", []),
+            signals=opportunity.get("signals", {}),
+            status=opportunity.get("status", "detected"),
+        )
+        topic = opportunity_topic(pair_id)
+        self._msgbus.publish(topic, msg)
+        self._log.debug(f"Published opportunity to {topic}")
 
     # =========================================================================
     # 数据查询
