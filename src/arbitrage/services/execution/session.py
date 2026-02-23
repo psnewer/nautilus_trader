@@ -118,6 +118,10 @@ class ExecutionSession:
     filled: OutcomeShares                   # 已成交 share
     initial_probabilities: OutcomeProbabilities  # 初始下单时的概率
 
+    # 各 outcome 对应的交易平台 {outcome: venue}
+    # 例: {"home": "polymarket", "away": "orbitexch"}
+    outcome_venues: dict[str, str] = field(default_factory=dict)
+
     # 状态
     phase: SessionPhase = SessionPhase.PLANNING
     end_reason: SessionEndReason | None = None

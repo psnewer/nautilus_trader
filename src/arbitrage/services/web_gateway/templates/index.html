@@ -30,9 +30,14 @@
             <span class="navbar-brand mb-0 h1">
                 <i class="bi bi-graph-up-arrow me-2"></i>Arbitrage Dashboard
             </span>
-            <span class="text-white">
-                <i class="bi bi-clock me-1"></i>
-                <span id="current-time"></span>
+            <span class="d-flex align-items-center gap-3">
+                <button id="pipeline-btn" class="btn btn-sm btn-light" onclick="togglePipeline()">
+                    <i class="bi bi-play-fill me-1"></i>Start
+                </button>
+                <span class="text-white">
+                    <i class="bi bi-clock me-1"></i>
+                    <span id="current-time"></span>
+                </span>
             </span>
         </div>
     </nav>
@@ -718,6 +723,13 @@
                                             </div>
                                         </div>
                                         <div class="mb-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="risk-execution-enabled" checked>
+                                                <label class="form-check-label" for="risk-execution-enabled">启用执行</label>
+                                            </div>
+                                            <small class="text-muted">关闭后，所有下注执行将被阻止</small>
+                                        </div>
+                                        <div class="mb-3">
                                             <label class="form-label">单场止损 (Match SL)</label>
                                             <div class="input-group" style="max-width: 200px;">
                                                 <input type="number" class="form-control" id="risk-match-sl" value="-10" min="-100" max="0" step="1">
@@ -985,6 +997,7 @@
             try {
                 const config = await api('/api/risk/config');
                 document.getElementById('risk-enabled').checked = config.enabled;
+                document.getElementById('risk-execution-enabled').checked = config.execution_enabled !== false;
                 document.getElementById('risk-match-sl').value = (config.match_sl || -0.10) * 100;
                 document.getElementById('risk-global-sl').value = (config.global_sl || -0.50) * 100;
                 document.getElementById('risk-match-tp').value = (config.match_tp || 0.10) * 100;
@@ -998,6 +1011,7 @@
             try {
                 const data = {
                     enabled: document.getElementById('risk-enabled').checked,
+                    execution_enabled: document.getElementById('risk-execution-enabled').checked,
                     match_sl: parseFloat(document.getElementById('risk-match-sl').value) / 100,
                     global_sl: parseFloat(document.getElementById('risk-global-sl').value) / 100,
                     match_tp: parseFloat(document.getElementById('risk-match-tp').value) / 100,
@@ -1798,11 +1812,73 @@
             refreshStrategyStatus();
         });
 
+        // ==============================
+        // Pipeline Functions
+        // ==============================
+
+        let _pipelineActive = false;
+
+        async function togglePipeline() {
+            if (!_pipelineActive) {
+                // Start
+                try {
+                    await api('/api/pipeline/start', 'POST');
+                    _pipelineActive = true;
+                    updatePipelineButton();
+                    showToast('Pipeline started — Discovery → Matching → Subscribe');
+                    pollPipelineStatus();
+                } catch (e) {
+                    showToast('Error: ' + e.message, 'error');
+                }
+            } else {
+                // Stop — confirm first
+                if (!confirm('Stop pipeline and shut down the server?')) return;
+                try {
+                    await api('/api/pipeline/stop', 'POST');
+                    showToast('Stopping...');
+                } catch (e) {
+                    showToast('Error: ' + e.message, 'error');
+                }
+            }
+        }
+
+        function updatePipelineButton() {
+            const btn = document.getElementById('pipeline-btn');
+            if (_pipelineActive) {
+                btn.className = 'btn btn-sm btn-danger';
+                btn.innerHTML = '<i class="bi bi-stop-fill me-1"></i>Stop';
+            } else {
+                btn.className = 'btn btn-sm btn-light';
+                btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Start';
+            }
+        }
+
+        async function checkPipelineStatus() {
+            try {
+                const status = await api('/api/pipeline/status');
+                _pipelineActive = status.active;
+                updatePipelineButton();
+                return status;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function pollPipelineStatus() {
+            const interval = setInterval(async () => {
+                const status = await checkPipelineStatus();
+                if (!status || !status.active) {
+                    clearInterval(interval);
+                }
+            }, 3000);
+        }
+
         // Init
         document.addEventListener('DOMContentLoaded', () => {
             loadConfig();
             refreshDiscoveryResults();
             refreshMatchingResults();
+            checkPipelineStatus();
         });
     </script>
 </body>

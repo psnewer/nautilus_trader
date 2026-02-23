@@ -5,6 +5,7 @@
 
 ODDS_TOPIC_PATTERN = "arbitrage.odds.*"
 MATCH_STATUS_TOPIC_PATTERN = "arbitrage.match_status.*"
+PAIR_ACTIVITY_TOPIC_PATTERN = "arbitrage.pair_activity.*"
 
 
 def odds_topic(venue: str, pair_id: str, market_type: str) -> str:
@@ -13,3 +14,7 @@ def odds_topic(venue: str, pair_id: str, market_type: str) -> str:
 
 def match_status_topic(pair_id: str) -> str:
     return f"arbitrage.match_status.{pair_id}"
+
+
+def pair_activity_topic(pair_id: str) -> str:
+    return f"arbitrage.pair_activity.{pair_id}"

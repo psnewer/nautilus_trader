@@ -14,6 +14,8 @@ from .messages import WayRebateMessage
 from .topics import way_rebate_topic
 from src.arbitrage.services.execution.messages import SessionCompleteMessage
 from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTERN
+from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
+from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 
 
 @dataclass
@@ -117,6 +119,7 @@ class RiskService:
             return
 
         pair_id = msg.pair_id
+        self._publish_pair_activity(pair_id, True, "risk")
 
         if not self._odds_service:
             self._log.warning(f"Cannot process session_complete for {pair_id}: odds_service not set")
@@ -137,6 +140,18 @@ class RiskService:
 
         # 发布 way_rebate
         self._publish_way_rebate(pair_id)
+
+    def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
+        """发布 pair 活跃状态消息"""
+        if not self._msgbus:
+            return
+        msg = PairActivityMessage(
+            pair_id=pair_id,
+            is_active=is_active,
+            source=source,
+        )
+        topic = pair_activity_topic(pair_id)
+        self._msgbus.publish(topic, msg)
 
     def _publish_way_rebate(self, pair_id: str) -> None:
         """发布指定 pair 的 way_rebate 到消息总线"""
@@ -296,6 +311,10 @@ class RiskService:
         Returns:
             检查结果
         """
+        # 执行开关关闭 — 阻止所有执行
+        if not self._config.execution_enabled:
+            return RiskCheckResult(allowed=False, reason="Execution disabled")
+
         # 风控未启用
         if not self._config.enabled:
             return RiskCheckResult(allowed=True, reason="Risk disabled")

@@ -12,10 +12,14 @@ from typing import Any, Callable
 from src.arbitrage.services.market_matching.service import MatchedPair
 
 from .config import OddsSubscriptionConfig
-from .messages import OddsUpdateMessage, MatchStatusMessage
+from .messages import OddsUpdateMessage, MatchStatusMessage, PairActivityMessage
 from .orbitexch_client import OrbitExchOddsClient
 from .polymarket_client import PolymarketOddsClient
-from .topics import odds_topic, match_status_topic
+from .topics import (
+    odds_topic,
+    match_status_topic,
+    PAIR_ACTIVITY_TOPIC_PATTERN,
+)
 
 
 class OddsSubscriptionService:
@@ -46,6 +50,7 @@ class OddsSubscriptionService:
         # 订阅状态
         self._subscribed_pairs: dict[str, MatchedPair] = {}  # pair_id -> MatchedPair
         self._latest_odds: dict[str, dict] = {}  # pair_id -> {polymarket: {...}, orbitexch: {...}}
+        self._pair_activity: dict[str, float] = {}  # pair_id -> last_active_ts
 
         # 超时监控
         self._last_updates: dict[str, float] = {}  # pair_id -> timestamp
@@ -275,6 +280,13 @@ class OddsSubscriptionService:
                 if pair_id not in self._latest_odds:
                     self._latest_odds[pair_id] = {"polymarket": {}, "orbitexch": {}}
 
+                # price_change 消息不含 size，保留缓存的值
+                if odds_data.get("source") == "price_change":
+                    cached = self._latest_odds[pair_id]["polymarket"].get(market_type, {})
+                    if "bid_size" not in odds_data and "bid_size" in cached:
+                        odds_data["bid_size"] = cached["bid_size"]
+                    if "ask_size" not in odds_data and "ask_size" in cached:
+                        odds_data["ask_size"] = cached["ask_size"]
                 self._latest_odds[pair_id]["polymarket"][market_type] = odds_data
 
                 # 更新时间戳
@@ -317,6 +329,8 @@ class OddsSubscriptionService:
                 "market_type": market_type,
                 "back": back,
                 "lay": lay,
+                "back_size": odds_data.get("back_size", 0),
+                "lay_size": odds_data.get("lay_size", 0),
                 "timestamp": odds_data.get("timestamp"),
             }
 
@@ -341,10 +355,14 @@ class OddsSubscriptionService:
     def set_msgbus(self, msgbus) -> None:
         """设置消息总线"""
         self._msgbus = msgbus
+        if self._msgbus:
+            self._msgbus.subscribe(PAIR_ACTIVITY_TOPIC_PATTERN, self._on_pair_activity_message)
 
     def _publish_odds_update(self, pair_id: str, venue: str, odds_data: dict) -> None:
         """发布赔率更新"""
         if not self._msgbus:
+            return
+        if self._is_pair_active(pair_id):
             return
         market_type = odds_data.get("market_type", "")
         if not market_type:
@@ -363,6 +381,38 @@ class OddsSubscriptionService:
             return
         msg = MatchStatusMessage(pair_id=pair_id, is_live=is_live, source="orbitexch")
         self._msgbus.publish(match_status_topic(pair_id), msg, external_pub=False)
+
+    def _on_pair_activity_message(self, msg: Any) -> None:
+        """处理 pair 活跃状态消息"""
+        if isinstance(msg, PairActivityMessage):
+            pair_id = msg.pair_id
+            is_active = msg.is_active
+        elif isinstance(msg, dict):
+            pair_id = msg.get("pair_id", "")
+            is_active = msg.get("is_active", False)
+        else:
+            return
+
+        if not pair_id:
+            return
+
+        if is_active:
+            self._pair_activity[pair_id] = time.time()
+        else:
+            self._pair_activity.pop(pair_id, None)
+
+    def _is_pair_active(self, pair_id: str) -> bool:
+        """检查 pair 是否处于活跃互斥状态"""
+        last_active = self._pair_activity.get(pair_id)
+        if last_active is None:
+            return False
+
+        timeout_sec = self.config.pair_activity_timeout_sec
+        if timeout_sec > 0 and time.time() - last_active > timeout_sec:
+            self._pair_activity.pop(pair_id, None)
+            return False
+
+        return True
 
     # =========================================================================
     # 仓位变化回调

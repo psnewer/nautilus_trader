@@ -11,7 +11,9 @@ from typing import Any, TYPE_CHECKING
 
 from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
+from .signals.base import ArbitrageDirection
 from .strategies import Strategy, StrategyResult, DefaultStrategy, get_strategy_class
+from src.arbitrage.common.utils import adjust_share_by_liquidity
 from src.arbitrage.services.odds_subscription.messages import OddsUpdateMessage, MatchStatusMessage
 from src.arbitrage.services.odds_subscription.topics import (
     ODDS_TOPIC_PATTERN,
@@ -21,6 +23,8 @@ from src.arbitrage.services.strategy.messages import OpportunityMessage
 from src.arbitrage.services.strategy.topics import opportunity_topic
 from src.arbitrage.services.risk.messages import WayRebateMessage
 from src.arbitrage.services.risk.topics import WAY_REBATE_TOPIC_PATTERN
+from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
+from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 
 if TYPE_CHECKING:
     from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
@@ -145,6 +149,19 @@ class StrategyService:
             self._log.debug(
                 f"Way rebate cache updated for {msg.pair_id}: {msg.way_rebate}"
             )
+            self._publish_pair_activity(msg.pair_id, False, "strategy")
+
+    def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
+        """发布 pair 活跃状态消息"""
+        if not self._msgbus:
+            return
+        msg = PairActivityMessage(
+            pair_id=pair_id,
+            is_active=is_active,
+            source=source,
+        )
+        topic = pair_activity_topic(pair_id)
+        self._msgbus.publish(topic, msg)
 
     def set_risk_service(self, risk_service) -> None:
         """设置风控服务引用"""
@@ -226,6 +243,8 @@ class StrategyService:
         if not self._config.enabled:
             return
 
+        self._publish_pair_activity(pair_id, True, "strategy")
+
         # 更新赔率缓存
         if pair_id not in self._odds_cache:
             self._odds_cache[pair_id] = {"polymarket": {}, "orbitexch": {}}
@@ -242,14 +261,20 @@ class StrategyService:
             ctx.orbitexch_odds = self._odds_cache[pair_id].get("orbitexch", {})
 
         # 赔率更新只触发赔率相关信号计算
+        opportunity_published = False
         if pair_id in self._match_contexts:
-            self._evaluate_match(pair_id, triggered_signals=self._odds_signals)
+            opportunity_published = self._evaluate_match(
+                pair_id, triggered_signals=self._odds_signals
+            )
+
+        if not opportunity_published:
+            self._publish_pair_activity(pair_id, False, "strategy")
 
     # =========================================================================
     # 策略评估
     # =========================================================================
 
-    def _evaluate_match(self, pair_id: str, triggered_signals: set[str] | None = None) -> None:
+    def _evaluate_match(self, pair_id: str, triggered_signals: set[str] | None = None) -> bool:
         """
         评估比赛的所有策略
 
@@ -298,7 +323,9 @@ class StrategyService:
 
         # 如果有策略触发，创建机会
         if any_triggered:
-            self._create_opportunity(pair_id, strategies)
+            return self._create_opportunity(pair_id, strategies)
+
+        return False
 
     def _evaluate_strategy_sequential(
         self,
@@ -462,11 +489,69 @@ class StrategyService:
 
         return params
 
+    def _check_and_adjust_size(
+        self,
+        pair_id: str,
+        direction: ArbitrageDirection | None,
+    ) -> float | None:
+        """
+        检查市场可交易数量并调整 share
+
+        Returns:
+            调整后的 share，如果最小值不满足返回 None
+        """
+        if not direction:
+            return self._share
+
+        odds_cache = self._odds_cache.get(pair_id, {})
+        share = self._share
+
+        # 组装 legs 数据供 utils 计算
+        legs_info = []
+        for leg in direction.legs:
+            venue = leg.venue.value
+            market_type = leg.market_type
+            venue_odds = odds_cache.get(venue, {}).get(market_type, {})
+
+            if venue == "polymarket":
+                intended = share
+                if leg.action.value == "buy":
+                    available = venue_odds.get("ask_size", 0)
+                else:
+                    available = venue_odds.get("bid_size", 0)
+                raw_odds = 0
+            else:  # orbitexch
+                raw_odds = leg.raw_odds
+                intended = share / raw_odds if raw_odds > 0 else 0
+                if leg.action.value == "buy":
+                    available = venue_odds.get("back_size", 0)
+                else:
+                    available = venue_odds.get("lay_size", 0)
+
+            legs_info.append({
+                "venue": venue,
+                "intended": intended,
+                "available": available,
+                "raw_odds": raw_odds,
+            })
+
+        adjusted_share = adjust_share_by_liquidity(share, legs_info)
+
+        if adjusted_share is None:
+            self._log.info(f"Size check failed for {pair_id}: below minimum after adjustment")
+        elif adjusted_share < share:
+            self._log.info(
+                f"Size scaled for {pair_id}: share {share} → {adjusted_share:.2f} "
+                f"(factor={adjusted_share / share:.4f})"
+            )
+
+        return adjusted_share
+
     def _create_opportunity(
         self,
         pair_id: str,
         strategies: list[str],
-    ) -> None:
+    ) -> bool:
         """
         创建套利机会
 
@@ -485,7 +570,7 @@ class StrategyService:
         ]
 
         if not triggered_strategies:
-            return
+            return False
 
         # 风控检查
         if self._risk_service:
@@ -494,7 +579,7 @@ class StrategyService:
                 self._log.warning(
                     f"Opportunity blocked by risk control for {pair_id}: {risk_result.reason}"
                 )
-                return
+                return False
 
         # 获取 rebate 信号的值（优先 mean_rebate，其次 rebate）
         mean_rebate_signal = signals.get("mean_rebate")
@@ -514,6 +599,12 @@ class StrategyService:
         best_direction = context.get_best_direction() if context else None
         all_directions = [d.to_dict() for d in context.arbitrage_directions] if context else []
 
+        # ---- Size 可用性检查 ----
+        adjusted_share = self._check_and_adjust_size(pair_id, best_direction)
+        if adjusted_share is None:
+            self._log.warning(f"Opportunity rejected: insufficient market size for {pair_id}")
+            return False
+
         # 获取各方向的持仓返水率（执行侧用于 size 调整）
         way_rebate = context.way_rebate if context else {}
 
@@ -531,6 +622,7 @@ class StrategyService:
             "best_direction": best_direction.to_dict() if best_direction else None,
             "all_directions": all_directions,
             "signals": {name: result.to_dict() for name, result in signals.items()},
+            "adjusted_share": adjusted_share,
             "status": "detected",
         }
 
@@ -546,13 +638,13 @@ class StrategyService:
         )
 
         # 通过消息总线发布
-        self._publish_opportunity(opportunity)
+        return self._publish_opportunity(opportunity)
 
-    def _publish_opportunity(self, opportunity: dict) -> None:
+    def _publish_opportunity(self, opportunity: dict) -> bool:
         """通过消息总线发布套利机会"""
         if not self._msgbus:
             self._log.warning("Cannot publish opportunity: msgbus not set")
-            return
+            return False
 
         pair_id = opportunity.get("pair_id", "")
         msg = OpportunityMessage(
@@ -569,11 +661,13 @@ class StrategyService:
             best_direction=opportunity.get("best_direction"),
             all_directions=opportunity.get("all_directions", []),
             signals=opportunity.get("signals", {}),
+            adjusted_share=opportunity.get("adjusted_share"),
             status=opportunity.get("status", "detected"),
         )
         topic = opportunity_topic(pair_id)
         self._msgbus.publish(topic, msg)
         self._log.debug(f"Published opportunity to {topic}")
+        return True
 
     # =========================================================================
     # 数据查询

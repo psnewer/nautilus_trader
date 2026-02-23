@@ -17,6 +17,8 @@ from typing import Any, Callable
 
 from src.arbitrage.services.strategy.messages import OpportunityMessage
 from src.arbitrage.services.strategy.topics import OPPORTUNITY_TOPIC_PATTERN
+from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
+from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 from src.arbitrage.services.execution.messages import SessionCompleteMessage
 from src.arbitrage.services.execution.topics import session_complete_topic
 
@@ -308,6 +310,18 @@ class ExecutionService:
         topic = session_complete_topic(session.pair_id)
         self._msgbus.publish(topic, msg)
         self._log.info(f"Published session_complete to {topic}")
+
+    def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
+        """发布 pair 活跃状态消息"""
+        if not self._msgbus:
+            return
+        msg = PairActivityMessage(
+            pair_id=pair_id,
+            is_active=is_active,
+            source=source,
+        )
+        topic = pair_activity_topic(pair_id)
+        self._msgbus.publish(topic, msg)
 
     def _has_incomplete_orders(self, pair_id: str) -> bool:
         """
@@ -827,6 +841,7 @@ class ExecutionService:
                 "best_direction": msg.best_direction,
                 "all_directions": msg.all_directions,
                 "signals": msg.signals,
+                "adjusted_share": msg.adjusted_share,
                 "status": msg.status,
             }
             try:
@@ -851,6 +866,8 @@ class ExecutionService:
 
         if not best_direction:
             self._log.debug(f"Opportunity {opportunity_id}: no best_direction")
+            if pair_id:
+                self._publish_pair_activity(pair_id, False, "execution")
             return
 
         # 检查是否有活跃的执行会话（每个 pair 同时只能有一个）
@@ -861,6 +878,9 @@ class ExecutionService:
                 f"{active_session.session_id if active_session else 'unknown'}, skipping"
             )
             return
+
+        if pair_id:
+            self._publish_pair_activity(pair_id, True, "execution")
 
         self._log.info(
             f"Processing opportunity {opportunity_id}: "
@@ -879,6 +899,7 @@ class ExecutionService:
             discount=discount,
             take_off=take_off,
             way_rebate=way_rebate,
+            adjusted_share=opportunity.get("adjusted_share"),
         )
 
     async def _process_opportunity(
@@ -889,6 +910,7 @@ class ExecutionService:
         discount: float = 1.0,
         take_off: float = 0.0,
         way_rebate: dict = None,
+        adjusted_share: float | None = None,
     ) -> None:
         """
         处理 opportunity（内部方法）
@@ -900,6 +922,7 @@ class ExecutionService:
             discount: 折扣系数
             take_off: 从其他方向持仓返水中拿走的比例
             way_rebate: 各方向持仓返水率 {outcome: rebate_rate}
+            adjusted_share: 经 strategy 调整的 share（考虑市场可交易量）
         """
         way_rebate = way_rebate or {}
 
@@ -923,8 +946,10 @@ class ExecutionService:
         rebate_market = best_direction.get("rebate_market", "")  # home/draw/away
         rebate_venue = best_direction.get("rebate_venue", "")    # polymarket/orbitexch
 
-        # 获取 share（基准金额）
-        share = self._arbitrage_config.share if self._arbitrage_config else 100.0
+        # 获取 share（优先使用经 strategy 调整的值）
+        share = adjusted_share or (
+            self._arbitrage_config.share if self._arbitrage_config else 100.0
+        )
 
         # 计算其他方向持仓返水率的最小值
         min_other_rebate = self._calculate_min_other_rebate(

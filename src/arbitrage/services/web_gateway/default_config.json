@@ -56,6 +56,7 @@
   "odds": {
     "enabled": true,
     "staleness_timeout_sec": 300,
+    "pair_activity_timeout_sec": 300,
     "polymarket_api_key": "",
     "polymarket_api_secret": "",
     "polymarket_passphrase": "",

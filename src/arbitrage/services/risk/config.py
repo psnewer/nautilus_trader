@@ -21,6 +21,7 @@ class RiskConfig:
         match_overrides: 比赛级别的止损覆盖 {pair_id: sl_value}
     """
     enabled: bool = True
+    execution_enabled: bool = True
     match_sl: float = -0.10  # -10%
     global_sl: float = -0.50  # -50%
     match_tp: float = 0.10   # 10%
@@ -33,6 +34,7 @@ class RiskConfig:
     def to_dict(self) -> dict:
         return {
             "enabled": self.enabled,
+            "execution_enabled": self.execution_enabled,
             "match_sl": self.match_sl,
             "global_sl": self.global_sl,
             "match_tp": self.match_tp,
@@ -43,6 +45,7 @@ class RiskConfig:
     def from_dict(cls, data: dict) -> "RiskConfig":
         return cls(
             enabled=data.get("enabled", True),
+            execution_enabled=data.get("execution_enabled", True),
             match_sl=data.get("match_sl", -0.10),
             global_sl=data.get("global_sl", -0.50),
             match_tp=data.get("match_tp", 0.10),

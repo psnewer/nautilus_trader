@@ -92,7 +92,7 @@ class MarketDiscoveryConfig:
     ```
     """
     enabled: bool = True
-    poll_interval_sec: int = 60
+    poll_interval_sec: int = 3600
     venues: VenueConfig = field(default_factory=VenueConfig)
     matching: MatchingConfig = field(default_factory=MatchingConfig)
 
@@ -133,7 +133,7 @@ class MarketDiscoveryConfig:
 
         return cls(
             enabled=data.get("enabled", True),
-            poll_interval_sec=data.get("poll_interval_sec", 60),
+            poll_interval_sec=data.get("poll_interval_sec", 3600),
             venues=VenueConfig(
                 polymarket=polymarket_config,
                 orbitexch=orbitexch_config,

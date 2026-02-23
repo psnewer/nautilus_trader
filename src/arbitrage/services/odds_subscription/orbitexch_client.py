@@ -826,29 +826,35 @@ class OrbitExchOddsClient:
         for rc in rc_list:
             selection_id = str(rc.get("id", ""))
 
-            # 提取 best back price
+            # 提取 best back price and size
             # OrbitExch 使用 bdatb (best display available to back)
             # 格式: [{"index": 0, "odds": 3.05, "amount": 53.1}, ...]
             back_price = 0.0
+            back_size = 0.0
             bdatb = rc.get("bdatb") or rc.get("batb", [])
             if bdatb and len(bdatb) > 0:
                 first_back = bdatb[0]
                 if isinstance(first_back, dict):
                     back_price = float(first_back.get("odds", 0))
+                    back_size = float(first_back.get("amount", 0))
                 elif isinstance(first_back, list) and len(first_back) > 1:
                     back_price = float(first_back[1])
+                    back_size = float(first_back[2]) if len(first_back) > 2 else 0.0
 
-            # 提取 best lay price
+            # 提取 best lay price and size
             # OrbitExch 使用 bdatl (best display available to lay)
             # 格式: [{"index": 0, "odds": 3.1, "amount": 5.55}, ...]
             lay_price = 0.0
+            lay_size = 0.0
             bdatl = rc.get("bdatl") or rc.get("batl", [])
             if bdatl and len(bdatl) > 0:
                 first_lay = bdatl[0]
                 if isinstance(first_lay, dict):
                     lay_price = float(first_lay.get("odds", 0))
+                    lay_size = float(first_lay.get("amount", 0))
                 elif isinstance(first_lay, list) and len(first_lay) > 1:
                     lay_price = float(first_lay[1])
+                    lay_size = float(first_lay[2]) if len(first_lay) > 2 else 0.0
 
             # 跳过无价格数据
             if not back_price and not lay_price:
@@ -858,6 +864,8 @@ class OrbitExchOddsClient:
                 "selectionId": selection_id,
                 "back": back_price,
                 "lay": lay_price,
+                "back_size": back_size,
+                "lay_size": lay_size,
                 "timestamp": timestamp,
             })
 
@@ -1016,19 +1024,23 @@ class OrbitExchOddsClient:
             for rc in rc_list:
                 selection_id = str(rc.get("id", ""))
 
-                # 提取 best back price (batb)
+                # 提取 best back price and size (batb)
                 back_price = 0.0
+                back_size = 0.0
                 batb = rc.get("batb", [])
                 if batb and len(batb) > 0:
                     # batb 格式: [[price_idx, price, size], ...]
                     # 取第一个（最佳价格）
                     back_price = float(batb[0][1]) if len(batb[0]) > 1 else 0.0
+                    back_size = float(batb[0][2]) if len(batb[0]) > 2 else 0.0
 
-                # 提取 best lay price (batl)
+                # 提取 best lay price and size (batl)
                 lay_price = 0.0
+                lay_size = 0.0
                 batl = rc.get("batl", [])
                 if batl and len(batl) > 0:
                     lay_price = float(batl[0][1]) if len(batl[0]) > 1 else 0.0
+                    lay_size = float(batl[0][2]) if len(batl[0]) > 2 else 0.0
 
                 # 跳过无价格数据
                 if not back_price and not lay_price:
@@ -1040,6 +1052,8 @@ class OrbitExchOddsClient:
                     "selectionId": selection_id,
                     "back": back_price,
                     "lay": lay_price,
+                    "back_size": back_size,
+                    "lay_size": lay_size,
                     "timestamp": timestamp,
                 })
 

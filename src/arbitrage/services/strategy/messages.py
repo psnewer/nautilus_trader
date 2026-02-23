@@ -22,4 +22,5 @@ class OpportunityMessage:
     best_direction: dict[str, Any] | None
     all_directions: list[dict[str, Any]]
     signals: dict[str, dict[str, Any]]
+    adjusted_share: float | None = None
     status: str = "detected"

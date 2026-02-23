@@ -10,6 +10,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..state import app_state, DiscoveryResult
+from ..messages import DiscoveryCompleteMessage
+from ..topics import DISCOVERY_COMPLETE_TOPIC
 
 router = APIRouter(prefix="/api/discovery", tags=["discovery"])
 _log = logging.getLogger(__name__)
@@ -67,18 +69,19 @@ async def _run_discovery(venue: str | None = None):
     _discovery_running = True
     _log.info(f"Starting discovery for venue: {venue or 'all'}")
 
+    _has_failure = False
+
     try:
         config = app_state.discovery_config_obj
         _log.debug(f"Discovery config loaded, checking Polymarket...")
         _log.debug(f"venue={venue}, venue is None={venue is None}, venue=='polymarket'={venue=='polymarket'}")
 
-        # Polymarket 发现（独立错误处理）
+        # Polymarket 发现
         if venue is None or venue == "polymarket":
             _log.debug(f"Entered Polymarket block")
             _log.debug(f"Polymarket enabled: {config.venues.polymarket.enabled}")
             _log.debug(f"Polymarket sports: {len(config.venues.polymarket.sports)}")
             if config.venues.polymarket.enabled:
-                # 检查是否配置了 sports
                 if not config.venues.polymarket.sports:
                     _log.warning("Polymarket: No sports configured, skipping discovery")
                 else:
@@ -89,10 +92,11 @@ async def _run_discovery(venue: str | None = None):
                         _log.error(f"Polymarket discovery failed: {e}")
                         import traceback
                         traceback.print_exc()
+                        _has_failure = True
             else:
                 _log.info("Polymarket discovery is disabled")
 
-        # OrbitExch 发现（独立错误处理）
+        # OrbitExch 发现
         if venue is None or venue == "orbitexch":
             if config.venues.orbitexch.enabled:
                 if not config.venues.orbitexch.sports:
@@ -105,15 +109,50 @@ async def _run_discovery(venue: str | None = None):
                         _log.error(f"OrbitExch discovery failed: {e}")
                         import traceback
                         traceback.print_exc()
+                        _has_failure = True
             else:
                 _log.info("OrbitExch discovery is disabled")
 
-        _log.info("Discovery task completed")
+        # 任一平台失败 → 不发布消息，防止部分结果污染下游级联
+        if _has_failure:
+            _log.warning(
+                "Discovery aborted: one or more venues failed, "
+                "not publishing DiscoveryCompleteMessage to protect downstream services"
+            )
+            if app_state.pipeline_active:
+                # 区分首次 discovery 和定时刷新：
+                # - 首次 (phase="discovery"): 下游服务尚未启动，重置为 idle
+                # - 定时刷新 (之前已 "running"): 下游服务仍在运行，恢复为 running
+                prev_phase = app_state.pipeline_phase
+                if prev_phase == "discovery":
+                    app_state._pipeline_phase = "idle"
+                    app_state._pipeline_active = False
+                    _log.warning("Pipeline reset to idle due to initial discovery failure")
+                else:
+                    app_state._pipeline_phase = "running"
+                    _log.warning(
+                        "Periodic discovery failed, pipeline restored to 'running' "
+                        "(existing services unaffected)"
+                    )
+            return
+
+        _log.info("Discovery task completed (all venues succeeded)")
+
+        # 发布 Discovery 完成消息
+        msgbus = app_state.get_msgbus()
+        msg = DiscoveryCompleteMessage(
+            polymarket_count=len(app_state.polymarket_events),
+            orbitexch_count=len(app_state.orbitexch_events),
+        )
+        msgbus.publish(DISCOVERY_COMPLETE_TOPIC, msg)
+        _log.info(f"Published DiscoveryCompleteMessage: poly={msg.polymarket_count}, orbit={msg.orbitexch_count}")
 
     except Exception as e:
         _log.error(f"Discovery task failed: {e}")
         import traceback
         traceback.print_exc()
+        if app_state.pipeline_active:
+            app_state.stop_pipeline()
     finally:
         _discovery_running = False
 

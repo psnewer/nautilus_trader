@@ -198,10 +198,12 @@ class OrderTracker:
             )
 
         # 等待 WebSocket 事件或超时
+        # 只有所有下单操作完全成交才提前退出，否则等到超时
+        # 这样部分成交的订单有更多时间被撮合
         start_time = time.time()
         remaining_time = self._timeout
 
-        while remaining_time > 0 and self._has_pending():
+        while remaining_time > 0 and not self._all_fully_filled():
             try:
                 await asyncio.wait_for(
                     self._tracking_events.wait(),
@@ -214,7 +216,7 @@ class OrderTracker:
             elapsed = time.time() - start_time
             remaining_time = self._timeout - elapsed
 
-        # 超时后，刷新数据并对比快照
+        # 超时后，刷新数据并对比快照（仍有 PENDING 的操作）
         if self._has_pending():
             self._log.info("Timeout reached, refreshing and comparing snapshots")
             await self._refresh_and_diff()
@@ -227,6 +229,21 @@ class OrderTracker:
             r.status == TrackingStatus.PENDING
             for r in self._results.values()
         )
+
+    def _all_fully_filled(self) -> bool:
+        """
+        检查是否所有操作都已完成（下单完全成交 / 撤单已确认）
+
+        只有全部完全成交才返回 True，部分成交继续等待。
+        """
+        for r in self._results.values():
+            if r.status == TrackingStatus.PENDING:
+                return False
+            # PLACE/MODIFY: 必须 size_remaining == 0 才算完全成交
+            if r.operation.operation_type in (OperationType.PLACE, OperationType.MODIFY):
+                if r.size_remaining > 0:
+                    return False
+        return True
 
     # =========================================================================
     # 快照对比

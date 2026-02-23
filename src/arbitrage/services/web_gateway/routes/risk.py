@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/risk", tags=["risk"])
 class RiskConfigUpdate(BaseModel):
     """风控配置更新"""
     enabled: bool = True
+    execution_enabled: bool = True
     match_sl: float = -0.10
     global_sl: float = -0.50
     match_tp: float = 0.10
@@ -47,6 +48,7 @@ async def update_risk_config(config: RiskConfigUpdate):
     risk_service = app_state.get_risk_service()
     new_config = RiskConfig(
         enabled=config.enabled,
+        execution_enabled=config.execution_enabled,
         match_sl=config.match_sl,
         global_sl=config.global_sl,
         match_tp=config.match_tp,

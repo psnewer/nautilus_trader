@@ -9,6 +9,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..state import app_state, MatchedPairResult
+from ..messages import MatchingCompleteMessage
+from ..topics import MATCHING_COMPLETE_TOPIC
 
 router = APIRouter(prefix="/api/matching", tags=["matching"])
 _log = logging.getLogger(__name__)
@@ -78,6 +80,8 @@ async def _run_matching():
 
         if not poly_events and not orbit_events:
             _log.warning("No events to match. Run discovery first.")
+            if app_state.pipeline_active:
+                app_state.stop_pipeline()
             return
 
         # 创建匹配服务
@@ -139,10 +143,19 @@ async def _run_matching():
         app_state.set_matched_pairs(results)
         _log.info(f"Matched {len(results)} pairs")
 
+        # 发布 Matching 完成消息
+        msgbus = app_state.get_msgbus()
+        msg = MatchingCompleteMessage(pairs_count=len(results))
+        msgbus.publish(MATCHING_COMPLETE_TOPIC, msg)
+        _log.info(f"Published MatchingCompleteMessage: pairs={msg.pairs_count}")
+
     except Exception as e:
         _log.error(f"Matching failed: {e}")
         import traceback
         traceback.print_exc()
+        # 管道模式下重置状态，防止卡死
+        if app_state.pipeline_active:
+            app_state.stop_pipeline()
     finally:
         _matching_running = False
 
