@@ -32,4 +32,3 @@
 
 - OddsSubscriptionService 仅负责发布消息，不再保留回调注册方式。
 - StrategyService 通过订阅消息触发信号计算与策略评估。
-- OddsSubscriptionService 同时作为数据源，被 RiskService 和 ExecutionService 通过 DI 查询持仓和下单信息。

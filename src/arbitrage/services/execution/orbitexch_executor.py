@@ -312,7 +312,7 @@ class OrbitExchExecutor:
         """
         撤销订单
 
-        通过点击网页上的 'Cancel Bet' 按钮执行撤单。
+        通过 API 撤单执行撤单。
 
         Args:
             order: 订单
@@ -341,7 +341,143 @@ class OrbitExchExecutor:
         try:
             self._log.info(f"Cancelling order: {order.venue_order_id}")
 
-            # 方法1: 使用 API 撤单 (优先)
+            if not order.market_id:
+                return CancelResult(
+                    success=False,
+                    order_id=order.order_id,
+                    venue_order_id=order.venue_order_id,
+                    message="Missing market_id for cancel",
+                )
+
+            cookies = await page.context().cookies()
+            cookie_names = {
+                "BIAB_AN",
+                "BIAB_LANGUAGE",
+                "BIAB_TZ",
+                "_gid",
+                "_gat_gtag_UA_252822765_1",
+                "CSRF-TOKEN",
+                "COLLAPSE-LEFT_PANEL_COLLAPSE_GROUP-SPORT_COLLAPSE",
+                "BIAB_CUSTOMER",
+                "BIAB_LOGIN_POP_UP_SHOWN",
+                "BIAB_SHOW_TOOLTIPS",
+                "_ga",
+                "_ga_R0X6ZP423B",
+                "AWSALB",
+                "AWSALBCORS",
+            }
+            cookie_pairs = [
+                f"{c['name']}={c['value']}"
+                for c in cookies
+                if c.get("name") in cookie_names
+            ]
+            cookie_header = "; ".join(cookie_pairs)
+            csrf_token = ""
+            for c in cookies:
+                if c.get("name") == "CSRF-TOKEN":
+                    csrf_token = c.get("value", "")
+                    break
+
+            if not csrf_token:
+                return CancelResult(
+                    success=False,
+                    order_id=order.order_id,
+                    venue_order_id=order.venue_order_id,
+                    message="CSRF token not found",
+                )
+
+            response = await page.evaluate(
+                """async (payload) => {
+                    try {
+                        const response = await fetch('/customer/api/cancelBets', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json, text/plain, */*',
+                                'x-csrf-token': payload.csrfToken,
+                                'x-device': 'DESKTOP',
+                                'Origin': window.location.origin,
+                                'Referer': window.location.href,
+                                'Cookie': payload.cookieHeader,
+                            },
+                            body: JSON.stringify(payload.body),
+                            credentials: 'include',
+                        });
+                        return await response.json();
+                    } catch (error) {
+                        return { error: error.message };
+                    }
+                }""",
+                {
+                    "csrfToken": csrf_token,
+                    "cookieHeader": cookie_header,
+                    "body": {
+                        order.market_id: [
+                            {
+                                "offerId": order.venue_order_id,
+                                "betType": "EXCHANGE",
+                            }
+                        ]
+                    },
+                },
+            )
+
+            if response and not response.get("error"):
+                order.status = OrderStatus.CANCELLED
+                order.updated_at = time.time()
+
+                self._log.info(f"Order cancelled via API: {order.venue_order_id}")
+
+                return CancelResult(
+                    success=True,
+                    order_id=order.order_id,
+                    venue_order_id=order.venue_order_id,
+                    message="Order cancelled via API",
+                    venue_response=response,
+                )
+
+            return CancelResult(
+                success=False,
+                order_id=order.order_id,
+                venue_order_id=order.venue_order_id,
+                message=response.get("error", "Cancel failed"),
+                venue_response=response if response else {},
+            )
+
+        except Exception as e:
+            self._log.error(f"Failed to cancel order: {e}")
+
+            return CancelResult(
+                success=False,
+                order_id=order.order_id,
+                venue_order_id=order.venue_order_id,
+                message=str(e),
+            )
+
+    async def _cancel_order_legacy(self, order: Order, page: Page | None = None) -> CancelResult:
+        """
+        旧版撤单流程（暂时保留）
+        """
+        if not page and not self._pages:
+            return CancelResult(
+                success=False,
+                order_id=order.order_id,
+                message="No page available",
+            )
+
+        if not page:
+            page = next(iter(self._pages.values()))
+
+        if not order.venue_order_id:
+            return CancelResult(
+                success=False,
+                order_id=order.order_id,
+                message="No venue order ID",
+            )
+
+        try:
+            self._log.info(f"Cancelling order (legacy): {order.venue_order_id}")
+
             response = await page.evaluate(
                 """async (betId) => {
                     try {
@@ -380,70 +516,26 @@ class OrbitExchExecutor:
                 order.status = OrderStatus.CANCELLED
                 order.updated_at = time.time()
 
-                self._log.info(f"Order cancelled via API: {order.venue_order_id}")
+                self._log.info(f"Order cancelled via API (legacy): {order.venue_order_id}")
 
                 return CancelResult(
                     success=True,
                     order_id=order.order_id,
                     venue_order_id=order.venue_order_id,
-                    message="Order cancelled via API",
+                    message="Order cancelled via API (legacy)",
                     venue_response=response,
-                )
-
-            # 方法2: 点击页面上的 Cancel Bet 按钮
-            # OrbitExch UI 结构: 订单在右侧 Betslip 面板
-            # 每个订单有 "Cancel Bet" 按钮 (绿色)
-            # 订单引用号格式: "Ref: 212280836"
-
-            # 策略1: 通过订单引用号定位到订单容器，然后找 Cancel Bet 按钮
-            order_container = page.locator(f':has-text("Ref: {order.venue_order_id}")')
-            cancel_button = order_container.locator('button:has-text("Cancel Bet")').first
-
-            if await cancel_button.count() > 0:
-                await cancel_button.click()
-                await asyncio.sleep(0.5)
-
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = time.time()
-
-                self._log.info(f"Order cancelled via UI: {order.venue_order_id}")
-
-                return CancelResult(
-                    success=True,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="Order cancelled via UI",
-                )
-
-            # 策略2: 通用选择器查找 Cancel Bet 按钮
-            cancel_button = page.locator('button:has-text("Cancel Bet")').first
-
-            if await cancel_button.count() > 0:
-                await cancel_button.click()
-                await asyncio.sleep(0.5)
-
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = time.time()
-
-                self._log.info(f"Order cancelled via UI (generic): {order.venue_order_id}")
-
-                return CancelResult(
-                    success=True,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="Order cancelled via UI",
                 )
 
             return CancelResult(
                 success=False,
                 order_id=order.order_id,
                 venue_order_id=order.venue_order_id,
-                message="Cancel button not found",
+                message=response.get("error", "Cancel failed"),
                 venue_response=response if response else {},
             )
 
         except Exception as e:
-            self._log.error(f"Failed to cancel order: {e}")
+            self._log.error(f"Failed to cancel order (legacy): {e}")
 
             return CancelResult(
                 success=False,

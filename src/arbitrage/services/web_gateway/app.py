@@ -5,6 +5,7 @@ Web Gateway 应用入口
 """
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -21,11 +22,21 @@ from .routes import (
     execution_router,
     debug_router,
     risk_router,
+    pipeline_router,
 )
 
 # 模板目录
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动调度器，关闭时清理"""
+    from .state import app_state
+    app_state.start_scheduler()
+    yield
+    app_state.stop_scheduler()
 
 
 def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
@@ -45,6 +56,7 @@ def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
         title=config.title,
         description="Arbitrage System Web Dashboard",
         version="1.0.0",
+        lifespan=lifespan,
     )
 
     # 注册路由
@@ -56,6 +68,7 @@ def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
     app.include_router(execution_router)
     app.include_router(debug_router)
     app.include_router(risk_router)
+    app.include_router(pipeline_router)
 
     # 静态文件
     if STATIC_DIR.exists():

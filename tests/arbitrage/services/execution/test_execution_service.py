@@ -795,8 +795,10 @@ def test_orchestrator_replan_on_new_fill_before_operate(event_loop):
     async def track_partial(operations, operation_results):
         call_state["track_calls"] += 1
         op = operations[0]
-        size_matched = 5.0 if op.size > 1 else op.size
-        size_remaining = 0.0 if op.size > 1 else max(0.0, op.size - size_matched)
+        # Initial plan has large size (>=10) → partial fill 5.0
+        # Recovery plan has smaller size (6.0) → full fill
+        size_matched = 5.0 if op.size >= 10 else op.size
+        size_remaining = 0.0
         result = TrackingResult(
             operation=op,
             status=TrackingStatus.CONFIRMED,
@@ -814,7 +816,7 @@ def test_orchestrator_replan_on_new_fill_before_operate(event_loop):
             operation_type=OperationType.PLACE,
             venue=OperationVenue.POLYMARKET,
             market_type="draw",
-            size=1.0,
+            size=6.0,
             price=0.25,
             token_id="token-draw",
             condition_id="condition-draw",

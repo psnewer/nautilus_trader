@@ -36,6 +36,15 @@ def _load_case(case_id: str) -> dict:
     return data[case_id]
 
 
+def _inject_way_rebate(service: StrategyService, pair_id: str, case: dict) -> None:
+    """将 way_rebate 数据注入 service 的内部缓存（模拟 MessageBus 推送）"""
+    risk = case.get("risk", {})
+    if "way_rebate_combined" in risk:
+        service._way_rebate_cache[pair_id] = risk["way_rebate_combined"]
+    if "way_rebate_by_venue" in risk:
+        service._way_rebate_by_venue_cache[pair_id] = risk["way_rebate_by_venue"]
+
+
 def _apply_odds(strategy_service: StrategyService, case: dict) -> None:
     for payload in case["odds"]["polymarket"]:
         strategy_service.on_odds_update(case["pair"]["pair_id"], "polymarket", payload)
@@ -149,6 +158,7 @@ def test_multi_way_filters_directions():
         away_team=case["pair"]["away_team"],
         is_live=False,
     )
+    _inject_way_rebate(service, case["pair"]["pair_id"], case)
 
     _apply_odds(service, case)
     signals = service.get_signals(case["pair"]["pair_id"])["signals"]
@@ -284,6 +294,7 @@ def test_priority_negative_way_rebate_selected():
         away_team=case["pair"]["away_team"],
         is_live=False,
     )
+    _inject_way_rebate(service, case["pair"]["pair_id"], case)
 
     _apply_odds(service, case)
     best = service.get_arbitrage_directions(case["pair"]["pair_id"])["best_direction"]
@@ -302,6 +313,7 @@ def test_priority_min_positive_way_rebate_selected():
         away_team=case["pair"]["away_team"],
         is_live=False,
     )
+    _inject_way_rebate(service, case["pair"]["pair_id"], case)
 
     _apply_odds(service, case)
     best = service.get_arbitrage_directions(case["pair"]["pair_id"])["best_direction"]

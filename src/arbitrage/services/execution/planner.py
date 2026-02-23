@@ -176,17 +176,20 @@ class ExecutionPlanner:
         规划补救操作
 
         策略：
-        - OrbitExch: 使用 MODIFY 操作（修改 size + Take 按市价执行），无需撤单
-        - Polymarket: 使用 FOK 模式，不会有部分成交，无需补救
+        - 所有未成交订单由 orchestrator 统一撤单（撤单在调用本方法前已完成）
+        - 本方法只规划新的 PLACE 操作，根据 session.outcome_venues 选择平台
+
+        注意：OrbitExch MODIFY 操作已弃用，改为撤单后重新下单。
+        MODIFY 实现保留在 orchestrator._execute_modify_operation 中供需要时使用。
 
         Args:
             session: 执行会话
             current_probabilities: 当前实时概率
-            pending_orders: 未成交订单列表
+            pending_orders: 未成交订单列表（已弃用，应为空列表）
             order_info_getter: 获取订单信息的函数
 
         Returns:
-            执行计划（包含 MODIFY 和/或 PLACE 操作）
+            执行计划（PLACE 操作）
         """
         # 计算补救目标
         recovery_result = self._recovery_calculator.calculate(
@@ -203,117 +206,66 @@ class ExecutionPlanner:
         )
 
         operations = []
-
-        # 处理未成交订单
-        # OrbitExch: 修改 size 并按市价执行（MODIFY）
-        # Polymarket: 使用 FOK，不应该有未成交订单
-        for order in pending_orders:
-            size_remaining = order.get("size_remaining", 0)
-            if size_remaining <= 0:
-                continue
-
-            venue_str = order.get("venue", "")
-            market_type = order.get("market_type", "")
-
-            if venue_str == "orbitexch":
-                # OrbitExch: 计算新的目标 size 并修改+Take
-                # 新 size = 需要额外下注的 share 对应的 size
-                additional_share = recovery_result.additional_shares[market_type]
-                prob = current_probabilities[market_type]
-
-                if additional_share > 0 and prob > 0:
-                    # OrbitExch size = share * probability
-                    new_size = additional_share * prob
-
-                    self._log.info(
-                        f"OrbitExch MODIFY: {market_type}, "
-                        f"additional_share={additional_share:.2f}, new_size={new_size:.2f}"
-                    )
-
-                    operations.append(OrderOperation(
-                        operation_type=OperationType.MODIFY,
-                        venue=OperationVenue.ORBITEXCH,
-                        market_type=market_type,
-                        size=new_size,  # 新的 size
-                        price=order.get("price", 0),  # 保留原价格用于记录
-                        order_id=order.get("order_id", ""),
-                        market_id=order.get("market_id", ""),
-                        selection_id=order.get("selection_id", ""),
-                        metadata={"action": "modify_and_take"},
-                    ))
-                else:
-                    # 不需要额外下注，直接按当前 size 市价执行
-                    self._log.info(
-                        f"OrbitExch MODIFY (take current): {market_type}, size={size_remaining}"
-                    )
-
-                    operations.append(OrderOperation(
-                        operation_type=OperationType.MODIFY,
-                        venue=OperationVenue.ORBITEXCH,
-                        market_type=market_type,
-                        size=size_remaining,  # 保持当前 size
-                        price=order.get("price", 0),
-                        order_id=order.get("order_id", ""),
-                        market_id=order.get("market_id", ""),
-                        selection_id=order.get("selection_id", ""),
-                        metadata={"action": "take_current"},
-                    ))
-
-            elif venue_str == "polymarket":
-                # Polymarket 使用 FOK，理论上不应该有未成交订单
-                # 如果有，记录警告（可能是旧订单或异常情况）
-                self._log.warning(
-                    f"Unexpected Polymarket pending order: {market_type}, "
-                    f"remaining={size_remaining} (FOK should prevent this)"
-                )
-
-        # 检查是否需要额外下单（没有对应的未成交订单可以修改）
         outcomes = current_probabilities.outcomes()
-        pending_markets = {o.get("market_type") for o in pending_orders if o.get("size_remaining", 0) > 0}
 
         for outcome in outcomes:
             additional = recovery_result.additional_shares[outcome]
             if additional <= 0:
                 continue
 
-            # 如果该方向已经有 MODIFY 操作，跳过
-            if outcome in pending_markets:
-                continue
-
             prob = current_probabilities[outcome]
-
-            # 获取订单信息
             order_info = order_info_getter(session.pair_id, outcome) if order_info_getter else None
 
-            # 新下单使用 Polymarket FOK
-            size = additional  # Polymarket: size = share
-            price = prob
+            # 根据 session.outcome_venues 决定下单平台
+            venue_str = session.outcome_venues.get(outcome, "polymarket")
 
-            self._log.info(
-                f"Polymarket PLACE (FOK): {outcome}, size={size:.2f}, price={price:.4f}"
-            )
+            if venue_str == "orbitexch":
+                # OrbitExch: size = share * probability (= share / odds)
+                size = additional * prob if prob > 0 else 0
+                price = 1 / prob if prob > 0 else 0  # 转为赔率
 
-            operations.append(OrderOperation(
-                operation_type=OperationType.PLACE,
-                venue=OperationVenue.POLYMARKET,
-                market_type=outcome,
-                size=size,
-                price=price,
-                token_id=order_info.get("polymarket", {}).get("token_id", "") if order_info else "",
-                condition_id=order_info.get("polymarket", {}).get("condition_id", "") if order_info else "",
-            ))
+                if size <= 0:
+                    continue
 
-        self._log.info(
-            f"Recovery plan: {len(operations)} operations "
-            f"({sum(1 for o in operations if o.operation_type == OperationType.MODIFY)} modify, "
-            f"{sum(1 for o in operations if o.operation_type == OperationType.PLACE)} place)"
-        )
+                self._log.info(
+                    f"OrbitExch PLACE: {outcome}, share={additional:.2f}, "
+                    f"size={size:.2f}, odds={price:.4f}"
+                )
+
+                operations.append(OrderOperation(
+                    operation_type=OperationType.PLACE,
+                    venue=OperationVenue.ORBITEXCH,
+                    market_type=outcome,
+                    size=size,
+                    price=price,
+                    market_id=order_info.get("orbitexch", {}).get("market_id", "") if order_info else "",
+                    selection_id=order_info.get("orbitexch", {}).get("selection_id", "") if order_info else "",
+                ))
+            else:
+                # Polymarket: size = share
+                size = additional
+                price = prob
+
+                self._log.info(
+                    f"Polymarket PLACE: {outcome}, size={size:.2f}, price={price:.4f}"
+                )
+
+                operations.append(OrderOperation(
+                    operation_type=OperationType.PLACE,
+                    venue=OperationVenue.POLYMARKET,
+                    market_type=outcome,
+                    size=size,
+                    price=price,
+                    token_id=order_info.get("polymarket", {}).get("token_id", "") if order_info else "",
+                    condition_id=order_info.get("polymarket", {}).get("condition_id", "") if order_info else "",
+                ))
+
+        self._log.info(f"Recovery plan: {len(operations)} PLACE operations")
 
         return ExecutionPlan(
             operations=operations,
-            has_modifies=any(o.operation_type == OperationType.MODIFY for o in operations),
-            has_places=any(o.operation_type == OperationType.PLACE for o in operations),
-            description="Recovery: modify OrbitExch + place Polymarket FOK",
+            has_places=len(operations) > 0,
+            description="Recovery: place orders on original venues",
         )
 
     def plan_modify_to_market(

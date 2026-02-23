@@ -82,33 +82,6 @@ Debug 测试框架允许在实盘环境中测试订单执行流程，同时确�
 }
 ```
 
-### 3. 模拟交易所（可选）
-
-当 `use_mock_exchange` 启用时，执行服务会使用模拟交易所处理订单请求。
-可通过 `mock_data` 的 `execution` 分类配置状态流转与回报：
-
-```json
-{
-  "id": "mock_execution_flow",
-  "category": "execution",
-  "name": "模拟执行流转",
-  "enabled": true,
-  "data": {
-    "success": true,
-    "timeline": [
-      {"delay": 0.2, "status": "live"},
-      {"delay": 0.5, "status": "partially_filled", "filled_size": 50},
-      {"delay": 0.5, "status": "filled", "filled_size": 100}
-    ]
-  },
-  "conditions": {
-    "venue": "polymarket"
-  }
-}
-```
-
-如果不提供 `timeline`，系统会按默认节奏模拟：挂单 → 部分成交 → 完全成交。
-
 ### 2. 代码中使用
 
 ```python
@@ -153,7 +126,6 @@ debug_manager.set_override("polymarket_price", enabled=True, value=0.01)
 | `order_size` | 通用订单金额（旧） | 1.0 | 兼容旧配置 |
 | `skip_execution` | 跳过执行 | true | 不发送订单 |
 | `execution_delay` | 执行延迟 (秒) | 5.0 | 观察订单流程 |
-| `use_mock_exchange` | 使用模拟交易所 | false | 模拟账户测试 |
 
 ## 订单元数据
 
@@ -312,4 +284,5 @@ orders = debug_manager.get_or_default(
     "conditions": {"venue": "polymarket"}
   }
 }
-```
+``` 
+

@@ -4,6 +4,7 @@
 管理配置和运行时数据状态。
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -176,6 +177,14 @@ class AppState:
 
         # 消息总线
         self._msgbus = None
+
+        # 管道状态
+        self._pipeline_active: bool = False
+        self._pipeline_phase: str = "idle"  # idle | discovery | matching | subscribing | running
+        self._pipeline_subscribed: bool = False
+
+        # 定时调度器
+        self._scheduler_task: asyncio.Task | None = None
 
         # 加载保存的配置
         self._load_saved_config()
@@ -864,6 +873,159 @@ class AppState:
         risk_service.set_odds_service(self.get_odds_service())
 
         self._log.info("Risk service integrated with message bus")
+
+    # =========================================================================
+    # 定时调度器
+    # =========================================================================
+
+    def start_scheduler(self) -> None:
+        """启动定时发现调度器"""
+        if self._scheduler_task and not self._scheduler_task.done():
+            self._log.warning("Scheduler already running")
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._scheduler_task = loop.create_task(self._scheduler_loop())
+            self._log.info("Discovery scheduler started")
+        except RuntimeError:
+            self._log.error("No running event loop for scheduler")
+
+    def stop_scheduler(self) -> None:
+        """停止定时发现调度器"""
+        if self._scheduler_task and not self._scheduler_task.done():
+            self._scheduler_task.cancel()
+            self._scheduler_task = None
+            self._log.info("Discovery scheduler stopped")
+
+    async def _scheduler_loop(self) -> None:
+        """定时执行 Discovery 的后台循环"""
+        interval = self._discovery_config.poll_interval_sec
+        self._log.info(f"Scheduler loop started: interval={interval}s")
+
+        # 首次启动：立即执行 pipeline
+        try:
+            self.start_pipeline()
+            from .routes.discovery import _run_discovery
+            await _run_discovery()
+        except Exception as e:
+            self._log.error(f"Scheduler: initial discovery failed: {e}")
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+
+                # 跳过：如果 discovery 正在运行
+                from .routes.discovery import _discovery_running
+                if _discovery_running:
+                    self._log.info("Scheduler: discovery already running, skipping")
+                    continue
+
+                self._log.info("Scheduler: triggering periodic discovery")
+                self._pipeline_active = True
+                # 不覆盖 _pipeline_phase：保留 "running" 让 _run_discovery
+                # 区分定时刷新（恢复 running）和首次启动（重置 idle）
+
+                from .routes.discovery import _run_discovery
+                await _run_discovery()
+
+            except asyncio.CancelledError:
+                self._log.info("Scheduler loop cancelled")
+                break
+            except Exception as e:
+                self._log.error(f"Scheduler loop error: {e}")
+
+    # =========================================================================
+    # 管道协调器
+    # =========================================================================
+
+    @property
+    def pipeline_active(self) -> bool:
+        """管道是否正在运行"""
+        return self._pipeline_active
+
+    @property
+    def pipeline_phase(self) -> str:
+        """当前管道阶段"""
+        return self._pipeline_phase
+
+    def setup_pipeline_subscriptions(self) -> None:
+        """订阅管道消息（幂等）"""
+        if self._pipeline_subscribed:
+            return
+
+        from .topics import DISCOVERY_COMPLETE_TOPIC, MATCHING_COMPLETE_TOPIC
+
+        msgbus = self.get_msgbus()
+        msgbus.subscribe(DISCOVERY_COMPLETE_TOPIC, self._on_discovery_complete)
+        msgbus.subscribe(MATCHING_COMPLETE_TOPIC, self._on_matching_complete)
+        self._pipeline_subscribed = True
+        self._log.info("Pipeline subscriptions set up")
+
+    def start_pipeline(self) -> None:
+        """启动管道"""
+        self._pipeline_active = True
+        self._pipeline_phase = "discovery"
+        self.setup_pipeline_subscriptions()
+        self._log.info("Pipeline started")
+
+    def stop_pipeline(self) -> None:
+        """停止管道"""
+        self._pipeline_active = False
+        self._pipeline_phase = "idle"
+        self._log.info("Pipeline stopped")
+
+    def _on_discovery_complete(self, msg) -> None:
+        """Discovery 完成回调 — 触发 Matching"""
+        if not self._pipeline_active:
+            return
+        self._log.info("Pipeline: Discovery complete, triggering matching...")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._run_matching_cascade())
+        except RuntimeError:
+            self._log.error("Pipeline: No running event loop, cannot trigger matching cascade")
+            self.stop_pipeline()
+
+    def _on_matching_complete(self, msg) -> None:
+        """Matching 完成回调 — 触发 OddsSubscription"""
+        if not self._pipeline_active:
+            return
+        self._log.info(f"Pipeline: Matching complete ({msg.pairs_count} pairs), triggering subscription...")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._run_subscription_cascade())
+        except RuntimeError:
+            self._log.error("Pipeline: No running event loop, cannot trigger subscription cascade")
+            self.stop_pipeline()
+
+    async def _run_matching_cascade(self) -> None:
+        """级联执行 Matching"""
+        self._pipeline_phase = "matching"
+        try:
+            from .routes.matching import _run_matching
+            await _run_matching()
+            # 检查是否有匹配结果；若无则停止管道
+            if not self._matched_pairs:
+                self._log.warning("Pipeline: No matched pairs, stopping pipeline")
+                self._pipeline_active = False
+                self._pipeline_phase = "idle"
+        except Exception as e:
+            self._log.error(f"Pipeline matching cascade failed: {e}")
+            self._pipeline_phase = "idle"
+            self._pipeline_active = False
+
+    async def _run_subscription_cascade(self) -> None:
+        """级联执行 OddsSubscription"""
+        self._pipeline_phase = "subscribing"
+        try:
+            from .routes.odds import _run_subscription
+            await _run_subscription()
+            self._pipeline_phase = "running"
+            self._log.info("Pipeline: All stages complete, now running")
+        except Exception as e:
+            self._log.error(f"Pipeline subscription cascade failed: {e}")
+            self._pipeline_phase = "idle"
+            self._pipeline_active = False
 
     def load_risk_historical_positions(self) -> dict[str, int]:
         """

@@ -20,6 +20,7 @@ from .session import (
 from .planner import ExecutionPlanner, ExecutionPlan, OrderOperation, OperationType, OperationVenue
 from .tracker import OrderTracker, TrackingStatus, TrackingResult, BatchTrackingResult
 from .models import Order, OrderSide, OrderType, Venue
+from src.arbitrage.common.utils import check_min_size
 
 
 class ExecutionOrchestrator:
@@ -218,6 +219,13 @@ class ExecutionOrchestrator:
 
         # 记录执行开始时间戳（毫秒），用于 recovery 刷新时过滤本 session 的订单
         session_start_ms = int(time.time() * 1000)
+
+        # 从 legs 提取 outcome -> venue 映射，供 recovery 使用
+        for leg in legs:
+            mt = leg.get("market_type", "")
+            venue_str = leg.get("venue", "")
+            if mt and venue_str:
+                session.outcome_venues[mt] = venue_str
 
         # === 初始轮 ===
         session.update_phase(SessionPhase.PLANNING)
@@ -531,6 +539,15 @@ class ExecutionOrchestrator:
                     self._log.info(f"Session {session.session_id}: no recovery operations needed")
                     break
 
+                # 无挂单且新规划订单不满足最小 size → 上一轮订单全部完成
+                if self._recovery_below_min_size(plan):
+                    self._log.info(
+                        f"Session {session.session_id}: recovery orders below minimum size, "
+                        f"considering previous plan complete"
+                    )
+                    session.complete(SessionEndReason.TARGET_MET)
+                    return
+
                 # 旧的 current 变成 last，新规划变成 current
                 last_plan_target = current_plan_target
                 current_plan_target = OutcomeShares.from_dict(session.adjusted_target.to_dict())
@@ -628,6 +645,31 @@ class ExecutionOrchestrator:
             if result.status in {TrackingStatus.FAILED, TrackingStatus.TIMEOUT}:
                 return False
             if op.size > epsilon and result.size_matched < op.size - epsilon:
+                return False
+
+        return True
+
+    def _recovery_below_min_size(self, plan: ExecutionPlan) -> bool:
+        """
+        检查 recovery 规划的订单是否全部低于最小 size
+
+        如果所有操作都不满足最小 size，认为上一轮订单已实质完成。
+
+        Args:
+            plan: recovery 规划
+
+        Returns:
+            True 表示所有操作都低于最小 size
+        """
+        place_or_modify = [
+            op for op in plan.operations
+            if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+        ]
+        if not place_or_modify:
+            return False
+
+        for op in place_or_modify:
+            if check_min_size(op.venue.value, op.size):
                 return False
 
         return True

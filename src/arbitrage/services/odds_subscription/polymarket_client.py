@@ -500,10 +500,15 @@ class PolymarketOddsClient:
             bids = data.get("bids", [])
             asks = data.get("asks", [])
 
-            # 取最优价格：最高 bid，最低 ask
+            # 取最优价格及其可用数量：最高 bid，最低 ask
             # 订单簿可能不按价格排序，需要遍历查找
-            best_bid = max((float(b["price"]) for b in bids), default=0) if bids else 0
-            best_ask = min((float(a["price"]) for a in asks), default=0) if asks else 0
+            best_bid_entry = max(bids, key=lambda b: float(b["price"])) if bids else None
+            best_ask_entry = min(asks, key=lambda a: float(a["price"])) if asks else None
+
+            best_bid = float(best_bid_entry["price"]) if best_bid_entry else 0
+            best_ask = float(best_ask_entry["price"]) if best_ask_entry else 0
+            bid_size = float(best_bid_entry.get("size", 0)) if best_bid_entry else 0
+            ask_size = float(best_ask_entry.get("size", 0)) if best_ask_entry else 0
 
             odds_data = {
                 "event_id": token_info["event_id"],
@@ -514,6 +519,8 @@ class PolymarketOddsClient:
                 "away_team": token_info.get("away_team", ""),
                 "bid": best_bid,
                 "ask": best_ask,
+                "bid_size": bid_size,
+                "ask_size": ask_size,
                 "last": (best_bid + best_ask) / 2 if best_bid and best_ask else 0,
                 "timestamp": timestamp,
                 "source": "book",

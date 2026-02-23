@@ -27,6 +27,7 @@ class OddsSubscriptionConfig:
 
     # 数据超时配置
     staleness_timeout_sec: int = 300  # 5分钟无数据更新则刷新
+    pair_activity_timeout_sec: int = 300  # 活跃互斥超时，避免异常导致一直阻塞
 
     # Polymarket 配置
     polymarket_api_key: str = ""
@@ -59,6 +60,7 @@ class OddsSubscriptionConfig:
         return cls(
             enabled=data.get("enabled", True),
             staleness_timeout_sec=data.get("staleness_timeout_sec", 300),
+            pair_activity_timeout_sec=data.get("pair_activity_timeout_sec", 300),
             polymarket_api_key=data.get("polymarket_api_key", ""),
             polymarket_api_secret=data.get("polymarket_api_secret", ""),
             polymarket_passphrase=data.get("polymarket_passphrase", ""),
@@ -84,6 +86,7 @@ class OddsSubscriptionConfig:
         return {
             "enabled": self.enabled,
             "staleness_timeout_sec": self.staleness_timeout_sec,
+            "pair_activity_timeout_sec": self.pair_activity_timeout_sec,
             "polymarket_api_key": self.polymarket_api_key,
             "polymarket_api_secret": self.polymarket_api_secret,
             "polymarket_passphrase": self.polymarket_passphrase,
