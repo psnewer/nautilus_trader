@@ -42,15 +42,11 @@ async def start_pipeline():
 
 @router.post("/stop")
 async def stop_pipeline():
-    """停止管道并关闭程序"""
+    """停止管道（不关闭程序）"""
     app_state.stop_scheduler()
     app_state.stop_pipeline()
 
-    # 延迟 0.5s 后发送 SIGTERM 关闭 uvicorn
-    loop = asyncio.get_event_loop()
-    loop.call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
-
-    return {"status": "stopping"}
+    return {"status": "stopped"}
 
 
 @router.get("/status")

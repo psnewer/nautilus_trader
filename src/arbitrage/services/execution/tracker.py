@@ -461,8 +461,22 @@ class OrderTracker:
                         )
                         break
                 else:
-                    result.status = TrackingStatus.FAILED
-                    result.error_message = "Cancelled bet not found in diff"
+                    # 允许订单仍在列表但 sizeRemaining=0 的情况
+                    for offer_id in current.keys():
+                        bet = current[offer_id]
+                        if (str(bet.get("selectionId")) == op.selection_id
+                                and bet.get("side", "").upper() == "BACK"
+                                and float(bet.get("sizeRemaining", 0)) == 0.0):
+                            result.status = TrackingStatus.CONFIRMED
+                            result.venue_order_id = offer_id
+                            self._log.info(
+                                f"OrbitExch CANCEL confirmed via sizeRemaining=0: "
+                                f"offerId={offer_id}, selectionId={op.selection_id}"
+                            )
+                            break
+                    else:
+                        result.status = TrackingStatus.FAILED
+                        result.error_message = "Cancelled bet not found in diff"
 
             elif op.operation_type == OperationType.MODIFY:
                 # 修改提交：找 selectionId + side 匹配且 sizeMatched 增加的 bet
@@ -553,6 +567,8 @@ class OrderTracker:
         for key, result in self._results.items():
             op = result.operation
             if op.market_id == market_id and op.selection_id == selection_id:
+                if op.operation_type == OperationType.CANCEL:
+                    continue
                 result.status = TrackingStatus.CONFIRMED
                 result.size_matched = float(data.get("sizeMatched", 0))
                 result.size_remaining = float(data.get("sizeRemaining", 0))

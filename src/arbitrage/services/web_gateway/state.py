@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -899,20 +900,21 @@ class AppState:
 
     async def _scheduler_loop(self) -> None:
         """定时执行 Discovery 的后台循环"""
-        interval = self._discovery_config.poll_interval_sec
-        self._log.info(f"Scheduler loop started: interval={interval}s")
-
-        # 首次启动：立即执行 pipeline
-        try:
-            self.start_pipeline()
-            from .routes.discovery import _run_discovery
-            await _run_discovery()
-        except Exception as e:
-            self._log.error(f"Scheduler: initial discovery failed: {e}")
+        self._log.info("Scheduler loop started: aligned to top of the hour")
 
         while True:
             try:
-                await asyncio.sleep(interval)
+                now = datetime.datetime.now()
+                next_hour = (
+                    now.replace(minute=0, second=0, microsecond=0)
+                    + datetime.timedelta(hours=1)
+                )
+                sleep_seconds = max(0.0, (next_hour - now).total_seconds())
+                await asyncio.sleep(sleep_seconds)
+
+                if not self._pipeline_active:
+                    self._log.info("Scheduler: pipeline inactive, skipping discovery")
+                    continue
 
                 # 跳过：如果 discovery 正在运行
                 from .routes.discovery import _discovery_running
@@ -920,11 +922,7 @@ class AppState:
                     self._log.info("Scheduler: discovery already running, skipping")
                     continue
 
-                self._log.info("Scheduler: triggering periodic discovery")
-                self._pipeline_active = True
-                # 不覆盖 _pipeline_phase：保留 "running" 让 _run_discovery
-                # 区分定时刷新（恢复 running）和首次启动（重置 idle）
-
+                self._log.info("Scheduler: triggering hourly discovery")
                 from .routes.discovery import _run_discovery
                 await _run_discovery()
 
