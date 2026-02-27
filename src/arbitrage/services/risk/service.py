@@ -319,6 +319,11 @@ class RiskService:
         if not self._config.enabled:
             return RiskCheckResult(allowed=True, reason="Risk disabled")
 
+        # 赔率缺失或异常检查
+        odds_check = self._check_odds_valid(pair_id)
+        if odds_check is not None:
+            return odds_check
+
         # 获取持仓数据
         position = self._position_manager.get_position(pair_id)
         way_rebate = position.calculate_way_rebate() if position else {}
@@ -382,6 +387,66 @@ class RiskService:
             min_way_rebate=min_way_rebate,
             global_min_sum=global_min_sum,
         )
+
+    def _check_odds_valid(self, pair_id: str) -> RiskCheckResult | None:
+        """
+        检查赔率是否缺失或异常
+
+        规则：
+        - 任意平台任意方向赔率缺失 → 拒绝
+        - 任意平台任意方向赔率 > 99 或 < 1.03 → 拒绝
+        """
+        if not self._odds_service:
+            return RiskCheckResult(allowed=False, reason="Odds service not ready")
+
+        odds = self._odds_service.get_latest_odds(pair_id)
+        if not odds:
+            return RiskCheckResult(allowed=False, reason="Odds missing")
+
+        outcomes = {"home", "away"}
+        if "draw" in odds.get("polymarket", {}) or "draw" in odds.get("orbitexch", {}):
+            outcomes.add("draw")
+
+        for venue in ("polymarket", "orbitexch"):
+            venue_odds = odds.get(venue, {})
+            for outcome in outcomes:
+                market_data = venue_odds.get(outcome)
+                if not market_data:
+                    return RiskCheckResult(
+                        allowed=False,
+                        reason=f"Odds missing: {venue}/{outcome}",
+                    )
+                if venue == "polymarket":
+                    bid = market_data.get("bid", 0)
+                    ask = market_data.get("ask", 0)
+                    if bid <= 0 or ask <= 0:
+                        return RiskCheckResult(
+                            allowed=False,
+                            reason=f"Odds missing: {venue}/{outcome}",
+                        )
+                    for price in (bid, ask):
+                        odds_value = 1 / price
+                        if odds_value > 99 or odds_value < 1.03:
+                            return RiskCheckResult(
+                                allowed=False,
+                                reason=f"Odds out of range: {venue}/{outcome}",
+                            )
+                else:
+                    back = market_data.get("back", 0)
+                    lay = market_data.get("lay", 0)
+                    if back <= 0 or lay <= 0:
+                        return RiskCheckResult(
+                            allowed=False,
+                            reason=f"Odds missing: {venue}/{outcome}",
+                        )
+                    for odds_value in (back, lay):
+                        if odds_value > 99 or odds_value < 1.03:
+                            return RiskCheckResult(
+                                allowed=False,
+                                reason=f"Odds out of range: {venue}/{outcome}",
+                            )
+
+        return None
 
     def is_match_allowed(self, pair_id: str) -> bool:
         """

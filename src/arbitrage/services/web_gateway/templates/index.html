@@ -1379,6 +1379,15 @@
             stopAutoRefresh();
         });
 
+        // 切换到 Discovery/Matching 标签页时刷新结果
+        document.getElementById('discovery-tab')?.addEventListener('shown.bs.tab', () => {
+            refreshDiscoveryResults();
+        });
+
+        document.getElementById('matching-tab')?.addEventListener('shown.bs.tab', () => {
+            refreshMatchingResults();
+        });
+
         // 监听 auto-refresh checkbox
         document.getElementById('auto-refresh-odds')?.addEventListener('change', (e) => {
             if (e.target.checked) {
