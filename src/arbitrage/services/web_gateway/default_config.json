@@ -15,7 +15,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "wta"
+              "atp"
             ]
           }
         ]
@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "WTA Doha 2026"
+              "ATP Acapulco 2026"
             ]
           }
         ]
@@ -45,12 +45,12 @@
     "sport_aliases": {},
     "competition_aliases": {
       "epl": "English Premier League",
-      "wta": "WTA",
-      "WTA Doha 2026": "WTA"
+      "atp": "ATP",
+      "ATP Acapulco 2026": "ATP"
     },
     "competition_max_matches": {
-      "English Premier League": 1,
-      "WTA": 0
+      "English Premier League": 0,
+      "ATP": 1
     }
   },
   "odds": {
@@ -115,6 +115,16 @@
       "live": {
         "params": {},
         "description": "\u8d5b\u4e2d\u76d8\u4fe1\u53f7\uff0c\u6bd4\u8d5b\u8fdb\u884c\u4e2d\u65f6\u4e3a True"
+      },
+      "mean_rebate": {
+        "params": {
+          "rate": -0.2
+        },
+        "description": "\u5e73\u5747\u8fd4\u6c34\u4fe1\u53f7\uff0c\u5404\u65b9\u5411\u53d6\u6700\u4f18\u4ef7\u683c\uff0c\u8fd4\u6c34\u5e73\u5747\u5206\u914d\u5230\u6240\u6709\u65b9\u5411\u3002"
+      },
+      "multi-way": {
+        "params": {},
+        "description": "\u591a\u65b9\u5411\u8fc7\u6ee4\u4fe1\u53f7\uff0c\u79fb\u9664\u6301\u4ed3\u8fd4\u6c34\u7387\u4e3a\u8d1f\u7684\u65b9\u5411"
       }
     },
     "strategies": {
@@ -134,7 +144,7 @@
       },
       "default": {
         "signals": [
-          "rebate"
+          "mean_rebate"
         ],
         "description": "\u9ed8\u8ba4\u7b56\u7565\uff08\u4ec5\u68c0\u67e5\u8fd4\u6c34\u7387\uff09"
       }
@@ -144,6 +154,7 @@
   },
   "risk": {
     "enabled": true,
+    "execution_enabled": true,
     "match_sl": -0.1,
     "global_sl": -0.5,
     "match_tp": 0.1,

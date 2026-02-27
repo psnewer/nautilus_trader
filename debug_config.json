@@ -3,15 +3,15 @@
   "overrides": {
     "min_rebate_rate": {
       "enabled": true,
-      "value": -10.0
+      "value": -0.1
     },
     "polymarket_price": {
       "enabled": true,
-      "value": 0.01
+      "value": 1.0
     },
     "orbitexch_price": {
       "enabled": true,
-      "value": 10.0
+      "value": 100
     },
     "polymarket_size": {
       "enabled": true,
@@ -19,7 +19,7 @@
     },
     "orbitexch_size": {
       "enabled": true,
-      "value": 10.0
+      "value": 7
     },
     "order_size": {
       "enabled": false,
@@ -28,6 +28,10 @@
     "skip_execution": {
       "enabled": false,
       "value": true
+    },
+    "use_mock_exchange": {
+      "enabled": false,
+      "value": false
     }
   },
   "mock_data": {}

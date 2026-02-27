@@ -86,6 +86,7 @@ class StrategyService:
         self._odds_signals = {"rebate", "mean_rebate", "multi-way"}
         self._status_signals = {"live", "pre-match"}
 
+
         # 消息总线
         self._msgbus = None
         if msgbus is not None:
@@ -477,13 +478,13 @@ class StrategyService:
         Returns:
             增强后的参数
         """
-        # rebate 信号：检查 debug 覆盖
-        if signal_name == "rebate":
+        # rebate / mean_rebate 信号：检查 debug 覆盖
+        if signal_name in ("rebate", "mean_rebate"):
             try:
                 from src.arbitrage.services.debug import debug_manager
                 if debug_manager.is_override_active("min_rebate_rate"):
                     params["rate"] = debug_manager.get_override("min_rebate_rate", params.get("rate", 0.01))
-                    self._log.warning(f"[DEBUG] rebate rate override: {params['rate']}")
+                    self._log.warning(f"[DEBUG] {signal_name} rate override: {params['rate']}")
             except ImportError:
                 pass
 
@@ -666,6 +667,7 @@ class StrategyService:
         )
         topic = opportunity_topic(pair_id)
         self._msgbus.publish(topic, msg)
+
         self._log.debug(f"Published opportunity to {topic}")
         return True
 
