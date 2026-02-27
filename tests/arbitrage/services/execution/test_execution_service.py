@@ -930,3 +930,155 @@ def test_orchestrator_max_retries_exceeded(event_loop):
     ))
 
     assert session.end_reason.value == "max_failure_retries"
+
+
+def test_orchestrator_tampered_params_zero_fill(event_loop):
+    """
+    测试参数掉包后零成交场景:
+    - mean_rebate rate = -0.1 (触发机会)
+    - OrbitExch: size=7, odds=100 (极端赔率，无法成交)
+    - Polymarket: share=5, prob=1.0 (概率=1，无法成交)
+    - 预期: 两个订单都不成交，session 以 zero_fill 结束
+    """
+    legs = [
+        {"venue": "orbitexch", "market_type": "home", "probability": 1, "raw_odds": 100},
+        {"venue": "polymarket", "market_type": "away", "probability": 100, "raw_odds": 1.0},
+    ]
+    # OrbitExch: size = target * (prob/100) = 700 * 0.01 = 7
+    # Polymarket: size = target = 5
+    target_shares = {"home": 700, "draw": 0, "away": 5}
+    probabilities = {"home": 0.01, "draw": 0.0, "away": 1.0}
+
+    tracker = FakeTracker(batches=[])
+    orchestrator = _build_orchestrator(tracker)
+
+    planned_operations = []
+
+    async def track_zero(operations, operation_results):
+        planned_operations.extend(operations)
+        results = [
+            TrackingResult(
+                operation=op,
+                status=TrackingStatus.CONFIRMED,
+                venue_order_id=f"v-{i}",
+                size_matched=0.0,
+                size_remaining=op.size,  # 订单挂在交易所但无成交
+            )
+            for i, op in enumerate(operations)
+        ]
+        return BatchTrackingResult(results=results, all_confirmed=True)
+
+    orchestrator._tracker.track_operations = track_zero
+
+    session = event_loop.run_until_complete(orchestrator.execute_opportunity(
+        pair_id="pair-tamper-zf",
+        opportunity_id="opp-tamper-zf",
+        legs=legs,
+        target_shares=target_shares,
+        probabilities=probabilities,
+    ))
+
+    # 验证下单参数与掉包值一致
+    assert len(planned_operations) == 2
+    orbit_op = next(op for op in planned_operations if op.venue == OperationVenue.ORBITEXCH)
+    poly_op = next(op for op in planned_operations if op.venue == OperationVenue.POLYMARKET)
+
+    assert orbit_op.size == 7.0
+    assert orbit_op.price == 100
+    assert orbit_op.market_type == "home"
+    assert poly_op.size == 5.0
+    assert poly_op.price == 1.0
+    assert poly_op.market_type == "away"
+
+    # 验证零成交结束
+    assert session.end_reason.value == "zero_fill"
+    assert session.filled.is_zero()
+
+
+def test_orchestrator_tampered_params_recovery_cancels_pending(event_loop):
+    """
+    测试参数掉包后进入 recovery 并撤销挂单:
+    - OrbitExch: size=7, odds=100 → 微量成交 0.1 (share = 0.1 * 100 = 10)
+    - Polymarket: share=5, prob=1.0 → 零成交
+    - 非零成交 → 进入 recovery → 两个挂单都有 size_remaining > 0 → 撤销两个挂单
+    - 撤销后重新规划 → 执行新订单 → 完成
+    """
+    legs = [
+        {"venue": "orbitexch", "market_type": "home", "probability": 1, "raw_odds": 100},
+        {"venue": "polymarket", "market_type": "away", "probability": 100, "raw_odds": 1.0},
+    ]
+    target_shares = {"home": 700, "draw": 0, "away": 5}
+    probabilities = {"home": 0.01, "draw": 0.0, "away": 1.0}
+
+    tracker = FakeTracker(batches=[])
+    orchestrator = _build_orchestrator(tracker)
+
+    call_state = {"track_calls": 0, "cancelled_order_ids": []}
+
+    async def track_flow(operations, operation_results):
+        call_state["track_calls"] += 1
+        results = []
+
+        for op in operations:
+            if op.operation_type == OperationType.CANCEL:
+                call_state["cancelled_order_ids"].append(op.order_id)
+                results.append(TrackingResult(
+                    operation=op,
+                    status=TrackingStatus.CONFIRMED,
+                    venue_order_id=op.order_id,
+                    size_matched=0.0,
+                    size_remaining=0.0,
+                ))
+            elif call_state["track_calls"] == 1:
+                # 初始轮: OrbitExch 微量成交，Polymarket 零成交
+                if op.venue == OperationVenue.ORBITEXCH:
+                    results.append(TrackingResult(
+                        operation=op,
+                        status=TrackingStatus.CONFIRMED,
+                        venue_order_id="orbit-v-1",
+                        size_matched=0.1,   # share = 0.1 * 100 = 10
+                        size_remaining=6.9,
+                    ))
+                else:
+                    results.append(TrackingResult(
+                        operation=op,
+                        status=TrackingStatus.CONFIRMED,
+                        venue_order_id="poly-v-1",
+                        size_matched=0.0,
+                        size_remaining=5.0,
+                    ))
+            else:
+                # Recovery 轮: 全部成交
+                results.append(TrackingResult(
+                    operation=op,
+                    status=TrackingStatus.CONFIRMED,
+                    venue_order_id=f"v-{call_state['track_calls']}-{op.market_type}",
+                    size_matched=op.size,
+                    size_remaining=0.0,
+                ))
+
+        return BatchTrackingResult(results=results, all_confirmed=True)
+
+    orchestrator._tracker.track_operations = track_flow
+
+    session = event_loop.run_until_complete(orchestrator.execute_opportunity(
+        pair_id="pair-tamper-rc",
+        opportunity_id="opp-tamper-rc",
+        legs=legs,
+        target_shares=target_shares,
+        probabilities=probabilities,
+    ))
+
+    # 验证两个挂单都被撤销
+    assert len(call_state["cancelled_order_ids"]) == 2
+    assert "orbit-v-1" in call_state["cancelled_order_ids"]
+    assert "poly-v-1" in call_state["cancelled_order_ids"]
+
+    # 验证 session 最终完成
+    assert session.end_reason.value == "target_met"
+
+    # 验证进入了 recovery (至少 cancel + replan 两轮)
+    assert session.retry_count >= 2
+
+    # 验证 filled 非零 (OrbitExch 微量成交 share=10 + recovery 补单)
+    assert session.filled.home > 0
