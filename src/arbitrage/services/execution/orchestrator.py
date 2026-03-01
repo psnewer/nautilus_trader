@@ -252,6 +252,7 @@ class ExecutionOrchestrator:
 
         all_tracking_results.extend(tracking_result.results)
         self._update_session_filled(session, all_tracking_results)
+        session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
         if self._should_fail_for_tracking(session, operation_results, tracking_result):
             session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
             return
@@ -267,9 +268,15 @@ class ExecutionOrchestrator:
             return
 
         if session.is_zero_fill():
-            self._log.info(f"Session {session.session_id}: zero fill, minimal loss")
-            session.complete(SessionEndReason.ZERO_FILL)
-            return
+            if session.has_open_orders:
+                self._log.info(
+                    f"Session {session.session_id}: zero fill but pending orders, "
+                    f"entering recovery"
+                )
+            else:
+                self._log.info(f"Session {session.session_id}: zero fill, minimal loss")
+                session.complete(SessionEndReason.ZERO_FILL)
+                return
 
         # === Recovery 循环 ===
         # 初始阶段：last 和 current 都是 strategy 传入的目标
@@ -390,6 +397,7 @@ class ExecutionOrchestrator:
         return {
             "success": result.success,
             "order_id": operation.order_id,
+            "venue_order_id": operation.order_id,
             "message": result.message if hasattr(result, 'message') else "",
         }
 
@@ -500,6 +508,7 @@ class ExecutionOrchestrator:
             # =============================================
             await self._refresh_tracking_results(all_tracking_results, session_start_ms)
             self._update_session_filled(session, all_tracking_results)
+            session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
 
             if self._is_plan_operations_filled(all_tracking_results, last_plan_operations):
                 self._log.info(
@@ -596,7 +605,14 @@ class ExecutionOrchestrator:
             # =============================================
             if plan.has_cancels:
                 # 撤单轮：标记已撤销，回到循环顶部进入新规划
-                self._mark_cancelled(all_tracking_results, pending)
+                confirmed_cancel_ids = {
+                    r.venue_order_id
+                    for r in tracking_result.results
+                    if r.operation.operation_type == OperationType.CANCEL
+                    and r.status == TrackingStatus.CONFIRMED
+                    and r.venue_order_id
+                }
+                self._mark_cancelled(all_tracking_results, pending, confirmed_cancel_ids)
                 self._log.info(f"Session {session.session_id}: cancels done, re-planning")
                 continue
 
@@ -807,6 +823,7 @@ class ExecutionOrchestrator:
         self,
         all_results: list[TrackingResult],
         cancelled_results: list[TrackingResult],
+        confirmed_cancel_ids: set[str],
     ) -> None:
         """
         撤单完成后，标记对应追踪结果的 size_remaining 为 0
@@ -817,7 +834,12 @@ class ExecutionOrchestrator:
             all_results: 全 session 的追踪结果
             cancelled_results: 已撤销的追踪结果
         """
-        cancelled_ids = {id(r) for r in cancelled_results}
+        if not confirmed_cancel_ids:
+            return
+        cancelled_ids = {
+            id(r) for r in cancelled_results
+            if r.venue_order_id in confirmed_cancel_ids
+        }
         for result in all_results:
             if id(result) in cancelled_ids:
                 result.size_remaining = 0.0

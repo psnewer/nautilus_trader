@@ -119,6 +119,18 @@ class OrderTracker:
         """生成操作唯一键"""
         return f"{operation.venue.value}_{operation.market_type}_{operation.operation_type.value}_{id(operation)}"
 
+    def _polymarket_snapshot_key(self, operation: OrderOperation) -> tuple[str, str, str]:
+        """
+        生成 Polymarket 快照 key
+
+        返回 (key, key_type, key_value)
+        """
+        if operation.condition_id:
+            return f"condition:{operation.condition_id}", "condition", operation.condition_id
+        if operation.token_id:
+            return f"asset:{operation.token_id}", "asset", operation.token_id
+        return "", "", ""
+
     # =========================================================================
     # 快照
     # =========================================================================
@@ -138,12 +150,19 @@ class OrderTracker:
 
         for op in operations:
             if op.venue == OperationVenue.POLYMARKET:
-                cid = op.condition_id
-                if cid and cid not in self._poly_snapshot and self._polymarket_client:
-                    orders = self._polymarket_client.get_current_orders(condition_id=cid)
-                    self._poly_snapshot[cid] = {o.order_id: o for o in orders}
+                key, key_type, key_value = self._polymarket_snapshot_key(op)
+                if key and key not in self._poly_snapshot and self._polymarket_client:
+                    if key_type == "condition":
+                        orders = self._polymarket_client.get_current_orders(
+                            condition_id=key_value
+                        )
+                    else:
+                        orders = self._polymarket_client.get_current_orders(
+                            asset_id=key_value
+                        )
+                    self._poly_snapshot[key] = {o.order_id: o for o in orders}
                     self._log.debug(
-                        f"Snapshot polymarket {cid}: {len(self._poly_snapshot[cid])} orders"
+                        f"Snapshot polymarket {key}: {len(self._poly_snapshot[key])} orders"
                     )
 
             elif op.venue == OperationVenue.ORBITEXCH:
@@ -194,8 +213,31 @@ class OrderTracker:
             self._results[key] = TrackingResult(
                 operation=operation,
                 status=TrackingStatus.PENDING,
-                venue_order_id=op_result.get("venue_order_id", ""),
+                venue_order_id=(
+                    op_result.get("venue_order_id")
+                    or op_result.get("order_id")
+                    or operation.order_id
+                ),
             )
+            if op_result.get("success") is False:
+                self._results[key].status = TrackingStatus.FAILED
+                self._results[key].error_message = op_result.get("message", "Operation failed")
+                continue
+            if operation.operation_type == OperationType.CANCEL and op_result.get("success"):
+                # 撤单 API 返回成功，直接标记为已确认，无需等待快照对比
+                self._results[key].status = TrackingStatus.CONFIRMED
+                self._log.info(
+                    f"CANCEL confirmed via API response: order_id={result.venue_order_id}"
+                )
+                continue
+            if op_result.get("venue_order_id") and operation.operation_type in (
+                OperationType.PLACE,
+                OperationType.MODIFY,
+            ):
+                # 有下单回执时先标记为已确认挂单，避免被误判为失败
+                self._results[key].status = TrackingStatus.CONFIRMED
+                self._results[key].size_matched = 0.0
+                self._results[key].size_remaining = operation.size
 
         # 等待 WebSocket 事件或超时
         # 只有所有下单操作完全成交才提前退出，否则等到超时
@@ -258,27 +300,36 @@ class OrderTracker:
         3. 对比前后差异，匹配到对应操作
         """
         # 收集需要刷新的市场
-        poly_conditions = set()
+        poly_keys: dict[str, tuple[str, str]] = {}
         orbit_markets = set()
 
         for result in self._results.values():
             if result.status != TrackingStatus.PENDING:
                 continue
             op = result.operation
-            if op.venue == OperationVenue.POLYMARKET and op.condition_id:
-                poly_conditions.add(op.condition_id)
+            if op.venue == OperationVenue.POLYMARKET:
+                key, key_type, key_value = self._polymarket_snapshot_key(op)
+                if key:
+                    poly_keys[key] = (key_type, key_value)
             elif op.venue == OperationVenue.ORBITEXCH and op.market_id:
                 orbit_markets.add(op.market_id)
 
         # 刷新 Polymarket（调 REST API）
         poly_after: dict[str, dict[str, Any]] = {}
-        if poly_conditions and self._polymarket_client:
+        if poly_keys and self._polymarket_client:
             try:
                 # fetch_open_orders 会更新内存缓存
                 await self._polymarket_client.fetch_open_orders()
-                for cid in poly_conditions:
-                    orders = self._polymarket_client.get_current_orders(condition_id=cid)
-                    poly_after[cid] = {o.order_id: o for o in orders}
+                for key, (key_type, key_value) in poly_keys.items():
+                    if key_type == "condition":
+                        orders = self._polymarket_client.get_current_orders(
+                            condition_id=key_value
+                        )
+                    else:
+                        orders = self._polymarket_client.get_current_orders(
+                            asset_id=key_value
+                        )
+                    poly_after[key] = {o.order_id: o for o in orders}
             except Exception as e:
                 self._log.error(f"Failed to refresh Polymarket orders: {e}")
 
@@ -315,9 +366,9 @@ class OrderTracker:
             if op.venue != OperationVenue.POLYMARKET:
                 continue
 
-            cid = op.condition_id
-            before = self._poly_snapshot.get(cid, {})
-            current = after.get(cid, {})
+            key, _, _ = self._polymarket_snapshot_key(op)
+            before = self._poly_snapshot.get(key, {})
+            current = after.get(key, {})
 
             if op.operation_type == OperationType.PLACE:
                 # 下单：找新增的、token_id 匹配的订单
@@ -355,6 +406,14 @@ class OrderTracker:
                         result.error_message = "Order not found in diff"
 
             elif op.operation_type == OperationType.CANCEL:
+                # 撤单：优先按订单号确认
+                if result.venue_order_id and result.venue_order_id not in current:
+                    result.status = TrackingStatus.CONFIRMED
+                    self._log.info(
+                        f"Polymarket CANCEL confirmed via missing order_id: "
+                        f"order_id={result.venue_order_id}"
+                    )
+                    continue
                 # 撤单：找消失的、token_id 匹配的订单
                 removed_ids = set(before.keys()) - set(current.keys())
                 for oid in removed_ids:
@@ -447,6 +506,23 @@ class OrderTracker:
                         result.error_message = "Bet not found in diff"
 
             elif op.operation_type == OperationType.CANCEL:
+                # 撤单：优先按 offerId 确认
+                if result.venue_order_id:
+                    if result.venue_order_id not in current:
+                        result.status = TrackingStatus.CONFIRMED
+                        self._log.info(
+                            f"OrbitExch CANCEL confirmed via missing offerId: "
+                            f"offerId={result.venue_order_id}"
+                        )
+                        continue
+                    bet = current.get(result.venue_order_id, {})
+                    if float(bet.get("sizeRemaining", 0)) == 0.0:
+                        result.status = TrackingStatus.CONFIRMED
+                        self._log.info(
+                            f"OrbitExch CANCEL confirmed via sizeRemaining=0: "
+                            f"offerId={result.venue_order_id}"
+                        )
+                        continue
                 # 撤单：找消失的、selectionId + side 匹配的 bet
                 removed_ids = set(before.keys()) - set(current.keys())
                 for offer_id in removed_ids:
@@ -536,22 +612,26 @@ class OrderTracker:
             event_type: 事件类型 (PLACEMENT, UPDATE, CANCELLATION)
             data: 事件数据
         """
-        order_id = data.get("id", "")
+        order_id = data.get("id", "") or data.get("order_id", "")
+
+        if not order_id:
+            return
 
         for key, result in self._results.items():
-            if result.venue_order_id == order_id:
-                if event_type == "PLACEMENT":
-                    result.status = TrackingStatus.CONFIRMED
-                    result.size_matched = float(data.get("size_matched", 0))
-                    result.size_remaining = float(data.get("original_size", 0)) - result.size_matched
-                elif event_type == "UPDATE":
-                    result.size_matched = float(data.get("size_matched", 0))
-                    result.size_remaining = float(data.get("original_size", 0)) - result.size_matched
-                elif event_type == "CANCELLATION":
-                    result.status = TrackingStatus.CONFIRMED
+            if result.venue_order_id != order_id:
+                continue
+            if event_type == "PLACEMENT":
+                result.status = TrackingStatus.CONFIRMED
+                result.size_matched = float(data.get("size_matched", 0))
+                result.size_remaining = float(data.get("original_size", 0)) - result.size_matched
+            elif event_type == "UPDATE":
+                result.size_matched = float(data.get("size_matched", 0))
+                result.size_remaining = float(data.get("original_size", 0)) - result.size_matched
+            elif event_type == "CANCELLATION":
+                result.status = TrackingStatus.CONFIRMED
 
-                self._tracking_events.set()
-                break
+            self._tracking_events.set()
+            break
 
     def on_orbitexch_event(self, event_type: str, data: dict) -> None:
         """
@@ -561,17 +641,29 @@ class OrderTracker:
             event_type: 事件类型
             data: 事件数据
         """
+        offer_id = str(data.get("offerId", ""))
         market_id = str(data.get("marketId", ""))
         selection_id = str(data.get("selectionId", ""))
 
         for key, result in self._results.items():
             op = result.operation
-            if op.market_id == market_id and op.selection_id == selection_id:
-                if op.operation_type == OperationType.CANCEL:
-                    continue
-                result.status = TrackingStatus.CONFIRMED
+            if offer_id and result.venue_order_id != offer_id:
+                continue
+            if not offer_id and not (op.market_id == market_id and op.selection_id == selection_id):
+                continue
+            if op.operation_type == OperationType.CANCEL:
+                if float(data.get("sizeRemaining", 0)) == 0.0:
+                    result.status = TrackingStatus.CONFIRMED
+                    result.size_matched = float(data.get("sizeMatched", 0))
+                    result.size_remaining = 0.0
+                    self._tracking_events.set()
+                    break
                 result.size_matched = float(data.get("sizeMatched", 0))
                 result.size_remaining = float(data.get("sizeRemaining", 0))
+                continue
+            result.status = TrackingStatus.CONFIRMED
+            result.size_matched = float(data.get("sizeMatched", 0))
+            result.size_remaining = float(data.get("sizeRemaining", 0))
 
-                self._tracking_events.set()
-                break
+            self._tracking_events.set()
+            break

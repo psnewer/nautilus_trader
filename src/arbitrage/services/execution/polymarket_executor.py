@@ -135,9 +135,13 @@ class PolymarketExecutor:
             )
 
         try:
-            # 强制使用 FOK 订单类型，确保全部成交或全部取消
-            clob_order_type = self._convert_order_type(OrderType.FOK)
-            self._log.info("Using FOK order type (forced)")
+            # 市价单使用 FOK；限价单使用订单自身的类型（默认 GTC）
+            if order.metadata.get("market_order"):
+                clob_order_type = self._convert_order_type(OrderType.FOK)
+                self._log.info("Using FOK order type (market order)")
+            else:
+                clob_order_type = self._convert_order_type(order.order_type)
+                self._log.info(f"Using {order.order_type.value} order type (limit order)")
 
             # 转换订单方向
             side = "BUY" if order.side in (OrderSide.BUY, OrderSide.BACK) else "SELL"

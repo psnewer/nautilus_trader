@@ -349,7 +349,7 @@ class OrbitExchExecutor:
                     message="Missing market_id for cancel",
                 )
 
-            cookies = await page.context().cookies()
+            cookies = await page.context.cookies()
             cookie_names = {
                 "BIAB_AN",
                 "BIAB_LANGUAGE",

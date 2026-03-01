@@ -41,7 +41,7 @@ class OddsSubscriptionService:
     ):
         self.config = config or OddsSubscriptionConfig()
         self._log = logger or logging.getLogger(self.__class__.__name__)
-        self._msgbus = msgbus
+        self._msgbus = None
 
         # 客户端
         self._polymarket_client: PolymarketOddsClient | None = None
@@ -61,6 +61,11 @@ class OddsSubscriptionService:
 
         # 仓位变化回调
         self._position_callbacks: list[Callable[[str], None]] = []
+        self._polymarket_order_callbacks: list[Callable[[str, dict], None]] = []
+        self._orbitexch_bets_callbacks: list[Callable[[str, dict], None]] = []
+
+        if msgbus is not None:
+            self.set_msgbus(msgbus)
 
     # =========================================================================
     # 生命周期
@@ -93,6 +98,7 @@ class OddsSubscriptionService:
         # 设置仓位变化回调
         self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
         self._polymarket_client.register_positions_callback(self._on_polymarket_position_update)
+        self._polymarket_client.register_orders_callback(self._on_polymarket_orders_update)
 
         # 启动客户端
         await self._polymarket_client.start()
@@ -364,6 +370,7 @@ class OddsSubscriptionService:
             return
         if self._is_pair_active(pair_id):
             return
+        odds_data = self._apply_mock_odds(pair_id, venue, odds_data)
         market_type = odds_data.get("market_type", "")
         if not market_type:
             return
@@ -374,6 +381,21 @@ class OddsSubscriptionService:
             odds_data=odds_data,
         )
         self._msgbus.publish(odds_topic(venue, pair_id, market_type), msg, external_pub=False)
+
+    def _apply_mock_odds(self, pair_id: str, venue: str, odds_data: dict) -> dict:
+        """应用 debug mock 赔率覆盖"""
+        try:
+            from src.arbitrage.services.debug import debug_manager, MockCategory
+        except ImportError:
+            return odds_data
+        if not debug_manager.enabled:
+            return odds_data
+        market_type = odds_data.get("market_type", "")
+        context = {"pair_id": pair_id, "venue": venue, "market_type": market_type}
+        mocked = debug_manager.get_mock_data(MockCategory.ODDS, context)
+        if isinstance(mocked, dict) and mocked:
+            return mocked
+        return odds_data
 
     def _on_match_status_update(self, pair_id: str, is_live: bool) -> None:
         """发布比赛状态更新"""
@@ -446,6 +468,38 @@ class OddsSubscriptionService:
             except Exception as e:
                 self._log.error(f"Position callback error: {e}")
 
+    def register_polymarket_order_callback(
+        self,
+        callback: Callable[[str, dict], None],
+    ) -> None:
+        """注册 Polymarket 订单更新回调"""
+        if callback in self._polymarket_order_callbacks:
+            return
+        self._polymarket_order_callbacks.append(callback)
+
+    def register_orbitexch_bets_callback(
+        self,
+        callback: Callable[[str, dict], None],
+    ) -> None:
+        """注册 OrbitExch 订单更新回调"""
+        if callback in self._orbitexch_bets_callbacks:
+            return
+        self._orbitexch_bets_callbacks.append(callback)
+
+    def _notify_polymarket_order_callbacks(self, event_type: str, data: dict) -> None:
+        for callback in self._polymarket_order_callbacks:
+            try:
+                callback(event_type, data)
+            except Exception as e:
+                self._log.error(f"Polymarket order callback error: {e}")
+
+    def _notify_orbitexch_bets_callbacks(self, event_type: str, data: dict) -> None:
+        for callback in self._orbitexch_bets_callbacks:
+            try:
+                callback(event_type, data)
+            except Exception as e:
+                self._log.error(f"OrbitExch bets callback error: {e}")
+
     def _on_orbitexch_bets_update(self, bets_data: dict) -> None:
         """
         OrbitExch 订单更新回调
@@ -456,12 +510,52 @@ class OddsSubscriptionService:
         market_id = bets_data.get("market_id", "")
 
         # 查找对应的 pair_id
-        for pair_id, pair in self._subscribed_pairs.items():
-            orbitexch_data = pair.orbitexch_data
-            if orbitexch_data.get("market_id") == market_id:
-                self._log.debug(f"OrbitExch bets update for {pair_id}")
-                self._notify_position_callbacks(pair_id)
-                break
+        if market_id:
+            for pair_id, pair in self._subscribed_pairs.items():
+                orbitexch_data = pair.orbitexch_data
+                if orbitexch_data.get("market_id") == market_id:
+                    self._log.debug(f"OrbitExch bets update for {pair_id}")
+                    self._notify_position_callbacks(pair_id)
+                    break
+
+        for bet in bets_data.get("bets", []):
+            self._notify_orbitexch_bets_callbacks(
+                "UPDATE",
+                {
+                    "offerId": bet.get("offerId"),
+                    "marketId": bet.get("marketId"),
+                    "selectionId": bet.get("selectionId"),
+                    "sizeMatched": bet.get("sizeMatched", 0),
+                    "sizeRemaining": bet.get("sizeRemaining", 0),
+                },
+            )
+
+    def _on_polymarket_orders_update(self, data: dict) -> None:
+        """
+        Polymarket 订单更新回调
+
+        Args:
+            data: 订单更新数据
+        """
+        order = data.get("order")
+        if not order:
+            return
+        status = str(getattr(order, "status", "")).upper()
+        if status == "CANCELLED":
+            event_type = "CANCELLATION"
+        elif status == "MATCHED":
+            event_type = "UPDATE"
+        else:
+            event_type = "PLACEMENT"
+        self._notify_polymarket_order_callbacks(
+            event_type,
+            {
+                "id": getattr(order, "order_id", ""),
+                "order_id": getattr(order, "order_id", ""),
+                "size_matched": getattr(order, "size_matched", 0),
+                "original_size": getattr(order, "original_size", 0),
+            },
+        )
 
     def _on_polymarket_position_update(self, event_id: str) -> None:
         """
@@ -558,6 +652,10 @@ class OddsSubscriptionService:
             return self._latest_odds.get(pair_id, {})
         else:
             return self._latest_odds
+
+    def get_pair_odds(self, pair_id: str) -> dict[str, Any]:
+        """获取指定 pair 的最新赔率"""
+        return self._latest_odds.get(pair_id, {})
 
     def get_subscriptions(self) -> list[dict[str, Any]]:
         """
@@ -709,6 +807,14 @@ class OddsSubscriptionService:
         if not self._orbitexch_client:
             return {}
         return self._orbitexch_client.get_selection_mapping(pair_id)
+
+    def get_polymarket_client(self):
+        """获取 Polymarket 客户端（用于执行追踪）"""
+        return self._polymarket_client
+
+    def get_orbitexch_client(self):
+        """获取 OrbitExch 客户端（用于执行追踪）"""
+        return self._orbitexch_client
 
     def get_position_mappings(self) -> dict:
         """
