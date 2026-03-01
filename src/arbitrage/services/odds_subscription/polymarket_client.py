@@ -679,6 +679,16 @@ class PolymarketOddsClient:
             self._log.debug("No API key configured, skipping position fetch")
             return []
 
+        user_address = self.config.polymarket_user_address
+        if not user_address and self.config.polymarket_api_key.startswith("0x"):
+            user_address = self.config.polymarket_api_key
+
+        if not user_address:
+            self._log.warning(
+                "No Polymarket user address configured, skipping position fetch"
+            )
+            return []
+
         path = "/positions"
         headers = self._generate_l1_auth_headers("GET", path)
 
@@ -690,6 +700,7 @@ class PolymarketOddsClient:
                 resp = await client.get(
                     f"{self.DATA_API_URL}{path}",
                     headers=headers,
+                    params={"user": user_address},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -752,6 +763,16 @@ class PolymarketOddsClient:
             self._log.debug("No API key configured, skipping orders fetch")
             return []
 
+        user_address = self.config.polymarket_user_address
+        if not user_address and self.config.polymarket_api_key.startswith("0x"):
+            user_address = self.config.polymarket_api_key
+
+        if not user_address:
+            self._log.warning(
+                "No Polymarket user address configured, skipping orders fetch"
+            )
+            return []
+
         path = "/orders"
         if asset_id:
             path = f"/orders?asset_id={asset_id}"
@@ -762,9 +783,13 @@ class PolymarketOddsClient:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                params = {"user": user_address}
+                if asset_id:
+                    params["asset_id"] = asset_id
                 resp = await client.get(
-                    f"{self.DATA_API_URL}{path}",
+                    f"{self.DATA_API_URL}/orders",
                     headers=headers,
+                    params=params,
                 )
                 resp.raise_for_status()
                 data = resp.json()

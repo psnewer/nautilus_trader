@@ -134,6 +134,7 @@ class ExecutionSession:
     # 当前操作
     pending_operations: list = field(default_factory=list)
     operation_results: list = field(default_factory=list)
+    has_open_orders: bool = False
 
     # 历史记录
     history: list[dict] = field(default_factory=list)
@@ -260,7 +261,7 @@ class ExecutionSession:
         if self.is_target_met():
             return False
         if self.is_zero_fill():
-            return False
+            return self.has_open_orders
         # 部分成交，需要补救
         return True
 
@@ -295,6 +296,7 @@ class ExecutionSession:
             "retry_count": self.retry_count,
             "failure_count": self.failure_count,
             "max_failure_retries": self.max_failure_retries,
+            "has_open_orders": self.has_open_orders,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "history_count": len(self.history),

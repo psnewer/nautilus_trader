@@ -15,7 +15,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "atp"
+              "wta"
             ]
           }
         ]
@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "ATP Acapulco 2026"
+              "WTA Antalya 2026"
             ]
           }
         ]
@@ -45,28 +45,28 @@
     "sport_aliases": {},
     "competition_aliases": {
       "epl": "English Premier League",
-      "atp": "ATP",
-      "ATP Acapulco 2026": "ATP"
+      "wta": "WTA",
+      "WTA Antalya 2026": "WTA"
     },
     "competition_max_matches": {
       "English Premier League": 0,
-      "ATP": 1
+      "WTA": 1
     }
   },
   "odds": {
     "enabled": true,
     "staleness_timeout_sec": 300,
     "pair_activity_timeout_sec": 300,
-    "polymarket_api_key": "",
-    "polymarket_api_secret": "",
-    "polymarket_passphrase": "",
+    "polymarket_api_key": "019c11d1-873a-788d-a4e7-2065a2f9f36f",
+    "polymarket_api_secret": "1wF4nCed5DMLqbvl77jYmdmicZSQGxH0wP9t  T3Zx9A8=",
+    "polymarket_passphrase": "517b4b076ce1dde35d9ab989ee6e34b9b08d8714e37e760bbdaa0ad4fc96af70",
     "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
     "orbitexch_page_refresh_sec": 600,
     "orbitexch_staleness_timeout_sec": 60,
-    "orbitexch_username": "",
-    "orbitexch_password": "",
+    "orbitexch_username": "haidi123",
+    "orbitexch_password": "594110_Aa",
     "orbitexch_user_data_dir": "",
     "orbitexch_cdp_url": "",
     "supported_market_types": [
@@ -76,7 +76,7 @@
     ]
   },
   "arbitrage": {
-    "share": 30.0
+    "share": 50
   },
   "execution": {
     "enabled": true,

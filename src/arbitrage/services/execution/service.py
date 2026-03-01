@@ -142,6 +142,7 @@ class ExecutionService:
             logger=logging.getLogger("ExecutionOrchestrator"),
         )
         self._log.info("Execution orchestrator initialized")
+        self._sync_tracking_clients()
 
         # 注册会话完成回调：触发风控返水率重新计算
         self._orchestrator.register_session_callback(self._on_session_complete)
@@ -528,6 +529,11 @@ class ExecutionService:
         """
         order = self._orders.get(order_id)
         if not order:
+            for existing in self._orders.values():
+                if existing.venue_order_id == order_id:
+                    order = existing
+                    break
+        if not order:
             return CancelResult(
                 success=False,
                 order_id=order_id,
@@ -552,6 +558,8 @@ class ExecutionService:
         # 更新活跃订单
         if result.success and order_id in self._active_orders:
             del self._active_orders[order_id]
+        elif result.success and order.order_id in self._active_orders:
+            del self._active_orders[order.order_id]
 
         # 触发回调
         self._notify_order_update(order)
@@ -801,6 +809,27 @@ class ExecutionService:
         """
         self._odds_service = odds_service
         self._log.info("Odds service reference set")
+        self._sync_tracking_clients()
+
+    def _sync_tracking_clients(self) -> None:
+        """同步追踪所需的赔率客户端引用"""
+        if not self._orchestrator or not self._odds_service:
+            return
+        try:
+            self._orchestrator.set_polymarket_client(
+                self._odds_service.get_polymarket_client()
+            )
+            self._orchestrator.set_orbitexch_client(
+                self._odds_service.get_orbitexch_client()
+            )
+            self._odds_service.register_polymarket_order_callback(
+                self.on_polymarket_ws_event
+            )
+            self._odds_service.register_orbitexch_bets_callback(
+                self.on_orbitexch_ws_event
+            )
+        except Exception as e:
+            self._log.warning(f"Failed to sync tracking clients: {e}")
 
     def set_arbitrage_config(self, arbitrage_config) -> None:
         """
@@ -887,300 +916,115 @@ class ExecutionService:
             f"pair={pair_id}, rebate_rate={best_direction.get('rebate_rate')}"
         )
 
-        # 获取 size 计算参数
-        discount = self.config.discount
-        take_off = self.config.take_off
-        way_rebate = opportunity.get("way_rebate", {})
-
-        await self._process_opportunity(
-            opportunity_id=opportunity_id,
-            pair_id=pair_id,
-            best_direction=best_direction,
-            discount=discount,
-            take_off=take_off,
-            way_rebate=way_rebate,
-            adjusted_share=opportunity.get("adjusted_share"),
-        )
-
-    async def _process_opportunity(
-        self,
-        opportunity_id: str,
-        pair_id: str,
-        best_direction: dict,
-        discount: float = 1.0,
-        take_off: float = 0.0,
-        way_rebate: dict = None,
-        adjusted_share: float | None = None,
-    ) -> None:
-        """
-        处理 opportunity（内部方法）
-
-        Args:
-            opportunity_id: 机会 ID
-            pair_id: 比赛 ID
-            best_direction: 最佳套利方向
-            discount: 折扣系数
-            take_off: 从其他方向持仓返水中拿走的比例
-            way_rebate: 各方向持仓返水率 {outcome: rebate_rate}
-            adjusted_share: 经 strategy 调整的 share（考虑市场可交易量）
-        """
-        way_rebate = way_rebate or {}
-
-        # 从 best_direction 提取所有套利腿
         legs = best_direction.get("legs", [])
         if len(legs) < 2:
             self._log.warning(f"Opportunity {opportunity_id}: insufficient legs ({len(legs)})")
             return
 
-        # 分离 Polymarket 和 OrbitExch 腿（可能有多个）
-        poly_legs = [leg for leg in legs if leg.get("venue") == "polymarket"]
-        orbit_legs = [leg for leg in legs if leg.get("venue") == "orbitexch"]
-
-        self._log.info(
-            f"Opportunity {opportunity_id}: {len(legs)} legs "
-            f"({len(poly_legs)} poly + {len(orbit_legs)} orbit)"
+        target_shares, probabilities = self._build_session_targets(
+            best_direction=best_direction,
+            legs=legs,
+            way_rebate=opportunity.get("way_rebate", {}),
+            adjusted_share=opportunity.get("adjusted_share"),
         )
 
-        # 获取返水方向信息
-        rebate_rate = best_direction.get("rebate_rate", 0.0)
-        rebate_market = best_direction.get("rebate_market", "")  # home/draw/away
-        rebate_venue = best_direction.get("rebate_venue", "")    # polymarket/orbitexch
+        if not any(value > 0 for value in target_shares.values()):
+            self._log.warning(f"Opportunity {opportunity_id}: invalid target shares {target_shares}")
+            return
 
-        # 获取 share（优先使用经 strategy 调整的值）
+        await self.execute_with_session(
+            pair_id=pair_id,
+            opportunity_id=opportunity_id,
+            legs=legs,
+            target_shares=target_shares,
+            probabilities=probabilities,
+        )
+
+    def _build_session_targets(
+        self,
+        best_direction: dict,
+        legs: list[dict],
+        way_rebate: dict | None = None,
+        adjusted_share: float | None = None,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """
+        构建会话执行的目标 share 与初始概率
+
+        返回:
+            (target_shares, probabilities)
+        """
+        way_rebate = way_rebate or {}
+        target_shares = {"home": 0.0, "draw": 0.0, "away": 0.0}
+        probabilities = {"home": 0.0, "draw": 0.0, "away": 0.0}
+
         share = adjusted_share or (
             self._arbitrage_config.share if self._arbitrage_config else 100.0
         )
 
-        # 计算其他方向持仓返水率的最小值
+        rebate_rate = best_direction.get("rebate_rate", 0.0)
+        rebate_market = best_direction.get("rebate_market", "")
+        rebate_venue = best_direction.get("rebate_venue", "")
         min_other_rebate = self._calculate_min_other_rebate(
             rebate_market=rebate_market,
             way_rebate=way_rebate,
             legs=legs,
         )
 
-        # 获取返水方向的概率（用于 Polymarket size 计算）
         rebate_prob = 0.0
         for leg in legs:
             if leg.get("market_type") == rebate_market:
-                rebate_prob = leg.get("probability", 0) / 100  # 转为 0-1
+                rebate_prob = leg.get("probability", 0) / 100
                 break
 
-        # Size 计算参数
-        size_params = {
-            "rebate_rate": rebate_rate,
-            "rebate_prob": rebate_prob,
-            "discount": discount,
-            "take_off": take_off,
-            "share": share,
-            "min_other_rebate": min_other_rebate,
-        }
+        for leg in legs:
+            market_type = leg.get("market_type", "")
+            if not market_type:
+                continue
 
-        # 为每条腿创建订单
-        orders: list[Order] = []
+            prob_pct = leg.get("probability", 0)
+            probabilities[market_type] = prob_pct / 100 if prob_pct else 0.0
 
-        # 创建 Polymarket 订单（可能有 1-2 个）
-        for leg in poly_legs:
-            # 判断此腿是否为返水方向
-            is_rebate_leg = (
-                leg.get("market_type") == rebate_market and
-                rebate_venue == "polymarket"
-            )
-            order = await self._create_order_from_leg(
-                opportunity_id, pair_id, leg, Venue.POLYMARKET,
-                is_rebate_leg=is_rebate_leg,
-                size_params=size_params,
-            )
-            if order:
-                orders.append(order)
+            venue_str = leg.get("venue", "")
+            raw_odds = leg.get("raw_odds", 0)
+            is_rebate_leg = market_type == rebate_market and rebate_venue == venue_str
 
-        # 创建 OrbitExch 订单（可能有 1-2 个）
-        for leg in orbit_legs:
-            # 判断此腿是否为返水方向
-            is_rebate_leg = (
-                leg.get("market_type") == rebate_market and
-                rebate_venue == "orbitexch"
-            )
-            order = await self._create_order_from_leg(
-                opportunity_id, pair_id, leg, Venue.ORBITEXCH,
-                is_rebate_leg=is_rebate_leg,
-                size_params=size_params,
-            )
-            if order:
-                orders.append(order)
-
-        if not orders:
-            self._log.warning(f"Opportunity {opportunity_id}: no orders created")
-            return
-
-        self._log.info(f"Opportunity {opportunity_id}: executing {len(orders)} orders")
-
-        # 确保 OrbitExch 页面可用（可能在订阅过程中还未设置）
-        orbit_orders = [o for o in orders if o.venue == Venue.ORBITEXCH]
-        if orbit_orders and not self._orbitexch_executor._pages:
-            # 尝试从 odds_service 获取页面
-            if self._odds_service:
-                orbitexch_pages = self._odds_service.get_orbitexch_pages()
-                for comp_id, page in orbitexch_pages.items():
-                    if comp_id != "main":
-                        self._orbitexch_executor.set_page(comp_id, page)
-                        self._log.info(f"Dynamically set OrbitExch page: {comp_id}")
-
-            if not self._orbitexch_executor._pages:
-                self._log.warning(
-                    f"Opportunity {opportunity_id}: OrbitExch pages not yet available, skipping"
+            if venue_str == "polymarket":
+                base_size = share
+                if self._arbitrage_config:
+                    base_size = self._arbitrage_config.calculate_polymarket_size(prob_pct)
+                final_size = self._calculate_final_size(
+                    base_size=base_size,
+                    venue=Venue.POLYMARKET,
+                    rebate_rate=rebate_rate,
+                    rebate_prob=rebate_prob,
+                    discount=self.config.discount,
+                    take_off=self.config.take_off,
+                    share=share,
+                    min_other_rebate=min_other_rebate,
+                    is_rebate_leg=is_rebate_leg,
                 )
-                return
-
-        # 并行执行所有订单
-        results = await asyncio.gather(
-            *[self.execute_order(order) for order in orders],
-            return_exceptions=True,
-        )
-
-        # 记录结果（包括详细错误信息）
-        success_count = 0
-        for i, r in enumerate(results):
-            order = orders[i]
-            if isinstance(r, Exception):
-                self._log.error(
-                    f"Order {order.order_id} ({order.venue.value}/{order.market_type}) "
-                    f"raised exception: {r}"
+                target_shares[market_type] = final_size
+            elif venue_str == "orbitexch":
+                if raw_odds <= 0:
+                    continue
+                base_size = share / raw_odds
+                if self._arbitrage_config:
+                    base_size = self._arbitrage_config.calculate_orbitexch_size(raw_odds)
+                final_size = self._calculate_final_size(
+                    base_size=base_size,
+                    venue=Venue.ORBITEXCH,
+                    rebate_rate=rebate_rate,
+                    rebate_prob=rebate_prob,
+                    discount=self.config.discount,
+                    take_off=self.config.take_off,
+                    share=share,
+                    min_other_rebate=min_other_rebate,
+                    is_rebate_leg=is_rebate_leg,
                 )
-            elif r.success:
-                success_count += 1
-            else:
-                self._log.error(
-                    f"Order {order.order_id} ({order.venue.value}/{order.market_type}) "
-                    f"failed: {r.message}"
-                )
+                target_shares[market_type] = final_size * raw_odds
 
-        self._log.info(
-            f"Opportunity {opportunity_id} execution: "
-            f"{success_count}/{len(orders)} orders successful"
-        )
+        return target_shares, probabilities
 
-    async def _create_order_from_leg(
-        self,
-        opportunity_id: str,
-        pair_id: str,
-        leg: dict,
-        venue: Venue,
-        is_rebate_leg: bool = False,
-        size_params: dict = None,
-    ) -> Order | None:
-        """
-        从套利腿创建订单
-
-        Args:
-            opportunity_id: 机会 ID
-            pair_id: 比赛 ID
-            leg: 套利腿数据
-            venue: 平台
-            is_rebate_leg: 是否为返水方向的腿
-            size_params: size 计算参数 {rebate_rate, rebate_prob, discount, take_off, share, min_other_rebate}
-
-        Returns:
-            订单对象，如果创建失败返回 None
-        """
-        size_params = size_params or {}
-        market_type = leg.get("market_type", "")
-        probability = leg.get("probability", 0)  # 0-100 scale
-        raw_odds = leg.get("raw_odds", 0)
-        action = leg.get("action", "buy")
-
-        # 获取订单信息
-        order_info = None
-        if self._odds_service:
-            order_info = self._odds_service.get_order_info(pair_id, market_type)
-
-        if not order_info:
-            self._log.warning(
-                f"Opportunity {opportunity_id}: cannot get order info "
-                f"for {pair_id}/{market_type}/{venue.value}"
-            )
-            return None
-
-        # 记录订单信息以便调试
-        self._log.info(
-            f"Order info for {pair_id}/{market_type}/{venue.value}: {order_info}"
-        )
-
-        # 计算订单大小
-        if venue == Venue.POLYMARKET:
-            base_size = 10.0
-            if self._arbitrage_config:
-                base_size = self._arbitrage_config.calculate_polymarket_size(probability)
-
-            # 计算最终 size
-            size = self._calculate_final_size(
-                base_size=base_size,
-                venue=venue,
-                rebate_rate=size_params.get("rebate_rate", 0.0),
-                rebate_prob=size_params.get("rebate_prob", 0.0),
-                discount=size_params.get("discount", 1.0),
-                take_off=size_params.get("take_off", 0.0),
-                share=size_params.get("share", 100.0),
-                min_other_rebate=size_params.get("min_other_rebate"),
-                is_rebate_leg=is_rebate_leg,
-            )
-
-            return Order(
-                venue=venue,
-                pair_id=pair_id,
-                market_type=market_type,
-                token_id=order_info.get("polymarket", {}).get("token_id", ""),
-                condition_id=order_info.get("polymarket", {}).get("condition_id", ""),
-                side=OrderSide.BUY if action == "buy" else OrderSide.SELL,
-                price=probability / 100,  # 转换为 0-1
-                size=size,
-                order_type=OrderType.GTC,
-                metadata={
-                    "opportunity_id": opportunity_id,
-                    "leg_action": action,
-                    "original_probability": probability,
-                    "base_size": base_size,
-                    "is_rebate_leg": is_rebate_leg,
-                },
-            )
-
-        elif venue == Venue.ORBITEXCH:
-            base_size = 10.0
-            if self._arbitrage_config:
-                base_size = self._arbitrage_config.calculate_orbitexch_size(raw_odds)
-
-            # 计算最终 size
-            size = self._calculate_final_size(
-                base_size=base_size,
-                venue=venue,
-                rebate_rate=size_params.get("rebate_rate", 0.0),
-                rebate_prob=size_params.get("rebate_prob", 0.0),
-                discount=size_params.get("discount", 1.0),
-                take_off=size_params.get("take_off", 0.0),
-                share=size_params.get("share", 100.0),
-                min_other_rebate=size_params.get("min_other_rebate"),
-                is_rebate_leg=is_rebate_leg,
-            )
-
-            return Order(
-                venue=venue,
-                pair_id=pair_id,
-                market_type=market_type,
-                market_id=order_info.get("orbitexch", {}).get("market_id", ""),
-                selection_id=order_info.get("orbitexch", {}).get("selection_id", ""),
-                side=OrderSide.BACK if action == "buy" else OrderSide.LAY,
-                price=raw_odds,
-                size=size,
-                order_type=OrderType.GTC,
-                metadata={
-                    "opportunity_id": opportunity_id,
-                    "leg_action": action,
-                    "original_odds": raw_odds,
-                    "base_size": base_size,
-                    "is_rebate_leg": is_rebate_leg,
-                },
-            )
-
-        return None
 
     # =========================================================================
     # 编排器支持方法

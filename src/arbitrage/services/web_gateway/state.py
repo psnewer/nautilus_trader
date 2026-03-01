@@ -599,6 +599,11 @@ class AppState:
                 config.polymarket_api_secret = os.getenv("POLYMARKET_API_SECRET", "")
             if not config.polymarket_passphrase:
                 config.polymarket_passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
+            if not config.polymarket_user_address:
+                config.polymarket_user_address = os.getenv(
+                    "POLYMARKET_USER_ADDRESS",
+                    os.getenv("POLYMARKET_ADDRESS", ""),
+                )
 
             self._odds_service = OddsSubscriptionService(
                 config=config,
