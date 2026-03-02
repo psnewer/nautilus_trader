@@ -135,7 +135,8 @@ class PolymarketOddsClient:
 
         # 订单数据（来自 User Channel）
         self._current_orders: dict[str, PolymarketOrder] = {}  # order_id -> order
-        self._positions: dict[str, PolymarketPosition] = {}  # asset_id -> position
+        self._positions: dict[str, PolymarketPosition] | None = None  # asset_id -> position
+        self._positions_event = asyncio.Event()
 
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
@@ -728,9 +729,14 @@ class PolymarketOddsClient:
 
                     # 更新缓存
                     if pos.size > 0:
+                        if self._positions is None:
+                            self._positions = {}
                         self._positions[asset_id] = pos
 
                 self._log.info(f"Fetched {len(positions)} positions from Data API")
+                if self._positions is None:
+                    self._positions = {}
+                self._positions_event.set()
 
                 # 触发仓位更新回调
                 if self._positions_update_callback:
@@ -1056,6 +1062,8 @@ class PolymarketOddsClient:
         """
         if event_id:
             return [p for p in self._positions.values() if p.event_id == event_id]
+        if not self._positions:
+            return []
         return list(self._positions.values())
 
     def get_positions_by_pair(self, pair_id: str) -> list[PolymarketPosition]:
@@ -1069,7 +1077,19 @@ class PolymarketOddsClient:
             持仓列表
         """
         # pair_id 通常与 event_id 相同或有映射关系
+        if not self._positions:
+            return []
         return [p for p in self._positions.values() if p.event_id == pair_id]
+
+    async def wait_for_positions(self, timeout: float) -> bool:
+        """等待首次 positions 到达"""
+        if self._positions is not None:
+            return True
+        try:
+            await asyncio.wait_for(self._positions_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     def register_orders_callback(self, callback: Callable[[dict], None]) -> None:
         """注册订单更新回调"""

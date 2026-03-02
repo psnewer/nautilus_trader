@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "WTA Antalya 2026"
+              "WTA Indian Wells 2026"
             ]
           }
         ]
@@ -46,7 +46,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "wta": "WTA",
-      "WTA Antalya 2026": "WTA"
+      "WTA Indian Wells 2026": "WTA"
     },
     "competition_max_matches": {
       "English Premier League": 0,
@@ -60,6 +60,7 @@
     "polymarket_api_key": "019c11d1-873a-788d-a4e7-2065a2f9f36f",
     "polymarket_api_secret": "1wF4nCed5DMLqbvl77jYmdmicZSQGxH0wP9t  T3Zx9A8=",
     "polymarket_passphrase": "517b4b076ce1dde35d9ab989ee6e34b9b08d8714e37e760bbdaa0ad4fc96af70",
+    "polymarket_user_address": "",
     "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
