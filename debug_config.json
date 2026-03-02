@@ -19,7 +19,7 @@
     },
     "orbitexch_size": {
       "enabled": true,
-      "value": 5
+      "value": 7
     },
     "order_size": {
       "enabled": false,
@@ -42,7 +42,7 @@
       "data": {
         "market_type": "home",
         "bid": 0.29,
-        "ask": 0.30
+        "ask": 0.99
       },
       "conditions": {
         "venue": "polymarket",
@@ -56,7 +56,7 @@
       "data": {
         "market_type": "away",
         "bid": 0.49,
-        "ask": 0.50
+        "ask": 0.99
       },
       "conditions": {
         "venue": "polymarket",

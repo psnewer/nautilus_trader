@@ -1030,7 +1030,7 @@ class AppState:
             self._pipeline_phase = "idle"
             self._pipeline_active = False
 
-    def load_risk_historical_positions(self) -> dict[str, int]:
+    async def load_risk_historical_positions(self) -> dict[str, int]:
         """
         加载历史持仓到风控服务
 
@@ -1041,6 +1041,14 @@ class AppState:
         """
         odds_service = self.get_odds_service()
         risk_service = self.get_risk_service()
+
+        # 等待 Polymarket positions 到达
+        if not await odds_service.wait_for_polymarket_positions(timeout=30.0):
+            self._log.warning("Polymarket positions not received within timeout")
+
+        # 等待 OrbitExch CURRENT_BETS 到达
+        if not await odds_service.wait_for_orbitexch_current_bets(timeout=30.0):
+            self._log.warning("OrbitExch CURRENT_BETS not received within timeout")
 
         # 获取映射数据
         mappings = odds_service.get_position_mappings()

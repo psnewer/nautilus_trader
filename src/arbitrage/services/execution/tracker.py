@@ -225,7 +225,8 @@ class OrderTracker:
                 continue
             if operation.operation_type == OperationType.CANCEL and op_result.get("success"):
                 # 撤单 API 返回成功，直接标记为已确认，无需等待快照对比
-                self._results[key].status = TrackingStatus.CONFIRMED
+                result = self._results[key]
+                result.status = TrackingStatus.CONFIRMED
                 self._log.info(
                     f"CANCEL confirmed via API response: order_id={result.venue_order_id}"
                 )

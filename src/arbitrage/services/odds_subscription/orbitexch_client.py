@@ -69,7 +69,8 @@ class OrbitExchOddsClient:
 
         # 当前订单（CURRENT_BETS）
         # market_id -> [bet_dict, ...]
-        self._current_bets: dict[str, list[dict]] = {}
+        self._current_bets: dict[str, list[dict]] | None = None
+        self._current_bets_event = asyncio.Event()
 
         # 订单更新回调
         self._bets_update_callback: Callable[[dict], None] | None = None
@@ -900,8 +901,6 @@ class OrbitExchOddsClient:
         """
         try:
             bets = data.get("CURRENT_BETS", [])
-            if not bets:
-                return
 
             self._log.debug(f"Received CURRENT_BETS update: {len(bets)} bets")
 
@@ -916,6 +915,7 @@ class OrbitExchOddsClient:
 
             # 更新缓存
             self._current_bets = bets_by_market
+            self._current_bets_event.set()
 
             # 触发回调
             if self._bets_update_callback:
@@ -943,6 +943,8 @@ class OrbitExchOddsClient:
         Returns:
             订单列表
         """
+        if not self._current_bets:
+            return []
         if market_id:
             return self._current_bets.get(market_id, [])
         else:
@@ -968,10 +970,20 @@ class OrbitExchOddsClient:
         pair_info = self._pair_info.get(pair_id, {})
         market_id = pair_info.get("market_id")
 
-        if market_id:
+        if market_id and self._current_bets:
             result = self._current_bets.get(market_id, [])
 
         return result
+
+    async def wait_for_current_bets(self, timeout: float) -> bool:
+        """等待首次 CURRENT_BETS 到达"""
+        if self._current_bets is not None:
+            return True
+        try:
+            await asyncio.wait_for(self._current_bets_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     def register_bets_callback(self, callback: Callable[[dict], None]) -> None:
         """注册订单更新回调"""

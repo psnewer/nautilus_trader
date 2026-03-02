@@ -142,7 +142,7 @@ async def _run_subscription():
 
         # 加载历史持仓到风控服务
         app_state.ensure_risk_registered()
-        position_counts = app_state.load_risk_historical_positions()
+        position_counts = await app_state.load_risk_historical_positions()
         _log.info(f"Loaded historical positions: {position_counts}")
 
         # 更新执行服务的 OrbitExch 页面引用（订阅后页面才可用）
