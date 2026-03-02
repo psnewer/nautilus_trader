@@ -762,6 +762,22 @@ class OddsSubscriptionService:
             return []
         return self._polymarket_client.get_positions_by_pair(pair_id) if pair_id else self._polymarket_client.get_positions()
 
+    def get_polymarket_open_orders(self) -> list:
+        """
+        获取 Polymarket 当前未完成订单
+
+        Returns:
+            PolymarketOrder 列表
+        """
+        if self._use_mock_exchange():
+            from src.arbitrage.services.debug import debug_manager, MockCategory
+            context = {"venue": "polymarket"}
+            return debug_manager.get_mock_data(MockCategory.ORDERS, context) or []
+
+        if not self._polymarket_client:
+            return []
+        return self._polymarket_client.get_current_orders()
+
     async def wait_for_polymarket_positions(self, timeout: float) -> bool:
         """等待 Polymarket 首次 positions 到达"""
         if not self._polymarket_client:

@@ -80,7 +80,6 @@ class ExecutionService:
 
         # 订单管理
         self._orders: dict[str, Order] = {}  # order_id -> Order
-        self._active_orders: dict[str, Order] = {}  # order_id -> Order (活跃订单)
 
         # 回调
         self._order_update_callbacks: list[Callable[[Order], None]] = []
@@ -259,7 +258,7 @@ class ExecutionService:
 
         # 更新订单状态
         if result.success and order.is_active:
-            self._active_orders[order.order_id] = order
+            self._add_active_order(order)
 
         # 触发回调
         self._notify_order_update(order)
@@ -293,6 +292,8 @@ class ExecutionService:
         Args:
             session: ExecutionSession
         """
+        # 会话结束后清理活跃订单
+        session.active_order_ids.clear()
         self._publish_session_complete(session)
 
     def _publish_session_complete(self, session) -> None:
@@ -511,9 +512,9 @@ class ExecutionService:
     def _on_mock_order_update(self, order: Order) -> None:
         """处理模拟交易所的订单状态更新"""
         if order.is_active:
-            self._active_orders[order.order_id] = order
-        elif order.order_id in self._active_orders:
-            del self._active_orders[order.order_id]
+            self._add_active_order(order)
+        else:
+            self._remove_active_order(order)
 
         self._notify_order_update(order)
 
@@ -556,10 +557,8 @@ class ExecutionService:
             )
 
         # 更新活跃订单
-        if result.success and order_id in self._active_orders:
-            del self._active_orders[order_id]
-        elif result.success and order.order_id in self._active_orders:
-            del self._active_orders[order.order_id]
+        if result.success:
+            self._remove_active_order(order)
 
         # 触发回调
         self._notify_order_update(order)
@@ -601,8 +600,7 @@ class ExecutionService:
 
         # 更新活跃订单
         if result.success and result.order.is_done:
-            if order_id in self._active_orders:
-                del self._active_orders[order_id]
+            self._remove_active_order(order)
 
         # 触发回调
         self._notify_order_update(result.order)
@@ -667,10 +665,7 @@ class ExecutionService:
         Returns:
             撤单结果列表
         """
-        orders_to_cancel = [
-            order for order in self._active_orders.values()
-            if venue is None or order.venue == venue
-        ]
+        orders_to_cancel = self.get_active_orders(venue=venue)
 
         if not orders_to_cancel:
             return []
@@ -704,7 +699,7 @@ class ExecutionService:
 
         if self._use_mock_exchange():
             orbit_orders = [
-                order for order in self._active_orders.values()
+                order for order in self.get_active_orders(venue=Venue.ORBITEXCH)
                 if order.venue == Venue.ORBITEXCH
             ]
             return await self._mock_exchange.cancel_all_unmatched(orbit_orders)
@@ -713,12 +708,11 @@ class ExecutionService:
 
         # 更新本地订单状态
         if result.success:
-            for order_id, order in list(self._active_orders.items()):
-                if order.venue == Venue.ORBITEXCH:
-                    order.status = OrderStatus.CANCELLED
-                    order.updated_at = time.time()
-                    del self._active_orders[order_id]
-                    self._notify_order_update(order)
+            for order in self.get_active_orders(venue=Venue.ORBITEXCH):
+                order.status = OrderStatus.CANCELLED
+                order.updated_at = time.time()
+                self._remove_active_order(order)
+                self._notify_order_update(order)
 
         return result
 
@@ -748,7 +742,13 @@ class ExecutionService:
 
     def get_active_orders(self, venue: Venue | None = None) -> list[Order]:
         """获取活跃订单"""
-        orders = list(self._active_orders.values())
+        orders = []
+        if self._orchestrator:
+            for session in self._orchestrator.get_all_sessions():
+                for order_id in session.active_order_ids:
+                    order = self._orders.get(order_id)
+                    if order:
+                        orders.append(order)
         if venue:
             orders = [o for o in orders if o.venue == venue]
         return orders
@@ -775,7 +775,7 @@ class ExecutionService:
     def get_orders_summary(self) -> dict[str, Any]:
         """获取订单统计"""
         total = len(self._orders)
-        active = len(self._active_orders)
+        active = len(self.get_active_orders())
 
         by_venue = {}
         by_status = {}
@@ -1134,6 +1134,29 @@ class ExecutionService:
         if self._orchestrator:
             return self._orchestrator.get_session(session_id)
         return None
+
+    def _get_order_session(self, order: Order) -> ExecutionSession | None:
+        """获取订单所属会话"""
+        if not self._orchestrator:
+            return None
+        session_id = order.metadata.get("session_id")
+        if not session_id:
+            return None
+        return self._orchestrator.get_session(session_id)
+
+    def _add_active_order(self, order: Order) -> None:
+        """记录会话活跃订单"""
+        session = self._get_order_session(order)
+        if not session:
+            return
+        session.active_order_ids.add(order.order_id)
+
+    def _remove_active_order(self, order: Order) -> None:
+        """移除会话活跃订单"""
+        session = self._get_order_session(order)
+        if not session:
+            return
+        session.active_order_ids.discard(order.order_id)
 
     def get_active_sessions(self) -> list[ExecutionSession]:
         """获取活跃执行会话"""

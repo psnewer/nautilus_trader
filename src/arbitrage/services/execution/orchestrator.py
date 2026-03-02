@@ -987,3 +987,7 @@ class ExecutionOrchestrator:
             "by_phase": by_phase,
             "by_end_reason": by_end_reason,
         }
+
+    def get_all_sessions(self) -> list[ExecutionSession]:
+        """获取全部会话"""
+        return list(self._sessions.values())

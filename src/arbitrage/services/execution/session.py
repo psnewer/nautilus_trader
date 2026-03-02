@@ -135,6 +135,7 @@ class ExecutionSession:
     pending_operations: list = field(default_factory=list)
     operation_results: list = field(default_factory=list)
     has_open_orders: bool = False
+    active_order_ids: set[str] = field(default_factory=set)
 
     # 历史记录
     history: list[dict] = field(default_factory=list)
