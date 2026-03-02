@@ -134,6 +134,7 @@ class PolymarketOddsClient:
         self._latest_odds: dict[str, dict] = {}  # token_id -> odds_data
 
         # 订单数据（来自 User Channel）
+        # 用于记录未完全成交订单
         self._current_orders: dict[str, PolymarketOrder] = {}  # order_id -> order
         self._positions: dict[str, PolymarketPosition] | None = None  # asset_id -> position
         self._positions_event = asyncio.Event()
@@ -841,8 +842,9 @@ class PolymarketOddsClient:
             )
             self._log.info("User Channel WebSocket connected")
 
-            # 连接成功后获取初始持仓
+            # 连接成功后获取初始持仓与未完全成交订单
             await self.fetch_positions()
+            await self.fetch_open_orders()
 
         except Exception as e:
             self._log.error(f"User Channel WebSocket connection failed: {e}")

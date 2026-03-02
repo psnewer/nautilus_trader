@@ -224,24 +224,48 @@ async def get_orders(
 @router.get("/orders/active")
 async def get_active_orders(venue: str | None = None):
     """获取活跃订单"""
-    from src.arbitrage.services.execution import Venue
-
-    service = app_state.get_execution_service()
-
-    if not service:
+    odds_service = app_state.get_odds_service()
+    if not odds_service:
         return {"orders": [], "total": 0}
 
-    venue_filter = None
-    if venue:
-        try:
-            venue_filter = Venue(venue)
-        except ValueError:
-            pass
+    venue_filter = venue if venue in {"polymarket", "orbitexch"} else None
 
-    orders = service.get_active_orders(venue=venue_filter)
+    orders = []
+    if venue_filter in (None, "polymarket"):
+        for order in odds_service.get_polymarket_open_orders():
+            size_remaining = float(order.original_size) - float(order.size_matched)
+            if size_remaining <= 0:
+                continue
+            orders.append({
+                "venue": "polymarket",
+                "order_id": order.order_id,
+                "status": order.status,
+                "price": order.price,
+                "size_matched": order.size_matched,
+                "size_remaining": size_remaining,
+                "token_id": order.asset_id,
+                "condition_id": order.market,
+            })
+
+    if venue_filter in (None, "orbitexch"):
+        for bet in odds_service.get_orbitexch_bets():
+            size_remaining = float(bet.get("sizeRemaining", 0))
+            if size_remaining <= 0:
+                continue
+            orders.append({
+                "venue": "orbitexch",
+                "order_id": str(bet.get("offerId", "")),
+                "status": bet.get("status", ""),
+                "price": bet.get("price", 0),
+                "size_matched": float(bet.get("sizeMatched", 0)),
+                "size_remaining": size_remaining,
+                "market_id": bet.get("marketId", ""),
+                "selection_id": bet.get("selectionId", ""),
+                "side": bet.get("side", ""),
+            })
 
     return {
-        "orders": [o.to_dict() for o in orders],
+        "orders": orders,
         "total": len(orders),
     }
 

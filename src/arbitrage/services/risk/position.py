@@ -474,7 +474,7 @@ class PositionManager:
             if not market_type:
                 continue
 
-            # 只处理已匹配的订单
+            # 只处理已成交的订单
             size_matched = float(bet.get("sizeMatched", 0))
             if size_matched <= 0:
                 continue

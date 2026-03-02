@@ -319,6 +319,13 @@ class RiskService:
         if not self._config.enabled:
             return RiskCheckResult(allowed=True, reason="Risk disabled")
 
+        # 全局挂单检查：存在未完全成交订单时禁止下单
+        if self._has_open_orders():
+            return RiskCheckResult(
+                allowed=False,
+                reason="Open orders detected",
+            )
+
         # 赔率缺失或异常检查
         odds_check = self._check_odds_valid(pair_id)
         if odds_check is not None:
@@ -471,6 +478,26 @@ class RiskService:
     def get_way_rebate(self, pair_id: str) -> dict[str, float]:
         """获取比赛各方向返水率"""
         return self._position_manager.get_way_rebate(pair_id)
+
+    def _has_open_orders(self) -> bool:
+        """是否存在未完全成交订单"""
+        if not self._odds_service:
+            return False
+
+        # Polymarket 未完全成交订单
+        for order in self._odds_service.get_polymarket_open_orders():
+            size_remaining = float(getattr(order, "original_size", 0)) - float(
+                getattr(order, "size_matched", 0)
+            )
+            if size_remaining > 0:
+                return True
+
+        # OrbitExch 未完全成交订单
+        for bet in self._odds_service.get_orbitexch_bets():
+            if float(bet.get("sizeRemaining", 0)) > 0:
+                return True
+
+        return False
 
     def get_way_rebate_by_venue(self, pair_id: str) -> dict[str, dict[str, float]]:
         """获取比赛按平台拆分的返水率"""
