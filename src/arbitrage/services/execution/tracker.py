@@ -315,7 +315,7 @@ class OrderTracker:
             elif op.venue == OperationVenue.ORBITEXCH and op.market_id:
                 orbit_markets.add(op.market_id)
 
-        # 刷新 Polymarket（调 REST API）
+        # 刷新 Polymarket（调 REST API 获取最新订单）
         poly_after: dict[str, dict[str, Any]] = {}
         if poly_keys and self._polymarket_client:
             try:

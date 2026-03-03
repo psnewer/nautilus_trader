@@ -77,12 +77,14 @@ class PolymarketPosition:
     从持仓汇总计算得出
     """
     asset_id: str  # token_id
+    condition_id: str  # market condition ID
     outcome: str  # "Yes" or "No"
     market_type: str  # "home", "away", "draw"
     size: float  # 持仓数量
     avg_price: float  # 平均成本
     current_price: float  # 当前价格
     event_id: str = ""
+    neg_risk: bool = False  # 是否为负风险市场
 
     @property
     def profit_if_win(self) -> float:
@@ -213,8 +215,13 @@ class PolymarketOddsClient:
                 away_slug = f"{event_ticker}-{away_abbr}" if away_abbr else ""
                 draw_slug = f"{event_ticker}-draw"
 
+                # event 级别的 negRisk 标志
+                event_neg_risk = event_data.get("negRisk", False)
+
                 for market in markets:
                     market_slug = market.get("slug", "")
+                    market_condition_id = market.get("conditionId", "")
+                    market_neg_risk = market.get("negRisk", event_neg_risk)
                     outcomes_raw = market.get("outcomes", [])
                     clob_token_ids_raw = market.get("clobTokenIds", "[]")
 
@@ -251,6 +258,8 @@ class PolymarketOddsClient:
                                 "outcome": outcomes[0],
                                 "market_type": "home",
                                 "event_id": event_id,
+                                "condition_id": market_condition_id,
+                                "neg_risk": market_neg_risk,
                                 "ticker": market_slug,
                                 "home_team": home_team,
                                 "away_team": away_team,
@@ -261,6 +270,8 @@ class PolymarketOddsClient:
                                 "outcome": outcomes[1],
                                 "market_type": "away",
                                 "event_id": event_id,
+                                "condition_id": market_condition_id,
+                                "neg_risk": market_neg_risk,
                                 "ticker": market_slug,
                                 "home_team": home_team,
                                 "away_team": away_team,
@@ -274,6 +285,8 @@ class PolymarketOddsClient:
                             "outcome": "Yes",
                             "market_type": "home",
                             "event_id": event_id,
+                            "condition_id": market_condition_id,
+                            "neg_risk": market_neg_risk,
                             "ticker": market_slug,
                             "home_team": home_team,
                             "away_team": away_team,
@@ -287,6 +300,8 @@ class PolymarketOddsClient:
                             "outcome": "Yes",
                             "market_type": "away",
                             "event_id": event_id,
+                            "condition_id": market_condition_id,
+                            "neg_risk": market_neg_risk,
                             "ticker": market_slug,
                             "home_team": home_team,
                             "away_team": away_team,
@@ -300,6 +315,8 @@ class PolymarketOddsClient:
                             "outcome": "Yes",
                             "market_type": "draw",
                             "event_id": event_id,
+                            "condition_id": market_condition_id,
+                            "neg_risk": market_neg_risk,
                             "ticker": market_slug,
                             "home_team": home_team,
                             "away_team": away_team,
@@ -638,6 +655,7 @@ class PolymarketOddsClient:
     # 参考: https://docs.polymarket.com/developers/CLOB/websocket
 
     DATA_API_URL = "https://data-api.polymarket.com"
+    CLOB_API_URL = "https://clob.polymarket.com"
 
     def _generate_l1_auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
         """
@@ -719,12 +737,14 @@ class PolymarketOddsClient:
 
                     pos = PolymarketPosition(
                         asset_id=asset_id,
+                        condition_id=token_info.get("condition_id", item.get("condition_id", "")),
                         outcome=token_info.get("outcome", item.get("outcome", "")),
                         market_type=token_info.get("market_type", ""),
                         size=float(item.get("size", 0)),
                         avg_price=float(item.get("avg_price", 0)),
                         current_price=current_price,
                         event_id=token_info.get("event_id", ""),
+                        neg_risk=token_info.get("neg_risk", False),
                     )
                     positions.append(pos)
 
@@ -756,9 +776,10 @@ class PolymarketOddsClient:
 
     async def fetch_open_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
         """
-        从 Data API 获取当前活跃订单
+        从 CLOB API 获取当前活跃订单
 
         调用 REST API 获取最新订单状态，不依赖 WebSocket 缓存。
+        端点: GET https://clob.polymarket.com/orders
 
         Args:
             asset_id: 可选，按 asset_id 过滤
@@ -770,39 +791,30 @@ class PolymarketOddsClient:
             self._log.debug("No API key configured, skipping orders fetch")
             return []
 
-        user_address = self.config.polymarket_user_address
-        if not user_address and self.config.polymarket_api_key.startswith("0x"):
-            user_address = self.config.polymarket_api_key
-
-        if not user_address:
-            self._log.warning(
-                "No Polymarket user address configured, skipping orders fetch"
-            )
-            return []
-
         path = "/orders"
-        if asset_id:
-            path = f"/orders?asset_id={asset_id}"
-        headers = self._generate_l1_auth_headers("GET", path.split("?")[0])
+        headers = self._generate_l1_auth_headers("GET", path)
 
         if not headers:
             return []
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                params = {"user": user_address}
+                params = {}
                 if asset_id:
                     params["asset_id"] = asset_id
                 resp = await client.get(
-                    f"{self.DATA_API_URL}/orders",
+                    f"{self.CLOB_API_URL}/orders",
                     headers=headers,
                     params=params,
                 )
                 resp.raise_for_status()
-                data = resp.json()
+                result = resp.json()
+
+                # CLOB API 返回 {"data": [...], "next_cursor": ..., "count": ...}
+                items = result.get("data", result) if isinstance(result, dict) else result
 
                 orders = []
-                for item in data:
+                for item in items:
                     order = PolymarketOrder.from_dict(item)
                     orders.append(order)
                     # 同步更新缓存
@@ -811,7 +823,7 @@ class PolymarketOddsClient:
                     else:
                         self._current_orders[order.order_id] = order
 
-                self._log.info(f"Fetched {len(orders)} orders from Data API")
+                self._log.info(f"Fetched {len(orders)} orders from CLOB API")
                 return orders
 
         except Exception as e:
@@ -842,9 +854,9 @@ class PolymarketOddsClient:
             )
             self._log.info("User Channel WebSocket connected")
 
-            # 连接成功后获取初始持仓与未完全成交订单
+            # 连接成功后获取初始持仓
+            # 活跃订单由 User Channel WS 推送填充，无需单独 REST 查询
             await self.fetch_positions()
-            await self.fetch_open_orders()
 
         except Exception as e:
             self._log.error(f"User Channel WebSocket connection failed: {e}")
