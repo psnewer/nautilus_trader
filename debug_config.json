@@ -6,7 +6,7 @@
       "value": -1
     },
     "polymarket_price": {
-      "enabled": true,
+      "enabled": false,
       "value": 0.01
     },
     "orbitexch_price": {
@@ -38,11 +38,11 @@
     "mock_odds_poly_home": {
       "category": "odds",
       "name": "Polymarket home odds",
-      "enabled": true,
+      "enabled": false,
       "data": {
         "market_type": "home",
         "bid": 0.29,
-        "ask": 0.99
+        "ask": 0.30
       },
       "conditions": {
         "venue": "polymarket",
@@ -52,14 +52,42 @@
     "mock_odds_poly_away": {
       "category": "odds",
       "name": "Polymarket away odds",
-      "enabled": true,
+      "enabled": false,
       "data": {
         "market_type": "away",
         "bid": 0.49,
-        "ask": 0.99
+        "ask": 0.50
       },
       "conditions": {
         "venue": "polymarket",
+        "market_type": "away"
+      }
+    },
+    "mock_odds_orbit_home": {
+      "category": "odds",
+      "name": "OrbitExch home odds",
+      "enabled": true,
+      "data": {
+        "market_type": "home",
+        "back": 1.04,
+        "lay": 1.05
+      },
+      "conditions": {
+        "venue": "orbitexch",
+        "market_type": "home"
+      }
+    },
+    "mock_odds_orbit_away": {
+      "category": "odds",
+      "name": "OrbitExch away odds",
+      "enabled": true,
+      "data": {
+        "market_type": "away",
+        "back": 1.04,
+        "lay": 1.05
+      },
+      "conditions": {
+        "venue": "orbitexch",
         "market_type": "away"
       }
     }

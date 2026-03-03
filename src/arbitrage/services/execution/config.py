@@ -54,6 +54,15 @@ class ExecutionConfig:
     tracking_check_interval_sec: float = 5.0  # 追踪检查间隔
     max_failure_retries: int = 3             # 失败重试次数上限
 
+    # Relayer 配置 (用于链上操作: merge/redeem)
+    polymarket_relayer_url: str = "https://relayer-v2.polymarket.com/"
+    polygon_rpc_url: str = "https://polygon-rpc.com/"
+
+    # Post-session cleanup 开关
+    cleanup_enabled: bool = True
+    cleanup_merge_enabled: bool = True
+    cleanup_claim_enabled: bool = True
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExecutionConfig":
         """从字典创建配置实例"""
@@ -80,6 +89,13 @@ class ExecutionConfig:
             tracking_timeout_sec=data.get("tracking_timeout_sec", 30.0),
             tracking_check_interval_sec=data.get("tracking_check_interval_sec", 5.0),
             max_failure_retries=data.get("max_failure_retries", 3),
+            polymarket_relayer_url=data.get(
+                "polymarket_relayer_url", "https://relayer-v2.polymarket.com/"
+            ),
+            polygon_rpc_url=data.get("polygon_rpc_url", "https://polygon-rpc.com/"),
+            cleanup_enabled=data.get("cleanup_enabled", True),
+            cleanup_merge_enabled=data.get("cleanup_merge_enabled", True),
+            cleanup_claim_enabled=data.get("cleanup_claim_enabled", True),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,4 +117,9 @@ class ExecutionConfig:
             "tracking_timeout_sec": self.tracking_timeout_sec,
             "tracking_check_interval_sec": self.tracking_check_interval_sec,
             "max_failure_retries": self.max_failure_retries,
+            "polymarket_relayer_url": self.polymarket_relayer_url,
+            "polygon_rpc_url": self.polygon_rpc_url,
+            "cleanup_enabled": self.cleanup_enabled,
+            "cleanup_merge_enabled": self.cleanup_merge_enabled,
+            "cleanup_claim_enabled": self.cleanup_claim_enabled,
         }
