@@ -534,28 +534,60 @@ class OddsSubscriptionService:
         """
         Polymarket 订单更新回调
 
+        处理两种消息类型：
+        - type == "order": 订单事件（PLACEMENT / UPDATE / CANCELLATION）
+        - type == "trade": 成交事件（含 CONFIRMED 终态信号）
+
         Args:
-            data: 订单更新数据
+            data: 订单/成交更新数据
         """
-        order = data.get("order")
-        if not order:
-            return
-        status = str(getattr(order, "status", "")).upper()
-        if status == "CANCELLED":
-            event_type = "CANCELLATION"
-        elif status == "MATCHED":
-            event_type = "UPDATE"
-        else:
-            event_type = "PLACEMENT"
-        self._notify_polymarket_order_callbacks(
-            event_type,
-            {
-                "id": getattr(order, "order_id", ""),
-                "order_id": getattr(order, "order_id", ""),
-                "size_matched": getattr(order, "size_matched", 0),
-                "original_size": getattr(order, "original_size", 0),
-            },
-        )
+        msg_type = data.get("type")
+
+        if msg_type == "order":
+            order = data.get("order")
+            if not order:
+                return
+
+            # 使用 order_type 字段（由 polymarket_client 从 WS 的 type 映射而来）
+            order_type = data.get("order_type", "")
+            if order_type == "CANCELLATION":
+                event_type = "CANCELLATION"
+            elif order_type == "UPDATE":
+                event_type = "UPDATE"
+            else:
+                event_type = "PLACEMENT"
+
+            self._notify_polymarket_order_callbacks(
+                event_type,
+                {
+                    "id": getattr(order, "order_id", ""),
+                    "order_id": getattr(order, "order_id", ""),
+                    "size_matched": getattr(order, "size_matched", 0),
+                    "original_size": getattr(order, "original_size", 0),
+                },
+            )
+
+        elif msg_type == "trade":
+            trade = data.get("trade")
+            if not trade:
+                return
+
+            status = trade.get("status", "")
+            if status == "CONFIRMED":
+                # CONFIRMED 是完全成交的终态信号
+                maker_orders = trade.get("maker_orders", [])
+                self._notify_polymarket_order_callbacks(
+                    "TRADE_CONFIRMED",
+                    {
+                        "maker_orders": maker_orders,
+                        "taker_order_id": trade.get("taker_order_id", ""),
+                        "size": trade.get("size", "0"),
+                    },
+                )
+            elif status == "FAILED":
+                self._log.warning(
+                    f"Trade FAILED: id={trade.get('id', '')}"
+                )
 
     def _on_polymarket_position_update(self, event_id: str) -> None:
         """
