@@ -843,20 +843,20 @@ class PolymarketOddsClient:
         self._log.info(f"Connecting to User Channel WebSocket: {self.WS_USER_URL}")
 
         try:
-            # User Channel 认证通过订阅消息中的 auth 字段完成，不需要 HTTP headers
+            # User Channel 使用 L1 认证
+            auth_headers = self._generate_l1_auth_headers("GET", "/ws/user")
+
             self._user_ws = await websockets.connect(
                 self.WS_USER_URL,
+                additional_headers=auth_headers,
                 ping_interval=30,
                 ping_timeout=10,
             )
             self._log.info("User Channel WebSocket connected")
 
-            # 连接成功后，发送订阅消息
-            await self._subscribe_user_channel()
-
-            # 注意：不在这里调用 fetch_positions()
-            # 因为 HTTP 请求耗时会阻塞 WS 消息循环启动，导致服务端超时关闭连接
-            # 持仓数据由 _run_user_websocket 启动后异步获取
+            # 连接成功后获取初始持仓
+            # 活跃订单由 User Channel WS 推送填充，无需单独 REST 查询
+            await self.fetch_positions()
 
         except Exception as e:
             self._log.error(f"User Channel WebSocket connection failed: {e}")
@@ -895,7 +895,14 @@ class PolymarketOddsClient:
         }
 
         try:
-            await self._user_ws.send(json.dumps(subscribe_msg))
+            msg_json = json.dumps(subscribe_msg)
+            self._log.info(
+                f"Sending user channel subscription: markets={list(condition_ids)}, "
+                f"apiKey={self.config.polymarket_api_key[:8]}..., "
+                f"secret={'set' if self.config.polymarket_api_secret else 'EMPTY'}, "
+                f"passphrase={'set' if self.config.polymarket_passphrase else 'EMPTY'}"
+            )
+            await self._user_ws.send(msg_json)
             self._log.info(
                 f"Sent user channel subscription for {len(condition_ids)} markets"
             )
@@ -912,9 +919,6 @@ class PolymarketOddsClient:
                     self._log.warning("User Channel not available, stopping loop")
                     break
 
-                # WS 连接成功后异步获取初始持仓（不阻塞消息循环）
-                asyncio.create_task(self.fetch_positions())
-
                 async for message in self._user_ws:
                     if not self._running:
                         break
@@ -928,7 +932,12 @@ class PolymarketOddsClient:
                         self._log.error(f"Error handling User Channel message: {e}")
 
             except websockets.exceptions.ConnectionClosed as e:
-                self._log.warning(f"User Channel connection closed: {e}")
+                close_code = e.code if hasattr(e, 'code') else 'unknown'
+                close_reason = e.reason if hasattr(e, 'reason') else 'unknown'
+                self._log.warning(
+                    f"User Channel connection closed: code={close_code}, "
+                    f"reason='{close_reason}', exception={e}"
+                )
             except Exception as e:
                 self._log.error(f"User Channel error: {e}")
 
@@ -1248,14 +1257,9 @@ class PolymarketOddsClient:
                 self._log.info("Starting WebSocket task")
                 self._ws_task = asyncio.create_task(self._run_websocket())
 
-            # 懒启动 User Channel WebSocket（首次有 token 时启动）
-            if self.config.polymarket_api_key:
-                if not self._user_ws_task or self._user_ws_task.done():
-                    self._log.info("Starting User Channel WebSocket for order tracking")
-                    self._user_ws_task = asyncio.create_task(self._run_user_websocket())
-                elif self._user_ws:
-                    # 已连接时，重新发送订阅消息以包含新增的 condition_id
-                    await self._subscribe_user_channel()
+            # User Channel 已连接时，重新发送订阅消息以包含新增的 condition_id
+            if self._user_ws:
+                await self._subscribe_user_channel()
 
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
 
@@ -1307,10 +1311,12 @@ class PolymarketOddsClient:
         self._running = True
         self._log.info("Polymarket odds client started")
 
-        # User Channel 延迟到 subscribe_event 首次调用时启动
-        # 因为连接后需要立即发送订阅消息（含 condition_ids），否则服务端会关闭连接
-        if not self.config.polymarket_api_key:
-            self._log.info("No API key configured, User Channel will be disabled")
+        # 启动 User Channel WebSocket（如果配置了 API key）
+        if self.config.polymarket_api_key:
+            self._log.info("Starting User Channel WebSocket for order tracking")
+            self._user_ws_task = asyncio.create_task(self._run_user_websocket())
+        else:
+            self._log.info("No API key configured, User Channel disabled")
 
     async def stop(self) -> None:
         """停止客户端"""
