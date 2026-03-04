@@ -259,8 +259,8 @@ class OrderTracker:
             elapsed = time.time() - start_time
             remaining_time = self._timeout - elapsed
 
-        # 超时后，刷新数据并对比快照（仍有 PENDING 的操作）
-        if self._has_pending():
+        # 超时后，刷新数据并对比快照（仍有未完全成交的操作）
+        if not self._all_fully_filled():
             self._log.info("Timeout reached, refreshing and comparing snapshots")
             await self._refresh_and_diff()
 
@@ -300,12 +300,15 @@ class OrderTracker:
         2. OrbitExch: 刷新页面后读取缓存
         3. 对比前后差异，匹配到对应操作
         """
-        # 收集需要刷新的市场
+        # 收集需要刷新的市场（包含未完全成交的操作，不仅限于 PENDING）
         poly_keys: dict[str, tuple[str, str]] = {}
         orbit_markets = set()
 
         for result in self._results.values():
-            if result.status != TrackingStatus.PENDING:
+            # 跳过已失败或已完全成交的操作
+            if result.status == TrackingStatus.FAILED:
+                continue
+            if result.status == TrackingStatus.CONFIRMED and result.size_remaining <= 0:
                 continue
             op = result.operation
             if op.venue == OperationVenue.POLYMARKET:
@@ -360,8 +363,11 @@ class OrderTracker:
         Args:
             after: 刷新后的订单状态 {condition_id: {order_id: order}}
         """
-        for key, result in self._results.items():
-            if result.status != TrackingStatus.PENDING:
+        for rkey, result in self._results.items():
+            # 跳过已失败或已完全成交的操作
+            if result.status == TrackingStatus.FAILED:
+                continue
+            if result.status == TrackingStatus.CONFIRMED and result.size_remaining <= 0:
                 continue
             op = result.operation
             if op.venue != OperationVenue.POLYMARKET:
@@ -459,7 +465,10 @@ class OrderTracker:
             after: 刷新后的 bet 状态 {market_id: {offerId: bet_dict}}
         """
         for key, result in self._results.items():
-            if result.status != TrackingStatus.PENDING:
+            # 跳过已失败或已完全成交的操作
+            if result.status == TrackingStatus.FAILED:
+                continue
+            if result.status == TrackingStatus.CONFIRMED and result.size_remaining <= 0:
                 continue
             op = result.operation
             if op.venue != OperationVenue.ORBITEXCH:
@@ -610,9 +619,39 @@ class OrderTracker:
         处理 Polymarket WebSocket 事件
 
         Args:
-            event_type: 事件类型 (PLACEMENT, UPDATE, CANCELLATION)
+            event_type: 事件类型 (PLACEMENT, UPDATE, CANCELLATION, TRADE_CONFIRMED)
             data: 事件数据
         """
+        if event_type == "TRADE_CONFIRMED":
+            # Trade CONFIRMED: 完全成交终态信号
+            # 收集 trade 中所有 order_id（maker + taker），与我们的订单逐一比较
+            candidate_ids = set()
+            for maker in data.get("maker_orders", []):
+                oid = maker.get("order_id", "")
+                if oid:
+                    candidate_ids.add(oid)
+            taker_id = data.get("taker_order_id", "")
+            if taker_id:
+                candidate_ids.add(taker_id)
+
+            self._log.info(
+                f"TRADE_CONFIRMED: candidate_ids={candidate_ids}"
+            )
+
+            matched_any = False
+            for key, result in self._results.items():
+                if result.venue_order_id in candidate_ids:
+                    result.size_matched = result.operation.size
+                    result.size_remaining = 0.0
+                    self._log.info(
+                        f"TRADE_CONFIRMED matched: order_id={result.venue_order_id}, "
+                        f"filled={result.size_matched}"
+                    )
+                    matched_any = True
+            if matched_any:
+                self._tracking_events.set()
+            return
+
         order_id = data.get("id", "") or data.get("order_id", "")
 
         if not order_id:

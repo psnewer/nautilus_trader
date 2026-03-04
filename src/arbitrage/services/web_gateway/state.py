@@ -587,23 +587,20 @@ class AppState:
 
             # 使用存储的配置，并从环境变量补充凭据（如果配置中没有设置）
             config = self._odds_config
-            if not config.orbitexch_username:
-                config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", "")
-            if not config.orbitexch_password:
-                config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
+            config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", "")
+            config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
 
             # Polymarket 凭据（用于 User Channel 订单追踪）
-            if not config.polymarket_api_key:
-                config.polymarket_api_key = os.getenv("POLYMARKET_API_KEY", "")
-            if not config.polymarket_api_secret:
-                config.polymarket_api_secret = os.getenv("POLYMARKET_API_SECRET", "")
-            if not config.polymarket_passphrase:
-                config.polymarket_passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
-            if not config.polymarket_user_address:
-                config.polymarket_user_address = os.getenv(
-                    "POLYMARKET_USER_ADDRESS",
-                    os.getenv("POLYMARKET_ADDRESS", ""),
-                )
+            config.polymarket_api_key = os.getenv("POLYMARKET_API_KEY", "")
+            config.polymarket_api_secret = os.getenv("POLYMARKET_API_SECRET", "")
+            config.polymarket_passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
+            config.polymarket_user_address = os.getenv(
+                "POLYMARKET_USER_ADDRESS",
+                os.getenv("POLYMARKET_ADDRESS", ""),
+            )
+            config.polymarket_funder = os.getenv("POLYMARKET_FUNDER", "")
+            if config.polymarket_funder:
+                config.polymarket_user_address = config.polymarket_funder
 
             self._odds_service = OddsSubscriptionService(
                 config=config,

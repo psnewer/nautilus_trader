@@ -843,25 +843,64 @@ class PolymarketOddsClient:
         self._log.info(f"Connecting to User Channel WebSocket: {self.WS_USER_URL}")
 
         try:
-            # User Channel 使用 L1 认证
-            auth_headers = self._generate_l1_auth_headers("GET", "/ws/user")
-
+            # User Channel 认证通过订阅消息中的 auth 字段完成，不需要 HTTP headers
             self._user_ws = await websockets.connect(
                 self.WS_USER_URL,
-                additional_headers=auth_headers,
                 ping_interval=30,
                 ping_timeout=10,
             )
             self._log.info("User Channel WebSocket connected")
 
-            # 连接成功后获取初始持仓
-            # 活跃订单由 User Channel WS 推送填充，无需单独 REST 查询
-            await self.fetch_positions()
+            # 连接成功后，发送订阅消息
+            await self._subscribe_user_channel()
+
+            # 注意：不在这里调用 fetch_positions()
+            # 因为 HTTP 请求耗时会阻塞 WS 消息循环启动，导致服务端超时关闭连接
+            # 持仓数据由 _run_user_websocket 启动后异步获取
 
         except Exception as e:
             self._log.error(f"User Channel WebSocket connection failed: {e}")
             self._user_ws = None
             raise
+
+    async def _subscribe_user_channel(self) -> None:
+        """
+        发送 User Channel 订阅消息
+
+        从 _subscribed_tokens 收集唯一 condition_id 列表，
+        发送订阅消息以接收对应 market 的 order/trade 事件。
+        """
+        if not self._user_ws:
+            return
+
+        # 收集唯一的 condition_id
+        condition_ids = set()
+        for token_info in self._subscribed_tokens.values():
+            cid = token_info.get("condition_id", "")
+            if cid:
+                condition_ids.add(cid)
+
+        if not condition_ids:
+            self._log.info("No condition_ids to subscribe for User Channel")
+            return
+
+        subscribe_msg = {
+            "auth": {
+                "apiKey": self.config.polymarket_api_key,
+                "secret": self.config.polymarket_api_secret,
+                "passphrase": self.config.polymarket_passphrase,
+            },
+            "markets": list(condition_ids),
+            "type": "user",
+        }
+
+        try:
+            await self._user_ws.send(json.dumps(subscribe_msg))
+            self._log.info(
+                f"Sent user channel subscription for {len(condition_ids)} markets"
+            )
+        except Exception as e:
+            self._log.error(f"Failed to send user channel subscription: {e}")
 
     async def _run_user_websocket(self) -> None:
         """User Channel WebSocket 主循环"""
@@ -872,6 +911,9 @@ class PolymarketOddsClient:
                 if not self._user_ws:
                     self._log.warning("User Channel not available, stopping loop")
                     break
+
+                # WS 连接成功后异步获取初始持仓（不阻塞消息循环）
+                asyncio.create_task(self.fetch_positions())
 
                 async for message in self._user_ws:
                     if not self._running:
@@ -916,45 +958,44 @@ class PolymarketOddsClient:
         """
         处理单个 User Channel 消息
 
-        订单消息格式:
+        Polymarket User Channel 消息为扁平结构：
+
+        Order 消息:
         {
             "event_type": "order",
-            "order": {
-                "id": "order_id",
-                "market": "condition_id",
-                "asset_id": "token_id",
-                "side": "BUY",
-                "price": "0.55",
-                "original_size": "100",
-                "size_matched": "50",
-                "status": "LIVE"
-            }
+            "type": "PLACEMENT",  # PLACEMENT / UPDATE / CANCELLATION
+            "id": "0xff354cd7...",
+            "original_size": "10",
+            "size_matched": "0",
+            "asset_id": "...",
+            "market": "...",
+            "side": "SELL",
+            "price": "0.57"
         }
 
-        成交消息格式:
+        Trade 消息:
         {
             "event_type": "trade",
-            "trade": {
-                "id": "trade_id",
-                "taker_order_id": "order_id",
-                "market": "condition_id",
-                "asset_id": "token_id",
-                "side": "BUY",
-                "price": "0.55",
-                "size": "50",
-                "status": "MATCHED"
-            }
+            "type": "TRADE",
+            "id": "28c4d2eb-...",
+            "status": "MATCHED",  # MATCHED → MINED → CONFIRMED / FAILED
+            "maker_orders": [{"order_id": "...", "matched_amount": "10", ...}],
+            "taker_order_id": "0x06bc63e...",
+            "size": "10",
+            "price": "0.57"
         }
         """
         event_type = data.get("event_type")
 
+        self._log.debug(f"User Channel message: event_type={event_type}, data={data}")
+
         if event_type == "order":
-            order_data = data.get("order", {})
-            await self._process_order_update(order_data)
+            # 扁平结构：data 本身就是 order 数据
+            await self._process_order_update(data)
 
         elif event_type == "trade":
-            trade_data = data.get("trade", {})
-            await self._process_trade_update(trade_data)
+            # 扁平结构：data 本身就是 trade 数据
+            await self._process_trade_update(data)
 
         # 批量订单更新（初始连接时推送所有活跃订单）
         elif "orders" in data:
@@ -965,19 +1006,44 @@ class PolymarketOddsClient:
 
     async def _process_order_update(self, order_data: dict) -> None:
         """
-        处理订单更新
+        处理订单更新（扁平格式）
+
+        字段映射：
+        - id → order_id
+        - type → PLACEMENT / UPDATE / CANCELLATION
+        - original_size → 原始数量（字符串）
+        - size_matched → 累计成交量（字符串）
+        - asset_id → token_id
+        - market → condition_id
+        - side → BUY / SELL
+        - price → 价格
 
         Args:
-            order_data: 订单数据
+            order_data: 订单数据（扁平结构）
         """
         try:
             order_id = order_data.get("id", "")
             if not order_id:
                 return
 
-            # 查找 token 信息以获取 market_type
+            order_type = order_data.get("type", "")  # PLACEMENT / UPDATE / CANCELLATION
             asset_id = order_data.get("asset_id", "")
             token_info = self._subscribed_tokens.get(asset_id, {})
+
+            original_size = float(order_data.get("original_size", 0))
+            size_matched = float(order_data.get("size_matched", 0))
+
+            # 根据 type 映射状态
+            if order_type == "CANCELLATION":
+                status = "CANCELLED"
+            elif size_matched >= original_size > 0:
+                status = "MATCHED"
+            elif order_type == "PLACEMENT" and order_id not in self._current_orders:
+                status = "LIVE"
+            elif order_type == "UPDATE":
+                status = "LIVE"
+            else:
+                status = "LIVE"
 
             order = PolymarketOrder(
                 order_id=order_id,
@@ -985,24 +1051,29 @@ class PolymarketOddsClient:
                 asset_id=asset_id,
                 side=order_data.get("side", ""),
                 price=float(order_data.get("price", 0)),
-                original_size=float(order_data.get("original_size", 0)),
-                size_matched=float(order_data.get("size_matched", 0)),
-                status=order_data.get("status", ""),
+                original_size=original_size,
+                size_matched=size_matched,
+                status=status,
                 outcome=token_info.get("outcome", ""),
                 event_id=token_info.get("event_id", ""),
                 timestamp=int(time.time() * 1000),
             )
 
+            self._log.info(
+                f"Order {order_type}: id={order_id[:20]}..., status={status}, "
+                f"matched={size_matched}/{original_size}"
+            )
+
             # 根据状态更新或移除订单
-            if order.status in ("CANCELLED", "MATCHED"):
+            if status in ("CANCELLED", "MATCHED"):
                 self._current_orders.pop(order_id, None)
-                self._log.debug(f"Order removed: {order_id} ({order.status})")
+                self._log.debug(f"Order removed: {order_id} ({status})")
             else:
                 self._current_orders[order_id] = order
-                self._log.debug(f"Order updated: {order_id} ({order.status})")
+                self._log.debug(f"Order updated: {order_id} ({status})")
 
             # 成交后刷新持仓
-            if order.status == "MATCHED":
+            if status == "MATCHED":
                 await self.fetch_positions()
 
             # 触发回调
@@ -1010,8 +1081,9 @@ class PolymarketOddsClient:
                 self._orders_update_callback({
                     "type": "order",
                     "order": order,
+                    "order_type": order_type,
                     "orders": list(self._current_orders.values()),
-                    "positions": list(self._positions.values()),
+                    "positions": list(self._positions.values()) if self._positions else [],
                 })
 
         except Exception as e:
@@ -1019,25 +1091,49 @@ class PolymarketOddsClient:
 
     async def _process_trade_update(self, trade_data: dict) -> None:
         """
-        处理成交更新
+        处理成交更新（扁平格式）
 
-        成交后刷新持仓数据
+        Trade 消息字段：
+        - id: trade ID
+        - status: MATCHED → MINED → CONFIRMED（终态）/ RETRYING → FAILED（终态）
+        - maker_orders: [{order_id, matched_amount, ...}]
+        - taker_order_id: taker 的 order_id
+        - size: 成交数量
+        - price: 成交价格
+
+        CONFIRMED 是完全成交的终态信号。
 
         Args:
-            trade_data: 成交数据
+            trade_data: 成交数据（扁平结构）
         """
         try:
-            self._log.debug(f"Trade processed: {trade_data.get('id', '')}")
+            trade_id = trade_data.get("id", "")
+            status = trade_data.get("status", "")
+            maker_orders = trade_data.get("maker_orders", [])
+            taker_order_id = trade_data.get("taker_order_id", "")
+
+            self._log.info(
+                f"Trade update: id={trade_id}, status={status}, "
+                f"maker_orders={len(maker_orders)}, taker={taker_order_id[:20] if taker_order_id else ''}"
+            )
 
             # 成交后刷新持仓
-            await self.fetch_positions()
+            if status in ("CONFIRMED", "MATCHED"):
+                await self.fetch_positions()
 
             # 触发回调
             if self._orders_update_callback:
                 self._orders_update_callback({
                     "type": "trade",
-                    "trade": trade_data,
-                    "positions": list(self._positions.values()),
+                    "trade": {
+                        "id": trade_id,
+                        "status": status,
+                        "maker_orders": maker_orders,
+                        "taker_order_id": taker_order_id,
+                        "size": trade_data.get("size", "0"),
+                        "price": trade_data.get("price", "0"),
+                    },
+                    "positions": list(self._positions.values()) if self._positions else [],
                 })
 
         except Exception as e:
@@ -1152,6 +1248,15 @@ class PolymarketOddsClient:
                 self._log.info("Starting WebSocket task")
                 self._ws_task = asyncio.create_task(self._run_websocket())
 
+            # 懒启动 User Channel WebSocket（首次有 token 时启动）
+            if self.config.polymarket_api_key:
+                if not self._user_ws_task or self._user_ws_task.done():
+                    self._log.info("Starting User Channel WebSocket for order tracking")
+                    self._user_ws_task = asyncio.create_task(self._run_user_websocket())
+                elif self._user_ws:
+                    # 已连接时，重新发送订阅消息以包含新增的 condition_id
+                    await self._subscribe_user_channel()
+
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
 
     # =========================================================================
@@ -1202,12 +1307,10 @@ class PolymarketOddsClient:
         self._running = True
         self._log.info("Polymarket odds client started")
 
-        # 启动 User Channel WebSocket（如果配置了 API key）
-        if self.config.polymarket_api_key:
-            self._log.info("Starting User Channel WebSocket for order tracking")
-            self._user_ws_task = asyncio.create_task(self._run_user_websocket())
-        else:
-            self._log.info("No API key configured, User Channel disabled")
+        # User Channel 延迟到 subscribe_event 首次调用时启动
+        # 因为连接后需要立即发送订阅消息（含 condition_ids），否则服务端会关闭连接
+        if not self.config.polymarket_api_key:
+            self._log.info("No API key configured, User Channel will be disabled")
 
     async def stop(self) -> None:
         """停止客户端"""
