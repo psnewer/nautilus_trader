@@ -406,7 +406,9 @@ class ExecutionOrchestrator:
         operation: OrderOperation,
     ) -> dict:
         """执行撤单操作"""
-        result = await self._cancel_order(operation.order_id)
+        from .models import Venue
+        venue = Venue(operation.venue.value)
+        result = await self._cancel_order(operation.order_id, venue=venue)
 
         return {
             "success": result.success,

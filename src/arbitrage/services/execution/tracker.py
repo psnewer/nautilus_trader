@@ -266,13 +266,6 @@ class OrderTracker:
 
         return self._summarize_results()
 
-    def _has_pending(self) -> bool:
-        """检查是否有待追踪的操作"""
-        return any(
-            r.status == TrackingStatus.PENDING
-            for r in self._results.values()
-        )
-
     def _all_fully_filled(self) -> bool:
         """
         检查是否所有操作都已完成（下单完全成交 / 撤单已确认）

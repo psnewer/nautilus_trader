@@ -674,7 +674,15 @@ class PolymarketOddsClient:
 
         # HMAC-SHA256 签名
         try:
-            secret = base64.b64decode(self.config.polymarket_api_secret)
+            secret_raw = self.config.polymarket_api_secret.strip()
+            padding = (-len(secret_raw)) % 4
+            if padding:
+                secret_raw += "=" * padding
+            try:
+                secret = base64.b64decode(secret_raw, validate=True)
+            except Exception:
+                # 兼容 urlsafe base64（可能缺少 padding）
+                secret = base64.urlsafe_b64decode(secret_raw)
             signature = hmac.new(secret, message.encode(), hashlib.sha256)
             signature_b64 = base64.b64encode(signature.digest()).decode()
         except Exception as e:
@@ -1042,54 +1050,78 @@ class PolymarketOddsClient:
             original_size = float(order_data.get("original_size", 0))
             size_matched = float(order_data.get("size_matched", 0))
 
-            # 根据 type 映射状态
-            if order_type == "CANCELLATION":
-                status = "CANCELLED"
-            elif size_matched >= original_size > 0:
-                status = "MATCHED"
-            elif order_type == "PLACEMENT" and order_id not in self._current_orders:
-                status = "LIVE"
-            elif order_type == "UPDATE":
-                status = "LIVE"
-            else:
-                status = "LIVE"
-
-            order = PolymarketOrder(
-                order_id=order_id,
-                market=order_data.get("market", ""),
-                asset_id=asset_id,
-                side=order_data.get("side", ""),
-                price=float(order_data.get("price", 0)),
-                original_size=original_size,
-                size_matched=size_matched,
-                status=status,
-                outcome=token_info.get("outcome", ""),
-                event_id=token_info.get("event_id", ""),
-                timestamp=int(time.time() * 1000),
-            )
-
             self._log.info(
-                f"Order {order_type}: id={order_id[:20]}..., status={status}, "
+                f"Order {order_type}: id={order_id[:20]}..., "
                 f"matched={size_matched}/{original_size}"
             )
 
-            # 根据状态更新或移除订单
-            if status in ("CANCELLED", "MATCHED"):
+            # 根据 order_type 更新活跃订单
+            if order_type == "CANCELLATION":
                 self._current_orders.pop(order_id, None)
-                self._log.debug(f"Order removed: {order_id} ({status})")
-            else:
+                self._log.debug(f"Order removed (CANCELLATION): {order_id}")
+            elif order_type == "PLACEMENT":
+                order = PolymarketOrder(
+                    order_id=order_id,
+                    market=order_data.get("market", ""),
+                    asset_id=asset_id,
+                    side=order_data.get("side", ""),
+                    price=float(order_data.get("price", 0)),
+                    original_size=original_size,
+                    size_matched=size_matched,
+                    status="LIVE",
+                    outcome=token_info.get("outcome", ""),
+                    event_id=token_info.get("event_id", ""),
+                    timestamp=int(time.time() * 1000),
+                )
                 self._current_orders[order_id] = order
-                self._log.debug(f"Order updated: {order_id} ({status})")
+                self._log.debug(f"Order added (PLACEMENT): {order_id}")
+            elif order_type == "UPDATE":
+                existing = self._current_orders.get(order_id)
+                if existing:
+                    existing.size_matched = size_matched
+                    self._log.debug(
+                        f"Order updated (UPDATE): {order_id}, "
+                        f"size_matched={size_matched}"
+                    )
+                else:
+                    # 缓存中没有，可能是重连后收到的，创建新记录
+                    order = PolymarketOrder(
+                        order_id=order_id,
+                        market=order_data.get("market", ""),
+                        asset_id=asset_id,
+                        side=order_data.get("side", ""),
+                        price=float(order_data.get("price", 0)),
+                        original_size=original_size,
+                        size_matched=size_matched,
+                        status="LIVE",
+                        outcome=token_info.get("outcome", ""),
+                        event_id=token_info.get("event_id", ""),
+                        timestamp=int(time.time() * 1000),
+                    )
+                    self._current_orders[order_id] = order
+                    self._log.debug(f"Order added (UPDATE, not in cache): {order_id}")
 
-            # 成交后刷新持仓
-            if status == "MATCHED":
-                await self.fetch_positions()
-
-            # 触发回调
+            # 触发回调（通知 tracker）
             if self._orders_update_callback:
+                # 构建 order 对象用于回调（CANCELLATION 时用临时对象）
+                cb_order = self._current_orders.get(order_id)
+                if not cb_order:
+                    cb_order = PolymarketOrder(
+                        order_id=order_id,
+                        market=order_data.get("market", ""),
+                        asset_id=asset_id,
+                        side=order_data.get("side", ""),
+                        price=float(order_data.get("price", 0)),
+                        original_size=original_size,
+                        size_matched=size_matched,
+                        status="CANCELLED",
+                        outcome=token_info.get("outcome", ""),
+                        event_id=token_info.get("event_id", ""),
+                        timestamp=int(time.time() * 1000),
+                    )
                 self._orders_update_callback({
                     "type": "order",
-                    "order": order,
+                    "order": cb_order,
                     "order_type": order_type,
                     "orders": list(self._current_orders.values()),
                     "positions": list(self._positions.values()) if self._positions else [],
@@ -1126,11 +1158,49 @@ class PolymarketOddsClient:
                 f"maker_orders={len(maker_orders)}, taker={taker_order_id[:20] if taker_order_id else ''}"
             )
 
-            # 成交后刷新持仓
-            if status in ("CONFIRMED", "MATCHED"):
-                await self.fetch_positions()
+            # 只处理 CONFIRMED（完全成交终态）
+            if status != "CONFIRMED":
+                # 非 CONFIRMED 仍触发回调让 tracker 知道状态变化
+                if self._orders_update_callback:
+                    self._orders_update_callback({
+                        "type": "trade",
+                        "trade": {
+                            "id": trade_id,
+                            "status": status,
+                            "maker_orders": maker_orders,
+                            "taker_order_id": taker_order_id,
+                            "size": trade_data.get("size", "0"),
+                            "price": trade_data.get("price", "0"),
+                        },
+                        "positions": list(self._positions.values()) if self._positions else [],
+                    })
+                return
 
-            # 触发回调
+            # === CONFIRMED 处理 ===
+            # 收集本次成交涉及的 order_id
+            confirmed_order_ids: set[str] = set()
+            for mo in maker_orders:
+                oid = mo.get("order_id", "")
+                if oid:
+                    confirmed_order_ids.add(oid)
+            if taker_order_id:
+                confirmed_order_ids.add(taker_order_id)
+
+            # 从活跃订单中找到匹配的订单，更新持仓，删除活跃订单
+            for oid in confirmed_order_ids:
+                order = self._current_orders.pop(oid, None)
+                if not order:
+                    continue
+
+                self._log.info(
+                    f"Trade CONFIRMED: removing order {oid[:20]}..., "
+                    f"updating position for asset={order.asset_id[:20]}..."
+                )
+
+                # 更新持仓（不调 fetch_positions）
+                self._update_position_from_order(order)
+
+            # 触发回调（通知 tracker）
             if self._orders_update_callback:
                 self._orders_update_callback({
                     "type": "trade",
@@ -1147,6 +1217,59 @@ class PolymarketOddsClient:
 
         except Exception as e:
             self._log.error(f"Error processing trade update: {e}")
+
+    def _update_position_from_order(self, order: PolymarketOrder) -> None:
+        """
+        根据已成交订单更新内存持仓
+
+        BUY → 持仓增加 original_size
+        SELL → 持仓减少 original_size
+
+        Args:
+            order: 已成交的订单
+        """
+        if self._positions is None:
+            self._positions = {}
+
+        asset_id = order.asset_id
+        filled_size = order.original_size
+        token_info = self._subscribed_tokens.get(asset_id, {})
+
+        existing = self._positions.get(asset_id)
+
+        if order.side == "BUY":
+            if existing:
+                # 加权平均价格
+                total_size = existing.size + filled_size
+                if total_size > 0:
+                    existing.avg_price = (
+                        existing.avg_price * existing.size + order.price * filled_size
+                    ) / total_size
+                existing.size = total_size
+            else:
+                self._positions[asset_id] = PolymarketPosition(
+                    asset_id=asset_id,
+                    condition_id=order.market,
+                    outcome=order.outcome or token_info.get("outcome", ""),
+                    market_type=token_info.get("market_type", ""),
+                    size=filled_size,
+                    avg_price=order.price,
+                    current_price=order.price,
+                    event_id=order.event_id or token_info.get("event_id", ""),
+                    neg_risk=token_info.get("neg_risk", False),
+                )
+        elif order.side == "SELL":
+            if existing:
+                existing.size = max(0, existing.size - filled_size)
+                # size 为 0 则移除
+                if existing.size <= 0:
+                    self._positions.pop(asset_id, None)
+
+        self._log.debug(
+            f"Position updated: asset={asset_id[:20]}..., "
+            f"side={order.side}, filled={filled_size}, "
+            f"new_size={self._positions[asset_id].size if asset_id in self._positions else 0}"
+        )
 
     def get_current_orders(
         self,
