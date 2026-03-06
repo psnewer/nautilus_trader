@@ -839,6 +839,22 @@ class OddsSubscriptionService:
             return self._orbitexch_client.get_bets_by_pair(pair_id)
         return self._orbitexch_client.get_current_bets()
 
+    def get_orbitexch_open_orders(self) -> list[dict]:
+        """
+        获取 OrbitExch 当前活跃订单（sizeRemaining > 0）
+
+        Returns:
+            活跃订单列表
+        """
+        if self._use_mock_exchange():
+            from src.arbitrage.services.debug import debug_manager, MockCategory
+            context = {"venue": "orbitexch"}
+            return debug_manager.get_mock_data(MockCategory.ORDERS, context) or []
+
+        if not self._orbitexch_client:
+            return []
+        return self._orbitexch_client.get_active_orders()
+
     async def wait_for_orbitexch_current_bets(self, timeout: float) -> bool:
         """等待 OrbitExch 首次 CURRENT_BETS 到达"""
         if not self._orbitexch_client:

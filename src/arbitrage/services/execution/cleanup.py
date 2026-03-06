@@ -88,14 +88,11 @@ class PostSessionCleanup:
                 self._log.info(f"No positions found for cleanup")
                 return result
 
-            # 过滤属于当前 pair 的持仓
-            pair_positions = [
-                p for p in positions
-                if p.event_id == pair_id and p.size > 0
-            ]
+            # 过滤有持仓量的 position
+            pair_positions = [p for p in positions if p.size > 0]
 
             if not pair_positions:
-                self._log.info(f"No positions for pair {pair_id}")
+                self._log.info(f"No positions with size > 0")
                 return result
 
             self._log.info(

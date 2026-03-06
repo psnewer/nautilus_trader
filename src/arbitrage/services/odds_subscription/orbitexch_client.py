@@ -72,6 +72,14 @@ class OrbitExchOddsClient:
         self._current_bets: dict[str, list[dict]] | None = None
         self._current_bets_event = asyncio.Event()
 
+        # 活跃订单（sizeRemaining > 0 的 bet）
+        # market_id -> [bet_dict, ...]
+        self._active_orders: dict[str, list[dict]] = {}
+
+        # 持仓（sizeMatched > 0 的 bet）
+        # market_id -> [bet_dict, ...]
+        self._positions: dict[str, list[dict]] = {}
+
         # 订单更新回调
         self._bets_update_callback: Callable[[dict], None] | None = None
 
@@ -906,16 +914,37 @@ class OrbitExchOddsClient:
 
             # 按 market_id 分组
             bets_by_market: dict[str, list[dict]] = {}
+            active_orders: dict[str, list[dict]] = {}
+            positions: dict[str, list[dict]] = {}
+
             for bet in bets:
                 market_id = str(bet.get("marketId", ""))
-                if market_id:
-                    if market_id not in bets_by_market:
-                        bets_by_market[market_id] = []
-                    bets_by_market[market_id].append(bet)
+                if not market_id:
+                    continue
+
+                bets_by_market.setdefault(market_id, []).append(bet)
+
+                size_remaining = float(bet.get("sizeRemaining", 0))
+                size_matched = float(bet.get("sizeMatched", 0))
+
+                # 活跃订单：还有未成交部分
+                if size_remaining > 0:
+                    active_orders.setdefault(market_id, []).append(bet)
+
+                # 持仓：有已成交部分（未结算的）
+                if size_matched > 0:
+                    positions.setdefault(market_id, []).append(bet)
 
             # 更新缓存
             self._current_bets = bets_by_market
+            self._active_orders = active_orders
+            self._positions = positions
             self._current_bets_event.set()
+
+            self._log.debug(
+                f"CURRENT_BETS derived: {sum(len(v) for v in active_orders.values())} active orders, "
+                f"{sum(len(v) for v in positions.values())} positions"
+            )
 
             # 触发回调
             if self._bets_update_callback:
@@ -974,6 +1003,40 @@ class OrbitExchOddsClient:
             result = self._current_bets.get(market_id, [])
 
         return result
+
+    def get_active_orders(self, market_id: str | None = None) -> list[dict]:
+        """
+        获取活跃订单（sizeRemaining > 0）
+
+        Args:
+            market_id: 可选，按 market_id 过滤
+
+        Returns:
+            活跃订单列表
+        """
+        if market_id:
+            return self._active_orders.get(market_id, [])
+        all_orders = []
+        for orders in self._active_orders.values():
+            all_orders.extend(orders)
+        return all_orders
+
+    def get_positions(self, market_id: str | None = None) -> list[dict]:
+        """
+        获取持仓（sizeMatched > 0，未结算）
+
+        Args:
+            market_id: 可选，按 market_id 过滤
+
+        Returns:
+            持仓列表
+        """
+        if market_id:
+            return self._positions.get(market_id, [])
+        all_positions = []
+        for positions in self._positions.values():
+            all_positions.extend(positions)
+        return all_positions
 
     async def wait_for_current_bets(self, timeout: float) -> bool:
         """等待首次 CURRENT_BETS 到达"""

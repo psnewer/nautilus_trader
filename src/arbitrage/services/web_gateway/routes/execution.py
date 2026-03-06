@@ -176,25 +176,22 @@ async def take_at_market(order_id: str):
 @router.get("/orders")
 async def get_orders(
     venue: str | None = None,
-    status: str | None = None,
     limit: int = 100,
 ):
     """
-    获取订单列表
+    获取活跃订单列表
 
     Args:
         venue: 可选，过滤平台
-        status: 可选，过滤状态
         limit: 返回数量限制
     """
-    from src.arbitrage.services.execution import Venue, OrderStatus
+    from src.arbitrage.services.execution import Venue
 
     service = app_state.get_execution_service()
 
     if not service:
         return {"orders": [], "total": 0}
 
-    # 解析过滤条件
     venue_filter = None
     if venue:
         try:
@@ -202,21 +199,10 @@ async def get_orders(
         except ValueError:
             pass
 
-    status_filter = None
-    if status:
-        try:
-            status_filter = OrderStatus(status)
-        except ValueError:
-            pass
-
-    orders = service.get_all_orders(
-        venue=venue_filter,
-        status=status_filter,
-        limit=limit,
-    )
+    orders = service.get_active_orders(venue=venue_filter)
 
     return {
-        "orders": [o.to_dict() for o in orders],
+        "orders": orders[:limit],
         "total": len(orders),
     }
 
@@ -278,11 +264,11 @@ async def get_order(order_id: str):
     if not service:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    order = service.get_order(order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+    for o in service.get_active_orders():
+        if o["order_id"] == order_id:
+            return o
 
-    return order.to_dict()
+    raise HTTPException(status_code=404, detail="Order not found")
 
 
 @router.post("/cancel-all")

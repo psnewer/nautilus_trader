@@ -80,9 +80,6 @@ class ExecutionService:
             logger=logging.getLogger("OrbitExchExecutor"),
         )
 
-        # 订单管理
-        self._orders: dict[str, Order] = {}  # order_id -> Order
-
         # 回调
         self._order_update_callbacks: list[Callable[[Order], None]] = []
 
@@ -230,12 +227,7 @@ class ExecutionService:
 
         # 模拟交易所模式
         if self._use_mock_exchange():
-            # 保存订单
-            self._orders[order.order_id] = order
             return await self._mock_exchange.place_order(order)
-
-        # 保存订单
-        self._orders[order.order_id] = order
 
         # 检查是否跳过执行
         debug_mgr = _get_debug_manager()
@@ -279,10 +271,6 @@ class ExecutionService:
         else:
             self._log.error(f"Order {order.order_id} failed: {result.message}")
 
-        # 更新订单状态
-        if result.success and order.is_active:
-            self._add_active_order(order)
-
         # 触发回调
         self._notify_order_update(order)
 
@@ -315,8 +303,6 @@ class ExecutionService:
         Args:
             session: ExecutionSession
         """
-        # 会话结束后清理活跃订单
-        session.active_order_ids.clear()
         self._publish_session_complete(session)
 
     def _publish_session_complete(self, session) -> None:
@@ -348,20 +334,6 @@ class ExecutionService:
         topic = pair_activity_topic(pair_id)
         self._msgbus.publish(topic, msg)
 
-    def _has_incomplete_orders(self, pair_id: str) -> bool:
-        """
-        检查指定 pair 是否有未完成的订单
-
-        Args:
-            pair_id: 比赛 ID
-
-        Returns:
-            是否有未完成订单
-        """
-        for existing in self._orders.values():
-            if existing.pair_id == pair_id and not existing.is_done:
-                return True
-        return False
 
     def _calculate_min_other_rebate(
         self,
@@ -534,99 +506,122 @@ class ExecutionService:
 
     def _on_mock_order_update(self, order: Order) -> None:
         """处理模拟交易所的订单状态更新"""
-        if order.is_active:
-            self._add_active_order(order)
-        else:
-            self._remove_active_order(order)
-
         self._notify_order_update(order)
 
-    async def cancel_order(self, order_id: str) -> CancelResult:
+    async def cancel_order(self, order_id: str, venue: Venue | None = None) -> CancelResult:
         """
         撤销订单
 
         Args:
-            order_id: 订单 ID
+            order_id: 平台订单 ID
+            venue: 交易平台（未指定时从 _orders 查找）
 
         Returns:
             撤单结果
         """
-        order = self._orders.get(order_id)
-        if not order:
-            for existing in self._orders.values():
-                if existing.venue_order_id == order_id:
-                    order = existing
+        # 如果未指定 venue，从活跃订单中查找
+        if venue is None:
+            for o in self.get_active_orders():
+                if o["order_id"] == order_id:
+                    venue = Venue(o["venue"])
                     break
-        if not order:
+
+        if venue is None:
             return CancelResult(
                 success=False,
                 order_id=order_id,
-                message="Order not found",
+                message="Cannot determine venue for order",
             )
 
         if self._use_mock_exchange():
-            return await self._mock_exchange.cancel_order(order)
+            cancel_order_obj = Order(order_id=order_id, venue=venue, venue_order_id=order_id)
+            return await self._mock_exchange.cancel_order(cancel_order_obj)
+
+        # 构建最小 Order 对象用于 executor
+        cancel_order = Order(
+            order_id=order_id,
+            venue=venue,
+            venue_order_id=order_id,
+        )
 
         # 分发到对应执行器
-        if order.venue == Venue.POLYMARKET:
-            result = await self._polymarket_executor.cancel_order(order)
-        elif order.venue == Venue.ORBITEXCH:
-            result = await self._orbitexch_executor.cancel_order(order)
+        if venue == Venue.POLYMARKET:
+            result = await self._polymarket_executor.cancel_order(cancel_order)
+        elif venue == Venue.ORBITEXCH:
+            result = await self._orbitexch_executor.cancel_order(cancel_order)
         else:
             return CancelResult(
                 success=False,
                 order_id=order_id,
-                message=f"Unknown venue: {order.venue}",
+                message=f"Unknown venue: {venue}",
             )
-
-        # 更新活跃订单
-        if result.success:
-            self._remove_active_order(order)
-
-        # 触发回调
-        self._notify_order_update(order)
 
         return result
 
-    async def take_remaining_at_market(self, order_id: str) -> ExecutionResult:
+    async def take_remaining_at_market(self, order_id: str, venue: Venue | None = None) -> ExecutionResult:
         """
         将未成交部分按市价立即执行
 
         Args:
-            order_id: 订单 ID
+            order_id: 平台订单 ID
+            venue: 交易平台
 
         Returns:
             执行结果
         """
-        order = self._orders.get(order_id)
-        if not order:
+        # 从活跃订单中查找
+        order_data = None
+        for o in self.get_active_orders(venue=venue):
+            if o["order_id"] == order_id:
+                order_data = o
+                break
+
+        if not order_data:
             return ExecutionResult(
                 success=False,
                 order=Order(order_id=order_id),
-                message="Order not found",
+                message="Active order not found",
             )
+
+        venue = Venue(order_data["venue"])
+        remaining = order_data.get("size_remaining", 0)
+
+        if remaining <= 0:
+            return ExecutionResult(
+                success=True,
+                order=Order(order_id=order_id, venue=venue),
+                message="No remaining size",
+            )
+
+        # 构建 Order 对象
+        order = Order(
+            order_id=order_id,
+            venue=venue,
+            venue_order_id=order_id,
+            token_id=order_data.get("asset_id", order_data.get("token_id", "")),
+            condition_id=order_data.get("condition_id", ""),
+            market_id=order_data.get("market_id", ""),
+            selection_id=order_data.get("selection_id", ""),
+            side=OrderSide(order_data.get("side", "BUY")),
+            price=order_data.get("price", 0),
+            size=order_data.get("original_size", 0),
+            filled_size=order_data.get("size_matched", 0),
+        )
 
         if self._use_mock_exchange():
             return await self._mock_exchange.take_remaining_at_market(order)
 
         # 分发到对应执行器
-        if order.venue == Venue.POLYMARKET:
+        if venue == Venue.POLYMARKET:
             result = await self._polymarket_executor.take_remaining_at_market(order)
-        elif order.venue == Venue.ORBITEXCH:
+        elif venue == Venue.ORBITEXCH:
             result = await self._orbitexch_executor.take_remaining_at_market(order)
         else:
             return ExecutionResult(
                 success=False,
                 order=order,
-                message=f"Unknown venue: {order.venue}",
+                message=f"Unknown venue: {venue}",
             )
-
-        # 更新活跃订单
-        if result.success and result.order.is_done:
-            self._remove_active_order(order)
-
-        # 触发回调
-        self._notify_order_update(result.order)
 
         return result
 
@@ -688,15 +683,15 @@ class ExecutionService:
         Returns:
             撤单结果列表
         """
-        orders_to_cancel = self.get_active_orders(venue=venue)
+        active = self.get_active_orders(venue=venue)
 
-        if not orders_to_cancel:
+        if not active:
             return []
 
-        self._log.info(f"Cancelling {len(orders_to_cancel)} orders")
+        self._log.info(f"Cancelling {len(active)} orders")
 
         results = await asyncio.gather(
-            *[self.cancel_order(order.order_id) for order in orders_to_cancel],
+            *[self.cancel_order(o["order_id"], venue=Venue(o["venue"])) for o in active],
             return_exceptions=True,
         )
 
@@ -721,21 +716,16 @@ class ExecutionService:
         self._log.info("Cancelling all OrbitExch unmatched orders")
 
         if self._use_mock_exchange():
-            orbit_orders = [
-                order for order in self.get_active_orders(venue=Venue.ORBITEXCH)
-                if order.venue == Venue.ORBITEXCH
-            ]
+            orbit_orders = []
+            for o in self.get_active_orders(venue=Venue.ORBITEXCH):
+                orbit_orders.append(Order(
+                    order_id=o["order_id"],
+                    venue=Venue.ORBITEXCH,
+                    venue_order_id=o["order_id"],
+                ))
             return await self._mock_exchange.cancel_all_unmatched(orbit_orders)
 
         result = await self._orbitexch_executor.cancel_all_unmatched()
-
-        # 更新本地订单状态
-        if result.success:
-            for order in self.get_active_orders(venue=Venue.ORBITEXCH):
-                order.status = OrderStatus.CANCELLED
-                order.updated_at = time.time()
-                self._remove_active_order(order)
-                self._notify_order_update(order)
 
         return result
 
@@ -759,60 +749,66 @@ class ExecutionService:
     # 查询
     # =========================================================================
 
-    def get_order(self, order_id: str) -> Order | None:
-        """获取订单"""
-        return self._orders.get(order_id)
+    def get_active_orders(self, venue: Venue | None = None) -> list[dict]:
+        """
+        获取活跃订单
 
-    def get_active_orders(self, venue: Venue | None = None) -> list[Order]:
-        """获取活跃订单"""
-        orders = []
-        if self._orchestrator:
-            for session in self._orchestrator.get_all_sessions():
-                for order_id in session.active_order_ids:
-                    order = self._orders.get(order_id)
-                    if order:
-                        orders.append(order)
-        if venue:
-            orders = [o for o in orders if o.venue == venue]
+        直接从 odds_subscription 内存缓存读取，返回统一格式的字典列表。
+
+        Returns:
+            [{"venue": str, "order_id": str, "price": float,
+              "original_size": float, "size_matched": float, "size_remaining": float, ...}]
+        """
+        orders: list[dict] = []
+
+        if not self._odds_service:
+            return orders
+
+        # Polymarket 活跃订单
+        if venue is None or venue == Venue.POLYMARKET:
+            for po in self._odds_service.get_polymarket_open_orders():
+                orders.append({
+                    "venue": "polymarket",
+                    "order_id": po.order_id,
+                    "asset_id": po.asset_id,
+                    "condition_id": po.market,
+                    "side": po.side,
+                    "price": po.price,
+                    "original_size": po.original_size,
+                    "size_matched": po.size_matched,
+                    "size_remaining": po.original_size - po.size_matched,
+                })
+
+        # OrbitExch 活跃订单
+        if venue is None or venue == Venue.ORBITEXCH:
+            for bet in self._odds_service.get_orbitexch_open_orders():
+                orders.append({
+                    "venue": "orbitexch",
+                    "order_id": str(bet.get("offerId", "")),
+                    "market_id": str(bet.get("marketId", "")),
+                    "selection_id": str(bet.get("selectionId", "")),
+                    "side": bet.get("side", ""),
+                    "price": bet.get("price", 0),
+                    "original_size": float(bet.get("sizePlaced", 0)),
+                    "size_matched": float(bet.get("sizeMatched", 0)),
+                    "size_remaining": float(bet.get("sizeRemaining", 0)),
+                })
+
         return orders
-
-    def get_all_orders(
-        self,
-        venue: Venue | None = None,
-        status: OrderStatus | None = None,
-        limit: int = 100,
-    ) -> list[Order]:
-        """获取所有订单"""
-        orders = list(self._orders.values())
-
-        if venue:
-            orders = [o for o in orders if o.venue == venue]
-        if status:
-            orders = [o for o in orders if o.status == status]
-
-        # 按创建时间倒序
-        orders.sort(key=lambda o: o.created_at, reverse=True)
-
-        return orders[:limit]
 
     def get_orders_summary(self) -> dict[str, Any]:
         """获取订单统计"""
-        total = len(self._orders)
-        active = len(self.get_active_orders())
+        active = self.get_active_orders()
+        active_count = len(active)
 
-        by_venue = {}
-        by_status = {}
-
-        for order in self._orders.values():
-            venue = order.venue.value
-            status = order.status.value
-
-            by_venue[venue] = by_venue.get(venue, 0) + 1
-            by_status[status] = by_status.get(status, 0) + 1
+        by_venue: dict[str, int] = {}
+        for o in active:
+            v = o["venue"]
+            by_venue[v] = by_venue.get(v, 0) + 1
 
         return {
-            "total_orders": total,
-            "active_orders": active,
+            "total_orders": active_count,
+            "active_orders": active_count,
             "by_venue": by_venue,
             "by_status": by_status,
         }
@@ -1157,29 +1153,6 @@ class ExecutionService:
         if self._orchestrator:
             return self._orchestrator.get_session(session_id)
         return None
-
-    def _get_order_session(self, order: Order) -> ExecutionSession | None:
-        """获取订单所属会话"""
-        if not self._orchestrator:
-            return None
-        session_id = order.metadata.get("session_id")
-        if not session_id:
-            return None
-        return self._orchestrator.get_session(session_id)
-
-    def _add_active_order(self, order: Order) -> None:
-        """记录会话活跃订单"""
-        session = self._get_order_session(order)
-        if not session:
-            return
-        session.active_order_ids.add(order.order_id)
-
-    def _remove_active_order(self, order: Order) -> None:
-        """移除会话活跃订单"""
-        session = self._get_order_session(order)
-        if not session:
-            return
-        session.active_order_ids.discard(order.order_id)
 
     def get_active_sessions(self) -> list[ExecutionSession]:
         """获取活跃执行会话"""
