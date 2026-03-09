@@ -16,7 +16,13 @@
 
 ## 消息订阅
 
-1. StrategyService（策略服务）
+1. Pair 活跃互斥（pair_id 锁定/解锁）
+   - 订阅主题：`arbitrage.pair_activity.{pair_id}`
+   - 数据：`PairActivityMessage`
+   - 处理：`is_active=true` 锁定 pair，抑制该 pair 的赔率发布；`is_active=false` 解锁
+   - 订阅位置：`src/arbitrage/services/odds_subscription/service.py::set_msgbus`
+
+2. StrategyService（策略服务）
    - 订阅主题：`arbitrage.odds.*`、`arbitrage.match_status.*`
    - 赔率消息触发信号：`rebate`、`mean_rebate`、`multi-way`
    - 比赛状态消息触发信号：`live`、`pre-match`

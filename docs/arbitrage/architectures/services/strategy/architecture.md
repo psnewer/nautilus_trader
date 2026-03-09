@@ -10,6 +10,15 @@
    - 发布位置：`src/arbitrage/services/strategy/service.py::_publish_opportunity`
    - 触发条件：策略评估通过且风控检查允许
 
+2. Pair 活跃互斥（pair_id 锁定/解锁）
+   - 主题：`arbitrage.pair_activity.{pair_id}`
+   - 数据：`PairActivityMessage`
+   - 发布位置：`src/arbitrage/services/strategy/service.py::_publish_pair_activity`
+   - 触发条件：
+     - `on_odds_update()` 触发时发送 `is_active=true` 锁定
+     - 评估未产生机会时发送 `is_active=false` 解锁
+     - 收到 way_rebate 更新时发送 `is_active=false` 解锁
+
 ## 消息订阅
 
 1. 赔率更新（来自 OddsSubscription）

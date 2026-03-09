@@ -787,6 +787,10 @@ class AppState:
                 execution_service.set_orbitexch_page(competition_id, page)
                 self._log.info(f"OrbitExch page set for competition: {competition_id}")
 
+        # 初始化 risk service 的 cleanup 组件
+        risk_service = self.get_risk_service()
+        await risk_service.initialize_cleanup(self._build_execution_config())
+
         self._log.info("Execution service registered to message bus")
         return success
 
