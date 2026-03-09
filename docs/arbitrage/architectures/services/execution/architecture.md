@@ -10,6 +10,15 @@
    - 发布位置：`src/arbitrage/services/execution/service.py::_publish_session_complete`
    - 触发条件：ExecutionOrchestrator 会话结束
 
+2. Pair 活跃互斥（pair_id 锁定/解锁）
+   - 主题：`arbitrage.pair_activity.{pair_id}`
+   - 数据：`PairActivityMessage`
+   - 发布位置：`src/arbitrage/services/execution/service.py::_publish_pair_activity`
+   - 触发条件：
+     - 接收机会并进入执行流程时发送 `is_active=true` 锁定
+     - 机会缺少方向（best_direction 为空）时发送 `is_active=false` 解锁
+     - 执行结束不主动解锁，由 OddsSubscription 超时清理活跃状态
+
 ## 消息订阅
 
 1. 套利机会（来自 StrategyService）

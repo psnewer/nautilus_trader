@@ -39,8 +39,6 @@ from .orbitexch_executor import OrbitExchExecutor
 from .orchestrator import ExecutionOrchestrator
 from .session import ExecutionSession
 from .mock_exchange import MockExchange
-from .polymarket_contract import PolymarketContractService
-from .cleanup import PostSessionCleanup
 
 # Debug 管理器 (延迟导入避免循环依赖)
 def _get_debug_manager():
@@ -129,26 +127,6 @@ class ExecutionService:
         # OrbitExch 执行器不需要单独初始化，使用页面引用
         self._log.info(f"OrbitExch executor ready (current pages: {len(self._orbitexch_executor._pages)})")
 
-        # 初始化 cleanup 组件
-        cleanup = None
-        if self.config.cleanup_enabled:
-            contract_service = PolymarketContractService(
-                config=self.config,
-                logger=logging.getLogger("PolymarketContractService"),
-            )
-            contract_ok = await contract_service.initialize()
-            if contract_ok:
-                cleanup = PostSessionCleanup(
-                    config=self.config,
-                    contract_service=contract_service,
-                    logger=logging.getLogger("PostSessionCleanup"),
-                )
-                self._log.info("Post-session cleanup initialized")
-            else:
-                self._log.warning(
-                    "PolymarketContractService init failed, cleanup disabled"
-                )
-
         # 初始化执行编排器
         self._orchestrator = ExecutionOrchestrator(
             config=self.config,
@@ -157,7 +135,6 @@ class ExecutionService:
             order_info_getter=self._get_order_info_wrapper,
             probabilities_getter=self._get_probabilities_wrapper,
             orbitexch_modify_and_take=self._orbitexch_modify_and_take_wrapper,
-            cleanup=cleanup,
             logger=logging.getLogger("ExecutionOrchestrator"),
         )
         self._log.info("Execution orchestrator initialized")

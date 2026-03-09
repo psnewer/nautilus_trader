@@ -1000,6 +1000,21 @@ class OddsSubscriptionService:
 
         return result
 
+    async def refresh_all_positions_and_orders(self) -> None:
+        """
+        全量刷新 Polymarket 持仓和活跃订单的内存数据
+
+        通过 REST API 查询最新数据，替换内存中的缓存。
+        """
+        if self._polymarket_client:
+            # 刷新持仓
+            await self._polymarket_client.fetch_positions()
+            # 刷新活跃订单
+            await self._polymarket_client.fetch_open_orders()
+            self._log.info("Polymarket positions and orders refreshed")
+
+        # OrbitExch 通过 WS CURRENT_BETS 自动维护，无需额外 REST 刷新
+
     def get_orbitexch_pages(self) -> dict:
         """
         获取 OrbitExch 的 Playwright 页面引用

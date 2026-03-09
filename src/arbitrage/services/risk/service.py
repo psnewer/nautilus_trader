@@ -4,6 +4,7 @@
 负责止损检查和持仓风险管理。
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,9 @@ from .messages import WayRebateMessage
 from .topics import way_rebate_topic
 from src.arbitrage.services.execution.messages import SessionCompleteMessage
 from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTERN
+from src.arbitrage.services.execution.cleanup import PostSessionCleanup
+from src.arbitrage.services.execution.polymarket_contract import PolymarketContractService
+from src.arbitrage.services.execution.config import ExecutionConfig
 from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
 from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 
@@ -80,6 +84,9 @@ class RiskService:
         self._msgbus = None
         self._odds_service = None
 
+        # Cleanup 组件
+        self._cleanup: PostSessionCleanup | None = None
+
     @property
     def config(self) -> RiskConfig:
         return self._config
@@ -109,11 +116,34 @@ class RiskService:
         self._odds_service = odds_service
         self._log.info("Odds service reference set")
 
+    async def initialize_cleanup(self, execution_config: ExecutionConfig) -> bool:
+        """初始化 cleanup 组件（merge & claim）"""
+        if not execution_config.cleanup_enabled:
+            self._log.info("Cleanup disabled")
+            return False
+
+        contract_service = PolymarketContractService(
+            config=execution_config,
+            logger=logging.getLogger("PolymarketContractService"),
+        )
+        contract_ok = await contract_service.initialize()
+        if not contract_ok:
+            self._log.warning("PolymarketContractService init failed, cleanup disabled")
+            return False
+
+        self._cleanup = PostSessionCleanup(
+            config=execution_config,
+            contract_service=contract_service,
+            logger=logging.getLogger("PostSessionCleanup"),
+        )
+        self._log.info("Cleanup initialized by risk service")
+        return True
+
     def _on_session_complete_message(self, msg: Any) -> None:
         """
         处理会话完成消息
 
-        查询 odds_service 获取该 pair 的持仓数据，刷新持仓，然后发布 way_rebate。
+        调度异步任务：cleanup → 全量刷新 → 更新所有 way_rebate
         """
         if not isinstance(msg, SessionCompleteMessage):
             return
@@ -121,25 +151,76 @@ class RiskService:
         pair_id = msg.pair_id
         self._publish_pair_activity(pair_id, True, "risk")
 
+        # 调度异步任务：cleanup → 全量刷新 → 更新所有 way_rebate
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._post_session_refresh(pair_id))
+        except RuntimeError:
+            self._log.warning(f"No running event loop for post-session refresh of {pair_id}")
+
+    async def _post_session_refresh(self, trigger_pair_id: str) -> None:
+        """
+        Session 结束后的完整刷新流程：
+        1. 执行 cleanup（merge & claim）
+        2. 全量刷新 odds_subscription 内存中的持仓和活跃订单
+        3. 从 odds_subscription 读取全量数据，更新所有 pair 的 way_rebate
+        """
+        # 1. Cleanup (merge & claim)
+        if self._cleanup and self._odds_service:
+            try:
+                polymarket_client = self._odds_service.get_polymarket_client()
+                if polymarket_client:
+                    cleanup_result = await self._cleanup.execute_global(polymarket_client)
+                    self._log.info(f"Post-session cleanup: {cleanup_result.summary}")
+            except Exception as e:
+                self._log.warning(f"Post-session cleanup error: {e}")
+
+        # 2. 全量刷新 odds_subscription 内存中的持仓和活跃订单
+        if self._odds_service:
+            try:
+                await self._odds_service.refresh_all_positions_and_orders()
+            except Exception as e:
+                self._log.warning(f"Full refresh error: {e}")
+
+        # 3. 从 odds_subscription 读取全量数据，更新所有 pair 的 way_rebate
+        self._refresh_all_way_rebates()
+
+    def _refresh_all_way_rebates(self) -> None:
+        """
+        全量更新所有已订阅 pair 的持仓和 way_rebate
+
+        使用新的 PositionManager 构建完整数据后原子替换，
+        避免 clear() 造成的空窗期影响并发的 check_risk 调用。
+        """
         if not self._odds_service:
-            self._log.warning(f"Cannot process session_complete for {pair_id}: odds_service not set")
             return
 
-        # 从 API 查询该 pair 的当前持仓
-        polymarket_positions = self._odds_service.get_polymarket_positions(pair_id)
-        orbitexch_bets = self._odds_service.get_orbitexch_bets(pair_id)
         mappings = self._odds_service.get_position_mappings()
+        all_polymarket_positions = self._odds_service.get_polymarket_positions()
+        all_orbitexch_bets = self._odds_service.get_orbitexch_bets()
 
-        # 刷新持仓
-        self.refresh_pair_position(
-            pair_id=pair_id,
-            polymarket_positions=polymarket_positions,
-            orbitexch_bets=orbitexch_bets,
-            mappings=mappings,
+        # 在新的 PositionManager 中构建全量持仓
+        new_manager = PositionManager(default_share=self._position_manager._default_share)
+        new_manager.load_polymarket_positions(
+            positions=all_polymarket_positions,
+            pair_mapping=mappings.get("polymarket_pair_mapping", {}),
+        )
+        new_manager.load_orbitexch_bets(
+            bets=all_orbitexch_bets,
+            pair_mapping=mappings.get("orbitexch_pair_mapping", {}),
+            selection_mappings=mappings.get("selection_mappings", {}),
         )
 
-        # 发布 way_rebate
-        self._publish_way_rebate(pair_id)
+        # 原子替换
+        self._position_manager = new_manager
+
+        # 发布所有 pair 的 way_rebate
+        for position in self._position_manager.get_all_positions():
+            self._publish_way_rebate(position.pair_id)
+
+        self._log.info(
+            f"All way_rebates refreshed: {len(self._position_manager.get_all_positions())} positions"
+        )
 
     def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
         """发布 pair 活跃状态消息"""

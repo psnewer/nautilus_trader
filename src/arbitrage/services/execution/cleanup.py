@@ -82,126 +82,13 @@ class PostSessionCleanup:
         self._log.info(f"Starting post-session cleanup for pair {pair_id}")
 
         try:
-            # 1. 刷新持仓
             positions = await polymarket_client.fetch_positions()
             if not positions:
-                self._log.info(f"No positions found for cleanup")
+                self._log.info("No positions found for cleanup")
                 return result
 
-            # 过滤有持仓量的 position
             pair_positions = [p for p in positions if p.size > 0]
-
-            if not pair_positions:
-                self._log.info(f"No positions with size > 0")
-                return result
-
-            self._log.info(
-                f"Found {len(pair_positions)} positions for pair {pair_id}: "
-                + ", ".join(
-                    f"{p.market_type}({p.outcome})={p.size:.2f}"
-                    for p in pair_positions
-                )
-            )
-
-            # 2. 按 condition_id 分组
-            by_condition: dict[str, list] = {}
-            for pos in pair_positions:
-                if not pos.condition_id:
-                    self._log.warning(
-                        f"Position {pos.asset_id[:20]}... missing condition_id, skipping"
-                    )
-                    continue
-                by_condition.setdefault(pos.condition_id, []).append(pos)
-
-            # 3. Merge: 同一 condition 下两个 outcome 都有持仓
-            if self._config.cleanup_merge_enabled:
-                for condition_id, cond_positions in by_condition.items():
-                    if len(cond_positions) < 2:
-                        continue
-
-                    # 取所有仓位的最小 size 作为 merge 数量
-                    sizes = [p.size for p in cond_positions]
-                    merge_amount = min(sizes)
-
-                    if merge_amount <= 0:
-                        continue
-
-                    neg_risk = any(p.neg_risk for p in cond_positions)
-
-                    self._log.info(
-                        f"Merge opportunity: condition={condition_id[:16]}..., "
-                        f"neg_risk={neg_risk}, amount={merge_amount:.2f}, "
-                        f"positions={len(cond_positions)}"
-                    )
-
-                    tx_result = await self._contract.merge_positions(
-                        condition_id=condition_id,
-                        amount=merge_amount,
-                        neg_risk=neg_risk,
-                    )
-                    result.merges.append(tx_result)
-
-                    if tx_result.success:
-                        self._log.info(
-                            f"Merge success: condition={condition_id[:16]}..., "
-                            f"amount={merge_amount:.2f}, tx={tx_result.tx_hash}"
-                        )
-                    else:
-                        self._log.warning(
-                            f"Merge failed: condition={condition_id[:16]}..., "
-                            f"error={tx_result.message}"
-                        )
-
-            # 4. Claim/Redeem: 检查市场是否已结算
-            if self._config.cleanup_claim_enabled:
-                for condition_id, cond_positions in by_condition.items():
-                    # 检查是否有持仓可赎回
-                    total_size = sum(p.size for p in cond_positions)
-                    if total_size <= 0:
-                        continue
-
-                    neg_risk = any(p.neg_risk for p in cond_positions)
-
-                    # 查询市场结算状态
-                    event_id = cond_positions[0].event_id
-                    is_resolved = await self._check_market_resolved(event_id)
-
-                    if not is_resolved:
-                        self._log.debug(
-                            f"Market not resolved: condition={condition_id[:16]}..."
-                        )
-                        continue
-
-                    self._log.info(
-                        f"Redeem opportunity: condition={condition_id[:16]}..., "
-                        f"neg_risk={neg_risk}, event={event_id}"
-                    )
-
-                    if neg_risk:
-                        amounts = [p.size for p in cond_positions]
-                        tx_result = await self._contract.redeem_positions(
-                            condition_id=condition_id,
-                            neg_risk=True,
-                            amounts=amounts,
-                        )
-                    else:
-                        tx_result = await self._contract.redeem_positions(
-                            condition_id=condition_id,
-                            neg_risk=False,
-                        )
-
-                    result.redeems.append(tx_result)
-
-                    if tx_result.success:
-                        self._log.info(
-                            f"Redeem success: condition={condition_id[:16]}..., "
-                            f"tx={tx_result.tx_hash}"
-                        )
-                    else:
-                        self._log.warning(
-                            f"Redeem failed: condition={condition_id[:16]}..., "
-                            f"error={tx_result.message}"
-                        )
+            result = await self._do_cleanup(pair_positions, label=f"pair {pair_id}")
 
         except Exception as e:
             error_msg = f"Cleanup error for pair {pair_id}: {e}"
@@ -209,6 +96,165 @@ class PostSessionCleanup:
             result.errors.append(error_msg)
 
         self._log.info(f"Cleanup complete for pair {pair_id}: {result.summary}")
+        return result
+
+    async def execute_global(self, polymarket_client) -> CleanupResult:
+        """
+        全局 cleanup：对所有 Polymarket 持仓执行 merge & claim
+        不限定 pair_id。
+
+        Args:
+            polymarket_client: PolymarketOddsClient
+
+        Returns:
+            CleanupResult
+        """
+        result = CleanupResult()
+
+        if not self._config.cleanup_enabled:
+            return result
+
+        self._log.info("Starting global post-session cleanup")
+
+        try:
+            positions = await polymarket_client.fetch_positions()
+            if not positions:
+                self._log.info("No positions found for global cleanup")
+                return result
+
+            all_positions = [p for p in positions if p.size > 0]
+            result = await self._do_cleanup(all_positions, label="global")
+
+        except Exception as e:
+            error_msg = f"Global cleanup error: {e}"
+            self._log.error(error_msg)
+            result.errors.append(error_msg)
+
+        self._log.info(f"Global cleanup complete: {result.summary}")
+        return result
+
+    async def _do_cleanup(self, positions: list, label: str = "") -> CleanupResult:
+        """
+        执行 cleanup 核心逻辑：merge & claim
+
+        Args:
+            positions: 有持仓量的 position 列表
+            label: 日志标签
+
+        Returns:
+            CleanupResult
+        """
+        result = CleanupResult()
+
+        if not positions:
+            self._log.info(f"No positions with size > 0 ({label})")
+            return result
+
+        self._log.info(
+            f"Found {len(positions)} positions ({label}): "
+            + ", ".join(
+                f"{p.market_type}({p.outcome})={p.size:.2f}"
+                for p in positions
+            )
+        )
+
+        # 按 condition_id 分组
+        by_condition: dict[str, list] = {}
+        for pos in positions:
+            if not pos.condition_id:
+                self._log.warning(
+                    f"Position {pos.asset_id[:20]}... missing condition_id, skipping"
+                )
+                continue
+            by_condition.setdefault(pos.condition_id, []).append(pos)
+
+        # Merge: 同一 condition 下两个 outcome 都有持仓
+        if self._config.cleanup_merge_enabled:
+            for condition_id, cond_positions in by_condition.items():
+                if len(cond_positions) < 2:
+                    continue
+
+                sizes = [p.size for p in cond_positions]
+                merge_amount = min(sizes)
+
+                if merge_amount <= 0:
+                    continue
+
+                neg_risk = any(p.neg_risk for p in cond_positions)
+
+                self._log.info(
+                    f"Merge opportunity: condition={condition_id[:16]}..., "
+                    f"neg_risk={neg_risk}, amount={merge_amount:.2f}, "
+                    f"positions={len(cond_positions)}"
+                )
+
+                tx_result = await self._contract.merge_positions(
+                    condition_id=condition_id,
+                    amount=merge_amount,
+                    neg_risk=neg_risk,
+                )
+                result.merges.append(tx_result)
+
+                if tx_result.success:
+                    self._log.info(
+                        f"Merge success: condition={condition_id[:16]}..., "
+                        f"amount={merge_amount:.2f}, tx={tx_result.tx_hash}"
+                    )
+                else:
+                    self._log.warning(
+                        f"Merge failed: condition={condition_id[:16]}..., "
+                        f"error={tx_result.message}"
+                    )
+
+        # Claim/Redeem: 检查市场是否已结算
+        if self._config.cleanup_claim_enabled:
+            for condition_id, cond_positions in by_condition.items():
+                total_size = sum(p.size for p in cond_positions)
+                if total_size <= 0:
+                    continue
+
+                neg_risk = any(p.neg_risk for p in cond_positions)
+
+                event_id = cond_positions[0].event_id
+                is_resolved = await self._check_market_resolved(event_id)
+
+                if not is_resolved:
+                    self._log.debug(
+                        f"Market not resolved: condition={condition_id[:16]}..."
+                    )
+                    continue
+
+                self._log.info(
+                    f"Redeem opportunity: condition={condition_id[:16]}..., "
+                    f"neg_risk={neg_risk}, event={event_id}"
+                )
+
+                if neg_risk:
+                    amounts = [p.size for p in cond_positions]
+                    tx_result = await self._contract.redeem_positions(
+                        condition_id=condition_id,
+                        neg_risk=True,
+                        amounts=amounts,
+                    )
+                else:
+                    tx_result = await self._contract.redeem_positions(
+                        condition_id=condition_id,
+                        neg_risk=False,
+                    )
+
+                result.redeems.append(tx_result)
+
+                if tx_result.success:
+                    self._log.info(
+                        f"Redeem success: condition={condition_id[:16]}..., "
+                        f"tx={tx_result.tx_hash}"
+                    )
+                else:
+                    self._log.warning(
+                        f"Redeem failed: condition={condition_id[:16]}..., "
+                        f"error={tx_result.message}"
+                    )
+
         return result
 
     async def _check_market_resolved(self, event_id: str) -> bool:

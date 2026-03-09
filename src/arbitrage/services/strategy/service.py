@@ -600,6 +600,10 @@ class StrategyService:
         best_direction = context.get_best_direction() if context else None
         all_directions = [d.to_dict() for d in context.arbitrage_directions] if context else []
 
+        if not best_direction:
+            self._log.debug(f"No arbitrage direction for {pair_id}, skipping")
+            return False
+
         # ---- Size 可用性检查 ----
         adjusted_share = self._check_and_adjust_size(pair_id, best_direction)
         if adjusted_share is None:

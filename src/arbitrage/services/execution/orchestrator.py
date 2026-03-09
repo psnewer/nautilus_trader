@@ -20,7 +20,6 @@ from .session import (
 from .planner import ExecutionPlanner, ExecutionPlan, OrderOperation, OperationType, OperationVenue
 from .tracker import OrderTracker, TrackingStatus, TrackingResult, BatchTrackingResult
 from .models import Order, OrderSide, OrderType, Venue
-from .cleanup import PostSessionCleanup
 from src.arbitrage.common.utils import check_min_size
 
 
@@ -42,7 +41,6 @@ class ExecutionOrchestrator:
         order_info_getter: Callable,
         probabilities_getter: Callable,
         orbitexch_modify_and_take: Callable | None = None,
-        cleanup: PostSessionCleanup | None = None,
         logger: logging.Logger | None = None,
     ):
         """
@@ -53,7 +51,6 @@ class ExecutionOrchestrator:
             order_info_getter: 订单信息获取函数 (pair_id, market_type) -> order_info
             probabilities_getter: 实时概率获取函数 (pair_id) -> {outcome: probability}
             orbitexch_modify_and_take: OrbitExch 修改并 Take 函数 async (order, new_size) -> ExecutionResult
-            cleanup: Post-session cleanup 组件
         """
         self._config = config
         self._execute_order = order_executor
@@ -61,7 +58,6 @@ class ExecutionOrchestrator:
         self._get_order_info = order_info_getter
         self._get_probabilities = probabilities_getter
         self._orbitexch_modify_and_take = orbitexch_modify_and_take
-        self._cleanup = cleanup
         self._polymarket_client = None  # 由 set_polymarket_client 设置
         self._log = logger or logging.getLogger(self.__class__.__name__)
 
@@ -200,13 +196,6 @@ class ExecutionOrchestrator:
                 del self._active_pair_sessions[pair_id]
 
         self._notify_session_update(session)
-
-        # Post-session cleanup (merge & claim)
-        if self._cleanup and self._polymarket_client:
-            try:
-                await self._cleanup.execute(session, self._polymarket_client)
-            except Exception as e:
-                self._log.warning(f"Post-session cleanup error: {e}")
 
         return session
 

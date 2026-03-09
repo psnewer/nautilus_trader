@@ -12,6 +12,14 @@
      - 会话完成后 `refresh_pair_position()` 刷新持仓
      - `load_historical_positions()` 加载历史持仓
 
+2. Pair 活跃互斥（pair_id 锁定）
+   - 主题：`arbitrage.pair_activity.{pair_id}`
+   - 数据：`PairActivityMessage`
+   - 发布位置：`src/arbitrage/services/risk/service.py::_publish_pair_activity`
+   - 触发条件：
+     - 收到 `session_complete` 后进入 post-session 刷新流程时发送 `is_active=true`
+     - 解锁依赖 OddsSubscription 的超时清理（Risk 不主动发送 `is_active=false`）
+
 ## 消息订阅
 
 1. 会话完成（来自 ExecutionService）
