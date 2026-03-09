@@ -85,6 +85,8 @@ class PolymarketPosition:
     current_price: float  # 当前价格
     event_id: str = ""
     neg_risk: bool = False  # 是否为负风险市场
+    redeemable: bool = False  # Data API 返回的可赎回标记
+    mergeable: bool = False  # Data API 返回的可合并标记
 
     @property
     def profit_if_win(self) -> float:
@@ -745,14 +747,16 @@ class PolymarketOddsClient:
 
                     pos = PolymarketPosition(
                         asset_id=asset_id,
-                        condition_id=token_info.get("condition_id", item.get("condition_id", "")),
+                        condition_id=token_info.get("condition_id", item.get("conditionId", item.get("condition_id", ""))),
                         outcome=token_info.get("outcome", item.get("outcome", "")),
                         market_type=token_info.get("market_type", ""),
                         size=float(item.get("size", 0)),
-                        avg_price=float(item.get("avg_price", 0)),
+                        avg_price=float(item.get("avgPrice", item.get("avg_price", 0))),
                         current_price=current_price,
-                        event_id=token_info.get("event_id", ""),
-                        neg_risk=token_info.get("neg_risk", False),
+                        event_id=token_info.get("event_id", item.get("eventSlug", "")),
+                        neg_risk=token_info.get("neg_risk", item.get("negativeRisk", False)),
+                        redeemable=bool(item.get("redeemable", False)),
+                        mergeable=bool(item.get("mergeable", False)),
                     )
                     positions.append(pos)
 
@@ -799,7 +803,7 @@ class PolymarketOddsClient:
             self._log.debug("No API key configured, skipping orders fetch")
             return []
 
-        path = "/orders"
+        path = "/data/orders"
         headers = self._generate_l1_auth_headers("GET", path)
 
         if not headers:
@@ -811,7 +815,7 @@ class PolymarketOddsClient:
                 if asset_id:
                     params["asset_id"] = asset_id
                 resp = await client.get(
-                    f"{self.CLOB_API_URL}/orders",
+                    f"{self.CLOB_API_URL}{path}",
                     headers=headers,
                     params=params,
                 )
