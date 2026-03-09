@@ -11,8 +11,6 @@ Session 结束后的 Polymarket 仓位收尾：
 import logging
 from dataclasses import dataclass, field
 
-import httpx
-
 from .config import ExecutionConfig
 from .polymarket_contract import PolymarketContractService, TxResult
 
@@ -206,7 +204,7 @@ class PostSessionCleanup:
                         f"error={tx_result.message}"
                     )
 
-        # Claim/Redeem: 检查市场是否已结算
+        # Claim/Redeem: 使用 Data API 返回的 redeemable 标记
         if self._config.cleanup_claim_enabled:
             for condition_id, cond_positions in by_condition.items():
                 total_size = sum(p.size for p in cond_positions)
@@ -215,18 +213,19 @@ class PostSessionCleanup:
 
                 neg_risk = any(p.neg_risk for p in cond_positions)
 
-                event_id = cond_positions[0].event_id
-                is_resolved = await self._check_market_resolved(event_id)
-
-                if not is_resolved:
+                # 检查是否有任一 position 标记为 redeemable
+                is_redeemable = any(
+                    getattr(p, "redeemable", False) for p in cond_positions
+                )
+                if not is_redeemable:
                     self._log.debug(
-                        f"Market not resolved: condition={condition_id[:16]}..."
+                        f"Market not redeemable: condition={condition_id[:16]}..."
                     )
                     continue
 
                 self._log.info(
                     f"Redeem opportunity: condition={condition_id[:16]}..., "
-                    f"neg_risk={neg_risk}, event={event_id}"
+                    f"neg_risk={neg_risk}"
                 )
 
                 if neg_risk:
@@ -257,37 +256,3 @@ class PostSessionCleanup:
 
         return result
 
-    async def _check_market_resolved(self, event_id: str) -> bool:
-        """
-        查询市场是否已结算
-
-        通过 Gamma API 检查 market.umaResolutionStatus
-
-        Args:
-            event_id: Polymarket event ID
-
-        Returns:
-            是否已结算
-        """
-        try:
-            url = f"https://gamma-api.polymarket.com/events/{event_id}"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-
-                markets = data.get("markets", [])
-                if not markets:
-                    return False
-
-                # 所有 market 都已 resolved 才算 resolved
-                for market in markets:
-                    status = market.get("umaResolutionStatus", "")
-                    if status != "resolved":
-                        return False
-
-                return True
-
-        except Exception as e:
-            self._log.warning(f"Failed to check market resolution for {event_id}: {e}")
-            return False

@@ -61,6 +61,7 @@
     "polymarket_api_secret": "",
     "polymarket_passphrase": "",
     "polymarket_user_address": "",
+    "polymarket_funder": "",
     "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
@@ -93,9 +94,14 @@
     "discount": 1.0,
     "take_off": 0.0,
     "market_order_enabled": false,
-    "tracking_timeout_sec": 20.0,
+    "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
-    "max_failure_retries": 5
+    "max_failure_retries": 5,
+    "polymarket_relayer_url": "https://relayer-v2.polymarket.com/",
+    "polygon_rpc_url": "https://polygon-rpc.com/",
+    "cleanup_enabled": true,
+    "cleanup_merge_enabled": true,
+    "cleanup_claim_enabled": true
   },
   "strategy": {
     "enabled": true,
