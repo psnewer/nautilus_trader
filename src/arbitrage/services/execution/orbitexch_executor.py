@@ -134,7 +134,7 @@ class OrbitExchExecutor:
                 "selectionId": int(order.selection_id),
                 "handicap": order.handicap,
                 "price": odds_price,
-                "size": order.size,
+                "size": round(order.size, 2),
                 "side": side,
                 "betUuid": bet_uuid,
                 "betType": "EXCHANGE",

@@ -11,6 +11,7 @@ Polymarket 订单执行器
 import asyncio
 import logging
 import time
+import traceback
 from typing import Any
 
 from .config import ExecutionConfig
@@ -27,7 +28,7 @@ from .models import (
 # 尝试导入 py-clob-client
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType as ClobOrderType
+    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType as ClobOrderType, ApiCreds
     HAS_CLOB_CLIENT = True
 except ImportError:
     HAS_CLOB_CLIENT = False
@@ -79,19 +80,24 @@ class PolymarketExecutor:
         try:
             # 初始化 CLOB 客户端
             # 参考: https://github.com/Polymarket/py-clob-client
+            # signature_type=2: Polymarket proxy wallet 模式
+            # funder = proxy wallet 地址 (持有资金), key = EOA 私钥 (签名)
+            funder = self.config.polymarket_funder or None
             self._client = ClobClient(
                 host=self.config.polymarket_clob_url,
                 key=self.config.polymarket_private_key,
                 chain_id=137,  # Polygon mainnet
-                signature_type=1,  # 1 for email/Magic wallet signatures
-                funder=self.config.polymarket_funder or None,
+                signature_type=2,
+                funder=funder,
             )
+            self._log.info(f"ClobClient initialized: signature_type=2, funder={funder}")
 
-            # 设置 API credentials（使用线程池避免阻塞）
-            api_creds = await asyncio.to_thread(
-                self._client.create_or_derive_api_creds
-            )
-            self._client.set_api_creds(api_creds)
+            # 使用预先派生的 CLOB API credentials
+            self._client.set_api_creds(ApiCreds(
+                api_key=self.config.polymarket_clob_api_key,
+                api_secret=self.config.polymarket_clob_secret,
+                api_passphrase=self.config.polymarket_clob_passphrase,
+            ))
 
             self._log.info("Polymarket executor initialized")
             return True
@@ -158,12 +164,15 @@ class PolymarketExecutor:
                 )
 
                 # 创建并签名市价订单（使用线程池避免阻塞 event loop）
+                market_order_args = MarketOrderArgs(
+                    token_id=order.token_id,
+                    amount=amount,
+                    side=side,
+                    price=order.price,
+                )
                 signed_order = await asyncio.to_thread(
                     self._client.create_market_order,
-                    token_id=order.token_id,
-                    side=side,
-                    amount=amount,
-                    price=order.price,
+                    market_order_args,
                 )
             else:
                 # 创建订单参数
@@ -231,7 +240,9 @@ class PolymarketExecutor:
             order.error_message = str(e)
             order.updated_at = time.time()
 
-            self._log.error(f"Failed to place order: {e}")
+            self._log.error(
+                f"Failed to place order: {e}\n{traceback.format_exc()}"
+            )
 
             return ExecutionResult(
                 success=False,

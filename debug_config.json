@@ -10,7 +10,7 @@
       "value": 0.01
     },
     "orbitexch_price": {
-      "enabled": true,
+      "enabled": false,
       "value": 100
     },
     "polymarket_size": {
@@ -18,7 +18,7 @@
       "value": 5
     },
     "orbitexch_size": {
-      "enabled": true,
+      "enabled": false,
       "value": 7
     },
     "order_size": {
@@ -26,7 +26,7 @@
       "value": 1.0
     },
     "skip_execution": {
-      "enabled": false,
+      "enabled": true,
       "value": true
     },
     "use_mock_exchange": {
@@ -41,8 +41,8 @@
       "enabled": false,
       "data": {
         "market_type": "home",
-        "bid": 0.29,
-        "ask": 0.30
+        "bid": 0.94,
+        "ask": 0.95
       },
       "conditions": {
         "venue": "polymarket",
@@ -55,8 +55,8 @@
       "enabled": false,
       "data": {
         "market_type": "away",
-        "bid": 0.49,
-        "ask": 0.50
+        "bid": 0.94,
+        "ask": 0.95
       },
       "conditions": {
         "venue": "polymarket",

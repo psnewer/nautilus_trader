@@ -35,6 +35,7 @@ class OddsSubscriptionConfig:
     polymarket_passphrase: str = ""
     polymarket_user_address: str = ""
     polymarket_funder: str = ""
+    polymarket_eoa_address: str = ""  # EOA 钱包地址（用于 CLOB L2 认证 POLY_ADDRESS 头）
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
     # OrbitExch 配置
@@ -68,6 +69,7 @@ class OddsSubscriptionConfig:
             polymarket_passphrase=data.get("polymarket_passphrase", ""),
             polymarket_user_address=data.get("polymarket_user_address", ""),
             polymarket_funder=data.get("polymarket_funder", ""),
+            polymarket_eoa_address=data.get("polymarket_eoa_address", ""),
             polymarket_ws_url=data.get(
                 "polymarket_ws_url",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
@@ -96,6 +98,7 @@ class OddsSubscriptionConfig:
             "polymarket_passphrase": self.polymarket_passphrase,
             "polymarket_user_address": self.polymarket_user_address,
             "polymarket_funder": self.polymarket_funder,
+            "polymarket_eoa_address": self.polymarket_eoa_address,
             "polymarket_ws_url": self.polymarket_ws_url,
             "orbitexch_base_url": self.orbitexch_base_url,
             "orbitexch_zoom_level": self.orbitexch_zoom_level,

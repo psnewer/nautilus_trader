@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "WTA Indian Wells 2026"
+              "WTA Miami 2026"
             ]
           }
         ]
@@ -46,7 +46,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "wta": "WTA",
-      "WTA Indian Wells 2026": "WTA"
+      "WTA Miami 2026": "WTA"
     },
     "competition_max_matches": {
       "English Premier League": 0,
@@ -57,18 +57,19 @@
     "enabled": true,
     "staleness_timeout_sec": 300,
     "pair_activity_timeout_sec": 300,
-    "polymarket_api_key": "",
-    "polymarket_api_secret": "",
-    "polymarket_passphrase": "",
-    "polymarket_user_address": "",
-    "polymarket_funder": "",
+    "polymarket_api_key": "32c8e9ec-3a8f-50c3-7e37-998a42749230",
+    "polymarket_api_secret": "vR8YMysgVve7MS9954n8EqeXilvla4fLFRLRzjKMOTk=",
+    "polymarket_passphrase": "36fbaf6b7069b766b62b9ffcde3e858ae474265c2c962172c714900f9b7b4572",
+    "polymarket_user_address": "0x568F620C81407e562678Ab7AB88Aa628D8d6d803",
+    "polymarket_funder": "0x568F620C81407e562678Ab7AB88Aa628D8d6d803",
+    "polymarket_eoa_address": "0x8aD0301a7346cCDAaCe360199404B6f50571D434",
     "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
     "orbitexch_page_refresh_sec": 600,
     "orbitexch_staleness_timeout_sec": 60,
-    "orbitexch_username": "",
-    "orbitexch_password": "",
+    "orbitexch_username": "haidi123",
+    "orbitexch_password": "594110_Aa",
     "orbitexch_user_data_dir": "",
     "orbitexch_cdp_url": "",
     "supported_market_types": [
@@ -78,13 +79,16 @@
     ]
   },
   "arbitrage": {
-    "share": 50
+    "share": 20
   },
   "execution": {
     "enabled": true,
     "polymarket_api_key": "",
     "polymarket_api_secret": "",
     "polymarket_passphrase": "",
+    "polymarket_clob_api_key": "",
+    "polymarket_clob_secret": "",
+    "polymarket_clob_passphrase": "",
     "polymarket_private_key": "",
     "polymarket_funder": "",
     "polymarket_clob_url": "https://clob.polymarket.com",
@@ -93,7 +97,7 @@
     "default_order_type": "GTC",
     "discount": 1.0,
     "take_off": 0.0,
-    "market_order_enabled": false,
+    "market_order_enabled": true,
     "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
     "max_failure_retries": 5,
