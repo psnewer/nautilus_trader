@@ -24,11 +24,15 @@ from .config import ExecutionConfig
 try:
     from py_builder_relayer_client.client import RelayClient
     from py_builder_relayer_client.models import OperationType, SafeTransaction
+    from py_builder_relayer_client.builder import derive as _derive_mod
+    from py_builder_relayer_client.builder import safe as _safe_mod
     from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
     HAS_RELAYER_CLIENT = True
 except ImportError:
     HAS_RELAYER_CLIENT = False
     RelayClient = None
+    _derive_mod = None
+    _safe_mod = None
 
 # 尝试导入 eth 工具
 try:
@@ -198,6 +202,10 @@ class PolymarketContractService:
             self._log.warning("Polymarket private key not configured")
             return False
 
+        if not self._config.polymarket_funder:
+            self._log.warning("Polymarket funder (proxy wallet) not configured")
+            return False
+
         try:
             builder_config = BuilderConfig(
                 local_builder_creds=BuilderApiKeyCreds(
@@ -214,13 +222,58 @@ class PolymarketContractService:
                 builder_config,
             )
 
+            # 验证 proxy wallet 地址
+            proxy_wallet = self._config.polymarket_funder
+            derived_safe = self._client.get_expected_safe()
+            if derived_safe.lower() != proxy_wallet.lower():
+                self._log.warning(
+                    f"SDK derived Safe ({derived_safe}) != configured proxy wallet ({proxy_wallet}). "
+                    f"Will override derive() to use proxy wallet."
+                )
+
             self._initialized = True
-            self._log.info("PolymarketContractService initialized")
+            self._log.info(
+                f"PolymarketContractService initialized, proxy_wallet={proxy_wallet}"
+            )
             return True
 
         except Exception as e:
             self._log.error(f"Failed to initialize relayer client: {e}")
             return False
+
+    def _execute_with_proxy(
+        self,
+        transactions: list,
+        metadata: str = "",
+    ):
+        """
+        使用实际 proxy wallet 地址执行 Relayer 交易
+
+        SDK 内部通过 CREATE2 派生 Safe 地址，可能与实际 proxy wallet 不匹配。
+        通过临时替换 derive 函数，强制使用配置中的 proxy wallet 地址。
+
+        需要 patch 两处:
+        - _derive_mod.derive: 被 client.py 的 get_expected_safe() 调用
+        - _safe_mod.derive: 被 safe.py 的 build_safe_transaction_request() 调用
+          (safe.py 用 from .derive import derive 创建了本地引用)
+        """
+        proxy_wallet = self._config.polymarket_funder
+        override = lambda addr, factory: proxy_wallet
+
+        # 保存原始引用
+        orig_derive_mod = _derive_mod.derive
+        orig_safe_mod = _safe_mod.derive
+
+        self._log.info(f"Executing with proxy wallet override: {proxy_wallet}")
+
+        # Patch both locations
+        _derive_mod.derive = override
+        _safe_mod.derive = override
+        try:
+            return self._client.execute(transactions, metadata)
+        finally:
+            _derive_mod.derive = orig_derive_mod
+            _safe_mod.derive = orig_safe_mod
 
     async def merge_positions(
         self,
@@ -264,12 +317,12 @@ class PolymarketContractService:
 
             txn = SafeTransaction(
                 to=target,
-                value=0,
+                value="0",
                 data="0x" + calldata.hex(),
                 operation=OperationType.Call,
             )
 
-            resp = self._client.execute([txn], desc)
+            resp = self._execute_with_proxy([txn], desc)
             self._log.info(f"Merge submitted: {resp}")
 
             # 等待确认
@@ -327,12 +380,12 @@ class PolymarketContractService:
 
             txn = SafeTransaction(
                 to=target,
-                value=0,
+                value="0",
                 data="0x" + calldata.hex(),
                 operation=OperationType.Call,
             )
 
-            resp = self._client.execute([txn], desc)
+            resp = self._execute_with_proxy([txn], desc)
             self._log.info(f"Redeem submitted: {resp}")
 
             awaited = resp.wait()

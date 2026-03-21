@@ -175,7 +175,8 @@ class RiskService:
             except Exception as e:
                 self._log.warning(f"Post-session cleanup error: {e}")
 
-        # 2. 全量刷新 odds_subscription 内存中的持仓和活跃订单
+        # 2. 等待 Data API 索引更新后，全量刷新持仓和活跃订单
+        await asyncio.sleep(5)
         if self._odds_service:
             try:
                 await self._odds_service.refresh_all_positions_and_orders()
@@ -218,8 +219,15 @@ class RiskService:
         for position in self._position_manager.get_all_positions():
             self._publish_way_rebate(position.pair_id)
 
+        all_positions = self._position_manager.get_all_positions()
+        for position in all_positions:
+            wr = self._position_manager.get_way_rebate(position.pair_id)
+            self._log.info(
+                f"[DEBUG] way_rebate for {position.pair_id}: {wr}, "
+                f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
+            )
         self._log.info(
-            f"All way_rebates refreshed: {len(self._position_manager.get_all_positions())} positions"
+            f"All way_rebates refreshed: {len(all_positions)} positions"
         )
 
     def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
@@ -305,8 +313,9 @@ class RiskService:
         for position in self._position_manager.get_all_positions():
             way_rebate = position.calculate_way_rebate()
             if way_rebate:
-                self._log.debug(
-                    f"Position {position.pair_id}: way_rebate={way_rebate}"
+                self._log.info(
+                    f"[DEBUG] way_rebate for {position.pair_id}: {way_rebate}, "
+                    f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
                 )
                 self._publish_way_rebate(position.pair_id)
 

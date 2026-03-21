@@ -440,6 +440,9 @@ class AppState:
             polymarket_api_key=os.getenv("POLYMARKET_API_KEY", ""),
             polymarket_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
             polymarket_passphrase=os.getenv("POLYMARKET_PASSPHRASE", ""),
+            polymarket_clob_api_key=os.getenv("POLYMARKET_CLOB_API_KEY", ""),
+            polymarket_clob_secret=os.getenv("POLYMARKET_CLOB_SECRET", ""),
+            polymarket_clob_passphrase=os.getenv("POLYMARKET_CLOB_PASSPHRASE", ""),
             polymarket_private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
             polymarket_funder=os.getenv("POLYMARKET_FUNDER", ""),
             polymarket_clob_url=base.polymarket_clob_url,
@@ -590,15 +593,16 @@ class AppState:
             config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", "")
             config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
 
-            # Polymarket 凭据（用于 User Channel 订单追踪）
-            config.polymarket_api_key = os.getenv("POLYMARKET_API_KEY", "")
-            config.polymarket_api_secret = os.getenv("POLYMARKET_API_SECRET", "")
-            config.polymarket_passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
+            # Polymarket CLOB 凭据（用于 WS User Channel 和 REST 查询）
+            config.polymarket_api_key = os.getenv("POLYMARKET_CLOB_API_KEY", "")
+            config.polymarket_api_secret = os.getenv("POLYMARKET_CLOB_SECRET", "")
+            config.polymarket_passphrase = os.getenv("POLYMARKET_CLOB_PASSPHRASE", "")
             config.polymarket_user_address = os.getenv(
                 "POLYMARKET_USER_ADDRESS",
                 os.getenv("POLYMARKET_ADDRESS", ""),
             )
             config.polymarket_funder = os.getenv("POLYMARKET_FUNDER", "")
+            config.polymarket_eoa_address = os.getenv("POLYMARKET_EOA_ADDRESS", "")
             if config.polymarket_funder:
                 config.polymarket_user_address = config.polymarket_funder
 
@@ -1050,6 +1054,9 @@ class AppState:
         # 等待 OrbitExch CURRENT_BETS 到达
         if not await odds_service.wait_for_orbitexch_current_bets(timeout=30.0):
             self._log.warning("OrbitExch CURRENT_BETS not received within timeout")
+
+        # 重新 fetch positions（此时 tokens 已订阅，event_id/market_type 可正确填充）
+        await odds_service.refresh_all_positions_and_orders()
 
         # 获取映射数据
         mappings = odds_service.get_position_mappings()

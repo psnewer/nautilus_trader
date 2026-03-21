@@ -482,19 +482,8 @@ class PositionManager:
             price = float(bet.get("price", 0))
             side = bet.get("side", "BACK")
 
-            # 获取交易所计算的 profit/liability
-            market_profit = float(bet.get("marketProfit", 0))
-            market_liability = float(bet.get("marketLiability", 0))
-
-            # BACK: 如果 selection 赢，获得 profit；如果输，损失 liability
-            # LAY: 反向
-            if side == "BACK":
-                profit = market_profit
-                loss = market_liability
-            else:  # LAY
-                profit = -market_liability
-                loss = -market_profit
-
+            # 使用 size 和 price 自行计算盈亏，不依赖 API 的 marketProfit/marketLiability
+            # OrbitExch profit_if_wins = size * (price - 1), loss_if_loses = size
             # 添加持仓
             position = self.get_or_create_position(pair_id)
             position.add_leg(PositionLeg(
@@ -502,8 +491,6 @@ class PositionManager:
                 market_type=market_type,
                 size=size_matched,
                 price=price,
-                profit_override=profit,
-                loss_override=loss,
             ))
             count += 1
 

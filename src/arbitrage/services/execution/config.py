@@ -31,9 +31,14 @@ class ExecutionConfig:
     enabled: bool = True
 
     # Polymarket 配置
+    # Builder Settings creds (用于 Relayer merge/redeem)
     polymarket_api_key: str = ""
     polymarket_api_secret: str = ""
     polymarket_passphrase: str = ""
+    # CLOB API creds (从 private key 派生, 用于下单)
+    polymarket_clob_api_key: str = ""
+    polymarket_clob_secret: str = ""
+    polymarket_clob_passphrase: str = ""
     polymarket_private_key: str = ""  # 用于签名订单
     polymarket_funder: str = ""  # funder 地址
 
@@ -71,6 +76,9 @@ class ExecutionConfig:
             polymarket_api_key=data.get("polymarket_api_key", ""),
             polymarket_api_secret=data.get("polymarket_api_secret", ""),
             polymarket_passphrase=data.get("polymarket_passphrase", ""),
+            polymarket_clob_api_key=data.get("polymarket_clob_api_key", ""),
+            polymarket_clob_secret=data.get("polymarket_clob_secret", ""),
+            polymarket_clob_passphrase=data.get("polymarket_clob_passphrase", ""),
             polymarket_private_key=data.get("polymarket_private_key", ""),
             polymarket_funder=data.get("polymarket_funder", ""),
             polymarket_clob_url=data.get(
@@ -105,6 +113,9 @@ class ExecutionConfig:
             "polymarket_api_key": self.polymarket_api_key,
             "polymarket_api_secret": self.polymarket_api_secret,
             "polymarket_passphrase": self.polymarket_passphrase,
+            "polymarket_clob_api_key": self.polymarket_clob_api_key,
+            "polymarket_clob_secret": "***" if self.polymarket_clob_secret else "",
+            "polymarket_clob_passphrase": "***" if self.polymarket_clob_passphrase else "",
             "polymarket_private_key": "***" if self.polymarket_private_key else "",
             "polymarket_funder": self.polymarket_funder,
             "polymarket_clob_url": self.polymarket_clob_url,

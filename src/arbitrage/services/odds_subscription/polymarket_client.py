@@ -148,6 +148,9 @@ class PolymarketOddsClient:
         self._orders_update_callback: Callable[[dict], None] | None = None
         self._positions_update_callback: Callable[[str], None] | None = None  # event_id
 
+        # 已处理的 CONFIRMED trade ID（去重）
+        self._confirmed_trade_ids: set[str] = set()
+
         # 状态
         self._running = False
 
@@ -659,42 +662,89 @@ class PolymarketOddsClient:
     DATA_API_URL = "https://data-api.polymarket.com"
     CLOB_API_URL = "https://clob.polymarket.com"
 
+    def _build_hmac_signature(self, secret_raw: str, timestamp: str, method: str, path: str, body: str = "") -> str:
+        """
+        构建 HMAC-SHA256 签名
+
+        与 py-clob-client 和 py-builder-signing-sdk 保持一致:
+        - message = timestamp + method + requestPath + body
+        - secret 使用 urlsafe_b64decode
+        - 签名使用 urlsafe_b64encode
+        """
+        secret = base64.urlsafe_b64decode(secret_raw)
+        message = f"{timestamp}{method}{path}"
+        if body:
+            message += body
+        sig = hmac.new(secret, message.encode(), hashlib.sha256)
+        return base64.urlsafe_b64encode(sig.digest()).decode()
+
     def _generate_l1_auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
         """
-        生成 Polymarket L1 认证 headers (用于 REST API)
+        生成 Polymarket Data API 认证 headers
 
-        Polymarket 使用 HMAC-SHA256 签名认证
-        参考: https://docs.polymarket.com/developers/CLOB/auth/l1-auth
+        用于 data-api.polymarket.com 端点 (如 /positions)。
+        Data API 使用毫秒时间戳。
         """
         if not self.config.polymarket_api_key or not self.config.polymarket_api_secret:
             return {}
 
         timestamp = str(int(time.time() * 1000))
-
-        # 构造签名消息: timestamp + method + path + body
         message = f"{timestamp}{method}{path}{body}"
 
-        # HMAC-SHA256 签名
         try:
             secret_raw = self.config.polymarket_api_secret.strip()
             padding = (-len(secret_raw)) % 4
             if padding:
                 secret_raw += "=" * padding
-            try:
-                secret = base64.b64decode(secret_raw, validate=True)
-            except Exception:
-                # 兼容 urlsafe base64（可能缺少 padding）
-                secret = base64.urlsafe_b64decode(secret_raw)
+            secret = base64.urlsafe_b64decode(secret_raw)
             signature = hmac.new(secret, message.encode(), hashlib.sha256)
             signature_b64 = base64.b64encode(signature.digest()).decode()
         except Exception as e:
-            self._log.error(f"Failed to generate signature: {e}")
+            self._log.error(f"Failed to generate L1 signature: {e}")
             return {}
 
         return {
             "POLY_ADDRESS": self.config.polymarket_api_key,
             "POLY_SIGNATURE": signature_b64,
             "POLY_TIMESTAMP": timestamp,
+            "POLY_PASSPHRASE": self.config.polymarket_passphrase,
+        }
+
+    def _generate_clob_auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
+        """
+        生成 Polymarket CLOB API L2 认证 headers
+
+        用于 clob.polymarket.com 端点 (如 /data/orders)。
+        与 py-clob-client create_level_2_headers 保持一致:
+        - POLY_ADDRESS = EOA 钱包地址
+        - POLY_API_KEY = API key UUID
+        - POLY_TIMESTAMP = 秒级时间戳
+        - POLY_SIGNATURE = urlsafe_b64encode HMAC
+        - POLY_PASSPHRASE = passphrase
+        """
+        if not self.config.polymarket_api_key or not self.config.polymarket_api_secret:
+            return {}
+
+        eoa_address = self.config.polymarket_eoa_address
+        if not eoa_address:
+            self._log.error("EOA address not configured for CLOB auth")
+            return {}
+
+        timestamp = str(int(time.time()))
+
+        try:
+            signature_b64 = self._build_hmac_signature(
+                self.config.polymarket_api_secret, timestamp, method, path, body
+            )
+        except Exception as e:
+            self._log.error(f"Failed to generate CLOB signature: {e}")
+            return {}
+
+        return {
+            "POLY_ADDRESS": eoa_address,
+            "POLY_SIGNATURE": signature_b64,
+            "POLY_TIMESTAMP": timestamp,
+            "POLY_API_KEY": self.config.polymarket_api_key,
             "POLY_PASSPHRASE": self.config.polymarket_passphrase,
         }
 
@@ -736,9 +786,18 @@ class PolymarketOddsClient:
                 data = resp.json()
 
                 positions = []
+                self._log.info(f"[DEBUG] _subscribed_tokens keys: {[k[:20]+'...' for k in self._subscribed_tokens.keys()]}")
                 for item in data:
-                    asset_id = item.get("asset_id", "")
+                    asset_id = item.get("asset", item.get("asset_id", ""))
                     token_info = self._subscribed_tokens.get(asset_id, {})
+                    self._log.info(
+                        f"[DEBUG] Position asset_id={asset_id[:20]}..., "
+                        f"token_match={'YES' if token_info else 'NO'}, "
+                        f"event_id={token_info.get('event_id', '')}, "
+                        f"market_type={token_info.get('market_type', '')}, "
+                        f"size={item.get('size', 0)}, "
+                        f"raw_keys={list(item.keys())}"
+                    )
 
                     # 获取当前价格
                     current_price = 0.0
@@ -753,22 +812,21 @@ class PolymarketOddsClient:
                         size=float(item.get("size", 0)),
                         avg_price=float(item.get("avgPrice", item.get("avg_price", 0))),
                         current_price=current_price,
-                        event_id=token_info.get("event_id", item.get("eventSlug", "")),
+                        event_id=token_info.get("event_id", str(item.get("eventId", item.get("eventSlug", "")))),
                         neg_risk=token_info.get("neg_risk", item.get("negativeRisk", False)),
                         redeemable=bool(item.get("redeemable", False)),
                         mergeable=bool(item.get("mergeable", False)),
                     )
                     positions.append(pos)
 
-                    # 更新缓存
+                # 用 API 返回的数据完整替换缓存（merge 后不在列表中的仓位会被移除）
+                new_positions = {}
+                for pos in positions:
                     if pos.size > 0:
-                        if self._positions is None:
-                            self._positions = {}
-                        self._positions[asset_id] = pos
+                        new_positions[pos.asset_id] = pos
+                self._positions = new_positions
 
                 self._log.info(f"Fetched {len(positions)} positions from Data API")
-                if self._positions is None:
-                    self._positions = {}
                 self._positions_event.set()
 
                 # 触发仓位更新回调
@@ -804,7 +862,7 @@ class PolymarketOddsClient:
             return []
 
         path = "/data/orders"
-        headers = self._generate_l1_auth_headers("GET", path)
+        headers = self._generate_clob_auth_headers("GET", path)
 
         if not headers:
             return []
@@ -1163,6 +1221,10 @@ class PolymarketOddsClient:
             )
 
             # 只处理 CONFIRMED（完全成交终态）
+            if status == "CONFIRMED" and trade_id in self._confirmed_trade_ids:
+                self._log.debug(f"Trade CONFIRMED already processed, skip: id={trade_id}")
+                return
+
             if status != "CONFIRMED":
                 # 非 CONFIRMED 仍触发回调让 tracker 知道状态变化
                 if self._orders_update_callback:
@@ -1181,6 +1243,8 @@ class PolymarketOddsClient:
                 return
 
             # === CONFIRMED 处理 ===
+            self._confirmed_trade_ids.add(trade_id)
+
             # 收集本次成交涉及的 order_id
             confirmed_order_ids: set[str] = set()
             for mo in maker_orders:
@@ -1416,6 +1480,7 @@ class PolymarketOddsClient:
         self._pending_subscribe.clear()
         self._current_orders.clear()
         self._positions.clear()
+        self._confirmed_trade_ids.clear()
         self._log.info(f"Cleared {old_count} token subscriptions")
 
     def get_latest_odds(self, event_id: str) -> dict[str, dict]:
