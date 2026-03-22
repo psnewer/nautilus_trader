@@ -52,8 +52,9 @@ class OddsSubscriptionService:
         self._latest_odds: dict[str, dict] = {}  # pair_id -> {polymarket: {...}, orbitexch: {...}}
         self._pair_activity: dict[str, float] = {}  # pair_id -> last_active_ts
 
-        # 超时监控
-        self._last_updates: dict[str, float] = {}  # pair_id -> timestamp
+        # 超时监控（按 venue 独立追踪）
+        self._last_updates_pm: dict[str, float] = {}  # pair_id -> timestamp (Polymarket)
+        self._last_updates_oe: dict[str, float] = {}  # pair_id -> timestamp (OrbitExch)
         self._heartbeat_task: asyncio.Task | None = None
 
         # 运行状态
@@ -200,7 +201,8 @@ class OddsSubscriptionService:
 
         # 记录订阅
         self._subscribed_pairs[pair_id] = pair
-        self._last_updates[pair_id] = time.time()
+        self._last_updates_pm[pair_id] = time.time()
+        self._last_updates_oe[pair_id] = time.time()
 
         # 订阅 Polymarket
         polymarket_event_id = pair.polymarket_event_id
@@ -296,7 +298,7 @@ class OddsSubscriptionService:
                 self._latest_odds[pair_id]["polymarket"][market_type] = odds_data
 
                 # 更新时间戳
-                self._last_updates[pair_id] = time.time()
+                self._last_updates_pm[pair_id] = time.time()
 
                 self._log.debug(
                     f"Polymarket update: {pair_id} {market_type} "
@@ -341,7 +343,7 @@ class OddsSubscriptionService:
             }
 
             # 更新时间戳
-            self._last_updates[pair_id] = time.time()
+            self._last_updates_oe[pair_id] = time.time()
 
             self._log.debug(
                 f"OrbitExch: {pair_id} {market_type} back={back} lay={lay}"
@@ -628,43 +630,54 @@ class OddsSubscriptionService:
                 await asyncio.sleep(30)
 
     async def _check_staleness(self) -> None:
-        """检查数据新鲜度"""
+        """按 venue 独立检查数据新鲜度"""
         now = time.time()
         timeout_sec = self.config.staleness_timeout_sec
 
-        for pair_id, last_update in list(self._last_updates.items()):
-            if now - last_update > timeout_sec:
+        for pair_id in list(self._subscribed_pairs.keys()):
+            # 检查 Polymarket
+            pm_last = self._last_updates_pm.get(pair_id, 0)
+            if pm_last > 0 and now - pm_last > timeout_sec:
                 self._log.warning(
-                    f"Stale data detected for pair {pair_id}: "
-                    f"{int(now - last_update)}s since last update"
+                    f"Polymarket stale for pair {pair_id}: "
+                    f"{int(now - pm_last)}s since last update"
                 )
+                await self._refresh_pair(pair_id, venue="polymarket")
 
-                # 触发刷新
-                await self._refresh_pair(pair_id)
+            # 检查 OrbitExch
+            oe_last = self._last_updates_oe.get(pair_id, 0)
+            if oe_last > 0 and now - oe_last > timeout_sec:
+                self._log.warning(
+                    f"OrbitExch stale for pair {pair_id}: "
+                    f"{int(now - oe_last)}s since last update"
+                )
+                await self._refresh_pair(pair_id, venue="orbitexch")
 
-    async def _refresh_pair(self, pair_id: str) -> None:
+    async def _refresh_pair(self, pair_id: str, venue: str | None = None) -> None:
         """
         刷新 pair 的订阅
 
         Args:
             pair_id: pair ID
+            venue: 指定刷新的平台（polymarket/orbitexch），None 则两者都刷新
         """
         pair = self._subscribed_pairs.get(pair_id)
         if not pair:
             return
 
-        self._log.info(f"Refreshing pair {pair_id}")
+        self._log.info(f"Refreshing pair {pair_id} venue={venue or 'all'}")
 
         # Polymarket: 重新订阅
-        if pair.polymarket_event_id and self._polymarket_client:
-            await self._polymarket_client.subscribe_event(pair.polymarket_event_id)
+        if venue in (None, "polymarket"):
+            if pair.polymarket_event_id and self._polymarket_client:
+                await self._polymarket_client.subscribe_event(pair.polymarket_event_id)
+            self._last_updates_pm[pair_id] = time.time()
 
         # OrbitExch: 刷新页面（不关闭浏览器）
-        if self._orbitexch_client:
-            await self._orbitexch_client.refresh_page()
-
-        # 重置时间戳
-        self._last_updates[pair_id] = time.time()
+        if venue in (None, "orbitexch"):
+            if self._orbitexch_client:
+                await self._orbitexch_client.refresh_page()
+            self._last_updates_oe[pair_id] = time.time()
 
     # =========================================================================
     # 数据访问
@@ -699,16 +712,22 @@ class OddsSubscriptionService:
         subscriptions = []
 
         for pair_id, pair in self._subscribed_pairs.items():
-            last_update = self._last_updates.get(pair_id, 0)
-            age_sec = int(time.time() - last_update) if last_update > 0 else None
+            now = time.time()
+            pm_last = self._last_updates_pm.get(pair_id, 0)
+            oe_last = self._last_updates_oe.get(pair_id, 0)
+            pm_age = int(now - pm_last) if pm_last > 0 else None
+            oe_age = int(now - oe_last) if oe_last > 0 else None
+            timeout = self.config.staleness_timeout_sec
 
             subscriptions.append({
                 "pair_id": pair_id,
                 "sport": pair.sport,
                 "competition": pair.competition,
                 "polymarket_event_id": pair.polymarket_event_id,
-                "last_update_sec_ago": age_sec,
-                "is_stale": age_sec > self.config.staleness_timeout_sec if age_sec else False,
+                "pm_last_update_sec_ago": pm_age,
+                "oe_last_update_sec_ago": oe_age,
+                "pm_stale": pm_age > timeout if pm_age else False,
+                "oe_stale": oe_age > timeout if oe_age else False,
             })
 
         return subscriptions
