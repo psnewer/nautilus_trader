@@ -198,6 +198,55 @@ class TestServiceStaleness:
         )
         service._orbitexch_client.refresh_page.assert_not_called()
 
+    def test_refresh_clears_stale_venue_odds(self):
+        """刷新时清空对应 venue 的赔率缓存"""
+        service = _make_service(staleness_timeout=10)
+        _subscribe_pair(service)
+
+        # 预设两个 venue 的赔率
+        service._latest_odds["pair-1"] = {
+            "polymarket": {"home": {"bid": 0.5, "ask": 0.6}},
+            "orbitexch": {"home": {"back": 2.0, "lay": 2.1}},
+        }
+
+        # 只刷新 Polymarket
+        _run(service._refresh_pair("pair-1", venue="polymarket"))
+
+        # Polymarket 赔率应被清空
+        assert "polymarket" not in service._latest_odds["pair-1"]
+        # OrbitExch 赔率应保留
+        assert "orbitexch" in service._latest_odds["pair-1"]
+
+    def test_refresh_clears_only_orbitexch_odds(self):
+        """只刷新 OrbitExch 时，只清空 OrbitExch 赔率"""
+        service = _make_service(staleness_timeout=10)
+        _subscribe_pair(service)
+
+        service._latest_odds["pair-1"] = {
+            "polymarket": {"home": {"bid": 0.5, "ask": 0.6}},
+            "orbitexch": {"home": {"back": 2.0, "lay": 2.1}},
+        }
+
+        _run(service._refresh_pair("pair-1", venue="orbitexch"))
+
+        assert "polymarket" in service._latest_odds["pair-1"]
+        assert "orbitexch" not in service._latest_odds["pair-1"]
+
+    def test_refresh_all_clears_both_odds(self):
+        """不指定 venue 刷新时，清空两个 venue 的赔率"""
+        service = _make_service(staleness_timeout=10)
+        _subscribe_pair(service)
+
+        service._latest_odds["pair-1"] = {
+            "polymarket": {"home": {"bid": 0.5, "ask": 0.6}},
+            "orbitexch": {"home": {"back": 2.0, "lay": 2.1}},
+        }
+
+        _run(service._refresh_pair("pair-1", venue=None))
+
+        assert "polymarket" not in service._latest_odds["pair-1"]
+        assert "orbitexch" not in service._latest_odds["pair-1"]
+
     def test_get_subscriptions_per_venue(self):
         """get_subscriptions 返回按 venue 拆分的状态"""
         service = _make_service(staleness_timeout=10)

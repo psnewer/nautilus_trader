@@ -667,6 +667,13 @@ class OddsSubscriptionService:
 
         self._log.info(f"Refreshing pair {pair_id} venue={venue or 'all'}")
 
+        # 清空对应 venue 的赔率缓存，避免刷新期间使用过时数据
+        if pair_id in self._latest_odds:
+            if venue in (None, "polymarket"):
+                self._latest_odds[pair_id].pop("polymarket", None)
+            if venue in (None, "orbitexch"):
+                self._latest_odds[pair_id].pop("orbitexch", None)
+
         # Polymarket: 重新订阅
         if venue in (None, "polymarket"):
             if pair.polymarket_event_id and self._polymarket_client:
