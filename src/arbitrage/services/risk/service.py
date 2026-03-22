@@ -192,9 +192,22 @@ class RiskService:
 
         使用新的 PositionManager 构建完整数据后原子替换，
         避免 clear() 造成的空窗期影响并发的 check_risk 调用。
+
+        Polymarket merge 保护：
+        - 如果某方向的 Polymarket 仓位变小（merge 导致），保留旧的较大仓位
+        - 如果某方向的 Polymarket 仓位完全消失，检查 OrbitExch 是否还有该 pair 的仓位：
+          - 有 → 比赛未结束，保留旧 Polymarket 仓位
+          - 无 → 比赛已结束，不保留
         """
         if not self._odds_service:
             return
+
+        # 快照旧 manager 中每个 pair 的 Polymarket 腿: {pair_id: {market_type: PositionLeg}}
+        old_pm_legs: dict[str, dict[str, Any]] = {}
+        for position in self._position_manager.get_all_positions():
+            for leg in position.legs:
+                if leg.venue == "polymarket":
+                    old_pm_legs.setdefault(position.pair_id, {})[leg.market_type] = leg
 
         mappings = self._odds_service.get_position_mappings()
         all_polymarket_positions = self._odds_service.get_polymarket_positions()
@@ -211,6 +224,50 @@ class RiskService:
             pair_mapping=mappings.get("orbitexch_pair_mapping", {}),
             selection_mappings=mappings.get("selection_mappings", {}),
         )
+
+        # Polymarket merge 保护：保留因 merge 而缩小/消失的仓位
+        for pair_id, old_legs_by_type in old_pm_legs.items():
+            new_position = new_manager.get_position(pair_id)
+
+            # 检查新 manager 中该 pair 是否还有任何仓位（PM 或 OrbitExch）
+            pair_still_active = bool(new_position and new_position.legs)
+
+            for market_type, old_leg in old_legs_by_type.items():
+                # 找新 manager 中对应的 Polymarket 腿
+                new_pm_leg = None
+                if new_position:
+                    for leg in new_position.legs:
+                        if leg.venue == "polymarket" and leg.market_type == market_type:
+                            new_pm_leg = leg
+                            break
+
+                if new_pm_leg is not None:
+                    # 仓位变小 → 保留旧值（merge 只会减小不会增大）
+                    if new_pm_leg.size < old_leg.size - 0.001:
+                        self._log.info(
+                            f"PM merge protection: {pair_id}/{market_type} "
+                            f"size {new_pm_leg.size:.4f} → {old_leg.size:.4f} (kept old)"
+                        )
+                        new_pm_leg.size = old_leg.size
+                        new_pm_leg.price = old_leg.price
+                        new_pm_leg.profit_override = old_leg.profit_override
+                        new_pm_leg.loss_override = old_leg.loss_override
+                else:
+                    # 仓位消失
+                    if pair_still_active:
+                        # 该 pair 仍有其他仓位 → 比赛未结束，恢复旧 Polymarket 腿
+                        position = new_manager.get_or_create_position(pair_id)
+                        position.add_leg(old_leg)
+                        self._log.info(
+                            f"PM merge protection: {pair_id}/{market_type} "
+                            f"disappeared but pair still active, restored "
+                            f"size={old_leg.size:.4f} price={old_leg.price:.4f}"
+                        )
+                    else:
+                        self._log.info(
+                            f"PM position cleared: {pair_id}/{market_type} "
+                            f"disappeared and no other legs (match ended)"
+                        )
 
         # 原子替换
         self._position_manager = new_manager
