@@ -170,6 +170,17 @@ class OddsSubscriptionService:
 
         self._log.info(f"Subscribing to {len(matched_pairs)} matched pairs in parallel")
 
+        # 清理不在新列表中的旧订阅
+        new_pair_ids = {p.pair_id for p in matched_pairs}
+        stale_ids = [pid for pid in self._subscribed_pairs if pid not in new_pair_ids]
+        for pid in stale_ids:
+            self._subscribed_pairs.pop(pid, None)
+            self._latest_odds.pop(pid, None)
+            self._last_updates_pm.pop(pid, None)
+            self._last_updates_oe.pop(pid, None)
+            self._pair_activity.pop(pid, None)
+            self._log.info(f"Removed stale subscription: {pid}")
+
         # 并行订阅所有 pairs
         tasks = [
             self._subscribe_single_pair_safe(pair)
