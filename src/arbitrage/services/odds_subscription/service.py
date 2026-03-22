@@ -296,8 +296,8 @@ class OddsSubscriptionService:
         for pair_id, pair in self._subscribed_pairs.items():
             if pair.polymarket_event_id == event_id:
                 # 更新缓存
-                if pair_id not in self._latest_odds:
-                    self._latest_odds[pair_id] = {"polymarket": {}, "orbitexch": {}}
+                self._latest_odds.setdefault(pair_id, {"polymarket": {}, "orbitexch": {}})
+                self._latest_odds[pair_id].setdefault("polymarket", {})
 
                 # price_change 消息不含 size，保留缓存的值
                 if odds_data.get("source") == "price_change":
@@ -341,8 +341,8 @@ class OddsSubscriptionService:
 
         if pair_id and pair_id in self._subscribed_pairs:
             # 更新缓存
-            if pair_id not in self._latest_odds:
-                self._latest_odds[pair_id] = {"polymarket": {}, "orbitexch": {}}
+            self._latest_odds.setdefault(pair_id, {"polymarket": {}, "orbitexch": {}})
+            self._latest_odds[pair_id].setdefault("orbitexch", {})
 
             self._latest_odds[pair_id]["orbitexch"][market_type] = {
                 "market_type": market_type,
