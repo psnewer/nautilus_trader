@@ -96,8 +96,8 @@ class OrbitExchOddsClient:
         # WebSocket 连接追踪
         self._ws_request_ids: dict[str, str] = {}  # requestId -> url
 
-        # 最后数据更新时间（毫秒时间戳）
-        self._last_data_update: float = 0
+        # 最后数据更新时间（毫秒时间戳），按页面独立追踪
+        self._last_data_updates: dict[str, float] = {}  # page_key -> timestamp
 
         # 超时监控任务
         self._staleness_monitor_task: asyncio.Task | None = None
@@ -677,9 +677,12 @@ class OrbitExchOddsClient:
             # 启用网络监控
             await cdp_session.send("Network.enable")
 
-            # 注册 WebSocket 事件处理
+            # 注册 WebSocket 事件处理（用闭包捕获 page_key）
             cdp_session.on("Network.webSocketCreated", self._on_websocket_created)
-            cdp_session.on("Network.webSocketFrameReceived", self._on_websocket_frame)
+            cdp_session.on(
+                "Network.webSocketFrameReceived",
+                lambda event, pk=page_key: self._on_websocket_frame(event, pk),
+            )
             cdp_session.on("Network.webSocketClosed", self._on_websocket_closed)
 
             self._log.info(f"CDP WebSocket interception ready for {page_key}")
@@ -713,7 +716,7 @@ class OrbitExchOddsClient:
         url = self._ws_request_ids.pop(request_id, "unknown")
         self._log.info(f"WebSocket closed: {url} (requestId={request_id})")
 
-    def _on_websocket_frame(self, event: dict) -> None:
+    def _on_websocket_frame(self, event: dict, page_key: str = "") -> None:
         """
         WebSocket 帧接收回调
 
@@ -721,6 +724,7 @@ class OrbitExchOddsClient:
 
         Args:
             event: CDP 事件数据 {"requestId": str, "timestamp": float, "response": {"payloadData": str}}
+            page_key: 来源页面标识
         """
         try:
             payload_data = event.get("response", {}).get("payloadData", "")
@@ -732,7 +736,7 @@ class OrbitExchOddsClient:
             # 解析 SockJS 格式: a["..."]
             if payload_data.startswith('a['):
                 # 只有收到实际数据消息才更新时间戳（心跳不算）
-                self._last_data_update = time.time() * 1000
+                self._last_data_updates[page_key] = time.time() * 1000
                 try:
                     # 去掉开头的 'a' 得到 JSON 数组
                     inner_data = json.loads(payload_data[1:])
@@ -1484,51 +1488,33 @@ class OrbitExchOddsClient:
 
     async def _check_and_refresh_if_stale(self) -> None:
         """
-        检查 WebSocket 数据是否过时，如果超时则刷新所有页面
+        按页面独立检查 WebSocket 数据是否过时，只刷新超时的页面
         """
         timeout_sec = self.config.orbitexch_staleness_timeout_sec
         now = time.time() * 1000
-        stale_seconds = (now - self._last_data_update) / 1000 if self._last_data_update else 0
 
-        # 如果从未收到过数据，给更多时间（初始化阶段）
-        if self._last_data_update == 0:
-            return
+        for page_key, page in list(self._pages.items()):
+            if page_key == "main":
+                continue
 
-        if stale_seconds > timeout_sec:
+            last_update = self._last_data_updates.get(page_key, 0)
+
+            # 该页面从未收到过数据，跳过（初始化阶段）
+            if last_update == 0:
+                continue
+
+            stale_seconds = (now - last_update) / 1000
+            if stale_seconds <= timeout_sec:
+                continue
+
             self._log.warning(
-                f"WebSocket data is stale ({stale_seconds:.0f}s), refreshing pages..."
+                f"Page {page_key} data is stale ({stale_seconds:.0f}s), refreshing..."
             )
 
-            for page_key, page in list(self._pages.items()):
-                if page_key == "main":
-                    continue
-
-                try:
-                    # 断开旧的 CDP 会话
-                    old_cdp = self._cdp_sessions.pop(page_key, None)
-                    if old_cdp:
-                        try:
-                            await old_cdp.detach()
-                        except Exception:
-                            pass
-
-                    # 刷新页面
-                    await page.reload(wait_until="networkidle")
-                    await asyncio.sleep(2)
-
-                    # 重新设置 CDP 拦截
-                    await self._setup_websocket_interception(page, page_key)
-
-                    # 重新设置可见性欺骗
-                    await self._setup_visibility_spoof(page)
-
-                    # 重新抓取 selection 映射
-                    await self._refresh_selection_mapping_from_page(page)
-
-                    self._log.info(f"Page {page_key} refreshed")
-
-                except Exception as e:
-                    self._log.error(f"Error refreshing page {page_key}: {e}")
+            try:
+                await self._refresh_single_page(page_key, page)
+            except Exception as e:
+                self._log.error(f"Error refreshing page {page_key}: {e}")
 
     async def _process_odds_update(self, data: dict) -> None:
         """
@@ -1838,45 +1824,54 @@ class OrbitExchOddsClient:
     # 页面刷新
     # =========================================================================
 
-    async def refresh_page(self) -> None:
+    async def _refresh_single_page(self, page_key: str, page) -> None:
         """
-        刷新所有订阅页面
+        刷新单个页面：断开 CDP、reload、重建拦截
 
-        用于超时重连
+        Args:
+            page_key: 页面标识
+            page: Playwright Page 对象
         """
-        self._log.info(f"Refreshing {len(self._pages)} pages...")
+        # 断开旧的 CDP 会话
+        old_cdp = self._cdp_sessions.pop(page_key, None)
+        if old_cdp:
+            try:
+                await old_cdp.detach()
+            except Exception:
+                pass
 
+        # 刷新页面
+        await page.reload(wait_until="networkidle")
+        await asyncio.sleep(2)
+
+        # 重新设置 CDP 拦截
+        await self._setup_websocket_interception(page, page_key)
+
+        # 重新设置可见性欺骗
+        await self._setup_visibility_spoof(page)
+
+        # 重新抓取 selection 映射
+        await self._refresh_selection_mapping_from_page(page)
+
+        self._log.info(f"Page {page_key} refreshed")
+
+    async def refresh_page(self, target_page_key: str | None = None) -> None:
+        """
+        刷新订阅页面
+
+        Args:
+            target_page_key: 指定刷新的页面，None 则刷新所有页面
+        """
         for page_key, page in list(self._pages.items()):
             if page_key == "main":
-                continue  # 跳过主登录页
+                continue
+            if target_page_key and page_key != target_page_key:
+                continue
 
             try:
-                # 断开旧的 CDP 会话
-                old_cdp = self._cdp_sessions.pop(page_key, None)
-                if old_cdp:
-                    try:
-                        await old_cdp.detach()
-                    except Exception:
-                        pass
-
-                # 刷新页面
-                await page.reload(wait_until="networkidle")
-                await asyncio.sleep(2)
-
-                # 重新设置 CDP 拦截
-                await self._setup_websocket_interception(page, page_key)
-
-                # 重新设置可见性欺骗
-                await self._setup_visibility_spoof(page)
-
-                # 重新抓取 selection 映射
-                await self._refresh_selection_mapping_from_page(page)
-
-                self._log.info(f"Page {page_key} refreshed")
+                await self._refresh_single_page(page_key, page)
             except Exception as e:
                 self._log.error(f"Failed to refresh page {page_key}: {e}")
-
-        self._log.info("All pages refreshed")
 
     async def close_main_page(self) -> None:
         """
@@ -1903,16 +1898,19 @@ class OrbitExchOddsClient:
             {
                 "cdp_sessions": list of page_keys with active CDP sessions,
                 "ws_connections": dict of tracked WebSocket connections,
-                "last_data_update": float timestamp of last data update,
-                "last_data_update_age_sec": float seconds since last update
+                "last_data_updates": dict of per-page {last_data_update, age_sec}
             }
         """
         now = time.time() * 1000
-        age_sec = (now - self._last_data_update) / 1000 if self._last_data_update else -1
+        per_page = {}
+        for page_key, ts in self._last_data_updates.items():
+            per_page[page_key] = {
+                "last_data_update": ts,
+                "age_sec": (now - ts) / 1000 if ts else -1,
+            }
 
         return {
             "cdp_sessions": list(self._cdp_sessions.keys()),
             "ws_connections": self._ws_request_ids.copy(),
-            "last_data_update": self._last_data_update,
-            "last_data_update_age_sec": age_sec,
+            "last_data_updates": per_page,
         }
