@@ -729,11 +729,10 @@ class OrbitExchOddsClient:
             if not payload_data:
                 return
 
-            # 更新最后数据更新时间
-            self._last_data_update = time.time() * 1000
-
             # 解析 SockJS 格式: a["..."]
             if payload_data.startswith('a['):
+                # 只有收到实际数据消息才更新时间戳（心跳不算）
+                self._last_data_update = time.time() * 1000
                 try:
                     # 去掉开头的 'a' 得到 JSON 数组
                     inner_data = json.loads(payload_data[1:])
