@@ -84,6 +84,14 @@ class RiskService:
         self._msgbus = None
         self._odds_service = None
 
+        # 健康检查
+        self._pm_healthy: bool = False
+        self._oe_healthy: bool = False
+        self._rebate_healthy: bool = False
+        self._health_ok: bool = False
+        self._health_check_task: asyncio.Task | None = None
+        self._execution_service = None  # 用于访问 PM client 和 OE pages
+
         # Cleanup 组件
         self._cleanup: PostSessionCleanup | None = None
 
@@ -115,6 +123,147 @@ class RiskService:
         """设置赔率服务引用（用于查询持仓数据）"""
         self._odds_service = odds_service
         self._log.info("Odds service reference set")
+
+    def set_execution_service(self, execution_service) -> None:
+        """设置执行服务引用（用于健康检查访问 PM client 和 OE pages）"""
+        self._execution_service = execution_service
+        self._log.info("Execution service reference set for health check")
+
+    def start_health_check_loop(self, interval: float | None = None) -> None:
+        """启动后台健康检查循环"""
+        if self._health_check_task and not self._health_check_task.done():
+            self._log.warning("Health check loop already running")
+            return
+
+        interval = interval or self._config.health_check_interval_sec
+        try:
+            loop = asyncio.get_running_loop()
+            self._health_check_task = loop.create_task(self._health_check_loop(interval))
+            self._log.info(f"Health check loop started (interval={interval}s)")
+        except RuntimeError:
+            self._log.warning("No running event loop, health check loop not started")
+
+    async def _health_check_loop(self, interval: float) -> None:
+        """后台健康检查循环"""
+        while True:
+            try:
+                await self._run_health_check()
+            except asyncio.CancelledError:
+                self._log.info("Health check loop cancelled")
+                break
+            except Exception as e:
+                self._log.error(f"Health check loop error: {e}")
+
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
+    async def _run_health_check(self) -> None:
+        """执行一次健康检查"""
+        old_ok = self._health_ok
+        exec_svc = self._execution_service
+
+        # --- Polymarket: 调用 get_ok() ---
+        pm_ok = False
+        if exec_svc and exec_svc._polymarket_executor._client:
+            try:
+                await asyncio.to_thread(
+                    exec_svc._polymarket_executor._client.get_ok
+                )
+                pm_ok = True
+            except Exception as e:
+                self._log.warning(f"Polymarket health check failed: {e}")
+        else:
+            self._log.debug("Polymarket client not available, skipping health check")
+
+        # --- OrbitExch: 通过 fetch API 验证网络连通性和会话有效性 ---
+        oe_ok = False
+        if exec_svc:
+            pages = exec_svc._orbitexch_executor._pages
+            if pages:
+                for page_key, page in list(pages.items()):
+                    try:
+                        result = await page.evaluate(
+                            """async () => {
+                                try {
+                                    const cookies = document.cookie.split(';');
+                                    let csrfToken = '';
+                                    for (const cookie of cookies) {
+                                        const [name, value] = cookie.trim().split('=');
+                                        if (name === 'CSRF-TOKEN') {
+                                            csrfToken = decodeURIComponent(value);
+                                            break;
+                                        }
+                                    }
+                                    if (!csrfToken) return { ok: false, reason: 'no_csrf' };
+                                    const response = await fetch('/customer/api/currentBets', {
+                                        method: 'GET',
+                                        headers: {
+                                            'Accept': 'application/json',
+                                            'x-csrf-token': csrfToken,
+                                        },
+                                        credentials: 'include',
+                                    });
+                                    return { ok: response.ok, status: response.status };
+                                } catch (error) {
+                                    return { ok: false, reason: error.message };
+                                }
+                            }"""
+                        )
+                        if result and result.get("ok"):
+                            oe_ok = True
+                            break
+                        else:
+                            self._log.warning(
+                                f"OrbitExch health check failed (page={page_key}): {result}"
+                            )
+                    except Exception as e:
+                        self._log.warning(
+                            f"OrbitExch health check failed (page={page_key}): {e}"
+                        )
+            else:
+                self._log.debug("No OrbitExch pages, skipping health check")
+
+        # --- Way Rebate 刷新验证 ---
+        rebate_ok = False
+        if self._odds_service:
+            try:
+                await self._odds_service.refresh_all_positions_and_orders()
+                self._refresh_all_way_rebates()
+                rebate_ok = True
+            except Exception as e:
+                self._log.warning(f"Way rebate refresh failed: {e}")
+        else:
+            self._log.debug("Odds service not available, skipping rebate check")
+
+        # --- 更新状态 ---
+        self._pm_healthy = pm_ok
+        self._oe_healthy = oe_ok
+        self._rebate_healthy = rebate_ok
+        self._health_ok = pm_ok and oe_ok and rebate_ok
+
+        # 状态变化时记录日志
+        if self._health_ok != old_ok:
+            if self._health_ok:
+                self._log.info(
+                    "Health check recovered: pm=OK, oe=OK, rebate=OK"
+                )
+            else:
+                self._log.warning(
+                    f"Health check FAILED: pm={'OK' if pm_ok else 'FAIL'}, "
+                    f"oe={'OK' if oe_ok else 'FAIL'}, "
+                    f"rebate={'OK' if rebate_ok else 'FAIL'}"
+                )
+
+    def get_health_status(self) -> dict:
+        """获取健康检查状态"""
+        return {
+            "health_ok": self._health_ok,
+            "polymarket": self._pm_healthy,
+            "orbitexch": self._oe_healthy,
+            "way_rebate": self._rebate_healthy,
+        }
 
     async def initialize_cleanup(self, execution_config: ExecutionConfig) -> bool:
         """初始化 cleanup 组件（merge & claim）"""
@@ -461,6 +610,15 @@ class RiskService:
         # 执行开关关闭 — 阻止所有执行
         if not self._config.execution_enabled:
             return RiskCheckResult(allowed=False, reason="Execution disabled")
+
+        # 健康检查未通过 — 拒绝机会
+        if not self._health_ok:
+            return RiskCheckResult(
+                allowed=False,
+                reason=f"Health check failed (pm={'OK' if self._pm_healthy else 'FAIL'}, "
+                       f"oe={'OK' if self._oe_healthy else 'FAIL'}, "
+                       f"rebate={'OK' if self._rebate_healthy else 'FAIL'})",
+            )
 
         # 风控未启用
         if not self._config.enabled:

@@ -31,14 +31,18 @@
 
 3. 持仓返水率（来自 RiskService）
    - 订阅主题：`arbitrage.way_rebate.*`
-   - 处理：更新 `_way_rebate_cache`，策略评估时从缓存读取
+   - 处理：更新 `_way_rebate_cache` 和 `_way_rebate_by_venue_cache`，策略评估时从缓存读取
+   - 消息来源：
+     - RiskService 会话完成后刷新
+     - RiskService 健康检查循环中刷新
 
 ## 同步依赖（DI）
 
-- `risk_service.check_risk()` — 风控门控，同步调用，保留 DI 注入
+- `risk_service.check_risk()` — 风控门控，同步调用，保留 DI 注入。检查顺序：execution_enabled → **健康检查** → 风控启用 → 挂单检查 → 赔率检查 → 止盈 → 单场止损 → 全局止损
 - `odds_service` — 用于获取持仓数据
 
 ## 说明
 
 - StrategyService 不再通过回调通知 ExecutionService，改为通过 MessageBus 发布 `OpportunityMessage`。
 - way_rebate 不再每次赔率更新时主动读取 RiskService，改为由 RiskService 推送、StrategyService 缓存。
+- 健康检查在 RiskService 的 `check_risk()` 中前置拦截，StrategyService 无需感知健康状态，只需处理 `allowed=False` 的拒绝结果。

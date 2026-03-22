@@ -270,10 +270,11 @@ class OrderTracker:
         """
         检查是否所有操作都已完成（下单完全成交 / 撤单已确认）
 
-        只有全部完全成交才返回 True，部分成交继续等待。
+        只有全部操作都成功且完全成交才返回 True。
+        任何操作失败都视为未完成，继续等待直到超时。
         """
         for r in self._results.values():
-            if r.status == TrackingStatus.PENDING:
+            if r.status in (TrackingStatus.PENDING, TrackingStatus.FAILED):
                 return False
             # PLACE/MODIFY: 必须 size_remaining == 0 才算完全成交
             if r.operation.operation_type in (OperationType.PLACE, OperationType.MODIFY):

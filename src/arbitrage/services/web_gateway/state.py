@@ -795,6 +795,12 @@ class AppState:
         risk_service = self.get_risk_service()
         await risk_service.initialize_cleanup(self._build_execution_config())
 
+        # 接线健康检查：risk_service 访问 execution_service 的 PM client 和 OE pages
+        risk_service.set_execution_service(execution_service)
+        risk_service.start_health_check_loop(
+            self._risk_config.health_check_interval_sec
+        )
+
         self._log.info("Execution service registered to message bus")
         return success
 
