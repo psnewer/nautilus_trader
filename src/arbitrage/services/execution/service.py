@@ -100,6 +100,13 @@ class ExecutionService:
         # 状态
         self._initialized = False
 
+        # 健康检查
+        self._pm_healthy: bool = False
+        self._oe_healthy: bool = False
+        self._health_ok: bool = False
+        self._health_event: asyncio.Event = asyncio.Event()
+        self._health_check_task: asyncio.Task | None = None
+
     # =========================================================================
     # 生命周期
     # =========================================================================
@@ -146,6 +153,17 @@ class ExecutionService:
         self._initialized = True
         self._log.info("Execution service initialized")
 
+        # 启动健康检查循环
+        try:
+            loop = asyncio.get_running_loop()
+            self._health_check_task = loop.create_task(self._health_check_loop())
+            self._log.info(
+                f"Health check loop started "
+                f"(interval={self.config.health_check_interval_sec}s)"
+            )
+        except RuntimeError:
+            self._log.warning("No running event loop, health check loop not started")
+
         return True
 
     def update_config(self, config: ExecutionConfig) -> None:
@@ -169,6 +187,104 @@ class ExecutionService:
             f"OrbitExch page set: competition={competition_id}, "
             f"total_pages={len(self._orbitexch_executor._pages)}"
         )
+
+    # =========================================================================
+    # 健康检查
+    # =========================================================================
+
+    async def _health_check_loop(self) -> None:
+        """
+        后台健康检查循环
+
+        每 N 秒检查 Polymarket API 和 OrbitExch 页面状态。
+        状态变化时设置/清除 _health_event 以门控下单。
+        """
+        interval = self.config.health_check_interval_sec
+        self._log.info(f"Health check loop running (interval={interval}s)")
+
+        while self._initialized:
+            try:
+                await self._run_health_check()
+            except asyncio.CancelledError:
+                self._log.info("Health check loop cancelled")
+                break
+            except Exception as e:
+                self._log.error(f"Health check loop error: {e}")
+
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
+    async def _run_health_check(self) -> None:
+        """执行一次健康检查"""
+        old_ok = self._health_ok
+
+        # --- Polymarket: 调用 get_ok() ---
+        pm_ok = False
+        if self._polymarket_executor._client:
+            try:
+                resp = await asyncio.to_thread(
+                    self._polymarket_executor._client.get_ok
+                )
+                pm_ok = True
+            except Exception as e:
+                self._log.warning(f"Polymarket health check failed: {e}")
+        else:
+            self._log.debug("Polymarket client not initialized, skipping health check")
+
+        # --- OrbitExch: 检查任一页面的 CSRF token ---
+        oe_ok = False
+        pages = self._orbitexch_executor._pages
+        if pages:
+            for page_key, page in list(pages.items()):
+                try:
+                    has_csrf = await page.evaluate(
+                        """() => {
+                            return document.cookie.split(';').some(
+                                c => c.trim().startsWith('CSRF-TOKEN=')
+                            );
+                        }"""
+                    )
+                    if has_csrf:
+                        oe_ok = True
+                        break
+                except Exception as e:
+                    self._log.warning(
+                        f"OrbitExch health check failed (page={page_key}): {e}"
+                    )
+        else:
+            self._log.debug("No OrbitExch pages, skipping health check")
+
+        # --- 更新状态 ---
+        self._pm_healthy = pm_ok
+        self._oe_healthy = oe_ok
+        self._health_ok = pm_ok and oe_ok
+
+        if self._health_ok:
+            self._health_event.set()
+        else:
+            self._health_event.clear()
+
+        # 状态变化时记录日志
+        if self._health_ok != old_ok:
+            if self._health_ok:
+                self._log.info(
+                    "Health check recovered: pm=OK, oe=OK — orders unblocked"
+                )
+            else:
+                self._log.warning(
+                    f"Health check FAILED: pm={'OK' if pm_ok else 'FAIL'}, "
+                    f"oe={'OK' if oe_ok else 'FAIL'} — orders BLOCKED"
+                )
+
+    def get_health_status(self) -> dict:
+        """获取健康检查状态"""
+        return {
+            "health_ok": self._health_ok,
+            "polymarket": self._pm_healthy,
+            "orbitexch": self._oe_healthy,
+        }
 
     # =========================================================================
     # 订单执行
@@ -196,6 +312,28 @@ class ExecutionService:
                 order=order,
                 message="Service not initialized",
             )
+
+        # 健康检查门控：接口异常时阻塞等待恢复
+        if not self._health_ok and not self._use_mock_exchange():
+            self._log.warning(
+                f"Order {order.order_id} blocked: health check failed "
+                f"(pm={'OK' if self._pm_healthy else 'FAIL'}, "
+                f"oe={'OK' if self._oe_healthy else 'FAIL'}), waiting..."
+            )
+            try:
+                await asyncio.wait_for(self._health_event.wait(), timeout=60)
+                self._log.info(
+                    f"Order {order.order_id} unblocked: health recovered"
+                )
+            except asyncio.TimeoutError:
+                self._log.error(
+                    f"Order {order.order_id} failed: health check timeout (60s)"
+                )
+                return ExecutionResult(
+                    success=False,
+                    order=order,
+                    message="Health check timeout — both venues unreachable",
+                )
 
         # 应用 debug 覆盖
         order = self._apply_debug_overrides(order)
