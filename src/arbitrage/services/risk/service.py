@@ -256,6 +256,41 @@ class RiskService:
                     f"rebate={'OK' if rebate_ok else 'FAIL'}"
                 )
 
+        # --- 失败时尝试恢复认证（不重试、不置位） ---
+        if not oe_ok:
+            await self._recover_orbitexch()
+
+    async def _recover_orbitexch(self) -> None:
+        """尝试通过临时页面重新登录 OrbitExch，然后 reload 所有已有页面"""
+        if not self._odds_service:
+            return
+        oe_client = getattr(self._odds_service, "_orbitexch_client", None)
+        if not oe_client or not oe_client._context:
+            return
+        if not oe_client.config.orbitexch_username or not oe_client.config.orbitexch_password:
+            self._log.debug("No OrbitExch credentials, skipping re-login")
+            return
+
+        # 1. 临时页面重新登录（刷新 context 中的 session cookie）
+        try:
+            temp_page = await oe_client._context.new_page()
+            try:
+                await oe_client._login(temp_page)
+                self._log.info("OrbitExch re-login succeeded")
+            finally:
+                await temp_page.close()
+        except Exception as e:
+            self._log.warning(f"OrbitExch re-login failed: {e}")
+            return
+
+        # 2. Reload 所有已有页面（重建 CDP 拦截和 WebSocket 连接）
+        for page_key, page in list(oe_client._pages.items()):
+            try:
+                await oe_client._refresh_single_page(page_key, page)
+                self._log.info(f"OrbitExch page {page_key} reloaded after re-login")
+            except Exception as e:
+                self._log.warning(f"OrbitExch page {page_key} reload failed: {e}")
+
     def get_health_status(self) -> dict:
         """获取健康检查状态"""
         return {
