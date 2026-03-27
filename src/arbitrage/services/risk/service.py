@@ -463,8 +463,8 @@ class RiskService:
         all_positions = self._position_manager.get_all_positions()
         for position in all_positions:
             wr = self._position_manager.get_way_rebate(position.pair_id)
-            self._log.info(
-                f"[DEBUG] way_rebate for {position.pair_id}: {wr}, "
+            self._log.debug(
+                f"way_rebate for {position.pair_id}: {wr}, "
                 f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
             )
         self._log.info(
@@ -554,8 +554,8 @@ class RiskService:
         for position in self._position_manager.get_all_positions():
             way_rebate = position.calculate_way_rebate()
             if way_rebate:
-                self._log.info(
-                    f"[DEBUG] way_rebate for {position.pair_id}: {way_rebate}, "
+                self._log.debug(
+                    f"way_rebate for {position.pair_id}: {way_rebate}, "
                     f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
                 )
                 self._publish_way_rebate(position.pair_id)

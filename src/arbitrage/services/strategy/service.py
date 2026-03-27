@@ -484,7 +484,7 @@ class StrategyService:
                 from src.arbitrage.services.debug import debug_manager
                 if debug_manager.is_override_active("min_rebate_rate"):
                     params["rate"] = debug_manager.get_override("min_rebate_rate", params.get("rate", 0.01))
-                    self._log.warning(f"[DEBUG] {signal_name} rate override: {params['rate']}")
+                    self._log.debug(f"{signal_name} rate override: {params['rate']}")
             except ImportError:
                 pass
 
