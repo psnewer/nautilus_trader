@@ -786,12 +786,12 @@ class PolymarketOddsClient:
                 data = resp.json()
 
                 positions = []
-                self._log.info(f"[DEBUG] _subscribed_tokens keys: {[k[:20]+'...' for k in self._subscribed_tokens.keys()]}")
+                self._log.debug(f"_subscribed_tokens keys: {[k[:20]+'...' for k in self._subscribed_tokens.keys()]}")
                 for item in data:
                     asset_id = item.get("asset", item.get("asset_id", ""))
                     token_info = self._subscribed_tokens.get(asset_id, {})
-                    self._log.info(
-                        f"[DEBUG] Position asset_id={asset_id[:20]}..., "
+                    self._log.debug(
+                        f"Position asset_id={asset_id[:20]}..., "
                         f"token_match={'YES' if token_info else 'NO'}, "
                         f"event_id={token_info.get('event_id', '')}, "
                         f"market_type={token_info.get('market_type', '')}, "

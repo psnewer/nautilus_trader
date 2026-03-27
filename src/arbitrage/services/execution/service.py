@@ -227,7 +227,7 @@ class ExecutionService:
         if debug_mgr and debug_mgr.is_override_active("execution_delay"):
             delay = debug_mgr.get_override("execution_delay", 0)
             if delay > 0:
-                self._log.info(f"[DEBUG] Execution delay: {delay}s")
+                self._log.debug(f"Execution delay: {delay}s")
                 await asyncio.sleep(delay)
 
         # 分发到对应执行器
