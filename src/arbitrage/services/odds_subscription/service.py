@@ -47,6 +47,9 @@ class OddsSubscriptionService:
         self._polymarket_client: PolymarketOddsClient | None = None
         self._orbitexch_client: OrbitExchOddsClient | None = None
 
+        # RiskService 引用（用于余额回调）
+        self._risk_service = None
+
         # 订阅状态
         self._subscribed_pairs: dict[str, MatchedPair] = {}  # pair_id -> MatchedPair
         self._latest_odds: dict[str, dict] = {}  # pair_id -> {polymarket: {...}, orbitexch: {...}}
@@ -100,6 +103,9 @@ class OddsSubscriptionService:
         self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
         self._polymarket_client.register_positions_callback(self._on_polymarket_position_update)
         self._polymarket_client.register_orders_callback(self._on_polymarket_orders_update)
+
+        # 设置余额回调
+        self._orbitexch_client.register_balance_callback(self._on_orbitexch_balance_update)
 
         # 启动客户端
         await self._polymarket_client.start()
@@ -377,6 +383,10 @@ class OddsSubscriptionService:
         if self._msgbus:
             self._msgbus.subscribe(PAIR_ACTIVITY_TOPIC_PATTERN, self._on_pair_activity_message)
 
+    def set_risk_service(self, risk_service) -> None:
+        """设置 RiskService 引用（用于余额回调）"""
+        self._risk_service = risk_service
+
     def _publish_odds_update(self, pair_id: str, venue: str, odds_data: dict) -> None:
         """发布赔率更新"""
         if not self._msgbus:
@@ -615,6 +625,19 @@ class OddsSubscriptionService:
                 self._log.debug(f"Polymarket position update for {pair_id}")
                 self._notify_position_callbacks(pair_id)
                 break
+
+    def _on_orbitexch_balance_update(self, balance: float) -> None:
+        """
+        OrbitExch 余额更新回调
+
+        Args:
+            balance: OrbitExch 余额
+        """
+        if self._risk_service:
+            try:
+                self._risk_service.update_orbitexch_balance(balance)
+            except Exception as e:
+                self._log.error(f"Failed to update OrbitExch balance in RiskService: {e}")
 
     # =========================================================================
     # 超时监控

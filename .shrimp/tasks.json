@@ -1,217 +1,236 @@
 {
   "tasks": [
     {
-      "id": "9ee9506b-2e40-4a99-9336-680be59b6669",
-      "name": "创建策略配置模块",
-      "description": "创建 src/arbitrage/services/strategy/config.py，定义策略服务的配置数据类，包括 SignalConfig（信号量配置）、StrategyConfig（单个策略配置）、StrategyServiceConfig（服务配置）。",
-      "notes": "参照 src/arbitrage/services/market_matching/config.py 的模式",
-      "status": "pending",
+      "id": "e5c7c8bb-08f3-46e0-8c81-49a3f2826639",
+      "name": "RiskConfig 添加余额阈值配置",
+      "description": "在 RiskConfig 中添加 min_polymarket_balance 和 min_orbitexch_balance 配置字段，并更新序列化方法",
+      "notes": "此任务无外部依赖，优先执行。配置字段的默认值已根据业务需求（最小订单大小）优化。",
+      "status": "in_progress",
       "dependencies": [],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:47:10.530Z",
       "relatedFiles": [
         {
-          "path": "src/arbitrage/services/strategy/config.py",
-          "type": "CREATE",
-          "description": "策略配置模块"
-        },
-        {
-          "path": "src/arbitrage/services/market_matching/config.py",
-          "type": "REFERENCE",
-          "description": "参考现有配置模式"
+          "path": "src/arbitrage/services/risk/config.py",
+          "type": "TO_MODIFY",
+          "description": "添加余额阈值配置字段",
+          "lineStart": 9,
+          "lineEnd": 56
         }
       ],
-      "implementationGuide": "1. 创建 config.py 文件\\n2. 定义 SignalConfig dataclass：signal_type(str), params(dict)\\n3. 定义 StrategyConfig dataclass：name(str), enabled(bool), signals(list[SignalConfig]), trigger_mode(str)\\n4. 定义 StrategyServiceConfig dataclass：enabled(bool), default_strategy(StrategyConfig), pair_overrides(dict[str, StrategyConfig])\\n5. 实现 from_dict 类方法\\n\\nPseudocode:\\n@dataclass\\nclass SignalConfig:\\n    signal_type: str  # spread, arbitrage\\n    params: dict = field(default_factory=dict)\\n\\n@dataclass\\nclass StrategyConfig:\\n    name: str = 'default'\\n    enabled: bool = True\\n    signals: list[SignalConfig] = field(default_factory=list)\\n    trigger_mode: str = 'all'  # all=AND, any=OR\\n\\n@dataclass\\nclass StrategyServiceConfig:\\n    enabled: bool = True\\n    default_strategy: StrategyConfig\\n    pair_overrides: dict[str, StrategyConfig]\\n    @classmethod\\n    def from_dict(cls, data): ...",
-      "verificationCriteria": "1. config.py 可正常导入\\n2. from_dict 方法能正确解析配置字典\\n3. 默认值设置合理",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+      "implementationGuide": "文件：src/arbitrage/services/risk/config.py\n\n1. 在 RiskConfig 类中添加字段（line 9-29）：\n   - min_polymarket_balance: float = 20.0\n   - min_orbitexch_balance: float = 15.0\n\n2. 更新 to_dict() 方法（line 35-44），添加：\n   - \"min_polymarket_balance\": self.min_polymarket_balance\n   - \"min_orbitexch_balance\": self.min_orbitexch_balance\n\n3. 更新 from_dict() 方法（line 46-56），添加：\n   - min_polymarket_balance=data.get(\"min_polymarket_balance\", 20.0)\n   - min_orbitexch_balance=data.get(\"min_orbitexch_balance\", 15.0)\n\n注意事项：\n- 默认值基于最小订单大小设定（PM: 5 USDC * 4 = 20, OE: 7 GBP * 2 = 14）\n- 保持与现有字段的命名风格一致（snake_case）",
+      "verificationCriteria": "1. RiskConfig 实例可正确创建并包含新字段\n2. to_dict() 输出包含 min_polymarket_balance 和 min_orbitexch_balance\n3. from_dict() 可正确反序列化配置（包括默认值处理）\n4. 现有单元测试通过（如有）",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
     },
     {
-      "id": "b17fb680-adf4-4ced-934e-1f07d38e5510",
-      "name": "创建信号量基类和实现",
-      "description": "创建 signals/ 子模块，包含 Signal 抽象基类、SpreadSignal（价差信号）、ArbitrageSignal（套利信号）实现。",
-      "notes": "信号量系统需可扩展，新增信号类型只需继承 Signal 基类",
+      "id": "db177e90-2d85-4ad7-995f-25607c06edb4",
+      "name": "RiskService 添加余额跟踪字段和更新方法",
+      "description": "在 RiskService 中添加余额跟踪字段、余额更新方法和余额查询方法",
+      "notes": "此任务依赖任务1（RiskConfig），因为需要配置中的阈值字段。余额更新方法设计为被动接收（通过回调），不主动查询。",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "9ee9506b-2e40-4a99-9336-680be59b6669"
+          "taskId": "e5c7c8bb-08f3-46e0-8c81-49a3f2826639"
         }
       ],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
       "relatedFiles": [
         {
-          "path": "src/arbitrage/services/strategy/signals/__init__.py",
-          "type": "CREATE",
-          "description": "信号量模块入口"
-        },
-        {
-          "path": "src/arbitrage/services/strategy/signals/base.py",
-          "type": "CREATE",
-          "description": "Signal 抽象基类"
-        },
-        {
-          "path": "src/arbitrage/services/strategy/signals/spread.py",
-          "type": "CREATE",
-          "description": "价差信号"
-        },
-        {
-          "path": "src/arbitrage/services/strategy/signals/arbitrage.py",
-          "type": "CREATE",
-          "description": "套利信号"
+          "path": "src/arbitrage/services/risk/service.py",
+          "type": "TO_MODIFY",
+          "description": "添加余额跟踪字段和方法",
+          "lineStart": 62,
+          "lineEnd": 140
         }
       ],
-      "implementationGuide": "1. 创建 signals/__init__.py\\n2. 创建 signals/base.py - Signal 抽象基类\\n3. 创建 signals/spread.py - SpreadSignal\\n4. 创建 signals/arbitrage.py - ArbitrageSignal\\n\\nPseudocode:\\n# base.py\\n@dataclass\\nclass SignalResult:\\n    signal_name: str\\n    value: float\\n    satisfied: bool\\n    details: dict\\n\\nclass Signal(ABC):\\n    name: str\\n    @abstractmethod\\n    def calculate(self, polymarket_odds: dict, orbitexch_odds: dict) -> SignalResult\\n\\n# spread.py\\nclass SpreadSignal(Signal):\\n    name = 'spread'\\n    def __init__(self, threshold: float = 0.02)\\n    def calculate(self, poly_odds, orbit_odds) -> SignalResult:\\n        # 计算 poly_bid vs orbit_back 价差\\n        spread = (orbit_back - poly_bid) / poly_bid\\n        return SignalResult(satisfied=spread > threshold)\\n\\n# arbitrage.py\\nclass ArbitrageSignal(Signal):\\n    name = 'arbitrage'\\n    def __init__(self, min_profit: float = 0.01)\\n    def calculate(self, poly_odds, orbit_odds) -> SignalResult:\\n        # 套利计算: poly买入 + orbit卖出(lay)\\n        profit = 1/poly_ask - 1/orbit_lay\\n        return SignalResult(satisfied=profit > min_profit)",
-      "verificationCriteria": "1. 所有信号类可正常导入\\n2. calculate 方法返回正确的 SignalResult\\n3. 参数配置生效",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+      "implementationGuide": "文件：src/arbitrage/services/risk/service.py\n\n1. 在 __init__ 方法中添加字段（line 73-98）：\n```python\nself._pm_balance: float = 0.0\nself._oe_balance: float = 0.0\n```\n\n2. 新增方法（在类中任意位置，建议在 set_odds_service 附近）：\n\n```python\ndef update_orbitexch_balance(self, balance: float) -> None:\n    \"\"\"更新 OrbitExch 余额（由 OddsService 通过回调触发）\"\"\"\n    old_balance = self._oe_balance\n    self._oe_balance = balance\n    if abs(balance - old_balance) > 0.01:\n        self._log.info(\n            f\"OrbitExch balance updated: {old_balance:.2f} -> {balance:.2f}\"\n        )\n\ndef get_balances(self) -> dict[str, float]:\n    \"\"\"获取当前余额\"\"\"\n    return {\n        \"polymarket\": self._pm_balance,\n        \"orbitexch\": self._oe_balance,\n    }\n```\n\n注意事项：\n- 余额字段初始化为 0.0，等待首次更新\n- 日志仅在变化超过 0.01 时记录，避免噪音\n- Python GIL 保证简单赋值的原子性，无需锁",
+      "verificationCriteria": "1. RiskService 实例包含 _pm_balance 和 _oe_balance 字段\n2. update_orbitexch_balance() 可正确更新余额并记录日志\n3. get_balances() 返回正确的余额字典\n4. 多次调用 update 方法不会出现线程安全问题",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
     },
     {
-      "id": "e8beea92-e0fe-4ca1-ac71-e624e791a512",
-      "name": "创建策略服务主模块",
-      "description": "创建 src/arbitrage/services/strategy/service.py，实现 StrategyService 主服务，负责信号量计算、策略评估、机会检测。",
-      "notes": "服务需与 OddsSubscriptionService 集成，通过回调接收赔率更新",
+      "id": "6169d2cb-206b-4fbf-93ef-f85522b62667",
+      "name": "OrbitExchOddsClient 添加 BALANCE 消息处理",
+      "description": "在 OrbitExchOddsClient 中添加 BALANCE 消息处理逻辑、余额回调注册方法和余额查询方法",
+      "notes": "此任务独立于其他任务，可并行执行。实现遵循现有的 CURRENT_BETS 消息处理模式。",
+      "status": "pending",
+      "dependencies": [],
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/odds_subscription/orbitexch_client.py",
+          "type": "TO_MODIFY",
+          "description": "添加 BALANCE 消息处理和回调机制",
+          "lineStart": 25,
+          "lineEnd": 92
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/orbitexch_client.py",
+          "type": "TO_MODIFY",
+          "description": "修改 WebSocket 消息处理逻辑",
+          "lineStart": 767,
+          "lineEnd": 792
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/orbitexch_client.py",
+          "type": "TO_MODIFY",
+          "description": "添加 _process_balance 方法",
+          "lineStart": 884,
+          "lineEnd": 967
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/orbitexch_client.py",
+          "type": "TO_MODIFY",
+          "description": "添加回调注册方法",
+          "lineStart": 1054,
+          "lineEnd": 1057
+        }
+      ],
+      "implementationGuide": "文件：src/arbitrage/services/odds_subscription/orbitexch_client.py\n\n1. 在 __init__ 方法中添加字段（line 36-92）：\n```python\nself._balance: float = 0.0\nself._balance_update_callback: Callable[[float], None] | None = None\n```\n\n2. 修改 _process_websocket_message 方法（line 767-792），在 elif 链中添加：\n```python\nelif \"BALANCE\" in data:\n    await self._process_balance(data)\n```\n\n3. 新增 _process_balance 方法（建议在 _process_current_bets 之后）：\n```python\nasync def _process_balance(self, data: dict) -> None:\n    \"\"\"处理 BALANCE 消息\n    \n    消息格式：{\"BALANCE\": {\"balance\": \"30.68\", \"avBalance\": null}}\n    \"\"\"\n    try:\n        balance_data = data.get(\"BALANCE\", {})\n        balance_str = balance_data.get(\"balance\")\n        \n        if balance_str is not None:\n            balance = float(balance_str)\n            old_balance = self._balance\n            self._balance = balance\n            \n            self._log.debug(\n                f\"Balance updated: {old_balance:.2f} -> {balance:.2f}\"\n            )\n            \n            if self._balance_update_callback:\n                try:\n                    self._balance_update_callback(balance)\n                except Exception as e:\n                    self._log.error(f\"Balance callback error: {e}\")\n    except Exception as e:\n        self._log.error(f\"Error processing BALANCE: {e}\")\n```\n\n4. 新增回调注册和查询方法（在 register_bets_callback 附近）：\n```python\ndef register_balance_callback(self, callback: Callable[[float], None]) -> None:\n    \"\"\"注册余额更新回调\"\"\"\n    self._balance_update_callback = callback\n\ndef get_balance(self) -> float:\n    \"\"\"获取当前余额\"\"\"\n    return self._balance\n```\n\n注意事项：\n- balance_str 需要转换为 float\n- 回调执行需要捕获异常，避免影响主流程\n- 日志级别使用 debug（余额更新频繁）",
+      "verificationCriteria": "1. WebSocket 收到 BALANCE 消息后 _balance 字段正确更新\n2. 余额变化触发回调并传递正确的值\n3. 回调异常不影响主流程\n4. get_balance() 返回最新余额\n5. 日志正确记录余额变化",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
+    },
+    {
+      "id": "da69b316-0e89-4806-b6ac-316a65182557",
+      "name": "OddsSubscriptionService 集成余额回调",
+      "description": "在 OddsSubscriptionService 中添加 RiskService 引用、余额回调处理方法和回调注册",
+      "notes": "此任务依赖任务2（RiskService 方法）和任务3（OrbitExch BALANCE 处理）。接线逻辑遵循现有回调注册模式。",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "9ee9506b-2e40-4a99-9336-680be59b6669"
+          "taskId": "db177e90-2d85-4ad7-995f-25607c06edb4"
         },
         {
-          "taskId": "b17fb680-adf4-4ced-934e-1f07d38e5510"
+          "taskId": "6169d2cb-206b-4fbf-93ef-f85522b62667"
         }
       ],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
-      "relatedFiles": [
-        {
-          "path": "src/arbitrage/services/strategy/service.py",
-          "type": "CREATE",
-          "description": "策略服务主模块"
-        },
-        {
-          "path": "src/arbitrage/services/strategy/__init__.py",
-          "type": "CREATE",
-          "description": "模块入口"
-        },
-        {
-          "path": "src/arbitrage/services/odds_subscription/service.py",
-          "type": "REFERENCE",
-          "description": "参考赔率服务模式"
-        }
-      ],
-      "implementationGuide": "1. 创建 service.py\\n2. 实现 StrategyService 类\\n3. 实现生命周期方法 start/stop\\n4. 实现赔率更新回调处理\\n5. 实现信号量计算和策略评估\\n\\nPseudocode:\\nclass StrategyService:\\n    def __init__(self, config: StrategyServiceConfig):\\n        self._config = config\\n        self._signal_cache: dict[str, dict] = {}  # pair_id -> signals\\n        self._opportunities: list[dict] = []\\n    \\n    def on_odds_update(self, pair_id: str, venue: str, odds_data: dict):\\n        # 更新缓存并触发计算\\n        self._calculate_signals(pair_id)\\n        self._evaluate_strategy(pair_id)\\n    \\n    def _calculate_signals(self, pair_id: str):\\n        strategy = self._get_strategy_for_pair(pair_id)\\n        for signal_config in strategy.signals:\\n            signal = self._create_signal(signal_config)\\n            result = signal.calculate(poly_odds, orbit_odds)\\n            self._signal_cache[pair_id][signal.name] = result\\n    \\n    def _evaluate_strategy(self, pair_id: str):\\n        strategy = self._get_strategy_for_pair(pair_id)\\n        signals = self._signal_cache[pair_id]\\n        if strategy.trigger_mode == 'all':\\n            satisfied = all(s.satisfied for s in signals.values())\\n        else:\\n            satisfied = any(s.satisfied for s in signals.values())\\n        if satisfied:\\n            self._create_opportunity(pair_id)\\n    \\n    def get_signals(self, pair_id: str) -> dict\\n    def get_opportunities(self) -> list",
-      "verificationCriteria": "1. StrategyService 可正常实例化\\n2. on_odds_update 回调正确触发计算\\n3. get_signals/get_opportunities 返回正确数据",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
-    },
-    {
-      "id": "ab9a248c-db95-4947-baa5-0c9ce219f8c4",
-      "name": "修改赔率服务添加回调接口",
-      "description": "修改 OddsSubscriptionService，添加策略回调注册接口，在赔率更新时触发策略计算。",
-      "notes": "保持向后兼容，回调是可选的",
-      "status": "pending",
-      "dependencies": [],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
       "relatedFiles": [
         {
           "path": "src/arbitrage/services/odds_subscription/service.py",
           "type": "TO_MODIFY",
-          "description": "添加策略回调接口",
-          "lineStart": 1,
-          "lineEnd": 50
+          "description": "添加 RiskService 引用和设置方法",
+          "lineStart": 40,
+          "lineEnd": 80
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/service.py",
+          "type": "TO_MODIFY",
+          "description": "在 start() 中注册余额回调",
+          "lineStart": 90,
+          "lineEnd": 112
+        },
+        {
+          "path": "src/arbitrage/services/odds_subscription/service.py",
+          "type": "TO_MODIFY",
+          "description": "添加余额回调处理方法",
+          "lineStart": 450,
+          "lineEnd": 500
         }
       ],
-      "implementationGuide": "1. 在 OddsSubscriptionService 添加 _strategy_callbacks 列表\\n2. 添加 register_strategy_callback(callback) 方法\\n3. 在 _on_polymarket_update 和 _on_orbitexch_update 中触发回调\\n\\nPseudocode:\\nclass OddsSubscriptionService:\\n    def __init__(self):\\n        ...\\n        self._strategy_callbacks: list[Callable] = []\\n    \\n    def register_strategy_callback(self, callback: Callable[[str, str, dict], None]):\\n        '''注册策略回调，callback(pair_id, venue, odds_data)'''\\n        self._strategy_callbacks.append(callback)\\n    \\n    def _notify_strategy_callbacks(self, pair_id: str, venue: str, odds_data: dict):\\n        for callback in self._strategy_callbacks:\\n            try:\\n                callback(pair_id, venue, odds_data)\\n            except Exception as e:\\n                self._log.error(f'Strategy callback error: {e}')\\n    \\n    def _on_polymarket_update(self, odds_data: dict):\\n        ...existing code...\\n        self._notify_strategy_callbacks(pair_id, 'polymarket', odds_data)\\n    \\n    def _on_orbitexch_update(self, odds_data: dict):\\n        ...existing code...\\n        self._notify_strategy_callbacks(pair_id, 'orbitexch', odds_data)",
-      "verificationCriteria": "1. register_strategy_callback 方法可用\\n2. 赔率更新时回调被正确触发\\n3. 回调异常不影响主流程",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+      "implementationGuide": "文件：src/arbitrage/services/odds_subscription/service.py\n\n1. 在 __init__ 方法中添加字段（建议在 _running 附近）：\n```python\nself._risk_service = None\n```\n\n2. 新增 set_risk_service 方法（建议在 set_msgbus 附近）：\n```python\ndef set_risk_service(self, risk_service) -> None:\n    \"\"\"设置 RiskService 引用（用于余额回调）\"\"\"\n    self._risk_service = risk_service\n```\n\n3. 在 start() 方法中注册回调（line 90-112，在现有回调注册之后）：\n```python\nself._orbitexch_client.register_balance_callback(\n    self._on_orbitexch_balance_update\n)\n```\n\n4. 新增回调处理方法（建议在 _on_orbitexch_bets_update 附近）：\n```python\ndef _on_orbitexch_balance_update(self, balance: float) -> None:\n    \"\"\"OrbitExch 余额更新回调\"\"\"\n    if self._risk_service:\n        try:\n            self._risk_service.update_orbitexch_balance(balance)\n        except Exception as e:\n            self._log.error(f\"Failed to update OrbitExch balance in RiskService: {e}\")\n```\n\n注意事项：\n- 回调方法需要检查 _risk_service 是否已设置\n- 异常捕获确保回调失败不影响主流程\n- 回调注册在 start() 中完成，与其他回调保持一致",
+      "verificationCriteria": "1. set_risk_service() 可正确设置引用\n2. 余额回调正确触发 RiskService.update_orbitexch_balance()\n3. 回调异常被正确捕获和记录\n4. 在 RiskService 未设置时回调不会崩溃",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
     },
     {
-      "id": "8e976ba2-a020-43ca-8460-40d6dce4da1d",
-      "name": "扩展 AppState 支持策略管理",
-      "description": "修改 web_gateway/state.py，添加策略配置和策略服务实例管理。",
-      "notes": "保持与现有 discovery/matching 配置一致的模式",
+      "id": "854e61ce-bdc5-4ece-b866-c8a586a0da65",
+      "name": "RiskService 健康检查添加 Polymarket 余额查询",
+      "description": "在 RiskService 的健康检查方法中添加 Polymarket 余额查询逻辑",
+      "notes": "此任务依赖任务1（RiskConfig）和任务2（RiskService 余额字段）。需要确保 Polymarket executor 已初始化。",
       "status": "pending",
       "dependencies": [
         {
-          "taskId": "e8beea92-e0fe-4ca1-ac71-e624e791a512"
+          "taskId": "e5c7c8bb-08f3-46e0-8c81-49a3f2826639"
         },
         {
-          "taskId": "ab9a248c-db95-4947-baa5-0c9ce219f8c4"
+          "taskId": "db177e90-2d85-4ad7-995f-25607c06edb4"
         }
       ],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/risk/service.py",
+          "type": "TO_MODIFY",
+          "description": "在健康检查中添加 Polymarket 余额查询",
+          "lineStart": 169,
+          "lineEnd": 235
+        },
+        {
+          "path": "nautilus_trader/adapters/polymarket/execution.py",
+          "type": "REFERENCE",
+          "description": "参考现有的余额查询实现",
+          "lineStart": 297,
+          "lineEnd": 305
+        },
+        {
+          "path": "nautilus_trader/adapters/polymarket/common/conversion.py",
+          "type": "REFERENCE",
+          "description": "usdce_from_units 函数定义",
+          "lineStart": 21,
+          "lineEnd": 40
+        }
+      ],
+      "implementationGuide": "文件：src/arbitrage/services/risk/service.py\n\n修改 _run_health_check 方法（line 169-268），在 Polymarket 检查部分添加余额查询：\n\n```python\npm_ok = False\nif exec_svc and exec_svc._polymarket_executor._client:\n    try:\n        client = exec_svc._polymarket_executor._client\n        \n        await asyncio.to_thread(client.get_ok)\n        \n        from py_clob_client.client import BalanceAllowanceParams\n        from py_clob_client.clob_types import AssetType\n        from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units\n        \n        params = BalanceAllowanceParams(\n            asset_type=AssetType.COLLATERAL,\n            signature_type=2,\n        )\n        response = await asyncio.to_thread(\n            client.get_balance_allowance, params\n        )\n        balance_raw = int(response.get(\"balance\", 0))\n        balance_usdc = usdce_from_units(balance_raw).as_double()\n        \n        old_balance = self._pm_balance\n        self._pm_balance = balance_usdc\n        if abs(balance_usdc - old_balance) > 0.01:\n            self._log.info(\n                f\"Polymarket balance updated: {old_balance:.2f} -> {balance_usdc:.2f}\"\n            )\n        \n        pm_ok = True\n    except Exception as e:\n        self._log.warning(f\"Polymarket health check failed: {e}\")\nelse:\n    self._log.debug(\"Polymarket client not available, skipping health check\")\n```\n\n关键API说明：\n- BalanceAllowanceParams：py_clob_client 的余额查询参数\n- AssetType.COLLATERAL：查询 USDC 抵押品余额\n- signature_type=2：Proxy wallet 模式\n- usdce_from_units：将最小单位转换为 Money 对象\n- .as_double()：将 Money 对象转换为 float\n\n注意事项：\n- 导入语句放在 try 块内，避免模块级导入污染\n- 使用 asyncio.to_thread 异步化同步 HTTP 调用\n- 余额变化小于 0.01 不记录日志",
+      "verificationCriteria": "1. 健康检查成功时 _pm_balance 字段更新\n2. 余额查询失败不影响健康检查的其他部分\n3. 日志正确记录余额变化\n4. Money 对象正确转换为 float\n5. API 调用异步化不阻塞事件循环",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
+    },
+    {
+      "id": "4750c20a-16c7-4595-8346-f7d182369ea3",
+      "name": "RiskService check_risk 添加余额门控",
+      "description": "在 RiskService 的 check_risk 方法中添加余额门控检查逻辑",
+      "notes": "此任务依赖任务2（余额字段）和任务5（Polymarket 余额查询）。余额门控是最后的集成步骤。",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "db177e90-2d85-4ad7-995f-25607c06edb4"
+        },
+        {
+          "taskId": "854e61ce-bdc5-4ece-b866-c8a586a0da65"
+        }
+      ],
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/risk/service.py",
+          "type": "TO_MODIFY",
+          "description": "在 check_risk 中添加余额门控检查",
+          "lineStart": 636,
+          "lineEnd": 680
+        }
+      ],
+      "implementationGuide": "文件：src/arbitrage/services/risk/service.py\n\n修改 check_risk 方法（line 636-730），在健康检查之后、风控开关检查之前添加余额门控：\n\n```python\nif not self._health_ok:\n    return RiskCheckResult(\n        allowed=False,\n        reason=f\"Health check failed (pm={'OK' if self._pm_healthy else 'FAIL'}, \"\n               f\"oe={'OK' if self._oe_healthy else 'FAIL'}, \"\n               f\"rebate={'OK' if self._rebate_healthy else 'FAIL'})\",\n    )\n\nif self._pm_balance < self._config.min_polymarket_balance:\n    return RiskCheckResult(\n        allowed=False,\n        reason=(\n            f\"Polymarket balance insufficient: \"\n            f\"{self._pm_balance:.2f} < {self._config.min_polymarket_balance:.2f}\"\n        ),\n    )\n\nif self._oe_balance < self._config.min_orbitexch_balance:\n    return RiskCheckResult(\n        allowed=False,\n        reason=(\n            f\"OrbitExch balance insufficient: \"\n            f\"{self._oe_balance:.2f} < {self._config.min_orbitexch_balance:.2f}\"\n        ),\n    )\n\nif not self._config.enabled:\n    return RiskCheckResult(allowed=True, reason=\"Risk disabled\")\n```\n\n门控逻辑说明：\n1. 位置：在健康检查之后，风控开关之前\n2. 优先级：余额门控优先于风控规则（止损/止盈/挂单检查）\n3. 原因：余额不足是硬性限制，不受风控开关控制\n4. 格式：RiskCheckResult(allowed=False, reason=...)\n\n注意事项：\n- 余额检查在健康检查通过后执行（确保余额数据是最新的）\n- 两个交易所的余额独立检查\n- reason 消息包含当前余额和阈值，便于调试",
+      "verificationCriteria": "1. 余额低于阈值时 check_risk 返回 allowed=False\n2. 余额充足时不影响后续门控检查\n3. reason 消息格式正确，包含余额和阈值信息\n4. 门控顺序正确（健康检查 -> 余额 -> 风控规则）\n5. 不影响现有的止损/止盈/挂单检查逻辑",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
+    },
+    {
+      "id": "2f786704-477f-4f8c-8308-2aab8ea8d19f",
+      "name": "state.py 接线 OddsService 和 RiskService",
+      "description": "在应用状态管理中接线 OddsService 和 RiskService，完成余额回调链路",
+      "notes": "此任务依赖任务4（OddsService 集成）。这是最后的接线步骤，完成整个功能链路。",
+      "status": "pending",
+      "dependencies": [
+        {
+          "taskId": "da69b316-0e89-4806-b6ac-316a65182557"
+        }
+      ],
+      "createdAt": "2026-03-27T15:46:58.253Z",
+      "updatedAt": "2026-03-27T15:46:58.253Z",
       "relatedFiles": [
         {
           "path": "src/arbitrage/services/web_gateway/state.py",
           "type": "TO_MODIFY",
-          "description": "添加策略管理"
-        },
-        {
-          "path": "src/arbitrage/services/web_gateway/default_config.json",
-          "type": "TO_MODIFY",
-          "description": "添加策略配置项"
+          "description": "在 ensure_risk_registered 中添加接线逻辑",
+          "lineStart": 882,
+          "lineEnd": 902
         }
       ],
-      "implementationGuide": "1. 添加 _strategy_config 属性\\n2. 添加 _strategy_service 延迟初始化\\n3. 添加策略配置的 get/update 方法\\n4. 在 get_odds_service 中注册策略回调\\n\\nPseudocode:\\nclass AppState:\\n    def __init__(self):\\n        ...\\n        self._strategy_config = StrategyServiceConfig(...)\\n        self._strategy_service = None\\n    \\n    def get_strategy_config(self) -> dict\\n    def update_strategy_config(self, data: dict) -> dict\\n    \\n    def get_strategy_service(self):\\n        if self._strategy_service is None:\\n            from ...strategy.service import StrategyService\\n            self._strategy_service = StrategyService(self._strategy_config)\\n            # 注册到赔率服务\\n            odds_service = self.get_odds_service()\\n            odds_service.register_strategy_callback(self._strategy_service.on_odds_update)\\n        return self._strategy_service",
-      "verificationCriteria": "1. get_strategy_service 正确返回服务实例\\n2. 策略配置可正确保存/加载\\n3. 回调正确注册",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
-    },
-    {
-      "id": "0575830e-0aa4-4347-bd15-6c6bc0f6d4fc",
-      "name": "创建策略 Web API 路由",
-      "description": "创建 src/arbitrage/services/web_gateway/routes/strategy.py，提供策略配置和状态查询的 REST API。",
-      "notes": "参照 discovery.py 路由模式",
-      "status": "pending",
-      "dependencies": [
-        {
-          "taskId": "8e976ba2-a020-43ca-8460-40d6dce4da1d"
-        }
-      ],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
-      "relatedFiles": [
-        {
-          "path": "src/arbitrage/services/web_gateway/routes/strategy.py",
-          "type": "CREATE",
-          "description": "策略 API 路由"
-        },
-        {
-          "path": "src/arbitrage/services/web_gateway/app.py",
-          "type": "TO_MODIFY",
-          "description": "注册路由"
-        },
-        {
-          "path": "src/arbitrage/services/web_gateway/routes/discovery.py",
-          "type": "REFERENCE",
-          "description": "参考路由模式"
-        }
-      ],
-      "implementationGuide": "1. 创建 strategy.py 路由文件\\n2. 实现 GET/PUT /api/strategy/config\\n3. 实现 GET /api/strategy/signals/{pair_id}\\n4. 实现 GET /api/strategy/opportunities\\n5. 在 app.py 中注册路由\\n\\nPseudocode:\\nrouter = APIRouter(prefix='/api/strategy', tags=['strategy'])\\n\\n@router.get('/config')\\nasync def get_strategy_config():\\n    return app_state.get_strategy_config()\\n\\n@router.put('/config')\\nasync def update_strategy_config(body: StrategyConfigUpdate):\\n    return app_state.update_strategy_config(body.dict())\\n\\n@router.get('/signals/{pair_id}')\\nasync def get_signals(pair_id: str):\\n    service = app_state.get_strategy_service()\\n    return service.get_signals(pair_id)\\n\\n@router.get('/opportunities')\\nasync def get_opportunities():\\n    service = app_state.get_strategy_service()\\n    return {'opportunities': service.get_opportunities()}",
-      "verificationCriteria": "1. 所有 API 端点可访问\\n2. 配置更新正确保存\\n3. 信号量和机会数据正确返回",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
-    },
-    {
-      "id": "cefb590e-3f81-4e46-a7d4-37b3116f72ad",
-      "name": "更新前端支持策略配置",
-      "description": "修改 index.html，添加策略配置区域，显示信号量状态和机会列表。",
-      "notes": "保持与现有前端风格一致",
-      "status": "pending",
-      "dependencies": [
-        {
-          "taskId": "0575830e-0aa4-4347-bd15-6c6bc0f6d4fc"
-        }
-      ],
-      "createdAt": "2026-02-08T04:00:38.084Z",
-      "updatedAt": "2026-02-08T04:00:38.084Z",
-      "relatedFiles": [
-        {
-          "path": "src/arbitrage/services/web_gateway/templates/index.html",
-          "type": "TO_MODIFY",
-          "description": "添加策略 UI"
-        }
-      ],
-      "implementationGuide": "1. 添加 Strategy 配置区域 HTML\\n2. 添加信号量状态显示表格\\n3. 添加机会列表显示\\n4. 实现 JavaScript 函数调用 API\\n\\nPseudocode:\\n<!-- HTML -->\\n<div class='card'>\\n  <h3>Strategy Configuration</h3>\\n  <div>Default Strategy: <select id='default-strategy'>...</select></div>\\n  <div>Min Spread: <input id='min-spread' type='number'/></div>\\n  <button onclick='updateStrategyConfig()'>Update</button>\\n</div>\\n\\n<div class='card'>\\n  <h3>Signals & Opportunities</h3>\\n  <table id='signals-table'>...</table>\\n  <table id='opportunities-table'>...</table>\\n</div>\\n\\n<!-- JavaScript -->\\nasync function loadStrategyConfig() {\\n  const resp = await fetch('/api/strategy/config');\\n  const data = await resp.json();\\n  // 填充表单\\n}\\n\\nasync function loadOpportunities() {\\n  const resp = await fetch('/api/strategy/opportunities');\\n  const data = await resp.json();\\n  // 更新表格\\n}",
-      "verificationCriteria": "1. 策略配置界面正常显示\\n2. 配置修改功能正常\\n3. 信号量和机会实时更新",
-      "analysisResult": "实现套利策略服务 (StrategyService)，支持信号量系统、策略配置、赔率触发计算、Web API。遵循现有微服务架构模式，配置使用 dataclass + from_dict 模式，Web API 使用 FastAPI APIRouter 模式。"
+      "implementationGuide": "文件：src/arbitrage/services/web_gateway/state.py\n\n修改 ensure_risk_registered 方法（line 882-902），在末尾添加：\n\n```python\ndef ensure_risk_registered(self) -> None:\n    risk_service = self.get_risk_service()\n    strategy_service = self.get_strategy_service()\n    odds_service = self.get_odds_service()\n    \n    risk_service.set_share(self._arbitrage_config.share)\n    risk_service.set_fx(self._arbitrage_config.fx)\n    \n    strategy_service.set_risk_service(risk_service)\n    \n    risk_service.set_msgbus(self.get_msgbus())\n    risk_service.set_odds_service(odds_service)\n    \n    odds_service.set_risk_service(risk_service)\n    \n    self._log.info(\"Risk service integrated with message bus\")\n```\n\n接线说明：\n1. odds_service.set_risk_service(risk_service)：建立 OddsService -> RiskService 的引用\n2. 该引用用于余额回调：OrbitExch WebSocket -> OddsService -> RiskService\n3. 该方法在应用启动时调用，确保服务间引用正确建立\n\n注意事项：\n- 在现有的 set_odds_service 之后添加\n- 确保 odds_service 已初始化\n- 日志消息保持不变，接线是内部实现细节",
+      "verificationCriteria": "1. OddsService 的 _risk_service 引用正确设置\n2. 余额回调链路完整：WebSocket -> OrbitExch -> OddsService -> RiskService\n3. 应用启动时不报错\n4. 余额更新能正确传递到 RiskService",
+      "analysisResult": "## 全局目标\\n\\n在 OrbitExch WebSocket 中处理 BALANCE 消息并更新余额，在 Polymarket 健康检查时更新余额，在 RiskService 下单前增加余额门控检查。\\n\\n## 技术方案\\n\\n1. **OrbitExch 余额更新**：通过 WebSocket BALANCE 消息实时接收余额，通过回调通知 RiskService\\n2. **Polymarket 余额更新**：在健康检查循环中使用 get_balance_allowance API 定期查询\\n3. **余额门控**：在 check_risk() 方法中检查余额是否低于配置阈值\\n\\n## 架构整合点\\n\\n- **回调模式**：复用现有 register_*_callback() 模式\\n- **健康检查**：扩展现有 _run_health_check() 方法\\n- **门控检查**：插入 check_risk() 现有门控序列\\n- **配置管理**：扩展 RiskConfig 的 to_dict/from_dict\\n\\n## 关键API\\n\\n- Polymarket 余额查询：`client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=2))`\\n- Money 对象转换：`usdce_from_units(int(response[\\\"balance\\\"])).as_double()`\\n- OrbitExch BALANCE 消息格式：`{\\\"BALANCE\\\": {\\\"balance\\\": \\\"30.68\\\", \\\"avBalance\\\": null}}`"
     }
   ]
 }

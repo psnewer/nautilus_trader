@@ -1,0 +1,195 @@
+{
+  "tasks": [
+    {
+      "id": "4135c945-0bac-45da-b66e-69f9e5a5df1e",
+      "name": "修改 PositionLeg 类添加 fx 属性和计算逻辑",
+      "description": "在 src/arbitrage/services/risk/position.py 的 PositionLeg 类中添加 fx 汇率参数，并修改 profit_if_wins() 和 loss_if_loses() 方法，使 OrbitExch 的盈亏计算乘以 fx。\n\n具体修改：\n1. 在 PositionLeg 的 @dataclass 定义中添加 fx: float = 1.0 属性（默认 1.0 不转换）\n2. 修改 profit_if_wins() 方法：\n   - 如果 venue == \"orbitexch\"，返回值改为 self.size * (self.price - 1) * self.fx\n   - Polymarket 保持不变\n3. 修改 loss_if_loses() 方法：\n   - 如果 venue == \"orbitexch\"，返回值改为 self.size * self.fx\n   - Polymarket 保持不变\n\n验收标准：\n- PositionLeg 类有 fx 属性，默认值为 1.0\n- OrbitExch 的 profit_if_wins() 结果乘以 fx\n- OrbitExch 的 loss_if_loses() 结果乘以 fx\n- Polymarket 的计算逻辑不受影响",
+      "notes": "此任务是底层数据结构修改，不依赖其他任务。fx 默认值 1.0 确保向后兼容。",
+      "status": "completed",
+      "dependencies": [],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:00:40.230Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/risk/position.py",
+          "type": "TO_MODIFY",
+          "description": "PositionLeg 类定义，需要添加 fx 属性并修改盈亏计算方法",
+          "lineStart": 31,
+          "lineEnd": 99
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/risk/position.py 文件：\n\n1. 找到 PositionLeg 的 @dataclass 定义（约第31-53行）\n2. 在 loss_override 属性后添加：\n   fx: float = 1.0\n\n3. 找到 profit_if_wins() 方法（约第55-70行）\n4. 修改 orbitexch 分支为：\n   else:  # orbitexch\n       return self.size * (self.price - 1) * self.fx\n\n5. 找到 loss_if_loses() 方法（约第72-87行）\n6. 修改 orbitexch 分支为：\n   else:  # orbitexch\n       return self.size * self.fx\n\n注意：\n- 保持代码风格一致（缩进、注释等）\n- profit_override 和 loss_override 的逻辑不变\n- Polymarket 的计算分支完全不变",
+      "verificationCriteria": "1. PositionLeg 类定义包含 fx: float = 1.0 属性\n2. profit_if_wins() 中 orbitexch 分支返回值包含 * self.fx\n3. loss_if_loses() 中 orbitexch 分支返回值包含 * self.fx\n4. Polymarket 的计算逻辑未被修改\n5. 代码风格与现有代码一致",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "PositionLeg 类已成功添加 fx 属性（默认值 1.0），profit_if_wins() 和 loss_if_loses() 方法中 OrbitExch 的计算逻辑已正确应用 fx 汇率转换，Polymarket 的计算逻辑保持不变。所有修改符合验收标准且代码风格一致。",
+      "completedAt": "2026-03-27T15:00:40.071Z"
+    },
+    {
+      "id": "55a60d88-797b-4614-a688-cca84f7636ec",
+      "name": "修改 PositionManager 添加 fx 管理功能",
+      "description": "在 src/arbitrage/services/risk/position.py 的 PositionManager 类中添加 fx 参数管理功能，包括初始化、设置方法和在创建 PositionLeg 时传递 fx。\n\n具体修改：\n1. 在 __init__() 方法中添加 self._fx = 1.0 属性\n2. 添加 set_fx(fx: float) 方法，用于设置汇率并更新所有 OrbitExch 持仓的 fx\n3. 修改 add_position() 方法，在创建 PositionLeg 时根据 venue 传递正确的 fx 值\n4. 修改 load_orbitexch_bets() 方法，在创建 PositionLeg 时传递 fx=self._fx\n\n验收标准：\n- PositionManager 有 _fx 属性，初始值为 1.0\n- set_fx() 方法能更新所有 OrbitExch 持仓的 fx\n- add_position() 对 OrbitExch 传递 fx，对 Polymarket 传递 1.0\n- load_orbitexch_bets() 对所有 OrbitExch 持仓传递 fx",
+      "notes": "此任务依赖任务1（PositionLeg 支持 fx）。set_fx() 方法参考 set_share() 的实现模式。",
+      "status": "completed",
+      "dependencies": [
+        {
+          "taskId": "4135c945-0bac-45da-b66e-69f9e5a5df1e"
+        }
+      ],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:04:02.570Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/risk/position.py",
+          "type": "TO_MODIFY",
+          "description": "PositionManager 类定义，需要添加 fx 管理功能",
+          "lineStart": 252,
+          "lineEnd": 511
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/risk/position.py 文件：\n\n1. 找到 PositionManager.__init__() 方法（约第263-266行）\n2. 在 self._default_share = default_share 后添加：\n   self._fx = 1.0\n\n3. 在 set_share() 方法后（约第381-385行）添加新方法：\n   def set_fx(self, fx: float) -> None:\n       \"\"\"设置汇率并更新所有 OrbitExch 持仓的 fx\"\"\"\n       self._fx = fx\n       for position in self._positions.values():\n           for leg in position.legs:\n               if leg.venue == \"orbitexch\":\n                   leg.fx = fx\n\n4. 找到 add_position() 方法（约第294-320行）\n5. 修改 PositionLeg 创建部分，添加 fx 参数：\n   position.add_leg(PositionLeg(\n       venue=venue,\n       market_type=market_type,\n       size=size,\n       price=price,\n       order_id=order_id,\n       fx=self._fx if venue == \"orbitexch\" else 1.0,\n   ))\n\n6. 找到 load_orbitexch_bets() 方法（约第489-494行）\n7. 修改 PositionLeg 创建部分，添加 fx 参数：\n   position.add_leg(PositionLeg(\n       venue=\"orbitexch\",\n       market_type=market_type,\n       size=size_matched,\n       price=price,\n       fx=self._fx,\n   ))",
+      "verificationCriteria": "1. PositionManager.__init__() 包含 self._fx = 1.0\n2. 存在 set_fx() 方法，能遍历所有 OrbitExch 持仓并更新 fx\n3. add_position() 中创建 PositionLeg 时传递 fx 参数\n4. load_orbitexch_bets() 中创建 PositionLeg 时传递 fx=self._fx\n5. 代码风格与 set_share() 一致",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "PositionManager 类已成功添加 _fx 属性（默认值 1.0），set_fx() 方法能遍历并更新所有 OrbitExch 持仓的 fx 值，add_position() 和 load_orbitexch_bets() 方法在创建 PositionLeg 时正确传递 fx 参数。实现模式与 set_share() 保持一致。",
+      "completedAt": "2026-03-27T15:04:02.554Z"
+    },
+    {
+      "id": "37ffbce7-228a-4ff7-8fbd-a62fa0d13b0c",
+      "name": "修改 RiskService 添加 fx 参数支持",
+      "description": "在 src/arbitrage/services/risk/service.py 的 RiskService 类中添加 fx 参数支持，使其能够将 fx 传递给 PositionManager。\n\n具体修改：\n1. 在 __init__() 方法中添加 self._fx = 1.0 属性\n2. 添加 set_fx(fx: float) 方法，调用 PositionManager.set_fx() 并记录日志\n\n验收标准：\n- RiskService 有 _fx 属性，初始值为 1.0\n- set_fx() 方法能调用 PositionManager.set_fx() 并记录日志\n- 日志格式与 set_share() 一致",
+      "notes": "此任务依赖任务2（PositionManager 支持 set_fx）。实现模式完全参考 set_share() 方法。",
+      "status": "completed",
+      "dependencies": [
+        {
+          "taskId": "55a60d88-797b-4614-a688-cca84f7636ec"
+        }
+      ],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:04:27.063Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/risk/service.py",
+          "type": "TO_MODIFY",
+          "description": "RiskService 类定义，需要添加 fx 参数支持",
+          "lineStart": 62,
+          "lineEnd": 130
+        },
+        {
+          "path": "src/arbitrage/services/risk/service.py",
+          "type": "REFERENCE",
+          "description": "参考 set_share() 方法的实现模式",
+          "lineStart": 107,
+          "lineEnd": 110
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/risk/service.py 文件：\n\n1. 找到 RiskService.__init__() 方法（约第73-96行）\n2. 在初始化 self._position_manager 后添加：\n   self._fx = 1.0\n\n3. 找到 set_share() 方法（约第107-110行）\n4. 在其后添加新方法：\n   def set_fx(self, fx: float) -> None:\n       \"\"\"设置汇率参数\"\"\"\n       self._fx = fx\n       self._position_manager.set_fx(fx)\n       self._log.info(f\"FX rate updated: {fx}\")\n\n注意：\n- 方法签名和实现模式完全参考 set_share()\n- 日志格式保持一致",
+      "verificationCriteria": "1. RiskService.__init__() 包含 self._fx = 1.0\n2. 存在 set_fx() 方法\n3. set_fx() 调用 self._position_manager.set_fx(fx)\n4. set_fx() 记录日志，格式为 FX rate updated: {fx}\n5. 方法实现与 set_share() 模式一致",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "RiskService 类已成功添加 _fx 属性（默认值 1.0），set_fx() 方法调用 PositionManager.set_fx() 并记录日志，实现模式与 set_share() 完全一致，日志格式为 \"FX rate updated: {fx}\"。",
+      "completedAt": "2026-03-27T15:04:27.019Z"
+    },
+    {
+      "id": "56abb078-b2f9-4661-bf14-1df616a35b58",
+      "name": "修改 ArbitrageConfig 添加 fx 参数",
+      "description": "在 src/arbitrage/services/web_gateway/state.py 的 ArbitrageConfig 类中添加 fx 参数，并修改 calculate_orbitexch_size() 方法以应用 fx。\n\n具体修改：\n1. 在 @dataclass 中添加 fx: float = 1.27 属性（默认 GBP/USD 汇率）\n2. 修改 from_dict() 方法，添加 fx 参数的读取\n3. 修改 to_dict() 方法，添加 fx 参数的导出\n4. 修改 calculate_orbitexch_size() 方法，返回值改为 self.share / odds / self.fx\n5. 更新 docstring 说明 fx 参数\n\n验收标准：\n- ArbitrageConfig 有 fx 属性，默认值为 1.27\n- from_dict() 能正确读取 fx 参数（默认 1.27）\n- to_dict() 能正确导出 fx 参数\n- calculate_orbitexch_size() 返回值包含 / self.fx\n- docstring 说明了 fx 参数的含义",
+      "notes": "此任务不依赖其他任务，可以独立完成。默认汇率 1.27 是典型的 GBP/USD 汇率。",
+      "status": "completed",
+      "dependencies": [],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:02:01.398Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/web_gateway/state.py",
+          "type": "TO_MODIFY",
+          "description": "ArbitrageConfig 类定义，需要添加 fx 参数",
+          "lineStart": 41,
+          "lineEnd": 97
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/web_gateway/state.py 文件：\n\n1. 找到 ArbitrageConfig 的 @dataclass 定义（约第42-49行）\n2. 在 share 属性后添加：\n   fx: float = 1.27  # 英镑兑美元汇率 (GBP/USD)\n\n3. 更新 Attributes docstring（约第44-48行）：\n   Attributes:\n       share: 持仓份额系数 (USDC)，用于计算订单大小\n       fx: 英镑兑美元汇率 (GBP/USD)，用于 OrbitExch 订单计算\n\n4. 找到 from_dict() 方法（约第51-56行）\n5. 修改 return 语句：\n   return cls(\n       share=data.get(\"share\", 30.0),\n       fx=data.get(\"fx\", 1.27),\n   )\n\n6. 找到 to_dict() 方法（约第58-62行）\n7. 修改 return 语句：\n   return {\n       \"share\": self.share,\n       \"fx\": self.fx,\n   }\n\n8. 找到 calculate_orbitexch_size() 方法（约第78-96行）\n9. 修改 return 语句（约第95-96行）：\n   return self.share / odds / self.fx\n\n10. 更新方法 docstring，说明 fx 的作用",
+      "verificationCriteria": "1. ArbitrageConfig 包含 fx: float = 1.27 属性\n2. from_dict() 中有 fx=data.get(\"fx\", 1.27)\n3. to_dict() 返回字典包含 \"fx\": self.fx\n4. calculate_orbitexch_size() 返回值为 self.share / odds / self.fx\n5. docstring 说明了 fx 参数",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "ArbitrageConfig 类已成功添加 fx 属性（默认值 1.27），from_dict() 和 to_dict() 方法已正确处理 fx 参数的序列化/反序列化，calculate_orbitexch_size() 方法已应用 fx 进行汇率转换（share / odds / fx），docstring 已更新说明 fx 参数的含义和使用方式。",
+      "completedAt": "2026-03-27T15:02:01.382Z"
+    },
+    {
+      "id": "46e75ce1-a8b9-4ab5-93d5-6c4a89ed6ee8",
+      "name": "修改 state.py 同步 fx 到 RiskService",
+      "description": "在 src/arbitrage/services/web_gateway/state.py 中修改 update_arbitrage_config() 和 ensure_risk_registered() 方法，使其能够将 fx 参数同步到 RiskService。\n\n具体修改：\n1. 在 update_arbitrage_config() 方法中，添加对 RiskService.set_fx() 的调用\n2. 在 ensure_risk_registered() 方法中，添加对 RiskService.set_fx() 的调用\n\n验收标准：\n- update_arbitrage_config() 中在更新 StrategyService 后调用 risk_service.set_fx()\n- ensure_risk_registered() 中在设置 share 后调用 risk_service.set_fx()\n- 调用前检查 _risk_service 是否存在",
+      "notes": "此任务依赖任务3（RiskService 支持 set_fx）和任务4（ArbitrageConfig 有 fx 属性）。实现模式参考 share 的同步方式。",
+      "status": "completed",
+      "dependencies": [
+        {
+          "taskId": "37ffbce7-228a-4ff7-8fbd-a62fa0d13b0c"
+        },
+        {
+          "taskId": "56abb078-b2f9-4661-bf14-1df616a35b58"
+        }
+      ],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:05:27.470Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/web_gateway/state.py",
+          "type": "TO_MODIFY",
+          "description": "AppState 类，需要同步 fx 到 RiskService",
+          "lineStart": 379,
+          "lineEnd": 390
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/state.py",
+          "type": "TO_MODIFY",
+          "description": "ensure_risk_registered 方法，需要初始化 fx",
+          "lineStart": 873,
+          "lineEnd": 892
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/web_gateway/state.py 文件：\n\n1. 找到 update_arbitrage_config() 方法（约第379-390行）\n2. 在 if self._strategy_service is not None: 块之后添加：\n   \n   # 同步 fx 到 RiskService\n   if self._risk_service is not None:\n       self._risk_service.set_fx(self._arbitrage_config.fx)\n\n3. 找到 ensure_risk_registered() 方法（约第873-892行）\n4. 在 risk_service.set_share() 调用后添加：\n   risk_service.set_fx(self._arbitrage_config.fx)\n\n注意：\n- 参考 set_share() 的调用方式\n- update_arbitrage_config() 中需要检查 _risk_service 是否存在\n- ensure_risk_registered() 中不需要检查（risk_service 已经获取）",
+      "verificationCriteria": "1. update_arbitrage_config() 中调用 self._risk_service.set_fx()\n2. ensure_risk_registered() 中调用 risk_service.set_fx()\n3. 调用位置在 set_share() 之后\n4. update_arbitrage_config() 中有 if self._risk_service is not None: 检查",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "state.py 已成功添加 fx 参数的同步逻辑。update_arbitrage_config() 方法在更新 StrategyService 后调用 RiskService.set_fx()（带 _risk_service 存在性检查），ensure_risk_registered() 方法在 set_share() 后调用 set_fx()，确保 fx 参数正确传递到 RiskService。",
+      "completedAt": "2026-03-27T15:05:27.452Z"
+    },
+    {
+      "id": "da2ced5a-2851-450c-a856-ce3b1d41425a",
+      "name": "修改 HTML 模板添加 fx 输入框",
+      "description": "在 src/arbitrage/services/web_gateway/templates/index.html 中的 arbitrage 配置区域添加 fx 输入框，并更新订单计算示例。\n\n具体修改：\n1. 在 share 输入框后添加 fx 输入框\n2. 更新订单计算示例，包含 fx 的说明\n3. 修改 JavaScript 代码，在加载配置时读取 fx\n4. 修改 JavaScript 代码，在保存配置时包含 fx\n\n验收标准：\n- 页面显示 fx 输入框，标签为 \"FX Rate (GBP/USD)\"\n- 输入框默认值 1.27，最小值 0.01，步长 0.01\n- 订单计算示例包含 fx 参数的说明\n- JavaScript 能正确加载和保存 fx 值",
+      "notes": "此任务依赖任务4（ArbitrageConfig 支持 fx）。HTML 风格和 JavaScript 模式参考现有的配置输入框。",
+      "status": "completed",
+      "dependencies": [
+        {
+          "taskId": "56abb078-b2f9-4661-bf14-1df616a35b58"
+        }
+      ],
+      "createdAt": "2026-03-27T14:59:15.185Z",
+      "updatedAt": "2026-03-27T15:06:31.294Z",
+      "relatedFiles": [
+        {
+          "path": "src/arbitrage/services/web_gateway/templates/index.html",
+          "type": "TO_MODIFY",
+          "description": "HTML 模板，需要添加 fx 输入框和更新示例",
+          "lineStart": 633,
+          "lineEnd": 658
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/templates/index.html",
+          "type": "TO_MODIFY",
+          "description": "JavaScript 配置加载部分",
+          "lineStart": 970,
+          "lineEnd": 980
+        },
+        {
+          "path": "src/arbitrage/services/web_gateway/templates/index.html",
+          "type": "TO_MODIFY",
+          "description": "JavaScript 配置保存函数",
+          "lineStart": 1145,
+          "lineEnd": 1155
+        }
+      ],
+      "implementationGuide": "定位到 src/arbitrage/services/web_gateway/templates/index.html 文件：\n\n1. 找到 arbitrage 配置区域（约第633-658行）\n2. 在 share 输入框的 div 后（约第649行）添加：\n\n<div class=\"mb-3\">\n    <label class=\"form-label\">FX Rate (GBP/USD)</label>\n    <input type=\"number\" class=\"form-control\" id=\"arbitrage-fx\" value=\"1.27\" min=\"0.01\" step=\"0.01\" style=\"max-width: 200px;\">\n    <small class=\"text-muted\">英镑兑美元汇率，用于 OrbitExch 订单计算</small>\n</div>\n\n3. 找到订单计算示例（约第651-655行）\n4. 修改为：\n<div class=\"alert alert-info mb-0\">\n    <strong>订单计算示例 (Share=30, FX=1.27):</strong><br>\n    <code>Polymarket: size = share = 30 (直接购买 30 份)</code><br>\n    <code>OrbitExch: size = share / odds / fx = 30 / 2.0 / 1.27 ≈ 11.81 (投入 11.81 GBP)</code>\n</div>\n\n5. 找到配置加载部分（约第976行）\n6. 添加一行：\ndocument.getElementById('arbitrage-fx').value = config.arbitrage?.fx || 1.27;\n\n7. 找到 saveArbitrageConfig() 函数（约第1145-1155行）\n8. 修改 data 对象：\nconst data = {\n    share: parseFloat(document.getElementById('arbitrage-share').value),\n    fx: parseFloat(document.getElementById('arbitrage-fx').value),\n};",
+      "verificationCriteria": "1. 页面有 id=\"arbitrage-fx\" 的输入框\n2. 输入框属性：type=\"number\", value=\"1.27\", min=\"0.01\", step=\"0.01\"\n3. 订单计算示例包含 fx 参数\n4. JavaScript 加载配置时读取 fx\n5. saveArbitrageConfig() 包含 fx 参数\n6. HTML 风格与现有输入框一致",
+      "analysisResult": "为 arbitrage 配置添加 fx（汇率）参数，用于处理 OrbitExch（英镑）和 Polymarket（美元）之间的货币转换。\n\n核心需求：\n1. OrbitExch 使用英镑（GBP），Polymarket 使用美元（USD）\n2. OrbitExch 的 share 计算改为：share / odds / fx\n3. 计算 way_rebate 时，OrbitExch 的 profit 和 loss 都乘以 fx\n\n技术架构：\n- 数据流：配置界面 → ArbitrageConfig → RiskService → PositionManager → PositionLeg\n- 修改顺序：自底向上（数据层 → 服务层 → 配置层 → 界面层）\n- 向后兼容：fx 默认值 1.0（或 1.27），不影响现有功能\n\n关键设计点：\n- 只有 OrbitExch 的 PositionLeg 需要 fx，Polymarket 保持默认 1.0\n- 参考 share 参数的传递模式实现 fx 的传递\n- ExecutionService 通过 ArbitrageConfig.calculate_orbitexch_size() 自动使用新的 fx 计算",
+      "summary": "HTML 模板已成功添加 fx 输入框（标签\"FX Rate (GBP/USD)\"，默认值1.27，最小值0.01，步长0.01），订单计算示例已更新包含 fx 参数说明，JavaScript 代码已正确实现 fx 的加载和保存功能。HTML 风格与现有配置输入框保持一致。",
+      "completedAt": "2026-03-27T15:06:31.275Z"
+    }
+  ]
+}

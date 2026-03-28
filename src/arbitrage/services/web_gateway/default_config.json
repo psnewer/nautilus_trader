@@ -79,7 +79,8 @@
     ]
   },
   "arbitrage": {
-    "share": 20
+    "share": 20,
+    "fx": 1.33
   },
   "execution": {
     "enabled": true,
@@ -103,6 +104,7 @@
     "max_failure_retries": 5,
     "polymarket_relayer_url": "https://relayer-v2.polymarket.com/",
     "polygon_rpc_url": "https://polygon-rpc.com/",
+    "health_check_interval_sec": 30.0,
     "cleanup_enabled": true,
     "cleanup_merge_enabled": true,
     "cleanup_claim_enabled": true
@@ -169,6 +171,7 @@
     "match_sl": -0.1,
     "global_sl": -0.5,
     "match_tp": 0.1,
-    "match_overrides": {}
+    "match_overrides": {},
+    "health_check_interval_sec": 30.0
   }
 }

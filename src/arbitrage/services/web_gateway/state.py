@@ -45,20 +45,24 @@ class ArbitrageConfig:
 
     Attributes:
         share: 持仓份额系数 (USDC)，用于计算订单大小
+        fx: 英镑兑美元汇率 (GBP/USD)，用于 OrbitExch 订单计算
     """
     share: float = 30.0  # 持仓份额系数 (USDC)
+    fx: float = 1.27  # 英镑兑美元汇率 (GBP/USD)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ArbitrageConfig":
         """从字典创建配置实例"""
         return cls(
             share=data.get("share", 30.0),
+            fx=data.get("fx", 1.27),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "share": self.share,
+            "fx": self.fx,
         }
 
     def calculate_polymarket_size(self, probability: float) -> float:
@@ -79,21 +83,22 @@ class ArbitrageConfig:
         """
         计算 OrbitExch 订单大小
 
-        OrbitExch 的 size 参数是 stake（投入金额）。
-        公式: stake = share / odds
-        - share: 30 (目标 share 数量)
+        OrbitExch 的 size 参数是 stake（投入金额，英镑）。
+        公式: stake = share / odds / fx
+        - share: 30 (目标 share 数量，美元)
         - odds: 2.0 (十进制赔率)
-        - stake = 30 / 2.0 = 15 (投入 15，如果赢得 share=15*2=30)
+        - fx: 1.27 (英镑兑美元汇率)
+        - stake = 30 / 2.0 / 1.27 ≈ 11.81 (投入 11.81 GBP)
 
         Args:
             odds: 十进制赔率 (如 2.0)
 
         Returns:
-            订单大小 (stake，投入金额)
+            订单大小 (stake，投入金额，英镑)
         """
         if odds <= 0:
             return 0.0
-        return self.share / odds
+        return self.share / odds / self.fx
 
 
 # 默认配置文件路径
@@ -386,6 +391,10 @@ class AppState:
             self._strategy_service.set_arbitrage_params(
                 share=self._arbitrage_config.share,
             )
+
+        # 同步 fx 到 RiskService
+        if self._risk_service is not None:
+            self._risk_service.set_fx(self._arbitrage_config.fx)
 
         return self.get_arbitrage_config()
 
@@ -878,16 +887,21 @@ class AppState:
         """
         risk_service = self.get_risk_service()
         strategy_service = self.get_strategy_service()
+        odds_service = self.get_odds_service()
 
         # 同步 share 参数
         risk_service.set_share(self._arbitrage_config.share)
+        risk_service.set_fx(self._arbitrage_config.fx)
 
         # 设置策略服务的风控服务引用（check_risk 同步门控保留 DI）
         strategy_service.set_risk_service(risk_service)
 
         # 连接消息总线
         risk_service.set_msgbus(self.get_msgbus())
-        risk_service.set_odds_service(self.get_odds_service())
+        risk_service.set_odds_service(odds_service)
+
+        # 设置 OddsService 的 RiskService 引用（用于余额回调）
+        odds_service.set_risk_service(risk_service)
 
         self._log.info("Risk service integrated with message bus")
 
