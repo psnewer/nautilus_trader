@@ -646,12 +646,17 @@
                                             <input type="number" class="form-control" id="arbitrage-share" value="30" min="1" step="1" style="max-width: 200px;">
                                             <small class="text-muted">持仓份额，用于计算订单大小</small>
                                         </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">FX Rate (GBP/USD)</label>
+                                            <input type="number" class="form-control" id="arbitrage-fx" value="1.27" min="0.01" step="0.01" style="max-width: 200px;">
+                                            <small class="text-muted">英镑兑美元汇率，用于 OrbitExch 订单计算</small>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="alert alert-info mb-0">
-                                    <strong>订单计算示例 (Share=30):</strong><br>
+                                    <strong>订单计算示例 (Share=30, FX=1.27):</strong><br>
                                     <code>Polymarket: size = share = 30 (直接购买 30 份)</code><br>
-                                    <code>OrbitExch: size = share / odds = 30 / 2.0 = 15 (投入 15，赢得 30)</code>
+                                    <code>OrbitExch: size = share / odds / fx = 30 / 2.0 / 1.27 ≈ 11.81 (投入 11.81 GBP)</code>
                                 </div>
                             </div>
                         </div>
@@ -974,6 +979,7 @@
 
                 // Arbitrage config
                 document.getElementById('arbitrage-share').value = config.arbitrage?.share || 30;
+                document.getElementById('arbitrage-fx').value = config.arbitrage?.fx || 1.27;
 
                 // Execution config
                 document.getElementById('execution-tracking-timeout').value = config.execution?.tracking_timeout_sec || 30;
@@ -1146,6 +1152,7 @@
             try {
                 const data = {
                     share: parseFloat(document.getElementById('arbitrage-share').value),
+                    fx: parseFloat(document.getElementById('arbitrage-fx').value),
                 };
                 await api('/api/strategy/arbitrage-config', 'PUT', data);
                 showToast('Arbitrage config saved');

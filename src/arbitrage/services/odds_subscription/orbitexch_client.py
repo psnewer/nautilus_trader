@@ -80,8 +80,14 @@ class OrbitExchOddsClient:
         # market_id -> [bet_dict, ...]
         self._positions: dict[str, list[dict]] = {}
 
+        # 账户余额
+        self._balance: float = 0.0
+
         # 订单更新回调
         self._bets_update_callback: Callable[[dict], None] | None = None
+
+        # 余额更新回调
+        self._balance_update_callback: Callable[[float], None] | None = None
 
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
@@ -784,6 +790,9 @@ class OrbitExchOddsClient:
             # 处理 CURRENT_BETS 消息（用户订单数据）
             elif "CURRENT_BETS" in data:
                 await self._process_current_bets(data)
+            # 处理 BALANCE 消息（账户余额）
+            elif "BALANCE" in data:
+                await self._process_balance(data)
             # 跳过其他消息类型（EVENT_INFO_UPDATES, PROPERTIES, OPEN_BETS_COUNTER）
 
         except Exception as e:
@@ -965,6 +974,35 @@ class OrbitExchOddsClient:
             import traceback
             traceback.print_exc()
 
+    async def _process_balance(self, data: dict) -> None:
+        """
+        处理 BALANCE 消息（账户余额）
+
+        消息格式：
+        {"BALANCE": {"balance": "30.68", "avBalance": null}}
+        """
+        try:
+            balance_data = data.get("BALANCE", {})
+            balance_str = balance_data.get("balance")
+
+            if balance_str is not None:
+                balance = float(balance_str)
+                old_balance = self._balance
+                self._balance = balance
+
+                self._log.debug(
+                    f"Balance updated: {old_balance:.2f} -> {balance:.2f}"
+                )
+
+                # 触发回调
+                if self._balance_update_callback:
+                    try:
+                        self._balance_update_callback(balance)
+                    except Exception as e:
+                        self._log.error(f"Balance callback error: {e}")
+        except Exception as e:
+            self._log.error(f"Error processing BALANCE: {e}")
+
     def get_current_bets(self, market_id: str | None = None) -> list[dict]:
         """
         获取当前订单
@@ -1054,6 +1092,14 @@ class OrbitExchOddsClient:
     def register_bets_callback(self, callback: Callable[[dict], None]) -> None:
         """注册订单更新回调"""
         self._bets_update_callback = callback
+
+    def register_balance_callback(self, callback: Callable[[float], None]) -> None:
+        """注册余额更新回调"""
+        self._balance_update_callback = callback
+
+    def get_balance(self) -> float:
+        """获取当前余额"""
+        return self._balance
 
     async def _process_mcm_message(self, data: dict) -> None:
         """

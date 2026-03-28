@@ -610,6 +610,19 @@ class StrategyService:
             self._log.warning(f"Opportunity rejected: insufficient market size for {pair_id}")
             return False
 
+        # ---- 余额门控检查 ----
+        if self._risk_service:
+            balance_check = self._risk_service.check_balance(
+                pair_id=pair_id,
+                share=adjusted_share,
+                direction=best_direction
+            )
+            if not balance_check.allowed:
+                self._log.warning(
+                    f"Opportunity blocked by balance check for {pair_id}: {balance_check.reason}"
+                )
+                return False
+
         # 获取各方向的持仓返水率（执行侧用于 size 调整）
         way_rebate = context.way_rebate if context else {}
 

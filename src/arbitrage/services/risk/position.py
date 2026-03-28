@@ -51,6 +51,7 @@ class PositionLeg:
     filled_at: float = field(default_factory=time.time)
     profit_override: float | None = None
     loss_override: float | None = None
+    fx: float = 1.0  # 汇率（用于 OrbitExch 货币转换，默认 1.0 不转换）
 
     def profit_if_wins(self) -> float:
         """
@@ -59,7 +60,7 @@ class PositionLeg:
         如果设置了 profit_override，直接返回该值。
         否则根据 venue 类型计算：
         - Polymarket: size * (1 - price)
-        - OrbitExch: size * (price - 1)
+        - OrbitExch: size * (price - 1) * fx
         """
         if self.profit_override is not None:
             return self.profit_override
@@ -67,7 +68,7 @@ class PositionLeg:
         if self.venue == "polymarket":
             return self.size * (1 - self.price)
         else:  # orbitexch
-            return self.size * (self.price - 1)
+            return self.size * (self.price - 1) * self.fx
 
     def loss_if_loses(self) -> float:
         """
@@ -76,7 +77,7 @@ class PositionLeg:
         如果设置了 loss_override，直接返回该值。
         否则根据 venue 类型计算：
         - Polymarket: size * price
-        - OrbitExch: size
+        - OrbitExch: size * fx
         """
         if self.loss_override is not None:
             return self.loss_override
@@ -84,7 +85,7 @@ class PositionLeg:
         if self.venue == "polymarket":
             return self.size * self.price
         else:  # orbitexch
-            return self.size
+            return self.size * self.fx
 
     def to_dict(self) -> dict:
         return {
@@ -261,6 +262,7 @@ class PositionManager:
     def __init__(self, default_share: float = 100.0):
         self._positions: dict[str, MatchPosition] = {}  # pair_id -> MatchPosition
         self._default_share = default_share
+        self._fx = 1.0
 
     def get_or_create_position(
         self,
@@ -317,6 +319,7 @@ class PositionManager:
             size=size,
             price=price,
             order_id=order_id,
+            fx=self._fx if venue == "orbitexch" else 1.0,
         ))
 
     def refresh_position(self, pair_id: str) -> None:
@@ -383,6 +386,14 @@ class PositionManager:
         self._default_share = share
         for position in self._positions.values():
             position.share = share
+
+    def set_fx(self, fx: float) -> None:
+        """设置汇率并更新所有 OrbitExch 持仓的 fx"""
+        self._fx = fx
+        for position in self._positions.values():
+            for leg in position.legs:
+                if leg.venue == "orbitexch":
+                    leg.fx = fx
 
     def clear(self) -> None:
         """清空所有持仓"""
@@ -491,6 +502,7 @@ class PositionManager:
                 market_type=market_type,
                 size=size_matched,
                 price=price,
+                fx=self._fx,
             ))
             count += 1
 

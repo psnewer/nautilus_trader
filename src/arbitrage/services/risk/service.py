@@ -79,6 +79,11 @@ class RiskService:
         self._config = config or RiskConfig()
         self._log = logger or logging.getLogger(self.__class__.__name__)
         self._position_manager = PositionManager(default_share=share)
+        self._fx = 1.0
+
+        # 余额跟踪
+        self._pm_balance: float = 0.0  # Polymarket USDC 余额
+        self._oe_balance: float = 0.0  # OrbitExch 余额
 
         # 消息总线和外部服务
         self._msgbus = None
@@ -109,6 +114,12 @@ class RiskService:
         self._position_manager.set_share(share)
         self._log.info(f"Share updated: {share}")
 
+    def set_fx(self, fx: float) -> None:
+        """设置汇率参数"""
+        self._fx = fx
+        self._position_manager.set_fx(fx)
+        self._log.info(f"FX rate updated: {fx}")
+
     def set_msgbus(self, msgbus) -> None:
         """设置消息总线并订阅主题"""
         if self._msgbus is msgbus:
@@ -128,6 +139,32 @@ class RiskService:
         """设置执行服务引用（用于健康检查访问 PM client 和 OE pages）"""
         self._execution_service = execution_service
         self._log.info("Execution service reference set for health check")
+
+    def update_orbitexch_balance(self, balance: float) -> None:
+        """
+        更新 OrbitExch 余额（由 OddsService 通过回调触发）
+
+        Args:
+            balance: OrbitExch 余额
+        """
+        old_balance = self._oe_balance
+        self._oe_balance = balance
+        if abs(balance - old_balance) > 0.01:
+            self._log.info(
+                f"OrbitExch balance updated: {old_balance:.2f} -> {balance:.2f}"
+            )
+
+    def get_balances(self) -> dict[str, float]:
+        """
+        获取当前余额
+
+        Returns:
+            {"polymarket": float, "orbitexch": float}
+        """
+        return {
+            "polymarket": self._pm_balance,
+            "orbitexch": self._oe_balance,
+        }
 
     def start_health_check_loop(self, interval: float | None = None) -> None:
         """启动后台健康检查循环"""
@@ -164,13 +201,37 @@ class RiskService:
         old_ok = self._health_ok
         exec_svc = self._execution_service
 
-        # --- Polymarket: 调用 get_ok() ---
+        # --- Polymarket: 调用 get_ok() 和查询余额 ---
         pm_ok = False
         if exec_svc and exec_svc._polymarket_executor._client:
             try:
-                await asyncio.to_thread(
-                    exec_svc._polymarket_executor._client.get_ok
+                client = exec_svc._polymarket_executor._client
+
+                # 健康检查
+                await asyncio.to_thread(client.get_ok)
+
+                # 查询余额
+                from py_clob_client.client import BalanceAllowanceParams
+                from py_clob_client.clob_types import AssetType
+                from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
+
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=2,
                 )
+                response = await asyncio.to_thread(
+                    client.get_balance_allowance, params
+                )
+                balance_raw = int(response.get("balance", 0))
+                balance_usdc = usdce_from_units(balance_raw).as_double()
+
+                old_balance = self._pm_balance
+                self._pm_balance = balance_usdc
+                if abs(balance_usdc - old_balance) > 0.01:
+                    self._log.info(
+                        f"Polymarket balance updated: {old_balance:.2f} -> {balance_usdc:.2f}"
+                    )
+
                 pm_ok = True
             except Exception as e:
                 self._log.warning(f"Polymarket health check failed: {e}")
@@ -227,14 +288,28 @@ class RiskService:
 
         # --- Way Rebate 刷新验证 ---
         rebate_ok = False
+        rebate_error = None
         if self._odds_service:
             try:
+                # 步骤1: 刷新持仓和活跃订单
+                self._log.debug("Starting refresh_all_positions_and_orders...")
                 await self._odds_service.refresh_all_positions_and_orders()
+                self._log.debug("refresh_all_positions_and_orders completed")
+
+                # 步骤2: 刷新所有 way_rebates
+                self._log.debug("Starting _refresh_all_way_rebates...")
                 self._refresh_all_way_rebates()
+                self._log.debug("_refresh_all_way_rebates completed")
+
                 rebate_ok = True
             except Exception as e:
-                self._log.warning(f"Way rebate refresh failed: {e}")
+                rebate_error = f"{type(e).__name__}: {str(e)}"
+                self._log.warning(
+                    f"Way rebate refresh failed: {rebate_error}",
+                    exc_info=True  # 包含完整堆栈跟踪
+                )
         else:
+            rebate_error = "Odds service not available"
             self._log.debug("Odds service not available, skipping rebate check")
 
         # --- 更新状态 ---
@@ -250,10 +325,20 @@ class RiskService:
                     "Health check recovered: pm=OK, oe=OK, rebate=OK"
                 )
             else:
+                # 失败时显示详细信息
+                failure_details = []
+                if not pm_ok:
+                    failure_details.append("pm=FAIL")
+                if not oe_ok:
+                    failure_details.append("oe=FAIL")
+                if not rebate_ok:
+                    rebate_msg = f"rebate=FAIL"
+                    if rebate_error:
+                        rebate_msg += f" ({rebate_error})"
+                    failure_details.append(rebate_msg)
+
                 self._log.warning(
-                    f"Health check FAILED: pm={'OK' if pm_ok else 'FAIL'}, "
-                    f"oe={'OK' if oe_ok else 'FAIL'}, "
-                    f"rebate={'OK' if rebate_ok else 'FAIL'}"
+                    f"Health check FAILED: {', '.join(failure_details)}"
                 )
 
         # --- 失败时尝试恢复认证（不重试、不置位） ---
@@ -734,6 +819,90 @@ class RiskService:
             min_way_rebate=min_way_rebate,
             global_min_sum=global_min_sum,
         )
+
+    def check_balance(self, pair_id: str, share: float, direction) -> RiskCheckResult:
+        """
+        余额门控检查
+
+        检查各平台余额是否足够本次下单（包含活跃订单）
+
+        Args:
+            pair_id: 比赛 ID
+            share: adjusted_share（调整后的份额系数）
+            direction: best_direction（套利方向，包含各腿信息）
+
+        Returns:
+            检查结果
+        """
+        # 计算各平台需要的实际 size（下单金额）
+        pm_required_size = 0.0  # Polymarket 需要的金额（USDC）
+        oe_required_size = 0.0  # OrbitExch 需要的金额（GBP）
+
+        for leg in direction.legs:
+            if leg.venue.value == "polymarket":
+                # Polymarket: size = share
+                pm_required_size += share
+            else:  # orbitexch
+                # OrbitExch: size = share / odds / fx
+                if leg.raw_odds > 0:
+                    oe_required_size += share / leg.raw_odds / self._fx
+
+        # 检查 Polymarket 余额
+        if pm_required_size > 0:
+            pm_active_orders = self._get_active_polymarket_orders_total()
+            pm_total_required = pm_required_size + pm_active_orders
+
+            if self._pm_balance < pm_total_required:
+                return RiskCheckResult(
+                    allowed=False,
+                    reason=(
+                        f"PM balance insufficient: {self._pm_balance:.2f} < {pm_total_required:.2f} "
+                        f"(this order: {pm_required_size:.2f}, active: {pm_active_orders:.2f})"
+                    ),
+                )
+
+        # 检查 OrbitExch 余额
+        if oe_required_size > 0:
+            oe_active_orders = self._get_active_orbitexch_orders_total()
+            oe_total_required = oe_required_size + oe_active_orders
+
+            if self._oe_balance < oe_total_required:
+                return RiskCheckResult(
+                    allowed=False,
+                    reason=(
+                        f"OE balance insufficient: {self._oe_balance:.2f} < {oe_total_required:.2f} "
+                        f"(this order: {oe_required_size:.2f}, active: {oe_active_orders:.2f})"
+                    ),
+                )
+
+        # 余额充足
+        return RiskCheckResult(allowed=True)
+
+    def _get_active_polymarket_orders_total(self) -> float:
+        """获取 Polymarket 活跃订单总金额（USDC）"""
+        if not self._odds_service:
+            return 0.0
+
+        try:
+            active_orders = self._odds_service._polymarket_client.get_active_orders()
+            total = sum(float(order.get("size", 0)) for order in active_orders)
+            return total
+        except Exception as e:
+            self._log.warning(f"Failed to get Polymarket active orders: {e}")
+            return 0.0
+
+    def _get_active_orbitexch_orders_total(self) -> float:
+        """获取 OrbitExch 活跃订单总金额（GBP）"""
+        if not self._odds_service:
+            return 0.0
+
+        try:
+            active_orders = self._odds_service._orbitexch_client.get_active_orders()
+            total = sum(float(order.get("sizePlaced", 0)) for order in active_orders)
+            return total
+        except Exception as e:
+            self._log.warning(f"Failed to get OrbitExch active orders: {e}")
+            return 0.0
 
     def _check_odds_valid(self, pair_id: str) -> RiskCheckResult | None:
         """
