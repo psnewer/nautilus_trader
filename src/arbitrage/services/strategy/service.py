@@ -163,6 +163,7 @@ class StrategyService:
         )
         topic = pair_activity_topic(pair_id)
         self._msgbus.publish(topic, msg)
+        self._log.info(f"Pair activity: {pair_id} {'LOCKED' if is_active else 'UNLOCKED'} (source={source})")
 
     def set_risk_service(self, risk_service) -> None:
         """设置风控服务引用"""
@@ -267,8 +268,11 @@ class StrategyService:
             opportunity_published = self._evaluate_match(
                 pair_id, triggered_signals=self._odds_signals
             )
+        else:
+            self._log.debug(f"Pair {pair_id} not in match_contexts, skipping evaluation")
 
         if not opportunity_published:
+            self._log.info(f"Opportunity not published for {pair_id}, unlocking pair")
             self._publish_pair_activity(pair_id, False, "strategy")
 
     # =========================================================================
@@ -578,7 +582,8 @@ class StrategyService:
             risk_result = self._risk_service.check_risk(pair_id)
             if not risk_result.allowed:
                 self._log.warning(
-                    f"Opportunity blocked by risk control for {pair_id}: {risk_result.reason}"
+                    f"Opportunity blocked by risk control for {pair_id}: {risk_result.reason} "
+                    f"(opportunity will not be published, pair will be unlocked)"
                 )
                 return False
 
@@ -601,13 +606,19 @@ class StrategyService:
         all_directions = [d.to_dict() for d in context.arbitrage_directions] if context else []
 
         if not best_direction:
-            self._log.debug(f"No arbitrage direction for {pair_id}, skipping")
+            self._log.info(
+                f"No arbitrage direction for {pair_id} "
+                f"(opportunity will not be published, pair will be unlocked)"
+            )
             return False
 
         # ---- Size 可用性检查 ----
         adjusted_share = self._check_and_adjust_size(pair_id, best_direction)
         if adjusted_share is None:
-            self._log.warning(f"Opportunity rejected: insufficient market size for {pair_id}")
+            self._log.warning(
+                f"Opportunity rejected: insufficient market size for {pair_id} "
+                f"(opportunity will not be published, pair will be unlocked)"
+            )
             return False
 
         # ---- 余额门控检查 ----
@@ -619,7 +630,8 @@ class StrategyService:
             )
             if not balance_check.allowed:
                 self._log.warning(
-                    f"Opportunity blocked by balance check for {pair_id}: {balance_check.reason}"
+                    f"Opportunity blocked by balance check for {pair_id}: {balance_check.reason} "
+                    f"(opportunity will not be published, pair will be unlocked)"
                 )
                 return False
 
