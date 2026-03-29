@@ -15,7 +15,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "wta"
+              "atp"
             ]
           }
         ]
@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "WTA Miami 2026"
+              "ATP Bucharest 2026"
             ]
           }
         ]
@@ -45,12 +45,12 @@
     "sport_aliases": {},
     "competition_aliases": {
       "epl": "English Premier League",
-      "wta": "WTA",
-      "WTA Miami 2026": "WTA"
+      "atp": "ATP",
+      "ATP Bucharest 2026": "ATP"
     },
     "competition_max_matches": {
       "English Premier League": 0,
-      "WTA": 1
+      "ATP": 1
     }
   },
   "odds": {
@@ -131,7 +131,7 @@
       },
       "mean_rebate": {
         "params": {
-          "rate": -0.2
+          "rate": -1
         },
         "description": "\u5e73\u5747\u8fd4\u6c34\u4fe1\u53f7\uff0c\u5404\u65b9\u5411\u53d6\u6700\u4f18\u4ef7\u683c\uff0c\u8fd4\u6c34\u5e73\u5747\u5206\u914d\u5230\u6240\u6709\u65b9\u5411\u3002"
       },

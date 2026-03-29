@@ -131,6 +131,9 @@ async def _run_subscription():
         # 获取或创建服务
         service = app_state.get_odds_service()
 
+        # 在订阅前先设置 RiskService 引用（确保余额回调能立即生效）
+        app_state.ensure_risk_registered()
+
         # 直接使用完整的 MatchedPair 对象订阅
         await service.subscribe_matched_pairs(matched_pairs_full)
 
@@ -141,13 +144,17 @@ async def _run_subscription():
         _log.info("Registered matches to strategy service with status")
 
         # 加载历史持仓到风控服务
-        app_state.ensure_risk_registered()
         position_counts = await app_state.load_risk_historical_positions()
         _log.info(f"Loaded historical positions: {position_counts}")
 
         # 更新执行服务的 OrbitExch 页面引用（订阅后页面才可用）
         app_state.update_execution_pages()
         _log.info("Updated execution service with OrbitExch pages")
+
+        # 启动健康检查循环（确保 OrbitExch pages 已设置）
+        risk_service = app_state.get_risk_service()
+        risk_service.start_health_check_loop()
+        _log.info("Health check loop started")
 
     except Exception as e:
         _log.error(f"Odds subscription failed: {e}")

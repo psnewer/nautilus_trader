@@ -792,6 +792,7 @@ class OrbitExchOddsClient:
                 await self._process_current_bets(data)
             # 处理 BALANCE 消息（账户余额）
             elif "BALANCE" in data:
+                self._log.info(f"BALANCE message received: {data}")
                 await self._process_balance(data)
             # 跳过其他消息类型（EVENT_INFO_UPDATES, PROPERTIES, OPEN_BETS_COUNTER）
 
@@ -990,9 +991,15 @@ class OrbitExchOddsClient:
                 old_balance = self._balance
                 self._balance = balance
 
-                self._log.debug(
-                    f"Balance updated: {old_balance:.2f} -> {balance:.2f}"
-                )
+                # 升级为 INFO 级别，确保能看到
+                if abs(balance - old_balance) > 0.01:
+                    self._log.info(
+                        f"OrbitExch balance updated: {old_balance:.2f} -> {balance:.2f}"
+                    )
+                else:
+                    self._log.debug(
+                        f"Balance unchanged: {balance:.2f}"
+                    )
 
                 # 触发回调
                 if self._balance_update_callback:
@@ -1000,6 +1007,8 @@ class OrbitExchOddsClient:
                         self._balance_update_callback(balance)
                     except Exception as e:
                         self._log.error(f"Balance callback error: {e}")
+                else:
+                    self._log.warning("BALANCE message received but no callback registered")
         except Exception as e:
             self._log.error(f"Error processing BALANCE: {e}")
 
