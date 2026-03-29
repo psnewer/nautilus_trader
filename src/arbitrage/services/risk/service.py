@@ -288,28 +288,14 @@ class RiskService:
 
         # --- Way Rebate 刷新验证 ---
         rebate_ok = False
-        rebate_error = None
         if self._odds_service:
             try:
-                # 步骤1: 刷新持仓和活跃订单
-                self._log.debug("Starting refresh_all_positions_and_orders...")
                 await self._odds_service.refresh_all_positions_and_orders()
-                self._log.debug("refresh_all_positions_and_orders completed")
-
-                # 步骤2: 刷新所有 way_rebates
-                self._log.debug("Starting _refresh_all_way_rebates...")
                 self._refresh_all_way_rebates()
-                self._log.debug("_refresh_all_way_rebates completed")
-
                 rebate_ok = True
             except Exception as e:
-                rebate_error = f"{type(e).__name__}: {str(e)}"
-                self._log.warning(
-                    f"Way rebate refresh failed: {rebate_error}",
-                    exc_info=True  # 包含完整堆栈跟踪
-                )
+                self._log.warning(f"Way rebate refresh failed: {e}")
         else:
-            rebate_error = "Odds service not available"
             self._log.debug("Odds service not available, skipping rebate check")
 
         # --- 更新状态 ---
@@ -322,23 +308,15 @@ class RiskService:
         if self._health_ok != old_ok:
             if self._health_ok:
                 self._log.info(
-                    "Health check recovered: pm=OK, oe=OK, rebate=OK"
+                    f"Health check recovered: pm=OK, oe=OK, rebate=OK, "
+                    f"pm_balance={self._pm_balance:.2f}, oe_balance={self._oe_balance:.2f}"
                 )
             else:
-                # 失败时显示详细信息
-                failure_details = []
-                if not pm_ok:
-                    failure_details.append("pm=FAIL")
-                if not oe_ok:
-                    failure_details.append("oe=FAIL")
-                if not rebate_ok:
-                    rebate_msg = f"rebate=FAIL"
-                    if rebate_error:
-                        rebate_msg += f" ({rebate_error})"
-                    failure_details.append(rebate_msg)
-
                 self._log.warning(
-                    f"Health check FAILED: {', '.join(failure_details)}"
+                    f"Health check FAILED: pm={'OK' if pm_ok else 'FAIL'}, "
+                    f"oe={'OK' if oe_ok else 'FAIL'}, "
+                    f"rebate={'OK' if rebate_ok else 'FAIL'}, "
+                    f"pm_balance={self._pm_balance:.2f}, oe_balance={self._oe_balance:.2f}"
                 )
 
         # --- 失败时尝试恢复认证（不重试、不置位） ---
