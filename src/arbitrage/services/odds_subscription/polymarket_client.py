@@ -458,17 +458,29 @@ class PolymarketOddsClient:
                 await self._connect_websocket()
 
                 # 接收消息循环
+                # 接收消息计数（用于诊断）
+                message_count = 0
                 async for message in self._ws:
                     if not self._running:
                         break
 
+                    message_count += 1
                     try:
                         data = json.loads(message)
+                        # 每10条消息记录一次，避免日志过多
+                        if message_count % 10 == 1:
+                            msg_type = "list" if isinstance(data, list) else data.get('event_type', 'dict')
+                            self._log.info(
+                                f"Market Channel messages received: {message_count}, "
+                                f"latest type: {msg_type}"
+                            )
                         await self._handle_message(data)
                     except json.JSONDecodeError:
                         self._log.warning(f"Invalid JSON message: {message[:100]}")
                     except Exception as e:
                         self._log.error(f"Error handling message: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             except websockets.exceptions.ConnectionClosed as e:
                 self._log.warning(f"WebSocket connection closed: {e}")
@@ -939,6 +951,17 @@ class PolymarketOddsClient:
 
         从 _subscribed_tokens 收集唯一 condition_id 列表，
         发送订阅消息以接收对应 market 的 order/trade 事件。
+
+        订阅消息格式（参考: https://docs.polymarket.com/developers/CLOB/websocket/user-channel）:
+        {
+          "auth": {
+            "apiKey": "your-api-key",
+            "secret": "your-api-secret",
+            "passphrase": "your-passphrase"
+          },
+          "markets": ["condition_id"],
+          "type": "user"
+        }
         """
         if not self._user_ws:
             return
@@ -954,6 +977,15 @@ class PolymarketOddsClient:
             self._log.info("No condition_ids to subscribe for User Channel")
             return
 
+        # 验证凭证
+        if not self.config.polymarket_api_secret or not self.config.polymarket_passphrase:
+            self._log.error(
+                f"User Channel subscription requires valid credentials: "
+                f"secret={'SET' if self.config.polymarket_api_secret else 'MISSING'}, "
+                f"passphrase={'SET' if self.config.polymarket_passphrase else 'MISSING'}"
+            )
+            return
+
         subscribe_msg = {
             "auth": {
                 "apiKey": self.config.polymarket_api_key,
@@ -967,10 +999,10 @@ class PolymarketOddsClient:
         try:
             msg_json = json.dumps(subscribe_msg)
             self._log.info(
-                f"Sending user channel subscription: markets={list(condition_ids)}, "
-                f"apiKey={self.config.polymarket_api_key[:8]}..., "
-                f"secret={'set' if self.config.polymarket_api_secret else 'EMPTY'}, "
-                f"passphrase={'set' if self.config.polymarket_passphrase else 'EMPTY'}"
+                f"Sending user channel subscription: markets={list(condition_ids)[:3]}{'...' if len(condition_ids) > 3 else ''}, "
+                f"apiKey={self.config.polymarket_api_key[:8] if self.config.polymarket_api_key else 'NONE'}..., "
+                f"secret_len={len(self.config.polymarket_api_secret) if self.config.polymarket_api_secret else 0}, "
+                f"passphrase_len={len(self.config.polymarket_passphrase) if self.config.polymarket_passphrase else 0}"
             )
             await self._user_ws.send(msg_json)
             self._log.info(
@@ -1433,14 +1465,36 @@ class PolymarketOddsClient:
         async with self._ws_lock:
             # 记录订阅
             token_ids = []
+            new_count = 0
             for token_info in tokens:
                 token_id = token_info["token_id"]
+                if token_id not in self._subscribed_tokens:
+                    new_count += 1
                 self._subscribed_tokens[token_id] = token_info
                 token_ids.append(token_id)
 
-            self._log.info(f"Total subscribed tokens now: {len(self._subscribed_tokens)}")
+            self._log.info(
+                f"Total subscribed tokens: {len(self._subscribed_tokens)} "
+                f"(new: {new_count}, resubscribe: {len(token_ids) - new_count})"
+            )
 
-            # 发送订阅
+            # 如果是重新订阅（解决 stale 问题），先重连 WebSocket
+            if new_count == 0 and len(token_ids) > 0:
+                self._log.info("Resubscribing to resolve stale data - reconnecting WebSocket")
+                # 关闭现有连接
+                if self._ws:
+                    try:
+                        await self._ws.close()
+                    except Exception as e:
+                        self._log.warning(f"Error closing WebSocket: {e}")
+                    self._ws = None
+
+                # 重连会在 _run_websocket 循环中自动完成
+                # 新订阅会在连接成功后发送
+                self._pending_subscribe.extend(token_ids)
+                return
+
+            # 首次订阅：直接发送
             await self._send_subscribe(token_ids)
 
             # 启动 WebSocket（如果还未启动）
@@ -1449,8 +1503,14 @@ class PolymarketOddsClient:
                 self._ws_task = asyncio.create_task(self._run_websocket())
 
             # User Channel 已连接时，重新发送订阅消息以包含新增的 condition_id
+            # 暂时禁用：测试 User Channel 是否需要显式订阅
+            # if self._user_ws:
+            #     await self._subscribe_user_channel()
             if self._user_ws:
-                await self._subscribe_user_channel()
+                self._log.info(
+                    "User Channel connected - waiting for automatic order/trade pushes "
+                    "(subscription disabled for testing)"
+                )
 
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
 

@@ -862,8 +862,13 @@ class RiskService:
             return 0.0
 
         try:
-            active_orders = self._odds_service._polymarket_client.get_active_orders()
-            total = sum(float(order.get("size", 0)) for order in active_orders)
+            active_orders = self._odds_service._polymarket_client.get_current_orders()
+            # 活跃订单金额 = 原始金额 - 已成交金额
+            total = sum(
+                (order.original_size - order.size_matched)
+                for order in active_orders
+                if order.status == "LIVE"  # 只统计活跃订单
+            )
             return total
         except Exception as e:
             self._log.warning(f"Failed to get Polymarket active orders: {e}")
@@ -876,7 +881,8 @@ class RiskService:
 
         try:
             active_orders = self._odds_service._orbitexch_client.get_active_orders()
-            total = sum(float(order.get("sizePlaced", 0)) for order in active_orders)
+            # 统计未成交金额（sizeRemaining），不是下单金额（sizePlaced）
+            total = sum(float(order.get("sizeRemaining", 0)) for order in active_orders)
             return total
         except Exception as e:
             self._log.warning(f"Failed to get OrbitExch active orders: {e}")
