@@ -1895,12 +1895,12 @@ class OrbitExchOddsClient:
             except Exception:
                 pass
 
-        # 刷新页面
+        # 先设置 CDP 拦截（必须在 reload 之前，否则会错过 WebSocket 创建事件）
+        await self._setup_websocket_interception(page, page_key)
+
+        # 再刷新页面（reload 时创建的 WebSocket 会被 CDP 捕获）
         await page.reload(wait_until="networkidle")
         await asyncio.sleep(2)
-
-        # 重新设置 CDP 拦截
-        await self._setup_websocket_interception(page, page_key)
 
         # 重新设置可见性欺骗
         await self._setup_visibility_spoof(page)
