@@ -229,14 +229,10 @@ class StrategyService:
             ctx.orbitexch_odds = self._odds_cache[pair_id].get("orbitexch", {})
 
         # 赔率更新只触发赔率相关信号计算
-        opportunity_published = False
         if pair_id in self._match_contexts:
-            opportunity_published = self._evaluate_match(
-                pair_id, triggered_signals=self._odds_signals
-            )
+            self._evaluate_match(pair_id, triggered_signals=self._odds_signals)
         else:
             self._log.debug(f"Pair {pair_id} not in match_contexts, skipping evaluation")
-
 
     # =========================================================================
     # 策略评估
@@ -249,6 +245,11 @@ class StrategyService:
         Args:
             pair_id: 比赛 ID
         """
+        # 检查 pair 是否被其他服务锁定（防竞态：消息已在队列中时 pair 被锁定）
+        if self._odds_service and self._odds_service._is_pair_active(pair_id):
+            self._log.debug(f"Pair {pair_id} is locked, skipping evaluation")
+            return False
+
         # 获取比赛上下文
         context = self._match_contexts.get(pair_id)
         if not context:
