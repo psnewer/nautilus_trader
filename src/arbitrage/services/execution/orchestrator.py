@@ -898,7 +898,7 @@ class ExecutionOrchestrator:
 
                 elif operation.venue == OperationVenue.ORBITEXCH:
                     if self._tracker._orbitexch_client and operation.market_id:
-                        bets = await self._tracker._orbitexch_client.get_current_bets(
+                        bets = self._tracker._orbitexch_client.get_current_bets(
                             operation.market_id
                         )
                         # 时间戳过滤 + selectionId + side 匹配方向
