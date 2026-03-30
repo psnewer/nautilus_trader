@@ -261,6 +261,10 @@ class ExecutionService:
         if order.venue == Venue.POLYMARKET:
             order.order_type = OrderType.FOK
             order.metadata["market_order"] = True
+            if order.side == OrderSide.BUY:
+                order.price = 0.99
+            else:
+                order.price = 0.01
         elif order.venue == Venue.ORBITEXCH:
             order.order_type = OrderType.FOK
             if order.side in (OrderSide.BUY, OrderSide.BACK):
