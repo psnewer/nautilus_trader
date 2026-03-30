@@ -11,8 +11,6 @@ from typing import Any
 
 from .config import RiskConfig
 from .position import PositionManager, MatchPosition
-from .messages import WayRebateMessage
-from .topics import way_rebate_topic
 from src.arbitrage.services.execution.messages import SessionCompleteMessage
 from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTERN
 from src.arbitrage.services.execution.cleanup import PostSessionCleanup
@@ -396,7 +394,6 @@ class RiskService:
             return
 
         pair_id = msg.pair_id
-        self._publish_pair_activity(pair_id, True, "risk")
 
         # 调度异步任务：cleanup → 全量刷新 → 更新所有 way_rebate
         try:
@@ -411,27 +408,38 @@ class RiskService:
         1. 执行 cleanup（merge & claim）
         2. 全量刷新 odds_subscription 内存中的持仓和活跃订单
         3. 从 odds_subscription 读取全量数据，更新所有 pair 的 way_rebate
+
+        使用 try-finally 确保无论成功失败都解锁 pair。
         """
-        # 1. Cleanup (merge & claim)
-        if self._cleanup and self._odds_service:
-            try:
-                polymarket_client = self._odds_service.get_polymarket_client()
-                if polymarket_client:
-                    cleanup_result = await self._cleanup.execute_global(polymarket_client)
-                    self._log.info(f"Post-session cleanup: {cleanup_result.summary}")
-            except Exception as e:
-                self._log.warning(f"Post-session cleanup error: {e}")
+        try:
+            # 锁定 pair
+            self._publish_pair_activity(trigger_pair_id, True, "risk")
 
-        # 2. 等待 Data API 索引更新后，全量刷新持仓和活跃订单
-        await asyncio.sleep(5)
-        if self._odds_service:
-            try:
-                await self._odds_service.refresh_all_positions_and_orders()
-            except Exception as e:
-                self._log.warning(f"Full refresh error: {e}")
+            # 1. Cleanup (merge & claim)
+            if self._cleanup and self._odds_service:
+                try:
+                    polymarket_client = self._odds_service.get_polymarket_client()
+                    if polymarket_client:
+                        cleanup_result = await self._cleanup.execute_global(polymarket_client)
+                        self._log.info(f"Post-session cleanup: {cleanup_result.summary}")
+                except Exception as e:
+                    self._log.warning(f"Post-session cleanup error: {e}")
 
-        # 3. 从 odds_subscription 读取全量数据，更新所有 pair 的 way_rebate
-        self._refresh_all_way_rebates()
+            # 2. 等待 Data API 索引更新后，全量刷新持仓和活跃订单
+            await asyncio.sleep(5)
+            if self._odds_service:
+                try:
+                    await self._odds_service.refresh_all_positions_and_orders()
+                except Exception as e:
+                    self._log.warning(f"Full refresh error: {e}")
+
+            # 3. 从 odds_subscription 读取全量数据，更新所有 pair 的 way_rebate
+            self._refresh_all_way_rebates()
+
+        finally:
+            # 确保解锁 pair（无论成功失败）
+            self._publish_pair_activity(trigger_pair_id, False, "risk")
+            self._log.info(f"Post-session refresh completed for {trigger_pair_id}, pair unlocked")
 
     def _refresh_all_way_rebates(self) -> None:
         """
@@ -519,10 +527,6 @@ class RiskService:
         # 原子替换
         self._position_manager = new_manager
 
-        # 发布所有 pair 的 way_rebate
-        for position in self._position_manager.get_all_positions():
-            self._publish_way_rebate(position.pair_id)
-
         all_positions = self._position_manager.get_all_positions()
         for position in all_positions:
             wr = self._position_manager.get_way_rebate(position.pair_id)
@@ -545,26 +549,6 @@ class RiskService:
         )
         topic = pair_activity_topic(pair_id)
         self._msgbus.publish(topic, msg)
-
-    def _publish_way_rebate(self, pair_id: str) -> None:
-        """发布指定 pair 的 way_rebate 到消息总线"""
-        if not self._msgbus:
-            return
-
-        way_rebate = self._position_manager.get_way_rebate(pair_id)
-        position = self._position_manager.get_position(pair_id)
-        way_rebate_by_venue = position.calculate_way_rebate_by_venue() if position else {}
-        min_rebate = min(way_rebate.values()) if way_rebate else None
-
-        msg = WayRebateMessage(
-            pair_id=pair_id,
-            way_rebate=way_rebate,
-            way_rebate_by_venue=way_rebate_by_venue,
-            min_way_rebate=min_rebate,
-        )
-        topic = way_rebate_topic(pair_id)
-        self._msgbus.publish(topic, msg)
-        self._log.debug(f"Published way_rebate to {topic}: {way_rebate}")
 
     # =========================================================================
     # 历史持仓加载
@@ -613,7 +597,7 @@ class RiskService:
             f"Loaded historical positions: Polymarket={pm_count}, OrbitExch={oe_count}"
         )
 
-        # 记录各比赛的 way_rebate 并发布到消息总线
+        # 记录各比赛的 way_rebate
         for position in self._position_manager.get_all_positions():
             way_rebate = position.calculate_way_rebate()
             if way_rebate:
@@ -621,7 +605,6 @@ class RiskService:
                     f"way_rebate for {position.pair_id}: {way_rebate}, "
                     f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
                 )
-                self._publish_way_rebate(position.pair_id)
 
         return {"polymarket": pm_count, "orbitexch": oe_count}
 

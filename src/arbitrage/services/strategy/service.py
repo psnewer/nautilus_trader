@@ -21,10 +21,6 @@ from src.arbitrage.services.odds_subscription.topics import (
 )
 from src.arbitrage.services.strategy.messages import OpportunityMessage
 from src.arbitrage.services.strategy.topics import opportunity_topic
-from src.arbitrage.services.risk.messages import WayRebateMessage
-from src.arbitrage.services.risk.topics import WAY_REBATE_TOPIC_PATTERN
-from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
-from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 
 if TYPE_CHECKING:
     from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
@@ -78,10 +74,6 @@ class StrategyService:
         self._opportunities: list[dict[str, Any]] = []
         self._max_opportunities = 100
 
-        # way_rebate 缓存（由 RiskService 推送更新）
-        self._way_rebate_cache: dict[str, dict[str, float]] = {}  # pair_id -> {outcome: rebate_rate}
-        self._way_rebate_by_venue_cache: dict[str, dict[str, dict[str, float]]] = {}  # pair_id -> {venue: {outcome: rate}}
-
         # 信号分类
         self._odds_signals = {"rebate", "mean_rebate", "multi-way"}
         self._status_signals = {"live", "pre-match"}
@@ -120,7 +112,6 @@ class StrategyService:
             return
         self._msgbus.subscribe(ODDS_TOPIC_PATTERN, self._on_odds_message)
         self._msgbus.subscribe(MATCH_STATUS_TOPIC_PATTERN, self._on_match_status_message)
-        self._msgbus.subscribe(WAY_REBATE_TOPIC_PATTERN, self._on_way_rebate_message)
 
     def _on_odds_message(self, msg: Any) -> None:
         """处理赔率更新消息"""
@@ -141,29 +132,6 @@ class StrategyService:
             pair_id = msg.get("pair_id", "")
             if pair_id and "is_live" in msg:
                 self.update_match_status(pair_id, bool(msg.get("is_live")))
-
-    def _on_way_rebate_message(self, msg: Any) -> None:
-        """处理 way_rebate 推送消息（由 RiskService 发布）"""
-        if isinstance(msg, WayRebateMessage):
-            self._way_rebate_cache[msg.pair_id] = msg.way_rebate
-            self._way_rebate_by_venue_cache[msg.pair_id] = msg.way_rebate_by_venue
-            self._log.debug(
-                f"Way rebate cache updated for {msg.pair_id}: {msg.way_rebate}"
-            )
-            self._publish_pair_activity(msg.pair_id, False, "strategy")
-
-    def _publish_pair_activity(self, pair_id: str, is_active: bool, source: str) -> None:
-        """发布 pair 活跃状态消息"""
-        if not self._msgbus:
-            return
-        msg = PairActivityMessage(
-            pair_id=pair_id,
-            is_active=is_active,
-            source=source,
-        )
-        topic = pair_activity_topic(pair_id)
-        self._msgbus.publish(topic, msg)
-        self._log.info(f"Pair activity: {pair_id} {'LOCKED' if is_active else 'UNLOCKED'} (source={source})")
 
     def set_risk_service(self, risk_service) -> None:
         """设置风控服务引用"""
@@ -245,8 +213,6 @@ class StrategyService:
         if not self._config.enabled:
             return
 
-        self._publish_pair_activity(pair_id, True, "strategy")
-
         # 更新赔率缓存
         if pair_id not in self._odds_cache:
             self._odds_cache[pair_id] = {"polymarket": {}, "orbitexch": {}}
@@ -271,9 +237,6 @@ class StrategyService:
         else:
             self._log.debug(f"Pair {pair_id} not in match_contexts, skipping evaluation")
 
-        if not opportunity_published:
-            self._log.info(f"Opportunity not published for {pair_id}, unlocking pair")
-            self._publish_pair_activity(pair_id, False, "strategy")
 
     # =========================================================================
     # 策略评估
@@ -300,9 +263,18 @@ class StrategyService:
         # 清空上一次的套利方向
         context.clear_directions()
 
-        # 从缓存读取 way_rebate（由 RiskService 通过 MessageBus 推送）
-        context.way_rebate = self._way_rebate_cache.get(pair_id, {})
-        context.way_rebate_by_venue = self._way_rebate_by_venue_cache.get(pair_id, {})
+        # 从 RiskService 实时查询 way_rebate
+        if self._risk_service:
+            try:
+                context.way_rebate = self._risk_service.get_way_rebate(pair_id)
+                context.way_rebate_by_venue = self._risk_service.get_way_rebate_by_venue(pair_id)
+            except Exception as e:
+                self._log.warning(f"Failed to get way_rebate for {pair_id}: {e}")
+                context.way_rebate = {}
+                context.way_rebate_by_venue = {}
+        else:
+            context.way_rebate = {}
+            context.way_rebate_by_venue = {}
 
         # 获取该比赛应使用的策略列表
         strategies = self._config.get_strategies_for_match(
@@ -583,7 +555,7 @@ class StrategyService:
             if not risk_result.allowed:
                 self._log.warning(
                     f"Opportunity blocked by risk control for {pair_id}: {risk_result.reason} "
-                    f"(opportunity will not be published, pair will be unlocked)"
+                    f"(skipped)"
                 )
                 return False
 
@@ -608,7 +580,7 @@ class StrategyService:
         if not best_direction:
             self._log.info(
                 f"No arbitrage direction for {pair_id} "
-                f"(opportunity will not be published, pair will be unlocked)"
+                f"(skipped)"
             )
             return False
 
@@ -617,7 +589,7 @@ class StrategyService:
         if adjusted_share is None:
             self._log.warning(
                 f"Opportunity rejected: insufficient market size for {pair_id} "
-                f"(opportunity will not be published, pair will be unlocked)"
+                f"(skipped)"
             )
             return False
 
@@ -631,7 +603,7 @@ class StrategyService:
             if not balance_check.allowed:
                 self._log.warning(
                     f"Opportunity blocked by balance check for {pair_id}: {balance_check.reason} "
-                    f"(opportunity will not be published, pair will be unlocked)"
+                    f"(skipped)"
                 )
                 return False
 

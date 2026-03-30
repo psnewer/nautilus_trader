@@ -882,6 +882,8 @@ class ExecutionService:
         从机会信息创建订单并执行。
         支持 2-way（2 legs）和 3-way（3 legs）套利。
 
+        所有验证在锁定前完成，使用 try-finally 确保解锁。
+
         Args:
             opportunity: 机会数据，包含 best_direction 等
         """
@@ -889,10 +891,10 @@ class ExecutionService:
         pair_id = opportunity.get("pair_id", "")
         best_direction = opportunity.get("best_direction")
 
+        # ==== 所有验证在锁定前完成 ====
+
         if not best_direction:
             self._log.debug(f"Opportunity {opportunity_id}: no best_direction")
-            if pair_id:
-                self._publish_pair_activity(pair_id, False, "execution")
             return
 
         # 检查是否有活跃的执行会话（每个 pair 同时只能有一个）
@@ -903,14 +905,6 @@ class ExecutionService:
                 f"{active_session.session_id if active_session else 'unknown'}, skipping"
             )
             return
-
-        if pair_id:
-            self._publish_pair_activity(pair_id, True, "execution")
-
-        self._log.info(
-            f"Processing opportunity {opportunity_id}: "
-            f"pair={pair_id}, rebate_rate={best_direction.get('rebate_rate')}"
-        )
 
         legs = best_direction.get("legs", [])
         if len(legs) < 2:
@@ -928,13 +922,32 @@ class ExecutionService:
             self._log.warning(f"Opportunity {opportunity_id}: invalid target shares {target_shares}")
             return
 
-        await self.execute_with_session(
-            pair_id=pair_id,
-            opportunity_id=opportunity_id,
-            legs=legs,
-            target_shares=target_shares,
-            probabilities=probabilities,
-        )
+        # ==== 所有验证通过，锁定 pair 并执行 ====
+
+        if pair_id:
+            self._publish_pair_activity(pair_id, True, "execution")
+
+        try:
+            self._log.info(
+                f"Processing opportunity {opportunity_id}: "
+                f"pair={pair_id}, rebate_rate={best_direction.get('rebate_rate')}"
+            )
+
+            await self.execute_with_session(
+                pair_id=pair_id,
+                opportunity_id=opportunity_id,
+                legs=legs,
+                target_shares=target_shares,
+                probabilities=probabilities,
+            )
+
+        except Exception as e:
+            self._log.error(f"Opportunity {opportunity_id} execution error: {e}")
+
+        finally:
+            if pair_id:
+                self._publish_pair_activity(pair_id, False, "execution")
+                self._log.info(f"Pair {pair_id} unlocked (source=execution)")
 
     def _build_session_targets(
         self,
