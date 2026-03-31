@@ -135,6 +135,7 @@ class ExecutionService:
             order_info_getter=self._get_order_info_wrapper,
             probabilities_getter=self._get_probabilities_wrapper,
             orbitexch_modify_and_take=self._orbitexch_modify_and_take_wrapper,
+            fx_getter=self._get_fx,
             logger=logging.getLogger("ExecutionOrchestrator"),
         )
         self._log.info("Execution orchestrator initialized")
@@ -261,10 +262,6 @@ class ExecutionService:
         if order.venue == Venue.POLYMARKET:
             order.order_type = OrderType.FOK
             order.metadata["market_order"] = True
-            if order.side == OrderSide.BUY:
-                order.price = 0.99
-            else:
-                order.price = 0.01
         elif order.venue == Venue.ORBITEXCH:
             order.order_type = OrderType.FOK
             if order.side in (OrderSide.BUY, OrderSide.BACK):
@@ -842,6 +839,12 @@ class ExecutionService:
         """
         self._arbitrage_config = arbitrage_config
         self._log.info("Arbitrage config set")
+
+    def _get_fx(self) -> float:
+        """获取 GBP/USD 汇率"""
+        if self._arbitrage_config:
+            return self._arbitrage_config.fx
+        return 1.0
 
     def set_msgbus(self, msgbus) -> None:
         """设置消息总线并订阅主题"""

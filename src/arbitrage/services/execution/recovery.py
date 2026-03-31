@@ -35,18 +35,12 @@ class RecoveryCalculator:
     计算平均返水策略下的最小补救目标。
 
     原理：
-    要实现平均返水（无论哪个结果盈亏一致），必须按概率比例下注。
-    如果概率为 (p1, p2, p3)，下注 (s1, s2, s3)，则需满足：
-        s1/p1 = s2/p2 = s3/p3 = base
+    每个 share 在对应结果发生时赔付 $1（Polymarket）或等值金额（OrbitExch 已转 USD）。
+    要实现平均返水（无论哪个结果盈亏一致），各方向的 share 数量必须相等。
 
     当部分成交后，已成交 share 为 (f1, f2, f3)，
-    为了补救，需要找到最小的 base 使得：
-        base >= max(f1/p1, f2/p2, f3/p3)
-
-    然后目标变为：
-        target_i = base * p_i
-
-    如果 target_i < f_i，说明已经超过目标，不需要额外下注。
+    base = max(f1, f2, f3)，即成交量最大的方向。
+    所有方向的目标 share = base，额外下注 = base - filled。
     """
 
     def __init__(self, logger: logging.Logger | None = None):
@@ -60,9 +54,12 @@ class RecoveryCalculator:
         """
         计算补救目标
 
+        平均返水原理：每个 share 赢了赔付 $1，要实现无论哪个结果盈亏一致，
+        各方向的 share 数量必须相等。因此 base = max(filled)，所有方向目标相同。
+
         Args:
             probabilities: 当前实时概率 (0-1)
-            filled: 已成交 share
+            filled: 已成交 share（统一为 USD share）
 
         Returns:
             补救计算结果
@@ -78,37 +75,24 @@ class RecoveryCalculator:
                 limiting_outcome="",
             )
 
-        # 计算每个方向的 filled/probability 比例
-        ratios = {}
-        for outcome in outcomes:
-            prob = probabilities[outcome]
-            fill = filled[outcome]
-            if prob > 0:
-                ratios[outcome] = fill / prob
-            else:
-                ratios[outcome] = 0
-
-        # 找到最大比例（限制因素）
-        limiting_outcome = max(ratios, key=lambda x: ratios[x])
-        base_value = ratios[limiting_outcome]
+        # 找到成交量最大的方向作为 base
+        limiting_outcome = max(outcomes, key=lambda x: filled[x])
+        base_value = filled[limiting_outcome]
 
         self._log.info(
-            f"Recovery calculation: ratios={ratios}, "
+            f"Recovery calculation: filled={filled.to_dict()}, "
             f"limiting={limiting_outcome}, base={base_value:.4f}"
         )
 
-        # 计算目标 share
+        # 计算目标 share：所有方向目标相同 = base
         target = OutcomeShares()
         additional = OutcomeShares()
 
         for outcome in outcomes:
-            prob = probabilities[outcome]
-            target_share = base_value * prob
             fill = filled[outcome]
-
-            target[outcome] = target_share
+            target[outcome] = base_value
             # 需要额外下注的量（不能为负）
-            additional[outcome] = max(0, target_share - fill)
+            additional[outcome] = max(0, base_value - fill)
 
         self._log.info(
             f"Recovery result: target={target.to_dict()}, "
@@ -155,22 +139,20 @@ class RecoveryCalculator:
         pnls = []
 
         for outcome in outcomes:
-            prob = probabilities[outcome]
             share = shares[outcome]
 
-            if prob > 0:
-                # 如果该结果发生，赢得 share/prob
-                win = share / prob
-                # 盈亏 = 赢得 - 总成本
-                pnl = win - total_cost
-                results[outcome] = {
-                    "win": round(win, 4),
-                    "cost": round(total_cost, 4),
-                    "pnl": round(pnl, 4),
-                }
-                pnls.append(pnl)
+            # 如果该结果发生，赢得 share（每个 share 赔付 $1）
+            win = share
+            # 盈亏 = 赢得 - 总成本（总成本 = 所有方向 share × 对应价格 的总和）
+            pnl = win - total_cost
+            results[outcome] = {
+                "win": round(win, 4),
+                "cost": round(total_cost, 4),
+                "pnl": round(pnl, 4),
+            }
+            pnls.append(pnl)
 
-        # 检查所有盈亏是否相等
+        # 检查所有盈亏是否相等（share 相等则 pnl 一定相等）
         is_mean_rebate = len(set(round(p, 4) for p in pnls)) <= 1
 
         return {

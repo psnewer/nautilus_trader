@@ -41,6 +41,7 @@ class ExecutionOrchestrator:
         order_info_getter: Callable,
         probabilities_getter: Callable,
         orbitexch_modify_and_take: Callable | None = None,
+        fx_getter: Callable | None = None,
         logger: logging.Logger | None = None,
     ):
         """
@@ -51,6 +52,7 @@ class ExecutionOrchestrator:
             order_info_getter: 订单信息获取函数 (pair_id, market_type) -> order_info
             probabilities_getter: 实时概率获取函数 (pair_id) -> {outcome: probability}
             orbitexch_modify_and_take: OrbitExch 修改并 Take 函数 async (order, new_size) -> ExecutionResult
+            fx_getter: 汇率获取函数 () -> float (GBP/USD)
         """
         self._config = config
         self._execute_order = order_executor
@@ -58,11 +60,12 @@ class ExecutionOrchestrator:
         self._get_order_info = order_info_getter
         self._get_probabilities = probabilities_getter
         self._orbitexch_modify_and_take = orbitexch_modify_and_take
+        self._get_fx = fx_getter
         self._polymarket_client = None  # 由 set_polymarket_client 设置
         self._log = logger or logging.getLogger(self.__class__.__name__)
 
         # 组件
-        self._planner = ExecutionPlanner(logger=self._log)
+        self._planner = ExecutionPlanner(fx_getter=self._get_fx, logger=self._log)
         self._tracker = OrderTracker(
             timeout=config.tracking_timeout_sec,
             logger=self._log,
@@ -745,25 +748,26 @@ class ExecutionOrchestrator:
             all_results: 全 session 生命周期的所有追踪结果
         """
         filled = {"home": 0.0, "draw": 0.0, "away": 0.0}
+        fx = self._get_fx() if self._get_fx else 1.0
 
         for result in all_results:
             market_type = result.operation.market_type
             if market_type in filled:
-                # 根据平台类型转换 size_matched 为 share
+                # 根据平台类型转换 size_matched 为 USD share
                 if result.operation.venue == OperationVenue.POLYMARKET:
-                    # Polymarket: size_matched 就是 share
+                    # Polymarket: size_matched 就是 USD share
                     filled[market_type] += result.size_matched
                 elif result.operation.venue == OperationVenue.ORBITEXCH:
-                    # OrbitExch: share = size_matched * odds
+                    # OrbitExch: size_matched (GBP stake) * odds = GBP share, * fx = USD share
                     odds = result.operation.price
                     if odds > 0:
-                        filled[market_type] += result.size_matched * odds
+                        filled[market_type] += result.size_matched * odds * fx
                     else:
-                        filled[market_type] += result.size_matched
+                        filled[market_type] += result.size_matched * fx
 
         session.update_filled(filled)
         self._log.info(
-            f"Session {session.session_id}: filled updated to {filled}"
+            f"Session {session.session_id}: filled updated to {filled} (fx={fx})"
         )
 
     # =========================================================================
