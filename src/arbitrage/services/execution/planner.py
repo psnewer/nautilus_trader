@@ -86,9 +86,10 @@ class ExecutionPlanner:
     3. 分离撤单和下单操作
     """
 
-    def __init__(self, logger: logging.Logger | None = None):
+    def __init__(self, fx_getter: "Callable | None" = None, logger: logging.Logger | None = None):
         self._log = logger or logging.getLogger(self.__class__.__name__)
         self._recovery_calculator = RecoveryCalculator(logger=self._log)
+        self._get_fx = fx_getter
 
     def plan_initial(
         self,
@@ -220,8 +221,10 @@ class ExecutionPlanner:
             venue_str = session.outcome_venues.get(outcome, "polymarket")
 
             if venue_str == "orbitexch":
-                # OrbitExch: size = share * probability (= share / odds)
-                size = additional * prob if prob > 0 else 0
+                # OrbitExch: additional 是 USD share, 需要转为 GBP stake
+                # GBP stake = USD share * prob / fx
+                fx = self._get_fx() if self._get_fx else 1.0
+                size = additional * prob / fx if prob > 0 else 0
                 price = 1 / prob if prob > 0 else 0  # 转为赔率
 
                 if size <= 0:

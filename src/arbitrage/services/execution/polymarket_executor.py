@@ -153,14 +153,16 @@ class PolymarketExecutor:
             side = "BUY" if order.side in (OrderSide.BUY, OrderSide.BACK) else "SELL"
 
             if order.metadata.get("market_order"):
-                # 市价单：BUY 用金额，SELL 用份额，price 作为最差成交价限制
+                # 市价单：BUY 用金额（size × 原始概率），SELL 用份额
+                # price 仅作为防滑点阈值，不参与 amount 计算
                 amount = order.size
                 if side == "BUY":
                     amount = order.size * order.price
+                slippage_price = 0.99 if side == "BUY" else 0.01
 
                 self._log.info(
                     f"Placing Polymarket market order: token={order.token_id[:20]}..., "
-                    f"side={side}, amount={amount:.4f}, price={order.price}"
+                    f"side={side}, amount={amount:.4f}, slippage_price={slippage_price}"
                 )
 
                 # 创建并签名市价订单（使用线程池避免阻塞 event loop）
@@ -168,7 +170,7 @@ class PolymarketExecutor:
                     token_id=order.token_id,
                     amount=amount,
                     side=side,
-                    price=order.price,
+                    price=slippage_price,
                 )
                 signed_order = await asyncio.to_thread(
                     self._client.create_market_order,
@@ -213,7 +215,7 @@ class PolymarketExecutor:
 
                 self._log.info(
                     f"Order placed: venue_order_id={order.venue_order_id}, "
-                    f"status={order.status.value}"
+                    f"status={order.status.value}, response_status={response.get('status')}"
                 )
 
                 return ExecutionResult(
