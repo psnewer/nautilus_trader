@@ -208,8 +208,9 @@ class PolymarketExecutor:
                 order.venue_order_id = response.get("orderID", "")
                 order.status = OrderStatus.LIVE
 
-                # 检查是否立即成交
-                if response.get("status") == "MATCHED":
+                # 检查是否成交（matched=立即成交, delayed=延迟匹配）
+                response_status = (response.get("status") or "").upper()
+                if response_status in ("MATCHED", "DELAYED"):
                     order.status = OrderStatus.FILLED
                     order.filled_size = order.size
 

@@ -936,6 +936,9 @@ class PolymarketOddsClient:
             )
             self._log.info("User Channel WebSocket connected")
 
+            # 连接成功后发送订阅消息
+            await self._subscribe_user_channel()
+
             # 连接成功后获取初始持仓
             # 活跃订单由 User Channel WS 推送填充，无需单独 REST 查询
             await self.fetch_positions()
@@ -1503,14 +1506,8 @@ class PolymarketOddsClient:
                 self._ws_task = asyncio.create_task(self._run_websocket())
 
             # User Channel 已连接时，重新发送订阅消息以包含新增的 condition_id
-            # 暂时禁用：测试 User Channel 是否需要显式订阅
-            # if self._user_ws:
-            #     await self._subscribe_user_channel()
             if self._user_ws:
-                self._log.info(
-                    "User Channel connected - waiting for automatic order/trade pushes "
-                    "(subscription disabled for testing)"
-                )
+                await self._subscribe_user_channel()
 
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
 
