@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "ATP Miami FL 2026"
+              "ATP Houston TX 2026"
             ]
           }
         ]
@@ -46,7 +46,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "atp": "ATP",
-      "ATP Miami FL 2026": "ATP"
+      "ATP Houston TX 2026": "ATP"
     },
     "competition_max_matches": {
       "English Premier League": 0,
