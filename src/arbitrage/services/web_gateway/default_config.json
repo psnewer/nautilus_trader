@@ -98,7 +98,7 @@
     "default_order_type": "GTC",
     "discount": 1.0,
     "take_off": 0.0,
-    "market_order_enabled": false,
+    "market_order_enabled": true,
     "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
     "max_failure_retries": 5,
