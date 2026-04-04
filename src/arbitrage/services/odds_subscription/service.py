@@ -97,6 +97,7 @@ class OddsSubscriptionService:
         # 设置回调
         self._polymarket_client.on_price_update(self._on_polymarket_update)
         self._orbitexch_client.on_price_update(self._on_orbitexch_update)
+        self._orbitexch_client.on_page_refresh(self._on_orbitexch_page_refresh)
         self._orbitexch_client.register_status_callback(self._on_match_status_update)
 
         # 设置仓位变化回调
@@ -325,6 +326,13 @@ class OddsSubscriptionService:
                 # 发布赔率更新
                 self._publish_odds_update(pair_id, "polymarket", odds_data)
                 break
+
+    def _on_orbitexch_page_refresh(self) -> None:
+        """OrbitExch 页面刷新回调：清除所有 OrbitExch 赔率缓存"""
+        for pair_id in list(self._latest_odds.keys()):
+            if "orbitexch" in self._latest_odds[pair_id]:
+                self._latest_odds[pair_id]["orbitexch"] = {}
+        self._log.info("Cleared OrbitExch odds cache due to page refresh")
 
     def _on_orbitexch_update(self, odds_data: dict) -> None:
         """

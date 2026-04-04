@@ -91,6 +91,7 @@ class OrbitExchOddsClient:
 
         # 回调函数
         self._price_update_callback: Callable[[dict], None] | None = None
+        self._page_refresh_callback: Callable[[], None] | None = None
         self._status_callbacks: list[Callable[[str, bool], None]] = []
 
         # 状态
@@ -1833,6 +1834,12 @@ class OrbitExchOddsClient:
         """
         self._price_update_callback = callback
 
+    def on_page_refresh(self, callback: Callable[[], None]) -> None:
+        """
+        设置页面刷新回调（用于清除上层缓存）
+        """
+        self._page_refresh_callback = callback
+
     # =========================================================================
     # 数据访问
     # =========================================================================
@@ -1894,6 +1901,14 @@ class OrbitExchOddsClient:
             page: Playwright Page 对象
         """
         self._log.info(f"Refreshing page {page_key}...")
+
+        # 清除 OrbitExch 赔率缓存
+        self._latest_odds.clear()
+        if self._page_refresh_callback:
+            try:
+                self._page_refresh_callback()
+            except Exception as e:
+                self._log.warning(f"Page refresh callback error: {e}")
 
         # 断开旧的 CDP 会话
         old_cdp = self._cdp_sessions.pop(page_key, None)
