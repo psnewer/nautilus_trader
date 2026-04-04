@@ -259,10 +259,12 @@ class OrderTracker:
             elapsed = time.time() - start_time
             remaining_time = self._timeout - elapsed
 
-        # 超时后，刷新数据并对比快照（仍有未完全成交的操作）
-        if not self._all_fully_filled():
-            self._log.info("Timeout reached, refreshing and comparing snapshots")
-            await self._refresh_and_diff()
+        # 超时后，无论是否已全部成交，都刷新数据确认成交情况
+        self._log.info(
+            f"Tracking ended (all_filled={self._all_fully_filled()}), "
+            f"refreshing to confirm"
+        )
+        await self._refresh_and_diff()
 
         return self._summarize_results()
 
@@ -290,34 +292,33 @@ class OrderTracker:
         """
         刷新数据并与操作前快照对比
 
-        1. Polymarket: 调 REST API 获取最新订单
+        1. Polymarket: fetch_open_orders + fetch_positions 确认成交
         2. OrbitExch: 刷新页面后读取缓存
         3. 对比前后差异，匹配到对应操作
         """
-        # 收集需要刷新的市场（包含未完全成交的操作，不仅限于 PENDING）
+        # 收集所有操作涉及的市场（不跳过已确认的，用于全面验证）
         poly_keys: dict[str, tuple[str, str]] = {}
         orbit_markets = set()
+        has_poly_ops = False
 
         for result in self._results.values():
-            # 跳过已失败或已完全成交的操作
             if result.status == TrackingStatus.FAILED:
-                continue
-            if result.status == TrackingStatus.CONFIRMED and result.size_remaining <= 0:
                 continue
             op = result.operation
             if op.venue == OperationVenue.POLYMARKET:
+                has_poly_ops = True
                 key, key_type, key_value = self._polymarket_snapshot_key(op)
                 if key:
                     poly_keys[key] = (key_type, key_value)
             elif op.venue == OperationVenue.ORBITEXCH and op.market_id:
                 orbit_markets.add(op.market_id)
 
-        # 刷新 Polymarket（调 REST API 获取最新订单）
+        # 刷新 Polymarket（fetch_open_orders + fetch_positions）
         poly_after: dict[str, dict[str, Any]] = {}
-        if poly_keys and self._polymarket_client:
+        if has_poly_ops and self._polymarket_client:
             try:
-                # fetch_open_orders 会更新内存缓存
                 await self._polymarket_client.fetch_open_orders()
+                await self._polymarket_client.fetch_positions()
                 for key, (key_type, key_value) in poly_keys.items():
                     if key_type == "condition":
                         orders = self._polymarket_client.get_current_orders(
@@ -329,7 +330,7 @@ class OrderTracker:
                         )
                     poly_after[key] = {o.order_id: o for o in orders}
             except Exception as e:
-                self._log.error(f"Failed to refresh Polymarket orders: {e}")
+                self._log.error(f"Failed to refresh Polymarket data: {e}")
 
         # 刷新 OrbitExch（刷新页面）
         orbit_after: dict[str, dict[str, dict]] = {}
@@ -358,9 +359,10 @@ class OrderTracker:
             after: 刷新后的订单状态 {condition_id: {order_id: order}}
         """
         for rkey, result in self._results.items():
-            # 跳过已失败或已完全成交的操作
+            # 跳过已失败的操作
             if result.status == TrackingStatus.FAILED:
                 continue
+            # 跳过已由 WS 确认全部成交的操作（不覆盖 WS 结果）
             if result.status == TrackingStatus.CONFIRMED and result.size_remaining <= 0:
                 continue
             op = result.operation

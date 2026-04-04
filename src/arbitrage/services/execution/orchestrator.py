@@ -226,6 +226,9 @@ class ExecutionOrchestrator:
         # 记录执行开始时间戳（毫秒），用于 recovery 刷新时过滤本 session 的订单
         session_start_ms = int(time.time() * 1000)
 
+        # 拍持仓快照（用于 filled = 当前持仓 - 快照）
+        position_snapshot = await self._take_position_snapshot(session, legs)
+
         # 从 legs 提取 outcome -> venue 映射，供 recovery 使用
         for leg in legs:
             mt = leg.get("market_type", "")
@@ -257,7 +260,7 @@ class ExecutionOrchestrator:
         )
 
         all_tracking_results.extend(tracking_result.results)
-        self._update_session_filled(session, all_tracking_results)
+        await self._update_session_filled(session, position_snapshot)
         session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
         if self._should_fail_for_tracking(session, operation_results, tracking_result):
             session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
@@ -515,7 +518,7 @@ class ExecutionOrchestrator:
             # 1. 刷新成交，检查上一轮规划是否全部成交
             # =============================================
             await self._refresh_tracking_results(all_tracking_results, session_start_ms)
-            self._update_session_filled(session, all_tracking_results)
+            await self._update_session_filled(session, position_snapshot)
             session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
 
             if self._is_plan_operations_filled(all_tracking_results, last_plan_operations):
@@ -579,7 +582,7 @@ class ExecutionOrchestrator:
             # =============================================
             old_filled = session.filled.to_dict()
             await self._refresh_tracking_results(all_tracking_results, session_start_ms)
-            self._update_session_filled(session, all_tracking_results)
+            await self._update_session_filled(session, position_snapshot)
 
             if session.filled.to_dict() != old_filled:
                 self._log.info(
@@ -626,7 +629,7 @@ class ExecutionOrchestrator:
 
             # 下单/修改轮：累加追踪结果
             all_tracking_results.extend(tracking_result.results)
-            self._update_session_filled(session, all_tracking_results)
+            await self._update_session_filled(session, position_snapshot)
 
             if self._is_plan_operations_filled(all_tracking_results, current_plan_operations):
                 self._log.info(
@@ -733,41 +736,142 @@ class ExecutionOrchestrator:
         self._log.warning(f"Session {session.session_id}: max failure retries reached")
         return True
 
-    def _update_session_filled(
+    async def _take_position_snapshot(
         self,
         session: ExecutionSession,
-        all_results: list[TrackingResult],
-    ) -> None:
+        legs: list[dict],
+    ) -> dict[str, float]:
         """
-        根据全部追踪结果更新会话已成交数量
-
-        从所有轮次的追踪结果中聚合计算总 filled。
+        拍持仓快照（session 开始前的各方向 USD share）
 
         Args:
             session: 执行会话
-            all_results: 全 session 生命周期的所有追踪结果
+            legs: 套利腿列表
+
+        Returns:
+            {market_type: USD share} 快照
         """
-        filled = {"home": 0.0, "draw": 0.0, "away": 0.0}
+        snapshot = {"home": 0.0, "draw": 0.0, "away": 0.0}
         fx = self._get_fx() if self._get_fx else 1.0
 
-        for result in all_results:
-            market_type = result.operation.market_type
-            if market_type in filled:
-                # 根据平台类型转换 size_matched 为 USD share
-                if result.operation.venue == OperationVenue.POLYMARKET:
-                    # Polymarket: size_matched 就是 USD share
-                    filled[market_type] += result.size_matched
-                elif result.operation.venue == OperationVenue.ORBITEXCH:
-                    # OrbitExch: size_matched (GBP stake) * odds = GBP share, * fx = USD share
-                    odds = result.operation.price
-                    if odds > 0:
-                        filled[market_type] += result.size_matched * odds * fx
-                    else:
-                        filled[market_type] += result.size_matched * fx
+        # Polymarket: 从 positions 获取
+        if self._tracker._polymarket_client:
+            try:
+                await self._tracker._polymarket_client.fetch_positions()
+                for leg in legs:
+                    market_type = leg.get("market_type", "")
+                    if leg.get("venue") == "polymarket" and market_type in snapshot:
+                        token_id = leg.get("token_id", "")
+                        if not token_id:
+                            order_info = self._get_order_info(session.pair_id, market_type) if self._get_order_info else None
+                            token_id = order_info.get("polymarket", {}).get("token_id", "") if order_info else ""
+                        if token_id and self._tracker._polymarket_client._positions:
+                            pos = self._tracker._polymarket_client._positions.get(token_id)
+                            if pos:
+                                snapshot[market_type] = pos.size
+            except Exception as e:
+                self._log.warning(f"Failed to snapshot Polymarket positions: {e}")
+
+        # OrbitExch: 从 current_bets 获取
+        if self._tracker._orbitexch_client:
+            try:
+                for leg in legs:
+                    market_type = leg.get("market_type", "")
+                    if leg.get("venue") == "orbitexch" and market_type in snapshot:
+                        market_id = leg.get("market_id", "")
+                        selection_id = leg.get("selection_id", "")
+                        if not market_id or not selection_id:
+                            order_info = self._get_order_info(session.pair_id, market_type) if self._get_order_info else None
+                            if order_info:
+                                market_id = order_info.get("orbitexch", {}).get("market_id", "")
+                                selection_id = order_info.get("orbitexch", {}).get("selection_id", "")
+                        if market_id:
+                            bets = self._tracker._orbitexch_client.get_current_bets(market_id)
+                            for bet in bets:
+                                if (str(bet.get("selectionId")) == selection_id
+                                        and bet.get("side", "").upper() == "BACK"):
+                                    # GBP stake * odds * fx = USD share
+                                    matched = float(bet.get("sizeMatched", 0))
+                                    odds = float(bet.get("price", 0))
+                                    if odds > 0:
+                                        snapshot[market_type] += matched * odds * fx
+                                    else:
+                                        snapshot[market_type] += matched * fx
+            except Exception as e:
+                self._log.warning(f"Failed to snapshot OrbitExch positions: {e}")
+
+        self._log.info(f"Session {session.session_id}: position snapshot={snapshot} (fx={fx})")
+        return snapshot
+
+    async def _update_session_filled(
+        self,
+        session: ExecutionSession,
+        position_snapshot: dict[str, float],
+    ) -> None:
+        """
+        基于持仓计算 filled：当前持仓 - 快照 = 本 session 成交量
+
+        每次调用都重新获取最新持仓，确保数据准确。
+
+        Args:
+            session: 执行会话
+            position_snapshot: session 开始前的持仓快照 {market_type: USD share}
+        """
+        current = {"home": 0.0, "draw": 0.0, "away": 0.0}
+        fx = self._get_fx() if self._get_fx else 1.0
+
+        # Polymarket: 获取最新持仓
+        if self._tracker._polymarket_client:
+            try:
+                await self._tracker._polymarket_client.fetch_positions()
+                positions = self._tracker._polymarket_client._positions or {}
+                for market_type in current:
+                    venue = session.outcome_venues.get(market_type, "")
+                    if venue == "polymarket":
+                        # 找到对应 token 的持仓
+                        for pos in positions.values():
+                            if pos.market_type == market_type:
+                                current[market_type] = pos.size
+                                break
+            except Exception as e:
+                self._log.warning(f"Failed to fetch Polymarket positions: {e}")
+
+        # OrbitExch: 获取最新 bets
+        if self._tracker._orbitexch_client:
+            try:
+                for market_type in current:
+                    venue = session.outcome_venues.get(market_type, "")
+                    if venue != "orbitexch":
+                        continue
+                    order_info = self._get_order_info(session.pair_id, market_type) if self._get_order_info else None
+                    if not order_info:
+                        continue
+                    market_id = order_info.get("orbitexch", {}).get("market_id", "")
+                    selection_id = order_info.get("orbitexch", {}).get("selection_id", "")
+                    if not market_id:
+                        continue
+                    bets = self._tracker._orbitexch_client.get_current_bets(market_id)
+                    for bet in bets:
+                        if (str(bet.get("selectionId")) == selection_id
+                                and bet.get("side", "").upper() == "BACK"):
+                            matched = float(bet.get("sizeMatched", 0))
+                            odds = float(bet.get("price", 0))
+                            if odds > 0:
+                                current[market_type] += matched * odds * fx
+                            else:
+                                current[market_type] += matched * fx
+            except Exception as e:
+                self._log.warning(f"Failed to fetch OrbitExch bets: {e}")
+
+        # filled = 当前持仓 - 快照
+        filled = {}
+        for market_type in current:
+            filled[market_type] = max(0, current[market_type] - position_snapshot.get(market_type, 0.0))
 
         session.update_filled(filled)
         self._log.info(
-            f"Session {session.session_id}: filled updated to {filled} (fx={fx})"
+            f"Session {session.session_id}: filled={filled}, "
+            f"current={current}, snapshot={position_snapshot} (fx={fx})"
         )
 
     # =========================================================================

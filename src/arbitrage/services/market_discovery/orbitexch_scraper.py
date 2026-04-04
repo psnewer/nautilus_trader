@@ -140,7 +140,7 @@ class OrbitExchScraper:
             await self.start_browser()
 
         self._log.info(f"Navigating to {self.BASE_URL}...")
-        await self._page.goto(self.BASE_URL, wait_until="networkidle")
+        await self._page.goto(self.BASE_URL, wait_until="networkidle", timeout=60000)
         await asyncio.sleep(2)  # 等待动态内容加载
 
     async def find_and_click_sport(self, sport_name: str) -> bool:
@@ -305,7 +305,7 @@ class OrbitExchScraper:
         self._log.info(f"Navigating to {url}...")
 
         try:
-            await self._page.goto(url, wait_until="networkidle")
+            await self._page.goto(url, wait_until="networkidle", timeout=60000)
             await asyncio.sleep(2)
             return True
         except Exception as e:
