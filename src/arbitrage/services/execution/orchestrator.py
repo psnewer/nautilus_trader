@@ -292,6 +292,7 @@ class ExecutionOrchestrator:
         initial_target = session.initial_target
         await self._recovery_loop(
             session, all_tracking_results, session_start_ms,
+            position_snapshot=position_snapshot,
             last_plan_target=initial_target,
             current_plan_target=initial_target,
             last_plan_operations=initial_plan_operations,
@@ -474,6 +475,7 @@ class ExecutionOrchestrator:
         session: ExecutionSession,
         all_tracking_results: list[TrackingResult],
         session_start_ms: int,
+        position_snapshot: dict[str, float],
         last_plan_target: OutcomeShares,
         current_plan_target: OutcomeShares,
         last_plan_operations: list[OrderOperation],
@@ -754,10 +756,9 @@ class ExecutionOrchestrator:
         snapshot = {"home": 0.0, "draw": 0.0, "away": 0.0}
         fx = self._get_fx() if self._get_fx else 1.0
 
-        # Polymarket: 从 positions 获取
+        # Polymarket: 从内存缓存的 positions 获取（无需 API 调用）
         if self._tracker._polymarket_client:
             try:
-                await self._tracker._polymarket_client.fetch_positions()
                 for leg in legs:
                     market_type = leg.get("market_type", "")
                     if leg.get("venue") == "polymarket" and market_type in snapshot:
