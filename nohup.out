@@ -1,425 +1,287 @@
 <frozen runpy>:128: RuntimeWarning: 'src.arbitrage.services.web_gateway.app' found in sys.modules after import of package 'src.arbitrage.services.web_gateway', but prior to execution of 'src.arbitrage.services.web_gateway.app'; this may result in unpredictable behaviour
-2026-04-04 15:30:11,320 - WebGatewayService - INFO - Starting Web Gateway at http://127.0.0.1:8080
-2026-04-04 15:30:11,363 - AppState - INFO - Discovery scheduler started
-2026-04-04 15:30:11,363 - AppState - INFO - Scheduler loop started: aligned to top of the hour
-2026-04-04 15:30:23,765 - AppState - INFO - Pipeline subscriptions set up
-2026-04-04 15:30:23,765 - AppState - INFO - Pipeline started
-2026-04-04 15:30:23,765 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Starting discovery for venue: all
-2026-04-04 15:30:23,765 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Polymarket: Starting discovery for 2 sports
-2026-04-04 15:30:23,765 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovering Polymarket events...
-2026-04-04 15:30:23,766 - PolymarketScraper - INFO - Fetching sports from https://gamma-api.polymarket.com/sports...
-2026-04-04 15:30:24,746 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/sports "HTTP/1.1 200 OK"
-2026-04-04 15:30:24,761 - PolymarketScraper - INFO - Fetched 170 competitions from API
-2026-04-04 15:30:24,761 - PolymarketScraper - INFO - Matched competition: epl -> sport: Soccer, fetching series 10188...
-2026-04-04 15:30:26,685 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/series/10188?closed=false "HTTP/1.1 200 OK"
-2026-04-04 15:30:27,389 - PolymarketScraper - INFO - Matched competition: atp -> sport: Tennis, fetching series 10365...
-2026-04-04 15:30:28,754 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/series/10365?closed=false "HTTP/1.1 200 OK"
-2026-04-04 15:30:30,973 - PolymarketScraper - INFO - Discovered 84 match events from Polymarket
-2026-04-04 15:30:30,979 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovered 84 Polymarket events
-2026-04-04 15:30:30,979 - PolymarketScraper - INFO - Closing Playwright browser...
-2026-04-04 15:30:30,979 - PolymarketScraper - INFO - Browser closed
-2026-04-04 15:30:30,979 - src.arbitrage.services.web_gateway.routes.discovery - INFO - OrbitExch: Starting discovery for 2 sports
-2026-04-04 15:30:30,979 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovering OrbitExch events...
-2026-04-04 15:30:30,979 - OrbitExchScraper - INFO - Starting Playwright browser for OrbitExch...
-2026-04-04 15:30:32,543 - OrbitExchScraper - INFO - Browser started successfully
-2026-04-04 15:30:32,543 - OrbitExchScraper - INFO - Processing Soccer > English Premier League
-2026-04-04 15:30:32,543 - OrbitExchScraper - INFO - Navigating to https://www.orbitexch.com...
-2026-04-04 15:30:46,190 - OrbitExchScraper - INFO - Looking for sport: Soccer
-2026-04-04 15:30:48,348 - OrbitExchScraper - INFO - Clicked sport: Soccer
-2026-04-04 15:30:50,473 - OrbitExchScraper - INFO - Clicked 'All Soccer' to expand all competitions
-2026-04-04 15:30:50,473 - OrbitExchScraper - INFO - Looking for competition: English Premier League
-2026-04-04 15:30:53,643 - OrbitExchScraper - INFO - Clicked competition: English Premier League
-2026-04-04 15:30:53,643 - OrbitExchScraper - INFO - Extracted IDs from URL: sport_id='1', competition_id='10932509' (URL: https://www.orbitexch.com/customer/sport/1/competition/10932509)
-2026-04-04 15:30:53,643 - OrbitExchScraper - INFO - Extracting matches from current page...
-2026-04-04 15:30:53,661 - OrbitExchScraper - INFO - Extracted 20 matches with market_id and selection IDs
-2026-04-04 15:30:53,661 - OrbitExchScraper - INFO - Processing Tennis > ATP Bucharest 2026
-2026-04-04 15:30:53,661 - OrbitExchScraper - INFO - Navigating to https://www.orbitexch.com...
-2026-04-04 15:30:59,852 - OrbitExchScraper - INFO - Looking for sport: Tennis
-2026-04-04 15:31:01,972 - OrbitExchScraper - INFO - Clicked sport: Tennis
-2026-04-04 15:31:02,032 - OrbitExchScraper - INFO - Looking for competition: ATP Bucharest 2026
-2026-04-04 15:31:05,104 - OrbitExchScraper - INFO - Clicked competition: ATP Bucharest 2026
-2026-04-04 15:31:05,104 - OrbitExchScraper - INFO - Extracted IDs from URL: sport_id='2', competition_id='12792407' (URL: https://www.orbitexch.com/customer/sport/2/competition/12792407)
-2026-04-04 15:31:05,104 - OrbitExchScraper - INFO - Extracting matches from current page...
-2026-04-04 15:31:05,117 - OrbitExchScraper - INFO - Extracted 4 matches with market_id and selection IDs
-2026-04-04 15:31:05,117 - OrbitExchScraper - INFO - Discovered 24 total match events from OrbitExch
-2026-04-04 15:31:05,117 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovered 24 OrbitExch events
-2026-04-04 15:31:05,118 - OrbitExchScraper - INFO - Closing Playwright browser...
-2026-04-04 15:31:05,441 - OrbitExchScraper - INFO - Browser closed
-2026-04-04 15:31:05,442 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovery task completed (all venues succeeded)
-2026-04-04 15:31:05,442 - AppState - INFO - Pipeline: Discovery complete, triggering matching...
-2026-04-04 15:31:05,442 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Published DiscoveryCompleteMessage: poly=84, orbit=24
-2026-04-04 15:31:05,442 - src.arbitrage.services.web_gateway.routes.matching - INFO - Starting market matching...
-2026-04-04 15:31:05,442 - MarketMatchingService - INFO - Starting market matching: 84 Polymarket events, 24 OrbitExch events
-2026-04-04 15:31:05,443 - MarketMatchingService - INFO - Found 2 common sport-competition groups (Polymarket: 2, OrbitExch: 2)
-2026-04-04 15:31:05,443 - MarketMatchingService - INFO - Reached max_matches limit (0) for competition 'English Premier League', stopping matching
-2026-04-04 15:31:05,443 - MarketMatchingService - INFO - Reached max_matches limit (1) for competition 'ATP', stopping matching
-2026-04-04 15:31:05,443 - MarketMatchingService - INFO - Total matched pairs: 1
-2026-04-04 15:31:05,443 - MarketMatchingService - INFO - Matching complete: 1 pairs matched
-2026-04-04 15:31:05,443 - src.arbitrage.services.web_gateway.routes.matching - INFO - Matched 1 pairs
-2026-04-04 15:31:05,443 - AppState - INFO - Pipeline: Matching complete (1 pairs), triggering subscription...
-2026-04-04 15:31:05,444 - src.arbitrage.services.web_gateway.routes.matching - INFO - Published MatchingCompleteMessage: pairs=1
-2026-04-04 15:31:05,444 - src.arbitrage.services.web_gateway.routes.odds - INFO - Starting odds subscription...
-2026-04-04 15:31:05,444 - StrategyService - INFO - Odds service reference set
-2026-04-04 15:31:05,444 - StrategyService - INFO - Arbitrage params updated: share=20
-2026-04-04 15:31:05,444 - ExecutionService - INFO - Initializing execution service...
-2026-04-04 15:31:05,447 - PolymarketExecutor - INFO - ClobClient initialized: signature_type=2, funder=0x568F620C81407e562678Ab7AB88Aa628D8d6d803
-2026-04-04 15:31:05,447 - PolymarketExecutor - INFO - Polymarket executor initialized
-2026-04-04 15:31:05,447 - ExecutionService - INFO - Polymarket executor initialized
-2026-04-04 15:31:05,447 - ExecutionService - INFO - OrbitExch executor ready (current pages: 0)
-2026-04-04 15:31:05,447 - ExecutionService - INFO - Execution orchestrator initialized
-2026-04-04 15:31:05,448 - ExecutionService - INFO - Execution service initialized
-2026-04-04 15:31:05,448 - ExecutionService - INFO - Odds service reference set
-2026-04-04 15:31:05,448 - ExecutionService - INFO - Arbitrage config set
-2026-04-04 15:31:05,448 - ExecutionService - INFO - Subscribed to opportunity messages
-2026-04-04 15:31:05,452 - PolymarketContractService - INFO - PolymarketContractService initialized, proxy_wallet=0x568F620C81407e562678Ab7AB88Aa628D8d6d803
-2026-04-04 15:31:05,452 - RiskService - INFO - Cleanup initialized by risk service
-2026-04-04 15:31:05,452 - RiskService - INFO - Execution service reference set for health check
-2026-04-04 15:31:05,452 - AppState - INFO - Execution service registered to message bus
-2026-04-04 15:31:05,452 - RiskService - INFO - Share updated: 20
-2026-04-04 15:31:05,452 - RiskService - INFO - FX rate updated: 1.33
-2026-04-04 15:31:05,453 - StrategyService - INFO - Risk service reference set
-2026-04-04 15:31:05,453 - RiskService - INFO - Subscribed to session_complete messages
-2026-04-04 15:31:05,453 - RiskService - INFO - Odds service reference set
-2026-04-04 15:31:05,453 - AppState - INFO - Risk service integrated with message bus
-2026-04-04 15:31:05,453 - OddsSubscription - INFO - Starting odds subscription service...
-2026-04-04 15:31:05,453 - PolymarketOdds - INFO - Polymarket odds client started
-2026-04-04 15:31:05,453 - PolymarketOdds - INFO - Starting User Channel WebSocket for order tracking
-2026-04-04 15:31:05,453 - OrbitExchOdds - INFO - Starting OrbitExch odds client...
-2026-04-04 15:31:05,453 - PolymarketOdds - INFO - Connecting to User Channel WebSocket: wss://ws-subscriptions-clob.polymarket.com/ws/user
-2026-04-04 15:31:06,633 - PolymarketOdds - INFO - User Channel WebSocket connected
-2026-04-04 15:31:06,633 - PolymarketOdds - INFO - No condition_ids to subscribe for User Channel
-2026-04-04 15:31:06,938 - OrbitExchOdds - INFO - Logging in to OrbitExch...
-2026-04-04 15:31:07,868 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:31:07,869 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:31:48,202 - OrbitExchOdds - INFO - Popup dismissed (OK button)
-2026-04-04 15:31:48,703 - OrbitExchOdds - INFO - Login successful
-2026-04-04 15:31:48,704 - OrbitExchOdds - INFO - OrbitExch odds client started (browser is open)
-2026-04-04 15:31:48,704 - OddsSubscription - INFO - Odds subscription service started
-2026-04-04 15:31:48,704 - OddsSubscription - INFO - Subscribing to 1 matched pairs in parallel
-2026-04-04 15:31:48,704 - OddsSubscription - INFO - Starting heartbeat monitor
-2026-04-04 15:31:48,704 - PolymarketOdds - INFO - Starting subscription for event 340011
-2026-04-04 15:31:48,704 - PolymarketOdds - INFO - Fetching tokens for event 340011
-2026-04-04 15:31:49,649 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/events/340011 "HTTP/1.1 200 OK"
-2026-04-04 15:31:49,654 - PolymarketOdds - INFO - Event: Bucharest Open: Mariano Navone vs Botic van de Zandschulp, ticker=atp-navone-zandsch-2026-04-04, home=Navone, away=Zandsch, markets=10
-2026-04-04 15:31:49,654 - PolymarketOdds - INFO -   Market ticker=atp-navone-zandsch-2026-04-04 (exact match), outcomes=['Mariano Navone', 'Botic van de Zandschulp']
-2026-04-04 15:31:49,654 - PolymarketOdds - INFO - Found 2 tokens for event 340011
-2026-04-04 15:31:49,657 - PolymarketOdds - INFO - Got 2 tokens for event 340011
-2026-04-04 15:31:49,657 - PolymarketOdds - INFO -   Token: type=home, outcome=Mariano Navone, id=79164478613506499510...
-2026-04-04 15:31:49,657 - PolymarketOdds - INFO -   Token: type=away, outcome=Botic van de Zandschulp, id=13107021195859597239...
-2026-04-04 15:31:49,657 - PolymarketOdds - INFO - Total subscribed tokens: 2 (new: 2, resubscribe: 0)
-2026-04-04 15:31:49,657 - PolymarketOdds - WARNING - WebSocket not connected, queuing subscription
-2026-04-04 15:31:49,657 - PolymarketOdds - INFO - Starting WebSocket task
-2026-04-04 15:31:49,658 - PolymarketOdds - INFO - Sending user channel subscription: markets=['0x2f5a75d9cf914ccdd66640ffb17b883e78538d5e241a20206ffc214456f0daad'], apiKey=32c8e9ec..., secret_len=44, passphrase_len=64
-2026-04-04 15:31:49,658 - PolymarketOdds - INFO - Sent user channel subscription for 1 markets
-2026-04-04 15:31:49,658 - PolymarketOdds - INFO - Subscribed to 2 tokens for event 340011
-2026-04-04 15:31:49,658 - OddsSubscription - INFO - OrbitExch data for pair pair-340011: sport_id='2', competition_id='12792407', full_data={'sport_id': '2', 'competition_id': '12792407', 'market_id': '1.256251610', 'home_selection_id': '21809027', 'draw_selection_id': '', 'away_selection_id': '9628851'}
-2026-04-04 15:31:49,658 - OrbitExchOdds - INFO - Registered pair info: pair-340011 -> Mariano Navone vs Botic Van de Zandschulp
-2026-04-04 15:31:49,658 - OrbitExchOdds - INFO - Registered selection: 1.256251610:21809027 -> pair-340011/home
-2026-04-04 15:31:49,658 - OrbitExchOdds - INFO - Registered selection: 1.256251610:9628851 -> pair-340011/away
-2026-04-04 15:31:49,658 - OddsSubscription - INFO - Registered OrbitExch selections for pair-340011: market_id=1.256251610, home=21809027, draw=, away=9628851
-2026-04-04 15:31:49,658 - OrbitExchOdds - INFO - Subscribing to competition: sport_id=2, competition_id=12792407, events=1
-2026-04-04 15:31:49,667 - PolymarketOdds - INFO - Connecting to Market Channel WebSocket: wss://ws-subscriptions-clob.polymarket.com/ws/market
-2026-04-04 15:31:49,838 - OrbitExchOdds - INFO - Created new tab for competition 12792407
-2026-04-04 15:31:49,838 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:31:49,872 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:31:49,872 - OrbitExchOdds - INFO - Navigating to: https://www.orbitexch.com/customer/sport/2/competition/12792407
-2026-04-04 15:31:50,838 - PolymarketOdds - INFO - Market Channel WebSocket connected
-2026-04-04 15:31:50,839 - PolymarketOdds - INFO - Sending 2 pending token subscriptions
-2026-04-04 15:31:50,839 - PolymarketOdds - INFO - Sent subscription for 2 tokens (custom_feature_enabled=true)
-2026-04-04 15:31:51,249 - PolymarketOdds - INFO - Market Channel messages received: 1, latest type: list
-2026-04-04 15:31:53,815 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/371/6484af00-8332-4e2f-a1fe-d16c1f8878ec/websocket (requestId=30956.88)
-2026-04-04 15:31:56,391 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:31:56,391 - OrbitExchOdds - INFO - OrbitExch balance updated: 0.00 -> 32.00
-2026-04-04 15:31:56,392 - RiskService - INFO - OrbitExch balance updated: 0.00 -> 32.00
-2026-04-04 15:31:56,775 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/650/ff1fc56b-c8ac-44aa-8db7-8d2ea69318f0/websocket (requestId=30956.93)
-2026-04-04 15:31:58,123 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:31:58,123 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:31:58,134 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:31:58,135 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:31:58,135 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:31:58,135 - OrbitExchOdds - INFO - Started staleness monitor task
-2026-04-04 15:31:58,135 - OrbitExchOdds - INFO - Subscribed to 1 events in competition 12792407
-2026-04-04 15:31:58,135 - OrbitExchOdds - INFO - Total open tabs: 2
-2026-04-04 15:31:58,136 - OddsSubscription - INFO - Subscribed pair pair-340011: Tennis - ATP
-2026-04-04 15:31:58,136 - OrbitExchOdds - INFO - Starting staleness monitor (check interval=30s, timeout=10s)
-2026-04-04 15:31:58,136 - OddsSubscription - INFO - Subscription complete: 1 pairs
-2026-04-04 15:31:58,264 - OrbitExchOdds - INFO - Main page closed
-2026-04-04 15:31:58,264 - src.arbitrage.services.web_gateway.routes.odds - INFO - Subscribed to 1 pairs
-2026-04-04 15:31:58,264 - AppState - INFO - Registered 1 matches to strategy service
-2026-04-04 15:31:58,264 - src.arbitrage.services.web_gateway.routes.odds - INFO - Registered matches to strategy service with status
-2026-04-04 15:31:59,130 - OrbitExchOdds - WARNING - Unmatched selection: 1.256250254:96903618 back=1.92 lay=1.93 (mapping has 2 entries)
-2026-04-04 15:31:59,130 - OrbitExchOdds - WARNING - Unmatched selection: 1.256250254:93476322 back=2.06 lay=2.08 (mapping has 2 entries)
-2026-04-04 15:31:59,138 - OrbitExchOdds - WARNING - Unmatched selection: 1.256255820:12008511 back=1.8 lay=1.97 (mapping has 2 entries)
-2026-04-04 15:31:59,138 - OrbitExchOdds - WARNING - Unmatched selection: 1.256255820:8206157 back=2.02 lay=3.75 (mapping has 2 entries)
-2026-04-04 15:31:59,151 - OrbitExchOdds - WARNING - Unmatched selection: 1.256264667:11942150 back=1.38 lay=1.4 (mapping has 2 entries)
-2026-04-04 15:31:59,151 - OrbitExchOdds - WARNING - Unmatched selection: 1.256264667:44982571 back=3.55 lay=3.6 (mapping has 2 entries)
-2026-04-04 15:31:59,481 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:31:59,482 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:32:00,580 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:32:00,581 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:32:00,585 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:32:00,585 - RiskService - INFO - Loaded historical positions: Polymarket=0, OrbitExch=0
-2026-04-04 15:32:00,585 - AppState - INFO - Loaded historical positions: Polymarket=0, OrbitExch=0
-2026-04-04 15:32:00,585 - src.arbitrage.services.web_gateway.routes.odds - INFO - Loaded historical positions: {'polymarket': 0, 'orbitexch': 0}
-2026-04-04 15:32:00,585 - AppState - INFO - Found 1 OrbitExch pages to update
-2026-04-04 15:32:00,585 - ExecutionService - INFO - OrbitExch page set: competition=2_12792407, total_pages=1
-2026-04-04 15:32:00,586 - AppState - INFO - Updated 1 OrbitExch pages for execution service
-2026-04-04 15:32:00,586 - src.arbitrage.services.web_gateway.routes.odds - INFO - Updated execution service with OrbitExch pages
-2026-04-04 15:32:00,586 - RiskService - INFO - Health check loop started (interval=30.0s)
-2026-04-04 15:32:00,586 - src.arbitrage.services.web_gateway.routes.odds - INFO - Health check loop started
-2026-04-04 15:32:00,586 - AppState - INFO - Pipeline: All stages complete, now running
-2026-04-04 15:32:01,492 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:32:02,240 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:32:02,243 - RiskService - INFO - Polymarket balance updated: 0.00 -> 88.23
-2026-04-04 15:32:03,697 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:32:03,698 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:32:03,848 - PolymarketOdds - INFO - Market Channel messages received: 11, latest type: price_change
-2026-04-04 15:32:04,855 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:32:04,858 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:32:04,864 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:32:04,864 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:32:04,864 - RiskService - INFO - Health check recovered: pm=OK, oe=OK, rebate=OK, pm_balance=88.23, oe_balance=32.00
-2026-04-04 15:32:21,468 - PolymarketOdds - INFO - Market Channel messages received: 21, latest type: price_change
-2026-04-04 15:32:36,137 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:32:36,578 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:32:38,155 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:32:38,156 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:32:39,305 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:32:39,306 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:32:39,309 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:32:39,309 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:32:41,806 - PolymarketOdds - INFO - Market Channel messages received: 31, latest type: price_change
-2026-04-04 15:32:51,943 - PolymarketOdds - INFO - Market Channel messages received: 41, latest type: new_market
-2026-04-04 15:32:57,845 - PolymarketOdds - INFO - Market Channel messages received: 51, latest type: new_market
-2026-04-04 15:33:05,696 - PolymarketOdds - INFO - Market Channel messages received: 61, latest type: new_market
-2026-04-04 15:33:10,289 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:33:10,697 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:33:12,336 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:33:12,337 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:33:13,377 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:33:13,378 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:33:13,382 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:33:13,382 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:33:13,520 - PolymarketOdds - INFO - Market Channel messages received: 71, latest type: new_market
-2026-04-04 15:33:21,241 - PolymarketOdds - INFO - Market Channel messages received: 81, latest type: new_market
-2026-04-04 15:33:28,136 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (19s), refreshing...
-2026-04-04 15:33:28,136 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:33:28,148 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:33:28,176 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:33:31,390 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/102/4bbce986-3364-4e17-989c-da01630b620b/websocket (requestId=30956.179)
-2026-04-04 15:33:31,398 - PolymarketOdds - INFO - Market Channel messages received: 91, latest type: new_market
-2026-04-04 15:33:33,471 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:33:33,891 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/062/a5204298-477a-4679-a643-5c0ac6eb366f/websocket (requestId=30956.206)
-2026-04-04 15:33:35,143 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:33:35,158 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:33:35,158 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:33:35,168 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:33:35,168 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:33:35,168 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:33:35,168 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:33:40,095 - PolymarketOdds - INFO - Market Channel messages received: 101, latest type: price_change
-2026-04-04 15:33:44,342 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:33:44,780 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:33:45,055 - PolymarketOdds - INFO - Market Channel messages received: 111, latest type: new_market
-2026-04-04 15:33:46,948 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:33:46,949 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:33:48,287 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:33:48,288 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:33:48,292 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:33:48,292 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:33:56,356 - PolymarketOdds - INFO - Market Channel messages received: 121, latest type: price_change
-2026-04-04 15:34:05,169 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (29s), refreshing...
-2026-04-04 15:34:05,169 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:34:05,181 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:34:05,204 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:34:07,705 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/827/766a9ea0-c730-412d-af3a-1d7505145712/websocket (requestId=30956.282)
-2026-04-04 15:34:07,854 - PolymarketOdds - INFO - Market Channel messages received: 131, latest type: new_market
-2026-04-04 15:34:10,818 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:34:11,256 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/030/cbad30e7-9e67-47c6-a5b1-a13676f3d05e/websocket (requestId=30956.309)
-2026-04-04 15:34:11,502 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:34:11,517 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:34:11,518 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:34:11,528 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:34:11,529 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:34:11,529 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:34:11,529 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:34:19,492 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:34:19,912 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:34:20,316 - PolymarketOdds - INFO - Market Channel messages received: 141, latest type: price_change
-2026-04-04 15:34:21,508 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:34:21,509 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:34:23,277 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:34:23,278 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:34:23,282 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:34:23,283 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:34:24,820 - PolymarketOdds - INFO - Market Channel messages received: 151, latest type: price_change
-2026-04-04 15:34:37,579 - PolymarketOdds - INFO - Market Channel messages received: 161, latest type: new_market
-2026-04-04 15:34:41,529 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (16s), refreshing...
-2026-04-04 15:34:41,530 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:34:41,541 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:34:41,562 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:34:44,298 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/951/3cb79468-ba71-4200-8c67-7deb7151d70f/websocket (requestId=30956.385)
-2026-04-04 15:34:46,937 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:34:47,193 - PolymarketOdds - INFO - Market Channel messages received: 171, latest type: price_change
-2026-04-04 15:34:47,327 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/243/6d94b6b7-78ff-4d83-bf6b-621fd03ec535/websocket (requestId=30956.412)
-2026-04-04 15:34:48,245 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:34:48,256 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:34:48,256 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:34:48,266 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:34:48,266 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:34:48,266 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:34:48,266 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:34:54,173 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:34:54,561 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:34:56,177 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:34:56,178 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:34:57,293 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:34:57,293 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:34:57,297 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:34:57,297 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:35:01,210 - PolymarketOdds - INFO - Market Channel messages received: 181, latest type: price_change
-2026-04-04 15:35:17,541 - PolymarketOdds - INFO - Market Channel messages received: 191, latest type: price_change
-2026-04-04 15:35:18,266 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (21s), refreshing...
-2026-04-04 15:35:18,267 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:35:18,277 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:35:18,295 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:35:20,990 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/897/12d0f393-c681-4d35-8880-5bd83d74623a/websocket (requestId=30956.508)
-2026-04-04 15:35:23,227 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:35:23,882 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/545/37a1eba5-8056-4d42-b2c4-4759ee663bb3/websocket (requestId=30956.515)
-2026-04-04 15:35:24,434 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:35:24,444 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:35:24,444 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:35:24,454 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:35:24,454 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:35:24,454 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:35:24,455 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:35:28,242 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:35:28,691 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:35:30,327 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:35:30,327 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:35:31,632 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:35:31,632 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:35:31,635 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:35:31,635 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:35:44,363 - PolymarketOdds - INFO - Market Channel messages received: 201, latest type: price_change
-2026-04-04 15:35:51,218 - PolymarketOdds - INFO - Market Channel messages received: 211, latest type: price_change
-2026-04-04 15:35:54,455 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (28s), refreshing...
-2026-04-04 15:35:54,455 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:35:54,465 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:35:54,487 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:35:57,681 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/332/ecc163a0-913b-4bad-92d3-a1191bcea0f1/websocket (requestId=30956.591)
-2026-04-04 15:35:59,642 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:36:00,040 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/274/a4e58768-43a5-40ca-a631-57d1f038b444/websocket (requestId=30956.617)
-2026-04-04 15:36:01,573 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:36:01,584 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:36:01,584 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:36:01,595 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:36:01,596 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:36:01,597 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:36:01,597 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:36:02,572 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:36:02,993 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:36:05,172 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:36:05,173 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:36:06,304 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:36:06,305 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:36:06,308 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:36:06,308 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:36:12,921 - PolymarketOdds - INFO - Market Channel messages received: 221, latest type: price_change
-2026-04-04 15:36:21,902 - PolymarketOdds - INFO - Market Channel messages received: 231, latest type: price_change
-2026-04-04 15:36:33,446 - PolymarketOdds - INFO - Market Channel messages received: 241, latest type: price_change
-2026-04-04 15:36:37,284 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:36:37,724 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:36:39,216 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:36:39,216 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:36:40,283 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:36:40,284 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:36:40,289 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:36:40,289 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:36:44,256 - PolymarketOdds - INFO - Market Channel messages received: 251, latest type: price_change
-2026-04-04 15:37:00,817 - PolymarketOdds - INFO - Market Channel messages received: 261, latest type: price_change
-2026-04-04 15:37:01,599 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (15s), refreshing...
-2026-04-04 15:37:01,599 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:37:01,609 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:37:01,628 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:37:04,345 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/883/8e95b144-b4c5-4934-9d4a-e0f985e3ba2c/websocket (requestId=30956.699)
-2026-04-04 15:37:06,434 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:37:06,766 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/982/f6a65fc3-ee6e-4375-b020-07c925585ad4/websocket (requestId=30956.725)
-2026-04-04 15:37:09,280 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:37:09,298 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:37:09,298 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:37:09,311 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:37:09,312 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:37:09,312 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:37:09,312 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:37:11,215 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:37:11,600 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:37:16,145 - PolymarketOdds - INFO - Market Channel messages received: 271, latest type: price_change
-2026-04-04 15:37:18,578 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:37:18,578 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:37:19,811 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:37:19,812 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:37:19,816 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:37:19,816 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:37:38,062 - PolymarketOdds - INFO - Market Channel messages received: 281, latest type: price_change
-2026-04-04 15:37:39,312 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (23s), refreshing...
-2026-04-04 15:37:39,313 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:37:39,325 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:37:39,341 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:37:41,734 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/195/cb1e267e-9148-4cc2-8d56-f59bdb5667c3/websocket (requestId=30956.801)
-2026-04-04 15:37:44,072 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/376/3ffad176-42f9-4cdf-8aa5-6b6aa0e1ec3e/websocket (requestId=30956.828)
-2026-04-04 15:37:44,313 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:37:45,510 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:37:45,520 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:37:45,520 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:37:45,529 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:37:45,529 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:37:45,529 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:37:45,529 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:37:50,955 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:37:51,358 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:37:52,766 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:37:52,766 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:37:53,700 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:37:53,701 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:37:53,704 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:37:53,704 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:37:54,615 - PolymarketOdds - INFO - Market Channel messages received: 291, latest type: price_change
-2026-04-04 15:38:00,241 - PolymarketOdds - INFO - Market Channel messages received: 301, latest type: price_change
-2026-04-04 15:38:18,945 - PolymarketOdds - INFO - Market Channel messages received: 311, latest type: price_change
-2026-04-04 15:38:24,553 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:38:24,960 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:38:26,489 - PolymarketOdds - INFO - Market Channel messages received: 321, latest type: price_change
-2026-04-04 15:38:26,529 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:38:26,530 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:38:27,926 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:38:27,927 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:38:27,930 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:38:27,930 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:38:37,499 - PolymarketOdds - INFO - Market Channel messages received: 331, latest type: price_change
-2026-04-04 15:38:44,255 - PolymarketOdds - INFO - Market Channel messages received: 341, latest type: new_market
-2026-04-04 15:38:55,323 - PolymarketOdds - INFO - Market Channel messages received: 351, latest type: price_change
-2026-04-04 15:38:59,157 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:38:59,576 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
-2026-04-04 15:39:01,225 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
-2026-04-04 15:39:01,226 - PolymarketOdds - INFO - Fetched 0 positions from Data API
-2026-04-04 15:39:02,191 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
-2026-04-04 15:39:02,192 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
-2026-04-04 15:39:02,196 - OddsSubscription - INFO - Polymarket positions and orders refreshed
-2026-04-04 15:39:02,196 - RiskService - INFO - All way_rebates refreshed: 0 positions
-2026-04-04 15:39:15,566 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (24s), refreshing...
-2026-04-04 15:39:15,566 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
-2026-04-04 15:39:15,576 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
-2026-04-04 15:39:15,591 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
-2026-04-04 15:39:18,736 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/033/79669e76-7895-4ca4-83c4-02ae1479ecc9/websocket (requestId=30956.914)
-2026-04-04 15:39:22,083 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/464/3fbbd916-d9dc-4b3e-ae61-e37fc6ee5e4c/websocket (requestId=30956.941)
-2026-04-04 15:39:22,393 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
-2026-04-04 15:39:23,189 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
-2026-04-04 15:39:23,202 - OrbitExchOdds - INFO - Visibility spoof installed
-2026-04-04 15:39:23,202 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
-2026-04-04 15:39:23,213 - OrbitExchOdds - INFO - Found 4 matches on page
-2026-04-04 15:39:23,213 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
-2026-04-04 15:39:23,213 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
-2026-04-04 15:39:23,213 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
-2026-04-04 15:39:33,350 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
-2026-04-04 15:39:33,850 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:44:32,126 - WebGatewayService - INFO - Starting Web Gateway at http://127.0.0.1:8080
+2026-04-04 15:44:32,166 - AppState - INFO - Discovery scheduler started
+2026-04-04 15:44:32,166 - AppState - INFO - Scheduler loop started: aligned to top of the hour
+2026-04-04 15:44:35,124 - AppState - INFO - Pipeline subscriptions set up
+2026-04-04 15:44:35,124 - AppState - INFO - Pipeline started
+2026-04-04 15:44:35,125 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Starting discovery for venue: all
+2026-04-04 15:44:35,125 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Polymarket: Starting discovery for 2 sports
+2026-04-04 15:44:35,125 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovering Polymarket events...
+2026-04-04 15:44:35,125 - PolymarketScraper - INFO - Fetching sports from https://gamma-api.polymarket.com/sports...
+2026-04-04 15:44:36,016 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/sports "HTTP/1.1 200 OK"
+2026-04-04 15:44:36,036 - PolymarketScraper - INFO - Fetched 170 competitions from API
+2026-04-04 15:44:36,036 - PolymarketScraper - INFO - Matched competition: epl -> sport: Soccer, fetching series 10188...
+2026-04-04 15:44:37,330 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/series/10188?closed=false "HTTP/1.1 200 OK"
+2026-04-04 15:44:38,143 - PolymarketScraper - INFO - Matched competition: atp -> sport: Tennis, fetching series 10365...
+2026-04-04 15:44:39,217 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/series/10365?closed=false "HTTP/1.1 200 OK"
+2026-04-04 15:44:40,693 - PolymarketScraper - INFO - Discovered 84 match events from Polymarket
+2026-04-04 15:44:40,699 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovered 84 Polymarket events
+2026-04-04 15:44:40,699 - PolymarketScraper - INFO - Closing Playwright browser...
+2026-04-04 15:44:40,700 - PolymarketScraper - INFO - Browser closed
+2026-04-04 15:44:40,700 - src.arbitrage.services.web_gateway.routes.discovery - INFO - OrbitExch: Starting discovery for 2 sports
+2026-04-04 15:44:40,700 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovering OrbitExch events...
+2026-04-04 15:44:40,700 - OrbitExchScraper - INFO - Starting Playwright browser for OrbitExch...
+2026-04-04 15:44:42,211 - OrbitExchScraper - INFO - Browser started successfully
+2026-04-04 15:44:42,211 - OrbitExchScraper - INFO - Processing Soccer > English Premier League
+2026-04-04 15:44:42,211 - OrbitExchScraper - INFO - Navigating to https://www.orbitexch.com...
+2026-04-04 15:44:54,077 - OrbitExchScraper - INFO - Looking for sport: Soccer
+2026-04-04 15:44:56,377 - OrbitExchScraper - INFO - Clicked sport: Soccer
+2026-04-04 15:44:59,400 - OrbitExchScraper - INFO - Clicked 'All Soccer' to expand all competitions
+2026-04-04 15:44:59,401 - OrbitExchScraper - INFO - Looking for competition: English Premier League
+2026-04-04 15:45:02,588 - OrbitExchScraper - INFO - Clicked competition: English Premier League
+2026-04-04 15:45:02,588 - OrbitExchScraper - INFO - Extracted IDs from URL: sport_id='1', competition_id='10932509' (URL: https://www.orbitexch.com/customer/sport/1/competition/10932509)
+2026-04-04 15:45:02,589 - OrbitExchScraper - INFO - Extracting matches from current page...
+2026-04-04 15:45:02,603 - OrbitExchScraper - INFO - Extracted 20 matches with market_id and selection IDs
+2026-04-04 15:45:02,604 - OrbitExchScraper - INFO - Processing Tennis > ATP Bucharest 2026
+2026-04-04 15:45:02,604 - OrbitExchScraper - INFO - Navigating to https://www.orbitexch.com...
+2026-04-04 15:45:14,209 - OrbitExchScraper - INFO - Looking for sport: Tennis
+2026-04-04 15:45:16,318 - OrbitExchScraper - INFO - Clicked sport: Tennis
+2026-04-04 15:45:16,364 - OrbitExchScraper - INFO - Looking for competition: ATP Bucharest 2026
+2026-04-04 15:45:19,442 - OrbitExchScraper - INFO - Clicked competition: ATP Bucharest 2026
+2026-04-04 15:45:19,442 - OrbitExchScraper - INFO - Extracted IDs from URL: sport_id='2', competition_id='12792407' (URL: https://www.orbitexch.com/customer/sport/2/competition/12792407)
+2026-04-04 15:45:19,443 - OrbitExchScraper - INFO - Extracting matches from current page...
+2026-04-04 15:45:19,454 - OrbitExchScraper - INFO - Extracted 4 matches with market_id and selection IDs
+2026-04-04 15:45:19,455 - OrbitExchScraper - INFO - Discovered 24 total match events from OrbitExch
+2026-04-04 15:45:19,455 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovered 24 OrbitExch events
+2026-04-04 15:45:19,455 - OrbitExchScraper - INFO - Closing Playwright browser...
+2026-04-04 15:45:19,781 - OrbitExchScraper - INFO - Browser closed
+2026-04-04 15:45:19,781 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Discovery task completed (all venues succeeded)
+2026-04-04 15:45:19,781 - AppState - INFO - Pipeline: Discovery complete, triggering matching...
+2026-04-04 15:45:19,781 - src.arbitrage.services.web_gateway.routes.discovery - INFO - Published DiscoveryCompleteMessage: poly=84, orbit=24
+2026-04-04 15:45:19,781 - src.arbitrage.services.web_gateway.routes.matching - INFO - Starting market matching...
+2026-04-04 15:45:19,781 - MarketMatchingService - INFO - Starting market matching: 84 Polymarket events, 24 OrbitExch events
+2026-04-04 15:45:19,782 - MarketMatchingService - INFO - Found 2 common sport-competition groups (Polymarket: 2, OrbitExch: 2)
+2026-04-04 15:45:19,782 - MarketMatchingService - INFO - Reached max_matches limit (1) for competition 'ATP', stopping matching
+2026-04-04 15:45:19,782 - MarketMatchingService - INFO - Reached max_matches limit (0) for competition 'English Premier League', stopping matching
+2026-04-04 15:45:19,782 - MarketMatchingService - INFO - Total matched pairs: 1
+2026-04-04 15:45:19,782 - MarketMatchingService - INFO - Matching complete: 1 pairs matched
+2026-04-04 15:45:19,782 - src.arbitrage.services.web_gateway.routes.matching - INFO - Matched 1 pairs
+2026-04-04 15:45:19,782 - AppState - INFO - Pipeline: Matching complete (1 pairs), triggering subscription...
+2026-04-04 15:45:19,782 - src.arbitrage.services.web_gateway.routes.matching - INFO - Published MatchingCompleteMessage: pairs=1
+2026-04-04 15:45:19,783 - src.arbitrage.services.web_gateway.routes.odds - INFO - Starting odds subscription...
+2026-04-04 15:45:19,783 - StrategyService - INFO - Odds service reference set
+2026-04-04 15:45:19,783 - StrategyService - INFO - Arbitrage params updated: share=20
+2026-04-04 15:45:19,783 - ExecutionService - INFO - Initializing execution service...
+2026-04-04 15:45:19,787 - PolymarketExecutor - INFO - ClobClient initialized: signature_type=2, funder=0x568F620C81407e562678Ab7AB88Aa628D8d6d803
+2026-04-04 15:45:19,787 - PolymarketExecutor - INFO - Polymarket executor initialized
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Polymarket executor initialized
+2026-04-04 15:45:19,787 - ExecutionService - INFO - OrbitExch executor ready (current pages: 0)
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Execution orchestrator initialized
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Execution service initialized
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Odds service reference set
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Arbitrage config set
+2026-04-04 15:45:19,787 - ExecutionService - INFO - Subscribed to opportunity messages
+2026-04-04 15:45:19,791 - PolymarketContractService - INFO - PolymarketContractService initialized, proxy_wallet=0x568F620C81407e562678Ab7AB88Aa628D8d6d803
+2026-04-04 15:45:19,791 - RiskService - INFO - Cleanup initialized by risk service
+2026-04-04 15:45:19,791 - RiskService - INFO - Execution service reference set for health check
+2026-04-04 15:45:19,791 - AppState - INFO - Execution service registered to message bus
+2026-04-04 15:45:19,791 - RiskService - INFO - Share updated: 20
+2026-04-04 15:45:19,791 - RiskService - INFO - FX rate updated: 1.33
+2026-04-04 15:45:19,791 - StrategyService - INFO - Risk service reference set
+2026-04-04 15:45:19,791 - RiskService - INFO - Subscribed to session_complete messages
+2026-04-04 15:45:19,791 - RiskService - INFO - Odds service reference set
+2026-04-04 15:45:19,791 - AppState - INFO - Risk service integrated with message bus
+2026-04-04 15:45:19,791 - OddsSubscription - INFO - Starting odds subscription service...
+2026-04-04 15:45:19,791 - PolymarketOdds - INFO - Polymarket odds client started
+2026-04-04 15:45:19,792 - PolymarketOdds - INFO - Starting User Channel WebSocket for order tracking
+2026-04-04 15:45:19,792 - OrbitExchOdds - INFO - Starting OrbitExch odds client...
+2026-04-04 15:45:19,792 - PolymarketOdds - INFO - Connecting to User Channel WebSocket: wss://ws-subscriptions-clob.polymarket.com/ws/user
+2026-04-04 15:45:20,945 - PolymarketOdds - INFO - User Channel WebSocket connected
+2026-04-04 15:45:20,945 - PolymarketOdds - INFO - No condition_ids to subscribe for User Channel
+2026-04-04 15:45:21,367 - OrbitExchOdds - INFO - Logging in to OrbitExch...
+2026-04-04 15:45:22,257 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:45:22,257 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:45:44,906 - OrbitExchOdds - INFO - Popup dismissed (OK button)
+2026-04-04 15:45:45,407 - OrbitExchOdds - INFO - Login successful
+2026-04-04 15:45:45,407 - OrbitExchOdds - INFO - OrbitExch odds client started (browser is open)
+2026-04-04 15:45:45,407 - OddsSubscription - INFO - Odds subscription service started
+2026-04-04 15:45:45,407 - OddsSubscription - INFO - Subscribing to 1 matched pairs in parallel
+2026-04-04 15:45:45,408 - OddsSubscription - INFO - Starting heartbeat monitor
+2026-04-04 15:45:45,408 - PolymarketOdds - INFO - Starting subscription for event 340011
+2026-04-04 15:45:45,408 - PolymarketOdds - INFO - Fetching tokens for event 340011
+2026-04-04 15:45:46,509 - httpx - INFO - HTTP Request: GET https://gamma-api.polymarket.com/events/340011 "HTTP/1.1 200 OK"
+2026-04-04 15:45:46,524 - PolymarketOdds - INFO - Event: Bucharest Open: Mariano Navone vs Botic van de Zandschulp, ticker=atp-navone-zandsch-2026-04-04, home=Navone, away=Zandsch, markets=10
+2026-04-04 15:45:46,525 - PolymarketOdds - INFO -   Market ticker=atp-navone-zandsch-2026-04-04 (exact match), outcomes=['Mariano Navone', 'Botic van de Zandschulp']
+2026-04-04 15:45:46,525 - PolymarketOdds - INFO - Found 2 tokens for event 340011
+2026-04-04 15:45:46,528 - PolymarketOdds - INFO - Got 2 tokens for event 340011
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO -   Token: type=home, outcome=Mariano Navone, id=79164478613506499510...
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO -   Token: type=away, outcome=Botic van de Zandschulp, id=13107021195859597239...
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO - Total subscribed tokens: 2 (new: 2, resubscribe: 0)
+2026-04-04 15:45:46,529 - PolymarketOdds - WARNING - WebSocket not connected, queuing subscription
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO - Starting WebSocket task
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO - Sending user channel subscription: markets=['0x2f5a75d9cf914ccdd66640ffb17b883e78538d5e241a20206ffc214456f0daad'], apiKey=32c8e9ec..., secret_len=44, passphrase_len=64
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO - Sent user channel subscription for 1 markets
+2026-04-04 15:45:46,529 - PolymarketOdds - INFO - Subscribed to 2 tokens for event 340011
+2026-04-04 15:45:46,529 - OddsSubscription - INFO - OrbitExch data for pair pair-340011: sport_id='2', competition_id='12792407', full_data={'sport_id': '2', 'competition_id': '12792407', 'market_id': '1.256251610', 'home_selection_id': '21809027', 'draw_selection_id': '', 'away_selection_id': '9628851'}
+2026-04-04 15:45:46,529 - OrbitExchOdds - INFO - Registered pair info: pair-340011 -> Mariano Navone vs Botic Van de Zandschulp
+2026-04-04 15:45:46,529 - OrbitExchOdds - INFO - Registered selection: 1.256251610:21809027 -> pair-340011/home
+2026-04-04 15:45:46,529 - OrbitExchOdds - INFO - Registered selection: 1.256251610:9628851 -> pair-340011/away
+2026-04-04 15:45:46,529 - OddsSubscription - INFO - Registered OrbitExch selections for pair-340011: market_id=1.256251610, home=21809027, draw=, away=9628851
+2026-04-04 15:45:46,530 - OrbitExchOdds - INFO - Subscribing to competition: sport_id=2, competition_id=12792407, events=1
+2026-04-04 15:45:46,537 - PolymarketOdds - INFO - Connecting to Market Channel WebSocket: wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-04 15:45:46,626 - OrbitExchOdds - INFO - Created new tab for competition 12792407
+2026-04-04 15:45:46,626 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
+2026-04-04 15:45:46,660 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
+2026-04-04 15:45:46,660 - OrbitExchOdds - INFO - Navigating to: https://www.orbitexch.com/customer/sport/2/competition/12792407
+2026-04-04 15:45:47,877 - PolymarketOdds - INFO - Market Channel WebSocket connected
+2026-04-04 15:45:47,878 - PolymarketOdds - INFO - Sending 2 pending token subscriptions
+2026-04-04 15:45:47,878 - PolymarketOdds - INFO - Sent subscription for 2 tokens (custom_feature_enabled=true)
+2026-04-04 15:45:48,301 - PolymarketOdds - INFO - Market Channel messages received: 1, latest type: list
+2026-04-04 15:45:49,337 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/257/425e3f7c-02ea-429d-8e19-447f301de044/websocket (requestId=32337.72)
+2026-04-04 15:45:51,724 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
+2026-04-04 15:45:51,724 - OrbitExchOdds - INFO - OrbitExch balance updated: 0.00 -> 32.00
+2026-04-04 15:45:51,724 - RiskService - INFO - OrbitExch balance updated: 0.00 -> 32.00
+2026-04-04 15:45:52,154 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/471/b68f4927-5236-4797-bd11-3143ba6b7b24/websocket (requestId=32337.93)
+2026-04-04 15:45:54,065 - OrbitExchOdds - INFO - Visibility spoof installed
+2026-04-04 15:45:54,065 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
+2026-04-04 15:45:54,084 - OrbitExchOdds - WARNING - Unmatched selection: 1.256250254:96903618 back=1.91 lay=1.93 (mapping has 2 entries)
+2026-04-04 15:45:54,084 - OrbitExchOdds - WARNING - Unmatched selection: 1.256250254:93476322 back=2.06 lay=2.1 (mapping has 2 entries)
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Found 4 matches on page
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Started staleness monitor task
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Subscribed to 1 events in competition 12792407
+2026-04-04 15:45:54,090 - OrbitExchOdds - INFO - Total open tabs: 2
+2026-04-04 15:45:54,091 - OddsSubscription - INFO - Subscribed pair pair-340011: Tennis - ATP
+2026-04-04 15:45:54,091 - OrbitExchOdds - INFO - Starting staleness monitor (check interval=30s, timeout=10s)
+2026-04-04 15:45:54,091 - OddsSubscription - INFO - Subscription complete: 1 pairs
+2026-04-04 15:45:54,100 - OrbitExchOdds - WARNING - Unmatched selection: 1.256255820:12008511 back=1.8 lay=1.95 (mapping has 2 entries)
+2026-04-04 15:45:54,100 - OrbitExchOdds - WARNING - Unmatched selection: 1.256255820:8206157 back=2.04 lay=3.75 (mapping has 2 entries)
+2026-04-04 15:45:54,115 - OrbitExchOdds - INFO - Main page closed
+2026-04-04 15:45:54,116 - src.arbitrage.services.web_gateway.routes.odds - INFO - Subscribed to 1 pairs
+2026-04-04 15:45:54,117 - AppState - INFO - Registered 1 matches to strategy service
+2026-04-04 15:45:54,117 - src.arbitrage.services.web_gateway.routes.odds - INFO - Registered matches to strategy service with status
+2026-04-04 15:45:54,404 - OrbitExchOdds - WARNING - Unmatched selection: 1.256264667:11942150 back=1.4 lay=1.41 (mapping has 2 entries)
+2026-04-04 15:45:54,404 - OrbitExchOdds - WARNING - Unmatched selection: 1.256264667:44982571 back=3.45 lay=3.5 (mapping has 2 entries)
+2026-04-04 15:45:55,398 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:45:55,398 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:45:56,483 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:45:56,484 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:45:56,487 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:45:56,487 - RiskService - INFO - Loaded historical positions: Polymarket=0, OrbitExch=0
+2026-04-04 15:45:56,487 - AppState - INFO - Loaded historical positions: Polymarket=0, OrbitExch=0
+2026-04-04 15:45:56,487 - src.arbitrage.services.web_gateway.routes.odds - INFO - Loaded historical positions: {'polymarket': 0, 'orbitexch': 0}
+2026-04-04 15:45:56,487 - AppState - INFO - Found 1 OrbitExch pages to update
+2026-04-04 15:45:56,488 - ExecutionService - INFO - OrbitExch page set: competition=2_12792407, total_pages=1
+2026-04-04 15:45:56,488 - AppState - INFO - Updated 1 OrbitExch pages for execution service
+2026-04-04 15:45:56,488 - src.arbitrage.services.web_gateway.routes.odds - INFO - Updated execution service with OrbitExch pages
+2026-04-04 15:45:56,488 - RiskService - INFO - Health check loop started (interval=30.0s)
+2026-04-04 15:45:56,488 - src.arbitrage.services.web_gateway.routes.odds - INFO - Health check loop started
+2026-04-04 15:45:56,488 - AppState - INFO - Pipeline: All stages complete, now running
+2026-04-04 15:45:57,580 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:45:58,216 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:45:58,218 - RiskService - INFO - Polymarket balance updated: 0.00 -> 88.23
+2026-04-04 15:45:59,758 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:45:59,758 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:46:01,036 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:46:01,053 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:46:01,057 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:46:01,057 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:46:01,057 - RiskService - INFO - Health check recovered: pm=OK, oe=OK, rebate=OK, pm_balance=88.23, oe_balance=32.00
+2026-04-04 15:46:02,225 - PolymarketOdds - INFO - Market Channel messages received: 11, latest type: price_change
+2026-04-04 15:46:32,763 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:46:33,178 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:46:34,529 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:46:34,530 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:46:35,628 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:46:35,629 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:46:35,633 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:46:35,633 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:46:54,092 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (13s), refreshing...
+2026-04-04 15:46:54,092 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
+2026-04-04 15:46:54,092 - OddsSubscription - INFO - Cleared OrbitExch odds cache due to page refresh
+2026-04-04 15:46:54,101 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
+2026-04-04 15:46:54,117 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
+2026-04-04 15:46:56,826 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/471/4979aefd-0a41-4b2d-a088-60bedd7b808d/websocket (requestId=32337.175)
+2026-04-04 15:46:59,184 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
+2026-04-04 15:46:59,734 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/881/af21dcc6-97bb-4a03-be24-83f097cab1f3/websocket (requestId=32337.202)
+2026-04-04 15:47:02,281 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
+2026-04-04 15:47:02,308 - OrbitExchOdds - INFO - Visibility spoof installed
+2026-04-04 15:47:02,308 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
+2026-04-04 15:47:02,407 - OrbitExchOdds - INFO - Found 4 matches on page
+2026-04-04 15:47:02,408 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
+2026-04-04 15:47:02,408 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
+2026-04-04 15:47:02,408 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
+2026-04-04 15:47:06,912 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:47:07,651 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:47:10,380 - PolymarketOdds - INFO - Market Channel messages received: 21, latest type: price_change
+2026-04-04 15:47:10,382 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:47:10,384 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:47:11,475 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:47:11,476 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:47:11,479 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:47:11,479 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:47:32,408 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (27s), refreshing...
+2026-04-04 15:47:32,408 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
+2026-04-04 15:47:32,409 - OddsSubscription - INFO - Cleared OrbitExch odds cache due to page refresh
+2026-04-04 15:47:32,420 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
+2026-04-04 15:47:32,436 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
+2026-04-04 15:47:36,041 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/308/59f00928-3b4a-4e1e-bbb3-cb4eff7f141a/websocket (requestId=32337.298)
+2026-04-04 15:47:38,033 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
+2026-04-04 15:47:39,049 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/459/528fdcf9-5721-42a9-93f7-54f0e734dca8/websocket (requestId=32337.305)
+2026-04-04 15:47:39,479 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
+2026-04-04 15:47:39,489 - OrbitExchOdds - INFO - Visibility spoof installed
+2026-04-04 15:47:39,489 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
+2026-04-04 15:47:39,502 - OrbitExchOdds - INFO - Found 4 matches on page
+2026-04-04 15:47:39,502 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
+2026-04-04 15:47:39,503 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
+2026-04-04 15:47:39,503 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
+2026-04-04 15:47:42,670 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:47:43,088 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:47:44,788 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:47:44,788 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:47:45,851 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:47:45,852 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:47:45,856 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:47:45,856 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:48:09,503 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (18s), refreshing...
+2026-04-04 15:48:09,503 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
+2026-04-04 15:48:09,503 - OddsSubscription - INFO - Cleared OrbitExch odds cache due to page refresh
+2026-04-04 15:48:09,512 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
+2026-04-04 15:48:09,529 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
+2026-04-04 15:48:12,384 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/716/b42ef1e5-e288-4562-a613-890684d3e630/websocket (requestId=32337.381)
+2026-04-04 15:48:14,817 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
+2026-04-04 15:48:15,227 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/044/925dd47e-7945-461a-a2b7-b3850e528bbb/websocket (requestId=32337.408)
+2026-04-04 15:48:15,908 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
+2026-04-04 15:48:15,923 - OrbitExchOdds - INFO - Visibility spoof installed
+2026-04-04 15:48:15,923 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
+2026-04-04 15:48:15,942 - OrbitExchOdds - INFO - Found 4 matches on page
+2026-04-04 15:48:15,942 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
+2026-04-04 15:48:15,943 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
+2026-04-04 15:48:15,943 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
+2026-04-04 15:48:16,851 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:48:17,279 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:48:18,817 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:48:18,818 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:48:19,834 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:48:19,835 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:48:19,839 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:48:19,839 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:48:23,675 - PolymarketOdds - INFO - Market Channel messages received: 31, latest type: price_change
+2026-04-04 15:48:42,647 - PolymarketOdds - INFO - Market Channel messages received: 41, latest type: price_change
+2026-04-04 15:48:45,944 - OrbitExchOdds - WARNING - Page 2_12792407 data is stale (29s), refreshing...
+2026-04-04 15:48:45,945 - OrbitExchOdds - INFO - Refreshing page 2_12792407...
+2026-04-04 15:48:45,945 - OddsSubscription - INFO - Cleared OrbitExch odds cache due to page refresh
+2026-04-04 15:48:45,960 - OrbitExchOdds - INFO - Setting up CDP WebSocket interception for 2_12792407...
+2026-04-04 15:48:45,986 - OrbitExchOdds - INFO - CDP WebSocket interception ready for 2_12792407
+2026-04-04 15:48:48,701 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/general/684/2b35329a-f6ca-49cc-b1d3-a927f1e99d5c/websocket (requestId=32337.484)
+2026-04-04 15:48:50,719 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/ "HTTP/2 200 OK"
+2026-04-04 15:48:51,124 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL&signature_type=2 "HTTP/2 200 OK"
+2026-04-04 15:48:51,759 - OrbitExchOdds - INFO - BALANCE message received: {'BALANCE': {'balance': '32.00', 'avBalance': None}}
+2026-04-04 15:48:51,802 - PolymarketOdds - INFO - Market Channel messages received: 51, latest type: new_market
+2026-04-04 15:48:52,229 - OrbitExchOdds - INFO - Re-enabled Network.enable after reload for 2_12792407
+2026-04-04 15:48:52,240 - OrbitExchOdds - INFO - Visibility spoof installed
+2026-04-04 15:48:52,240 - OrbitExchOdds - INFO - Refreshing selection mapping from live page...
+2026-04-04 15:48:52,249 - OrbitExchOdds - INFO - Found 4 matches on page
+2026-04-04 15:48:52,249 - OrbitExchOdds - INFO - Found match for pair-340011: Mariano Navone vs Botic Van de Zandschulp -> market_id=1.256251610
+2026-04-04 15:48:52,250 - OrbitExchOdds - INFO - Updated selection mapping for 1 pairs
+2026-04-04 15:48:52,250 - OrbitExchOdds - INFO - Page 2_12792407 refreshed
+2026-04-04 15:48:52,268 - OrbitExchOdds - INFO - WebSocket created: wss://www.orbitexch.com/customer/ws/multiple-market-prices/319/ddeeb4d5-1998-4b1c-82f0-5ef9b17018b7/websocket (requestId=32337.512)
+2026-04-04 15:48:53,926 - httpx - INFO - HTTP Request: GET https://data-api.polymarket.com/positions?user=0x568F620C81407e562678Ab7AB88Aa628D8d6d803 "HTTP/1.1 200 OK"
+2026-04-04 15:48:53,926 - PolymarketOdds - INFO - Fetched 0 positions from Data API
+2026-04-04 15:48:54,994 - httpx - INFO - HTTP Request: GET https://clob.polymarket.com/data/orders "HTTP/1.1 200 OK"
+2026-04-04 15:48:54,995 - PolymarketOdds - INFO - Fetched 0 orders from CLOB API
+2026-04-04 15:48:54,998 - OddsSubscription - INFO - Polymarket positions and orders refreshed
+2026-04-04 15:48:54,998 - RiskService - INFO - All way_rebates refreshed: 0 positions
+2026-04-04 15:49:01,377 - PolymarketOdds - INFO - Market Channel messages received: 61, latest type: price_change
+2026-04-04 15:49:11,876 - PolymarketOdds - INFO - Market Channel messages received: 71, latest type: price_change
