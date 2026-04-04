@@ -835,7 +835,7 @@ class OrbitExchOddsClient:
             data: 市场数据
         """
         market_id = str(data.get("id", ""))
-        timestamp = data.get("apiPt", int(time.time() * 1000))
+        timestamp = int(time.time() * 1000)
 
         # 从 marketDefinition 获取 inplay 状态
         market_def = data.get("marketDefinition", {})
