@@ -620,7 +620,7 @@ class OrbitExchOddsClient:
 
             # 3. 导航到 competition 页面
             self._log.info(f"Navigating to: {url}")
-            await page.goto(url, wait_until="networkidle")
+            await page.goto(url, wait_until="networkidle", timeout=60000)
 
             # 4. 等待页面加载和 WebSocket 连接
             await asyncio.sleep(3)
@@ -741,8 +741,6 @@ class OrbitExchOddsClient:
 
             # 解析 SockJS 格式: a["..."]
             if payload_data.startswith('a['):
-                # 只有收到实际数据消息才更新时间戳（心跳不算）
-                self._last_data_updates[page_key] = time.time() * 1000
                 try:
                     # 去掉开头的 'a' 得到 JSON 数组
                     inner_data = json.loads(payload_data[1:])
@@ -751,8 +749,8 @@ class OrbitExchOddsClient:
                         # 每个 item 是一个 JSON 字符串
                         try:
                             data = json.loads(item)
-                            # 异步处理消息
-                            asyncio.create_task(self._process_websocket_message(data))
+                            # 异步处理消息（传递 page_key 用于追踪数据新鲜度）
+                            asyncio.create_task(self._process_websocket_message(data, page_key))
                         except json.JSONDecodeError:
                             pass
 
@@ -770,7 +768,7 @@ class OrbitExchOddsClient:
         except Exception as e:
             self._log.error(f"Error processing WebSocket frame: {e}")
 
-    async def _process_websocket_message(self, data: dict) -> None:
+    async def _process_websocket_message(self, data: dict, page_key: str = "") -> None:
         """
         处理 WebSocket 消息
 
@@ -782,10 +780,14 @@ class OrbitExchOddsClient:
 
         Args:
             data: 解析后的 JSON 数据
+            page_key: 来源页面标识
         """
         try:
             # 检查是否是市场数据消息（包含 id 和 rc 字段）
             if "id" in data and "rc" in data:
+                # 只有市场数据才更新 last_data_updates（用于 staleness 检测）
+                if page_key:
+                    self._last_data_updates[page_key] = time.time() * 1000
                 await self._process_market_data(data)
             # 处理 CURRENT_BETS 消息（用户订单数据）
             elif "CURRENT_BETS" in data:
@@ -1627,6 +1629,10 @@ class OrbitExchOddsClient:
         else:
             # 未注册的 selection，记录用于调试
             if composite_key not in self._unmatched_selections:
+                self._log.warning(
+                    f"Unmatched selection: {composite_key} back={back_price} lay={lay_price} "
+                    f"(mapping has {len(self._selection_mapping)} entries)"
+                )
                 self._unmatched_selections[composite_key] = {
                     "back": back_price,
                     "lay": lay_price,
@@ -1887,6 +1893,8 @@ class OrbitExchOddsClient:
             page_key: 页面标识
             page: Playwright Page 对象
         """
+        self._log.info(f"Refreshing page {page_key}...")
+
         # 断开旧的 CDP 会话
         old_cdp = self._cdp_sessions.pop(page_key, None)
         if old_cdp:
@@ -1899,8 +1907,21 @@ class OrbitExchOddsClient:
         await self._setup_websocket_interception(page, page_key)
 
         # 再刷新页面（reload 时创建的 WebSocket 会被 CDP 捕获）
-        await page.reload(wait_until="networkidle")
+        await page.reload(wait_until="networkidle", timeout=60000)
         await asyncio.sleep(2)
+
+        # reload 后再次确保 Network.enable 生效（防止 reload 重置 CDP 状态）
+        cdp = self._cdp_sessions.get(page_key)
+        if cdp:
+            try:
+                await cdp.send("Network.enable")
+                self._log.info(f"Re-enabled Network.enable after reload for {page_key}")
+            except Exception as e:
+                self._log.warning(f"Failed to re-enable Network after reload for {page_key}: {e}")
+                # CDP 会话可能已失效，重新创建
+                self._cdp_sessions.pop(page_key, None)
+                await self._setup_websocket_interception(page, page_key)
+                self._log.info(f"Recreated CDP session after reload for {page_key}")
 
         # 重新设置可见性欺骗
         await self._setup_visibility_spoof(page)
