@@ -57,6 +57,7 @@ class StrategyService:
 
         # 套利参数
         self._share = share
+        self._fx = 1.0
 
         # 比赛信息缓存：pair_id -> MatchContext
         self._match_contexts: dict[str, MatchContext] = {}
@@ -138,15 +139,17 @@ class StrategyService:
         self._risk_service = risk_service
         self._log.info("Risk service reference set")
 
-    def set_arbitrage_params(self, share: float) -> None:
+    def set_arbitrage_params(self, share: float, fx: float = 1.0) -> None:
         """
         设置套利参数
 
         Args:
             share: 用于计算 way_rebate 的基数
+            fx: GBP/USD 汇率
         """
         self._share = share
-        self._log.info(f"Arbitrage params updated: share={share}")
+        self._fx = fx
+        self._log.info(f"Arbitrage params updated: share={share}, fx={fx}")
 
     # =========================================================================
     # 比赛上下文管理
@@ -513,7 +516,7 @@ class StrategyService:
                 "raw_odds": raw_odds,
             })
 
-        adjusted_share = adjust_share_by_liquidity(share, legs_info)
+        adjusted_share = adjust_share_by_liquidity(share, legs_info, fx=self._fx)
 
         if adjusted_share is None:
             self._log.info(f"Size check failed for {pair_id}: below minimum after adjustment")

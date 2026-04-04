@@ -414,6 +414,7 @@ def check_all_legs_min_size(legs: list[dict]) -> bool:
 def adjust_share_by_liquidity(
     share: float,
     legs: list[dict],
+    fx: float = 1.0,
 ) -> float | None:
     """
     根据市场可交易量调整 share 并检查最小 size 门控
@@ -424,12 +425,13 @@ def adjust_share_by_liquidity(
     无可用量数据时（available=0）不阻止。
 
     Args:
-        share: 原始 share（基准金额）
+        share: 原始 share（基准金额，USD）
         legs: 每条腿的信息列表，每项包含:
             - venue: str ("polymarket" | "orbitexch")
             - intended: float (计划下注量，Polymarket=share，OrbitExch=stake)
             - available: float (市场可交易量)
             - raw_odds: float (OrbitExch 赔率，用于门控时换算 stake)
+        fx: GBP/USD 汇率（OrbitExch stake 需要除以 fx 转为 GBP）
 
     Returns:
         调整后的 share，如果最小值不满足返回 None
@@ -454,7 +456,8 @@ def adjust_share_by_liquidity(
             leg_size = adjusted_share
         else:  # orbitexch
             raw_odds = leg.get("raw_odds", 0)
-            leg_size = adjusted_share / raw_odds if raw_odds > 0 else 0
+            # OrbitExch stake = share / odds / fx (GBP)
+            leg_size = adjusted_share / raw_odds / fx if raw_odds > 0 else 0
 
         if not check_min_size(venue, leg_size):
             return None

@@ -390,6 +390,7 @@ class AppState:
         if self._strategy_service is not None:
             self._strategy_service.set_arbitrage_params(
                 share=self._arbitrage_config.share,
+                fx=self._arbitrage_config.fx,
             )
 
         # 同步 fx 到 RiskService
@@ -693,6 +694,7 @@ class AppState:
         # 同步套利参数
         strategy_service.set_arbitrage_params(
             share=self._arbitrage_config.share,
+            fx=self._arbitrage_config.fx,
         )
 
         # StrategyService 已在初始化时订阅消息总线
