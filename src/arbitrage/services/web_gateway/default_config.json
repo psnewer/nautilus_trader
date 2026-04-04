@@ -67,7 +67,7 @@
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
     "orbitexch_page_refresh_sec": 600,
-    "orbitexch_staleness_timeout_sec": 10,
+    "orbitexch_staleness_timeout_sec": 300,
     "orbitexch_username": "",
     "orbitexch_password": "",
     "orbitexch_user_data_dir": "",
