@@ -190,7 +190,8 @@ class RiskService:
                 self._log.error(f"Health check loop error: {e}")
 
             try:
-                await asyncio.sleep(interval)
+                # 每次循环从配置读取间隔，支持动态更新
+                await asyncio.sleep(self._config.health_check_interval_sec)
             except asyncio.CancelledError:
                 break
 

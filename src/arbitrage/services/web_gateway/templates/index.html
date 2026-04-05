@@ -765,6 +765,14 @@
                                             </div>
                                             <small class="text-muted">当某场比赛所有方向持仓返水率都 ≥ 此值时，停止该场下注</small>
                                         </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">健康检查间隔</label>
+                                            <div class="input-group" style="max-width: 200px;">
+                                                <input type="number" class="form-control" id="risk-health-check-interval" value="120" min="30" max="600" step="10">
+                                                <span class="input-group-text">秒</span>
+                                            </div>
+                                            <small class="text-muted">Polymarket/OrbitExch 连接和持仓数据健康检查的间隔时间</small>
+                                        </div>
                                     </div>
                                     <div class="col-md-6">
                                         <div class="mb-3">
@@ -1014,6 +1022,7 @@
                 document.getElementById('risk-match-sl').value = (config.match_sl || -0.10) * 100;
                 document.getElementById('risk-global-sl').value = (config.global_sl || -0.50) * 100;
                 document.getElementById('risk-match-tp').value = (config.match_tp || 0.10) * 100;
+                document.getElementById('risk-health-check-interval').value = config.health_check_interval_sec || 120;
                 await refreshRiskStatus();
             } catch (e) {
                 console.error('Error loading risk config:', e);
@@ -1028,7 +1037,8 @@
                     match_sl: parseFloat(document.getElementById('risk-match-sl').value) / 100,
                     global_sl: parseFloat(document.getElementById('risk-global-sl').value) / 100,
                     match_tp: parseFloat(document.getElementById('risk-match-tp').value) / 100,
-                    match_overrides: {}
+                    match_overrides: {},
+                    health_check_interval_sec: parseFloat(document.getElementById('risk-health-check-interval').value)
                 };
                 await api('/api/risk/config', 'PUT', data);
                 showToast('Risk config saved');
