@@ -73,6 +73,18 @@ class Strategy(ABC):
         """
         return []
 
+    @property
+    def strict_filter(self) -> bool:
+        """
+        优先级筛选严格模式
+
+        True: 优先级 1 筛选无结果时返回 None（不放行）
+        False: 筛选无结果时全部放过到下一级（默认）
+
+        子类可覆盖此属性。
+        """
+        return False
+
     def execute(
         self,
         context: MatchContext,
@@ -124,10 +136,13 @@ class Strategy(ABC):
         """
         从多个套利方向中选择最优的一个
 
-        默认选择逻辑（优先级降序，逐步筛选）：
-        1. 平台维度持仓返水率为负的一方（需要平衡持仓，仅筛负的方向）
-        2. 当前持仓返水率最小的一方（合并两平台，仅筛对应方向）
-        3. rebate 信号计算出返水率最大的一方（在剩余方向中选最大）
+        默认选择逻辑（优先级降序）：
+        1. 平台维度持仓返水率 <= 0 的方向（需要平衡持仓）
+        2. 合并维度返水最小的方向（相同返水时按 rebate_rate 最大）
+        3. 无持仓数据时，按 rebate_rate 最大选择
+
+        当 strict_filter=True 时，优先级 1 筛选无结果则返回 None（不放行）。
+        当 strict_filter=False 时，筛选无结果则全部放过到下一级（默认行为）。
 
         子类可以覆盖此方法实现自定义选择逻辑。
 
@@ -156,22 +171,22 @@ class Strategy(ABC):
             d for d in directions
             if (get_venue_way_rebate(d) is not None and get_venue_way_rebate(d) <= 0)
         ]
-        candidates = negative_directions if negative_directions else list(directions)
+        if negative_directions:
+            candidates = negative_directions
+        elif self.strict_filter:
+            return None
+        else:
+            candidates = list(directions)
 
-        # 优先级 2：按合并维度最小返水筛方向
+        # 优先级 2：按合并维度返水最小选择（相同返水时按 rebate_rate 最大）
         if context.way_rebate:
-            outcomes = {d.rebate_market for d in candidates}
-            valid_outcomes = {
-                outcome: rebate
-                for outcome, rebate in context.way_rebate.items()
-                if outcome in outcomes
-            }
-            if valid_outcomes:
-                min_outcome = min(valid_outcomes, key=valid_outcomes.get)
-                candidates = [d for d in candidates if d.rebate_market == min_outcome]
-
-        # 优先级 3：按 rebate_rate 最大选择
-        best_direction = max(candidates, key=lambda d: d.rebate_rate)
+            best_direction = min(
+                candidates,
+                key=lambda d: (context.way_rebate.get(d.rebate_market, float('inf')), -d.rebate_rate),
+            )
+        else:
+            # 无持仓数据时，按 rebate_rate 最大选择
+            best_direction = max(candidates, key=lambda d: d.rebate_rate)
 
         # 更新 context，只保留选中的方向
         context.arbitrage_directions = [best_direction]
