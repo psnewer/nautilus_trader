@@ -318,8 +318,8 @@ class OddsSubscriptionService:
                 # 更新时间戳
                 self._last_updates_pm[pair_id] = time.time()
 
-                self._log.debug(
-                    f"Polymarket update: {pair_id} {market_type} "
+                self._log.info(
+                    f"Polymarket: {pair_id} {market_type} "
                     f"bid={odds_data.get('bid')} ask={odds_data.get('ask')}"
                 )
 
@@ -370,7 +370,7 @@ class OddsSubscriptionService:
             # 更新时间戳
             self._last_updates_oe[pair_id] = time.time()
 
-            self._log.debug(
+            self._log.info(
                 f"OrbitExch: {pair_id} {market_type} back={back} lay={lay}"
             )
 
