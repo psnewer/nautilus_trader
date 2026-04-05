@@ -58,6 +58,11 @@ class ArbitrageConfig:
             fx=data.get("fx", 1.27),
         )
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        self.share = data.get("share", self.share)
+        self.fx = data.get("fx", self.fx)
+
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
@@ -297,8 +302,8 @@ class AppState:
         return self._discovery_config_to_dict()
 
     def update_discovery_config(self, data: dict) -> dict:
-        """更新市场发现配置"""
-        self._discovery_config = MarketDiscoveryConfig.from_dict(data)
+        """更新市场发现配置（原地更新，保持引用不变）"""
+        self._discovery_config.update_from_dict(data)
         self._save_config()
         return self.get_discovery_config()
 
@@ -332,8 +337,8 @@ class AppState:
         return self._matching_config_to_dict()
 
     def update_matching_config(self, data: dict) -> dict:
-        """更新市场匹配配置"""
-        self._matching_config = MarketMatchingConfig.from_dict(data)
+        """更新市场匹配配置（原地更新，保持引用不变）"""
+        self._matching_config.update_from_dict(data)
         self._save_config()
         return self.get_matching_config()
 
@@ -358,8 +363,8 @@ class AppState:
         return self._odds_config.to_dict()
 
     def update_odds_config(self, data: dict) -> dict:
-        """更新赔率订阅配置"""
-        self._odds_config = OddsSubscriptionConfig.from_dict(data)
+        """更新赔率订阅配置（原地更新，保持引用不变）"""
+        self._odds_config.update_from_dict(data)
         self._save_config()
 
         # 如果赔率服务已创建，更新其配置
@@ -382,8 +387,8 @@ class AppState:
         return self._arbitrage_config.to_dict()
 
     def update_arbitrage_config(self, data: dict) -> dict:
-        """更新套利配置"""
-        self._arbitrage_config = ArbitrageConfig.from_dict(data)
+        """更新套利配置（原地更新，保持引用不变）"""
+        self._arbitrage_config.update_from_dict(data)
         self._save_config()
 
         # 同步更新策略服务的参数
@@ -438,7 +443,9 @@ class AppState:
         self._save_config()
 
         if self._execution_service is not None:
-            self._execution_service.update_config(self._build_execution_config())
+            self._execution_service.config.update_from_dict(
+                self._build_execution_config().to_dict()
+            )
 
         return self.get_execution_config()
 
@@ -633,13 +640,9 @@ class AppState:
         return self._strategy_config.to_dict()
 
     def update_strategy_config(self, data: dict) -> dict:
-        """更新策略配置"""
-        self._strategy_config = StrategyServiceConfig.from_dict(data)
+        """更新策略配置（原地更新，保持引用不变）"""
+        self._strategy_config.update_from_dict(data)
         self._save_config()
-
-        # 如果策略服务已创建，更新其配置
-        if self._strategy_service is not None:
-            self._strategy_service.update_config(self._strategy_config)
 
         return self.get_strategy_config()
 
@@ -846,13 +849,9 @@ class AppState:
         return self._risk_config.to_dict()
 
     def update_risk_config(self, data: dict) -> dict:
-        """更新风控配置"""
-        self._risk_config = RiskConfig.from_dict(data)
+        """更新风控配置（原地更新，保持引用不变）"""
+        self._risk_config.update_from_dict(data)
         self._save_config()
-
-        # 如果风控服务已创建，更新其配置
-        if self._risk_service is not None:
-            self._risk_service.update_config(self._risk_config)
 
         return self.get_risk_config()
 

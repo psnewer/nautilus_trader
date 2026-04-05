@@ -53,6 +53,12 @@ class OddsSubscriptionConfig:
         default_factory=lambda: ["home", "draw", "away"]
     )
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        for key, value in data.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OddsSubscriptionConfig":
         """从字典创建配置实例"""

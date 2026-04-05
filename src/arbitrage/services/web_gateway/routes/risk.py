@@ -43,24 +43,8 @@ async def get_risk_config():
 @router.put("/config")
 async def update_risk_config(config: RiskConfigUpdate):
     """更新风控配置"""
-    from src.arbitrage.services.risk import RiskConfig
-
-    risk_service = app_state.get_risk_service()
-    new_config = RiskConfig(
-        enabled=config.enabled,
-        execution_enabled=config.execution_enabled,
-        match_sl=config.match_sl,
-        global_sl=config.global_sl,
-        match_tp=config.match_tp,
-        match_overrides=config.match_overrides,
-    )
-    risk_service.update_config(new_config)
-
-    # 同时保存到 app_state 的配置文件
-    app_state._risk_config = new_config
-    app_state._save_config()
-
-    return {"status": "ok", "config": new_config.to_dict()}
+    result = app_state.update_risk_config(config.model_dump())
+    return {"status": "ok", "config": result}
 
 
 @router.get("/positions")
@@ -127,10 +111,6 @@ async def set_match_override(pair_id: str, override: MatchOverride):
     risk_service = app_state.get_risk_service()
     config = risk_service.config
     config.match_overrides[pair_id] = override.sl
-    risk_service.update_config(config)
-
-    # 同时保存到 app_state
-    app_state._risk_config = config
     app_state._save_config()
 
     return {"status": "ok", "pair_id": pair_id, "sl": override.sl}
@@ -144,10 +124,6 @@ async def delete_match_override(pair_id: str):
 
     if pair_id in config.match_overrides:
         del config.match_overrides[pair_id]
-        risk_service.update_config(config)
-
-        # 同时保存到 app_state
-        app_state._risk_config = config
         app_state._save_config()
 
     return {"status": "ok", "pair_id": pair_id}

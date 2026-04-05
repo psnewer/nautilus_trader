@@ -301,6 +301,16 @@ class StrategyServiceConfig:
             match_config=match_config,
         )
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        new = StrategyServiceConfig.from_dict(data)
+        self.enabled = new.enabled
+        self.default_strategies = new.default_strategies
+        self.signals = new.signals
+        self.strategies = new.strategies
+        self.competition_config = new.competition_config
+        self.match_config = new.match_config
+
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {

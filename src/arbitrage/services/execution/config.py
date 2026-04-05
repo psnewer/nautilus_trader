@@ -71,6 +71,12 @@ class ExecutionConfig:
     cleanup_merge_enabled: bool = True
     cleanup_claim_enabled: bool = True
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        for key, value in data.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExecutionConfig":
         """从字典创建配置实例"""
