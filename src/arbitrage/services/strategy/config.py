@@ -68,6 +68,7 @@ class StrategyDefinition:
     name: str
     signals: list[str] = field(default_factory=list)
     description: str = ""
+    strict_filter: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "StrategyDefinition":
@@ -77,6 +78,7 @@ class StrategyDefinition:
                 name=name,
                 signals=data.get("signals", []),
                 description=data.get("description", ""),
+                strict_filter=data.get("strict_filter", False),
             )
         elif isinstance(data, list):
             # 兼容直接传 signals 列表
@@ -88,6 +90,7 @@ class StrategyDefinition:
         return {
             "signals": self.signals,
             "description": self.description,
+            "strict_filter": self.strict_filter,
         }
 
 
@@ -431,10 +434,10 @@ class StrategyServiceConfig:
             name=name, params=params, description=description
         )
 
-    def add_strategy(self, name: str, signals: list[str], description: str = "") -> None:
+    def add_strategy(self, name: str, signals: list[str], description: str = "", strict_filter: bool = False) -> None:
         """添加 Strategy 定义"""
         self.strategies[name] = StrategyDefinition(
-            name=name, signals=signals, description=description
+            name=name, signals=signals, description=description, strict_filter=strict_filter
         )
 
     def set_competition_strategies(self, competition: str, strategies: list[str]) -> None:

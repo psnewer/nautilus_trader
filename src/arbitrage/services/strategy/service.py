@@ -337,7 +337,7 @@ class StrategyService:
             return False
 
         # 获取策略类实例
-        strategy = self._get_strategy_instance(strategy_name, strategy_def.signals)
+        strategy = self._get_strategy_instance(strategy_name, strategy_def.signals, strategy_def.strict_filter)
 
         # 创建信号计算器
         def signal_calculator(signal_name: str, ctx: MatchContext) -> SignalResult | None:
@@ -371,6 +371,7 @@ class StrategyService:
         self,
         strategy_name: str,
         signals: list[str],
+        strict_filter: bool = False,
     ) -> Strategy:
         """
         获取策略实例
@@ -380,6 +381,7 @@ class StrategyService:
         Args:
             strategy_name: 策略名称
             signals: 信号列表
+            strict_filter: 优先级筛选严格模式
 
         Returns:
             策略实例
@@ -388,10 +390,10 @@ class StrategyService:
         strategy_class = get_strategy_class(strategy_name)
 
         if strategy_class:
-            return strategy_class(name=strategy_name, signals=signals)
+            return strategy_class(name=strategy_name, signals=signals, strict_filter=strict_filter)
         else:
             # 使用默认策略
-            return DefaultStrategy(name=strategy_name, signals=signals)
+            return DefaultStrategy(name=strategy_name, signals=signals, strict_filter=strict_filter)
 
     def _calculate_signal(
         self,
