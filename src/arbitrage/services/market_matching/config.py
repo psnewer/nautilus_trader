@@ -102,6 +102,15 @@ class MarketMatchingConfig:
     competition_aliases: dict[str, str] = field(default_factory=lambda: DEFAULT_COMPETITION_ALIASES.copy())
     competition_max_matches: dict[str, int] = field(default_factory=dict)  # 每个 competition 的最大匹配数量
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        new = MarketMatchingConfig.from_dict(data)
+        self.enabled = new.enabled
+        self.min_similarity = new.min_similarity
+        self.sport_aliases = new.sport_aliases
+        self.competition_aliases = new.competition_aliases
+        self.competition_max_matches = new.competition_max_matches
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MarketMatchingConfig":
         """从字典创建配置实例"""

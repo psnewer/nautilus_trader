@@ -96,6 +96,14 @@ class MarketDiscoveryConfig:
     venues: VenueConfig = field(default_factory=VenueConfig)
     matching: MatchingConfig = field(default_factory=MatchingConfig)
 
+    def update_from_dict(self, data: dict[str, Any]) -> None:
+        """原地更新配置（保持引用不变）"""
+        new = MarketDiscoveryConfig.from_dict(data)
+        self.enabled = new.enabled
+        self.poll_interval_sec = new.poll_interval_sec
+        self.venues = new.venues
+        self.matching = new.matching
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MarketDiscoveryConfig":
         """从字典创建配置实例"""

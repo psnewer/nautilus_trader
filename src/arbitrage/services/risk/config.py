@@ -32,6 +32,16 @@ class RiskConfig:
         """获取指定比赛的止损阈值"""
         return self.match_overrides.get(pair_id, self.match_sl)
 
+    def update_from_dict(self, data: dict) -> None:
+        """原地更新配置（保持引用不变）"""
+        self.enabled = data.get("enabled", self.enabled)
+        self.execution_enabled = data.get("execution_enabled", self.execution_enabled)
+        self.match_sl = data.get("match_sl", self.match_sl)
+        self.global_sl = data.get("global_sl", self.global_sl)
+        self.match_tp = data.get("match_tp", self.match_tp)
+        self.match_overrides = data.get("match_overrides", self.match_overrides)
+        self.health_check_interval_sec = data.get("health_check_interval_sec", self.health_check_interval_sec)
+
     def to_dict(self) -> dict:
         return {
             "enabled": self.enabled,
