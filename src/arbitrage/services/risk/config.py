@@ -62,5 +62,5 @@ class RiskConfig:
             global_sl=data.get("global_sl", -0.50),
             match_tp=data.get("match_tp", 0.10),
             match_overrides=data.get("match_overrides", {}),
-            health_check_interval_sec=data.get("health_check_interval_sec", 30.0),
+            health_check_interval_sec=data.get("health_check_interval_sec", 120.0),
         )

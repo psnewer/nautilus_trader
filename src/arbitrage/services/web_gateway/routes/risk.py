@@ -19,6 +19,7 @@ class RiskConfigUpdate(BaseModel):
     global_sl: float = -0.50
     match_tp: float = 0.10
     match_overrides: dict[str, float] = {}
+    health_check_interval_sec: float = 120.0
 
 
 class MatchOverride(BaseModel):
