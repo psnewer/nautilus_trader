@@ -151,10 +151,10 @@ class Strategy(ABC):
                 return None
             return context.way_rebate_by_venue.get(rebate_venue, {}).get(market_type)
 
-        # 优先级 1：仅保留平台维度负返水方向
+        # 优先级 1：仅保留平台维度返水率 <= 0 的方向
         negative_directions = [
             d for d in directions
-            if (get_venue_way_rebate(d) is not None and get_venue_way_rebate(d) < 0)
+            if (get_venue_way_rebate(d) is not None and get_venue_way_rebate(d) <= 0)
         ]
         candidates = negative_directions if negative_directions else list(directions)
 
