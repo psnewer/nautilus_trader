@@ -929,6 +929,12 @@ class ExecutionService:
             self._log.warning(f"Opportunity {opportunity_id}: invalid target shares {target_shares}")
             return
 
+        # 验证 5: Polymarket client 是否被占用
+        has_polymarket = any(leg.get("venue") == "polymarket" for leg in legs)
+        if has_polymarket and self._polymarket_executor and self._polymarket_executor._client_lock.locked():
+            self._log.warning(f"Opportunity {opportunity_id}: Polymarket client busy, skipping")
+            return
+
         # ==== 所有验证通过，锁定 pair 并执行 ====
 
         if pair_id:

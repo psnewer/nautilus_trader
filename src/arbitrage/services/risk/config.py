@@ -26,7 +26,7 @@ class RiskConfig:
     global_sl: float = -0.50  # -50%
     match_tp: float = 0.10   # 10%
     match_overrides: dict[str, float] = field(default_factory=dict)
-    health_check_interval_sec: float = 30.0  # 健康检查间隔（秒）
+    health_check_interval_sec: float = 120.0  # 健康检查间隔（秒）
 
     def get_match_sl(self, pair_id: str) -> float:
         """获取指定比赛的止损阈值"""
