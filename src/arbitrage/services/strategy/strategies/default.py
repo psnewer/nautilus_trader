@@ -19,16 +19,18 @@ class DefaultStrategy(Strategy):
     信号列表通过配置文件指定。
     """
 
-    def __init__(self, name: str = "default", signals: list[str] | None = None):
+    def __init__(self, name: str = "default", signals: list[str] | None = None, strict_filter: bool = False):
         """
         初始化策略
 
         Args:
             name: 策略名称
             signals: 信号列表
+            strict_filter: 优先级筛选严格模式
         """
         self._name = name
         self._signals = signals or []
+        self._strict_filter = strict_filter
 
     @property
     def name(self) -> str:
@@ -37,3 +39,7 @@ class DefaultStrategy(Strategy):
     @property
     def signals(self) -> list[str]:
         return self._signals
+
+    @property
+    def strict_filter(self) -> bool:
+        return self._strict_filter

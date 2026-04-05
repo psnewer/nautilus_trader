@@ -98,7 +98,7 @@
     "default_order_type": "GTC",
     "discount": 1.0,
     "take_off": 0.0,
-    "market_order_enabled": false,
+    "market_order_enabled": true,
     "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
     "max_failure_retries": 5,
@@ -146,20 +146,23 @@
           "rebate",
           "pre-match"
         ],
-        "description": "\u8d5b\u524d\u5957\u5229\u7b56\u7565"
+        "description": "\u8d5b\u524d\u5957\u5229\u7b56\u7565",
+        "strict_filter": false
       },
       "strategy_2": {
         "signals": [
           "rebate",
           "live"
         ],
-        "description": "\u8d5b\u4e2d\u5957\u5229\u7b56\u7565"
+        "description": "\u8d5b\u4e2d\u5957\u5229\u7b56\u7565",
+        "strict_filter": false
       },
       "default": {
         "signals": [
           "mean_rebate"
         ],
-        "description": "\u9ed8\u8ba4\u7b56\u7565\uff08\u4ec5\u68c0\u67e5\u8fd4\u6c34\u7387\uff09"
+        "description": "\u9ed8\u8ba4\u7b56\u7565\uff08\u4ec5\u68c0\u67e5\u8fd4\u6c34\u7387\uff09",
+        "strict_filter": true
       }
     },
     "competition_config": {},

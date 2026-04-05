@@ -133,4 +133,8 @@ output/
  
 # Config System 
 config/config.yaml 
-output/ 
+output/
+
+# Log
+*.out
+*.log 

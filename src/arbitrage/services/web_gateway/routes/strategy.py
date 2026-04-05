@@ -30,6 +30,7 @@ class StrategyDefinitionUpdate(BaseModel):
     """Strategy 定义更新"""
     signals: list[str] = []
     description: str = ""
+    strict_filter: bool = False
 
 
 class CompetitionConfigUpdate(BaseModel):
@@ -127,7 +128,7 @@ async def update_strategy_definition(strategy_name: str, body: StrategyDefinitio
     """更新或添加 Strategy 定义"""
     try:
         config = app_state.strategy_config_obj
-        config.add_strategy(strategy_name, body.signals, body.description)
+        config.add_strategy(strategy_name, body.signals, body.description, body.strict_filter)
         app_state.update_strategy_config(config.to_dict())
         return {"strategy_name": strategy_name, **body.model_dump()}
     except Exception as e:

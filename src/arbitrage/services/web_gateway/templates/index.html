@@ -404,6 +404,13 @@
                                 <label class="form-label">Description</label>
                                 <input type="text" class="form-control" id="modal-strategy-description" placeholder="Strategy description">
                             </div>
+                            <div class="mb-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="modal-strategy-strict-filter">
+                                    <label class="form-check-label" for="modal-strategy-strict-filter">Strict Filter</label>
+                                </div>
+                                <small class="text-muted">When enabled, blocks opportunity if no direction has way_rebate &lt;= 0</small>
+                            </div>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1697,6 +1704,7 @@
         function showAddStrategyModal() {
             document.getElementById('modal-strategy-name').value = '';
             document.getElementById('modal-strategy-description').value = '';
+            document.getElementById('modal-strategy-strict-filter').checked = false;
             renderStrategySignalsCheckboxes([]);
             new bootstrap.Modal(document.getElementById('addStrategyModal')).show();
         }
@@ -1705,6 +1713,7 @@
             const strat = strategyConfig.strategies[name] || {};
             document.getElementById('modal-strategy-name').value = name;
             document.getElementById('modal-strategy-description').value = strat.description || '';
+            document.getElementById('modal-strategy-strict-filter').checked = strat.strict_filter || false;
             renderStrategySignalsCheckboxes(strat.signals || []);
             new bootstrap.Modal(document.getElementById('addStrategyModal')).show();
         }
@@ -1732,6 +1741,7 @@
             try {
                 const name = document.getElementById('modal-strategy-name').value.trim();
                 const description = document.getElementById('modal-strategy-description').value.trim();
+                const strict_filter = document.getElementById('modal-strategy-strict-filter').checked;
                 const signals = [];
                 document.querySelectorAll('.strategy-signal-checkbox:checked').forEach(cb => {
                     signals.push(cb.value);
@@ -1742,7 +1752,7 @@
                     return;
                 }
 
-                await api(`/api/strategy/strategies/${name}`, 'PUT', { signals, description });
+                await api(`/api/strategy/strategies/${name}`, 'PUT', { signals, description, strict_filter });
                 bootstrap.Modal.getInstance(document.getElementById('addStrategyModal')).hide();
                 showToast(`Strategy "${name}" saved`, 'success');
                 await loadStrategyConfig();
