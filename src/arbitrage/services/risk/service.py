@@ -203,10 +203,11 @@ class RiskService:
         pm_ok = False
         if exec_svc and exec_svc._polymarket_executor._client:
             try:
-                client = exec_svc._polymarket_executor._client
+                pm_executor = exec_svc._polymarket_executor
+                client = pm_executor._client
 
-                # 健康检查
-                await asyncio.to_thread(client.get_ok)
+                # 健康检查（通过 executor 的锁序列化，避免与下单冲突）
+                await pm_executor._call_client(client.get_ok)
 
                 # 查询余额
                 from py_clob_client.client import BalanceAllowanceParams
@@ -217,7 +218,7 @@ class RiskService:
                     asset_type=AssetType.COLLATERAL,
                     signature_type=2,
                 )
-                response = await asyncio.to_thread(
+                response = await pm_executor._call_client(
                     client.get_balance_allowance, params
                 )
                 balance_raw = int(response.get("balance", 0))

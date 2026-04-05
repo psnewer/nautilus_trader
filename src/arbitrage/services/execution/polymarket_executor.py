@@ -54,6 +54,12 @@ class PolymarketExecutor:
 
         # CLOB 客户端
         self._client: ClobClient | None = None
+        self._client_lock = asyncio.Lock()  # 序列化所有 client 调用，避免 HTTP/2 连接池冲突
+
+    async def _call_client(self, func, *args, **kwargs):
+        """序列化调用 client 方法，避免 HTTP/2 连接池冲突"""
+        async with self._client_lock:
+            return await asyncio.to_thread(func, *args, **kwargs)
 
         # 检查依赖
         if not HAS_CLOB_CLIENT:
@@ -172,7 +178,7 @@ class PolymarketExecutor:
                     side=side,
                     price=slippage_price,
                 )
-                signed_order = await asyncio.to_thread(
+                signed_order = await self._call_client(
                     self._client.create_market_order,
                     market_order_args,
                 )
@@ -190,13 +196,13 @@ class PolymarketExecutor:
                     f"side={side}, price={order.price}, size={order.size}"
                 )
 
-                # 创建并签名订单（使用线程池避免阻塞 event loop）
-                signed_order = await asyncio.to_thread(
+                # 创建并签名订单
+                signed_order = await self._call_client(
                     self._client.create_order, order_args
                 )
 
-            # 提交订单（使用线程池避免阻塞 event loop）
-            response = await asyncio.to_thread(
+            # 提交订单
+            response = await self._call_client(
                 self._client.post_order, signed_order, clob_order_type
             )
 
@@ -280,7 +286,7 @@ class PolymarketExecutor:
         try:
             self._log.info(f"Cancelling order: {order.venue_order_id}")
 
-            response = await asyncio.to_thread(
+            response = await self._call_client(
                 self._client.cancel, order.venue_order_id
             )
 
