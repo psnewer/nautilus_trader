@@ -458,22 +458,12 @@ class PolymarketOddsClient:
                 await self._connect_websocket()
 
                 # 接收消息循环
-                # 接收消息计数（用于诊断）
-                message_count = 0
                 async for message in self._ws:
                     if not self._running:
                         break
 
-                    message_count += 1
                     try:
                         data = json.loads(message)
-                        # 每10条消息记录一次，避免日志过多
-                        if message_count % 10 == 1:
-                            msg_type = "list" if isinstance(data, list) else data.get('event_type', 'dict')
-                            self._log.info(
-                                f"Market Channel messages received: {message_count}, "
-                                f"latest type: {msg_type}"
-                            )
                         await self._handle_message(data)
                     except json.JSONDecodeError:
                         self._log.warning(f"Invalid JSON message: {message[:100]}")
