@@ -250,7 +250,6 @@ class ExecutionOrchestrator:
             return
 
         session.update_phase(SessionPhase.OPERATING)
-        self._tracker.take_snapshot(initial_plan.operations)
         operation_results = await self._execute_operations(session, initial_plan)
 
         session.update_phase(SessionPhase.TRACKING)
@@ -586,7 +585,6 @@ class ExecutionOrchestrator:
                 # 3. 执行
                 # =============================================
                 session.update_phase(SessionPhase.OPERATING)
-                self._tracker.take_snapshot(plan.operations)
                 operation_results = await self._execute_operations(session, plan)
 
                 # =============================================
