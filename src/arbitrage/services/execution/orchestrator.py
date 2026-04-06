@@ -261,33 +261,34 @@ class ExecutionOrchestrator:
 
         all_tracking_results.extend(tracking_result.results)
         session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
-        if self._has_tracking_failure(operation_results, tracking_result):
-            if not session.increment_failure():
-                session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
-                return
 
         initial_plan_operations = [
             op for op in initial_plan.operations
             if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
         ]
 
-        if self._is_plan_operations_filled(all_tracking_results, initial_plan_operations):
+        if self._has_tracking_failure(operation_results, tracking_result):
+            # tracking 失败，跳过后续判断直接进入 recovery
+            if not session.increment_failure():
+                session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+                return
+        elif self._is_plan_operations_filled(all_tracking_results, initial_plan_operations):
             self._log.info(f"Session {session.session_id}: initial plan operations filled")
             session.complete(SessionEndReason.TARGET_MET)
             return
-
-        # 用 TrackingResult 判断 zero fill（不依赖 fetch_positions）
-        any_matched = any(r.size_matched > 0 for r in all_tracking_results)
-        if not any_matched:
-            if session.has_open_orders:
-                self._log.info(
-                    f"Session {session.session_id}: zero fill but pending orders, "
-                    f"entering recovery"
-                )
-            else:
-                self._log.info(f"Session {session.session_id}: zero fill, minimal loss")
-                session.complete(SessionEndReason.ZERO_FILL)
-                return
+        else:
+            # 用 TrackingResult 判断 zero fill（不依赖 fetch_positions）
+            any_matched = any(r.size_matched > 0 for r in all_tracking_results)
+            if not any_matched:
+                if session.has_open_orders:
+                    self._log.info(
+                        f"Session {session.session_id}: zero fill but pending orders, "
+                        f"entering recovery"
+                    )
+                else:
+                    self._log.info(f"Session {session.session_id}: zero fill, minimal loss")
+                    session.complete(SessionEndReason.ZERO_FILL)
+                    return
 
         # === Recovery 循环 ===
         # 初始阶段：last 和 current 都是 strategy 传入的目标
@@ -635,6 +636,7 @@ class ExecutionOrchestrator:
                 if not session.increment_failure():
                     session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
                     return
+                await asyncio.sleep(30)
                 continue
 
         # 循环结束
