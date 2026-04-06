@@ -197,6 +197,16 @@ class RiskService:
 
     async def _run_health_check(self) -> None:
         """执行一次健康检查"""
+        # 有活跃 pair 时跳过（execution 或 risk 正在操作）
+        if self._odds_service and self._odds_service._pair_activity:
+            active_pairs = [
+                pid for pid in self._odds_service._pair_activity
+                if self._odds_service._is_pair_active(pid)
+            ]
+            if active_pairs:
+                self._log.debug(f"Skipping health check: active pairs {active_pairs}")
+                return
+
         old_ok = self._health_ok
         exec_svc = self._execution_service
 

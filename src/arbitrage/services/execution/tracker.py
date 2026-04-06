@@ -259,13 +259,7 @@ class OrderTracker:
             elapsed = time.time() - start_time
             remaining_time = self._timeout - elapsed
 
-        # 超时后，无论是否已全部成交，都刷新数据确认成交情况
-        self._log.info(
-            f"Tracking ended (all_filled={self._all_fully_filled()}), "
-            f"refreshing to confirm"
-        )
-        await self._refresh_and_diff()
-
+        self._log.info(f"Tracking ended (all_filled={self._all_fully_filled()})")
         return self._summarize_results()
 
     def _all_fully_filled(self) -> bool:

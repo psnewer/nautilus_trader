@@ -750,7 +750,7 @@ class PolymarketOddsClient:
             "POLY_PASSPHRASE": self.config.polymarket_passphrase,
         }
 
-    async def fetch_positions(self) -> list[PolymarketPosition]:
+    async def fetch_positions(self) -> list[PolymarketPosition] | None:
         """
         从 Data API 获取用户持仓
 
@@ -843,8 +843,8 @@ class PolymarketOddsClient:
                 return positions
 
         except Exception as e:
-            self._log.error(f"Failed to fetch positions: {e}")
-            return []
+            self._log.error(f"Failed to fetch positions: {type(e).__name__}: {e}")
+            return None
 
     async def fetch_open_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
         """

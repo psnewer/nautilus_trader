@@ -260,11 +260,11 @@ class ExecutionOrchestrator:
         )
 
         all_tracking_results.extend(tracking_result.results)
-        await self._update_session_filled(session, position_snapshot)
         session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
-        if self._should_fail_for_tracking(session, operation_results, tracking_result):
-            session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
-            return
+        if self._has_tracking_failure(operation_results, tracking_result):
+            if not session.increment_failure():
+                session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+                return
 
         initial_plan_operations = [
             op for op in initial_plan.operations
@@ -276,7 +276,9 @@ class ExecutionOrchestrator:
             session.complete(SessionEndReason.TARGET_MET)
             return
 
-        if session.is_zero_fill():
+        # 用 TrackingResult 判断 zero fill（不依赖 fetch_positions）
+        any_matched = any(r.size_matched > 0 for r in all_tracking_results)
+        if not any_matched:
             if session.has_open_orders:
                 self._log.info(
                     f"Session {session.session_id}: zero fill but pending orders, "
@@ -497,9 +499,8 @@ class ExecutionOrchestrator:
         1. 刷新成交 → 检查 last_plan_operations 是否全部成交 → 是则结束
         2. 检查挂单 → 有挂单则先撤单
         3. 无挂单 → 规划新订单 → last = current, current = 新目标，更新对应操作列表
-        4. 操作前新成交检查 → 有变化则回到步骤 1（检查 last）
-        5. 执行 → 追踪
-        6. 撤单轮：回到步骤 1；下单轮：检查 current 是否全部成交
+        4. 执行 → 追踪
+        5. 撤单轮：回到步骤 1；下单轮：检查 current 是否全部成交
 
         Args:
             session: 执行会话
@@ -516,129 +517,125 @@ class ExecutionOrchestrator:
                 f"Session {session.session_id}: recovery round {session.retry_count}"
             )
 
-            # =============================================
-            # 1. 刷新成交，检查上一轮规划是否全部成交
-            # =============================================
-            await self._refresh_tracking_results(all_tracking_results, session_start_ms)
-            await self._update_session_filled(session, position_snapshot)
-            session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
+            try:
+                # =============================================
+                # 1. 刷新成交，检查上一轮规划是否全部成交
+                # =============================================
+                await self._refresh_tracking_results(all_tracking_results, session_start_ms)
+                await self._update_session_filled(session, position_snapshot)
+                session.has_open_orders = bool(self._get_pending_results(all_tracking_results))
 
-            if self._is_plan_operations_filled(all_tracking_results, last_plan_operations):
-                self._log.info(
-                    f"Session {session.session_id}: last plan operations filled"
-                )
-                session.complete(SessionEndReason.TARGET_MET)
-                return
-
-            # =============================================
-            # 2. 检查挂单（size_remaining > 0 的订单）
-            # =============================================
-            pending = self._get_pending_results(all_tracking_results)
-
-            if pending:
-                # 有挂单 → 本轮只做撤单
-                self._log.info(
-                    f"Session {session.session_id}: {len(pending)} pending orders, cancelling"
-                )
-                plan = self._create_cancel_plan(pending)
-            else:
-                # 无挂单 → 规划新订单
-                current_probs = self._get_probabilities(session.pair_id)
-                if not current_probs:
-                    self._log.error(f"Session {session.session_id}: cannot get probabilities")
-                    session.fail(SessionEndReason.ERROR)
-                    return
-
-                session.update_phase(SessionPhase.PLANNING)
-                plan = self._planner.plan_recovery(
-                    session=session,
-                    current_probabilities=OutcomeProbabilities.from_dict(current_probs),
-                    pending_orders=[],
-                    order_info_getter=self._get_order_info,
-                )
-
-                if not plan.operations:
-                    self._log.info(f"Session {session.session_id}: no recovery operations needed")
-                    break
-
-                # 无挂单且新规划订单不满足最小 size → 上一轮订单全部完成
-                if self._recovery_below_min_size(plan):
+                if self._is_plan_operations_filled(all_tracking_results, last_plan_operations):
                     self._log.info(
-                        f"Session {session.session_id}: recovery orders below minimum size, "
-                        f"considering previous plan complete"
+                        f"Session {session.session_id}: last plan operations filled"
                     )
                     session.complete(SessionEndReason.TARGET_MET)
                     return
 
-                # 旧的 current 变成 last，新规划变成 current
-                last_plan_target = current_plan_target
-                current_plan_target = OutcomeShares.from_dict(session.adjusted_target.to_dict())
-                last_plan_operations = current_plan_operations
-                current_plan_operations = [
-                    op for op in plan.operations
-                    if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
-                ]
+                # =============================================
+                # 2. 检查挂单（size_remaining > 0 的订单）
+                # =============================================
+                pending = self._get_pending_results(all_tracking_results)
 
-            # =============================================
-            # 3. 操作前新成交检查
-            # =============================================
-            old_filled = session.filled.to_dict()
-            await self._refresh_tracking_results(all_tracking_results, session_start_ms)
-            await self._update_session_filled(session, position_snapshot)
+                if pending:
+                    # 有挂单 → 本轮只做撤单
+                    self._log.info(
+                        f"Session {session.session_id}: {len(pending)} pending orders, cancelling"
+                    )
+                    plan = self._create_cancel_plan(pending)
+                else:
+                    # 无挂单 → 规划新订单
+                    current_probs = self._get_probabilities(session.pair_id)
+                    if not current_probs:
+                        self._log.error(f"Session {session.session_id}: cannot get probabilities")
+                        session.fail(SessionEndReason.ERROR)
+                        return
 
-            if session.filled.to_dict() != old_filled:
-                self._log.info(
-                    f"Session {session.session_id}: new fills during planning, "
-                    f"old={old_filled}, new={session.filled.to_dict()}, re-planning"
+                    session.update_phase(SessionPhase.PLANNING)
+                    plan = self._planner.plan_recovery(
+                        session=session,
+                        current_probabilities=OutcomeProbabilities.from_dict(current_probs),
+                        pending_orders=[],
+                        order_info_getter=self._get_order_info,
+                    )
+
+                    if not plan.operations:
+                        self._log.info(f"Session {session.session_id}: no recovery operations needed")
+                        break
+
+                    # 无挂单且新规划订单不满足最小 size → 上一轮订单全部完成
+                    if self._recovery_below_min_size(plan):
+                        self._log.info(
+                            f"Session {session.session_id}: recovery orders below minimum size, "
+                            f"considering previous plan complete"
+                        )
+                        session.complete(SessionEndReason.TARGET_MET)
+                        return
+
+                    # 旧的 current 变成 last，新规划变成 current
+                    last_plan_target = current_plan_target
+                    current_plan_target = OutcomeShares.from_dict(session.adjusted_target.to_dict())
+                    last_plan_operations = current_plan_operations
+                    current_plan_operations = [
+                        op for op in plan.operations
+                        if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+                    ]
+
+                # =============================================
+                # 3. 执行
+                # =============================================
+                session.update_phase(SessionPhase.OPERATING)
+                self._tracker.take_snapshot(plan.operations)
+                operation_results = await self._execute_operations(session, plan)
+
+                # =============================================
+                # 4. 追踪
+                # =============================================
+                session.update_phase(SessionPhase.TRACKING)
+                tracking_result = await self._tracker.track_operations(
+                    plan.operations,
+                    operation_results,
                 )
-                # 回到循环顶部，检查 last_plan_operations 是否全部成交
-                continue
+                if self._has_tracking_failure(operation_results, tracking_result):
+                    if not session.increment_failure():
+                        session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+                        return
+                    continue
 
-            # =============================================
-            # 4. 执行
-            # =============================================
-            session.update_phase(SessionPhase.OPERATING)
-            self._tracker.take_snapshot(plan.operations)
-            operation_results = await self._execute_operations(session, plan)
+                # =============================================
+                # 5. 根据操作类型处理结果
+                # =============================================
+                if plan.has_cancels:
+                    # 撤单轮：标记已撤销，回到循环顶部进入新规划
+                    confirmed_cancel_ids = {
+                        r.venue_order_id
+                        for r in tracking_result.results
+                        if r.operation.operation_type == OperationType.CANCEL
+                        and r.status == TrackingStatus.CONFIRMED
+                        and r.venue_order_id
+                    }
+                    self._mark_cancelled(all_tracking_results, pending, confirmed_cancel_ids)
+                    self._log.info(f"Session {session.session_id}: cancels done, re-planning")
+                    continue
 
-            # =============================================
-            # 5. 追踪
-            # =============================================
-            session.update_phase(SessionPhase.TRACKING)
-            tracking_result = await self._tracker.track_operations(
-                plan.operations,
-                operation_results,
-            )
-            if self._should_fail_for_tracking(session, operation_results, tracking_result):
-                session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
-                return
+                # 下单/修改轮：累加追踪结果
+                all_tracking_results.extend(tracking_result.results)
 
-            # =============================================
-            # 6. 根据操作类型处理结果
-            # =============================================
-            if plan.has_cancels:
-                # 撤单轮：标记已撤销，回到循环顶部进入新规划
-                confirmed_cancel_ids = {
-                    r.venue_order_id
-                    for r in tracking_result.results
-                    if r.operation.operation_type == OperationType.CANCEL
-                    and r.status == TrackingStatus.CONFIRMED
-                    and r.venue_order_id
-                }
-                self._mark_cancelled(all_tracking_results, pending, confirmed_cancel_ids)
-                self._log.info(f"Session {session.session_id}: cancels done, re-planning")
-                continue
+                if self._is_plan_operations_filled(all_tracking_results, current_plan_operations):
+                    self._log.info(
+                        f"Session {session.session_id}: current plan operations filled"
+                    )
+                    session.complete(SessionEndReason.TARGET_MET)
+                    return
 
-            # 下单/修改轮：累加追踪结果
-            all_tracking_results.extend(tracking_result.results)
-            await self._update_session_filled(session, position_snapshot)
-
-            if self._is_plan_operations_filled(all_tracking_results, current_plan_operations):
-                self._log.info(
-                    f"Session {session.session_id}: current plan operations filled"
+            except Exception as e:
+                self._log.error(
+                    f"Session {session.session_id}: recovery round error: {e}"
                 )
-                session.complete(SessionEndReason.TARGET_MET)
-                return
+                if not session.increment_failure():
+                    session.fail(SessionEndReason.MAX_FAILURE_RETRIES)
+                    return
+                continue
 
         # 循环结束
         if session.needs_recovery():
@@ -703,14 +700,13 @@ class ExecutionOrchestrator:
 
         return True
 
-    def _should_fail_for_tracking(
+    def _has_tracking_failure(
         self,
-        session: ExecutionSession,
         operation_results: list[dict],
         tracking_result: BatchTrackingResult,
     ) -> bool:
         """
-        根据操作反馈与追踪结果判断是否累计失败次数
+        检查操作或追踪结果中是否有失败
 
         失败条件：
         - 操作结果中存在 success=False
@@ -724,19 +720,7 @@ class ExecutionOrchestrator:
             result.status in {TrackingStatus.FAILED, TrackingStatus.TIMEOUT}
             for result in tracking_result.results
         )
-
-        if not has_failure:
-            return False
-
-        if session.increment_failure():
-            self._log.warning(
-                f"Session {session.session_id}: failure retry "
-                f"{session.failure_count}/{session.max_failure_retries}"
-            )
-            return False
-
-        self._log.warning(f"Session {session.session_id}: max failure retries reached")
-        return True
+        return has_failure
 
     async def _take_position_snapshot(
         self,
@@ -821,23 +805,33 @@ class ExecutionOrchestrator:
         current = {"home": 0.0, "draw": 0.0, "away": 0.0}
         fx = self._get_fx() if self._get_fx else 1.0
 
-        # Polymarket: 获取最新持仓
+        # Polymarket: 获取最新持仓（REST API fetch）
         if self._tracker._polymarket_client:
             try:
-                await self._tracker._polymarket_client.fetch_positions()
+                result = await self._tracker._polymarket_client.fetch_positions()
+                if result is None:
+                    # fetch 失败（网络错误等），跳过整个 filled 更新
+                    self._log.warning(
+                        f"Session {session.session_id}: fetch_positions failed, "
+                        f"keeping existing filled data"
+                    )
+                    return
                 positions = self._tracker._polymarket_client._positions or {}
                 for market_type in current:
                     venue = session.outcome_venues.get(market_type, "")
                     if venue == "polymarket":
-                        # 找到对应 token 的持仓
                         for pos in positions.values():
                             if pos.market_type == market_type:
                                 current[market_type] = pos.size
                                 break
             except Exception as e:
-                self._log.warning(f"Failed to fetch Polymarket positions: {e}")
+                self._log.warning(
+                    f"Session {session.session_id}: fetch_positions exception: {e}, "
+                    f"keeping existing filled data"
+                )
+                return
 
-        # OrbitExch: 获取最新 bets
+        # OrbitExch: 读取本地缓存 bets
         if self._tracker._orbitexch_client:
             try:
                 for market_type in current:
@@ -856,13 +850,13 @@ class ExecutionOrchestrator:
                         if (str(bet.get("selectionId")) == selection_id
                                 and bet.get("side", "").upper() == "BACK"):
                             matched = float(bet.get("sizeMatched", 0))
-                            odds = float(bet.get("price", 0))
-                            if odds > 0:
-                                current[market_type] += matched * odds * fx
-                            else:
-                                current[market_type] += matched * fx
+                            if matched <= 0:
+                                continue
+                            # averagePrice 是实际成交均价，price 是下单请求价
+                            odds = float(bet.get("averagePrice", 0) or bet.get("price", 0))
+                            current[market_type] += matched * odds * fx
             except Exception as e:
-                self._log.warning(f"Failed to fetch OrbitExch bets: {e}")
+                self._log.warning(f"Failed to read OrbitExch bets cache: {e}")
 
         # filled = 当前持仓 - 快照
         filled = {}
@@ -978,6 +972,13 @@ class ExecutionOrchestrator:
             all_results: 全 session 的追踪结果列表（就地更新）
             session_start_ms: session 开始时间戳（毫秒）
         """
+        # 先刷新 Polymarket 订单缓存
+        if self._tracker._polymarket_client:
+            try:
+                await self._tracker._polymarket_client.fetch_open_orders()
+            except Exception as e:
+                self._log.warning(f"Failed to fetch open orders: {e}")
+
         for result in all_results:
             if result.status == TrackingStatus.FAILED:
                 continue  # 失败的操作不需要重新查询

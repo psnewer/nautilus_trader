@@ -490,19 +490,30 @@ class PositionManager:
             if size_matched <= 0:
                 continue
 
-            price = float(bet.get("price", 0))
+            # averagePrice 是实际成交均价，price 是下单请求价
+            avg_price = float(bet.get("averagePrice", 0) or bet.get("price", 0))
             side = bet.get("side", "BACK")
 
-            # 使用 size 和 price 自行计算盈亏，不依赖 API 的 marketProfit/marketLiability
-            # OrbitExch profit_if_wins = size * (price - 1), loss_if_loses = size
+            # 用 marketProfit / marketLiability 作为真实盈亏
+            market_profit = float(bet.get("marketProfit", 0))
+            market_liability = float(bet.get("marketLiability", 0))
+
+            profit_override = None
+            loss_override = None
+            if market_profit > 0 or market_liability > 0:
+                profit_override = market_profit * self._fx
+                loss_override = market_liability * self._fx
+
             # 添加持仓
             position = self.get_or_create_position(pair_id)
             position.add_leg(PositionLeg(
                 venue="orbitexch",
                 market_type=market_type,
                 size=size_matched,
-                price=price,
+                price=avg_price,
                 fx=self._fx,
+                profit_override=profit_override,
+                loss_override=loss_override,
             ))
             count += 1
 
