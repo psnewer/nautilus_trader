@@ -813,9 +813,14 @@ class ExecutionService:
         if not self._orchestrator or not self._odds_service:
             return
         try:
-            self._orchestrator.set_polymarket_client(
-                self._odds_service.get_polymarket_client()
-            )
+            polymarket_client = self._odds_service.get_polymarket_client()
+
+            # 注入到 executor（下单/撤单）
+            self._polymarket_executor.set_polymarket_client(polymarket_client)
+
+            # 注入到 orchestrator（fetch_positions）
+            self._orchestrator.set_polymarket_client(polymarket_client)
+
             self._orchestrator.set_orbitexch_client(
                 self._odds_service.get_orbitexch_client()
             )
@@ -931,7 +936,8 @@ class ExecutionService:
 
         # 验证 5: Polymarket client 是否被占用
         has_polymarket = any(leg.get("venue") == "polymarket" for leg in legs)
-        if has_polymarket and self._polymarket_executor and self._polymarket_executor._client_lock.locked():
+        polymarket_client = self._odds_service.get_polymarket_client() if self._odds_service else None
+        if has_polymarket and polymarket_client and polymarket_client._api_lock.locked():
             self._log.warning(f"Opportunity {opportunity_id}: Polymarket client busy, skipping")
             return
 

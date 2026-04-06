@@ -29,6 +29,14 @@ try:
 except ImportError:
     websockets = None
 
+# 尝试导入 py-clob-client
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds
+    HAS_CLOB_CLIENT = True
+except ImportError:
+    HAS_CLOB_CLIENT = False
+    ClobClient = None
 
 from .config import OddsSubscriptionConfig
 
@@ -156,6 +164,88 @@ class PolymarketOddsClient:
 
         # 锁：防止并行订阅时的竞态条件
         self._ws_lock = asyncio.Lock()
+        # 统一锁：序列化所有 Polymarket API 调用（REST + ClobClient）
+        self._api_lock = asyncio.Lock()
+
+        # ClobClient 实例（由 ExecutionService 通过 initialize_clob_client 初始化）
+        self._clob_client: ClobClient | None = None
+
+    # =========================================================================
+    # 统一 API 执行封装
+    # =========================================================================
+
+    async def _call_api(self, coro_or_func, *args, **kwargs):
+        """
+        统一 API 执行封装，所有 Polymarket API 调用都通过此方法。
+        内部加锁，各操作函数不需要单独做同步。
+
+        支持两种调用方式：
+        - 协程: await _call_api(some_async_func, arg1, arg2)
+        - 同步函数(ClobClient): await _call_api(self._clob_client.create_order, args)
+          → 自动用 asyncio.to_thread 包装
+        """
+        async with self._api_lock:
+            if asyncio.iscoroutinefunction(coro_or_func):
+                return await coro_or_func(*args, **kwargs)
+            else:
+                # ClobClient 的同步方法，用线程池执行
+                return await asyncio.to_thread(coro_or_func, *args, **kwargs)
+
+    def initialize_clob_client(self, execution_config) -> bool:
+        """
+        用 ExecutionConfig 初始化 ClobClient
+
+        Args:
+            execution_config: ExecutionConfig 实例
+
+        Returns:
+            是否初始化成功
+        """
+        if not HAS_CLOB_CLIENT:
+            self._log.error("py-clob-client not installed")
+            return False
+
+        if not execution_config.polymarket_private_key:
+            self._log.error("Polymarket private key not configured")
+            return False
+
+        try:
+            funder = execution_config.polymarket_funder or None
+            self._clob_client = ClobClient(
+                host=execution_config.polymarket_clob_url,
+                key=execution_config.polymarket_private_key,
+                chain_id=137,  # Polygon mainnet
+                signature_type=2,
+                funder=funder,
+            )
+            self._log.info(f"ClobClient initialized: signature_type=2, funder={funder}")
+
+            self._clob_client.set_api_creds(ApiCreds(
+                api_key=execution_config.polymarket_clob_api_key,
+                api_secret=execution_config.polymarket_clob_secret,
+                api_passphrase=execution_config.polymarket_clob_passphrase,
+            ))
+
+            self._log.info("ClobClient credentials set")
+            return True
+
+        except Exception as e:
+            self._log.error(f"Failed to initialize ClobClient: {e}")
+            return False
+
+    async def create_and_post_order(self, order_args, order_type) -> dict:
+        """创建并提交限价订单"""
+        signed = await self._call_api(self._clob_client.create_order, order_args)
+        return await self._call_api(self._clob_client.post_order, signed, order_type)
+
+    async def create_and_post_market_order(self, market_order_args, order_type) -> dict:
+        """创建并提交市价订单"""
+        signed = await self._call_api(self._clob_client.create_market_order, market_order_args)
+        return await self._call_api(self._clob_client.post_order, signed, order_type)
+
+    async def cancel_clob_order(self, venue_order_id: str) -> dict:
+        """撤销订单"""
+        return await self._call_api(self._clob_client.cancel, venue_order_id)
 
     # =========================================================================
     # API 查询
@@ -754,6 +844,8 @@ class PolymarketOddsClient:
         """
         从 Data API 获取用户持仓
 
+        通过 _call_api 统一加锁，防止与其他 API 调用并发冲突。
+
         Returns:
             持仓列表
         """
@@ -771,6 +863,10 @@ class PolymarketOddsClient:
             )
             return []
 
+        return await self._call_api(self._do_fetch_positions, user_address)
+
+    async def _do_fetch_positions(self, user_address: str) -> list[PolymarketPosition] | None:
+        """实际执行 fetch positions（在 _call_api 锁内调用）"""
         path = "/positions"
         headers = self._generate_l1_auth_headers("GET", path)
 
@@ -850,8 +946,7 @@ class PolymarketOddsClient:
         """
         从 CLOB API 获取当前活跃订单
 
-        调用 REST API 获取最新订单状态，不依赖 WebSocket 缓存。
-        端点: GET https://clob.polymarket.com/orders
+        通过 _call_api 统一加锁，防止与其他 API 调用并发冲突。
 
         Args:
             asset_id: 可选，按 asset_id 过滤
@@ -863,6 +958,10 @@ class PolymarketOddsClient:
             self._log.debug("No API key configured, skipping orders fetch")
             return []
 
+        return await self._call_api(self._do_fetch_open_orders, asset_id)
+
+    async def _do_fetch_open_orders(self, asset_id: str | None = None) -> list[PolymarketOrder]:
+        """实际执行 fetch open orders（在 _call_api 锁内调用）"""
         path = "/data/orders"
         headers = self._generate_clob_auth_headers("GET", path)
 

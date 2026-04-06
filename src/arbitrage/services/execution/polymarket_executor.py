@@ -27,12 +27,10 @@ from .models import (
 
 # 尝试导入 py-clob-client
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType as ClobOrderType, ApiCreds
+    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType as ClobOrderType
     HAS_CLOB_CLIENT = True
 except ImportError:
     HAS_CLOB_CLIENT = False
-    ClobClient = None
 
 
 class PolymarketExecutor:
@@ -47,70 +45,30 @@ class PolymarketExecutor:
     def __init__(
         self,
         config: ExecutionConfig,
+        polymarket_client=None,
         logger: logging.Logger | None = None,
     ):
         self.config = config
         self._log = logger or logging.getLogger(self.__class__.__name__)
 
-        # CLOB 客户端
-        self._client: ClobClient | None = None
-        self._client_lock = asyncio.Lock()  # 序列化所有 client 调用，避免 HTTP/2 连接池冲突
+        # PolymarketClient 引用（统一 API 入口）
+        self._polymarket_client = polymarket_client
 
-    async def _call_client(self, func, *args, **kwargs):
-        """序列化调用 client 方法，避免 HTTP/2 连接池冲突"""
-        async with self._client_lock:
-            return await asyncio.to_thread(func, *args, **kwargs)
-
-        # 检查依赖
-        if not HAS_CLOB_CLIENT:
-            self._log.warning(
-                "py-clob-client not installed. "
-                "Install with: pip install py-clob-client"
-            )
+    def set_polymarket_client(self, polymarket_client) -> None:
+        """设置 PolymarketClient 引用"""
+        self._polymarket_client = polymarket_client
 
     async def initialize(self) -> bool:
         """
-        初始化客户端
+        初始化客户端（委托给 PolymarketClient）
 
         Returns:
             是否初始化成功
         """
-        if not HAS_CLOB_CLIENT:
-            self._log.error("py-clob-client not installed")
-            return False
-
-        if not self.config.polymarket_private_key:
-            self._log.error("Polymarket private key not configured")
-            return False
-
-        try:
-            # 初始化 CLOB 客户端
-            # 参考: https://github.com/Polymarket/py-clob-client
-            # signature_type=2: Polymarket proxy wallet 模式
-            # funder = proxy wallet 地址 (持有资金), key = EOA 私钥 (签名)
-            funder = self.config.polymarket_funder or None
-            self._client = ClobClient(
-                host=self.config.polymarket_clob_url,
-                key=self.config.polymarket_private_key,
-                chain_id=137,  # Polygon mainnet
-                signature_type=2,
-                funder=funder,
-            )
-            self._log.info(f"ClobClient initialized: signature_type=2, funder={funder}")
-
-            # 使用预先派生的 CLOB API credentials
-            self._client.set_api_creds(ApiCreds(
-                api_key=self.config.polymarket_clob_api_key,
-                api_secret=self.config.polymarket_clob_secret,
-                api_passphrase=self.config.polymarket_clob_passphrase,
-            ))
-
-            self._log.info("Polymarket executor initialized")
-            return True
-
-        except Exception as e:
-            self._log.error(f"Failed to initialize Polymarket client: {e}")
-            return False
+        if self._polymarket_client:
+            return self._polymarket_client.initialize_clob_client(self.config)
+        self._log.error("PolymarketClient not set, cannot initialize")
+        return False
 
     async def place_order(self, order: Order) -> ExecutionResult:
         """
@@ -122,7 +80,7 @@ class PolymarketExecutor:
         Returns:
             执行结果
         """
-        if not self._client:
+        if not self._polymarket_client or not self._polymarket_client._clob_client:
             self._log.error(f"Order {order.order_id} failed: Polymarket client not initialized")
             return ExecutionResult(
                 success=False,
@@ -171,16 +129,15 @@ class PolymarketExecutor:
                     f"side={side}, amount={amount:.4f}, slippage_price={slippage_price}"
                 )
 
-                # 创建并签名市价订单（使用线程池避免阻塞 event loop）
+                # 创建并签名市价订单
                 market_order_args = MarketOrderArgs(
                     token_id=order.token_id,
                     amount=amount,
                     side=side,
                     price=slippage_price,
                 )
-                signed_order = await self._call_client(
-                    self._client.create_market_order,
-                    market_order_args,
+                response = await self._polymarket_client.create_and_post_market_order(
+                    market_order_args, clob_order_type
                 )
             else:
                 # 创建订单参数
@@ -196,15 +153,9 @@ class PolymarketExecutor:
                     f"side={side}, price={order.price}, size={order.size}"
                 )
 
-                # 创建并签名订单
-                signed_order = await self._call_client(
-                    self._client.create_order, order_args
+                response = await self._polymarket_client.create_and_post_order(
+                    order_args, clob_order_type
                 )
-
-            # 提交订单
-            response = await self._call_client(
-                self._client.post_order, signed_order, clob_order_type
-            )
 
             # 更新订单状态
             order.submitted_at = time.time()
@@ -269,7 +220,7 @@ class PolymarketExecutor:
         Returns:
             撤单结果
         """
-        if not self._client:
+        if not self._polymarket_client or not self._polymarket_client._clob_client:
             return CancelResult(
                 success=False,
                 order_id=order.order_id,
@@ -286,8 +237,8 @@ class PolymarketExecutor:
         try:
             self._log.info(f"Cancelling order: {order.venue_order_id}")
 
-            response = await self._call_client(
-                self._client.cancel, order.venue_order_id
+            response = await self._polymarket_client.cancel_clob_order(
+                order.venue_order_id
             )
 
             if response.get("success") or response.get("canceled"):

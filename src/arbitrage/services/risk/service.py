@@ -212,13 +212,15 @@ class RiskService:
 
         # --- Polymarket: 调用 get_ok() 和查询余额 ---
         pm_ok = False
-        if exec_svc and exec_svc._polymarket_executor._client:
+        pm_client = None
+        if self._odds_service:
+            pm_client = self._odds_service.get_polymarket_client()
+        if pm_client and pm_client._clob_client:
             try:
-                pm_executor = exec_svc._polymarket_executor
-                client = pm_executor._client
+                clob_client = pm_client._clob_client
 
-                # 健康检查（通过 executor 的锁序列化，避免与下单冲突）
-                await pm_executor._call_client(client.get_ok)
+                # 健康检查（通过 PolymarketClient 的统一锁序列化）
+                await pm_client._call_api(clob_client.get_ok)
 
                 # 查询余额
                 from py_clob_client.client import BalanceAllowanceParams
@@ -229,8 +231,8 @@ class RiskService:
                     asset_type=AssetType.COLLATERAL,
                     signature_type=2,
                 )
-                response = await pm_executor._call_client(
-                    client.get_balance_allowance, params
+                response = await pm_client._call_api(
+                    clob_client.get_balance_allowance, params
                 )
                 balance_raw = int(response.get("balance", 0))
                 balance_usdc = usdce_from_units(balance_raw).as_double()
