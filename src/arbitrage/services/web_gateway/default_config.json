@@ -32,7 +32,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "ATP Bucharest 2026"
+              "ATP Monte Carlo 2026"
             ]
           }
         ]
@@ -46,7 +46,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "atp": "ATP",
-      "ATP Bucharest 2026": "ATP"
+      "ATP Monte Carlo 2026": "ATP"
     },
     "competition_max_matches": {
       "English Premier League": 0,
@@ -79,7 +79,7 @@
     ]
   },
   "arbitrage": {
-    "share": 40,
+    "share": 5,
     "fx": 1.33
   },
   "execution": {

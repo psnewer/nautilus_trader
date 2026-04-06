@@ -3,7 +3,7 @@
   "overrides": {
     "min_rebate_rate": {
       "enabled": true,
-      "value": -1
+      "value": -10
     },
     "polymarket_price": {
       "enabled": false,
@@ -18,7 +18,7 @@
       "value": 5
     },
     "orbitexch_size": {
-      "enabled": false,
+      "enabled": true,
       "value": 7
     },
     "order_size": {
@@ -38,11 +38,11 @@
     "mock_odds_poly_home": {
       "category": "odds",
       "name": "Polymarket home odds",
-      "enabled": false,
+      "enabled": true,
       "data": {
         "market_type": "home",
-        "bid": 0.94,
-        "ask": 0.95
+        "bid": 0.05,
+        "ask": 0.06
       },
       "conditions": {
         "venue": "polymarket",
@@ -66,7 +66,7 @@
     "mock_odds_orbit_home": {
       "category": "odds",
       "name": "OrbitExch home odds",
-      "enabled": true,
+      "enabled": false,
       "data": {
         "market_type": "home",
         "back": 1.04,
@@ -83,8 +83,8 @@
       "enabled": true,
       "data": {
         "market_type": "away",
-        "back": 1.04,
-        "lay": 1.05
+        "back": 20,
+        "lay": 21
       },
       "conditions": {
         "venue": "orbitexch",
