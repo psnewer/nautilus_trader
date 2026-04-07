@@ -83,30 +83,8 @@ class OddsSubscriptionService:
 
         self._log.info("Starting odds subscription service...")
 
-        # 创建客户端
-        self._polymarket_client = PolymarketOddsClient(
-            config=self.config,
-            logger=logging.getLogger("PolymarketOdds"),
-        )
-
-        self._orbitexch_client = OrbitExchOddsClient(
-            config=self.config,
-            logger=logging.getLogger("OrbitExchOdds"),
-        )
-
-        # 设置回调
-        self._polymarket_client.on_price_update(self._on_polymarket_update)
-        self._orbitexch_client.on_price_update(self._on_orbitexch_update)
-        self._orbitexch_client.on_page_refresh(self._on_orbitexch_page_refresh)
-        self._orbitexch_client.register_status_callback(self._on_match_status_update)
-
-        # 设置仓位变化回调
-        self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
-        self._polymarket_client.register_positions_callback(self._on_polymarket_position_update)
-        self._polymarket_client.register_orders_callback(self._on_polymarket_orders_update)
-
-        # 设置余额回调
-        self._orbitexch_client.register_balance_callback(self._on_orbitexch_balance_update)
+        self._ensure_clients_created()
+        await self.ensure_polymarket_client_ready()
 
         # 启动客户端
         await self._polymarket_client.start()
@@ -154,10 +132,51 @@ class OddsSubscriptionService:
             config: 新的配置
         """
         self.config = config
+        if self._polymarket_client:
+            self._polymarket_client.config = config
+        if self._orbitexch_client:
+            self._orbitexch_client.config = config
         self._log.info(
             f"Odds config updated: staleness_timeout={config.staleness_timeout_sec}s, "
             f"orbitexch_staleness_timeout={config.orbitexch_staleness_timeout_sec}s"
         )
+
+    def _ensure_clients_created(self) -> None:
+        """确保共享客户端实例已创建并绑定回调。"""
+        if self._polymarket_client is None:
+            self._polymarket_client = PolymarketOddsClient(
+                config=self.config,
+                logger=logging.getLogger("PolymarketOdds"),
+            )
+            self._polymarket_client.on_price_update(self._on_polymarket_update)
+            self._polymarket_client.register_positions_callback(self._on_polymarket_position_update)
+            self._polymarket_client.register_orders_callback(self._on_polymarket_orders_update)
+
+        if self._orbitexch_client is None:
+            self._orbitexch_client = OrbitExchOddsClient(
+                config=self.config,
+                logger=logging.getLogger("OrbitExchOdds"),
+            )
+            self._orbitexch_client.on_price_update(self._on_orbitexch_update)
+            self._orbitexch_client.on_page_refresh(self._on_orbitexch_page_refresh)
+            self._orbitexch_client.register_status_callback(self._on_match_status_update)
+            self._orbitexch_client.register_bets_callback(self._on_orbitexch_bets_update)
+            self._orbitexch_client.register_balance_callback(self._on_orbitexch_balance_update)
+
+    async def ensure_polymarket_client_ready(self) -> bool:
+        """确保 Polymarket 共享客户端已创建且具备下单能力。"""
+        self._ensure_clients_created()
+        if not self._polymarket_client:
+            return False
+        if self._polymarket_client._clob_client:
+            return True
+
+        ok = self._polymarket_client.initialize_clob_client()
+        if ok:
+            self._log.info("Polymarket client ready")
+        else:
+            self._log.warning("Polymarket client initialization failed")
+        return ok
 
     # =========================================================================
     # 订阅管理
@@ -954,10 +973,12 @@ class OddsSubscriptionService:
 
     def get_polymarket_client(self):
         """获取 Polymarket 客户端（用于执行追踪）"""
+        self._ensure_clients_created()
         return self._polymarket_client
 
     def get_orbitexch_client(self):
         """获取 OrbitExch 客户端（用于执行追踪）"""
+        self._ensure_clients_created()
         return self._orbitexch_client
 
     def get_position_mappings(self) -> dict:

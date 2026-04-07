@@ -16,6 +16,7 @@ from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTE
 from src.arbitrage.services.execution.cleanup import PostSessionCleanup
 from src.arbitrage.services.execution.polymarket_contract import PolymarketContractService
 from src.arbitrage.services.execution.config import ExecutionConfig
+from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.odds_subscription.messages import PairActivityMessage
 from src.arbitrage.services.odds_subscription.topics import pair_activity_topic
 
@@ -375,14 +376,18 @@ class RiskService:
             "way_rebate": self._rebate_healthy,
         }
 
-    async def initialize_cleanup(self, execution_config: ExecutionConfig) -> bool:
+    async def initialize_cleanup(
+        self,
+        execution_config: ExecutionConfig,
+        odds_config: OddsSubscriptionConfig,
+    ) -> bool:
         """初始化 cleanup 组件（merge & claim）"""
         if not execution_config.cleanup_enabled:
             self._log.info("Cleanup disabled")
             return False
 
         contract_service = PolymarketContractService(
-            config=execution_config,
+            config=odds_config,
             logger=logging.getLogger("PolymarketContractService"),
         )
         contract_ok = await contract_service.initialize()

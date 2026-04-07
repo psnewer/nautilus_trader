@@ -57,13 +57,20 @@
     "enabled": true,
     "staleness_timeout_sec": 300,
     "pair_activity_timeout_sec": 300,
-    "polymarket_api_key": "32c8e9ec-3a8f-50c3-7e37-998a42749230",
-    "polymarket_api_secret": "vR8YMysgVve7MS9954n8EqeXilvla4fLFRLRzjKMOTk=",
-    "polymarket_passphrase": "36fbaf6b7069b766b62b9ffcde3e858ae474265c2c962172c714900f9b7b4572",
+    "polymarket_clob_api_key": "32c8e9ec-3a8f-50c3-7e37-998a42749230",
+    "polymarket_clob_api_secret": "vR8YMysgVve7MS9954n8EqeXilvla4fLFRLRzjKMOTk=",
+    "polymarket_clob_passphrase": "36fbaf6b7069b766b62b9ffcde3e858ae474265c2c962172c714900f9b7b4572",
     "polymarket_user_address": "0x568F620C81407e562678Ab7AB88Aa628D8d6d803",
     "polymarket_funder": "0x568F620C81407e562678Ab7AB88Aa628D8d6d803",
+    "polymarket_private_key": "",
     "polymarket_eoa_address": "0x8aD0301a7346cCDAaCe360199404B6f50571D434",
+    "polymarket_clob_url": "https://clob.polymarket.com",
     "polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    "polymarket_builder_api_key": "",
+    "polymarket_builder_api_secret": "",
+    "polymarket_builder_passphrase": "",
+    "polymarket_relayer_url": "https://relayer-v2.polymarket.com/",
+    "polygon_rpc_url": "https://polygon-rpc.com/",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
     "orbitexch_page_refresh_sec": 600,
@@ -79,20 +86,11 @@
     ]
   },
   "arbitrage": {
-    "share": 5,
+    "share": 35,
     "fx": 1.33
   },
   "execution": {
     "enabled": true,
-    "polymarket_api_key": "",
-    "polymarket_api_secret": "",
-    "polymarket_passphrase": "",
-    "polymarket_clob_api_key": "",
-    "polymarket_clob_secret": "",
-    "polymarket_clob_passphrase": "",
-    "polymarket_private_key": "",
-    "polymarket_funder": "",
-    "polymarket_clob_url": "https://clob.polymarket.com",
     "orbitexch_api_url": "https://www.orbitexch.com/customer/api",
     "orbitexch_default_persistence": "LAPSE",
     "default_order_type": "GTC",
@@ -102,8 +100,6 @@
     "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
     "max_failure_retries": 5,
-    "polymarket_relayer_url": "https://relayer-v2.polymarket.com/",
-    "polygon_rpc_url": "https://polygon-rpc.com/",
     "health_check_interval_sec": 120.0,
     "cleanup_enabled": true,
     "cleanup_merge_enabled": true,
@@ -131,7 +127,7 @@
       },
       "mean_rebate": {
         "params": {
-          "rate": 0.01
+          "rate": -1
         },
         "description": "\u5e73\u5747\u8fd4\u6c34\u4fe1\u53f7\uff0c\u5404\u65b9\u5411\u53d6\u6700\u4f18\u4ef7\u683c\uff0c\u8fd4\u6c34\u5e73\u5747\u5206\u914d\u5230\u6240\u6709\u65b9\u5411\u3002"
       },

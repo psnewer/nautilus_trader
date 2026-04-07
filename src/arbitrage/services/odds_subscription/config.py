@@ -30,13 +30,23 @@ class OddsSubscriptionConfig:
     pair_activity_timeout_sec: int = 300  # 活跃互斥超时，避免异常导致一直阻塞
 
     # Polymarket 配置
-    polymarket_api_key: str = ""
-    polymarket_api_secret: str = ""
-    polymarket_passphrase: str = ""
+    # CLOB / User Channel / 执行统一凭据
+    polymarket_clob_api_key: str = ""
+    polymarket_clob_api_secret: str = ""
+    polymarket_clob_passphrase: str = ""
     polymarket_user_address: str = ""
     polymarket_funder: str = ""
+    polymarket_private_key: str = ""  # 用于签名下单和链上操作
     polymarket_eoa_address: str = ""  # EOA 钱包地址（用于 CLOB L2 认证 POLY_ADDRESS 头）
+    polymarket_clob_url: str = "https://clob.polymarket.com"
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+
+    # Builder Relayer 凭据（用于 merge / claim）
+    polymarket_builder_api_key: str = ""
+    polymarket_builder_api_secret: str = ""
+    polymarket_builder_passphrase: str = ""
+    polymarket_relayer_url: str = "https://relayer-v2.polymarket.com/"
+    polygon_rpc_url: str = "https://polygon-rpc.com/"
 
     # OrbitExch 配置
     orbitexch_base_url: str = "https://www.orbitexch.com"
@@ -70,16 +80,29 @@ class OddsSubscriptionConfig:
             enabled=data.get("enabled", True),
             staleness_timeout_sec=data.get("staleness_timeout_sec", 300),
             pair_activity_timeout_sec=data.get("pair_activity_timeout_sec", 300),
-            polymarket_api_key=data.get("polymarket_api_key", ""),
-            polymarket_api_secret=data.get("polymarket_api_secret", ""),
-            polymarket_passphrase=data.get("polymarket_passphrase", ""),
+            polymarket_clob_api_key=data.get("polymarket_clob_api_key", ""),
+            polymarket_clob_api_secret=data.get("polymarket_clob_api_secret", ""),
+            polymarket_clob_passphrase=data.get("polymarket_clob_passphrase", ""),
             polymarket_user_address=data.get("polymarket_user_address", ""),
             polymarket_funder=data.get("polymarket_funder", ""),
+            polymarket_private_key=data.get("polymarket_private_key", ""),
             polymarket_eoa_address=data.get("polymarket_eoa_address", ""),
+            polymarket_clob_url=data.get(
+                "polymarket_clob_url",
+                "https://clob.polymarket.com",
+            ),
             polymarket_ws_url=data.get(
                 "polymarket_ws_url",
                 "wss://ws-subscriptions-clob.polymarket.com/ws/market",
             ),
+            polymarket_builder_api_key=data.get("polymarket_builder_api_key", ""),
+            polymarket_builder_api_secret=data.get("polymarket_builder_api_secret", ""),
+            polymarket_builder_passphrase=data.get("polymarket_builder_passphrase", ""),
+            polymarket_relayer_url=data.get(
+                "polymarket_relayer_url",
+                "https://relayer-v2.polymarket.com/",
+            ),
+            polygon_rpc_url=data.get("polygon_rpc_url", "https://polygon-rpc.com/"),
             orbitexch_base_url=data.get(
                 "orbitexch_base_url", "https://www.orbitexch.com"
             ),
@@ -99,13 +122,20 @@ class OddsSubscriptionConfig:
             "enabled": self.enabled,
             "staleness_timeout_sec": self.staleness_timeout_sec,
             "pair_activity_timeout_sec": self.pair_activity_timeout_sec,
-            "polymarket_api_key": self.polymarket_api_key,
-            "polymarket_api_secret": self.polymarket_api_secret,
-            "polymarket_passphrase": self.polymarket_passphrase,
+            "polymarket_clob_api_key": self.polymarket_clob_api_key,
+            "polymarket_clob_api_secret": self.polymarket_clob_api_secret,
+            "polymarket_clob_passphrase": self.polymarket_clob_passphrase,
             "polymarket_user_address": self.polymarket_user_address,
             "polymarket_funder": self.polymarket_funder,
+            "polymarket_private_key": "***" if self.polymarket_private_key else "",
             "polymarket_eoa_address": self.polymarket_eoa_address,
+            "polymarket_clob_url": self.polymarket_clob_url,
             "polymarket_ws_url": self.polymarket_ws_url,
+            "polymarket_builder_api_key": self.polymarket_builder_api_key,
+            "polymarket_builder_api_secret": self.polymarket_builder_api_secret,
+            "polymarket_builder_passphrase": self.polymarket_builder_passphrase,
+            "polymarket_relayer_url": self.polymarket_relayer_url,
+            "polygon_rpc_url": self.polygon_rpc_url,
             "orbitexch_base_url": self.orbitexch_base_url,
             "orbitexch_zoom_level": self.orbitexch_zoom_level,
             "orbitexch_page_refresh_sec": self.orbitexch_page_refresh_sec,

@@ -60,15 +60,18 @@ class PolymarketExecutor:
 
     async def initialize(self) -> bool:
         """
-        初始化客户端（委托给 PolymarketClient）
+        检查共享 PolymarketClient 是否已就绪
 
         Returns:
             是否初始化成功
         """
-        if self._polymarket_client:
-            return self._polymarket_client.initialize_clob_client(self.config)
-        self._log.error("PolymarketClient not set, cannot initialize")
-        return False
+        if not self._polymarket_client:
+            self._log.error("PolymarketClient not set, cannot initialize")
+            return False
+        if not self._polymarket_client._clob_client:
+            self._log.error("PolymarketClient not ready: ClobClient missing")
+            return False
+        return True
 
     async def place_order(self, order: Order) -> ExecutionResult:
         """

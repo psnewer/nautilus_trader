@@ -117,6 +117,9 @@ class ExecutionService:
 
         self._log.info("Initializing execution service...")
 
+        # 先同步共享客户端，再检查执行器是否就绪
+        self._sync_tracking_clients()
+
         # 初始化 Polymarket 执行器
         polymarket_ok = await self._polymarket_executor.initialize()
         if polymarket_ok:
@@ -810,7 +813,7 @@ class ExecutionService:
 
     def _sync_tracking_clients(self) -> None:
         """同步追踪所需的赔率客户端引用"""
-        if not self._orchestrator or not self._odds_service:
+        if not self._odds_service:
             return
         try:
             polymarket_client = self._odds_service.get_polymarket_client()
@@ -819,17 +822,17 @@ class ExecutionService:
             self._polymarket_executor.set_polymarket_client(polymarket_client)
 
             # 注入到 orchestrator（fetch_positions）
-            self._orchestrator.set_polymarket_client(polymarket_client)
-
-            self._orchestrator.set_orbitexch_client(
-                self._odds_service.get_orbitexch_client()
-            )
-            self._odds_service.register_polymarket_order_callback(
-                self.on_polymarket_ws_event
-            )
-            self._odds_service.register_orbitexch_bets_callback(
-                self.on_orbitexch_ws_event
-            )
+            if self._orchestrator:
+                self._orchestrator.set_polymarket_client(polymarket_client)
+                self._orchestrator.set_orbitexch_client(
+                    self._odds_service.get_orbitexch_client()
+                )
+                self._odds_service.register_polymarket_order_callback(
+                    self.on_polymarket_ws_event
+                )
+                self._odds_service.register_orbitexch_bets_callback(
+                    self.on_orbitexch_ws_event
+                )
         except Exception as e:
             self._log.warning(f"Failed to sync tracking clients: {e}")
 

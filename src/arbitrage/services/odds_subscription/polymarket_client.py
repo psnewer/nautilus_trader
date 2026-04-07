@@ -191,29 +191,29 @@ class PolymarketOddsClient:
                 # ClobClient 的同步方法，用线程池执行
                 return await asyncio.to_thread(coro_or_func, *args, **kwargs)
 
-    def initialize_clob_client(self, execution_config) -> bool:
+    def initialize_clob_client(self) -> bool:
         """
-        用 ExecutionConfig 初始化 ClobClient
-
-        Args:
-            execution_config: ExecutionConfig 实例
+        用 OddsSubscriptionConfig 初始化 ClobClient
 
         Returns:
             是否初始化成功
         """
+        if self._clob_client is not None:
+            return True
+
         if not HAS_CLOB_CLIENT:
             self._log.error("py-clob-client not installed")
             return False
 
-        if not execution_config.polymarket_private_key:
+        if not self.config.polymarket_private_key:
             self._log.error("Polymarket private key not configured")
             return False
 
         try:
-            funder = execution_config.polymarket_funder or None
+            funder = self.config.polymarket_funder or None
             self._clob_client = ClobClient(
-                host=execution_config.polymarket_clob_url,
-                key=execution_config.polymarket_private_key,
+                host=self.config.polymarket_clob_url,
+                key=self.config.polymarket_private_key,
                 chain_id=137,  # Polygon mainnet
                 signature_type=2,
                 funder=funder,
@@ -221,9 +221,9 @@ class PolymarketOddsClient:
             self._log.info(f"ClobClient initialized: signature_type=2, funder={funder}")
 
             self._clob_client.set_api_creds(ApiCreds(
-                api_key=execution_config.polymarket_clob_api_key,
-                api_secret=execution_config.polymarket_clob_secret,
-                api_passphrase=execution_config.polymarket_clob_passphrase,
+                api_key=self.config.polymarket_clob_api_key,
+                api_secret=self.config.polymarket_clob_api_secret,
+                api_passphrase=self.config.polymarket_clob_passphrase,
             ))
 
             self._log.info("ClobClient credentials set")
@@ -777,14 +777,14 @@ class PolymarketOddsClient:
         用于 data-api.polymarket.com 端点 (如 /positions)。
         Data API 使用毫秒时间戳。
         """
-        if not self.config.polymarket_api_key or not self.config.polymarket_api_secret:
+        if not self.config.polymarket_clob_api_key or not self.config.polymarket_clob_api_secret:
             return {}
 
         timestamp = str(int(time.time() * 1000))
         message = f"{timestamp}{method}{path}{body}"
 
         try:
-            secret_raw = self.config.polymarket_api_secret.strip()
+            secret_raw = self.config.polymarket_clob_api_secret.strip()
             padding = (-len(secret_raw)) % 4
             if padding:
                 secret_raw += "=" * padding
@@ -796,10 +796,10 @@ class PolymarketOddsClient:
             return {}
 
         return {
-            "POLY_ADDRESS": self.config.polymarket_api_key,
+            "POLY_ADDRESS": self.config.polymarket_clob_api_key,
             "POLY_SIGNATURE": signature_b64,
             "POLY_TIMESTAMP": timestamp,
-            "POLY_PASSPHRASE": self.config.polymarket_passphrase,
+            "POLY_PASSPHRASE": self.config.polymarket_clob_passphrase,
         }
 
     def _generate_clob_auth_headers(self, method: str, path: str, body: str = "") -> dict[str, str]:
@@ -814,7 +814,7 @@ class PolymarketOddsClient:
         - POLY_SIGNATURE = urlsafe_b64encode HMAC
         - POLY_PASSPHRASE = passphrase
         """
-        if not self.config.polymarket_api_key or not self.config.polymarket_api_secret:
+        if not self.config.polymarket_clob_api_key or not self.config.polymarket_clob_api_secret:
             return {}
 
         eoa_address = self.config.polymarket_eoa_address
@@ -826,7 +826,7 @@ class PolymarketOddsClient:
 
         try:
             signature_b64 = self._build_hmac_signature(
-                self.config.polymarket_api_secret, timestamp, method, path, body
+                self.config.polymarket_clob_api_secret, timestamp, method, path, body
             )
         except Exception as e:
             self._log.error(f"Failed to generate CLOB signature: {e}")
@@ -836,8 +836,8 @@ class PolymarketOddsClient:
             "POLY_ADDRESS": eoa_address,
             "POLY_SIGNATURE": signature_b64,
             "POLY_TIMESTAMP": timestamp,
-            "POLY_API_KEY": self.config.polymarket_api_key,
-            "POLY_PASSPHRASE": self.config.polymarket_passphrase,
+            "POLY_API_KEY": self.config.polymarket_clob_api_key,
+            "POLY_PASSPHRASE": self.config.polymarket_clob_passphrase,
         }
 
     async def fetch_positions(self) -> list[PolymarketPosition] | None:
@@ -849,13 +849,13 @@ class PolymarketOddsClient:
         Returns:
             持仓列表
         """
-        if not self.config.polymarket_api_key:
+        if not self.config.polymarket_clob_api_key:
             self._log.debug("No API key configured, skipping position fetch")
             return []
 
         user_address = self.config.polymarket_user_address
-        if not user_address and self.config.polymarket_api_key.startswith("0x"):
-            user_address = self.config.polymarket_api_key
+        if not user_address and self.config.polymarket_clob_api_key.startswith("0x"):
+            user_address = self.config.polymarket_clob_api_key
 
         if not user_address:
             self._log.warning(
@@ -954,7 +954,7 @@ class PolymarketOddsClient:
         Returns:
             订单列表
         """
-        if not self.config.polymarket_api_key:
+        if not self.config.polymarket_clob_api_key:
             self._log.debug("No API key configured, skipping orders fetch")
             return []
 
@@ -1007,7 +1007,7 @@ class PolymarketOddsClient:
             self._log.error("websockets library not installed")
             return
 
-        if not self.config.polymarket_api_key:
+        if not self.config.polymarket_clob_api_key:
             self._log.warning("Polymarket API key not configured, skipping User Channel")
             return
 
@@ -1070,19 +1070,19 @@ class PolymarketOddsClient:
             return
 
         # 验证凭证
-        if not self.config.polymarket_api_secret or not self.config.polymarket_passphrase:
+        if not self.config.polymarket_clob_api_secret or not self.config.polymarket_clob_passphrase:
             self._log.error(
                 f"User Channel subscription requires valid credentials: "
-                f"secret={'SET' if self.config.polymarket_api_secret else 'MISSING'}, "
-                f"passphrase={'SET' if self.config.polymarket_passphrase else 'MISSING'}"
+                f"secret={'SET' if self.config.polymarket_clob_api_secret else 'MISSING'}, "
+                f"passphrase={'SET' if self.config.polymarket_clob_passphrase else 'MISSING'}"
             )
             return
 
         subscribe_msg = {
             "auth": {
-                "apiKey": self.config.polymarket_api_key,
-                "secret": self.config.polymarket_api_secret,
-                "passphrase": self.config.polymarket_passphrase,
+                "apiKey": self.config.polymarket_clob_api_key,
+                "secret": self.config.polymarket_clob_api_secret,
+                "passphrase": self.config.polymarket_clob_passphrase,
             },
             "markets": list(condition_ids),
             "type": "user",
@@ -1092,9 +1092,9 @@ class PolymarketOddsClient:
             msg_json = json.dumps(subscribe_msg)
             self._log.info(
                 f"Sending user channel subscription: markets={list(condition_ids)[:3]}{'...' if len(condition_ids) > 3 else ''}, "
-                f"apiKey={self.config.polymarket_api_key[:8] if self.config.polymarket_api_key else 'NONE'}..., "
-                f"secret_len={len(self.config.polymarket_api_secret) if self.config.polymarket_api_secret else 0}, "
-                f"passphrase_len={len(self.config.polymarket_passphrase) if self.config.polymarket_passphrase else 0}"
+                f"apiKey={self.config.polymarket_clob_api_key[:8] if self.config.polymarket_clob_api_key else 'NONE'}..., "
+                f"secret_len={len(self.config.polymarket_clob_api_secret) if self.config.polymarket_clob_api_secret else 0}, "
+                f"passphrase_len={len(self.config.polymarket_clob_passphrase) if self.config.polymarket_clob_passphrase else 0}"
             )
             await self._user_ws.send(msg_json)
             self._log.info(
@@ -1650,7 +1650,7 @@ class PolymarketOddsClient:
         self._log.info("Polymarket odds client started")
 
         # 启动 User Channel WebSocket（如果配置了 API key）
-        if self.config.polymarket_api_key:
+        if self.config.polymarket_clob_api_key:
             self._log.info("Starting User Channel WebSocket for order tracking")
             self._user_ws_task = asyncio.create_task(self._run_user_websocket())
         else:

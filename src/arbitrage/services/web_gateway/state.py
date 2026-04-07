@@ -369,7 +369,7 @@ class AppState:
 
         # 如果赔率服务已创建，更新其配置
         if self._odds_service is not None:
-            self._odds_service.update_config(self._odds_config)
+            self._odds_service.update_config(self._build_odds_config())
 
         return self.get_odds_config()
 
@@ -377,6 +377,59 @@ class AppState:
     def odds_config_obj(self) -> OddsSubscriptionConfig:
         """获取赔率订阅配置对象"""
         return self._odds_config
+
+    def _build_odds_config(self) -> OddsSubscriptionConfig:
+        """构建赔率订阅配置（合并环境变量）。"""
+        base = self._odds_config
+        config = OddsSubscriptionConfig.from_dict(asdict(base))
+        config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", config.orbitexch_username)
+        config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", config.orbitexch_password)
+
+        # CLOB / User Channel / 执行统一凭据
+        config.polymarket_clob_api_key = os.getenv(
+            "POLYMARKET_CLOB_API_KEY",
+            config.polymarket_clob_api_key,
+        )
+        config.polymarket_clob_api_secret = os.getenv(
+            "POLYMARKET_CLOB_SECRET",
+            config.polymarket_clob_api_secret,
+        )
+        config.polymarket_clob_passphrase = os.getenv(
+            "POLYMARKET_CLOB_PASSPHRASE",
+            config.polymarket_clob_passphrase,
+        )
+        config.polymarket_private_key = os.getenv(
+            "POLYMARKET_PRIVATE_KEY",
+            config.polymarket_private_key,
+        )
+        config.polymarket_funder = os.getenv("POLYMARKET_FUNDER", config.polymarket_funder)
+        config.polymarket_user_address = os.getenv(
+            "POLYMARKET_USER_ADDRESS",
+            os.getenv("POLYMARKET_ADDRESS", config.polymarket_user_address),
+        )
+        config.polymarket_eoa_address = os.getenv(
+            "POLYMARKET_EOA_ADDRESS",
+            config.polymarket_eoa_address,
+        )
+
+        # Builder Relayer 凭据
+        config.polymarket_builder_api_key = os.getenv(
+            "POLYMARKET_API_KEY",
+            config.polymarket_builder_api_key,
+        )
+        config.polymarket_builder_api_secret = os.getenv(
+            "POLYMARKET_API_SECRET",
+            config.polymarket_builder_api_secret,
+        )
+        config.polymarket_builder_passphrase = os.getenv(
+            "POLYMARKET_PASSPHRASE",
+            config.polymarket_builder_passphrase,
+        )
+
+        if config.polymarket_funder:
+            config.polymarket_user_address = config.polymarket_funder
+
+        return config
 
     # =========================================================================
     # Arbitrage 配置
@@ -454,15 +507,6 @@ class AppState:
         base = self._execution_config
         return ExecutionConfig(
             enabled=base.enabled,
-            polymarket_api_key=os.getenv("POLYMARKET_API_KEY", ""),
-            polymarket_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
-            polymarket_passphrase=os.getenv("POLYMARKET_PASSPHRASE", ""),
-            polymarket_clob_api_key=os.getenv("POLYMARKET_CLOB_API_KEY", ""),
-            polymarket_clob_secret=os.getenv("POLYMARKET_CLOB_SECRET", ""),
-            polymarket_clob_passphrase=os.getenv("POLYMARKET_CLOB_PASSPHRASE", ""),
-            polymarket_private_key=os.getenv("POLYMARKET_PRIVATE_KEY", ""),
-            polymarket_funder=os.getenv("POLYMARKET_FUNDER", ""),
-            polymarket_clob_url=base.polymarket_clob_url,
             orbitexch_api_url=base.orbitexch_api_url,
             orbitexch_default_persistence=base.orbitexch_default_persistence,
             default_order_type=base.default_order_type,
@@ -605,23 +649,7 @@ class AppState:
         if self._odds_service is None:
             from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
 
-            # 使用存储的配置，并从环境变量补充凭据（如果配置中没有设置）
-            config = self._odds_config
-            config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", "")
-            config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", "")
-
-            # Polymarket CLOB 凭据（用于 WS User Channel 和 REST 查询）
-            config.polymarket_api_key = os.getenv("POLYMARKET_CLOB_API_KEY", "")
-            config.polymarket_api_secret = os.getenv("POLYMARKET_CLOB_SECRET", "")
-            config.polymarket_passphrase = os.getenv("POLYMARKET_CLOB_PASSPHRASE", "")
-            config.polymarket_user_address = os.getenv(
-                "POLYMARKET_USER_ADDRESS",
-                os.getenv("POLYMARKET_ADDRESS", ""),
-            )
-            config.polymarket_funder = os.getenv("POLYMARKET_FUNDER", "")
-            config.polymarket_eoa_address = os.getenv("POLYMARKET_EOA_ADDRESS", "")
-            if config.polymarket_funder:
-                config.polymarket_user_address = config.polymarket_funder
+            config = self._build_odds_config()
 
             self._odds_service = OddsSubscriptionService(
                 config=config,
@@ -788,15 +816,17 @@ class AppState:
         odds_service = self.get_odds_service()
         execution_service = self.get_execution_service()
 
-        # 初始化执行服务
-        success = await execution_service.initialize()
-        if not success:
-            self._log.warning("Execution service initialization failed (may be disabled)")
+        await odds_service.ensure_polymarket_client_ready()
 
         # 设置执行服务的依赖
         execution_service.set_odds_service(odds_service)
         execution_service.set_arbitrage_config(self._arbitrage_config)
         execution_service.set_msgbus(self.get_msgbus())
+
+        # 初始化执行服务
+        success = await execution_service.initialize()
+        if not success:
+            self._log.warning("Execution service initialization failed (may be disabled)")
 
         # 传递 OrbitExch 页面引用（用于下单）
         orbitexch_pages = odds_service.get_orbitexch_pages()
@@ -807,7 +837,10 @@ class AppState:
 
         # 初始化 risk service 的 cleanup 组件
         risk_service = self.get_risk_service()
-        await risk_service.initialize_cleanup(self._build_execution_config())
+        await risk_service.initialize_cleanup(
+            self._build_execution_config(),
+            self._build_odds_config(),
+        )
 
         # 设置 execution_service 引用（健康检查循环将在订阅完成后启动）
         risk_service.set_execution_service(execution_service)

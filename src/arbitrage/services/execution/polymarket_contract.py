@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from .config import ExecutionConfig
+from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 
 # 尝试导入 relayer 客户端
 try:
@@ -169,7 +169,7 @@ class PolymarketContractService:
 
     def __init__(
         self,
-        config: ExecutionConfig,
+        config: OddsSubscriptionConfig,
         logger: logging.Logger | None = None,
     ):
         self._config = config
@@ -209,9 +209,9 @@ class PolymarketContractService:
         try:
             builder_config = BuilderConfig(
                 local_builder_creds=BuilderApiKeyCreds(
-                    key=self._config.polymarket_api_key,
-                    secret=self._config.polymarket_api_secret,
-                    passphrase=self._config.polymarket_passphrase,
+                    key=self._config.polymarket_builder_api_key,
+                    secret=self._config.polymarket_builder_api_secret,
+                    passphrase=self._config.polymarket_builder_passphrase,
                 )
             )
 
