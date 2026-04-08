@@ -586,6 +586,37 @@ def test_take_remaining_missing_order(debug_reset, event_loop):
     assert result.message == "Order not found"
 
 
+def test_get_active_orders_orbitexch_uses_explicit_price_fields(debug_reset):
+    service = ExecutionService(config=ExecutionConfig())
+    service._initialized = True
+
+    class DummyOddsService:
+        def get_polymarket_open_orders(self):
+            return []
+
+        def get_orbitexch_open_orders(self):
+            return [{
+                "offerId": "216791854",
+                "marketId": "1.256411738",
+                "selectionId": "16149495",
+                "side": "BACK",
+                "price": "1.01",
+                "averagePrice": "5.46",
+                "sizePlaced": "8.10",
+                "sizeMatched": "8.10",
+                "sizeRemaining": "0.00",
+            }]
+
+    service._odds_service = DummyOddsService()
+
+    orders = service.get_active_orders(venue=Venue.ORBITEXCH)
+
+    assert len(orders) == 1
+    assert "price" not in orders[0]
+    assert orders[0]["request_price"] == pytest.approx(1.01)
+    assert orders[0]["average_price"] == pytest.approx(5.46)
+
+
 def test_cancel_all_orders_only_active(debug_mock_exchange, event_loop):
     debug_manager.add_mock(
         item_id="exec_keep_active",

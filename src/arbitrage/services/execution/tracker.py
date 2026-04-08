@@ -172,6 +172,9 @@ class OrderTracker:
                 self._results[key].size_matched = 0.0
                 self._results[key].size_remaining = operation.size
 
+        # 追踪启动前补抓一次当前缓存，避免下单回执与 tracking 启动之间的竞态丢失。
+        await self._bootstrap_from_cached_state()
+
         # 等待 WebSocket 事件或超时
         # 只有所有下单操作完全成交才提前退出，否则等到超时
         # 这样部分成交的订单有更多时间被撮合
@@ -193,6 +196,65 @@ class OrderTracker:
 
         self._log.info(f"Tracking ended (all_filled={self._all_fully_filled()})")
         return self._summarize_results()
+
+    async def _bootstrap_from_cached_state(self) -> None:
+        """从客户端当前缓存回填已发生成交的结果。"""
+        if self._polymarket_client:
+            try:
+                await self._polymarket_client.fetch_open_orders()
+            except Exception as e:
+                self._log.warning(f"Bootstrap fetch_open_orders failed: {e}")
+
+        updated = False
+        for result in self._results.values():
+            if result.status == TrackingStatus.FAILED:
+                continue
+
+            operation = result.operation
+            if operation.operation_type not in (OperationType.PLACE, OperationType.MODIFY):
+                continue
+
+            try:
+                if operation.venue == OperationVenue.POLYMARKET:
+                    if not self._polymarket_client or not operation.condition_id:
+                        continue
+                    orders = self._polymarket_client.get_current_orders(operation.condition_id)
+                    for order in orders:
+                        if result.venue_order_id and order.order_id != result.venue_order_id:
+                            continue
+                        if operation.token_id and order.asset_id != operation.token_id:
+                            continue
+
+                        result.status = TrackingStatus.CONFIRMED
+                        result.size_matched = order.size_matched
+                        result.size_remaining = max(0.0, order.original_size - order.size_matched)
+                        updated = True
+                        break
+
+                elif operation.venue == OperationVenue.ORBITEXCH:
+                    if not self._orbitexch_client or not operation.market_id:
+                        continue
+                    bets = self._orbitexch_client.get_current_bets(operation.market_id)
+                    for bet in bets:
+                        if result.venue_order_id and str(bet.get("offerId", "")) != result.venue_order_id:
+                            continue
+                        if operation.selection_id and str(bet.get("selectionId", "")) != operation.selection_id:
+                            continue
+                        if bet.get("side", "").upper() != "BACK":
+                            continue
+
+                        result.status = TrackingStatus.CONFIRMED
+                        result.size_matched = float(bet.get("sizeMatched", 0))
+                        result.size_remaining = float(bet.get("sizeRemaining", 0))
+                        updated = True
+                        break
+            except Exception as e:
+                self._log.warning(
+                    f"Bootstrap refresh failed for {operation.venue.value}/{operation.market_type}: {e}"
+                )
+
+        if updated:
+            self._tracking_events.set()
 
     def _all_fully_filled(self) -> bool:
         """

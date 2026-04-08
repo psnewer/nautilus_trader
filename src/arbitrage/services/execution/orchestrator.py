@@ -775,13 +775,14 @@ class ExecutionOrchestrator:
                             for bet in bets:
                                 if (str(bet.get("selectionId")) == selection_id
                                         and bet.get("side", "").upper() == "BACK"):
-                                    # GBP stake * odds * fx = USD share
-                                    matched = float(bet.get("sizeMatched", 0))
-                                    odds = float(bet.get("price", 0))
-                                    if odds > 0:
-                                        snapshot[market_type] += matched * odds * fx
-                                    else:
-                                        snapshot[market_type] += matched * fx
+                                    share = self._get_orbitexch_matched_share(
+                                        bet=bet,
+                                        market_type=market_type,
+                                        context="snapshot",
+                                        fx=fx,
+                                    )
+                                    if share > 0:
+                                        snapshot[market_type] += share
             except Exception as e:
                 self._log.warning(f"Failed to snapshot OrbitExch positions: {e}")
 
@@ -849,12 +850,14 @@ class ExecutionOrchestrator:
                     for bet in bets:
                         if (str(bet.get("selectionId")) == selection_id
                                 and bet.get("side", "").upper() == "BACK"):
-                            matched = float(bet.get("sizeMatched", 0))
-                            if matched <= 0:
-                                continue
-                            # averagePrice 是实际成交均价，price 是下单请求价
-                            odds = float(bet.get("averagePrice", 0) or bet.get("price", 0))
-                            current[market_type] += matched * odds * fx
+                            share = self._get_orbitexch_matched_share(
+                                bet=bet,
+                                market_type=market_type,
+                                context="current",
+                                fx=fx,
+                            )
+                            if share > 0:
+                                current[market_type] += share
             except Exception as e:
                 self._log.warning(f"Failed to read OrbitExch bets cache: {e}")
 
@@ -868,6 +871,33 @@ class ExecutionOrchestrator:
             f"Session {session.session_id}: filled={filled}, "
             f"current={current}, snapshot={position_snapshot} (fx={fx})"
         )
+
+    def _get_orbitexch_matched_share(
+        self,
+        bet: dict,
+        market_type: str,
+        context: str,
+        fx: float,
+    ) -> float:
+        """使用 CURRENT_BETS 的 averagePrice 计算 OrbitExch 已成交 share。"""
+        matched = float(bet.get("sizeMatched", 0))
+        if matched <= 0:
+            return 0.0
+
+        average_price_raw = bet.get("averagePrice", 0)
+        try:
+            average_price = float(average_price_raw)
+        except (TypeError, ValueError):
+            average_price = 0.0
+
+        if average_price <= 0:
+            self._log.warning(
+                f"OrbitExch {context} missing averagePrice for {market_type}: "
+                f"offerId={bet.get('offerId', '')}, sizeMatched={matched}"
+            )
+            return 0.0
+
+        return matched * average_price * fx
 
     # =========================================================================
     # 挂单管理

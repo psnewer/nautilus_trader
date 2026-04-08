@@ -257,9 +257,9 @@
   "load_orbitexch_bets": {
     "_doc": "从 OrbitExch API 加载订单数据",
     "bets": [
-      {"marketId": "mkt-1", "selectionId": 101, "sizeMatched": 25.0, "price": 2.5, "side": "BACK", "marketProfit": 37.5, "marketLiability": 25.0},
-      {"marketId": "mkt-1", "selectionId": 102, "sizeMatched": 15.0, "price": 3.0, "side": "BACK", "marketProfit": 30.0, "marketLiability": 15.0},
-      {"marketId": "mkt-unknown", "selectionId": 999, "sizeMatched": 10.0, "price": 2.0, "side": "BACK", "marketProfit": 10.0, "marketLiability": 10.0}
+      {"marketId": "mkt-1", "selectionId": 101, "sizeMatched": 25.0, "averagePrice": 2.5, "price": 1.01, "side": "BACK", "marketProfit": 37.5, "marketLiability": 25.0},
+      {"marketId": "mkt-1", "selectionId": 102, "sizeMatched": 15.0, "averagePrice": 3.0, "price": 1.01, "side": "BACK", "marketProfit": 30.0, "marketLiability": 15.0},
+      {"marketId": "mkt-unknown", "selectionId": 999, "sizeMatched": 10.0, "averagePrice": 2.0, "price": 1.01, "side": "BACK", "marketProfit": 10.0, "marketLiability": 10.0}
     ],
     "pair_mapping": {"mkt-1": "pair-load-2"},
     "selection_mappings": {"pair-load-2": {"101": "home", "102": "away"}},
@@ -273,7 +273,7 @@
       {"event_id": "evt-s1", "market_type": "home", "size": 30.0, "avg_price": 0.5, "profit_if_win": 15.0, "loss_if_lose": 15.0}
     ],
     "orbitexch_bets": [
-      {"marketId": "mkt-s1", "selectionId": 201, "sizeMatched": 20.0, "price": 2.0, "side": "BACK", "marketProfit": 20.0, "marketLiability": 20.0}
+      {"marketId": "mkt-s1", "selectionId": 201, "sizeMatched": 20.0, "averagePrice": 2.0, "price": 1.01, "side": "BACK", "marketProfit": 20.0, "marketLiability": 20.0}
     ],
     "mappings": {
       "polymarket_pair_mapping": {"evt-s1": "pair-session"},

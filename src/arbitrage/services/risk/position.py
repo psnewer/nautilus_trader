@@ -24,8 +24,12 @@
 """
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 import time
+
+
+logger = logging.getLogger("PositionManager")
 
 
 @dataclass
@@ -490,8 +494,19 @@ class PositionManager:
             if size_matched <= 0:
                 continue
 
-            # averagePrice 是实际成交均价，price 是下单请求价
-            avg_price = float(bet.get("averagePrice", 0) or bet.get("price", 0))
+            average_price_raw = bet.get("averagePrice", 0)
+            try:
+                avg_price = float(average_price_raw)
+            except (TypeError, ValueError):
+                avg_price = 0.0
+
+            if avg_price <= 0:
+                logger.warning(
+                    "OrbitExch bet missing averagePrice, skip loading: "
+                    f"marketId={market_id}, selectionId={selection_id}, sizeMatched={size_matched}"
+                )
+                continue
+
             side = bet.get("side", "BACK")
 
             # 用 marketProfit / marketLiability 作为真实盈亏

@@ -336,6 +336,31 @@ class TestPositionManager:
         home_leg = [l for l in pos.legs if l.market_type == "home"][0]
         assert home_leg.profit_if_wins() == pytest.approx(37.5)
         assert home_leg.loss_if_loses() == pytest.approx(25.0)
+        assert home_leg.price == pytest.approx(2.5)
+
+    def test_load_orbitexch_bets_skips_missing_average_price(self, caplog):
+        """缺失 averagePrice 的 OrbitExch bet 不应回退到 price。"""
+        pm = PositionManager()
+        selection_mappings = {"pair-load-2": {101: "home"}}
+
+        with caplog.at_level("WARNING"):
+            count = pm.load_orbitexch_bets(
+                bets=[{
+                    "marketId": "mkt-1",
+                    "selectionId": 101,
+                    "sizeMatched": 25.0,
+                    "price": 9.99,
+                    "side": "BACK",
+                    "marketProfit": 37.5,
+                    "marketLiability": 25.0,
+                }],
+                pair_mapping={"mkt-1": "pair-load-2"},
+                selection_mappings=selection_mappings,
+            )
+
+        assert count == 0
+        assert pm.get_position("pair-load-2") is None
+        assert "missing averagePrice" in caplog.text
 
     def test_to_dict_structure(self):
         pm = PositionManager(default_share=100.0)

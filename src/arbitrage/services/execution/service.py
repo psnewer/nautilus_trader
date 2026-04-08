@@ -584,7 +584,7 @@ class ExecutionService:
             market_id=order_data.get("market_id", ""),
             selection_id=order_data.get("selection_id", ""),
             side=OrderSide(order_data.get("side", "BUY")),
-            price=order_data.get("price", 0),
+            price=order_data.get("request_price", order_data.get("price", 0)),
             size=order_data.get("original_size", 0),
             filled_size=order_data.get("size_matched", 0),
         )
@@ -737,7 +737,7 @@ class ExecutionService:
         直接从 odds_subscription 内存缓存读取，返回统一格式的字典列表。
 
         Returns:
-            [{"venue": str, "order_id": str, "price": float,
+            [{"venue": str, "order_id": str,
               "original_size": float, "size_matched": float, "size_remaining": float, ...}]
         """
         orders: list[dict] = []
@@ -769,7 +769,8 @@ class ExecutionService:
                     "market_id": str(bet.get("marketId", "")),
                     "selection_id": str(bet.get("selectionId", "")),
                     "side": bet.get("side", ""),
-                    "price": bet.get("price", 0),
+                    "request_price": float(bet.get("price", 0)),
+                    "average_price": float(bet.get("averagePrice", 0) or 0),
                     "original_size": float(bet.get("sizePlaced", 0)),
                     "size_matched": float(bet.get("sizeMatched", 0)),
                     "size_remaining": float(bet.get("sizeRemaining", 0)),
