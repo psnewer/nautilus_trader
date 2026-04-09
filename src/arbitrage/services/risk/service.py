@@ -486,6 +486,15 @@ class RiskService:
         mappings = self._odds_service.get_position_mappings()
         all_polymarket_positions = self._odds_service.get_polymarket_positions()
         all_orbitexch_bets = self._odds_service.get_orbitexch_bets()
+        self._log.info(
+            "Refreshing all way rebates: "
+            f"pm_positions={len(all_polymarket_positions)}, "
+            f"oe_bets={len(all_orbitexch_bets)}, "
+            f"pm_pairs={len(mappings.get('polymarket_pair_mapping', {}))}, "
+            f"oe_pairs={len(mappings.get('orbitexch_pair_mapping', {}))}, "
+            f"selection_pairs={len(mappings.get('selection_mappings', {}))}, "
+            f"share={self._position_manager._default_share}, fx={self._fx}"
+        )
 
         # 在新的 PositionManager 中构建全量持仓
         new_manager = PositionManager(default_share=self._position_manager._default_share)
@@ -549,9 +558,9 @@ class RiskService:
         all_positions = self._position_manager.get_all_positions()
         for position in all_positions:
             wr = self._position_manager.get_way_rebate(position.pair_id)
-            self._log.debug(
+            self._log.info(
                 f"way_rebate for {position.pair_id}: {wr}, "
-                f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}' for l in position.legs)}]"
+                f"share={position.share}, legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}/profit_override={l.profit_override}/loss_override={l.loss_override}/fx={l.fx}' for l in position.legs)}]"
             )
         self._log.info(
             f"All way_rebates refreshed: {len(all_positions)} positions"
@@ -741,6 +750,17 @@ class RiskService:
         way_rebate = position.calculate_way_rebate() if position else {}
         min_way_rebate = min(way_rebate.values()) if way_rebate else None
         global_min_sum = self._position_manager.get_global_min_rebate_sum()
+        if position:
+            self._log.info(
+                f"Risk check input: pair_id={pair_id}, share={position.share}, "
+                f"way_rebate={way_rebate}, min_way_rebate={min_way_rebate}, "
+                f"legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}/profit_override={l.profit_override}/loss_override={l.loss_override}/fx={l.fx}' for l in position.legs)}]"
+            )
+        else:
+            self._log.info(
+                f"Risk check input: pair_id={pair_id}, no position, "
+                f"way_rebate={way_rebate}, min_way_rebate={min_way_rebate}"
+            )
 
         # 1. 单场止盈检查：所有方向返水率 >= tp
         if way_rebate:

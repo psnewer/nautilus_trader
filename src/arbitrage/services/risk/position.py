@@ -444,7 +444,7 @@ class PositionManager:
 
             # 添加持仓
             position = self.get_or_create_position(pair_id)
-            position.add_leg(PositionLeg(
+            leg = PositionLeg(
                 venue="polymarket",
                 market_type=market_type,
                 size=size,
@@ -452,7 +452,14 @@ class PositionManager:
                 # 使用计算好的 profit/loss
                 profit_override=getattr(pos, "profit_if_win", None),
                 loss_override=getattr(pos, "loss_if_lose", None),
-            ))
+            )
+            position.add_leg(leg)
+            logger.info(
+                "Risk load PM leg: "
+                f"pair_id={pair_id}, event_id={event_id}, market_type={market_type}, "
+                f"size={leg.size:.4f}, price={leg.price:.6f}, "
+                f"profit_override={leg.profit_override}, loss_override={leg.loss_override}"
+            )
             count += 1
 
         return count
@@ -521,7 +528,7 @@ class PositionManager:
 
             # 添加持仓
             position = self.get_or_create_position(pair_id)
-            position.add_leg(PositionLeg(
+            leg = PositionLeg(
                 venue="orbitexch",
                 market_type=market_type,
                 size=size_matched,
@@ -529,7 +536,16 @@ class PositionManager:
                 fx=self._fx,
                 profit_override=profit_override,
                 loss_override=loss_override,
-            ))
+            )
+            position.add_leg(leg)
+            logger.info(
+                "Risk load OE leg: "
+                f"pair_id={pair_id}, market_id={market_id}, selection_id={selection_id}, "
+                f"market_type={market_type}, side={side}, size={leg.size:.4f}, "
+                f"average_price={leg.price:.6f}, fx={leg.fx:.4f}, "
+                f"market_profit={market_profit}, market_liability={market_liability}, "
+                f"profit_override={leg.profit_override}, loss_override={leg.loss_override}"
+            )
             count += 1
 
         return count
