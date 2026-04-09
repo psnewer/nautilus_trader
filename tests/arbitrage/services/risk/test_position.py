@@ -321,7 +321,7 @@ class TestPositionManager:
         assert len(pos.legs) == 2
 
     def test_load_orbitexch_back_profit_loss(self):
-        """BACK 订单: profit=marketProfit, loss=marketLiability"""
+        """BACK 订单: 使用 size/averagePrice/fx 标准公式计算盈亏"""
         case = load_case("load_orbitexch_bets")
         pm = PositionManager()
         selection_mappings = {}
@@ -337,6 +337,33 @@ class TestPositionManager:
         assert home_leg.profit_if_wins() == pytest.approx(37.5)
         assert home_leg.loss_if_loses() == pytest.approx(25.0)
         assert home_leg.price == pytest.approx(2.5)
+
+    def test_load_orbitexch_bets_ignores_market_profit_fields(self):
+        """marketProfit / marketLiability 不应用作单笔 bet override。"""
+        pm = PositionManager()
+        selection_mappings = {"pair-load-2": {101: "home"}}
+        count = pm.load_orbitexch_bets(
+            bets=[{
+                "marketId": "mkt-1",
+                "selectionId": 101,
+                "sizeMatched": 10.0,
+                "averagePrice": 3.0,
+                "price": 1.01,
+                "side": "BACK",
+                "marketProfit": 999.0,
+                "marketLiability": 888.0,
+            }],
+            pair_mapping={"mkt-1": "pair-load-2"},
+            selection_mappings=selection_mappings,
+        )
+
+        assert count == 1
+        pos = pm.get_position("pair-load-2")
+        leg = pos.legs[0]
+        assert leg.profit_override is None
+        assert leg.loss_override is None
+        assert leg.profit_if_wins() == pytest.approx(20.0)
+        assert leg.loss_if_loses() == pytest.approx(10.0)
 
     def test_load_orbitexch_bets_skips_missing_average_price(self, caplog):
         """缺失 averagePrice 的 OrbitExch bet 不应回退到 price。"""

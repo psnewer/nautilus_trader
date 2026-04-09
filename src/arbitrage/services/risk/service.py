@@ -498,6 +498,7 @@ class RiskService:
 
         # 在新的 PositionManager 中构建全量持仓
         new_manager = PositionManager(default_share=self._position_manager._default_share)
+        new_manager.set_fx(self._fx)
         new_manager.load_polymarket_positions(
             positions=all_polymarket_positions,
             pair_mapping=mappings.get("polymarket_pair_mapping", {}),

@@ -314,6 +314,27 @@ class TestSessionCompleteHandler:
         service._on_session_complete_message("not a message")
         assert len(bus.published) == 0
 
+    def test_refresh_all_way_rebates_preserves_fx_for_orbitexch_legs(self):
+        """全量刷新重建 PositionManager 后，应保留已配置的 fx。"""
+        case = load_case("msgbus_session_complete")
+        poly_positions = [DummyPolymarketPosition(d) for d in case["polymarket_positions"]]
+        odds = DummyOddsService(
+            polymarket_positions=poly_positions,
+            orbitexch_bets=case["orbitexch_bets"],
+            mappings=case["mappings"],
+        )
+
+        service = RiskService(share=30.0)
+        service.set_odds_service(odds)
+        service.set_fx(1.33)
+
+        service._refresh_all_way_rebates()
+
+        pos = service.get_position(case["pair_id"])
+        assert pos is not None
+        orbit_leg = [leg for leg in pos.legs if leg.venue == "orbitexch"][0]
+        assert orbit_leg.fx == pytest.approx(1.33)
+
 
 # =========================================================================
 # refresh_pair_position

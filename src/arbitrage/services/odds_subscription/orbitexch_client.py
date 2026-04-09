@@ -1101,6 +1101,11 @@ class OrbitExchOddsClient:
         except asyncio.TimeoutError:
             return False
 
+    def prepare_current_bets_refresh(self) -> None:
+        """为页面刷新后的下一次 CURRENT_BETS 做等待准备。"""
+        self._current_bets = None
+        self._current_bets_event = asyncio.Event()
+
     def register_bets_callback(self, callback: Callable[[dict], None]) -> None:
         """注册订单更新回调"""
         self._bets_update_callback = callback

@@ -191,9 +191,22 @@ class _FakeOrbitExchClient:
         self._before = before_bets
         self._after = after_bets
         self._use_after = False
+        self.refresh_calls = 0
+        self.prepare_calls = 0
+        self.wait_calls = 0
 
     async def refresh_page(self):
+        self.refresh_calls += 1
         self._use_after = True
+
+    def prepare_current_bets_refresh(self):
+        self.prepare_calls += 1
+        self._use_after = False
+
+    async def wait_for_current_bets(self, timeout):
+        self.wait_calls += 1
+        self._use_after = True
+        return True
 
     def get_current_bets(self, market_id):
         if self._use_after:
@@ -881,6 +894,114 @@ def test_orchestrator_replan_on_new_fill_before_operate(event_loop):
 
     assert call_state["recovery_plans"] >= 2
     assert call_state["track_calls"] == 2
+
+
+def test_orchestrator_rejects_active_session(event_loop):
+    tracker = FakeTracker(batches=[])
+    orchestrator = _build_orchestrator(tracker)
+
+    session = orchestrator.get_active_session_for_pair("pair-5")
+    assert session is None
+
+    active = ExecutionSession.create(
+        pair_id="pair-5",
+        opportunity_id="opp-5",
+        target_shares={"home": 1, "draw": 0, "away": 0},
+        probabilities={"home": 0.5, "draw": 0.0, "away": 0.0},
+    )
+    orchestrator._active_pair_sessions["pair-5"] = active.session_id
+    orchestrator._sessions[active.session_id] = active
+
+
+def test_refresh_tracking_results_refreshes_orbitexch_page_and_waits(event_loop):
+    tracker = FakeTracker(batches=[])
+    tracker._orbitexch_client = _FakeOrbitExchClient(
+        before_bets={"market-away": []},
+        after_bets={
+            "market-away": [{
+                "marketId": "market-away",
+                "selectionId": "selection-away",
+                "side": "BACK",
+                "sizeMatched": "8.10",
+                "sizeRemaining": "0.00",
+                "placedDate": "2000",
+            }]
+        },
+    )
+    orchestrator = _build_orchestrator(tracker)
+
+    result = TrackingResult(
+        operation=OrderOperation(
+            operation_type=OperationType.PLACE,
+            venue=OperationVenue.ORBITEXCH,
+            market_type="away",
+            size=8.1,
+            price=1.01,
+            market_id="market-away",
+            selection_id="selection-away",
+        ),
+        status=TrackingStatus.CONFIRMED,
+        size_matched=0.0,
+        size_remaining=8.1,
+    )
+
+    event_loop.run_until_complete(
+        orchestrator._refresh_tracking_results([result], session_start_ms=1000)
+    )
+
+    assert tracker._orbitexch_client.prepare_calls == 1
+    assert tracker._orbitexch_client.refresh_calls == 1
+    assert tracker._orbitexch_client.wait_calls == 1
+    assert result.size_matched == pytest.approx(8.1)
+    assert result.size_remaining == pytest.approx(0.0)
+
+
+def test_refresh_tracking_results_skips_orbitexch_when_only_polymarket_pending(event_loop):
+    tracker = FakeTracker(batches=[])
+    tracker._polymarket_client = _FakePolymarketClient(
+        before_orders={},
+        after_orders={
+            "condition-home": [
+                _FakePolyOrder(
+                    order_id="poly-1",
+                    asset_id="token-home",
+                    original_size=10.0,
+                    size_matched=10.0,
+                    timestamp=2000,
+                )
+            ]
+        },
+    )
+    tracker._orbitexch_client = _FakeOrbitExchClient(
+        before_bets={"market-away": []},
+        after_bets={"market-away": []},
+    )
+    orchestrator = _build_orchestrator(tracker)
+
+    result = TrackingResult(
+        operation=OrderOperation(
+            operation_type=OperationType.PLACE,
+            venue=OperationVenue.POLYMARKET,
+            market_type="home",
+            size=10.0,
+            price=0.4,
+            token_id="token-home",
+            condition_id="condition-home",
+        ),
+        status=TrackingStatus.CONFIRMED,
+        size_matched=0.0,
+        size_remaining=10.0,
+    )
+
+    event_loop.run_until_complete(
+        orchestrator._refresh_tracking_results([result], session_start_ms=1000)
+    )
+
+    assert tracker._orbitexch_client.prepare_calls == 0
+    assert tracker._orbitexch_client.refresh_calls == 0
+    assert tracker._orbitexch_client.wait_calls == 0
+    assert result.size_matched == pytest.approx(10.0)
+    assert result.size_remaining == pytest.approx(0.0)
 
 
 def test_orchestrator_rejects_active_session(event_loop):

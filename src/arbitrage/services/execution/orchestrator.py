@@ -1002,12 +1002,38 @@ class ExecutionOrchestrator:
             all_results: 全 session 的追踪结果列表（就地更新）
             session_start_ms: session 开始时间戳（毫秒）
         """
-        # 先刷新 Polymarket 订单缓存
-        if self._tracker._polymarket_client:
+        pending_polymarket = any(
+            r.status != TrackingStatus.FAILED
+            and r.operation.venue == OperationVenue.POLYMARKET
+            and r.size_remaining > 0
+            for r in all_results
+        )
+        pending_orbitexch = any(
+            r.status != TrackingStatus.FAILED
+            and r.operation.venue == OperationVenue.ORBITEXCH
+            and r.size_remaining > 0
+            for r in all_results
+        )
+
+        # 仅在 Polymarket 仍有未完全成交时刷新订单缓存
+        if pending_polymarket and self._tracker._polymarket_client:
             try:
                 await self._tracker._polymarket_client.fetch_open_orders()
             except Exception as e:
                 self._log.warning(f"Failed to fetch open orders: {e}")
+
+        # 仅在 OrbitExch 仍有未完全成交时刷新页面，并等待下一次 CURRENT_BETS
+        if pending_orbitexch and self._tracker._orbitexch_client:
+            try:
+                self._tracker._orbitexch_client.prepare_current_bets_refresh()
+                await self._tracker._orbitexch_client.refresh_page()
+                received = await self._tracker._orbitexch_client.wait_for_current_bets(
+                    timeout=min(self._config.tracking_timeout_sec, 10.0)
+                )
+                if not received:
+                    self._log.warning("OrbitExch refresh_page completed but CURRENT_BETS not received")
+            except Exception as e:
+                self._log.warning(f"Failed to refresh OrbitExch page: {e}")
 
         for result in all_results:
             if result.status == TrackingStatus.FAILED:
