@@ -23,6 +23,7 @@ from .routes import (
     debug_router,
     risk_router,
     pipeline_router,
+    system_router,
 )
 
 # 模板目录
@@ -69,6 +70,7 @@ def create_app(config: WebGatewayConfig | None = None) -> FastAPI:
     app.include_router(debug_router)
     app.include_router(risk_router)
     app.include_router(pipeline_router)
+    app.include_router(system_router)
 
     # 静态文件
     if STATIC_DIR.exists():

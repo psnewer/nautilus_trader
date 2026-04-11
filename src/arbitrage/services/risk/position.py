@@ -449,16 +449,14 @@ class PositionManager:
                 market_type=market_type,
                 size=size,
                 price=avg_price,
-                # 使用计算好的 profit/loss
-                profit_override=getattr(pos, "profit_if_win", None),
-                loss_override=getattr(pos, "loss_if_lose", None),
             )
             position.add_leg(leg)
             logger.info(
                 "Risk load PM leg: "
                 f"pair_id={pair_id}, event_id={event_id}, market_type={market_type}, "
                 f"size={leg.size:.4f}, price={leg.price:.6f}, "
-                f"profit_override={leg.profit_override}, loss_override={leg.loss_override}"
+                f"profit_if_wins={leg.profit_if_wins():.6f}, "
+                f"loss_if_loses={leg.loss_if_loses():.6f}"
             )
             count += 1
 
@@ -515,8 +513,8 @@ class PositionManager:
                 continue
 
             side = bet.get("side", "BACK")
-            market_profit = float(bet.get("marketProfit", 0))
-            market_liability = float(bet.get("marketLiability", 0))
+            profit_net = float(bet.get("profitNet", 0))
+            liability = float(bet.get("liability", 0))
 
             # 添加持仓
             position = self.get_or_create_position(pair_id)
@@ -533,7 +531,7 @@ class PositionManager:
                 f"pair_id={pair_id}, market_id={market_id}, selection_id={selection_id}, "
                 f"market_type={market_type}, side={side}, size={leg.size:.4f}, "
                 f"average_price={leg.price:.6f}, fx={leg.fx:.4f}, "
-                f"market_profit={market_profit}, market_liability={market_liability}, "
+                f"profit_net={profit_net}, liability={liability}, "
                 f"profit_override={leg.profit_override}, loss_override={leg.loss_override}"
             )
             count += 1

@@ -444,7 +444,11 @@ class OrbitExchOddsClient:
             await self._login(main_page)
         else:
             self._log.warning("No OrbitExch credentials provided, skipping login")
-            await main_page.goto(self.config.orbitexch_base_url, wait_until="networkidle")
+            await main_page.goto(
+                self.config.orbitexch_base_url,
+                wait_until="networkidle",
+                timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
+            )
 
         self._log.info("OrbitExch odds client started (browser is open)")
 
@@ -459,7 +463,11 @@ class OrbitExchOddsClient:
 
         try:
             # 导航到首页
-            await page.goto(self.config.orbitexch_base_url, wait_until="networkidle")
+            await page.goto(
+                self.config.orbitexch_base_url,
+                wait_until="networkidle",
+                timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
+            )
 
             # 等待登录表单
             await page.wait_for_selector('input[name="username"]', timeout=10000)
@@ -491,9 +499,6 @@ class OrbitExchOddsClient:
             page: 浏览器页面
         """
         try:
-            # 等待弹窗出现
-            await asyncio.sleep(3)
-
             # 直接使用已知有效的选择器
             selector = 'xpath=//button[normalize-space()="OK"]'
             try:
@@ -621,10 +626,11 @@ class OrbitExchOddsClient:
 
             # 3. 导航到 competition 页面
             self._log.info(f"Navigating to: {url}")
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # 4. 等待页面加载和 WebSocket 连接
-            await asyncio.sleep(3)
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
+            )
 
             # 5. 注入可见性欺骗脚本（让所有比赛都接收 WebSocket 数据）
             await self._setup_visibility_spoof(page)
@@ -911,8 +917,8 @@ class OrbitExchOddsClient:
                     "sizePlaced": "7.00",
                     "sizeMatched": "0.00",
                     "sizeRemaining": "7.00",
-                    "marketProfit": 63.00,  # 如果 selection 赢时的盈利
-                    "marketLiability": 7.00,  # 如果 selection 输时的亏损
+                    "profitNet": 63.00,  # 如果 selection 赢时的净盈利
+                    "liability": 7.00,  # 如果 selection 输时的亏损
                     "eventName": "Team A v Team B",
                     "competitionName": "Premier League",
                     ...
@@ -927,6 +933,19 @@ class OrbitExchOddsClient:
             bets = data.get("CURRENT_BETS", [])
 
             self._log.debug(f"Received CURRENT_BETS update: {len(bets)} bets")
+            raw_fields = [
+                {
+                    "offerId": str(bet.get("offerId", "")),
+                    "selectionId": str(bet.get("selectionId", "")),
+                    "averagePrice": bet.get("averagePrice", 0),
+                    "profitNet": bet.get("profitNet", 0),
+                    "liability": bet.get("liability", 0),
+                }
+                for bet in bets
+            ]
+            self._log.info(
+                f"CURRENT_BETS raw fields: {raw_fields}"
+            )
 
             # 按 market_id 分组
             bets_by_market: dict[str, list[dict]] = {}
@@ -1927,8 +1946,10 @@ class OrbitExchOddsClient:
         await self._setup_websocket_interception(page, page_key)
 
         # 再刷新页面（reload 时创建的 WebSocket 会被 CDP 捕获）
-        await page.reload(wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(2)
+        await page.reload(
+            wait_until="networkidle",
+            timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
+        )
 
         # reload 后再次确保 Network.enable 生效（防止 reload 重置 CDP 状态）
         cdp = self._cdp_sessions.get(page_key)

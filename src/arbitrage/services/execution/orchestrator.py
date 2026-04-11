@@ -772,8 +772,9 @@ class ExecutionOrchestrator:
                                 selection_id = order_info.get("orbitexch", {}).get("selection_id", "")
                         if market_id:
                             bets = self._tracker._orbitexch_client.get_current_bets(market_id)
+                            selection_id_str = str(selection_id)
                             for bet in bets:
-                                if (str(bet.get("selectionId")) == selection_id
+                                if (str(bet.get("selectionId")) == selection_id_str
                                         and bet.get("side", "").upper() == "BACK"):
                                     share = self._get_orbitexch_matched_share(
                                         bet=bet,
@@ -847,8 +848,9 @@ class ExecutionOrchestrator:
                     if not market_id:
                         continue
                     bets = self._tracker._orbitexch_client.get_current_bets(market_id)
+                    selection_id_str = str(selection_id)
                     for bet in bets:
-                        if (str(bet.get("selectionId")) == selection_id
+                        if (str(bet.get("selectionId")) == selection_id_str
                                 and bet.get("side", "").upper() == "BACK"):
                             share = self._get_orbitexch_matched_share(
                                 bet=bet,
@@ -1067,12 +1069,13 @@ class ExecutionOrchestrator:
                         bets = self._tracker._orbitexch_client.get_current_bets(
                             operation.market_id
                         )
+                        operation_selection_id = str(operation.selection_id)
                         # 时间戳过滤 + selectionId + side 匹配方向
                         for bet in bets:
                             placed_date = int(bet.get("placedDate", 0))
                             if placed_date < session_start_ms:
                                 continue
-                            if (str(bet.get("selectionId")) == operation.selection_id
+                            if (str(bet.get("selectionId")) == operation_selection_id
                                     and bet.get("side", "").upper() == "BACK"):
                                 new_matched = float(bet.get("sizeMatched", 0))
                                 if new_matched > result.size_matched:

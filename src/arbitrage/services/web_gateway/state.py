@@ -34,6 +34,7 @@ from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConf
 from src.arbitrage.services.execution.config import ExecutionConfig
 from src.arbitrage.services.strategy.config import StrategyServiceConfig
 from src.arbitrage.services.risk.config import RiskConfig
+from src.arbitrage.services.web_gateway.system_config import SystemConfig
 from nautilus_trader.common.component import MessageBus, LiveClock
 from nautilus_trader.model.identifiers import TraderId
 
@@ -167,6 +168,7 @@ class AppState:
         self._execution_config = ExecutionConfig()
         self._strategy_config = StrategyServiceConfig()
         self._risk_config = RiskConfig()
+        self._system_config = SystemConfig()
 
         # 运行时数据
         self._polymarket_events: list[DiscoveryResult] = []
@@ -235,6 +237,8 @@ class AppState:
                     )
                 if "risk" in data:
                     self._risk_config = RiskConfig.from_dict(data["risk"])
+                if "system" in data:
+                    self._system_config = SystemConfig.from_dict(data["system"])
 
                 self._log.info(f"Loaded config from {DEFAULT_CONFIG_PATH}")
             except Exception as e:
@@ -251,6 +255,7 @@ class AppState:
                 "execution": self._execution_config.to_dict(),
                 "strategy": self._strategy_config.to_dict(),
                 "risk": self._risk_config.to_dict(),
+                "system": self._system_config.to_dict(),
             }
             with open(DEFAULT_CONFIG_PATH, "w") as f:
                 json.dump(data, f, indent=2)
@@ -378,12 +383,35 @@ class AppState:
         """获取赔率订阅配置对象"""
         return self._odds_config
 
+    def get_system_config(self) -> dict:
+        """获取系统配置"""
+        return self._system_config.to_dict()
+
+    def update_system_config(self, data: dict) -> dict:
+        """更新系统配置（原地更新，保持引用不变）"""
+        self._system_config.update_from_dict(data)
+        self._save_config()
+
+        if self._odds_service is not None:
+            self._odds_service.update_config(self._build_odds_config())
+
+        return self.get_system_config()
+
+    def _build_discovery_config(self) -> MarketDiscoveryConfig:
+        """构建 discovery 配置（合并系统级 OrbitExch 页面超时）。"""
+        config = MarketDiscoveryConfig.from_dict(self._discovery_config_to_dict())
+        config.venues.orbitexch.browser.timeout_ms = int(
+            self._system_config.orbitexch_page_load_timeout_sec * 1000
+        )
+        return config
+
     def _build_odds_config(self) -> OddsSubscriptionConfig:
         """构建赔率订阅配置（合并环境变量）。"""
         base = self._odds_config
         config = OddsSubscriptionConfig.from_dict(asdict(base))
         config.orbitexch_username = os.getenv("ORBITEXCH_USERNAME", config.orbitexch_username)
         config.orbitexch_password = os.getenv("ORBITEXCH_PASSWORD", config.orbitexch_password)
+        config.orbitexch_page_load_timeout_sec = self._system_config.orbitexch_page_load_timeout_sec
 
         # CLOB / User Channel / 执行统一凭据
         config.polymarket_clob_api_key = os.getenv(
@@ -609,7 +637,7 @@ class AppState:
     @property
     def discovery_config_obj(self) -> MarketDiscoveryConfig:
         """获取 discovery 配置对象"""
-        return self._discovery_config
+        return self._build_discovery_config()
 
     @property
     def matching_config_obj(self) -> MarketMatchingConfig:

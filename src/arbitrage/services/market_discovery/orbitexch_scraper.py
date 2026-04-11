@@ -59,6 +59,10 @@ class OrbitExchScraper:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
 
+    def _page_load_timeout_ms(self) -> int:
+        """OrbitExch 页面加载超时（毫秒）。"""
+        return self.config.browser.timeout_ms
+
     # =========================================================================
     # Playwright 生命周期
     # =========================================================================
@@ -140,8 +144,11 @@ class OrbitExchScraper:
             await self.start_browser()
 
         self._log.info(f"Navigating to {self.BASE_URL}...")
-        await self._page.goto(self.BASE_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(2)  # 等待动态内容加载
+        await self._page.goto(
+            self.BASE_URL,
+            wait_until="networkidle",
+            timeout=self._page_load_timeout_ms(),
+        )
 
     async def find_and_click_sport(self, sport_name: str) -> bool:
         """
@@ -305,8 +312,11 @@ class OrbitExchScraper:
         self._log.info(f"Navigating to {url}...")
 
         try:
-            await self._page.goto(url, wait_until="networkidle", timeout=60000)
-            await asyncio.sleep(2)
+            await self._page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=self._page_load_timeout_ms(),
+            )
             return True
         except Exception as e:
             self._log.error(f"Failed to navigate to competition page: {e}")

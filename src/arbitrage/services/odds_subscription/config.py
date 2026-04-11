@@ -51,6 +51,7 @@ class OddsSubscriptionConfig:
     # OrbitExch 配置
     orbitexch_base_url: str = "https://www.orbitexch.com"
     orbitexch_zoom_level: float = 0.8  # 页面缩放比例
+    orbitexch_page_load_timeout_sec: float = 60.0  # 页面加载超时秒数
     orbitexch_page_refresh_sec: int = 600  # 10分钟刷新页面一次
     orbitexch_staleness_timeout_sec: int = 60  # 赔率超时时间，超过该时间无更新则刷新页面
     orbitexch_username: str = ""
@@ -107,6 +108,10 @@ class OddsSubscriptionConfig:
                 "orbitexch_base_url", "https://www.orbitexch.com"
             ),
             orbitexch_zoom_level=data.get("orbitexch_zoom_level", 0.8),
+            orbitexch_page_load_timeout_sec=data.get(
+                "orbitexch_page_load_timeout_sec",
+                data.get("orbitexch_page_load_wait_sec", 60.0),
+            ),
             orbitexch_page_refresh_sec=data.get("orbitexch_page_refresh_sec", 600),
             orbitexch_staleness_timeout_sec=data.get("orbitexch_staleness_timeout_sec", 60),
             orbitexch_username=data.get("orbitexch_username", ""),
@@ -138,6 +143,7 @@ class OddsSubscriptionConfig:
             "polygon_rpc_url": self.polygon_rpc_url,
             "orbitexch_base_url": self.orbitexch_base_url,
             "orbitexch_zoom_level": self.orbitexch_zoom_level,
+            "orbitexch_page_load_timeout_sec": self.orbitexch_page_load_timeout_sec,
             "orbitexch_page_refresh_sec": self.orbitexch_page_refresh_sec,
             "orbitexch_staleness_timeout_sec": self.orbitexch_staleness_timeout_sec,
             "orbitexch_username": self.orbitexch_username,

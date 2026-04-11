@@ -291,14 +291,16 @@ class TestPositionManager:
         # evt-unknown 不在 pair_mapping 中
         assert pm.get_position("evt-unknown") is None
 
-    def test_load_polymarket_uses_override(self):
-        """从 API 加载时 profit/loss override 生效"""
+    def test_load_polymarket_uses_standard_formula(self):
+        """从 API 加载时按 size/avg_price 标准公式计算盈亏"""
         case = load_case("load_polymarket_positions")
         pm = PositionManager()
         positions = [DummyPolymarketPosition(d) for d in case["positions"]]
         pm.load_polymarket_positions(positions=positions, pair_mapping=case["pair_mapping"])
         pos = pm.get_position("pair-load-1")
         home_leg = [l for l in pos.legs if l.market_type == "home"][0]
+        assert home_leg.profit_override is None
+        assert home_leg.loss_override is None
         assert home_leg.profit_if_wins() == pytest.approx(27.5)
         assert home_leg.loss_if_loses() == pytest.approx(22.5)
 
@@ -338,8 +340,8 @@ class TestPositionManager:
         assert home_leg.loss_if_loses() == pytest.approx(25.0)
         assert home_leg.price == pytest.approx(2.5)
 
-    def test_load_orbitexch_bets_ignores_market_profit_fields(self):
-        """marketProfit / marketLiability 不应用作单笔 bet override。"""
+    def test_load_orbitexch_bets_ignores_profitnet_liability_fields(self):
+        """profitNet / liability 不应用作单笔 bet override。"""
         pm = PositionManager()
         selection_mappings = {"pair-load-2": {101: "home"}}
         count = pm.load_orbitexch_bets(
@@ -350,8 +352,8 @@ class TestPositionManager:
                 "averagePrice": 3.0,
                 "price": 1.01,
                 "side": "BACK",
-                "marketProfit": 999.0,
-                "marketLiability": 888.0,
+                "profitNet": 999.0,
+                "liability": 888.0,
             }],
             pair_mapping={"mkt-1": "pair-load-2"},
             selection_mappings=selection_mappings,
@@ -378,8 +380,8 @@ class TestPositionManager:
                     "sizeMatched": 25.0,
                     "price": 9.99,
                     "side": "BACK",
-                    "marketProfit": 37.5,
-                    "marketLiability": 25.0,
+                    "profitNet": 37.5,
+                    "liability": 25.0,
                 }],
                 pair_mapping={"mkt-1": "pair-load-2"},
                 selection_mappings=selection_mappings,

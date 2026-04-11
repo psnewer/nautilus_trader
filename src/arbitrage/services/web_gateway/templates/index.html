@@ -532,6 +532,12 @@
                             <i class="bi bi-shield-exclamation me-1"></i>Risk
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-system-tab" data-bs-toggle="tab"
+                                data-bs-target="#config-system" type="button" role="tab">
+                            <i class="bi bi-cpu me-1"></i>System
+                        </button>
+                    </li>
                 </ul>
 
                 <div class="tab-content" id="configSubTabsContent">
@@ -800,6 +806,29 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- System Config -->
+                    <div class="tab-pane fade" id="config-system" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-cpu me-1"></i>System Config</span>
+                                <button class="btn btn-sm btn-primary" onclick="saveSystemConfig()">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">OrbitExch Page Load Timeout (seconds)</label>
+                                            <input type="number" class="form-control" id="system-orbitexch-page-load-timeout" value="60" min="1" step="1" style="max-width: 200px;">
+                                            <small class="text-muted">OrbitExch 页面 `goto/reload` 的超时时间。达到该时间仍未完成加载则报错。</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1003,6 +1032,10 @@
                 document.getElementById('execution-take-off').value = config.execution?.take_off ?? 0;
                 document.getElementById('execution-market-order').checked = config.execution?.market_order_enabled || false;
 
+                // System config
+                document.getElementById('system-orbitexch-page-load-timeout').value =
+                    config.system?.orbitexch_page_load_timeout_sec ?? 60;
+
                 // Risk config
                 await loadRiskConfig();
             } catch (e) {
@@ -1189,6 +1222,20 @@
                 };
                 await api('/api/execution/config', 'PUT', data);
                 showToast('Execution config saved');
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function saveSystemConfig() {
+            try {
+                const data = {
+                    orbitexch_page_load_timeout_sec: parseFloat(
+                        document.getElementById('system-orbitexch-page-load-timeout').value
+                    ),
+                };
+                await api('/api/system/config', 'PUT', data);
+                showToast('System config saved');
             } catch (e) {
                 showToast('Error: ' + e.message, 'error');
             }

@@ -11,6 +11,7 @@ from .execution import router as execution_router
 from .debug import router as debug_router
 from .risk import router as risk_router
 from .pipeline import router as pipeline_router
+from .system import router as system_router
 
 __all__ = [
     "discovery_router",
@@ -22,4 +23,5 @@ __all__ = [
     "debug_router",
     "risk_router",
     "pipeline_router",
+    "system_router",
 ]

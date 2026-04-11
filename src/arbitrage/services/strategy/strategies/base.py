@@ -122,9 +122,13 @@ class Strategy(ABC):
         if all_satisfied and context.arbitrage_directions:
             selected_direction = self.select_direction(context)
 
+        triggered = all_satisfied
+        if context.arbitrage_directions or selected_direction is None:
+            triggered = all_satisfied and selected_direction is not None
+
         return StrategyResult(
             strategy_name=self.name,
-            triggered=all_satisfied,
+            triggered=triggered,
             signal_results=signal_results,
             selected_direction=selected_direction,
             details={
@@ -137,7 +141,8 @@ class Strategy(ABC):
         从多个套利方向中选择最优的一个
 
         默认选择逻辑（优先级降序）：
-        1. 平台维度持仓返水率 <= 0 的方向（需要平衡持仓）
+        1. 平台维度约束过滤：
+           如果某平台存在持仓返水率 < 0 的方向，则不放通该平台持仓返水率 > 0 的方向
         2. 合并维度返水最小的方向（相同返水时按 rebate_rate 最大）
         3. 无持仓数据时，按 rebate_rate 最大选择
 
@@ -156,27 +161,51 @@ class Strategy(ABC):
         if not directions:
             return None
 
-        if len(directions) == 1:
-            return directions[0]
+        def get_leg_way_rebate(venue: str, market_type: str) -> float | None:
+            if not context.way_rebate_by_venue:
+                return None
+            return context.way_rebate_by_venue.get(venue, {}).get(market_type)
+
+        def venue_has_negative_rebate(venue: str) -> bool:
+            if not context.way_rebate_by_venue:
+                return False
+            venue_rebates = context.way_rebate_by_venue.get(venue, {})
+            return any(rebate < 0 for rebate in venue_rebates.values())
+
+        def direction_passes_platform_filter(direction: ArbitrageDirection) -> bool:
+            for leg in direction.legs:
+                leg_rebate = get_leg_way_rebate(leg.venue.value, leg.market_type)
+                if (
+                    leg_rebate is not None
+                    and leg_rebate > 0
+                    and venue_has_negative_rebate(leg.venue.value)
+                ):
+                    return False
+            return True
 
         def get_venue_way_rebate(direction: ArbitrageDirection) -> float | None:
             market_type = direction.rebate_market
             rebate_venue = direction.rebate_venue.value
-            if not context.way_rebate_by_venue:
-                return None
-            return context.way_rebate_by_venue.get(rebate_venue, {}).get(market_type)
+            return get_leg_way_rebate(rebate_venue, market_type)
 
-        # 优先级 1：仅保留平台维度返水率 <= 0 的方向
-        negative_directions = [
-            d for d in directions
-            if (get_venue_way_rebate(d) is not None and get_venue_way_rebate(d) <= 0)
+        # 优先级 1：平台维度过滤
+        platform_filtered_directions = [
+            d for d in directions if direction_passes_platform_filter(d)
         ]
-        if negative_directions:
-            candidates = negative_directions
+        if platform_filtered_directions:
+            directions = platform_filtered_directions
         elif self.strict_filter:
+            context.arbitrage_directions = []
             return None
-        else:
-            candidates = list(directions)
+
+        if self.strict_filter:
+            strict_directions = [d for d in directions if direction_passes_platform_filter(d)]
+            if not strict_directions:
+                context.arbitrage_directions = []
+                return None
+            directions = strict_directions
+
+        candidates = list(directions)
 
         # 优先级 2：按合并维度返水最小选择（相同返水时按 rebate_rate 最大）
         if context.way_rebate:

@@ -73,6 +73,7 @@
     "polygon_rpc_url": "https://polygon-rpc.com/",
     "orbitexch_base_url": "https://www.orbitexch.com",
     "orbitexch_zoom_level": 0.8,
+    "orbitexch_page_load_timeout_sec": 60.0,
     "orbitexch_page_refresh_sec": 600,
     "orbitexch_staleness_timeout_sec": 300,
     "orbitexch_username": "haidi123",
@@ -86,7 +87,7 @@
     ]
   },
   "arbitrage": {
-    "share": 35,
+    "share": 22.5,
     "fx": 1.33
   },
   "execution": {
@@ -172,5 +173,8 @@
     "match_tp": 0.1,
     "match_overrides": {},
     "health_check_interval_sec": 120.0
+  },
+  "system": {
+    "orbitexch_page_load_timeout_sec": 60.0
   }
 }

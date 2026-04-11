@@ -28,6 +28,12 @@ class DummyRiskService:
             allowed = True
         return Result()
 
+    def check_balance(self, pair_id: str, share: float, direction):
+        class Result:
+            allowed = True
+            reason = ""
+        return Result()
+
 
 def _load_case(case_id: str) -> dict:
     data_path = Path(__file__).with_name("fixtures").joinpath("strategy_cases.json")
@@ -216,6 +222,67 @@ def test_mean_rebate_signal():
     _apply_odds(service, case)
     signals = service.get_signals(case["pair"]["pair_id"])["signals"]
     assert signals["mean_rebate"]["value"] is not None
+
+
+def test_mean_rebate_strict_filter_blocks_positive_leg_direction():
+    case = _load_case("case_7")
+    config = StrategyServiceConfig()
+    config.default_strategies = ["mean"]
+    config.strategies["mean"].strict_filter = True
+    risk_service = DummyRiskService(
+        way_rebate_by_venue={
+            "polymarket": {"home": 0.01, "away": 0.02},
+            "orbitexch": {"home": 0.01, "away": -0.03},
+        },
+        way_rebate_combined={"home": 0.01, "away": -0.03},
+    )
+    service = StrategyService(config=config, risk_service=risk_service)
+    service.register_match(
+        pair_id=case["pair"]["pair_id"],
+        competition=case["pair"]["competition"],
+        home_team=case["pair"]["home_team"],
+        away_team=case["pair"]["away_team"],
+        is_live=False,
+    )
+
+    _apply_odds(service, case)
+
+    strategy_results = service.get_strategy_results(case["pair"]["pair_id"])["strategies"]
+    directions = service.get_arbitrage_directions(case["pair"]["pair_id"])
+    assert strategy_results.get("mean") is False
+    assert directions["best_direction"] is None
+    assert directions["directions"] == []
+    assert service.get_opportunities(limit=10) == []
+
+
+def test_platform_negative_rebate_blocks_same_venue_positive_leg():
+    case = _load_case("case_7")
+    config = StrategyServiceConfig()
+    config.default_strategies = ["mean"]
+    risk_service = DummyRiskService(
+        way_rebate_by_venue={
+            "polymarket": {"home": 0.01, "away": -0.02},
+            "orbitexch": {"home": 0.01, "away": 0.02},
+        },
+        way_rebate_combined={"home": 0.01, "away": -0.02},
+    )
+    service = StrategyService(config=config, risk_service=risk_service)
+    service.register_match(
+        pair_id=case["pair"]["pair_id"],
+        competition=case["pair"]["competition"],
+        home_team=case["pair"]["home_team"],
+        away_team=case["pair"]["away_team"],
+        is_live=False,
+    )
+
+    _apply_odds(service, case)
+
+    best = service.get_arbitrage_directions(case["pair"]["pair_id"])["best_direction"]
+    assert best is not None
+    assert all(
+        not (leg["venue"] == "polymarket" and leg["market_type"] == "home")
+        for leg in best["legs"]
+    )
 
 
 def test_rebate_threshold_override():
