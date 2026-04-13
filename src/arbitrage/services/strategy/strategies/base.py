@@ -198,13 +198,6 @@ class Strategy(ABC):
             context.arbitrage_directions = []
             return None
 
-        if self.strict_filter:
-            strict_directions = [d for d in directions if direction_passes_platform_filter(d)]
-            if not strict_directions:
-                context.arbitrage_directions = []
-                return None
-            directions = strict_directions
-
         candidates = list(directions)
 
         # 优先级 2：按合并维度返水最小选择（相同返水时按 rebate_rate 最大）

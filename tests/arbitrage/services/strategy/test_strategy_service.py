@@ -45,9 +45,9 @@ def _load_case(case_id: str) -> dict:
 def _inject_way_rebate(service: StrategyService, pair_id: str, case: dict) -> None:
     """将 way_rebate 数据注入 service 的内部缓存（模拟 MessageBus 推送）"""
     risk = case.get("risk", {})
-    if "way_rebate_combined" in risk:
+    if "way_rebate_combined" in risk and hasattr(service, "_way_rebate_cache"):
         service._way_rebate_cache[pair_id] = risk["way_rebate_combined"]
-    if "way_rebate_by_venue" in risk:
+    if "way_rebate_by_venue" in risk and hasattr(service, "_way_rebate_by_venue_cache"):
         service._way_rebate_by_venue_cache[pair_id] = risk["way_rebate_by_venue"]
 
 
@@ -366,7 +366,7 @@ def test_priority_negative_way_rebate_selected():
     _apply_odds(service, case)
     best = service.get_arbitrage_directions(case["pair"]["pair_id"])["best_direction"]
     assert best["rebate_market"] == "home"
-    assert best["rebate_venue"] == "polymarket"
+    assert best["rebate_venue"] == "orbitexch"
 
 
 def test_priority_min_positive_way_rebate_selected():

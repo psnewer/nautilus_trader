@@ -451,7 +451,7 @@ class PositionManager:
                 price=avg_price,
             )
             position.add_leg(leg)
-            logger.info(
+            logger.debug(
                 "Risk load PM leg: "
                 f"pair_id={pair_id}, event_id={event_id}, market_type={market_type}, "
                 f"size={leg.size:.4f}, price={leg.price:.6f}, "
@@ -526,7 +526,7 @@ class PositionManager:
                 fx=self._fx,
             )
             position.add_leg(leg)
-            logger.info(
+            logger.debug(
                 "Risk load OE leg: "
                 f"pair_id={pair_id}, market_id={market_id}, selection_id={selection_id}, "
                 f"market_type={market_type}, side={side}, size={leg.size:.4f}, "

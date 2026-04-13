@@ -943,7 +943,7 @@ class OrbitExchOddsClient:
                 }
                 for bet in bets
             ]
-            self._log.info(
+            self._log.debug(
                 f"CURRENT_BETS raw fields: {raw_fields}"
             )
 

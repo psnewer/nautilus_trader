@@ -752,13 +752,13 @@ class RiskService:
         min_way_rebate = min(way_rebate.values()) if way_rebate else None
         global_min_sum = self._position_manager.get_global_min_rebate_sum()
         if position:
-            self._log.info(
+            self._log.debug(
                 f"Risk check input: pair_id={pair_id}, share={position.share}, "
                 f"way_rebate={way_rebate}, min_way_rebate={min_way_rebate}, "
                 f"legs=[{', '.join(f'{l.venue}/{l.market_type}/size={l.size}/price={l.price}/profit_override={l.profit_override}/loss_override={l.loss_override}/fx={l.fx}' for l in position.legs)}]"
             )
         else:
-            self._log.info(
+            self._log.debug(
                 f"Risk check input: pair_id={pair_id}, no position, "
                 f"way_rebate={way_rebate}, min_way_rebate={min_way_rebate}"
             )
