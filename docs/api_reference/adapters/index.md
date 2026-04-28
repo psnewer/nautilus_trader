@@ -19,6 +19,7 @@
    dydx.md
    interactive_brokers.md
    okx.md
+   orbitexch.md
    polymarket.md
    tardis.md
 ```

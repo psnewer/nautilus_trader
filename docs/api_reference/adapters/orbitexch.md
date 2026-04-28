@@ -1,7 +1,7 @@
-# Polymarket
+# OrbitExch
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket
+.. automodule:: nautilus_trader.adapters.orbitexch
    :show-inheritance:
    :inherited-members:
    :members:
@@ -11,37 +11,17 @@
 ## Config
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.config
+.. automodule:: nautilus_trader.adapters.orbitexch.config
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Factories
+## Config Loader
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.factories
-   :show-inheritance:
-   :inherited-members:
-   :members:
-   :member-order: bysource
-```
-
-## Enums
-
-```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.common.enums
-   :show-inheritance:
-   :inherited-members:
-   :members:
-   :member-order: bysource
-```
-
-## Providers
-
-```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.providers
+.. automodule:: nautilus_trader.adapters.orbitexch.config_loader
    :show-inheritance:
    :inherited-members:
    :members:
@@ -51,57 +31,77 @@
 ## Data
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.data
+.. automodule:: nautilus_trader.adapters.orbitexch.data
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Execution
+## Browser Manager
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.execution
+.. automodule:: nautilus_trader.adapters.orbitexch.browser_manager
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Scraper (Gamma API event discovery)
+## WebSocket Handler
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.scraper
+.. automodule:: nautilus_trader.adapters.orbitexch.websocket_handler
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Odds Client (CLOB market & user channel WebSocket)
+## Message Parser
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.odds_client
+.. automodule:: nautilus_trader.adapters.orbitexch.message_parser
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Executor (py-clob-client order execution)
+## Page Scraper (LiveDataClient page interception)
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.executor
+.. automodule:: nautilus_trader.adapters.orbitexch.scraper
    :show-inheritance:
    :inherited-members:
    :members:
    :member-order: bysource
 ```
 
-## Contract (Builder Relayer merge / redeem)
+## Discovery Scraper (sport/competition page discovery)
 
 ```{eval-rst}
-.. automodule:: nautilus_trader.adapters.polymarket.contract
+.. automodule:: nautilus_trader.adapters.orbitexch.discovery_scraper
+   :show-inheritance:
+   :inherited-members:
+   :members:
+   :member-order: bysource
+```
+
+## Odds Client (CDP-intercepted WebSocket + page refresh)
+
+```{eval-rst}
+.. automodule:: nautilus_trader.adapters.orbitexch.odds_client
+   :show-inheritance:
+   :inherited-members:
+   :members:
+   :member-order: bysource
+```
+
+## Executor (Playwright order execution)
+
+```{eval-rst}
+.. automodule:: nautilus_trader.adapters.orbitexch.executor
    :show-inheritance:
    :inherited-members:
    :members:
