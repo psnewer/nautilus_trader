@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -44,9 +44,9 @@
 //!
 //! - dYdX v4 Indexer API: <https://docs.dydx.trade/developers/indexer/indexer_api>
 //!
-//! # Official documentation
+//! # Official Documentation
 //!
-//! See: <https://docs.dydx.exchange/api_integration-indexer/indexer_api>
+//! See: <https://docs.dydx.xyz/api_integration-indexer/indexer_api>
 
 pub mod client;
 pub mod error;

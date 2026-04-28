@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -61,7 +61,7 @@ _TEST_TIMEOUT = 5.0
 _AUDUSD_SIM = TestInstrumentProvider.default_fx_ccy("AUD/USD")
 
 # Requirements:
-# - A Postgres service listening on the default port 5432
+# - A Postgres service listening on the default port 5432 (e.g. `makeinit-services`)
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -84,6 +84,7 @@ class TestCachePostgresAdapter:
             self.database.flush()
         except BaseException as e:
             message = str(e)
+
             if (
                 "error communicating with database" in message
                 or "Operation not permitted" in message
@@ -298,8 +299,9 @@ class TestCachePostgresAdapter:
 
         # We have to manually sleep and not use eventually
         await eventually(
-            lambda: self.database.load_instrument(_AUDUSD_SIM.id).min_price
-            == Price.from_str("111"),
+            lambda: (
+                self.database.load_instrument(_AUDUSD_SIM.id).min_price == Price.from_str("111")
+            ),
             timeout=_TEST_TIMEOUT,
         )
 

@@ -1,4 +1,4 @@
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,5 +32,5 @@ pub fn stub_margin_balance() -> MarginBalance {
     let initial = Money::from("5000 USD");
     let maintenance = Money::from("20000 USD");
     let instrument = instrument_id_btc_usdt();
-    MarginBalance::new(initial, maintenance, instrument)
+    MarginBalance::new(initial, maintenance, Some(instrument))
 }

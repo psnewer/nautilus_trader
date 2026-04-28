@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,7 +23,11 @@ use crate::{Returns, statistic::PortfolioStatistic};
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.analysis")
 )]
 pub struct LongRatio {
     pub precision: usize,
@@ -80,7 +84,8 @@ impl PortfolioStatistic for LongRatio {
 
 #[cfg(test)]
 mod tests {
-    use ahash::AHashMap;
+    use ahash::AHashSet;
+    use indexmap::IndexMap;
     use nautilus_core::{UnixNanos, approx_eq};
     use nautilus_model::{
         enums::{InstrumentClass, PositionSide},
@@ -88,6 +93,7 @@ mod tests {
             AccountId, ClientOrderId, PositionId,
             stubs::{instrument_id_aud_usd_sim, strategy_id_ema_cross, trader_id},
         },
+        stubs::TestDefault,
         types::{Currency, Quantity},
     };
     use rstest::rstest;
@@ -104,7 +110,7 @@ mod tests {
             instrument_id: instrument_id_aud_usd_sim(),
             id: PositionId::new("test-position"),
             account_id: AccountId::new("test-account"),
-            opening_order_id: ClientOrderId::default(),
+            opening_order_id: ClientOrderId::test_default(),
             closing_order_id: None,
             entry,
             side: PositionSide::Flat, // Closed positions are Flat
@@ -127,10 +133,10 @@ mod tests {
             avg_px_close: Some(0.0),
             realized_return: 0.0,
             realized_pnl: None,
-            trade_ids: Vec::new(),
+            trade_ids: AHashSet::new(),
             buy_qty: Quantity::default(),
             sell_qty: Quantity::default(),
-            commissions: AHashMap::new(),
+            commissions: IndexMap::new(),
             adjustments: Vec::new(),
             instrument_class: InstrumentClass::Spot,
             is_currency_pair: true,

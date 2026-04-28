@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -72,7 +72,7 @@ class DatabentoInstrumentProvider(InstrumentProvider):
 
         self._clock = clock
         self._config = config or InstrumentProviderConfig()
-        self._live_api_key = live_api_key or http_client.key
+        self._live_api_key = live_api_key or http_client.api_key
         self._live_gateway = live_gateway
 
         self._http_client = http_client
@@ -186,7 +186,7 @@ class DatabentoInstrumentProvider(InstrumentProvider):
         try:
             await asyncio.gather(
                 asyncio.ensure_future(
-                    live_client.start(callback=receive_instruments, callback_pyo3=print),
+                    live_client.start(callback=receive_instruments, callback_pyo3=lambda _: None),
                 ),
                 monitor_inactivity(),
             )

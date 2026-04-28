@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -54,11 +54,17 @@ impl StateSnapshot {
     /// outcome, this method returns 0.
     #[allow(dead_code)]
     pub fn remaining_burst_capacity(&self) -> u32 {
+        let t = self.t.as_u64();
+        if t == 0 {
+            return 0;
+        }
+
         let t0 = self.time_of_measurement + self.t;
+
         (cmp::min(
             (t0 + self.tau).saturating_sub(self.tat).as_u64(),
             self.tau.as_u64(),
-        ) / self.t.as_u64()) as u32
+        ) / t) as u32
     }
 }
 

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,13 +15,7 @@
 
 //! Enums for dYdX WebSocket operations, channels, and message types.
 
-use std::collections::HashMap;
-
-use nautilus_model::{
-    data::{Data, OrderBookDeltas},
-    events::AccountState,
-    reports::{FillReport, OrderStatusReport, PositionStatusReport},
-};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum::{AsRefStr, Display, EnumString, FromRepr};
@@ -29,8 +23,9 @@ use strum::{AsRefStr, Display, EnumString, FromRepr};
 use super::{
     error::DydxWebSocketError,
     messages::{
-        DydxOraclePriceMarket, DydxWsChannelBatchDataMsg, DydxWsChannelDataMsg, DydxWsConnectedMsg,
-        DydxWsSubaccountsChannelData, DydxWsSubaccountsSubscribed, DydxWsSubscriptionMsg,
+        DydxCandle, DydxMarketsContents, DydxOrderbookContents, DydxOrderbookSnapshotContents,
+        DydxTradeContents, DydxWsConnectedMsg, DydxWsSubaccountsChannelData,
+        DydxWsSubaccountsSubscribed, DydxWsSubscriptionMsg,
     },
 };
 
@@ -52,9 +47,9 @@ use super::{
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum DydxWsOperation {
-    /// Subscribe to a channel.
+    /// Subscribes to a channel.
     Subscribe,
-    /// Unsubscribe from a channel.
+    /// Unsubscribes from a channel.
     Unsubscribe,
     /// Ping keepalive message.
     Ping,
@@ -71,6 +66,7 @@ pub enum DydxWsOperation {
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     Hash,
@@ -112,7 +108,8 @@ pub enum DydxWsChannel {
     #[serde(rename = "v4_block_height")]
     #[strum(serialize = "v4_block_height")]
     BlockHeight,
-    /// Unknown/unrecognized channel type.
+    /// Unknown/unrecognized channel type (default when field is missing).
+    #[default]
     #[serde(other)]
     #[strum(to_string = "unknown")]
     Unknown,
@@ -143,6 +140,7 @@ impl DydxWsChannel {
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     Hash,
@@ -162,7 +160,8 @@ pub enum DydxWsMessageType {
     Subscribed,
     /// Unsubscription confirmed.
     Unsubscribed,
-    /// Channel data update.
+    /// Channel data update (default for missing type field).
+    #[default]
     ChannelData,
     /// Batch channel data update.
     ChannelBatchData,
@@ -174,7 +173,9 @@ pub enum DydxWsMessageType {
     Unknown,
 }
 
-/// High level message emitted by the dYdX WebSocket client.
+/// Control messages for the fallback parsing path.
+///
+/// Channel data is handled directly via `DydxWsFeedMessage` in `handle_feed_message()`.
 #[derive(Debug, Clone)]
 pub enum DydxWsMessage {
     /// Subscription acknowledgement.
@@ -185,12 +186,6 @@ pub enum DydxWsMessage {
     SubaccountsSubscribed(DydxWsSubaccountsSubscribed),
     /// Connected acknowledgement with connection_id.
     Connected(DydxWsConnectedMsg),
-    /// Channel data update.
-    ChannelData(DydxWsChannelDataMsg),
-    /// Batch of channel data updates.
-    ChannelBatchData(DydxWsChannelBatchDataMsg),
-    /// Block height update from chain.
-    BlockHeight(u64),
     /// Error received from the venue or client lifecycle.
     Error(DydxWebSocketError),
     /// Raw message payload that does not yet have a typed representation.
@@ -201,33 +196,45 @@ pub enum DydxWsMessage {
     Pong,
 }
 
-/// Nautilus domain message emitted after parsing dYdX WebSocket events.
+/// Venue-specific message emitted by the handler to consumers.
 ///
-/// This enum contains fully-parsed Nautilus domain objects ready for consumption
-/// by the Python layer without additional processing.
+/// The handler deserializes raw WebSocket JSON into these typed variants
+/// without converting to Nautilus domain types. Consumers (data client,
+/// execution client, Python bindings) perform the final conversion using
+/// their own instrument caches.
 #[derive(Debug, Clone)]
-pub enum NautilusWsMessage {
-    /// Market data (trades, quotes, bars).
-    Data(Vec<Data>),
-    /// Order book deltas.
-    Deltas(Box<OrderBookDeltas>),
-    /// Order status reports from subaccount stream.
-    Order(Box<OrderStatusReport>),
-    /// Fill reports from subaccount stream.
-    Fill(Box<FillReport>),
-    /// Position status reports from subaccount stream.
-    Position(Box<PositionStatusReport>),
-    /// Account state updates from subaccount stream.
-    AccountState(Box<AccountState>),
-    /// Raw subaccount subscription with full state (for execution client parsing).
+pub enum DydxWsOutputMessage {
+    /// Trade data for a market.
+    Trades {
+        id: String,
+        contents: DydxTradeContents,
+    },
+    /// Order book snapshot (initial subscription).
+    OrderbookSnapshot {
+        id: String,
+        contents: DydxOrderbookSnapshotContents,
+    },
+    /// Order book delta update.
+    OrderbookUpdate {
+        id: String,
+        contents: DydxOrderbookContents,
+    },
+    /// Order book batch update (multiple deltas).
+    OrderbookBatch {
+        id: String,
+        updates: Vec<DydxOrderbookContents>,
+    },
+    /// Candle data for a market.
+    Candles { id: String, contents: DydxCandle },
+    /// Markets channel data (oracle prices, trading, instrument status).
+    Markets(DydxMarketsContents),
+    /// Subaccount subscription with initial account state.
     SubaccountSubscribed(Box<DydxWsSubaccountsSubscribed>),
-    /// Raw subaccounts channel data (orders/fills) for execution client parsing.
+    /// Subaccount channel data (orders, fills).
     SubaccountsChannelData(Box<DydxWsSubaccountsChannelData>),
-    /// Oracle price updates from markets channel (for execution client).
-    OraclePrices(HashMap<String, DydxOraclePriceMarket>),
     /// Block height update from chain.
-    BlockHeight(u64),
-    /// Error message.
+    BlockHeight { height: u64, time: DateTime<Utc> },
+    /// Error from the venue or handler.
     Error(DydxWebSocketError),
     /// Reconnection notification.
     Reconnected,

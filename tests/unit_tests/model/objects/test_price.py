@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -116,49 +116,52 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Price(-0, precision=0), Decimal(0)],
-            [Price(0, precision=0), Decimal(0)],
-            [Price(1, precision=0), Decimal(1)],
-            [Price(-1, precision=0), Decimal(1)],
-            [Price(-1.1, precision=1), Decimal("1.1")],
+            [Price(-0, precision=0), Price(0, precision=0)],
+            [Price(0, precision=0), Price(0, precision=0)],
+            [Price(1, precision=0), Price(1, precision=0)],
+            [Price(-1, precision=0), Price(1, precision=0)],
+            [Price(-1.1, precision=1), Price(1.1, precision=1)],
         ],
     )
-    def test_abs_with_various_values_returns_expected_decimal(self, value, expected):
+    def test_abs_with_various_values_returns_expected_price(self, value, expected):
         # Arrange, Act
         result = abs(value)
 
         # Assert
+        assert isinstance(result, Price)
         assert result == expected
 
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [
-                Price(-1, precision=0),
-                Decimal(-1),
-            ],  # Matches built-in decimal.Decimal behavior
-            [Price(0, 0), Decimal(0)],
+            [Price(-1, precision=0), Price(-1, precision=0)],
+            [Price(0, precision=0), Price(0, precision=0)],
+            [Price(1.5, precision=1), Price(1.5, precision=1)],
         ],
     )
-    def test_pos_with_various_values_returns_expected_decimal(self, value, expected):
+    def test_pos_with_various_values_returns_expected_price(self, value, expected):
         # Arrange, Act
         result = +value
 
         # Assert
+        assert isinstance(result, Price)
         assert result == expected
 
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Price(1, precision=0), Decimal(-1)],
-            [Price(0, precision=0), Decimal(0)],
+            [Price(1, precision=0), Price(-1, precision=0)],
+            [Price(-1, precision=0), Price(1, precision=0)],
+            [Price(0, precision=0), Price(0, precision=0)],
+            [Price(-1.5, precision=1), Price(1.5, precision=1)],
         ],
     )
-    def test_neg_with_various_values_returns_expected_decimal(self, value, expected):
+    def test_neg_with_various_values_returns_expected_price(self, value, expected):
         # Arrange, Act
         result = -value
 
         # Assert
+        assert isinstance(result, Price)
         assert result == expected
 
     @pytest.mark.parametrize(
@@ -293,12 +296,12 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value1", "value2", "expected_type", "expected_value"),
         [
-            [Price(0, precision=0), Price(0, precision=0), Decimal, 0],
+            [Price(0, precision=0), Price(0, precision=0), Price, Price(0, precision=0)],
             [
                 Price(0, precision=0),
                 Price(1.1, precision=1),
-                Decimal,
-                Decimal("1.1"),
+                Price,
+                Price(1.1, precision=1),
             ],
             [Price(0, precision=0), 0, Decimal, 0],
             [Price(0, precision=0), 1, Decimal, 1],
@@ -311,8 +314,8 @@ class TestPrice:
             [
                 Price(1, precision=0),
                 Price(1.1, precision=1),
-                Decimal,
-                Decimal("2.1"),
+                Price,
+                Price(2.1, precision=1),
             ],
             [Price(1, precision=0), Decimal("1.1"), Decimal, Decimal("2.1")],
         ],
@@ -334,13 +337,8 @@ class TestPrice:
     @pytest.mark.parametrize(
         ("value1", "value2", "expected_type", "expected_value"),
         [
-            [Price(0, precision=0), Price(0, precision=0), Decimal, 0],
-            [
-                Price(0, precision=0),
-                Price(1.1, precision=1),
-                Decimal,
-                Decimal("-1.1"),
-            ],
+            [Price(0, precision=0), Price(0, precision=0), Price, Price(0, 0)],
+            [Price(0, precision=0), Price(1.1, precision=1), Price, Price(-1.1, 1)],
             [Price(0, precision=0), 0, Decimal, 0],
             [Price(0, precision=0), 1, Decimal, -1],
             [0, Price(0, precision=0), Decimal, 0],
@@ -349,12 +347,7 @@ class TestPrice:
             [Price(0, precision=0), 1.1, float, -1.1],
             [0.1, Price(1, precision=0), float, -0.9],
             [1.1, Price(1, precision=0), float, 0.10000000000000009],
-            [
-                Price(1, precision=0),
-                Price(1.1, precision=1),
-                Decimal,
-                Decimal("-0.1"),
-            ],
+            [Price(1, precision=0), Price(1.1, precision=1), Price, Price(-0.1, 1)],
             [Price(1, precision=0), Decimal("1.1"), Decimal, Decimal("-0.1")],
         ],
     )
@@ -762,7 +755,6 @@ class TestPrice:
                 Price.from_str("1." + "0" * 17)  # 17 decimals > 16
 
     def test_from_str_precision_preservation(self):
-
         # Whole numbers should have precision 0
         assert Price.from_str("100").precision == 0
         assert Price.from_str("1000000").precision == 0

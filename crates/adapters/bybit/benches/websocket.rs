@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,7 +16,7 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nautilus_bybit::websocket::{classify_bybit_message, messages::BybitWsMessage};
+use nautilus_bybit::websocket::{messages::BybitWsFrame, parse_bybit_ws_frame};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -33,10 +33,6 @@ const ACCOUNT_POSITION: &str = include_str!("../test_data/ws_account_position.js
 const PONG: &str = r#"{"op":"pong"}"#;
 const SUBSCRIBE_SUCCESS: &str =
     r#"{"success":true,"ret_msg":"","conn_id":"abc123","req_id":"1","op":"subscribe"}"#;
-
-// =============================================================================
-// CLASSIFICATION BENCHMARKS
-// =============================================================================
 
 fn bench_classification(c: &mut Criterion) {
     let mut group = c.benchmark_group("Classification");
@@ -60,17 +56,13 @@ fn bench_classification(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("classify", name), &value, |b, value| {
             b.iter(|| {
-                black_box(classify_bybit_message(black_box(value.clone())));
+                black_box(parse_bybit_ws_frame(black_box(value.clone())));
             });
         });
     }
 
     group.finish();
 }
-
-// =============================================================================
-// FULL FLOW BENCHMARKS (parse JSON + classify)
-// =============================================================================
 
 fn bench_full_flow(c: &mut Criterion) {
     let mut group = c.benchmark_group("Full Flow");
@@ -92,7 +84,7 @@ fn bench_full_flow(c: &mut Criterion) {
             |b, msg| {
                 b.iter(|| {
                     let value: Value = serde_json::from_str(black_box(msg)).unwrap();
-                    let msg_type = classify_bybit_message(value.clone());
+                    let msg_type = parse_bybit_ws_frame(value.clone());
                     black_box((value, msg_type));
                 });
             },
@@ -101,10 +93,6 @@ fn bench_full_flow(c: &mut Criterion) {
 
     group.finish();
 }
-
-// =============================================================================
-// JSON PARSING BENCHMARKS
-// =============================================================================
 
 fn bench_parsing(c: &mut Criterion) {
     let mut group = c.benchmark_group("Parsing");
@@ -128,10 +116,6 @@ fn bench_parsing(c: &mut Criterion) {
 
     group.finish();
 }
-
-// =============================================================================
-// BATCH BENCHMARKS
-// =============================================================================
 
 fn bench_batch(c: &mut Criterion) {
     let mut group = c.benchmark_group("Batch");
@@ -158,7 +142,7 @@ fn bench_batch(c: &mut Criterion) {
                     for i in 0..size {
                         let msg = messages[i % messages.len()];
                         let value: Value = serde_json::from_str(msg).unwrap();
-                        let msg_type = classify_bybit_message(value.clone());
+                        let msg_type = parse_bybit_ws_frame(value.clone());
                         black_box((value, msg_type));
                     }
                 });
@@ -168,10 +152,6 @@ fn bench_batch(c: &mut Criterion) {
 
     group.finish();
 }
-
-// =============================================================================
-// PREFILTER BENCHMARKS
-// =============================================================================
 
 fn bench_pong_prefilter(c: &mut Criterion) {
     let mut group = c.benchmark_group("Pong Prefilter");
@@ -202,10 +182,6 @@ fn bench_pong_prefilter(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// TUNGSTENITE MESSAGE ACCESS
-// =============================================================================
-
 fn bench_tungstenite_message_access(c: &mut Criterion) {
     let mut group = c.benchmark_group("Message Access");
 
@@ -233,50 +209,50 @@ fn bench_tungstenite_message_access(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// MESSAGE TYPE DISTRIBUTION
-// =============================================================================
-
 fn bench_message_type_match(c: &mut Criterion) {
     let mut group = c.benchmark_group("Message Type");
 
-    let messages: Vec<(_, BybitWsMessage)> = vec![
+    let frames: Vec<(_, BybitWsFrame)> = vec![
         (
             "trade",
-            classify_bybit_message(serde_json::from_str(TRADE).unwrap()),
+            parse_bybit_ws_frame(serde_json::from_str(TRADE).unwrap()),
         ),
         (
             "orderbook",
-            classify_bybit_message(serde_json::from_str(ORDERBOOK_DELTA).unwrap()),
+            parse_bybit_ws_frame(serde_json::from_str(ORDERBOOK_DELTA).unwrap()),
         ),
         (
             "ticker",
-            classify_bybit_message(serde_json::from_str(TICKER_LINEAR).unwrap()),
+            parse_bybit_ws_frame(serde_json::from_str(TICKER_LINEAR).unwrap()),
         ),
         (
             "kline",
-            classify_bybit_message(serde_json::from_str(KLINE).unwrap()),
+            parse_bybit_ws_frame(serde_json::from_str(KLINE).unwrap()),
         ),
         (
             "account_order",
-            classify_bybit_message(serde_json::from_str(ACCOUNT_ORDER).unwrap()),
+            parse_bybit_ws_frame(serde_json::from_str(ACCOUNT_ORDER).unwrap()),
         ),
     ];
 
-    for (name, msg) in messages {
-        group.bench_with_input(BenchmarkId::new("is_data_message", name), &msg, |b, msg| {
-            b.iter(|| {
-                let is_data = matches!(
-                    black_box(msg),
-                    BybitWsMessage::Trade(_)
-                        | BybitWsMessage::Orderbook(_)
-                        | BybitWsMessage::Kline(_)
-                        | BybitWsMessage::TickerLinear(_)
-                        | BybitWsMessage::TickerOption(_)
-                );
-                black_box(is_data);
-            });
-        });
+    for (name, frame) in frames {
+        group.bench_with_input(
+            BenchmarkId::new("is_data_frame", name),
+            &frame,
+            |b, frame| {
+                b.iter(|| {
+                    let is_data = matches!(
+                        black_box(frame),
+                        BybitWsFrame::Trade(_)
+                            | BybitWsFrame::Orderbook(_)
+                            | BybitWsFrame::Kline(_)
+                            | BybitWsFrame::TickerLinear(_)
+                            | BybitWsFrame::TickerOption(_)
+                    );
+                    black_box(is_data);
+                });
+            },
+        );
     }
 
     group.finish();

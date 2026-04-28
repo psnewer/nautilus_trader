@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,6 +18,7 @@ from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
@@ -49,6 +50,7 @@ class SubscribeStrategyConfig(StrategyConfig, frozen=True):
     trade_ticks: bool = False
     quote_ticks: bool = False
     bars: bool = False
+    index_prices: bool = False
 
 
 class SubscribeStrategy(Strategy):
@@ -82,6 +84,7 @@ class SubscribeStrategy(Strategy):
                 instrument_id=self.instrument.id,
                 book_type=self.config.book_type,
             )
+
             if self.config.snapshots:
                 self.subscribe_order_book_at_interval(
                     instrument_id=self.config.instrument_id,
@@ -97,6 +100,8 @@ class SubscribeStrategy(Strategy):
             self.subscribe_trade_ticks(instrument_id=self.config.instrument_id)
         if self.config.quote_ticks:
             self.subscribe_quote_ticks(instrument_id=self.config.instrument_id)
+        if self.config.index_prices:
+            self.subscribe_index_prices(instrument_id=self.config.instrument_id)
         if self.config.bars:
             bar_type: BarType = BarType(
                 instrument_id=self.config.instrument_id,
@@ -129,3 +134,6 @@ class SubscribeStrategy(Strategy):
 
     def on_bar(self, bar: Bar) -> None:
         self.log.info(str(bar))
+
+    def on_index_price(self, price: IndexPriceUpdate) -> None:
+        self.log.info(str(price))

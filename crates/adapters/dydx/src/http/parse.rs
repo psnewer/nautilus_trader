@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,18 +32,21 @@
 //! that include context about the field being parsed and the value that failed.
 //! This makes debugging API changes or data issues much easier.
 
+use std::collections::HashMap;
+
 use anyhow::Context;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{OrderSide, TimeInForce},
+    data::{Bar, BarType, TradeTick},
+    enums::{AccountType, AggressorSide, OrderSide, TimeInForce},
     events::AccountState,
-    identifiers::{InstrumentId, Symbol, Venue},
+    identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{CryptoPerpetual, InstrumentAny},
-    types::Currency,
+    types::{AccountBalance, Currency, MarginBalance, Price, Quantity},
 };
 use rust_decimal::Decimal;
 
-use super::models::PerpetualMarket;
+use super::models::{Candle, PerpetualMarket, Subaccount, Trade};
 #[cfg(test)]
 use crate::common::enums::DydxTransferType;
 use crate::{
@@ -53,6 +56,99 @@ use crate::{
     },
     websocket::messages::DydxSubaccountInfo,
 };
+
+/// Parses a dYdX [`Trade`] into a Nautilus [`TradeTick`].
+///
+/// # Errors
+///
+/// Returns an error if price, size, or timestamp conversion fails.
+pub fn parse_trade_tick(
+    trade: &Trade,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+    size_precision: u8,
+    ts_init: UnixNanos,
+) -> anyhow::Result<TradeTick> {
+    let aggressor_side = match trade.side {
+        OrderSide::Buy => AggressorSide::Buyer,
+        OrderSide::Sell => AggressorSide::Seller,
+        OrderSide::NoOrderSide => AggressorSide::NoAggressor,
+    };
+
+    let price = Price::from_decimal_dp(trade.price, price_precision)
+        .context(format!("failed to parse price for trade {}", trade.id))?;
+
+    let size = Quantity::from_decimal_dp(trade.size, size_precision)
+        .context(format!("failed to parse size for trade {}", trade.id))?;
+
+    let ts_event_nanos = trade
+        .created_at
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow::anyhow!("Timestamp out of range for trade {}", trade.id))?;
+    let ts_event = UnixNanos::from(ts_event_nanos as u64);
+
+    Ok(TradeTick::new(
+        instrument_id,
+        price,
+        size,
+        aggressor_side,
+        TradeId::new(&trade.id),
+        ts_event,
+        ts_init,
+    ))
+}
+
+/// Parses a dYdX [`Candle`] into a Nautilus [`Bar`].
+///
+/// When `timestamp_on_close` is true, `ts_event` is set to bar close time
+/// (started_at + interval). When false, uses the venue-native open time.
+///
+/// # Errors
+///
+/// Returns an error if OHLCV or timestamp conversion fails.
+pub fn parse_bar(
+    candle: &Candle,
+    bar_type: BarType,
+    price_precision: u8,
+    size_precision: u8,
+    timestamp_on_close: bool,
+    ts_init: UnixNanos,
+) -> anyhow::Result<Bar> {
+    let started_at_nanos = candle.started_at.timestamp_nanos_opt().ok_or_else(|| {
+        anyhow::anyhow!("Timestamp out of range for candle at {}", candle.started_at)
+    })?;
+    let mut ts_event = UnixNanos::from(started_at_nanos as u64);
+
+    if timestamp_on_close {
+        let interval_ns = bar_type
+            .spec()
+            .timedelta()
+            .num_nanoseconds()
+            .context("bar specification produced non-integer interval")?;
+        let interval_ns =
+            u64::try_from(interval_ns).context("bar interval overflowed u64 nanoseconds")?;
+        let updated = ts_event
+            .as_u64()
+            .checked_add(interval_ns)
+            .context("bar timestamp overflowed when adjusting to close time")?;
+        ts_event = UnixNanos::from(updated);
+    }
+
+    let open = Price::from_decimal_dp(candle.open, price_precision)
+        .context("failed to parse candle open price")?;
+    let high = Price::from_decimal_dp(candle.high, price_precision)
+        .context("failed to parse candle high price")?;
+    let low = Price::from_decimal_dp(candle.low, price_precision)
+        .context("failed to parse candle low price")?;
+    let close = Price::from_decimal_dp(candle.close, price_precision)
+        .context("failed to parse candle close price")?;
+    let volume = Quantity::from_decimal_dp(candle.base_token_volume, size_precision)
+        .context("failed to parse candle base_token_volume")?;
+
+    Ok(Bar::new(
+        bar_type, open, high, low, close, volume, ts_event, ts_init,
+    ))
+}
 
 /// Validates that a ticker has the correct format (BASE-QUOTE).
 ///
@@ -65,6 +161,7 @@ pub fn validate_ticker_format(ticker: &str) -> anyhow::Result<()> {
     if parts.len() != 2 {
         anyhow::bail!("Invalid ticker format '{ticker}', expected 'BASE-QUOTE' (e.g., 'BTC-USD')");
     }
+
     if parts[0].is_empty() || parts[1].is_empty() {
         anyhow::bail!("Invalid ticker format '{ticker}', base and quote cannot be empty");
     }
@@ -83,18 +180,10 @@ pub fn parse_ticker_currencies(ticker: &str) -> anyhow::Result<(&str, &str)> {
     Ok((parts[0], parts[1]))
 }
 
-/// Validates that a market is active and tradable.
-///
-/// # Errors
-///
-/// Returns an error if the market status is not Active.
-pub fn validate_market_active(ticker: &str, status: &DydxMarketStatus) -> anyhow::Result<()> {
-    if *status != DydxMarketStatus::Active {
-        anyhow::bail!(
-            "Market '{ticker}' is not active (status: {status:?}). Only active markets can be parsed."
-        );
-    }
-    Ok(())
+/// Returns true if the market status is Active.
+#[must_use]
+pub const fn is_market_active(status: &DydxMarketStatus) -> bool {
+    matches!(status, DydxMarketStatus::Active)
 }
 
 /// Calculate time-in-force for conditional orders.
@@ -146,8 +235,8 @@ pub fn calculate_time_in_force(
 /// # Errors
 ///
 /// Returns an error if:
-/// - Conditional order is missing trigger price
-/// - Trigger price is on wrong side of limit price for the order type
+/// - Conditional order is missing trigger price.
+/// - Trigger price is on wrong side of limit price for the order type.
 pub fn validate_conditional_order(
     order_type: DydxOrderType,
     trigger_price: Option<Decimal>,
@@ -210,23 +299,21 @@ pub fn validate_conditional_order(
 /// # Errors
 ///
 /// Returns an error if:
-/// - Market status is not Active.
 /// - Ticker format is invalid (not BASE-QUOTE).
 /// - Required fields are missing or invalid.
 /// - Price or quantity values cannot be parsed.
 /// - Currency parsing fails.
 /// - Margin fractions are out of valid range.
+///
+/// Note: Callers should pre-filter inactive markets using [`is_market_active`].
 pub fn parse_instrument_any(
     definition: &PerpetualMarket,
-    maker_fee: Option<rust_decimal::Decimal>,
-    taker_fee: Option<rust_decimal::Decimal>,
+    maker_fee: Option<Decimal>,
+    taker_fee: Option<Decimal>,
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
-    // Validate market status - only parse active markets
-    validate_market_active(&definition.ticker, &definition.status)?;
-
     // Parse instrument ID with Nautilus perpetual suffix and keep raw symbol as venue ticker
-    let instrument_id = parse_instrument_id(&definition.ticker);
+    let instrument_id = parse_instrument_id(definition.ticker);
     let raw_symbol = Symbol::from(definition.ticker.as_str());
 
     // Parse currencies from ticker using helper function
@@ -311,6 +398,7 @@ pub fn parse_instrument_any(
         margin_maint,
         maker_fee,
         taker_fee,
+        None, // info: Option<Params>
         ts_init,
         ts_init,
     );
@@ -323,10 +411,16 @@ mod tests {
     use std::str::FromStr;
 
     use chrono::Utc;
-    use nautilus_model::{enums::OrderSide, instruments::Instrument};
+    use nautilus_model::{
+        data::BarType,
+        enums::{AggressorSide, OrderSide},
+        identifiers::InstrumentId,
+        instruments::Instrument,
+    };
     use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
+    use ustr::Ustr;
 
     use super::*;
     use crate::{
@@ -343,14 +437,14 @@ mod tests {
     fn create_test_market() -> PerpetualMarket {
         PerpetualMarket {
             clob_pair_id: 1,
-            ticker: "BTC-USD".to_string(),
+            ticker: Ustr::from("BTC-USD"),
             status: DydxMarketStatus::Active,
-            base_asset: Some("BTC".to_string()),
-            quote_asset: Some("USD".to_string()),
+            base_asset: Some(Ustr::from("BTC")),
+            quote_asset: Some(Ustr::from("USD")),
             step_size: Decimal::from_str("0.001").unwrap(),
             tick_size: Decimal::from_str("1").unwrap(),
             index_price: Some(Decimal::from_str("50000").unwrap()),
-            oracle_price: Decimal::from_str("50000").unwrap(),
+            oracle_price: Some(Decimal::from_str("50000").unwrap()),
             price_change_24h: Decimal::ZERO,
             next_funding_rate: Decimal::ZERO,
             next_funding_at: Some(Utc::now()),
@@ -395,19 +489,19 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_instrument_any_inactive_market() {
-        let mut market = create_test_market();
-        market.status = DydxMarketStatus::Paused;
-
-        let result = parse_instrument_any(&market, None, None, UnixNanos::default());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not active"));
+    fn test_is_market_active() {
+        assert!(is_market_active(&DydxMarketStatus::Active));
+        assert!(!is_market_active(&DydxMarketStatus::Paused));
+        assert!(!is_market_active(&DydxMarketStatus::CancelOnly));
+        assert!(!is_market_active(&DydxMarketStatus::PostOnly));
+        assert!(!is_market_active(&DydxMarketStatus::Initializing));
+        assert!(!is_market_active(&DydxMarketStatus::FinalSettlement));
     }
 
     #[rstest]
     fn test_parse_instrument_any_invalid_ticker() {
         let mut market = create_test_market();
-        market.ticker = "INVALID".to_string();
+        market.ticker = Ustr::from("INVALID");
 
         let result = parse_instrument_any(&market, None, None, UnixNanos::default());
         assert!(result.is_err());
@@ -460,15 +554,6 @@ mod tests {
     fn test_parse_ticker_currencies_invalid() {
         assert!(parse_ticker_currencies("INVALID").is_err());
         assert!(parse_ticker_currencies("BTC-USD-PERP").is_err());
-    }
-
-    #[rstest]
-    fn test_validate_market_active() {
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::Active).is_ok());
-
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::Paused).is_err());
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::CancelOnly).is_err());
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::PostOnly).is_err());
     }
 
     #[rstest]
@@ -672,6 +757,66 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_perpetual_market_with_null_oracle_price() {
+        let json = serde_json::json!({
+            "markets": {
+                "WTI-USD": {
+                    "clobPairId": "99",
+                    "ticker": "WTI-USD",
+                    "status": "ACTIVE",
+                    "oraclePrice": null,
+                    "priceChange24H": "0",
+                    "nextFundingRate": "0",
+                    "initialMarginFraction": "0.1",
+                    "maintenanceMarginFraction": "0.05",
+                    "openInterest": "0",
+                    "atomicResolution": -7,
+                    "quantumConversionExponent": -9,
+                    "tickSize": "0.01",
+                    "stepSize": "0.1",
+                    "stepBaseQuantums": 1000000,
+                    "subticksPerTick": 1000000
+                }
+            }
+        });
+        let response: MarketsResponse =
+            serde_json::from_value(json).expect("Failed to parse market with null oraclePrice");
+
+        let wti = response.markets.get("WTI-USD").unwrap();
+        assert_eq!(wti.ticker.as_str(), "WTI-USD");
+        assert_eq!(wti.oracle_price, None);
+    }
+
+    #[rstest]
+    fn test_parse_perpetual_market_with_missing_oracle_price() {
+        let json = serde_json::json!({
+            "markets": {
+                "WTI-USD": {
+                    "clobPairId": "99",
+                    "ticker": "WTI-USD",
+                    "status": "ACTIVE",
+                    "priceChange24H": "0",
+                    "nextFundingRate": "0",
+                    "initialMarginFraction": "0.1",
+                    "maintenanceMarginFraction": "0.05",
+                    "openInterest": "0",
+                    "atomicResolution": -7,
+                    "quantumConversionExponent": -9,
+                    "tickSize": "0.01",
+                    "stepSize": "0.1",
+                    "stepBaseQuantums": 1000000,
+                    "subticksPerTick": 1000000
+                }
+            }
+        });
+        let response: MarketsResponse =
+            serde_json::from_value(json).expect("Failed to parse market with missing oraclePrice");
+
+        let wti = response.markets.get("WTI-USD").unwrap();
+        assert_eq!(wti.oracle_price, None);
+    }
+
+    #[rstest]
     fn test_parse_instrument_from_market() {
         let json = load_json_result_fixture("http_get_perpetual_markets.json");
         let response: MarketsResponse =
@@ -822,26 +967,83 @@ mod tests {
             );
         }
     }
-}
 
-////////////////////////////////////////////////////////////////////////////////
-// Order, Fill, and Position Report Parsing
-////////////////////////////////////////////////////////////////////////////////
+    #[rstest]
+    fn test_parse_trade_tick() {
+        let json = load_json_result_fixture("http_get_trades.json");
+        let response: TradesResponse =
+            serde_json::from_value(json).expect("Failed to parse trades");
+
+        let instrument_id = InstrumentId::from("BTC-USD-PERP.DYDX");
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+
+        let tick = parse_trade_tick(&response.trades[0], instrument_id, 0, 4, ts_init)
+            .expect("Failed to parse trade tick");
+
+        assert_eq!(tick.instrument_id, instrument_id);
+        assert_eq!(tick.price.to_string(), "89942");
+        assert_eq!(tick.size.to_string(), "0.0001");
+        assert_eq!(tick.aggressor_side, AggressorSide::Buyer);
+        assert_eq!(tick.trade_id.to_string(), "03f89a550000000200000002");
+        assert_eq!(tick.ts_init, ts_init);
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_parse_bar_timestamp_on_close(#[case] timestamp_on_close: bool) {
+        let json = load_json_result_fixture("http_get_candles.json");
+        let response: CandlesResponse =
+            serde_json::from_value(json).expect("Failed to parse candles");
+
+        let bar_type = BarType::from_str("BTC-USD-PERP.DYDX-1-MINUTE-LAST-EXTERNAL")
+            .expect("Failed to parse bar type");
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+
+        let bar = parse_bar(
+            &response.candles[0],
+            bar_type,
+            0,
+            4,
+            timestamp_on_close,
+            ts_init,
+        )
+        .expect("Failed to parse bar");
+
+        assert_eq!(bar.bar_type, bar_type);
+        assert_eq!(bar.open.to_string(), "89934");
+        assert_eq!(bar.high.to_string(), "89970");
+        assert_eq!(bar.low.to_string(), "89911");
+        assert_eq!(bar.close.to_string(), "89941");
+        assert_eq!(bar.volume.to_string(), "3.2767");
+
+        // 2025-12-08T16:11:00.000Z
+        let started_at_ns = 1_765_210_260_000_000_000u64;
+        let one_min_ns = 60_000_000_000u64;
+
+        if timestamp_on_close {
+            assert_eq!(bar.ts_event.as_u64(), started_at_ns + one_min_ns);
+        } else {
+            assert_eq!(bar.ts_event.as_u64(), started_at_ns);
+        }
+    }
+}
 
 use std::str::FromStr;
 
 use nautilus_core::UUID4;
 use nautilus_model::{
     enums::{LiquiditySide, OrderStatus, PositionSide, TriggerType},
-    identifiers::{AccountId, ClientOrderId, PositionId, TradeId, VenueOrderId},
+    identifiers::{AccountId, ClientOrderId, VenueOrderId},
     instruments::Instrument,
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{Money, Price, Quantity},
+    types::Money,
 };
-use rust_decimal::prelude::ToPrimitive;
 
 use super::models::{Fill, Order, PerpetualPosition};
-use crate::common::enums::{DydxLiquidity, DydxOrderStatus};
+use crate::common::enums::{DydxConditionType, DydxLiquidity, DydxOrderStatus};
+#[cfg(test)]
+use crate::common::enums::{DydxFillType, DydxPositionSide, DydxPositionStatus, DydxTickerType};
 
 /// Map dYdX order status to Nautilus OrderStatus.
 fn parse_order_status(status: &DydxOrderStatus) -> OrderStatus {
@@ -875,7 +1077,6 @@ pub fn parse_order_status_report(
         Some(ClientOrderId::new(&order.client_id))
     };
 
-    // Parse order type and time-in-force
     let order_type = order.order_type.into();
 
     let execution = order.execution.or({
@@ -896,42 +1097,22 @@ pub fn parse_order_status_report(
     let order_side = order.side;
     let order_status = parse_order_status(&order.status);
 
-    // Parse quantities using Nautilus types directly
     let size_precision = instrument.size_precision();
-    let quantity = Quantity::new(
-        order
-            .size
-            .to_f64()
-            .context("failed to convert order size to f64")?,
-        size_precision,
-    );
-    let filled_qty = Quantity::new(
-        order
-            .total_filled
-            .to_f64()
-            .context("failed to convert total_filled to f64")?,
-        size_precision,
-    );
+    let quantity = Quantity::from_decimal_dp(order.size, size_precision)
+        .context("failed to parse order size")?;
+    let filled_qty = Quantity::from_decimal_dp(order.total_filled, size_precision)
+        .context("failed to parse total_filled")?;
 
-    // Parse price using Nautilus types directly
     let price_precision = instrument.price_precision();
-    let price = Price::new(
-        order
-            .price
-            .to_f64()
-            .context("failed to convert order price to f64")?,
-        price_precision,
-    );
+    let price = Price::from_decimal_dp(order.price, price_precision)
+        .context("failed to parse order price")?;
 
-    // Parse timestamps
-    let ts_accepted = order.good_til_block_time.map_or(ts_init, |dt| {
+    // Use updated_at for both ts_accepted and ts_last (not good_til_block_time which is the expiry)
+    let ts_accepted = order.updated_at.map_or(ts_init, |dt| {
         UnixNanos::from(dt.timestamp_millis() as u64 * 1_000_000)
     });
-    let ts_last = order.updated_at.map_or(ts_init, |dt| {
-        UnixNanos::from(dt.timestamp_millis() as u64 * 1_000_000)
-    });
+    let ts_last = ts_accepted;
 
-    // Build the report
     let mut report = OrderStatusReport::new(
         account_id,
         instrument_id,
@@ -949,25 +1130,18 @@ pub fn parse_order_status_report(
         Some(UUID4::new()),
     );
 
-    // Add price
     report = report.with_price(price);
 
-    // Add trigger price for conditional orders
     if let Some(trigger_price_dec) = order.trigger_price {
-        let trigger_price = Price::new(
-            trigger_price_dec
-                .to_f64()
-                .context("failed to convert trigger_price to f64")?,
-            instrument.price_precision(),
-        );
+        let trigger_price = Price::from_decimal_dp(trigger_price_dec, instrument.price_precision())
+            .context("failed to parse trigger_price")?;
         report = report.with_trigger_price(trigger_price);
 
-        // Add trigger type based on condition type
         if let Some(condition_type) = order.condition_type {
             let trigger_type = match condition_type {
-                crate::common::enums::DydxConditionType::StopLoss => TriggerType::LastPrice,
-                crate::common::enums::DydxConditionType::TakeProfit => TriggerType::LastPrice,
-                crate::common::enums::DydxConditionType::Unspecified => TriggerType::Default,
+                DydxConditionType::StopLoss => TriggerType::LastPrice,
+                DydxConditionType::TakeProfit => TriggerType::LastPrice,
+                DydxConditionType::Unspecified => TriggerType::Default,
             };
             report = report.with_trigger_type(trigger_type);
         }
@@ -989,47 +1163,60 @@ pub fn parse_fill_report(
 ) -> anyhow::Result<FillReport> {
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(&fill.order_id);
-
-    // Construct trade_id from fill ID
     let trade_id = TradeId::new(&fill.id);
-
     let order_side = fill.side;
 
-    // Parse quantity and price using Nautilus types directly
+    // On dYdX v4 the indexer tags protocol-generated fills via the `type` field:
+    // LIQUIDATED / LIQUIDATION mark the undercollateralised account and the
+    // matching insurance-fund counterparty; DELEVERAGED / OFFSETTING mark
+    // deleveraging (ADL) events when the insurance fund is exhausted.
+    match fill.fill_type {
+        crate::common::enums::DydxFillType::Liquidated
+        | crate::common::enums::DydxFillType::Liquidation => {
+            log::warn!(
+                "Liquidation fill: {} id={} order_id={} type={:?} side={:?} size={} price={}",
+                instrument_id,
+                fill.id,
+                fill.order_id,
+                fill.fill_type,
+                order_side,
+                fill.size,
+                fill.price,
+            );
+        }
+        crate::common::enums::DydxFillType::Deleveraged
+        | crate::common::enums::DydxFillType::Offsetting => {
+            log::warn!(
+                "Deleveraging (ADL) fill: {} id={} order_id={} type={:?} side={:?} size={} price={}",
+                instrument_id,
+                fill.id,
+                fill.order_id,
+                fill.fill_type,
+                order_side,
+                fill.size,
+                fill.price,
+            );
+        }
+        crate::common::enums::DydxFillType::Limit => {}
+    }
+
     let size_precision = instrument.size_precision();
     let price_precision = instrument.price_precision();
 
-    let last_qty = Quantity::new(
-        fill.size
-            .to_f64()
-            .context("failed to convert fill size to f64")?,
-        size_precision,
-    );
-    let last_px = Price::new(
-        fill.price
-            .to_f64()
-            .context("failed to convert fill price to f64")?,
-        price_precision,
-    );
+    let last_qty = Quantity::from_decimal_dp(fill.size, size_precision)
+        .context("failed to parse fill size")?;
+    let last_px = Price::from_decimal_dp(fill.price, price_precision)
+        .context("failed to parse fill price")?;
 
-    // Parse commission (fee)
-    //
-    // Negate dYdX fee to match Nautilus conventions:
-    // - dYdX: negative fee = rebate, positive fee = cost
-    // - Nautilus: positive commission = rebate, negative commission = cost
-    // Reference: OKX and Bybit adapters also negate venue fees
-    let commission = Money::new(
-        -fill.fee.to_f64().context("failed to convert fee to f64")?,
-        instrument.quote_currency(),
-    );
+    // dYdX sign convention matches Nautilus (positive = cost)
+    let commission = Money::from_decimal(fill.fee, instrument.quote_currency())
+        .context("failed to parse fee")?;
 
-    // Parse liquidity side
     let liquidity_side = match fill.liquidity {
         DydxLiquidity::Maker => LiquiditySide::Maker,
         DydxLiquidity::Taker => LiquiditySide::Taker,
     };
 
-    // Parse timestamp
     let ts_event = UnixNanos::from(fill.created_at.timestamp_millis() as u64 * 1_000_000);
 
     let report = FillReport::new(
@@ -1065,36 +1252,22 @@ pub fn parse_position_status_report(
 ) -> anyhow::Result<PositionStatusReport> {
     let instrument_id = instrument.id();
 
-    // Determine position side based on size (negative for short)
-    let position_side = if position.size.is_zero() {
+    // Trust the venue-supplied `side` for open positions; fall back to Flat only
+    // when size is zero or the position is closed/liquidated. The prior logic
+    // derived the side from `size.is_sign_positive()`, which silently overrode the
+    // venue side for edge cases (e.g. an explicit Short reported with zero size).
+    let position_side = if position.status.is_closed() || position.size.is_zero() {
         PositionSide::Flat
-    } else if position.size.is_sign_positive() {
-        PositionSide::Long
     } else {
-        PositionSide::Short
+        PositionSide::from(position.side)
     };
 
     // Create quantity (always positive)
-    let quantity = Quantity::new(
-        position
-            .size
-            .abs()
-            .to_f64()
-            .context("failed to convert position size to f64")?,
-        instrument.size_precision(),
-    );
+    let quantity = Quantity::from_decimal_dp(position.size.abs(), instrument.size_precision())
+        .context("failed to parse position size")?;
 
-    // Parse entry price
     let avg_px_open = position.entry_price;
-
-    // Use position creation time as ts_last
     let ts_last = UnixNanos::from(position.created_at.timestamp_millis() as u64 * 1_000_000);
-
-    // Create venue position ID from market
-    let venue_position_id = Some(PositionId::new(format!(
-        "{}_{}",
-        account_id, position.market
-    )));
 
     Ok(PositionStatusReport::new(
         account_id,
@@ -1104,7 +1277,7 @@ pub fn parse_position_status_report(
         ts_last,
         ts_init,
         Some(UUID4::new()),
-        venue_position_id,
+        None, // venue_position_id: None for NETTING mode
         Some(avg_px_open),
     ))
 }
@@ -1142,25 +1315,29 @@ pub fn parse_account_state(
     let mut balances = Vec::new();
 
     // Parse equity (total) and freeCollateral (free)
-    let equity_f64 = subaccount.equity.parse::<f64>().context(format!(
-        "Failed to parse equity '{}' as f64",
-        subaccount.equity
-    ))?;
+    let equity: Decimal = if subaccount.equity.is_empty() {
+        Decimal::ZERO
+    } else {
+        subaccount
+            .equity
+            .parse()
+            .context(format!("Failed to parse equity '{}'", subaccount.equity))?
+    };
 
-    let free_collateral_f64 = subaccount.free_collateral.parse::<f64>().context(format!(
-        "Failed to parse freeCollateral '{}' as f64",
-        subaccount.free_collateral
-    ))?;
+    let free_collateral: Decimal = if subaccount.free_collateral.is_empty() {
+        Decimal::ZERO
+    } else {
+        subaccount.free_collateral.parse().context(format!(
+            "Failed to parse freeCollateral '{}'",
+            subaccount.free_collateral
+        ))?
+    };
 
     // dYdX uses USDC as the settlement currency
     let currency = Currency::get_or_create_crypto_with_context("USDC", None);
 
-    let total = Money::new(equity_f64, currency);
-    let free = Money::new(free_collateral_f64, currency);
-    let locked = total - free;
-
-    let balance = AccountBalance::new_checked(total, locked, free)
-        .context("Failed to create AccountBalance from subaccount data")?;
+    let balance = AccountBalance::from_total_and_free(equity, free_collateral, currency)
+        .context("failed to derive account balance from subaccount data")?;
     balances.push(balance);
 
     // Calculate margin balances from open positions
@@ -1178,9 +1355,8 @@ pub fn parse_account_state(
             let instrument = match instruments.get(&instrument_id) {
                 Some(inst) => inst,
                 None => {
-                    tracing::warn!(
-                        "Cannot calculate margin for position {}: instrument not found",
-                        market_str
+                    log::warn!(
+                        "Cannot calculate margin for position {market_str}: instrument not found"
                     );
                     continue;
                 }
@@ -1190,9 +1366,8 @@ pub fn parse_account_state(
             let (margin_init, margin_maint) = match instrument {
                 InstrumentAny::CryptoPerpetual(perp) => (perp.margin_init, perp.margin_maint),
                 _ => {
-                    tracing::warn!(
-                        "Instrument {} is not a CryptoPerpetual, skipping margin calculation",
-                        instrument_id
+                    log::warn!(
+                        "Instrument {instrument_id} is not a CryptoPerpetual, skipping margin calculation"
                     );
                     continue;
                 }
@@ -1202,7 +1377,7 @@ pub fn parse_account_state(
             let position_size = match Decimal::from_str(&position.size) {
                 Ok(size) => size.abs(),
                 Err(e) => {
-                    tracing::warn!(
+                    log::warn!(
                         "Failed to parse position size '{}' for {}: {}",
                         position.size,
                         market_str,
@@ -1225,10 +1400,7 @@ pub fn parse_account_state(
                 .unwrap_or(Decimal::ZERO);
 
             if oracle_price.is_zero() {
-                tracing::warn!(
-                    "No valid price for position {}, skipping margin calculation",
-                    market_str
-                );
+                log::warn!("No valid price for position {market_str}, skipping margin calculation");
                 continue;
             }
 
@@ -1262,18 +1434,133 @@ pub fn parse_account_state(
             format!("Failed to create maintenance margin Money for {currency}"),
         )?;
 
-        // Create synthetic instrument ID for account-level margin
-        // Format: ACCOUNT.DYDX (similar to OKX pattern)
-        let margin_instrument_id = InstrumentId::new(Symbol::new("ACCOUNT"), Venue::new("DYDX"));
-
-        let margin_balance =
-            MarginBalance::new(initial_money, maintenance_money, margin_instrument_id);
+        // dYdX cross-margin margins are computed per collateral currency; emit as
+        // account-wide entries keyed by that currency.
+        let margin_balance = MarginBalance::new(initial_money, maintenance_money, None);
         margins.push(margin_balance);
     }
 
     Ok(AccountState::new(
         account_id,
         AccountType::Margin, // dYdX uses cross-margin
+        balances,
+        margins,
+        true, // is_reported - comes from venue
+        UUID4::new(),
+        ts_event,
+        ts_init,
+        None, // base_currency - dYdX settles in USDC
+    ))
+}
+
+/// Parse a dYdX HTTP [`Subaccount`] response into a Nautilus [`AccountState`].
+///
+/// This is the HTTP variant of [`parse_account_state`] which takes the WebSocket
+/// `DydxSubaccountInfo` type (String fields). The HTTP `Subaccount` type uses
+/// `Decimal` fields directly (parsed via `serde_as`), so no string-to-decimal
+/// conversion is needed.
+///
+/// # Errors
+///
+/// Returns an error if balance or margin calculation fails.
+pub fn parse_account_state_from_http(
+    subaccount: &Subaccount,
+    account_id: AccountId,
+    instruments: &HashMap<InstrumentId, InstrumentAny>,
+    oracle_prices: &HashMap<InstrumentId, Decimal>,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+) -> anyhow::Result<AccountState> {
+    let mut balances = Vec::new();
+
+    let equity = subaccount.equity;
+    let free_collateral = subaccount.free_collateral;
+
+    // dYdX uses USDC as the settlement currency
+    let currency = Currency::get_or_create_crypto_with_context("USDC", None);
+
+    let balance = AccountBalance::from_total_and_free(equity, free_collateral, currency)
+        .context("failed to derive account balance from subaccount data")?;
+    balances.push(balance);
+
+    // Calculate margin balances from open positions
+    let mut margins = Vec::new();
+    let mut initial_margins: HashMap<Currency, Decimal> = HashMap::new();
+    let mut maintenance_margins: HashMap<Currency, Decimal> = HashMap::new();
+
+    for position in subaccount.open_perpetual_positions.values() {
+        let market_str = position.market.as_str();
+        let instrument_id = parse_instrument_id(market_str);
+
+        let instrument = match instruments.get(&instrument_id) {
+            Some(inst) => inst,
+            None => {
+                log::warn!(
+                    "Cannot calculate margin for position {market_str}: instrument not found"
+                );
+                continue;
+            }
+        };
+
+        let (margin_init, margin_maint) = match instrument {
+            InstrumentAny::CryptoPerpetual(perp) => (perp.margin_init, perp.margin_maint),
+            _ => {
+                log::warn!(
+                    "Instrument {instrument_id} is not a CryptoPerpetual, skipping margin calculation"
+                );
+                continue;
+            }
+        };
+
+        let position_size = position.size.abs();
+
+        if position_size.is_zero() {
+            continue;
+        }
+
+        // Get oracle price, fallback to entry price
+        let oracle_price = oracle_prices
+            .get(&instrument_id)
+            .copied()
+            .unwrap_or(position.entry_price);
+
+        if oracle_price.is_zero() {
+            log::warn!("No valid price for position {market_str}, skipping margin calculation");
+            continue;
+        }
+
+        let initial_margin = margin_init * position_size * oracle_price;
+        let maintenance_margin = margin_maint * position_size * oracle_price;
+
+        let quote_currency = instrument.quote_currency();
+        *initial_margins
+            .entry(quote_currency)
+            .or_insert(Decimal::ZERO) += initial_margin;
+        *maintenance_margins
+            .entry(quote_currency)
+            .or_insert(Decimal::ZERO) += maintenance_margin;
+    }
+
+    for (currency, initial_margin) in initial_margins {
+        let maintenance_margin = maintenance_margins
+            .get(&currency)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+
+        let initial_money = Money::from_decimal(initial_margin, currency).context(format!(
+            "Failed to create initial margin Money for {currency}"
+        ))?;
+        let maintenance_money = Money::from_decimal(maintenance_margin, currency).context(
+            format!("Failed to create maintenance margin Money for {currency}"),
+        )?;
+
+        let margin_balance = MarginBalance::new(initial_money, maintenance_money, None);
+        margins.push(margin_balance);
+    }
+
+    Ok(AccountState::new(
+        account_id,
+        AccountType::Margin,
         balances,
         margins,
         true, // is_reported - comes from venue
@@ -1294,7 +1581,9 @@ mod reconciliation_tests {
         types::Currency,
     };
     use rstest::rstest;
+    use rust_decimal::prelude::ToPrimitive;
     use rust_decimal_macros::dec;
+    use ustr::Ustr;
 
     use super::*;
 
@@ -1324,6 +1613,7 @@ mod reconciliation_tests {
             Some(dec!(0.03)),                 // margin_maint
             Some(dec!(0.0002)),               // maker_fee
             Some(dec!(0.0005)),               // taker_fee
+            None,                             // info: Option<Params>
             UnixNanos::default(),             // ts_event
             UnixNanos::default(),             // ts_init
         ))
@@ -1429,7 +1719,7 @@ mod reconciliation_tests {
             created_at_height: Some(1000),
             client_metadata: 0,
             trigger_price: Some(dec!(49000.0)),
-            condition_type: Some(crate::common::enums::DydxConditionType::StopLoss),
+            condition_type: Some(DydxConditionType::StopLoss),
             conditional_order_trigger_subticks: Some(490000),
             execution: None,
             updated_at: Some(Utc::now()),
@@ -1458,9 +1748,9 @@ mod reconciliation_tests {
             id: "fill789".to_string(),
             side: OrderSide::Buy,
             liquidity: DydxLiquidity::Taker,
-            fill_type: crate::common::enums::DydxFillType::Limit,
-            market: "BTC-USD".to_string(),
-            market_type: crate::common::enums::DydxTickerType::Perpetual,
+            fill_type: DydxFillType::Limit,
+            market: Ustr::from("BTC-USD"),
+            market_type: DydxTickerType::Perpetual,
             price: dec!(50100.0),
             size: dec!(1.0),
             fee: dec!(-5.01),
@@ -1478,7 +1768,7 @@ mod reconciliation_tests {
         assert_eq!(report.order_side, OrderSide::Buy);
         assert_eq!(report.liquidity_side, LiquiditySide::Taker);
         assert_eq!(report.last_px.as_f64(), 50100.0);
-        assert_eq!(report.commission.as_f64(), 5.01);
+        assert_eq!(report.commission.as_decimal(), dec!(-5.01));
     }
 
     #[rstest]
@@ -1488,9 +1778,9 @@ mod reconciliation_tests {
         let ts_init = UnixNanos::default();
 
         let position = PerpetualPosition {
-            market: "BTC-USD".to_string(),
-            status: crate::common::enums::DydxPositionStatus::Open,
-            side: OrderSide::Buy,
+            market: Ustr::from("BTC-USD"),
+            status: DydxPositionStatus::Open,
+            side: DydxPositionSide::Long,
             size: dec!(2.5),
             max_size: dec!(3.0),
             entry_price: dec!(49500.0),
@@ -1522,9 +1812,9 @@ mod reconciliation_tests {
         let ts_init = UnixNanos::default();
 
         let position = PerpetualPosition {
-            market: "BTC-USD".to_string(),
-            status: crate::common::enums::DydxPositionStatus::Open,
-            side: OrderSide::Sell,
+            market: Ustr::from("BTC-USD"),
+            status: DydxPositionStatus::Open,
+            side: DydxPositionSide::Short,
             size: dec!(-1.5),
             max_size: dec!(1.5),
             entry_price: dec!(51000.0),
@@ -1554,9 +1844,9 @@ mod reconciliation_tests {
         let ts_init = UnixNanos::default();
 
         let position = PerpetualPosition {
-            market: "BTC-USD".to_string(),
-            status: crate::common::enums::DydxPositionStatus::Closed,
-            side: OrderSide::Buy,
+            market: Ustr::from("BTC-USD"),
+            status: DydxPositionStatus::Closed,
+            side: DydxPositionSide::Long,
             size: dec!(0.0),
             max_size: dec!(2.0),
             entry_price: dec!(50000.0),
@@ -1682,9 +1972,9 @@ mod reconciliation_tests {
 
         // Position 1: Long position
         let long_position = PerpetualPosition {
-            market: "BTC-USD".to_string(),
-            status: crate::common::enums::DydxPositionStatus::Open,
-            side: OrderSide::Buy,
+            market: Ustr::from("BTC-USD"),
+            status: DydxPositionStatus::Open,
+            side: DydxPositionSide::Long,
             size: dec!(1.5),
             max_size: dec!(1.5),
             entry_price: dec!(49000.0),
@@ -1707,9 +1997,9 @@ mod reconciliation_tests {
 
         // Position 2: Short position (should be handled separately if from different market)
         let short_position = PerpetualPosition {
-            market: "BTC-USD".to_string(),
-            status: crate::common::enums::DydxPositionStatus::Open,
-            side: OrderSide::Sell,
+            market: Ustr::from("BTC-USD"),
+            status: DydxPositionStatus::Open,
+            side: DydxPositionSide::Short,
             size: dec!(-2.0),
             max_size: dec!(2.0),
             entry_price: dec!(51000.0),
@@ -1742,9 +2032,9 @@ mod reconciliation_tests {
             id: "fill-zero-fee".to_string(),
             side: OrderSide::Sell,
             liquidity: DydxLiquidity::Maker,
-            fill_type: crate::common::enums::DydxFillType::Limit,
-            market: "BTC-USD".to_string(),
-            market_type: crate::common::enums::DydxTickerType::Perpetual,
+            fill_type: DydxFillType::Limit,
+            market: Ustr::from("BTC-USD"),
+            market_type: DydxTickerType::Perpetual,
             price: dec!(50000.0),
             size: dec!(0.1),
             fee: dec!(0.0), // Zero fee (e.g., fee rebate or promotional period)
@@ -1772,9 +2062,9 @@ mod reconciliation_tests {
             id: "fill-maker-rebate".to_string(),
             side: OrderSide::Buy,
             liquidity: DydxLiquidity::Maker,
-            fill_type: crate::common::enums::DydxFillType::Limit,
-            market: "BTC-USD".to_string(),
-            market_type: crate::common::enums::DydxTickerType::Perpetual,
+            fill_type: DydxFillType::Limit,
+            market: Ustr::from("BTC-USD"),
+            market_type: DydxTickerType::Perpetual,
             price: dec!(50000.0),
             size: dec!(1.0),
             fee: dec!(-2.5), // Negative fee = rebate
@@ -1788,8 +2078,130 @@ mod reconciliation_tests {
         assert!(result.is_ok());
 
         let report = result.unwrap();
-        // Commission should be negated: -(-2.5) = 2.5 (positive = rebate)
-        assert_eq!(report.commission.as_f64(), 2.5);
+        assert_eq!(report.commission.as_decimal(), dec!(-2.5));
         assert_eq!(report.liquidity_side, LiquiditySide::Maker);
+    }
+
+    #[rstest]
+    fn test_parse_account_state_empty_balance() {
+        use crate::websocket::messages::DydxSubaccountInfo;
+
+        let subaccount = DydxSubaccountInfo {
+            address: "dydx1abc".to_string(),
+            subaccount_number: 0,
+            equity: String::new(),
+            free_collateral: String::new(),
+            open_perpetual_positions: None,
+            asset_positions: None,
+            margin_enabled: true,
+            updated_at_height: "0".to_string(),
+            latest_processed_block_height: "0".to_string(),
+        };
+
+        let account_id = AccountId::new("DYDX-001");
+        let instruments = std::collections::HashMap::new();
+        let oracle_prices = std::collections::HashMap::new();
+        let ts = UnixNanos::default();
+
+        let state = parse_account_state(
+            &subaccount,
+            account_id,
+            &instruments,
+            &oracle_prices,
+            ts,
+            ts,
+        )
+        .unwrap();
+
+        assert_eq!(state.account_id, account_id);
+        assert_eq!(state.balances.len(), 1);
+        let balance = &state.balances[0];
+        assert_eq!(balance.total.as_f64(), 0.0);
+        assert_eq!(balance.free.as_f64(), 0.0);
+        assert_eq!(balance.locked.as_f64(), 0.0);
+    }
+
+    #[rstest]
+    fn test_parse_account_state_nonzero_balance() {
+        use crate::websocket::messages::DydxSubaccountInfo;
+
+        // Exercises the `from_total_and_free(equity, free_collateral, USDC)` path
+        // in the WebSocket subaccount parser, locking in the argument order so a
+        // later swap would fail.
+        let subaccount = DydxSubaccountInfo {
+            address: "dydx1abc".to_string(),
+            subaccount_number: 0,
+            equity: "15000".to_string(),
+            free_collateral: "12500".to_string(),
+            open_perpetual_positions: None,
+            asset_positions: None,
+            margin_enabled: true,
+            updated_at_height: "0".to_string(),
+            latest_processed_block_height: "0".to_string(),
+        };
+
+        let account_id = AccountId::new("DYDX-001");
+        let instruments = std::collections::HashMap::new();
+        let oracle_prices = std::collections::HashMap::new();
+        let ts = UnixNanos::default();
+
+        let state = parse_account_state(
+            &subaccount,
+            account_id,
+            &instruments,
+            &oracle_prices,
+            ts,
+            ts,
+        )
+        .unwrap();
+
+        assert_eq!(state.balances.len(), 1);
+        let balance = &state.balances[0];
+        assert_eq!(balance.currency.code.as_str(), "USDC");
+        assert_eq!(balance.total.as_decimal(), dec!(15000));
+        assert_eq!(balance.free.as_decimal(), dec!(12500));
+        assert_eq!(balance.locked.as_decimal(), dec!(2500));
+    }
+
+    #[rstest]
+    fn test_parse_account_state_from_http_nonzero_balance() {
+        use crate::http::models::Subaccount;
+
+        // Exercises the HTTP variant of the subaccount parser. Both variants
+        // route through `from_total_and_free(equity, free_collateral, …)`, so a
+        // swap in either path must be caught independently.
+        let subaccount = Subaccount {
+            address: "dydx1abc".to_string(),
+            subaccount_number: 0,
+            equity: dec!(15000),
+            free_collateral: dec!(12500),
+            open_perpetual_positions: std::collections::HashMap::new(),
+            asset_positions: std::collections::HashMap::new(),
+            margin_enabled: true,
+            updated_at_height: 0,
+            latest_processed_block_height: None,
+        };
+
+        let account_id = AccountId::new("DYDX-001");
+        let instruments = std::collections::HashMap::new();
+        let oracle_prices = std::collections::HashMap::new();
+        let ts = UnixNanos::default();
+
+        let state = parse_account_state_from_http(
+            &subaccount,
+            account_id,
+            &instruments,
+            &oracle_prices,
+            ts,
+            ts,
+        )
+        .unwrap();
+
+        assert_eq!(state.balances.len(), 1);
+        let balance = &state.balances[0];
+        assert_eq!(balance.currency.code.as_str(), "USDC");
+        assert_eq!(balance.total.as_decimal(), dec!(15000));
+        assert_eq!(balance.free.as_decimal(), dec!(12500));
+        assert_eq!(balance.locked.as_decimal(), dec!(2500));
     }
 }

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,6 +19,7 @@ import tempfile
 from unittest.mock import patch
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.dataset as ds
 import pytest
 
@@ -28,16 +29,25 @@ from nautilus_trader.adapters.databento.loaders import DatabentoDataLoader
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.data import Data
 from nautilus_trader.core.datetime import dt_to_unix_nanos
+from nautilus_trader.core.datetime import time_object_to_dt
 from nautilus_trader.core.rust.model import AggressorSide
 from nautilus_trader.core.rust.model import BookAction
+from nautilus_trader.core.rust.model import OrderSide
 from nautilus_trader.model.custom import customdataclass
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import BarSpecification
+from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import CustomData
+from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import BarAggregation
+from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BettingInstrument
+from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
@@ -75,14 +85,16 @@ def test_catalog_query_filtered(
     trades = catalog_betfair.trade_ticks(start=1576875378384999936)
     assert len(trades) == 121
 
-    trades = catalog_betfair.trade_ticks(start=datetime.datetime(2019, 12, 20, 20, 56, 18, tzinfo=datetime.UTC))
+    trades = catalog_betfair.trade_ticks(
+        start=datetime.datetime(2019, 12, 20, 20, 56, 18, tzinfo=datetime.UTC),
+    )
     assert len(trades) == 121
 
     deltas = catalog_betfair.order_book_deltas()
     assert len(deltas) == 2384
 
     deltas = catalog_betfair.order_book_deltas(batched=True)
-    assert len(deltas) == 2007
+    assert len(deltas) == 2009
 
 
 def test_catalog_query_custom_filtered(
@@ -150,6 +162,69 @@ def test_catalog_instrument_ids_correctly_unmapped(catalog: ParquetDataCatalog) 
     assert trade_tick.instrument_id.value == "AUD/USD.SIM"
 
 
+def test_enforce_monotonic_ts_already_sorted_returns_unchanged() -> None:
+    table = pa.table(
+        {
+            "ts_init": pa.array([1000, 2000, 3000], type=pa.uint64()),
+            "x": pa.array([1, 2, 3]),
+        },
+    )
+    result = ParquetDataCatalog._enforce_monotonic_ts(table)
+    assert result.num_rows == 3
+    assert result.column("ts_init")[0].as_py() == 1000
+    assert result.column("ts_init")[1].as_py() == 2000
+    assert result.column("ts_init")[2].as_py() == 3000
+
+
+def test_enforce_monotonic_ts_unsorted_returns_sorted_by_ts_init() -> None:
+    table = pa.table(
+        {
+            "ts_init": pa.array([3000, 1000, 2000], type=pa.uint64()),
+            "x": pa.array([3, 1, 2]),
+        },
+    )
+    result = ParquetDataCatalog._enforce_monotonic_ts(table)
+    assert result.num_rows == 3
+    assert result.column("ts_init")[0].as_py() == 1000
+    assert result.column("ts_init")[1].as_py() == 2000
+    assert result.column("ts_init")[2].as_py() == 3000
+    assert result.column("x")[0].as_py() == 1
+    assert result.column("x")[1].as_py() == 2
+    assert result.column("x")[2].as_py() == 3
+
+
+def test_enforce_monotonic_ts_single_row_missing_ts_init_raises_error() -> None:
+    # Arrange
+    table = pa.table({"x": pa.array([1])})
+
+    # Act, Assert
+    with pytest.raises(ValueError, match="no 'ts_init' column"):
+        ParquetDataCatalog._enforce_monotonic_ts(table)
+
+
+def test_enforce_monotonic_ts_chunked_array_unsorted_returns_sorted() -> None:
+    # Tables from concat can have ChunkedArray ts_init; ensure we sort correctly
+    t1 = pa.table(
+        {
+            "ts_init": pa.array([3000, 1000], type=pa.uint64()),
+            "x": pa.array([3, 1]),
+        },
+    )
+    t2 = pa.table(
+        {
+            "ts_init": pa.array([2000], type=pa.uint64()),
+            "x": pa.array([2]),
+        },
+    )
+    combined = pa.concat_tables([t1, t2])
+    assert isinstance(combined.column("ts_init"), pa.ChunkedArray)
+    result = ParquetDataCatalog._enforce_monotonic_ts(combined)
+    assert result.num_rows == 3
+    assert result.column("ts_init")[0].as_py() == 1000
+    assert result.column("ts_init")[1].as_py() == 2000
+    assert result.column("ts_init")[2].as_py() == 3000
+
+
 def test_query_files_discovers_when_files_none(
     catalog: ParquetDataCatalog,
     monkeypatch,
@@ -200,6 +275,152 @@ def test_query_files_respects_empty_files_list(
     )
 
     assert result == []
+
+
+def test_write_data_empty_records_gap_extends_file(catalog: ParquetDataCatalog) -> None:
+    # Regression: empty-data gap handling moved from engine to parquet write_data
+    # Verifies that write_data([], start=..., end=..., data_cls=..., identifier=...)
+    # extends an adjacent parquet file name to record the gap.
+    instrument = TestInstrumentProvider.ethusdt_binance()
+    bar_spec = BarSpecification(1000, BarAggregation.TICK, PriceType.MID)
+    bar_type = BarType(instrument.id, bar_spec)
+    bar_type_str = str(bar_type)
+    ts = 1000
+    bar = Bar(
+        bar_type,
+        Price.from_str("1051.0"),
+        Price.from_str("1055.0"),
+        Price.from_str("1050.0"),
+        Price.from_str("1052.0"),
+        Quantity.from_int(100),
+        ts,
+        ts,
+    )
+    catalog.write_data([instrument, bar])
+    intervals_before = catalog.get_intervals(Bar, bar_type_str)
+    assert intervals_before == [(1000, 1000)]
+
+    catalog.write_data(
+        [],
+        start=1001,
+        end=2000,
+        data_cls=Bar,
+        identifier=bar_type_str,
+    )
+    intervals_after = catalog.get_intervals(Bar, bar_type_str)
+    assert intervals_after == [(1000, 2000)]
+
+
+def test_get_intervals_without_identifier_aggregates_across_partitions(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Regression: `get_intervals(cls, identifier=None)` must union intervals across
+    # every per-identifier subdirectory, not just the parent directory's top level.
+    audusd = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+    eurusd = TestInstrumentProvider.default_fx_ccy("EUR/USD")
+    trades = [
+        TestDataStubs.trade_tick(instrument=audusd, ts_init=1_000_000_000),
+        TestDataStubs.trade_tick(instrument=audusd, ts_init=2_000_000_000),
+        TestDataStubs.trade_tick(instrument=eurusd, ts_init=3_000_000_000),
+        TestDataStubs.trade_tick(instrument=eurusd, ts_init=4_000_000_000),
+    ]
+    catalog.write_data(trades)
+
+    aud_intervals = catalog.get_intervals(TradeTick, identifier=str(audusd.id))
+    eur_intervals = catalog.get_intervals(TradeTick, identifier=str(eurusd.id))
+    all_intervals = catalog.get_intervals(TradeTick, identifier=None)
+
+    assert aud_intervals == [(1_000_000_000, 2_000_000_000)]
+    assert eur_intervals == [(3_000_000_000, 4_000_000_000)]
+    assert all_intervals == [
+        (1_000_000_000, 2_000_000_000),
+        (3_000_000_000, 4_000_000_000),
+    ]
+    assert catalog.get_missing_intervals_for_request(
+        start=1_000_000_000,
+        end=4_000_000_000,
+        data_cls=TradeTick,
+        identifier=None,
+    ) == [(2_000_000_001, 2_999_999_999)]
+
+
+def test_get_intervals_without_identifier_merges_overlapping_partitions(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Regression: aggregated intervals must be merged into a disjoint sorted union,
+    # so callers like `query_last_timestamp` see the max end across all partitions.
+    audusd = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+    eurusd = TestInstrumentProvider.default_fx_ccy("EUR/USD")
+    trades = [
+        TestDataStubs.trade_tick(instrument=audusd, ts_init=1_000_000_000),
+        TestDataStubs.trade_tick(instrument=audusd, ts_init=10_000_000_000),
+        TestDataStubs.trade_tick(instrument=eurusd, ts_init=5_000_000_000),
+        TestDataStubs.trade_tick(instrument=eurusd, ts_init=6_000_000_000),
+    ]
+    catalog.write_data(trades)
+
+    all_intervals = catalog.get_intervals(TradeTick, identifier=None)
+    assert all_intervals == [(1_000_000_000, 10_000_000_000)]
+
+    last_ts = catalog.query_last_timestamp(TradeTick, identifier=None)
+    assert last_ts == time_object_to_dt(10_000_000_000)
+
+
+def test_get_intervals_without_identifier_on_flat_layout(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Custom data without an `instrument_id` is written flat at
+    # `<type>/<start>-<end>.parquet`, so `get_intervals(cls, None)` must read
+    # from the top-level directory rather than only per-identifier subdirs.
+    custom_data = [
+        TestCustomData(value="a", number=1, ts_event=1_000_000_000, ts_init=1_000_000_000),
+        TestCustomData(value="b", number=2, ts_event=2_000_000_000, ts_init=2_000_000_000),
+    ]
+    catalog.write_data(custom_data)
+
+    assert catalog.get_intervals(TestCustomData, identifier=None) == [
+        (1_000_000_000, 2_000_000_000),
+    ]
+
+
+def test_get_intervals_without_identifier_on_empty_directory(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # No data written for this class: the type directory does not exist.
+    # `get_intervals(cls, None)` must return [] instead of raising.
+    assert catalog.get_intervals(TestCustomData, identifier=None) == []
+
+
+def test_write_data_empty_with_start_zero_does_not_skip_branch(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Guards against truthiness: start=0 / end=0 must still enter empty-data branch
+    # (branch uses "is not None", so 0 is valid).
+    instrument = TestInstrumentProvider.ethusdt_binance()
+    bar_spec = BarSpecification(1000, BarAggregation.TICK, PriceType.MID)
+    bar_type = BarType(instrument.id, bar_spec)
+    catalog.write_data([instrument])
+    catalog.write_data(
+        [],
+        start=0,
+        end=0,
+        data_cls=Bar,
+        identifier=str(bar_type),
+    )
+    # No file to extend; just assert we did not skip the branch (no error)
+    intervals = catalog.get_intervals(Bar, str(bar_type))
+    assert intervals == []
+
+
+def test_from_uri_fs_storage_options_empty_dict_singleton(tmp_path) -> None:
+    # Ensures empty dict is preserved (no "or None") so singleton identity is stable
+    catalog_dir = tmp_path / "cat"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    uri = str(catalog_dir)
+    c1 = ParquetDataCatalog.from_uri(uri, fs_storage_options={})
+    c2 = ParquetDataCatalog.from_uri(uri, fs_storage_options={})
+    assert c1 is c2
+    assert c1.path == c2.path
 
 
 @pytest.mark.skip("development_only")
@@ -424,6 +645,41 @@ def test_catalog_persists_equity(
     assert quotes_from_catalog[0].instrument_id == instrument.id
 
 
+def test_catalog_instrument_roundtrip_with_info_params(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Roundtrip a vector of same instrument (CurrencyPair) with Params in info and
+    # small variations: two ts_init times.
+    base = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+    d = CurrencyPair.to_dict(base)
+    inst1 = CurrencyPair.from_dict(
+        {
+            **d,
+            "info": {"venue_extra": "v1", "count": 1, "enabled": True},
+            "ts_event": 1000,
+            "ts_init": 1000,
+        },
+    )
+    inst2 = CurrencyPair.from_dict(
+        {
+            **d,
+            "info": {"venue_extra": "v2", "count": 2, "enabled": False},
+            "ts_event": 2000,
+            "ts_init": 2000,
+        },
+    )
+    catalog.write_data([inst1, inst2])
+    read = catalog.instruments(instrument_ids=["AUD/USD.SIM"])
+    assert len(read) == 2
+    by_ts = {inst.ts_init: inst for inst in read}
+    assert 1000 in by_ts
+    assert 2000 in by_ts
+    assert by_ts[1000].info == {"venue_extra": "v1", "count": 1, "enabled": True}
+    assert by_ts[2000].info == {"venue_extra": "v2", "count": 2, "enabled": False}
+    assert by_ts[1000].id == inst1.id
+    assert by_ts[2000].id == inst2.id
+
+
 def test_list_backtest_runs(
     catalog_betfair: ParquetDataCatalog,
 ) -> None:
@@ -593,6 +849,7 @@ class TestConsolidateDataByPeriod:
         Create test quote ticks with specified timestamps.
         """
         quotes = []
+
         for ts in timestamps:
             quote = TestDataStubs.quote_tick(
                 instrument=(
@@ -1071,7 +1328,8 @@ class TestConsolidateDataByPeriod:
         # Verify data values are preserved
         for original_bar, retrieved_bar in zip(
             sorted(test_bars, key=lambda x: x.ts_init),
-            sorted(all_bars, key=lambda x: x.ts_init), strict=False,
+            sorted(all_bars, key=lambda x: x.ts_init),
+            strict=False,
         ):
             assert original_bar.open == retrieved_bar.open
             assert original_bar.high == retrieved_bar.high
@@ -1088,6 +1346,7 @@ class TestConsolidateDataByPeriod:
 
         # Create bars with incrementing values to easily verify preservation
         test_data = []
+
         for i in range(10):
             timestamp = base_time + (i * 3600_000_000_000)  # Every hour
             # Use TestDataStubs.bar_5decimal and modify the timestamp
@@ -1115,7 +1374,9 @@ class TestConsolidateDataByPeriod:
         retrieved_sorted = sorted(all_bars, key=lambda x: x.ts_init)
 
         # Verify each bar's timestamp is exactly preserved
-        for i, (original, retrieved) in enumerate(zip(original_sorted, retrieved_sorted, strict=False)):
+        for i, (original, retrieved) in enumerate(
+            zip(original_sorted, retrieved_sorted, strict=False),
+        ):
             assert original.ts_init == retrieved.ts_init, f"Timestamp mismatch at index {i}"
 
     def test_consolidate_mixed_data_types_integration(self):
@@ -1237,6 +1498,343 @@ class TestConsolidateDataByPeriod:
         retrieved_timestamps = sorted([bar.ts_init for bar in bars])
         assert retrieved_timestamps == sorted(boundary_timestamps)
 
+    def test_consolidate_rejects_conflicting_metadata(self):
+        """
+        Test that consolidation raises when parquet files have different precision
+        metadata.
+        """
+        # Arrange
+        instrument_id = self.audusd_sim.id
+
+        # Write batch with price_precision=2, size_precision=4
+        deltas_batch1 = [
+            OrderBookDelta(
+                instrument_id=instrument_id,
+                action=BookAction.UPDATE,
+                order=BookOrder(
+                    OrderSide.BUY,
+                    Price(1.11, 2),
+                    Quantity(10.0001, 4),
+                    1,
+                ),
+                flags=0,
+                sequence=0,
+                ts_event=100,
+                ts_init=100,
+            ),
+        ]
+        self.catalog.write_data(deltas_batch1)
+
+        # Write batch with price_precision=3, size_precision=6
+        deltas_batch2 = [
+            OrderBookDelta(
+                instrument_id=instrument_id,
+                action=BookAction.UPDATE,
+                order=BookOrder(
+                    OrderSide.BUY,
+                    Price(1.123, 3),
+                    Quantity(10.000001, 6),
+                    2,
+                ),
+                flags=0,
+                sequence=0,
+                ts_event=200,
+                ts_init=200,
+            ),
+        ]
+        self.catalog.write_data(deltas_batch2, skip_disjoint_check=True)
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="conflicting metadata"):
+            self.catalog.consolidate_catalog(ensure_contiguous_files=False)
+
+    def test_consolidate_fragment_per_flush_hourly_to_daily(self):
+        """
+        Test consolidation groups fragment-per-flush files (one bar per file) by period.
+
+        Regression: the legacy contiguity check required adjacent files to be exactly
+        1 ns apart, causing fragment-per-flush catalogs to be split into single-file
+        groups and pairwise-merged on each run.
+
+        """
+        # Arrange
+        instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", venue=Venue("SIM"))
+        bar_spec = BarSpecification(1, BarAggregation.HOUR, PriceType.MID)
+        bar_type = BarType(instrument.id, bar_spec)
+        bar_type_str = str(bar_type)
+
+        start_ns = pd.Timestamp("2024-01-01", tz="UTC").value
+        hour_ns = int(pd.Timedelta(hours=1).total_seconds() * 1e9)
+
+        for i in range(168):
+            ts = start_ns + i * hour_ns
+            bar = Bar(
+                bar_type=bar_type,
+                open=Price.from_str("1.00000"),
+                high=Price.from_str("1.00010"),
+                low=Price.from_str("0.99990"),
+                close=Price.from_str("1.00005"),
+                volume=Quantity.from_str("1000"),
+                ts_event=ts,
+                ts_init=ts,
+            )
+            self.catalog.write_data([bar], skip_disjoint_check=True)
+
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 168
+
+        # Act
+        self.catalog.consolidate_data_by_period(
+            data_cls=Bar,
+            identifier=bar_type_str,
+            period=pd.Timedelta(days=1),
+            ensure_contiguous_files=False,
+        )
+
+        # Assert
+        final_intervals = self.catalog.get_intervals(Bar, bar_type_str)
+        all_bars = self.catalog.bars(bar_types=[bar_type_str])
+        assert len(final_intervals) == 7
+        assert len(all_bars) == 168
+
+        for iv in final_intervals:
+            start_day = pd.Timestamp(iv[0], unit="ns", tz="UTC").date()
+            end_day = pd.Timestamp(iv[1], unit="ns", tz="UTC").date()
+            assert start_day == end_day
+
+    def test_consolidate_data_by_period_idempotent(self):
+        # Arrange - 48 hourly bars written one-per-file
+        instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", venue=Venue("SIM"))
+        bar_spec = BarSpecification(1, BarAggregation.HOUR, PriceType.MID)
+        bar_type = BarType(instrument.id, bar_spec)
+        bar_type_str = str(bar_type)
+
+        start_ns = pd.Timestamp("2024-01-01", tz="UTC").value
+        hour_ns = int(pd.Timedelta(hours=1).total_seconds() * 1e9)
+
+        for i in range(48):
+            ts = start_ns + i * hour_ns
+            bar = Bar(
+                bar_type=bar_type,
+                open=Price.from_str("1.00000"),
+                high=Price.from_str("1.00010"),
+                low=Price.from_str("0.99990"),
+                close=Price.from_str("1.00005"),
+                volume=Quantity.from_str("1000"),
+                ts_event=ts,
+                ts_init=ts,
+            )
+            self.catalog.write_data([bar], skip_disjoint_check=True)
+
+        # Act
+        self.catalog.consolidate_data_by_period(
+            Bar,
+            bar_type_str,
+            period=pd.Timedelta(days=1),
+            ensure_contiguous_files=False,
+        )
+        files_after_first = len(self.catalog.get_intervals(Bar, bar_type_str))
+        bars_after_first = len(self.catalog.bars(bar_types=[bar_type_str]))
+
+        self.catalog.consolidate_data_by_period(
+            Bar,
+            bar_type_str,
+            period=pd.Timedelta(days=1),
+            ensure_contiguous_files=False,
+        )
+
+        # Assert - second run must not destroy data
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == files_after_first
+        assert len(self.catalog.bars(bar_types=[bar_type_str])) == bars_after_first
+
+    def test_consolidate_predicate_exact_boundary_cases(self):
+        """
+        Validates deletion predicate handles exact boundary timestamps correctly. Each
+        case is isolated by resetting the catalog between runs.
+
+        The predicate deletes a source file only when its interval is fully consumed
+        by the consolidation query:
+
+        interval[0] >= queries_to_execute[0]["query_start"]  (left bound, inclusive)
+        interval[1] <= query_info["query_end"]               (right bound, inclusive)
+
+        query range: |-------------------|
+        case A:           |-|                single bar fully inside         -> DELETE
+        case B:     |----|                   starting 1ns before range       -> KEEP
+        case C:                      |----|  ending 1ns after range          -> KEEP
+        case D:      |                       exact query_start single bar    -> DELETE
+        case E:                          |   exact query_end single bar      -> DELETE
+        case F:                  |-------|   starts inside, ends exact end   -> DELETE
+        case G:      |-------|               starts exact start, ends inside -> DELETE
+        case H:         |__ __ __ __|        multi-bar spans middle          -> DELETE
+
+        """
+        import shutil
+
+        instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", venue=Venue("SIM"))
+        bar_spec = BarSpecification(1, BarAggregation.HOUR, PriceType.MID)
+        bar_type = BarType(instrument.id, bar_spec)
+        bar_type_str = str(bar_type)
+
+        base = dt_to_unix_nanos(pd.Timestamp("2024-01-01", tz="UTC"))
+        hour = int(pd.Timedelta(hours=1).total_seconds() * 1e9)
+        day_ns = int(pd.Timedelta(days=1).total_seconds() * 1e9)
+        query_start = base
+        query_end = base + day_ns - 1
+
+        def make_bar(ts):
+            return Bar(
+                bar_type=bar_type,
+                open=Price.from_str("1.00000"),
+                high=Price.from_str("1.00010"),
+                low=Price.from_str("0.99990"),
+                close=Price.from_str("1.00005"),
+                volume=Quantity.from_str("1000"),
+                ts_event=ts,
+                ts_init=ts,
+            )
+
+        def reset():
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            self.temp_dir = tempfile.mkdtemp()
+            self.catalog = ParquetDataCatalog(path=self.temp_dir)
+
+        def consolidate():
+            self.catalog.consolidate_data_by_period(
+                data_cls=Bar,
+                identifier=bar_type_str,
+                period=pd.Timedelta(days=1),
+                start=pd.Timestamp(query_start, unit="ns", tz="UTC"),
+                end=pd.Timestamp(query_end, unit="ns", tz="UTC"),
+                ensure_contiguous_files=False,
+            )
+
+        # --- case A: single bar fully inside -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_start + 6 * hour)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case A: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start + 6 * hour in retrieved, "case A: inside bar data was lost"
+        assert query_start - 1 in retrieved, "case A: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case A: keep_after was deleted"
+
+        reset()
+
+        # --- case B: straddle-left file (starts 1ns before range) -> SPLIT: original kept + consolidated written ---
+        self.catalog.write_data([make_bar(query_start - 2)], skip_disjoint_check=True)
+        self.catalog.write_data(
+            [make_bar(query_start - 1), make_bar(query_start + 3 * hour)],
+            skip_disjoint_check=True,
+        )
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 4, "case B: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start - 2 in retrieved, "case B: keep_before was deleted"
+        assert query_start - 1 in retrieved, "case B: straddle outside bar was lost"
+        assert query_start + 3 * hour in retrieved, "case B: straddle inside bar was lost"
+        assert query_end + 1 in retrieved, "case B: keep_after was deleted"
+
+        reset()
+
+        # --- case C: straddle-right file (ends 1ns after range) -> SPLIT: original kept + consolidated written ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data(
+            [make_bar(query_start + 20 * hour), make_bar(query_end + 1)],
+            skip_disjoint_check=True,
+        )
+        self.catalog.write_data([make_bar(query_end + 2)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 4, "case C: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start - 1 in retrieved, "case C: keep_before was deleted"
+        assert query_start + 20 * hour in retrieved, "case C: straddle inside bar was lost"
+        assert query_end + 1 in retrieved, "case C: straddle outside bar was lost"
+        assert query_end + 2 in retrieved, "case C: keep_after was deleted"
+
+        reset()
+
+        # --- case D: exact query_start single bar -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_start)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case D: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start in retrieved, "case D: exact start bar data was lost"
+        assert query_start - 1 in retrieved, "case D: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case D: keep_after was deleted"
+
+        reset()
+
+        # --- case E: exact query_end single bar -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_end)], skip_disjoint_check=True)
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case E: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_end in retrieved, "case E: exact end bar data was lost"
+        assert query_start - 1 in retrieved, "case E: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case E: keep_after was deleted"
+
+        reset()
+
+        # --- case F: starts inside, ends exact query_end -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data(
+            [make_bar(query_start + 20 * hour), make_bar(query_end)],
+            skip_disjoint_check=True,
+        )
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case F: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start + 20 * hour in retrieved, "case F: inside bar data was lost"
+        assert query_end in retrieved, "case F: exact end bar data was lost"
+        assert query_start - 1 in retrieved, "case F: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case F: keep_after was deleted"
+
+        reset()
+
+        # --- case G: starts exact query_start, ends inside -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data(
+            [make_bar(query_start), make_bar(query_start + 2 * hour)],
+            skip_disjoint_check=True,
+        )
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case G: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start in retrieved, "case G: exact start bar data was lost"
+        assert query_start + 2 * hour in retrieved, "case G: inside bar data was lost"
+        assert query_start - 1 in retrieved, "case G: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case G: keep_after was deleted"
+
+        reset()
+
+        # --- case H: multi-bar spans middle -> DELETE ---
+        self.catalog.write_data([make_bar(query_start - 1)], skip_disjoint_check=True)
+        self.catalog.write_data(
+            [
+                make_bar(query_start + 7 * hour),
+                make_bar(query_start + 9 * hour),
+                make_bar(query_start + 11 * hour),
+            ],
+            skip_disjoint_check=True,
+        )
+        self.catalog.write_data([make_bar(query_end + 1)], skip_disjoint_check=True)
+        consolidate()
+        assert len(self.catalog.get_intervals(Bar, bar_type_str)) == 3, "case H: file count wrong"
+        retrieved = [b.ts_init for b in self.catalog.bars(bar_types=[bar_type_str])]
+        assert query_start + 7 * hour in retrieved, "case H: bar 1 data was lost"
+        assert query_start + 9 * hour in retrieved, "case H: bar 2 data was lost"
+        assert query_start + 11 * hour in retrieved, "case H: bar 3 data was lost"
+        assert query_start - 1 in retrieved, "case H: keep_before was deleted"
+        assert query_end + 1 in retrieved, "case H: keep_after was deleted"
+
 
 def test_consolidate_catalog_by_period(catalog: ParquetDataCatalog) -> None:
     # Arrange
@@ -1246,6 +1844,7 @@ def test_consolidate_catalog_by_period(catalog: ParquetDataCatalog) -> None:
     # Get initial file count
     leaf_dirs = catalog._find_leaf_data_directories()
     initial_file_count = 0
+
     for directory in leaf_dirs:
         files = catalog.fs.glob(f"{directory}/*.parquet")
         initial_file_count += len(files)
@@ -1259,12 +1858,101 @@ def test_consolidate_catalog_by_period(catalog: ParquetDataCatalog) -> None:
     # Assert - method should complete without error
     # Note: Since all quotes have the same timestamp, they should be consolidated
     final_file_count = 0
+
     for directory in leaf_dirs:
         files = catalog.fs.glob(f"{directory}/*.parquet")
         final_file_count += len(files)
 
     # The consolidation should have processed the files
     assert initial_file_count >= 1  # We had some files initially
+
+
+def test_consolidate_data_no_overlap_range_is_noop(catalog: ParquetDataCatalog) -> None:
+    # Arrange: write bars in January 2024
+    instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", venue=Venue("SIM"))
+    bar_spec = BarSpecification(1, BarAggregation.HOUR, PriceType.MID)
+    bar_type = BarType(instrument.id, bar_spec)
+    bar_type_str = str(bar_type)
+
+    base = dt_to_unix_nanos(pd.Timestamp("2024-01-01", tz="UTC"))
+    hour = int(pd.Timedelta(hours=1).total_seconds() * 1e9)
+
+    def make_bar(ts: int) -> Bar:
+        return Bar(
+            bar_type=bar_type,
+            open=Price.from_str("1.00000"),
+            high=Price.from_str("1.00010"),
+            low=Price.from_str("0.99990"),
+            close=Price.from_str("1.00005"),
+            volume=Quantity.from_str("1000"),
+            ts_event=ts,
+            ts_init=ts,
+        )
+
+    for i in range(24):
+        catalog.write_data([make_bar(base + i * hour)], skip_disjoint_check=True)
+
+    initial_files = catalog.fs.glob(f"{catalog._make_path(Bar, bar_type_str)}/*.parquet")
+    assert len(initial_files) == 24
+
+    # Act: consolidate over a range that does not overlap any files
+    catalog.consolidate_data(
+        data_cls=Bar,
+        identifier=bar_type_str,
+        start=pd.Timestamp("2024-06-01", tz="UTC"),
+        end=pd.Timestamp("2024-06-30", tz="UTC"),
+    )
+
+    # Assert: original files untouched, no error raised
+    final_files = catalog.fs.glob(f"{catalog._make_path(Bar, bar_type_str)}/*.parquet")
+    assert len(final_files) == 24
+
+
+def test_consolidate_catalog_by_period_skips_unknown_directory(
+    catalog: ParquetDataCatalog,
+) -> None:
+    # Arrange: write bars, then create an unknown directory that sorts before `bar`
+    instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", venue=Venue("SIM"))
+    bar_spec = BarSpecification(1, BarAggregation.HOUR, PriceType.MID)
+    bar_type = BarType(instrument.id, bar_spec)
+    bar_type_str = str(bar_type)
+
+    base = dt_to_unix_nanos(pd.Timestamp("2024-01-01", tz="UTC"))
+    hour = int(pd.Timedelta(hours=1).total_seconds() * 1e9)
+
+    def make_bar(ts: int) -> Bar:
+        return Bar(
+            bar_type=bar_type,
+            open=Price.from_str("1.00000"),
+            high=Price.from_str("1.00010"),
+            low=Price.from_str("0.99990"),
+            close=Price.from_str("1.00005"),
+            volume=Quantity.from_str("1000"),
+            ts_event=ts,
+            ts_init=ts,
+        )
+
+    for i in range(24):
+        catalog.write_data([make_bar(base + i * hour)], skip_disjoint_check=True)
+
+    bar_dir = catalog._make_path(Bar, bar_type_str)
+    initial_files = catalog.fs.glob(f"{bar_dir}/*.parquet")
+    assert len(initial_files) == 24
+
+    unknown_dir = f"{catalog.path}/data/aaa_unknown_garbage"
+    catalog.fs.mkdir(unknown_dir, create_parents=True)
+    with catalog.fs.open(f"{unknown_dir}/placeholder.parquet", "wb") as f:
+        f.write(b"")
+
+    # Act: the unknown directory sorts before `bar`; the bug made this `return`
+    catalog.consolidate_catalog_by_period(
+        period=pd.Timedelta(days=1),
+        ensure_contiguous_files=False,
+    )
+
+    # Assert: bars were consolidated into a single file despite the unknown dir
+    final_files = catalog.fs.glob(f"{bar_dir}/*.parquet")
+    assert len(final_files) == 1
 
 
 def test_extract_data_cls_and_identifier_from_path(catalog: ParquetDataCatalog) -> None:
@@ -1737,9 +2425,9 @@ def test_delete_data_range_cross_file_split(catalog: ParquetDataCatalog) -> None
     remaining_timestamps.sort()
 
     expected_remaining = [1_000_000_000, 2_000_000_000, 3_000_000_000]
-    assert (
-        remaining_timestamps == expected_remaining
-    ), f"Expected {expected_remaining}, was {remaining_timestamps}"
+    assert remaining_timestamps == expected_remaining, (
+        f"Expected {expected_remaining}, was {remaining_timestamps}"
+    )
 
     # Verify file structure - should have 1 file remaining
     final_intervals = catalog.get_intervals(QuoteTick, "AUD/USD.SIM")
@@ -1748,12 +2436,12 @@ def test_delete_data_range_cross_file_split(catalog: ParquetDataCatalog) -> None
     # Verify the remaining file covers the correct range (should end just before deletion start)
     expected_start = 1_000_000_000
     expected_end = 4_000_000_000 - 1  # Just before deletion range starts (one nanosecond before)
-    assert (
-        final_intervals[0][0] == expected_start
-    ), f"Expected start {expected_start}, was {final_intervals[0][0]}"
-    assert (
-        final_intervals[0][1] == expected_end
-    ), f"Expected end {expected_end}, was {final_intervals[0][1]}"
+    assert final_intervals[0][0] == expected_start, (
+        f"Expected start {expected_start}, was {final_intervals[0][0]}"
+    )
+    assert final_intervals[0][1] == expected_end, (
+        f"Expected end {expected_end}, was {final_intervals[0][1]}"
+    )
 
     # Verify we can query the remaining data correctly
     queried_quotes = catalog.query(
@@ -1765,9 +2453,9 @@ def test_delete_data_range_cross_file_split(catalog: ParquetDataCatalog) -> None
     queried_timestamps = [q.ts_init for q in queried_quotes]
     queried_timestamps.sort()
 
-    assert (
-        queried_timestamps == expected_remaining
-    ), f"Query result should be {expected_remaining}, was {queried_timestamps}"
+    assert queried_timestamps == expected_remaining, (
+        f"Query result should be {expected_remaining}, was {queried_timestamps}"
+    )
 
 
 def test_delete_data_range_cross_file_split_keep_end(catalog: ParquetDataCatalog) -> None:
@@ -1833,9 +2521,9 @@ def test_delete_data_range_cross_file_split_keep_end(catalog: ParquetDataCatalog
     remaining_timestamps.sort()
 
     expected_remaining = [8_000_000_000, 9_000_000_000, 10_000_000_000]
-    assert (
-        remaining_timestamps == expected_remaining
-    ), f"Expected {expected_remaining}, was {remaining_timestamps}"
+    assert remaining_timestamps == expected_remaining, (
+        f"Expected {expected_remaining}, was {remaining_timestamps}"
+    )
 
     # Verify file structure - should have 2 files remaining (split file 2 + intact file 3)
     final_intervals = catalog.get_intervals(QuoteTick, "AUD/USD.SIM")
@@ -1851,9 +2539,9 @@ def test_delete_data_range_cross_file_split_keep_end(catalog: ParquetDataCatalog
     queried_timestamps = [q.ts_init for q in queried_quotes]
     queried_timestamps.sort()
 
-    assert (
-        queried_timestamps == expected_remaining
-    ), f"Query result should be {expected_remaining}, was {queried_timestamps}"
+    assert queried_timestamps == expected_remaining, (
+        f"Query result should be {expected_remaining}, was {queried_timestamps}"
+    )
 
 
 def test_delete_catalog_range_partial_overlap(catalog: ParquetDataCatalog) -> None:
@@ -2204,9 +2892,7 @@ def test_backend_session_table_naming_multiple_instruments(catalog: ParquetDataC
         "ADABTC-1m-2021-11-27.csv",
         bar_type1,
         instrument1,
-    )[
-        :5
-    ]  # Use fewer bars for faster test
+    )[:5]  # Use fewer bars for faster test
 
     bar_type2 = TestDataStubs.bartype_btcusdt_binance_100tick_last()
     instrument2 = TestInstrumentProvider.btcusdt_binance()
@@ -2214,9 +2900,7 @@ def test_backend_session_table_naming_multiple_instruments(catalog: ParquetDataC
         "ADABTC-1m-2021-11-27.csv",  # Reuse same CSV data but with different bar_type
         bar_type2,
         instrument2,
-    )[
-        :5
-    ]  # Use fewer bars for faster test
+    )[:5]  # Use fewer bars for faster test
 
     # Write data for both instruments
     catalog.write_data(bars1)
@@ -2415,7 +3099,7 @@ def test_backend_session_files_with_optimize_disabled_reads_only_specified_files
     catalog.write_data(trades_batch3)
 
     all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
-    assert len(all_files) == 3, f"Expected 3 files, got {len(all_files)}: {all_files}"
+    assert len(all_files) == 3, f"Expected 3 files, was {len(all_files)}: {all_files}"
     selected_files = [all_files[0]]
 
     # Act
@@ -2433,9 +3117,9 @@ def test_backend_session_files_with_optimize_disabled_reads_only_specified_files
         data.extend(capsule_to_list(chunk))
 
     # Assert
-    assert len(data) == 3, f"Expected 3 trades from one file, got {len(data)}"
+    assert len(data) == 3, f"Expected 3 trades from one file, was {len(data)}"
     prices = {str(trade.price) for trade in data}
-    assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
+    assert len(prices) == 1, f"Expected trades from single batch, was prices: {prices}"
 
 
 def test_backend_session_files_with_optimize_reads_entire_directory(
@@ -2501,6 +3185,41 @@ def test_backend_session_files_with_optimize_reads_entire_directory(
         data.extend(capsule_to_list(chunk))
 
     # Assert - with optimize_file_loading=True, the entire directory is read
-    assert len(data) == 6, f"Expected 6 trades from entire directory, got {len(data)}"
+    assert len(data) == 6, f"Expected 6 trades from entire directory, was {len(data)}"
     prices = {str(trade.price) for trade in data}
-    assert len(prices) == 2, f"Expected trades from both batches, got prices: {prices}"
+    assert len(prices) == 2, f"Expected trades from both batches, was prices: {prices}"
+
+
+def test_query_rust_drops_capsule_chunks(catalog: ParquetDataCatalog) -> None:
+    """
+    `_query_rust` must drop every PyCapsule chunk it consumes via capsule_to_list,
+    otherwise the underlying Vec<DataFFI> leaks.
+
+    Regression guard for
+    https://github.com/nautechsystems/nautilus_trader/issues/3889
+
+    """
+    from nautilus_trader.persistence.catalog import parquet as parquet_module
+
+    # Arrange - write enough quotes to produce capsule chunks
+    instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD", venue=Venue("SIM"))
+    quotes = [TestDataStubs.quote_tick(instrument=instrument, ts_init=i * 1000) for i in range(50)]
+    catalog.write_data(quotes)
+
+    drop_call_count = 0
+    original_drop = parquet_module.drop_cvec_pycapsule
+
+    def counting_drop(capsule):
+        nonlocal drop_call_count
+        drop_call_count += 1
+        return original_drop(capsule)
+
+    # Act - query through the Rust path
+    with patch.object(parquet_module, "drop_cvec_pycapsule", counting_drop):
+        result = catalog.query(QuoteTick)
+
+    # Assert - data was returned and at least one capsule was dropped
+    assert len(result) == 50
+    assert drop_call_count >= 1, (
+        f"Expected drop_cvec_pycapsule to be called at least once, was {drop_call_count}"
+    )

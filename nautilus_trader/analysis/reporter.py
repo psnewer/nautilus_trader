@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -103,6 +103,7 @@ class ReportProvider:
         fills = [
             OrderFilled.to_dict(e) for o in orders for e in o.events if isinstance(e, OrderFilled)
         ]
+
         if not fills:
             return pd.DataFrame()
 
@@ -194,7 +195,7 @@ class ReportProvider:
             for balance in state.pop("balances", [])
         ]
 
-        if not account_states:
+        if not balances:
             return pd.DataFrame()
 
         report = pd.DataFrame(data=balances).set_index("ts_event").sort_index()

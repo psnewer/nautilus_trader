@@ -3,7 +3,7 @@
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t, uintptr_t, int32_t, int64_t
 from nautilus_trader.core.rust.core cimport CVec, StackStr, UUID4_t
 
-DEF HIGH_PRECISION = False  # or True
+DEF HIGH_PRECISION = True  # or False
 
 cdef extern from "../includes/model.h":
     ctypedef unsigned long long uint128_t
@@ -321,6 +321,13 @@ cdef extern from "../includes/model.h":
         CALL # = 1,
         # A Put option gives the holder the right, but not the obligation, to sell an underlying asset at a specified strike price within a specified period of time.
         PUT # = 2,
+
+    # Defines when OTO (One-Triggers-Other) child orders are released.
+    cpdef enum OtoTriggerMode:
+        # Release child order(s) pro-rata to each partial fill (default).
+        PARTIAL # = 0,
+        # Release child order(s) only once the parent is fully filled.
+        FULL # = 1,
 
     # The status for a specific order.
     #
@@ -792,10 +799,10 @@ cdef extern from "../includes/model.h":
         # UNIX timestamp (nanoseconds) when the instance was created.
         uint64_t ts_init;
 
-    # A built-in Nautilus data type.
+    # A C-compatible representation of [`Data`] for FFI.
     #
-    # Not recommended for storing large amounts of data, as the largest variant is significantly
-    # larger (10x) than the smallest.
+    # This enum matches the standard variants of [`Data`] but excludes the `Custom`
+    # variant which is not FFI-safe.
     cpdef enum Data_t_Tag:
         DELTA,
         DELTAS,
@@ -918,7 +925,7 @@ cdef extern from "../includes/model.h":
 
     # Represents an event where an order has been accepted by the trading venue.
     #
-    # This event often corresponds to a `NEW` OrdStatus <39> field in FIX execution reports.
+    # This event often corresponds to a `NEW` `OrdStatus` <39> field in FIX execution reports.
     cdef struct OrderAccepted_t:
         # The trader ID associated with the event.
         TraderId_t trader_id;
@@ -1076,9 +1083,9 @@ cdef extern from "../includes/model.h":
     #
     # # Safety
     #
-    # This value is computed at compile time from MONEY_MAX * FIXED_SCALAR.
-    # The multiplication is guaranteed not to overflow because MONEY_MAX and FIXED_SCALAR
-    # are chosen such that their product fits within MoneyRaw's range in both
+    # This value is computed at compile time from `MONEY_MAX` * `FIXED_SCALAR`.
+    # The multiplication is guaranteed not to overflow because `MONEY_MAX` and `FIXED_SCALAR`
+    # are chosen such that their product fits within `MoneyRaw`'s range in both
     # high-precision (i128) and standard-precision (i64) modes.
     extern const MoneyRaw MONEY_RAW_MAX;
 
@@ -1086,9 +1093,9 @@ cdef extern from "../includes/model.h":
     #
     # # Safety
     #
-    # This value is computed at compile time from MONEY_MIN * FIXED_SCALAR.
-    # The multiplication is guaranteed not to overflow because MONEY_MIN and FIXED_SCALAR
-    # are chosen such that their product fits within MoneyRaw's range in both
+    # This value is computed at compile time from `MONEY_MIN` * `FIXED_SCALAR`.
+    # The multiplication is guaranteed not to overflow because `MONEY_MIN` and `FIXED_SCALAR`
+    # are chosen such that their product fits within `MoneyRaw`'s range in both
     # high-precision (i128) and standard-precision (i64) modes.
     extern const MoneyRaw MONEY_RAW_MIN;
 
@@ -1096,9 +1103,9 @@ cdef extern from "../includes/model.h":
     #
     # # Safety
     #
-    # This value is computed at compile time from PRICE_MAX * FIXED_SCALAR.
-    # The multiplication is guaranteed not to overflow because PRICE_MAX and FIXED_SCALAR
-    # are chosen such that their product fits within PriceRaw's range in both
+    # This value is computed at compile time from `PRICE_MAX` * `FIXED_SCALAR`.
+    # The multiplication is guaranteed not to overflow because `PRICE_MAX` and `FIXED_SCALAR`
+    # are chosen such that their product fits within `PriceRaw`'s range in both
     # high-precision (i128) and standard-precision (i64) modes.
     extern const PriceRaw PRICE_RAW_MAX;
 
@@ -1106,9 +1113,9 @@ cdef extern from "../includes/model.h":
     #
     # # Safety
     #
-    # This value is computed at compile time from PRICE_MIN * FIXED_SCALAR.
-    # The multiplication is guaranteed not to overflow because PRICE_MIN and FIXED_SCALAR
-    # are chosen such that their product fits within PriceRaw's range in both
+    # This value is computed at compile time from `PRICE_MIN` * `FIXED_SCALAR`.
+    # The multiplication is guaranteed not to overflow because `PRICE_MIN` and `FIXED_SCALAR`
+    # are chosen such that their product fits within `PriceRaw`'s range in both
     # high-precision (i128) and standard-precision (i64) modes.
     extern const PriceRaw PRICE_RAW_MIN;
 
@@ -1226,8 +1233,6 @@ cdef extern from "../includes/model.h":
     uint64_t orderbook_delta_hash(const OrderBookDelta_t *delta);
 
     # Creates a new [`OrderBookDeltas_API`] instance from a `CVec` of `OrderBookDelta`.
-    #
-    # # Safety
     #
     # - The `deltas` must be a valid pointer to a `CVec` containing `OrderBookDelta` objects.
     # - This function clones the data pointed to by `deltas` into Rust-managed memory, then forgets the original `Vec` to prevent Rust from auto-deallocating it.
@@ -1577,6 +1582,19 @@ cdef extern from "../includes/model.h":
     #
     # Panics if the C string does not correspond to a valid `OptionKind` variant.
     OptionKind option_kind_from_cstr(const char *ptr);
+
+    const char *oto_trigger_mode_to_cstr(OtoTriggerMode value);
+
+    # Returns an enum from a Python string.
+    #
+    # # Safety
+    #
+    # Assumes `ptr` is a valid C string pointer.
+    #
+    # # Panics
+    #
+    # Panics if the C string does not correspond to a valid `OtoTriggerMode` variant.
+    OtoTriggerMode oto_trigger_mode_from_cstr(const char *ptr);
 
     const char *order_side_to_cstr(OrderSide value);
 
@@ -2058,11 +2076,34 @@ cdef extern from "../includes/model.h":
 
     void orderbook_apply_deltas(OrderBook_API *book, const OrderBookDeltas_API *deltas);
 
+    # Creates an `OrderBookDeltas` snapshot from the current order book state.
+    #
+    # This is the reverse operation of `orderbook_apply_deltas`: it converts the current book state
+    # back into a snapshot format with a `Clear` delta followed by `Add` deltas for all orders.
+    #
+    # # Parameters
+    #
+    # * `book` - The order book to convert.
+    # * `sequence` - The message sequence number for the snapshot.
+    # * `ts_event` - UNIX timestamp (nanoseconds) when the book event occurred.
+    # * `ts_init` - UNIX timestamp (nanoseconds) when the instance was created.
+    #
+    # # Returns
+    #
+    # An `OrderBookDeltas_API` containing a snapshot of the current order book state.
+    OrderBookDeltas_API orderbook_to_snapshot_deltas(const OrderBook_API *book,
+                                                     uint64_t ts_event,
+                                                     uint64_t ts_init);
+
     void orderbook_apply_depth(OrderBook_API *book, const OrderBookDepth10_t *depth);
 
     CVec orderbook_bids(OrderBook_API *book);
 
     CVec orderbook_asks(OrderBook_API *book);
+
+    CVec orderbook_bids_down_to(OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
+
+    CVec orderbook_asks_up_to(OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
 
     uint8_t orderbook_has_bid(OrderBook_API *book);
 
@@ -2102,9 +2143,18 @@ cdef extern from "../includes/model.h":
                                              Quantity_t qty,
                                              OrderSide order_side);
 
+    Price_t orderbook_get_worst_px_for_quantity(OrderBook_API *book,
+                                                Quantity_t qty,
+                                                OrderSide order_side);
+
     double orderbook_get_quantity_for_price(OrderBook_API *book,
                                             Price_t price,
                                             OrderSide order_side);
+
+    Quantity_t orderbook_get_quantity_at_level(const OrderBook_API *book,
+                                               Price_t price,
+                                               OrderSide order_side,
+                                               uint8_t size_precision);
 
     # Updates the order book with a quote tick.
     #
@@ -2147,6 +2197,8 @@ cdef extern from "../includes/model.h":
     CVec level_orders(const BookLevel_API *level);
 
     double level_size(const BookLevel_API *level);
+
+    QuantityRaw level_size_raw(const BookLevel_API *level);
 
     double level_exposure(const BookLevel_API *level);
 
@@ -2220,32 +2272,16 @@ cdef extern from "../includes/model.h":
 
     double money_as_f64(const Money_t *money);
 
-    void money_add_assign(Money_t a, Money_t b);
-
-    void money_sub_assign(Money_t a, Money_t b);
-
     Price_t price_new(double value, uint8_t precision);
 
     Price_t price_from_raw(PriceRaw raw, uint8_t precision);
 
     double price_as_f64(const Price_t *price);
 
-    void price_add_assign(Price_t a, Price_t b);
-
-    void price_sub_assign(Price_t a, Price_t b);
-
     Quantity_t quantity_new(double value, uint8_t precision);
 
     Quantity_t quantity_from_raw(QuantityRaw raw, uint8_t precision);
 
     double quantity_as_f64(const Quantity_t *qty);
-
-    void quantity_add_assign(Quantity_t a, Quantity_t b);
-
-    void quantity_add_assign_u64(Quantity_t a, uint64_t b);
-
-    void quantity_sub_assign(Quantity_t a, Quantity_t b);
-
-    void quantity_sub_assign_u64(Quantity_t a, uint64_t b);
 
     Quantity_t quantity_saturating_sub(Quantity_t a, Quantity_t b);

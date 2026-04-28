@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,14 +20,14 @@ use chrono::{DateTime, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarType, BookOrder, DEPTH10_LEN, Data, FundingRateUpdate, NULL_ORDER, OrderBookDelta,
-        OrderBookDeltas, OrderBookDeltas_API, OrderBookDepth10, QuoteTick, TradeTick,
+        Bar, BarType, BookOrder, DEPTH10_LEN, Data, FundingRateUpdate, IndexPriceUpdate,
+        MarkPriceUpdate, NULL_ORDER, OrderBookDelta, OrderBookDeltas, OrderBookDeltas_API,
+        OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggregationSource, BookAction, OrderSide, RecordFlag},
     identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
-use uuid::Uuid;
 
 use super::{
     message::{
@@ -36,14 +36,16 @@ use super::{
     types::TardisInstrumentMiniInfo,
 };
 use crate::{
+    common::parse::{
+        derive_trade_id, normalize_amount, parse_aggressor_side, parse_bar_spec, parse_book_action,
+    },
     config::BookSnapshotOutput,
-    parse::{normalize_amount, parse_aggressor_side, parse_bar_spec, parse_book_action},
 };
 
 #[must_use]
 pub fn parse_tardis_ws_message(
     msg: WsMessage,
-    info: Arc<TardisInstrumentMiniInfo>,
+    info: &Arc<TardisInstrumentMiniInfo>,
     book_snapshot_output: &BookSnapshotOutput,
 ) -> Option<Data> {
     match msg {
@@ -51,21 +53,19 @@ pub fn parse_tardis_ws_message(
             if msg.bids.is_empty() && msg.asks.is_empty() {
                 let exchange = msg.exchange;
                 let symbol = &msg.symbol;
-                tracing::error!(
-                    "Invalid book change for {exchange} {symbol} (empty bids and asks)"
-                );
+                log::error!("Invalid book change for {exchange} {symbol} (empty bids and asks)");
                 return None;
             }
 
             match parse_book_change_msg_as_deltas(
-                msg,
+                &msg,
                 info.price_precision,
                 info.size_precision,
                 info.instrument_id,
             ) {
                 Ok(deltas) => Some(Data::Deltas(deltas)),
                 Err(e) => {
-                    tracing::error!("Failed to parse book change message: {e}");
+                    log::error!("Failed to parse book change message: {e}");
                     None
                 }
             }
@@ -73,14 +73,14 @@ pub fn parse_tardis_ws_message(
         WsMessage::BookSnapshot(msg) => match msg.bids.len() {
             1 => {
                 match parse_book_snapshot_msg_as_quote(
-                    msg,
+                    &msg,
                     info.price_precision,
                     info.size_precision,
                     info.instrument_id,
                 ) {
                     Ok(quote) => Some(Data::Quote(quote)),
                     Err(e) => {
-                        tracing::error!("Failed to parse book snapshot quote message: {e}");
+                        log::error!("Failed to parse book snapshot quote message: {e}");
                         None
                     }
                 }
@@ -88,28 +88,28 @@ pub fn parse_tardis_ws_message(
             _ => match book_snapshot_output {
                 BookSnapshotOutput::Depth10 => {
                     match parse_book_snapshot_msg_as_depth10(
-                        msg,
+                        &msg,
                         info.price_precision,
                         info.size_precision,
                         info.instrument_id,
                     ) {
                         Ok(depth10) => Some(Data::Depth10(Box::new(depth10))),
                         Err(e) => {
-                            tracing::error!("Failed to parse book snapshot as depth10: {e}");
+                            log::error!("Failed to parse book snapshot as depth10: {e}");
                             None
                         }
                     }
                 }
                 BookSnapshotOutput::Deltas => {
                     match parse_book_snapshot_msg_as_deltas(
-                        msg,
+                        &msg,
                         info.price_precision,
                         info.size_precision,
                         info.instrument_id,
                     ) {
                         Ok(deltas) => Some(Data::Deltas(deltas)),
                         Err(e) => {
-                            tracing::error!("Failed to parse book snapshot as deltas: {e}");
+                            log::error!("Failed to parse book snapshot as deltas: {e}");
                             None
                         }
                     }
@@ -118,28 +118,28 @@ pub fn parse_tardis_ws_message(
         },
         WsMessage::Trade(msg) => {
             match parse_trade_msg(
-                msg,
+                &msg,
                 info.price_precision,
                 info.size_precision,
                 info.instrument_id,
             ) {
                 Ok(trade) => Some(Data::Trade(trade)),
                 Err(e) => {
-                    tracing::error!("Failed to parse trade message: {e}");
+                    log::error!("Failed to parse trade message: {e}");
                     None
                 }
             }
         }
         WsMessage::TradeBar(msg) => {
             match parse_bar_msg(
-                msg,
+                &msg,
                 info.price_precision,
                 info.size_precision,
                 info.instrument_id,
             ) {
                 Ok(bar) => Some(Data::Bar(bar)),
                 Err(e) => {
-                    tracing::error!("Failed to parse bar message: {e}");
+                    log::error!("Failed to parse bar message: {e}");
                     None
                 }
             }
@@ -156,16 +156,14 @@ pub fn parse_tardis_ws_message(
 #[must_use]
 pub fn parse_tardis_ws_message_funding_rate(
     msg: WsMessage,
-    info: Arc<TardisInstrumentMiniInfo>,
+    info: &Arc<TardisInstrumentMiniInfo>,
 ) -> Option<FundingRateUpdate> {
     match msg {
         WsMessage::DerivativeTicker(msg) => {
-            match parse_derivative_ticker_msg(msg, info.instrument_id) {
+            match parse_derivative_ticker_msg(&msg, info.instrument_id) {
                 Ok(funding_rate) => funding_rate,
                 Err(e) => {
-                    tracing::error!(
-                        "Failed to parse derivative ticker message for funding rate: {e}"
-                    );
+                    log::error!("Failed to parse derivative ticker message for funding rate: {e}");
                     None
                 }
             }
@@ -181,14 +179,14 @@ pub fn parse_tardis_ws_message_funding_rate(
 ///
 /// Returns an error if timestamp fields cannot be converted to nanoseconds.
 pub fn parse_book_change_msg_as_deltas(
-    msg: BookChangeMsg,
+    msg: &BookChangeMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
 ) -> anyhow::Result<OrderBookDeltas_API> {
     parse_book_msg_as_deltas(
-        msg.bids,
-        msg.asks,
+        &msg.bids,
+        &msg.asks,
         msg.is_snapshot,
         price_precision,
         size_precision,
@@ -205,14 +203,14 @@ pub fn parse_book_change_msg_as_deltas(
 ///
 /// Returns an error if timestamp fields cannot be converted to nanoseconds.
 pub fn parse_book_snapshot_msg_as_deltas(
-    msg: BookSnapshotMsg,
+    msg: &BookSnapshotMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
 ) -> anyhow::Result<OrderBookDeltas_API> {
     parse_book_msg_as_deltas(
-        msg.bids,
-        msg.asks,
+        &msg.bids,
+        &msg.asks,
         true,
         price_precision,
         size_precision,
@@ -228,7 +226,7 @@ pub fn parse_book_snapshot_msg_as_deltas(
 ///
 /// Returns an error if timestamp fields cannot be converted to nanoseconds.
 pub fn parse_book_snapshot_msg_as_depth10(
-    msg: BookSnapshotMsg,
+    msg: &BookSnapshotMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
@@ -292,15 +290,15 @@ pub fn parse_book_snapshot_msg_as_depth10(
 }
 
 /// Parse raw book levels into order book deltas, returning error for invalid timestamps.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 /// Parse raw book levels into order book deltas.
 ///
 /// # Errors
 ///
 /// Returns an error if timestamp fields cannot be converted to nanoseconds.
 pub fn parse_book_msg_as_deltas(
-    bids: Vec<BookLevel>,
-    asks: Vec<BookLevel>,
+    bids: &[BookLevel],
+    asks: &[BookLevel],
     is_snapshot: bool,
     price_precision: u8,
     size_precision: u8,
@@ -348,7 +346,7 @@ pub fn parse_book_msg_as_deltas(
             ts_init,
         ) {
             Ok(delta) => deltas.push(delta),
-            Err(e) => tracing::warn!("Skipping invalid bid level for {instrument_id}: {e}"),
+            Err(e) => log::warn!("Skipping invalid bid level for {instrument_id}: {e}"),
         }
     }
 
@@ -364,7 +362,7 @@ pub fn parse_book_msg_as_deltas(
             ts_init,
         ) {
             Ok(delta) => deltas.push(delta),
-            Err(e) => tracing::warn!("Skipping invalid ask level for {instrument_id}: {e}"),
+            Err(e) => log::warn!("Skipping invalid ask level for {instrument_id}: {e}"),
         }
     }
 
@@ -384,13 +382,13 @@ pub fn parse_book_msg_as_deltas(
 /// # Errors
 ///
 /// Returns an error if a non-delete action has a zero size after normalization.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn parse_book_level(
     instrument_id: InstrumentId,
     price_precision: u8,
     size_precision: u8,
     side: OrderSide,
-    level: BookLevel,
+    level: &BookLevel,
     is_snapshot: bool,
     ts_event: UnixNanos,
     ts_init: UnixNanos,
@@ -431,7 +429,7 @@ pub fn parse_book_level(
 ///
 /// Returns an error if missing bid/ask levels or invalid sizes.
 pub fn parse_book_snapshot_msg_as_quote(
-    msg: BookSnapshotMsg,
+    msg: &BookSnapshotMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
@@ -473,7 +471,7 @@ pub fn parse_book_snapshot_msg_as_quote(
 ///
 /// Returns an error if invalid trade size is encountered.
 pub fn parse_trade_msg(
-    msg: TradeMsg,
+    msg: &TradeMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
@@ -482,9 +480,18 @@ pub fn parse_trade_msg(
     let size = Quantity::non_zero_checked(msg.amount, size_precision)
         .with_context(|| format!("Invalid trade size in message: {msg:?}"))?;
     let aggressor_side = parse_aggressor_side(&msg.side);
-    let trade_id = TradeId::new(msg.id.unwrap_or_else(|| Uuid::new_v4().to_string()));
     let ts_event = UnixNanos::from(msg.timestamp);
     let ts_init = UnixNanos::from(msg.local_timestamp);
+    let trade_id = match msg.id.as_deref() {
+        Some(id) if !id.is_empty() => TradeId::new(id),
+        _ => derive_trade_id(
+            msg.symbol,
+            ts_event.as_u64(),
+            msg.price,
+            msg.amount,
+            &msg.side,
+        ),
+    };
 
     Ok(TradeTick::new(
         instrument_id,
@@ -503,7 +510,7 @@ pub fn parse_trade_msg(
 ///
 /// Returns an error if the bar specification cannot be parsed.
 pub fn parse_bar_msg(
-    msg: BarMsg,
+    msg: &BarMsg,
     price_precision: u8,
     size_precision: u8,
     instrument_id: InstrumentId,
@@ -524,21 +531,10 @@ pub fn parse_bar_msg(
     ))
 }
 
-/// Parse a derivative ticker message into a funding rate update.
-///
-/// # Errors
-///
-/// Returns an error if timestamp fields cannot be converted to nanoseconds or decimal conversion fails.
-pub fn parse_derivative_ticker_msg(
-    msg: DerivativeTickerMsg,
-    instrument_id: InstrumentId,
-) -> anyhow::Result<Option<FundingRateUpdate>> {
-    // Only process if we have funding rate data
-    let funding_rate = match msg.funding_rate {
-        Some(rate) => rate,
-        None => return Ok(None), // No funding rate data
-    };
-
+/// Extracts event and init timestamps from a derivative ticker message.
+fn parse_derivative_ticker_timestamps(
+    msg: &DerivativeTickerMsg,
+) -> anyhow::Result<(UnixNanos, UnixNanos)> {
     let ts_event_nanos = msg
         .timestamp
         .timestamp_nanos_opt()
@@ -547,7 +543,6 @@ pub fn parse_derivative_ticker_msg(
         ts_event_nanos >= 0,
         "invalid timestamp: event nanoseconds {ts_event_nanos} is before UNIX epoch"
     );
-    let ts_event = UnixNanos::from(ts_event_nanos as u64);
 
     let ts_init_nanos = msg
         .local_timestamp
@@ -557,19 +552,86 @@ pub fn parse_derivative_ticker_msg(
         ts_init_nanos >= 0,
         "invalid timestamp: init nanoseconds {ts_init_nanos} is before UNIX epoch"
     );
-    let ts_init = UnixNanos::from(ts_init_nanos as u64);
 
+    Ok((
+        UnixNanos::from(ts_event_nanos as u64),
+        UnixNanos::from(ts_init_nanos as u64),
+    ))
+}
+
+/// Parses a derivative ticker message into a funding rate update.
+///
+/// # Errors
+///
+/// Returns an error if timestamp conversion or decimal conversion fails.
+pub fn parse_derivative_ticker_msg(
+    msg: &DerivativeTickerMsg,
+    instrument_id: InstrumentId,
+) -> anyhow::Result<Option<FundingRateUpdate>> {
+    let funding_rate = match msg.funding_rate {
+        Some(rate) => rate,
+        None => return Ok(None),
+    };
+
+    let (ts_event, ts_init) = parse_derivative_ticker_timestamps(msg)?;
     let rate = rust_decimal::Decimal::try_from(funding_rate)
-        .with_context(|| format!("Failed to convert funding rate {funding_rate} to Decimal"))?
-        .normalize();
-
-    // For live data, we don't typically have funding timestamp info from derivative ticker
-    let next_funding_ns = None;
+        .with_context(|| format!("failed to convert funding rate {funding_rate} to Decimal"))?;
 
     Ok(Some(FundingRateUpdate::new(
         instrument_id,
         rate,
-        next_funding_ns,
+        None,
+        None,
+        ts_event,
+        ts_init,
+    )))
+}
+
+/// Parses a derivative ticker message into a mark price update.
+///
+/// # Errors
+///
+/// Returns an error if timestamp conversion fails.
+pub fn parse_derivative_ticker_mark_price(
+    msg: &DerivativeTickerMsg,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+) -> anyhow::Result<Option<MarkPriceUpdate>> {
+    let mark_price = match msg.mark_price {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let (ts_event, ts_init) = parse_derivative_ticker_timestamps(msg)?;
+
+    Ok(Some(MarkPriceUpdate::new(
+        instrument_id,
+        Price::new(mark_price, price_precision),
+        ts_event,
+        ts_init,
+    )))
+}
+
+/// Parses a derivative ticker message into an index price update.
+///
+/// # Errors
+///
+/// Returns an error if timestamp conversion fails.
+pub fn parse_derivative_ticker_index_price(
+    msg: &DerivativeTickerMsg,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+) -> anyhow::Result<Option<IndexPriceUpdate>> {
+    let index_price = match msg.index_price {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let (ts_event, ts_init) = parse_derivative_ticker_timestamps(msg)?;
+
+    Ok(Some(IndexPriceUpdate::new(
+        instrument_id,
+        Price::new(index_price, price_precision),
         ts_event,
         ts_init,
     )))
@@ -581,7 +643,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::{enums::TardisExchange, tests::load_test_json};
+    use crate::common::{enums::TardisExchange, testing::load_test_json};
 
     #[rstest]
     fn test_parse_book_change_message() {
@@ -592,7 +654,7 @@ mod tests {
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
         let deltas =
-            parse_book_change_msg_as_deltas(msg, price_precision, size_precision, instrument_id)
+            parse_book_change_msg_as_deltas(&msg, price_precision, size_precision, instrument_id)
                 .unwrap();
 
         assert_eq!(deltas.deltas.len(), 1);
@@ -630,7 +692,7 @@ mod tests {
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
         let deltas =
-            parse_book_snapshot_msg_as_deltas(msg, price_precision, size_precision, instrument_id)
+            parse_book_snapshot_msg_as_deltas(&msg, price_precision, size_precision, instrument_id)
                 .unwrap();
 
         let clear_delta = deltas.deltas[0];
@@ -689,9 +751,13 @@ mod tests {
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
 
-        let depth10 =
-            parse_book_snapshot_msg_as_depth10(msg, price_precision, size_precision, instrument_id)
-                .unwrap();
+        let depth10 = parse_book_snapshot_msg_as_depth10(
+            &msg,
+            price_precision,
+            size_precision,
+            instrument_id,
+        )
+        .unwrap();
 
         assert_eq!(depth10.instrument_id, instrument_id);
         assert_eq!(depth10.flags, RecordFlag::F_SNAPSHOT.value());
@@ -741,7 +807,7 @@ mod tests {
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
         let quote =
-            parse_book_snapshot_msg_as_quote(msg, price_precision, size_precision, instrument_id)
+            parse_book_snapshot_msg_as_quote(&msg, price_precision, size_precision, instrument_id)
                 .expect("Failed to parse book snapshot quote message");
 
         assert_eq!(quote.instrument_id, instrument_id);
@@ -761,7 +827,7 @@ mod tests {
         let price_precision = 0;
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
-        let trade = parse_trade_msg(msg, price_precision, size_precision, instrument_id)
+        let trade = parse_trade_msg(&msg, price_precision, size_precision, instrument_id)
             .expect("Failed to parse trade message");
 
         assert_eq!(trade.instrument_id, instrument_id);
@@ -772,6 +838,41 @@ mod tests {
         assert_eq!(trade.ts_init, UnixNanos::from(1571826769740000000));
     }
 
+    fn build_trade_msg_without_id() -> TradeMsg {
+        let json_data = load_test_json("trade.json");
+        let mut msg: TradeMsg = serde_json::from_str(&json_data).unwrap();
+        msg.id = None;
+        msg
+    }
+
+    #[rstest]
+    fn test_parse_trade_message_derives_trade_id_when_missing() {
+        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
+
+        let first = parse_trade_msg(&build_trade_msg_without_id(), 0, 0, instrument_id).unwrap();
+        let second = parse_trade_msg(&build_trade_msg_without_id(), 0, 0, instrument_id).unwrap();
+
+        assert_eq!(first.trade_id, second.trade_id, "derivation must be stable");
+        assert_eq!(first.trade_id.as_str().len(), 16);
+
+        let mut altered = build_trade_msg_without_id();
+        altered.price = 7997.0;
+        let altered_trade = parse_trade_msg(&altered, 0, 0, instrument_id).unwrap();
+        assert_ne!(first.trade_id, altered_trade.trade_id);
+    }
+
+    #[rstest]
+    fn test_parse_trade_message_derives_trade_id_when_empty() {
+        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
+
+        let mut msg = build_trade_msg_without_id();
+        msg.id = Some(String::new());
+
+        let trade = parse_trade_msg(&msg, 0, 0, instrument_id).unwrap();
+        let fallback = parse_trade_msg(&build_trade_msg_without_id(), 0, 0, instrument_id).unwrap();
+        assert_eq!(trade.trade_id, fallback.trade_id);
+    }
+
     #[rstest]
     fn test_parse_bar_message() {
         let json_data = load_test_json("bar.json");
@@ -780,7 +881,7 @@ mod tests {
         let price_precision = 1;
         let size_precision = 0;
         let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
-        let bar = parse_bar_msg(msg, price_precision, size_precision, instrument_id).unwrap();
+        let bar = parse_bar_msg(&msg, price_precision, size_precision, instrument_id).unwrap();
 
         assert_eq!(
             bar.bar_type,
@@ -810,7 +911,7 @@ mod tests {
             0,
         ));
 
-        let result = parse_tardis_ws_message(ws_msg, info, &BookSnapshotOutput::Depth10);
+        let result = parse_tardis_ws_message(ws_msg, &info, &BookSnapshotOutput::Depth10);
 
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), Data::Depth10(_)));
@@ -831,9 +932,93 @@ mod tests {
             0,
         ));
 
-        let result = parse_tardis_ws_message(ws_msg, info, &BookSnapshotOutput::Deltas);
+        let result = parse_tardis_ws_message(ws_msg, &info, &BookSnapshotOutput::Deltas);
 
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), Data::Deltas(_)));
+    }
+
+    #[rstest]
+    fn test_parse_derivative_ticker_funding_rate() {
+        let json_data = load_test_json("derivative_ticker.json");
+        let msg: DerivativeTickerMsg = serde_json::from_str(&json_data).unwrap();
+
+        let instrument_id = InstrumentId::from("BTC-PERPETUAL.DERIBIT");
+
+        let result = parse_derivative_ticker_msg(&msg, instrument_id).unwrap();
+        assert!(result.is_some());
+
+        let funding = result.unwrap();
+        assert_eq!(funding.instrument_id, instrument_id);
+        assert_eq!(funding.rate.to_string(), "-0.00001568");
+        assert!(funding.ts_event.as_u64() > 0);
+        assert!(funding.ts_init.as_u64() > 0);
+    }
+
+    #[rstest]
+    fn test_parse_derivative_ticker_mark_price() {
+        let json_data = load_test_json("derivative_ticker.json");
+        let msg: DerivativeTickerMsg = serde_json::from_str(&json_data).unwrap();
+
+        let instrument_id = InstrumentId::from("BTC-PERPETUAL.DERIBIT");
+        let price_precision = 2;
+
+        let result =
+            parse_derivative_ticker_mark_price(&msg, instrument_id, price_precision).unwrap();
+        assert!(result.is_some());
+
+        let mark = result.unwrap();
+        assert_eq!(mark.instrument_id, instrument_id);
+        assert_eq!(mark.value, Price::new(7987.56, price_precision));
+        assert!(mark.ts_event.as_u64() > 0);
+        assert!(mark.ts_init.as_u64() > 0);
+    }
+
+    #[rstest]
+    fn test_parse_derivative_ticker_index_price() {
+        let json_data = load_test_json("derivative_ticker.json");
+        let msg: DerivativeTickerMsg = serde_json::from_str(&json_data).unwrap();
+
+        let instrument_id = InstrumentId::from("BTC-PERPETUAL.DERIBIT");
+        let price_precision = 2;
+
+        let result =
+            parse_derivative_ticker_index_price(&msg, instrument_id, price_precision).unwrap();
+        assert!(result.is_some());
+
+        let index = result.unwrap();
+        assert_eq!(index.instrument_id, instrument_id);
+        assert_eq!(index.value, Price::new(7989.28, price_precision));
+        assert!(index.ts_event.as_u64() > 0);
+        assert!(index.ts_init.as_u64() > 0);
+    }
+
+    #[rstest]
+    fn test_parse_derivative_ticker_missing_fields() {
+        // Test with minimal data (only funding_rate, no mark/index)
+        let json = r#"{
+            "type": "derivative_ticker",
+            "symbol": "BTCUSD",
+            "exchange": "bitmex",
+            "lastPrice": null,
+            "openInterest": null,
+            "fundingRate": 0.0001,
+            "indexPrice": null,
+            "markPrice": null,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "localTimestamp": "2024-01-01T00:00:00.100Z"
+        }"#;
+        let msg: DerivativeTickerMsg = serde_json::from_str(json).unwrap();
+
+        let instrument_id = InstrumentId::from("BTCUSD.BITMEX");
+
+        let funding = parse_derivative_ticker_msg(&msg, instrument_id).unwrap();
+        assert!(funding.is_some());
+
+        let mark = parse_derivative_ticker_mark_price(&msg, instrument_id, 1).unwrap();
+        assert!(mark.is_none());
+
+        let index = parse_derivative_ticker_index_price(&msg, instrument_id, 1).unwrap();
+        assert!(index.is_none());
     }
 }

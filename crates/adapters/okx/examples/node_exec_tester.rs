@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,7 +15,7 @@
 
 //! Example demonstrating live execution testing with the OKX adapter.
 //!
-//! Run with: `cargo run --example okx-exec-tester --package nautilus-okx`
+//! Run with: `cargo run --example okx-exec-tester --package nautilus-okx --features examples`
 
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
@@ -23,12 +23,14 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
+use nautilus_network::websocket::TransportBackend;
 use nautilus_okx::{
-    common::enums::OKXInstrumentType,
+    common::enums::{OKXEnvironment, OKXInstrumentType},
     config::{OKXDataClientConfig, OKXExecClientConfig},
     factories::{OKXDataClientFactory, OKXExecutionClientFactory},
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
+use nautilus_trading::strategy::StrategyConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,9 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_config = OKXDataClientConfig {
         api_key: None,        // Will use 'OKX_API_KEY' env var
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
-        api_passphrase: None, // Will use 'OKX_PASSPHRASE' env var
+        api_passphrase: None, // Will use 'OKX_API_PASSPHRASE' env var
         instrument_types: vec![OKXInstrumentType::Spot, OKXInstrumentType::Swap],
-        is_demo: false,
+        environment: OKXEnvironment::Live,
+        transport_backend: TransportBackend::Sockudo,
         ..Default::default()
     };
 
@@ -55,9 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_id,
         api_key: None,        // Will use 'OKX_API_KEY' env var
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
-        api_passphrase: None, // Will use 'OKX_PASSPHRASE' env var
+        api_passphrase: None, // Will use 'OKX_API_PASSPHRASE' env var
         instrument_types: vec![OKXInstrumentType::Spot, OKXInstrumentType::Swap],
-        is_demo: false,
+        environment: OKXEnvironment::Live,
+        transport_backend: TransportBackend::Sockudo,
         ..Default::default()
     };
 
@@ -68,23 +72,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_name(node_name)
         .add_data_client(None, Box::new(data_factory), Box::new(data_config))?
         .add_exec_client(None, Box::new(exec_factory), Box::new(exec_config))?
+        .with_reconciliation(true)
         .with_delay_post_stop_secs(5)
         .build()?;
 
-    let mut tester_config = ExecTesterConfig::new(
-        StrategyId::from("EXEC_TESTER-001"),
-        instrument_id,
-        client_id,
-        Quantity::from("0.01"),
-    )
-    .with_log_data(false);
-
-    // Use UUIDs for unique client order IDs across restarts
-    tester_config.base.use_uuid_client_order_ids = true;
-    // OKX doesn't allow hyphens in client order IDs
-    tester_config.base.use_hyphens_in_client_order_ids = false;
-    // Use post-only for limit orders
-    tester_config.use_post_only = true;
+    let tester_config = ExecTesterConfig::builder()
+        .base(StrategyConfig {
+            strategy_id: Some(StrategyId::from("EXEC_TESTER-001")),
+            external_order_claims: Some(vec![instrument_id]),
+            // OKX doesn't allow hyphens in client order IDs
+            use_hyphens_in_client_order_ids: false,
+            ..Default::default()
+        })
+        .instrument_id(instrument_id)
+        .client_id(client_id)
+        .order_qty(Quantity::from("0.01"))
+        .log_data(false)
+        // .enable_limit_buys(false)
+        // .enable_limit_sells(false)
+        // .enable_stop_sells(true)
+        // .stop_order_type(OrderType::TrailingStopMarket)
+        // .trailing_offset(Decimal::from(100))
+        // .trailing_offset_type(TrailingOffsetType::BasisPoints)
+        // .stop_offset_ticks(50)
+        .build();
 
     let tester = ExecTester::new(tester_config);
 

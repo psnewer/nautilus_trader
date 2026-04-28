@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -238,6 +238,10 @@ class TestBinanceSpotExecutionHandlers:
         exec_client._cache.strategy_id_for_order.return_value = StrategyId("S-001")
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
 
+        mock_order = mocker.MagicMock()
+        mock_order.is_closed = False
+        exec_client._cache.order.return_value = mock_order
+
         # Act
         wrapper.data.handle_execution_report(exec_client)
 
@@ -417,6 +421,58 @@ class TestBinanceSpotExecutionHandlers:
             "2500.00000000",
         )  # Preserved trigger price
         assert update_kwargs["quantity"] == mock_order.quantity
+
+    def test_custom_client_order_id_without_o_prefix_preserved(self, mocker):
+        """
+        Test that custom client_order_id values not starting with 'O' are preserved.
+
+        Regression test for GitHub issue #3500.
+
+        """
+        # Arrange
+        raw = pkgutil.get_data(
+            package="tests.integration_tests.adapters.binance.resources.ws_messages",
+            resource="ws_spot_execution_report_custom_client_id.json",
+        )
+        decoder = msgspec.json.Decoder(BinanceSpotOrderUpdateWrapper)
+        wrapper = decoder.decode(raw)
+        exec_client = mocker.MagicMock()
+        exec_client._cache.strategy_id_for_order.return_value = StrategyId("S-001")
+        exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
+        exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
+        exec_client._enum_parser.parse_binance_order_side.return_value = OrderSide.BUY
+        exec_client._enum_parser.parse_binance_order_type.return_value = mocker.MagicMock()
+
+        # Act
+        wrapper.data.handle_execution_report(exec_client)
+
+        # Assert - client_order_id should be preserved as "INIT-BTC-1234567890"
+        exec_client.generate_order_filled.assert_called_once()
+        call_kwargs = exec_client.generate_order_filled.call_args.kwargs
+        assert call_kwargs["client_order_id"] == ClientOrderId("INIT-BTC-1234567890")
+
+    def test_empty_client_order_id_sends_order_status_report(self, mocker):
+        """
+        Test that empty client_order_id (both c and C fields) sends OrderStatusReport.
+        """
+        # Arrange
+        raw = pkgutil.get_data(
+            package="tests.integration_tests.adapters.binance.resources.ws_messages",
+            resource="ws_spot_execution_report_empty_client_id.json",
+        )
+        decoder = msgspec.json.Decoder(BinanceSpotOrderUpdateWrapper)
+        wrapper = decoder.decode(raw)
+        exec_client = mocker.MagicMock()
+        exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
+
+        # Act
+        wrapper.data.handle_execution_report(exec_client)
+
+        # Assert - should send OrderStatusReport (treated as external order)
+        exec_client._cache.strategy_id_for_order.assert_not_called()
+        exec_client._send_order_status_report.assert_called_once()
+        report = exec_client._send_order_status_report.call_args[0][0]
+        assert report.client_order_id is None
 
 
 class TestBinanceFuturesExecutionHandlers:
@@ -888,10 +944,8 @@ class TestBinanceFuturesAlgoOrderHandlers:
         mock_order = mocker.MagicMock()
         mock_order.is_open = True
         mock_order.is_closed = False
-        mock_order.quantity._mem.raw = 38_000_000_000
-        mock_order.quantity._mem.precision = 9
-        mock_order.filled_qty._mem.raw = 0
-        mock_order.filled_qty._mem.precision = 9
+        mock_order.quantity = Quantity.from_str("38.0")
+        mock_order.filled_qty = Quantity.from_str("0.0")
         exec_client._cache.strategy_id_for_order.return_value = StrategyId("S-001")
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
@@ -942,3 +996,37 @@ class TestBinanceFuturesAlgoOrderHandlers:
         # Assert - order should be removed from triggered set
         assert client_order_id not in exec_client._triggered_algo_order_ids
         exec_client.generate_order_canceled.assert_called_once()
+
+    def test_order_trade_update_sends_status_report_when_instrument_not_in_cache(self, mocker):
+        # Arrange: tracked order (strategy_id present) but instrument missing from cache
+        raw = pkgutil.get_data(
+            package="tests.integration_tests.adapters.binance.resources.ws_messages",
+            resource="ws_futures_order_update_liquidation.json",
+        )
+        decoder = msgspec.json.Decoder(BinanceFuturesOrderUpdateWrapper)
+        wrapper = decoder.decode(raw)
+
+        exec_client = mocker.MagicMock()
+        exec_client.account_id = mocker.MagicMock()
+        exec_client._cache.strategy_id_for_order.return_value = StrategyId("S-001")
+        exec_client._get_cached_instrument_id.return_value = BTCUSDT_BINANCE.id
+        exec_client._instrument_provider.find.return_value = None  # Not in cache
+        exec_client._clock.timestamp_ns.return_value = 1759347763167000000
+
+        # Act
+        wrapper.data.o.handle_order_trade_update(exec_client)
+
+        # Assert: OrderStatusReport sent for reconciliation, no exception raised
+        exec_client._log.warning.assert_called()
+        warning_msgs = [c[0][0] for c in exec_client._log.warning.call_args_list]
+        assert any("not in cache" in msg for msg in warning_msgs)
+
+        exec_client._send_order_status_report.assert_called_once()
+        report = exec_client._send_order_status_report.call_args[0][0]
+        assert report.instrument_id == BTCUSDT_BINANCE.id
+        assert report.client_order_id == ClientOrderId("autoclose-1234567890123456")
+        assert report.venue_order_id == VenueOrderId("9876543210")
+
+        # No fill report or order events generated
+        exec_client._send_fill_report.assert_not_called()
+        exec_client.generate_order_filled.assert_not_called()

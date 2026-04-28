@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,9 +19,15 @@
 use rstest::fixture;
 
 use crate::{
-    accounts::{Account, AccountAny, CashAccount, MarginAccount},
+    accounts::{Account, AccountAny, BettingAccount, CashAccount, MarginAccount},
     enums::{AccountType, LiquiditySide},
-    events::account::{state::AccountState, stubs::*},
+    events::account::{
+        state::AccountState,
+        stubs::{
+            betting_account_state, cash_account_state, cash_account_state_million_usd,
+            cash_account_state_million_usdt, cash_account_state_multi, margin_account_state,
+        },
+    },
     identifiers::stubs::{account_id, uuid4},
     instruments::InstrumentAny,
     types::{AccountBalance, Currency, Money, Price, Quantity},
@@ -68,6 +74,11 @@ pub fn cash_account(cash_account_state: AccountState) -> CashAccount {
 }
 
 #[fixture]
+pub fn betting_account(betting_account_state: AccountState) -> BettingAccount {
+    BettingAccount::new(betting_account_state, true)
+}
+
+#[fixture]
 pub fn cash_account_million_usd(cash_account_state_million_usd: AccountState) -> CashAccount {
     CashAccount::new(cash_account_state_million_usd, true, false)
 }
@@ -96,7 +107,7 @@ pub fn cash_account_borrowing_million_usd(
 /// Panics if the underlying `calculate_commission` returns an error.
 #[must_use]
 pub fn calculate_commission(
-    instrument: InstrumentAny,
+    instrument: &InstrumentAny,
     quantity: Quantity,
     price: Price,
     currency: Option<Currency>,

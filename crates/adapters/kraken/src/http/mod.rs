@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,10 +28,15 @@ pub mod spot;
 // Re-exports
 pub use error::KrakenHttpError;
 pub use futures::{
-    client::{KrakenFuturesHttpClient, KrakenFuturesRawHttpClient},
+    client::{
+        KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND, KrakenFuturesHttpClient,
+        KrakenFuturesRawHttpClient,
+    },
     query::*,
 };
 pub use spot::{
-    client::{KrakenSpotHttpClient, KrakenSpotRawHttpClient},
+    client::{
+        KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND, KrakenSpotHttpClient, KrakenSpotRawHttpClient,
+    },
     query::*,
 };

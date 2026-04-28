@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from nautilus_trader.adapters.bybit import BYBIT
 from nautilus_trader.adapters.bybit import BybitDataClientConfig
+from nautilus_trader.adapters.bybit import BybitEnvironment
 from nautilus_trader.adapters.bybit import BybitExecClientConfig
 from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
 from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
@@ -71,23 +72,16 @@ config_node = TradingNodeConfig(
     # ),
     data_clients={
         BYBIT: BybitDataClientConfig(
-            api_key=None,  # 'BYBIT_API_KEY' env var
-            api_secret=None,  # 'BYBIT_API_SECRET' env var
-            base_url_http=None,  # Override with custom endpoint
+            environment=BybitEnvironment.MAINNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
-            product_types=(product_type,),  # Will load all instruments
-            testnet=False,  # If client uses the testnet
+            product_types=(product_type,),
         ),
     },
     exec_clients={
         BYBIT: BybitExecClientConfig(
-            api_key=None,  # 'BYBIT_API_KEY' env var
-            api_secret=None,  # 'BYBIT_API_SECRET' env var
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws_private=None,  # Override with custom endpoint
+            environment=BybitEnvironment.MAINNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             product_types=(product_type,),
-            testnet=False,  # If client uses the testnet
         ),
     },
     timeout_connection=20.0,

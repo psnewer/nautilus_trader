@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,7 +24,11 @@ use crate::defi::tick_map::full_math::{FullMath, Q128};
 /// including the liquidity amount, fee accumulation, and token deposits/withdrawals.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PoolPosition {
@@ -94,7 +98,7 @@ impl PoolPosition {
 
     /// Updates the position's fee tracking based on current fee growth inside the position's range.
     ///
-    /// Calculates the fees earned since the last update and adds them to tokens_owed.
+    /// Calculates the fees earned since the last update and adds them to `tokens_owed`.
     /// Updates the last known fee growth values for future calculations.
     pub fn update_fees(&mut self, fee_growth_inside_0: U256, fee_growth_inside_1: U256) {
         if self.liquidity > 0 {
@@ -124,7 +128,7 @@ impl PoolPosition {
 
     /// Collects fees owed to the position, up to the requested amounts.
     ///
-    /// Reduces tokens_owed by the collected amounts and tracks total collections.
+    /// Reduces `tokens_owed` by the collected amounts and tracks total collections.
     /// Cannot collect more than what is currently owed.
     pub fn collect_fees(&mut self, amount0: u128, amount1: u128) {
         let collect_amount_0 = amount0.min(self.tokens_owed_0);

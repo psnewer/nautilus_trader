@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -71,6 +71,7 @@ pub fn order_event_to_pyobject(py: Python, order_event: OrderEventAny) -> PyResu
 /// # Errors
 ///
 /// Returns a `PyErr` if extraction fails or the event type is unsupported.
+#[expect(clippy::needless_pass_by_value)]
 pub fn pyobject_to_order_event(py: Python, order_event: Py<PyAny>) -> PyResult<OrderEventAny> {
     let class = order_event.getattr(py, "__class__")?;
     match class.getattr(py, "__name__")?.extract::<&str>(py)? {

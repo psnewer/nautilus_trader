@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,22 +13,20 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Data persistence and storage management for [NautilusTrader](http://nautilustrader.io).
+//! Data persistence and storage management for [NautilusTrader](https://nautilustrader.io).
 //!
 //! The `nautilus-persistence` crate provides data persistence capabilities for storing and retrieving
 //! trading data, state, and configuration.
 //!
-//! # Platform
+//! # NautilusTrader
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
-//! algorithmic trading platform, providing quantitative traders with the ability to backtest
-//! portfolios of automated trading strategies on historical data with an event-driven engine,
-//! and also deploy those same strategies live, with no code changes.
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, production-grade, Rust-native
+//! engine for multi-asset, multi-venue trading systems.
 //!
-//! NautilusTrader's design, architecture, and implementation philosophy prioritizes software correctness and safety at the
-//! highest level, with the aim of supporting mission-critical, trading system backtesting and live deployment workloads.
+//! The system spans research, deterministic simulation, and live execution within a single
+//! event-driven architecture, providing research-to-live semantic parity.
 //!
-//! # Feature flags
+//! # Feature Flags
 //!
 //! This crate provides feature flags to control source code inclusion during compilation,
 //! depending on the intended use case, i.e. whether to provide Python bindings
@@ -48,8 +46,10 @@
 // #![deny(clippy::missing_errors_doc)]
 
 pub mod backend;
+#[cfg(feature = "python")]
 pub mod config;
 pub mod parquet;
+pub mod test_data;
 
 #[cfg(feature = "python")]
 pub mod python;

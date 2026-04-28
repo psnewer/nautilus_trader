@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,6 +17,7 @@ import datetime
 from collections import Counter
 from collections import defaultdict
 from copy import copy
+from types import SimpleNamespace
 
 import msgspec
 import pytest
@@ -56,22 +57,36 @@ from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_price
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_quantity
 from nautilus_trader.adapters.betfair.orderbook import create_betfair_order_book
 from nautilus_trader.adapters.betfair.parsing.common import instrument_id_betfair_ids
+from nautilus_trader.adapters.betfair.parsing.common import market_id_from_instrument_id
 from nautilus_trader.adapters.betfair.parsing.core import BetfairParser
+from nautilus_trader.adapters.betfair.parsing.requests import bet_to_order_status_report
 from nautilus_trader.adapters.betfair.parsing.requests import betfair_account_to_account_state
 from nautilus_trader.adapters.betfair.parsing.requests import determine_order_status
+from nautilus_trader.adapters.betfair.parsing.requests import hashed_trade_id
 from nautilus_trader.adapters.betfair.parsing.requests import make_customer_order_ref
-from nautilus_trader.adapters.betfair.parsing.requests import nautilus_limit_on_close_to_place_instructions
+from nautilus_trader.adapters.betfair.parsing.requests import (
+    nautilus_limit_on_close_to_place_instructions,
+)
 from nautilus_trader.adapters.betfair.parsing.requests import nautilus_limit_to_place_instructions
-from nautilus_trader.adapters.betfair.parsing.requests import nautilus_market_on_close_to_place_instructions
+from nautilus_trader.adapters.betfair.parsing.requests import (
+    nautilus_market_on_close_to_place_instructions,
+)
 from nautilus_trader.adapters.betfair.parsing.requests import nautilus_market_to_place_instructions
 from nautilus_trader.adapters.betfair.parsing.requests import nautilus_order_to_place_instructions
 from nautilus_trader.adapters.betfair.parsing.requests import order_cancel_to_cancel_order_params
 from nautilus_trader.adapters.betfair.parsing.requests import order_submit_to_place_order_params
+from nautilus_trader.adapters.betfair.parsing.requests import order_update_to_cancel_order_params
 from nautilus_trader.adapters.betfair.parsing.requests import order_update_to_replace_order_params
 from nautilus_trader.adapters.betfair.parsing.streaming import market_change_to_updates
-from nautilus_trader.adapters.betfair.parsing.streaming import market_definition_to_betfair_starting_prices
-from nautilus_trader.adapters.betfair.parsing.streaming import market_definition_to_instrument_closes
-from nautilus_trader.adapters.betfair.parsing.streaming import market_definition_to_instrument_status
+from nautilus_trader.adapters.betfair.parsing.streaming import (
+    market_definition_to_betfair_starting_prices,
+)
+from nautilus_trader.adapters.betfair.parsing.streaming import (
+    market_definition_to_instrument_closes,
+)
+from nautilus_trader.adapters.betfair.parsing.streaming import (
+    market_definition_to_instrument_status,
+)
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.core.data import Data
 from nautilus_trader.core.uuid import UUID4
@@ -92,9 +107,11 @@ from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
@@ -245,6 +262,7 @@ class TestBetfairParsingStreaming:
     def test_parsing_streaming_file(self, filename, num_msgs):
         mcms = BetfairDataProvider.market_updates(filename)
         updates = []
+
         for mcm in mcms:
             upd = self.parser.parse(mcm)
             updates.extend(upd)
@@ -290,6 +308,7 @@ class TestBetfairParsingStreaming:
         mcms = BetfairDataProvider.market_updates(filename)
 
         books: dict[InstrumentId, OrderBook] = {}
+
         for update in [x for mcm in mcms for x in self.parser.parse(mcm)]:
             if isinstance(update, OrderBookDeltas) and not isinstance(
                 update,
@@ -308,6 +327,7 @@ class TestBetfairParsingStreaming:
         mcms = BetfairDataProvider.read_mcm("1-206064380.bz2")
         trade_ticks: dict[InstrumentId, list[TradeTick]] = defaultdict(list)
         betfair_tv: dict[int, dict[float, float]] = {}
+
         for mcm in mcms:
             for data in self.parser.parse(mcm):
                 if isinstance(data, TradeTick):
@@ -433,6 +453,29 @@ class TestBetfairParsing:
             market_id="1-179082386",
             instructions=[CancelInstruction(bet_id=228302937743, size_reduction=None)],
             customer_ref="2d89666b1a1e4a75b1934eb3b454c757",
+        )
+        assert result == expected
+        assert msgspec.json.decode(msgspec.json.encode(result), type=CancelOrders) == expected
+
+    def test_order_partial_cancel_to_betfair(self):
+        modify = TestCommandStubs.modify_order_command(
+            instrument_id=self.instrument.id,
+            client_order_id=ClientOrderId("C-1"),
+            venue_order_id=VenueOrderId("228302937743"),
+            quantity=betfair_float_to_quantity(8),
+        )
+        size_reduction = 2.0
+
+        result = order_update_to_cancel_order_params(
+            command=modify,
+            instrument=self.instrument,
+            size_reduction=size_reduction,
+        )
+        expected = CancelOrders.with_params(
+            request_id=result.id,
+            market_id="1-179082386",
+            instructions=[CancelInstruction(bet_id=228302937743, size_reduction=2.0)],
+            customer_ref=result.params.customer_ref,
         )
         assert result == expected
         assert msgspec.json.decode(msgspec.json.encode(result), type=CancelOrders) == expected
@@ -703,6 +746,7 @@ class TestBetfairParsing:
             b'{"op":"mcm","id":1,"initialClk":"nhy58bfvDawc+Jbf/A2jHKee5vUN","clk":"AAAAAAAA","conflateMs":0,"heartbeatMs":5000,"pt":1624860195431,"ct":"SUB_IMAGE","mc":[{"id":"1.184839563","marketDefinition":{"bspMarket":false,"turnInPlayEnabled":true,"persistenceEnabled":true,"marketBaseRate":5,"eventId":"30633417","eventTypeId":"7522","numberOfWinners":1,"bettingType":"ODDS","marketType":"MATCH_ODDS","marketTime":"2021-06-29T01:10:00.000Z","suspendTime":"2021-06-29T01:10:00.000Z","bspReconciled":false,"complete":true,"inPlay":false,"crossMatching":true,"runnersVoidable":false,"numberOfActiveRunners":2,"betDelay":0,"status":"OPEN","runners":[{"status":"ACTIVE","sortPriority":1,"id":6023845},{"status":"ACTIVE","sortPriority":2,"id":237487}],"regulators":["MR_INT"],"countryCode":"GB","discountAllowed":true,"timezone":"GMT","openDate":"2021-06-29T01:10:00.000Z","version":3888693695,"priceLadderDefinition":{"type":"CLASSIC"}},"rc":[{"atb":[[1.46,59.86],[1.48,1419.67],[1.47,2.92],[1.01,971.95],[1.02,119.11],[1.21,103],[1.42,27.32]],"atl":[[2,68.67],[1000,1.72],[200,1.72]],"trd":[[1.53,27.93],[1.46,407.17],[1.41,5.15],[1.48,29.85],[1.52,53.15],[1.47,10.38],[1.49,10],[1.5,22.58],[1.4,5.76]],"batb":[[2,1.46,59.86],[0,1.48,1419.67],[1,1.47,2.92],[6,1.01,971.95],[5,1.02,119.11],[4,1.21,103],[3,1.42,27.32]],"batl":[[0,2,68.67],[2,1000,1.72],[1,200,1.72]],"tv":571.97,"id":237487},{"atb":[[2.8,1.54],[1.01,971.95],[1.02,119.11],[2,68.67],[2.82,1440.67],[2.88,14.22],[1.43,2.73]],"atl":[[9.8,25.75],[1000,1.72],[200,1.72],[3.6,2.54]],"trd":[[2.9,13.06],[2.92,2.95],[3.1,138.82],[2.88,32.33],[3.2,77.73],[2.94,27.48],[3,34.24],[3.15,2.94]],"batb":[[6,1.01,971.95],[5,1.02,119.11],[4,1.43,2.73],[3,2,68.67],[2,2.8,1.54],[1,2.82,1440.67],[0,2.88,14.22]],"batl":[[3,1000,1.72],[2,200,1.72],[1,9.8,25.75],[0,3.6,2.54]],"tv":329.55,"id":6023845}],"img":true,"tv":901.52},{"id":"1.183516561","marketDefinition":{"bspMarket":false,"turnInPlayEnabled":true,"persistenceEnabled":true,"marketBaseRate":5,"eventId":"30533301","eventTypeId":"7522","numberOfWinners":1,"bettingType":"ODDS","marketType":"MATCH_ODDS","marketTime":"2021-05-19T01:16:00.000Z","suspendTime":"2021-05-19T01:16:00.000Z","bspReconciled":false,"complete":true,"inPlay":false,"crossMatching":true,"runnersVoidable":false,"numberOfActiveRunners":2,"betDelay":0,"status":"SUSPENDED","runners":[{"status":"ACTIVE","sortPriority":1,"id":237485},{"status":"ACTIVE","sortPriority":2,"id":60427}],"regulators":["MR_INT"],"countryCode":"GB","discountAllowed":true,"timezone":"GMT","openDate":"2021-05-19T01:16:00.000Z","version":3824150209,"priceLadderDefinition":{"type":"CLASSIC"}},"rc":[{"atb":[[2.2,238.14],[2.22,451.53],[2.1,20.7],[2.24,462.2],[2.18,8.89],[1.4,2],[1.65,86.15],[2.16,11.6],[1.01,746.03],[2.08,56.26],[1.05,91.09],[1.1,86.15],[1.3,3.84],[1.02,86.15],[1.03,86.15],[1.86,17.5]],"atl":[[2.32,11.53],[2.3,140.58],[2.28,201.16],[2.36,21.14],[1000,1.72],[200,1.72]],"trd":[[2.26,908.83],[2.24,2262.18],[2.28,1206.46],[2.22,5340.65],[2.16,2461.4],[2.2,2042.06],[2.18,1704.71],[2.08,74.11],[2.14,1098.39],[2.1,1413.03],[2.12,62.51],[2.04,7.37],[2.32,41.98],[2.3,554.84],[2,54.31],[2.36,20.68],[2.06,2045.77],[1.98,0.63]],"batb":[[2,2.2,238.14],[1,2.22,451.53],[5,2.1,20.7],[0,2.24,462.2],[3,2.18,8.89],[9,1.4,2],[8,1.65,86.15],[7,1.86,17.5],[6,2.08,56.26],[4,2.16,11.6]],"batl":[[2,2.32,11.53],[5,1000,1.72],[4,200,1.72],[3,2.36,21.14],[1,2.3,140.58],[0,2.28,201.16]],"tv":21299.91,"id":237485},{"atb":[[1.78,210.83],[1.75,14.41],[1.76,28.4],[1.79,450.18],[1.77,14.42],[1.01,746.03],[1.65,86.15],[1.05,91.09],[1.1,86.15],[1.3,3.84],[1.02,86.15],[1.03,86.15]],"atl":[[1.81,430.16],[1.82,488.33],[1.85,11.31],[1.83,14.32],[1.84,14.28],[3.1,27.45],[1000,1.72],[200,1.72],[2.08,1.72]],"trd":[[1.8,6609.88],[1.79,2742.92],[1.81,2879.6],[1.82,1567.46],[1.77,964.99],[1.86,272.44],[1.91,96.58],[1.99,16.47],[1.92,220.37],[1.76,11.91],[1.87,362.25],[1.78,437.4],[1.85,415.17],[1.84,580.74],[1.83,1394.8],[1.73,4],[1.88,22.37],[1.95,9.49],[1.96,1.96],[1.89,45.75],[1.9,2.3],[2.02,0.61],[1.93,4.71]],"batb":[[1,1.78,210.83],[4,1.75,14.41],[3,1.76,28.4],[0,1.79,450.18],[9,1.03,86.15],[8,1.05,91.09],[7,1.1,86.15],[6,1.3,3.84],[5,1.65,86.15],[2,1.77,14.42]],"batl":[[0,1.81,430.16],[8,1000,1.72],[7,200,1.72],[6,3.1,27.45],[5,2.08,1.72],[4,1.85,11.31],[3,1.84,14.28],[2,1.83,14.32],[1,1.82,488.33]],"tv":18664.17,"id":60427}],"img":true,"tv":39964.08},{"id":"1.184866117","marketDefinition":{"bspMarket":false,"turnInPlayEnabled":true,"persistenceEnabled":true,"marketBaseRate":5,"eventId":"30635089","eventTypeId":"7522","numberOfWinners":1,"bettingType":"ODDS","marketType":"MATCH_ODDS","marketTime":"2021-06-30T00:40:00.000Z","suspendTime":"2021-06-30T00:40:00.000Z","bspReconciled":false,"complete":true,"inPlay":false,"crossMatching":true,"runnersVoidable":false,"numberOfActiveRunners":2,"betDelay":0,"status":"OPEN","runners":[{"status":"ACTIVE","sortPriority":1,"id":237477},{"status":"ACTIVE","sortPriority":2,"id":237490}],"regulators":["MR_INT"],"countryCode":"GB","discountAllowed":true,"timezone":"GMT","openDate":"2021-06-30T00:40:00.000Z","version":3890540057,"priceLadderDefinition":{"type":"CLASSIC"}},"rc":[{"atb":[[1.03,1.93],[1.02,76.24],[1.01,108.66],[1.39,68.58]],"atl":[[1.49,1.93]],"trd":[[1.39,52.64]],"batb":[[3,1.01,108.66],[2,1.02,76.24],[1,1.03,1.93],[0,1.39,68.58]],"batl":[[0,1.49,1.93]],"tv":52.64,"id":237477},{"atb":[[3.05,1.93],[1.02,76.24],[1.01,108.66],[3,13.37]],"atl":[[3.55,1.93]],"batb":[[3,1.01,108.66],[2,1.02,76.24],[1,3,13.37],[0,3.05,1.93]],"batl":[[0,3.55,1.93]],"id":237490}],"img":true,"tv":52.64}]}',
             b'{"op":"mcm","id":1,"clk":"AKgBAIgBANgB","pt":1624860200431,"ct":"HEARTBEAT"}',
         ]
+
         for line in lines:
             data = stream_decode(line)
             assert data
@@ -856,8 +900,6 @@ def test_bsp_orders_use_stake_units_not_liability():
     """
     from types import SimpleNamespace
 
-    from betfair_parser.spec.betting.enums import Side as BetOrderSide
-
     # This tests the fix for BSP order quantity calculation
     # Previously: used order.bsp_liability / order (TypeError)
     # Then: used order.bsp_liability directly (wrong - mixed liability and stake units)
@@ -872,7 +914,7 @@ def test_bsp_orders_use_stake_units_not_liability():
         size_cancelled=0.0,
         size_lapsed=0.0,
         size_voided=0.0,
-        side=BetOrderSide.BACK,
+        side=Side.BACK,
     )
 
     # Act - replicate the fixed logic from the code
@@ -944,7 +986,6 @@ def test_bsp_order_status_report_uses_stake_units():
     from types import SimpleNamespace
 
     from betfair_parser.spec.betting.enums import PersistenceType
-    from betfair_parser.spec.betting.enums import Side as BetOrderSide
     from betfair_parser.spec.common import OrderStatus
     from betfair_parser.spec.common import OrderType
 
@@ -964,7 +1005,7 @@ def test_bsp_order_status_report_uses_stake_units():
         size_cancelled=0.0,
         size_lapsed=0.0,
         size_voided=0.0,
-        side=BetOrderSide.BACK,
+        side=Side.BACK,
         order_type=OrderType.LIMIT,
         status=OrderStatus.EXECUTABLE,
         persistence_type=PersistenceType.LAPSE,
@@ -998,7 +1039,7 @@ def test_bsp_order_status_report_uses_stake_units():
         size_cancelled=0.0,
         size_lapsed=0.0,
         size_voided=0.0,
-        side=BetOrderSide.LAY,
+        side=Side.LAY,
         order_type=OrderType.LIMIT,
         status=OrderStatus.EXECUTABLE,
         persistence_type=PersistenceType.LAPSE,
@@ -1030,7 +1071,7 @@ def test_bsp_order_status_report_uses_stake_units():
         size_cancelled=0.0,
         size_lapsed=0.0,
         size_voided=0.0,
-        side=BetOrderSide.BACK,
+        side=Side.BACK,
         order_type=OrderType.LIMIT,
         status=OrderStatus.EXECUTABLE,
         persistence_type=PersistenceType.LAPSE,
@@ -1053,3 +1094,286 @@ def test_bsp_order_status_report_uses_stake_units():
     assert partial_report.quantity.as_double() == 10.0
     assert partial_report.filled_qty.as_double() == 6.0
     # This correctly shows 60% filled (6/10), not 30% (6/20)
+
+
+def test_order_status_report_uses_cached_values_when_stale_api():
+    """
+    Test bet_to_order_status_report uses cached values when API returns stale data.
+
+    During reconciliation, the stream may process fills faster than the HTTP API
+    reflects them. When cached_filled_qty > api_fill_qty, we should use the cached
+    values to avoid reporting stale fill state.
+
+    """
+    # API returns stale data (5.0 matched), but cache has newer data (10.0 matched)
+    order = SimpleNamespace(
+        price_size=SimpleNamespace(size=20.0, price=2.5),
+        bsp_liability=0.0,
+        size_matched=5.0,
+        size_remaining=15.0,
+        size_cancelled=0.0,
+        size_lapsed=0.0,
+        size_voided=0.0,
+        side=Side.BACK,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.EXECUTABLE,
+        persistence_type=PersistenceType.PERSIST,
+        placed_date="2021-03-24T06:47:02.000Z",
+        matched_date="2021-03-24T06:48:00.000Z",
+        average_price_matched=2.4,
+    )
+
+    cached_filled_qty = Quantity(10.0, 6)
+    cached_avg_px = 2.45
+
+    report = bet_to_order_status_report(
+        order=order,
+        account_id=AccountId("BETFAIR-001"),
+        instrument_id=InstrumentId.from_str("1.180575118.39980-None.BETFAIR"),
+        venue_order_id=VenueOrderId("228059754671"),
+        client_order_id=ClientOrderId("O-123"),
+        ts_init=0,
+        report_id=UUID4(),
+        cached_filled_qty=cached_filled_qty,
+        cached_avg_px=cached_avg_px,
+    )
+
+    assert report.filled_qty.as_double() == 10.0
+    assert float(report.avg_px) == 2.45
+
+
+def test_order_status_report_corrects_status_when_cached_fills_exist():
+    """
+    Test bet_to_order_status_report corrects order status when using cached fill data.
+
+    When API shows ACCEPTED (size_matched=0) but cached fills exist, the status must be
+    corrected to PARTIALLY_FILLED to ensure reconciliation handles fills.
+
+    """
+    # API shows ACCEPTED (size_matched=0), but stream has processed fills
+    order = SimpleNamespace(
+        price_size=SimpleNamespace(size=20.0, price=2.5),
+        bsp_liability=0.0,
+        size_matched=0.0,
+        size_remaining=20.0,
+        size_cancelled=0.0,
+        size_lapsed=0.0,
+        size_voided=0.0,
+        side=Side.BACK,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.EXECUTABLE,
+        persistence_type=PersistenceType.PERSIST,
+        placed_date="2021-03-24T06:47:02.000Z",
+        matched_date=None,
+        average_price_matched=0.0,
+    )
+
+    cached_filled_qty = Quantity(5.0, 6)
+    cached_avg_px = 2.48
+
+    report = bet_to_order_status_report(
+        order=order,
+        account_id=AccountId("BETFAIR-001"),
+        instrument_id=InstrumentId.from_str("1.180575118.39980-None.BETFAIR"),
+        venue_order_id=VenueOrderId("228059754671"),
+        client_order_id=ClientOrderId("O-123"),
+        ts_init=0,
+        report_id=UUID4(),
+        cached_filled_qty=cached_filled_qty,
+        cached_avg_px=cached_avg_px,
+    )
+
+    assert report.order_status == NautilusOrderStatus.PARTIALLY_FILLED
+    assert report.filled_qty.as_double() == 5.0
+    assert float(report.avg_px) == 2.48
+
+
+def test_order_status_report_uses_api_values_when_not_stale():
+    """
+    Test bet_to_order_status_report uses API values when not stale.
+
+    When api_fill_qty >= cached_filled_qty, the API data is current and should be used
+    instead of cached values.
+
+    """
+    # API returns current data (10.0 matched), cache has older data (5.0 matched)
+    order = SimpleNamespace(
+        price_size=SimpleNamespace(size=20.0, price=2.5),
+        bsp_liability=0.0,
+        size_matched=10.0,
+        size_remaining=10.0,
+        size_cancelled=0.0,
+        size_lapsed=0.0,
+        size_voided=0.0,
+        side=Side.BACK,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.EXECUTABLE,
+        persistence_type=PersistenceType.PERSIST,
+        placed_date="2021-03-24T06:47:02.000Z",
+        matched_date="2021-03-24T06:48:00.000Z",
+        average_price_matched=2.45,
+    )
+
+    cached_filled_qty = Quantity(5.0, 6)
+    cached_avg_px = 2.4
+
+    report = bet_to_order_status_report(
+        order=order,
+        account_id=AccountId("BETFAIR-001"),
+        instrument_id=InstrumentId.from_str("1.180575118.39980-None.BETFAIR"),
+        venue_order_id=VenueOrderId("228059754671"),
+        client_order_id=ClientOrderId("O-123"),
+        ts_init=0,
+        report_id=UUID4(),
+        cached_filled_qty=cached_filled_qty,
+        cached_avg_px=cached_avg_px,
+    )
+
+    assert report.filled_qty.as_double() == 10.0
+    assert float(report.avg_px) == 2.45
+
+
+def test_order_status_report_avg_px_populated_from_api():
+    """
+    Test bet_to_order_status_report populates avg_px from API when no cache.
+    """
+    order = SimpleNamespace(
+        price_size=SimpleNamespace(size=20.0, price=2.5),
+        bsp_liability=0.0,
+        size_matched=10.0,
+        size_remaining=10.0,
+        size_cancelled=0.0,
+        size_lapsed=0.0,
+        size_voided=0.0,
+        side=Side.BACK,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.EXECUTABLE,
+        persistence_type=PersistenceType.PERSIST,
+        placed_date="2021-03-24T06:47:02.000Z",
+        matched_date="2021-03-24T06:48:00.000Z",
+        average_price_matched=2.45,
+    )
+
+    report = bet_to_order_status_report(
+        order=order,
+        account_id=AccountId("BETFAIR-001"),
+        instrument_id=InstrumentId.from_str("1.180575118.39980-None.BETFAIR"),
+        venue_order_id=VenueOrderId("228059754671"),
+        client_order_id=ClientOrderId("O-123"),
+        ts_init=0,
+        report_id=UUID4(),
+    )
+
+    assert report.avg_px is not None
+    assert float(report.avg_px) == 2.45
+
+
+def test_order_status_report_avg_px_none_when_no_match():
+    """
+    Test bet_to_order_status_report returns None avg_px when no matches.
+    """
+    order = SimpleNamespace(
+        price_size=SimpleNamespace(size=20.0, price=2.5),
+        bsp_liability=0.0,
+        size_matched=0.0,
+        size_remaining=20.0,
+        size_cancelled=0.0,
+        size_lapsed=0.0,
+        size_voided=0.0,
+        side=Side.BACK,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.EXECUTABLE,
+        persistence_type=PersistenceType.PERSIST,
+        placed_date="2021-03-24T06:47:02.000Z",
+        matched_date=None,
+        average_price_matched=0.0,
+    )
+
+    report = bet_to_order_status_report(
+        order=order,
+        account_id=AccountId("BETFAIR-001"),
+        instrument_id=InstrumentId.from_str("1.180575118.39980-None.BETFAIR"),
+        venue_order_id=VenueOrderId("228059754671"),
+        client_order_id=ClientOrderId("O-123"),
+        ts_init=0,
+        report_id=UUID4(),
+    )
+
+    assert report.avg_px is None
+
+
+def test_hashed_trade_id_deterministic():
+    """
+    Test that hashed_trade_id produces consistent, deterministic output.
+
+    This locks down the hash algorithm to detect any accidental changes.
+
+    """
+    result = hashed_trade_id(
+        bet_id="12345",
+        price=2.5,
+        size=10.0,
+        side="B",
+        persistence_type="L",
+        order_type="L",
+        placed_date=1635217893000,
+        matched_date=1635217894000,
+        average_price_matched=2.5,
+        size_matched=10.0,
+    )
+
+    assert isinstance(result, TradeId)
+    assert result.value == "dbbcfdd8301db15100f11a07ee2dcfcdfc0a"
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected_market_id", "expected_selection_id", "expected_handicap"),
+    [
+        ("1-201070830-123456-None.BETFAIR", "1-201070830", 123456, None),
+        ("1-201070830-123456-0.0.BETFAIR", "1-201070830", 123456, 0.0),
+        ("1-201070830-123456-2.5.BETFAIR", "1-201070830", 123456, 2.5),
+        ("1-201070830-123456--2.5.BETFAIR", "1-201070830", 123456, -2.5),
+        ("1-201070830-123456--0.5.BETFAIR", "1-201070830", 123456, -0.5),
+        ("1-12345-999-1.0.BETFAIR", "1-12345", 999, 1.0),
+    ],
+)
+def test_instrument_id_betfair_ids(
+    symbol,
+    expected_market_id,
+    expected_selection_id,
+    expected_handicap,
+):
+    # Arrange
+    instrument_id = InstrumentId.from_str(symbol)
+
+    # Act
+    market_id, selection_id, handicap = instrument_id_betfair_ids(instrument_id)
+
+    # Assert
+    assert market_id == expected_market_id
+    assert selection_id == expected_selection_id
+
+    if expected_handicap is None:
+        assert handicap is None
+    else:
+        assert float(handicap) == expected_handicap
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected_market_id"),
+    [
+        ("1-201070830-123456-None.BETFAIR", "1.201070830"),
+        ("1-201070830-123456-2.5.BETFAIR", "1.201070830"),
+        ("1-201070830-123456--2.5.BETFAIR", "1.201070830"),
+        ("1-12345-999-1.0.BETFAIR", "1.12345"),
+    ],
+)
+def test_market_id_from_instrument_id(symbol, expected_market_id):
+    # Arrange
+    instrument_id = InstrumentId.from_str(symbol)
+
+    # Act
+    result = market_id_from_instrument_id(instrument_id)
+
+    # Assert
+    assert result == expected_market_id

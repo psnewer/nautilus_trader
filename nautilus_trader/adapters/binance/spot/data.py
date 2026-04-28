@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -125,6 +125,7 @@ class BinanceSpotDataClient(BinanceCommonDataClient):
         book_buffer: list[OrderBookDelta | OrderBookDeltas] | None = self._book_buffer.get(
             instrument_id,
         )
+
         if book_buffer is not None:
             book_buffer.append(book_snapshot)
         else:

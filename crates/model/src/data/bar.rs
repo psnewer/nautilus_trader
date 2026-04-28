@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,7 +29,7 @@ use indexmap::IndexMap;
 use nautilus_core::{
     UnixNanos,
     correctness::{FAILED, check_predicate_true},
-    datetime::{add_n_months, subtract_n_months, subtract_n_years},
+    datetime::{add_n_months, subtract_n_months},
     serialization::Serializable,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -147,6 +147,7 @@ pub const BAR_SPEC_12_MONTH_LAST: BarSpecification = BarSpecification {
 /// # Panics
 ///
 /// Panics if the aggregation method of the given `bar_type` is not time based.
+#[must_use]
 pub fn get_bar_interval(bar_type: &BarType) -> TimeDelta {
     let spec = bar_type.spec();
 
@@ -168,6 +169,7 @@ pub fn get_bar_interval(bar_type: &BarType) -> TimeDelta {
 /// # Panics
 ///
 /// Panics if the aggregation method of the given `bar_type` is not time based.
+#[must_use]
 pub fn get_bar_interval_ns(bar_type: &BarType) -> UnixNanos {
     let interval_ns = get_bar_interval(bar_type)
         .num_nanoseconds()
@@ -206,10 +208,10 @@ pub fn get_time_bar_start(
         BarAggregation::Day => find_closest_smaller_time(now, origin_offset, Duration::days(step)),
         BarAggregation::Week => {
             let mut start_time = now.trunc_subsecs(0)
-                - Duration::seconds(now.second() as i64)
-                - Duration::minutes(now.minute() as i64)
-                - Duration::hours(now.hour() as i64)
-                - TimeDelta::days(now.weekday().num_days_from_monday() as i64);
+                - Duration::seconds(i64::from(now.second()))
+                - Duration::minutes(i64::from(now.minute()))
+                - Duration::hours(i64::from(now.hour()))
+                - TimeDelta::days(i64::from(now.weekday().num_days_from_monday()));
             start_time += origin_offset;
 
             if now < start_time {
@@ -235,6 +237,7 @@ pub fn get_time_bar_start(
             }
 
             let months_step = step as u32;
+
             while start_time <= now {
                 start_time =
                     add_n_months(start_time, months_step).expect("Failed to add months in loop");
@@ -245,22 +248,29 @@ pub fn get_time_bar_start(
             start_time
         }
         BarAggregation::Year => {
-            // Set to the first day of the year
-            let mut start_time = DateTime::from_naive_utc_and_offset(
-                chrono::NaiveDate::from_ymd_opt(now.year(), 1, 1)
-                    .expect("valid date")
-                    .and_hms_opt(0, 0, 0)
-                    .expect("valid time"),
-                Utc,
-            );
-            start_time += origin_offset;
+            let step_i32 = step as i32;
 
-            if now < start_time {
-                start_time =
-                    subtract_n_years(start_time, step as u32).expect("Failed to subtract years");
+            // Reconstruct from Jan 1 + origin each time to avoid leap-day drift
+            let year_start = |y: i32| {
+                DateTime::from_naive_utc_and_offset(
+                    chrono::NaiveDate::from_ymd_opt(y, 1, 1)
+                        .expect("valid date")
+                        .and_hms_opt(0, 0, 0)
+                        .expect("valid time"),
+                    Utc,
+                ) + origin_offset
+            };
+
+            let mut year = now.year();
+            if year_start(year) > now {
+                year -= step_i32;
             }
 
-            start_time
+            while year_start(year + step_i32) <= now {
+                year += step_i32;
+            }
+
+            year_start(year)
         }
         _ => panic!(
             "Aggregation type {} not supported for time bars",
@@ -280,16 +290,22 @@ fn find_closest_smaller_time(
 ) -> DateTime<Utc> {
     // Floor to start of day
     let day_start = now.trunc_subsecs(0)
-        - Duration::seconds(now.second() as i64)
-        - Duration::minutes(now.minute() as i64)
-        - Duration::hours(now.hour() as i64);
+        - Duration::seconds(i64::from(now.second()))
+        - Duration::minutes(i64::from(now.minute()))
+        - Duration::hours(i64::from(now.hour()));
     let base_time = day_start + daily_time_origin;
 
     let time_difference = now - base_time;
-    let num_periods = (time_difference.num_nanoseconds().unwrap_or(0)
-        / period.num_nanoseconds().unwrap_or(1)) as i32;
+    let period_ns = period.num_nanoseconds().unwrap_or(1);
 
-    base_time + period * num_periods
+    // Use div_euclid for floor division (rounds toward -inf, not zero)
+    // so negative deltas (now before origin) yield the previous period boundary
+    let num_periods = time_difference
+        .num_nanoseconds()
+        .unwrap_or(0)
+        .div_euclid(period_ns);
+
+    base_time + TimeDelta::nanoseconds(num_periods * period_ns)
 }
 
 /// Represents a bar aggregation specification including a step, aggregation
@@ -300,7 +316,11 @@ fn find_closest_smaller_time(
 )]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct BarSpecification {
     /// The step for binning samples for bar aggregation.
@@ -356,6 +376,7 @@ impl BarSpecification {
     /// # Panics
     ///
     /// Panics if the aggregation method is not time-based.
+    #[must_use]
     pub fn timedelta(&self) -> TimeDelta {
         match self.aggregation {
             BarAggregation::Millisecond => Duration::milliseconds(self.step.get() as i64),
@@ -379,7 +400,10 @@ impl BarSpecification {
     ///  - [`BarAggregation::Minute`]
     ///  - [`BarAggregation::Hour`]
     ///  - [`BarAggregation::Day`]
+    ///  - [`BarAggregation::Week`]
     ///  - [`BarAggregation::Month`]
+    ///  - [`BarAggregation::Year`]
+    #[must_use]
     pub fn is_time_aggregated(&self) -> bool {
         matches!(
             self.aggregation,
@@ -388,7 +412,9 @@ impl BarSpecification {
                 | BarAggregation::Minute
                 | BarAggregation::Hour
                 | BarAggregation::Day
+                | BarAggregation::Week
                 | BarAggregation::Month
+                | BarAggregation::Year
         )
     }
 
@@ -399,6 +425,7 @@ impl BarSpecification {
     ///  - [`BarAggregation::VolumeImbalance`]
     ///  - [`BarAggregation::Value`]
     ///  - [`BarAggregation::ValueImbalance`]
+    #[must_use]
     pub fn is_threshold_aggregated(&self) -> bool {
         matches!(
             self.aggregation,
@@ -415,6 +442,7 @@ impl BarSpecification {
     ///  - [`BarAggregation::TickRuns`]
     ///  - [`BarAggregation::VolumeRuns`]
     ///  - [`BarAggregation::ValueRuns`]
+    #[must_use]
     pub fn is_information_aggregated(&self) -> bool {
         matches!(
             self.aggregation,
@@ -435,7 +463,11 @@ impl Display for BarSpecification {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.model")
 )]
 pub enum BarType {
     Standard {
@@ -479,6 +511,7 @@ impl BarType {
     }
 
     /// Creates a new composite [`BarType`] instance.
+    #[must_use]
     pub fn new_composite(
         instrument_id: InstrumentId,
         spec: BarSpecification,
@@ -500,6 +533,7 @@ impl BarType {
     }
 
     /// Returns whether this instance is a standard bar type.
+    #[must_use]
     pub fn is_standard(&self) -> bool {
         match &self {
             Self::Standard { .. } => true,
@@ -508,6 +542,7 @@ impl BarType {
     }
 
     /// Returns whether this instance is a composite bar type.
+    #[must_use]
     pub fn is_composite(&self) -> bool {
         match &self {
             Self::Standard { .. } => false,
@@ -551,6 +586,7 @@ impl BarType {
     }
 
     /// Returns the [`InstrumentId`] for this bar type.
+    #[must_use]
     pub fn instrument_id(&self) -> InstrumentId {
         match &self {
             Self::Standard { instrument_id, .. } | Self::Composite { instrument_id, .. } => {
@@ -560,6 +596,7 @@ impl BarType {
     }
 
     /// Returns the [`BarSpecification`] for this bar type.
+    #[must_use]
     pub fn spec(&self) -> BarSpecification {
         match &self {
             Self::Standard { spec, .. } | Self::Composite { spec, .. } => *spec,
@@ -567,6 +604,7 @@ impl BarType {
     }
 
     /// Returns the [`AggregationSource`] for this bar type.
+    #[must_use]
     pub fn aggregation_source(&self) -> AggregationSource {
         match &self {
             Self::Standard {
@@ -600,7 +638,7 @@ pub struct BarTypeParseError {
 impl FromStr for BarType {
     type Err = BarTypeParseError;
 
-    #[allow(clippy::needless_collect)] // Collect needed for .rev() and indexing
+    #[expect(clippy::needless_collect)] // Collect needed for .rev() and indexing
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('@').collect();
         let standard = parts[0];
@@ -698,9 +736,9 @@ impl FromStr for BarType {
     }
 }
 
-impl From<&str> for BarType {
-    fn from(value: &str) -> Self {
-        Self::from_str(value).expect(FAILED)
+impl<T: AsRef<str>> From<T> for BarType {
+    fn from(value: T) -> Self {
+        Self::from_str(value.as_ref()).expect(FAILED)
     }
 }
 
@@ -763,7 +801,11 @@ impl<'de> Deserialize<'de> for BarType {
 #[serde(tag = "type")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct Bar {
     /// The bar type for this bar.
@@ -792,12 +834,12 @@ impl Bar {
     /// Returns an error if:
     /// - `high` is not >= `low`.
     /// - `high` is not >= `close`.
-    /// - `low` is not <= `close.
+    /// - `low` is not <= `close`.
     ///
     /// # Notes
     ///
     /// PyO3 requires a `Result` type for proper error handling and stacktrace printing in Python.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         bar_type: BarType,
         open: Price,
@@ -833,8 +875,9 @@ impl Bar {
     /// This function panics if:
     /// - `high` is not >= `low`.
     /// - `high` is not >= `close`.
-    /// - `low` is not <= `close.
-    #[allow(clippy::too_many_arguments)]
+    /// - `low` is not <= `close`.
+    #[expect(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         bar_type: BarType,
         open: Price,
@@ -849,6 +892,7 @@ impl Bar {
             .expect(FAILED)
     }
 
+    #[must_use]
     pub fn instrument_id(&self) -> InstrumentId {
         self.bar_type.instrument_id()
     }
@@ -998,17 +1042,17 @@ mod tests {
 
     #[rstest]
     #[case::millisecond(
-    Utc.timestamp_opt(1658349296, 123_000_000).unwrap(), // 2024-07-21 12:34:56.123 UTC
+    Utc.timestamp_opt(1_658_349_296, 123_000_000).unwrap(), // 2024-07-21 12:34:56.123 UTC
     BarAggregation::Millisecond,
     1,
-    Utc.timestamp_opt(1658349296, 123_000_000).unwrap(),  // 2024-07-21 12:34:56.123 UTC
+    Utc.timestamp_opt(1_658_349_296, 123_000_000).unwrap(),  // 2024-07-21 12:34:56.123 UTC
     )]
     #[rstest]
     #[case::millisecond(
-    Utc.timestamp_opt(1658349296, 123_000_000).unwrap(), // 2024-07-21 12:34:56.123 UTC
+    Utc.timestamp_opt(1_658_349_296, 123_000_000).unwrap(), // 2024-07-21 12:34:56.123 UTC
     BarAggregation::Millisecond,
     10,
-    Utc.timestamp_opt(1658349296, 120_000_000).unwrap(),  // 2024-07-21 12:34:56.120 UTC
+    Utc.timestamp_opt(1_658_349_296, 120_000_000).unwrap(),  // 2024-07-21 12:34:56.120 UTC
     )]
     #[case::second(
     Utc.with_ymd_and_hms(2024, 7, 21, 12, 34, 56).unwrap(),

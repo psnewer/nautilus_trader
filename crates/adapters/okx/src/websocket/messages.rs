@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,11 +17,12 @@
 
 use derive_builder::Builder;
 use nautilus_model::{
-    data::{Data, FundingRateUpdate, OrderBookDeltas},
+    data::{Data, FundingRateUpdate, InstrumentStatus, OrderBookDeltas},
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderExpired,
         OrderModifyRejected, OrderRejected, OrderTriggered, OrderUpdated,
     },
+    identifiers::ClientOrderId,
     instruments::InstrumentAny,
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
 };
@@ -33,12 +34,14 @@ use crate::{
     common::{
         enums::{
             OKXAlgoOrderType, OKXBookAction, OKXCandleConfirm, OKXExecType, OKXInstrumentType,
-            OKXOrderCategory, OKXOrderStatus, OKXOrderType, OKXPositionSide, OKXSide,
+            OKXOrderCategory, OKXOrderStatus, OKXOrderType, OKXPositionSide, OKXPriceType,
+            OKXQuickMarginType, OKXSelfTradePreventionMode, OKXSettlementState, OKXSide,
             OKXTargetCurrency, OKXTradeMode, OKXTriggerType,
         },
+        models::OKXInstrument,
         parse::{
-            deserialize_empty_string_as_none, deserialize_string_to_u64,
-            deserialize_target_currency_as_none,
+            deserialize_empty_string_as_none, deserialize_empty_ustr_as_none,
+            deserialize_string_to_u64, deserialize_target_currency_as_none,
         },
     },
     websocket::enums::OKXSubscriptionEvent,
@@ -49,7 +52,8 @@ pub enum NautilusWsMessage {
     Data(Vec<Data>),
     Deltas(OrderBookDeltas),
     FundingRates(Vec<FundingRateUpdate>),
-    Instrument(Box<InstrumentAny>),
+    Instrument(Box<InstrumentAny>, Option<InstrumentStatus>),
+    InstrumentStatus(InstrumentStatus),
     AccountUpdate(AccountState),
     PositionUpdate(PositionStatusReport),
     OrderAccepted(OrderAccepted),
@@ -69,7 +73,11 @@ pub enum NautilusWsMessage {
 
 /// Represents an OKX WebSocket error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass)]
+#[cfg_attr(feature = "python", pyo3::pyclass(from_py_object))]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.okx")
+)]
 pub struct OKXWebSocketError {
     /// Error code from OKX (e.g., "50101").
     pub code: String,
@@ -82,10 +90,62 @@ pub struct OKXWebSocketError {
 }
 
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum ExecutionReport {
     Order(OrderStatusReport),
     Fill(FillReport),
+}
+
+/// Output from the OKX WebSocket handler.
+///
+/// Contains venue-specific types only. Data parsing occurs in `PyOKXWebSocketClient`
+/// (using an instruments cache), and execution parsing occurs in `execution.rs`
+/// (using the system Cache for order lookups).
+#[derive(Debug)]
+pub enum OKXWsMessage {
+    /// Order book snapshot or update.
+    BookData {
+        arg: OKXWebSocketArg,
+        action: OKXBookAction,
+        data: Vec<OKXBookMsg>,
+    },
+    /// Data from a non-book channel (trades, tickers, mark price, funding, candles, etc.).
+    ChannelData {
+        channel: OKXWsChannel,
+        inst_id: Option<Ustr>,
+        data: serde_json::Value,
+    },
+    /// Response to a WebSocket order command (place, cancel, amend, mass-cancel).
+    OrderResponse {
+        id: Option<String>,
+        op: OKXWsOperation,
+        code: String,
+        msg: String,
+        data: Vec<serde_json::Value>,
+    },
+    /// Order push channel updates.
+    Orders(Vec<OKXOrderMsg>),
+    /// Algo order push channel updates.
+    AlgoOrders(Vec<OKXAlgoOrderMsg>),
+    /// Account channel update (raw JSON).
+    Account(serde_json::Value),
+    /// Positions channel update (raw JSON).
+    Positions(serde_json::Value),
+    /// Instrument definition updates.
+    Instruments(Vec<OKXInstrument>),
+    /// A WebSocket send failed; carries context for emitting the appropriate rejection event.
+    SendFailed {
+        request_id: String,
+        client_order_id: Option<ClientOrderId>,
+        op: Option<OKXWsOperation>,
+        error: String,
+    },
+    /// Error received from OKX.
+    Error(OKXWebSocketError),
+    /// WebSocket reconnected.
+    Reconnected,
+    /// WebSocket authenticated.
+    Authenticated,
 }
 
 /// Generic WebSocket request for OKX trading commands.
@@ -142,7 +202,7 @@ pub struct OKXSubscriptionArg {
 /// Uses custom deserialization that checks discriminant fields (event, op, action)
 /// to determine the correct variant.
 #[derive(Debug)]
-pub enum OKXWsMessage {
+pub enum OKXWsFrame {
     Login {
         event: String,
         code: String,
@@ -186,7 +246,7 @@ pub enum OKXWsMessage {
     Reconnected,
 }
 
-impl<'de> Deserialize<'de> for OKXWsMessage {
+impl<'de> Deserialize<'de> for OKXWsFrame {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -197,7 +257,7 @@ impl<'de> Deserialize<'de> for OKXWsMessage {
         let value = serde_json::Value::deserialize(deserializer)?;
         let obj = value
             .as_object()
-            .ok_or_else(|| D::Error::custom("expected JSON object for OKXWsMessage"))?;
+            .ok_or_else(|| D::Error::custom("expected JSON object for OKXWsFrame"))?;
 
         // Check discriminant fields in priority order
 
@@ -237,7 +297,7 @@ impl<'de> Deserialize<'de> for OKXWsMessage {
         }
 
         Err(D::Error::custom(format!(
-            "cannot determine OKXWsMessage variant from: {}",
+            "cannot determine OKXWsFrame variant from: {}",
             serde_json::to_string(&value).unwrap_or_default()
         )))
     }
@@ -245,8 +305,8 @@ impl<'de> Deserialize<'de> for OKXWsMessage {
 
 fn parse_login<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
-    Ok(OKXWsMessage::Login {
+) -> Result<OKXWsFrame, E> {
+    Ok(OKXWsFrame::Login {
         event: obj
             .get("event")
             .and_then(|v| v.as_str())
@@ -272,7 +332,7 @@ fn parse_login<E: serde::de::Error>(
 
 fn parse_subscription<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
+) -> Result<OKXWsFrame, E> {
     let event_str = obj
         .get("event")
         .and_then(|v| v.as_str())
@@ -290,7 +350,7 @@ fn parse_subscription<E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid arg: {e}")))?
         .ok_or_else(|| E::missing_field("arg"))?;
 
-    Ok(OKXWsMessage::Subscription {
+    Ok(OKXWsFrame::Subscription {
         event,
         arg,
         conn_id: obj
@@ -305,7 +365,7 @@ fn parse_subscription<E: serde::de::Error>(
 
 fn parse_channel_conn_count<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
+) -> Result<OKXWsFrame, E> {
     let channel: OKXWsChannel = obj
         .get("channel")
         .cloned()
@@ -314,7 +374,7 @@ fn parse_channel_conn_count<E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid channel: {e}")))?
         .ok_or_else(|| E::missing_field("channel"))?;
 
-    Ok(OKXWsMessage::ChannelConnCount {
+    Ok(OKXWsFrame::ChannelConnCount {
         event: obj
             .get("event")
             .and_then(|v| v.as_str())
@@ -336,7 +396,7 @@ fn parse_channel_conn_count<E: serde::de::Error>(
 
 fn parse_order_response<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
+) -> Result<OKXWsFrame, E> {
     let op: OKXWsOperation = obj
         .get("op")
         .cloned()
@@ -353,7 +413,7 @@ fn parse_order_response<E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid data: {e}")))?
         .unwrap_or_default();
 
-    Ok(OKXWsMessage::OrderResponse {
+    Ok(OKXWsFrame::OrderResponse {
         id: obj.get("id").and_then(|v| v.as_str()).map(String::from),
         op,
         code: obj
@@ -372,7 +432,7 @@ fn parse_order_response<E: serde::de::Error>(
 
 fn parse_book_data<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
+) -> Result<OKXWsFrame, E> {
     let arg: OKXWebSocketArg = obj
         .get("arg")
         .cloned()
@@ -397,12 +457,12 @@ fn parse_book_data<E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid data: {e}")))?
         .ok_or_else(|| E::missing_field("data"))?;
 
-    Ok(OKXWsMessage::BookData { arg, action, data })
+    Ok(OKXWsFrame::BookData { arg, action, data })
 }
 
 fn parse_data<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
+) -> Result<OKXWsFrame, E> {
     let arg: OKXWebSocketArg = obj
         .get("arg")
         .cloned()
@@ -416,13 +476,13 @@ fn parse_data<E: serde::de::Error>(
         .cloned()
         .ok_or_else(|| E::missing_field("data"))?;
 
-    Ok(OKXWsMessage::Data { arg, data })
+    Ok(OKXWsFrame::Data { arg, data })
 }
 
 fn parse_error<E: serde::de::Error>(
     obj: &serde_json::Map<String, serde_json::Value>,
-) -> Result<OKXWsMessage, E> {
-    Ok(OKXWsMessage::Error {
+) -> Result<OKXWsFrame, E> {
+    Ok(OKXWsFrame::Error {
         code: obj
             .get("code")
             .and_then(|v| v.as_str())
@@ -489,6 +549,9 @@ pub struct OKXTickerMsg {
     /// Timestamp of the data generation, Unix timestamp format in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub ts: u64,
+    /// Order source for ELP liquidity identification.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Represents a single order in the order book.
@@ -542,21 +605,51 @@ pub struct OKXTradeMsg {
     /// Trade timestamp, Unix timestamp format in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub ts: u64,
+    /// Order source (0: normal, 1: ELP).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Sequence ID for trade events.
+    #[serde(default)]
+    pub seq_id: Option<u64>,
 }
 
 /// Funding rate data for perpetual swaps.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OKXFundingRateMsg {
+    /// Instrument type.
+    #[serde(default)]
+    pub inst_type: Option<OKXInstrumentType>,
     /// Instrument ID.
     pub inst_id: Ustr,
     /// Current funding rate.
     pub funding_rate: Ustr,
     /// Predicted next funding rate.
     pub next_funding_rate: Ustr,
-    /// Next funding time, Unix timestamp format in milliseconds.
+    /// Minimum funding rate.
+    #[serde(default)]
+    pub min_funding_rate: Option<String>,
+    /// Maximum funding rate.
+    #[serde(default)]
+    pub max_funding_rate: Option<String>,
+    /// Settlement state.
+    #[serde(default)]
+    pub sett_state: OKXSettlementState,
+    /// Settlement funding rate.
+    #[serde(default)]
+    pub sett_funding_rate: Option<String>,
+    /// Current premium.
+    #[serde(default)]
+    pub premium: Option<String>,
+    /// Funding rate calculation method.
+    #[serde(default)]
+    pub method: Option<String>,
+    /// Funding time, Unix timestamp format in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub funding_time: u64,
+    /// Next funding time, Unix timestamp format in milliseconds (used to determine funding interval).
+    #[serde(deserialize_with = "deserialize_string_to_u64")]
+    pub next_funding_time: u64,
     /// Message timestamp, Unix timestamp format in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub ts: u64,
@@ -656,6 +749,9 @@ pub struct OKXOpenInterestMsg {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OKXOptionSummaryMsg {
+    /// Instrument type.
+    #[serde(default)]
+    pub inst_type: Option<OKXInstrumentType>,
     /// Instrument ID.
     pub inst_id: Ustr,
     /// Underlying.
@@ -668,13 +764,17 @@ pub struct OKXOptionSummaryMsg {
     pub theta: String,
     /// Vega.
     pub vega: String,
-    /// Black-Scholes implied volatility delta.
+    /// Black-Scholes delta.
+    #[serde(alias = "deltaBS")]
     pub delta_bs: String,
-    /// Black-Scholes implied volatility gamma.
+    /// Black-Scholes gamma.
+    #[serde(alias = "gammaBS")]
     pub gamma_bs: String,
-    /// Black-Scholes implied volatility theta.
+    /// Black-Scholes theta.
+    #[serde(alias = "thetaBS")]
     pub theta_bs: String,
-    /// Black-Scholes implied volatility vega.
+    /// Black-Scholes vega.
+    #[serde(alias = "vegaBS")]
     pub vega_bs: String,
     /// Realized volatility.
     pub real_vol: String,
@@ -686,6 +786,15 @@ pub struct OKXOptionSummaryMsg {
     pub mark_vol: String,
     /// Leverage.
     pub lever: String,
+    /// Forward price.
+    #[serde(default)]
+    pub fwd_px: Option<String>,
+    /// Mark price.
+    #[serde(default)]
+    pub mark_px: Option<String>,
+    /// Volatility level.
+    #[serde(default)]
+    pub vol_lv: Option<String>,
     /// Timestamp of the data generation, Unix timestamp format in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub ts: u64,
@@ -728,6 +837,17 @@ pub struct OKXStatusMsg {
     pub ts: u64,
 }
 
+pub use crate::common::models::OKXAttachedAlgoOrd;
+
+/// Linked algo order metadata from order push updates.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OKXLinkedAlgoOrd {
+    /// Parent algo order ID.
+    #[serde(default)]
+    pub algo_id: String,
+}
+
 /// Order update message from WebSocket orders channel.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -735,6 +855,9 @@ pub struct OKXOrderMsg {
     /// Accumulated filled size.
     #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
     pub acc_fill_sz: Option<String>,
+    /// Algo order ID.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub algo_id: Option<String>,
     /// Average price.
     pub avg_px: String,
     /// Creation time, Unix timestamp in milliseconds.
@@ -755,11 +878,44 @@ pub struct OKXOrderMsg {
     /// Parent algo client order ID if present.
     #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
     pub algo_cl_ord_id: Option<String>,
-    /// Fee.
+    /// Attached child client order ID if surfaced at the top level.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub attach_algo_cl_ord_id: Option<String>,
+    /// Attached TP/SL child order metadata.
+    #[serde(default)]
+    pub attach_algo_ords: Vec<OKXAttachedAlgoOrd>,
+    /// Fee (cumulative).
     #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
     pub fee: Option<String>,
     /// Fee currency.
     pub fee_ccy: Ustr,
+    /// Fee for this fill.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_fee: Option<String>,
+    /// Fill fee currency.
+    #[serde(default, deserialize_with = "deserialize_empty_ustr_as_none")]
+    pub fill_fee_ccy: Option<Ustr>,
+    /// Mark price at fill time.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_mark_px: Option<String>,
+    /// Mark volatility at fill time (options).
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_mark_vol: Option<String>,
+    /// Implied volatility at fill time (options).
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_px_vol: Option<String>,
+    /// Fill price in USD (options).
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_px_usd: Option<String>,
+    /// Forward price at fill time (options).
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_fwd_px: Option<String>,
+    /// Fill notional in USD.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_notional_usd: Option<String>,
+    /// PnL for this fill.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub fill_pnl: Option<String>,
     /// Fill price.
     pub fill_px: String,
     /// Fill size.
@@ -771,8 +927,17 @@ pub struct OKXOrderMsg {
     pub inst_id: Ustr,
     /// Instrument type.
     pub inst_type: OKXInstrumentType,
+    /// Whether the TP order is a limit order.
+    #[serde(default)]
+    pub is_tp_limit: Option<String>,
     /// Leverage.
     pub lever: String,
+    /// Linked algo order metadata.
+    #[serde(default)]
+    pub linked_algo_ord: Option<OKXLinkedAlgoOrd>,
+    /// Notional value in USD.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub notional_usd: Option<String>,
     /// Order ID.
     pub ord_id: Ustr,
     /// Order type.
@@ -784,26 +949,86 @@ pub struct OKXOrderMsg {
     /// Price (algo orders use ordPx instead).
     #[serde(default)]
     pub px: String,
+    /// Price type (options).
+    #[serde(default)]
+    pub px_type: OKXPriceType,
+    /// Price in USD (options).
+    #[serde(default)]
+    pub px_usd: Option<String>,
+    /// Price in volatility (options).
+    #[serde(default)]
+    pub px_vol: Option<String>,
+    /// Quick margin type.
+    #[serde(default)]
+    pub quick_mgn_type: OKXQuickMarginType,
+    /// Rebate amount.
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub rebate: Option<String>,
+    /// Rebate currency.
+    #[serde(default, deserialize_with = "deserialize_empty_ustr_as_none")]
+    pub rebate_ccy: Option<Ustr>,
     /// Reduce only flag.
     pub reduce_only: String,
     /// Side.
     pub side: OKXSide,
+    /// Stop-loss order price.
+    #[serde(default)]
+    pub sl_ord_px: Option<String>,
+    /// Stop-loss trigger price.
+    #[serde(default)]
+    pub sl_trigger_px: Option<String>,
+    /// Stop-loss trigger price type (last, mark, index).
+    #[serde(default)]
+    pub sl_trigger_px_type: Option<OKXTriggerType>,
+    /// Order source.
+    #[serde(default)]
+    pub source: Option<String>,
     /// Order state.
     pub state: OKXOrderStatus,
+    /// Self-trade prevention ID.
+    #[serde(default)]
+    pub stp_id: Option<String>,
+    /// Self-trade prevention mode.
+    #[serde(default)]
+    pub stp_mode: OKXSelfTradePreventionMode,
     /// Execution type.
     pub exec_type: OKXExecType,
     /// Size.
     pub sz: String,
+    /// Order tag.
+    #[serde(default)]
+    pub tag: Option<String>,
     /// Trade mode.
     pub td_mode: OKXTradeMode,
     /// Target currency (base_ccy or quote_ccy). Empty for margin modes.
     #[serde(default, deserialize_with = "deserialize_target_currency_as_none")]
     pub tgt_ccy: Option<OKXTargetCurrency>,
+    /// Take-profit order price.
+    #[serde(default)]
+    pub tp_ord_px: Option<String>,
+    /// Take-profit trigger price.
+    #[serde(default)]
+    pub tp_trigger_px: Option<String>,
+    /// Take-profit trigger price type (last, mark, index).
+    #[serde(default)]
+    pub tp_trigger_px_type: Option<OKXTriggerType>,
     /// Trade ID.
     pub trade_id: String,
     /// Last update time, Unix timestamp in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub u_time: u64,
+    /// Amend result code.
+    #[serde(default)]
+    pub amend_result: Option<String>,
+    /// Request ID (for amend responses).
+    #[serde(default)]
+    pub req_id: Option<String>,
+    /// Error code.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Error message.
+    #[serde(default)]
+    pub msg: Option<String>,
 }
 
 /// Represents an algo order message from WebSocket updates.
@@ -823,8 +1048,8 @@ pub struct OKXAlgoOrderMsg {
     pub inst_id: Ustr,
     /// Instrument type.
     pub inst_type: OKXInstrumentType,
-    /// Order type (always "trigger" for conditional orders).
-    pub ord_type: OKXOrderType,
+    /// Algo order type (trigger, move_order_stop, oco, iceberg, twap).
+    pub ord_type: OKXAlgoOrderType,
     /// Order state.
     pub state: OKXOrderStatus,
     /// Side.
@@ -832,24 +1057,53 @@ pub struct OKXAlgoOrderMsg {
     /// Position side.
     pub pos_side: OKXPositionSide,
     /// Size.
+    #[serde(default)]
     pub sz: String,
     /// Trigger price.
+    #[serde(default)]
     pub trigger_px: String,
     /// Trigger price type (last, mark, index).
+    #[serde(default)]
     pub trigger_px_type: OKXTriggerType,
+    /// Stop-loss trigger price for conditional close orders.
+    #[serde(default)]
+    pub sl_trigger_px: String,
+    /// Stop-loss order price for conditional close orders.
+    #[serde(default)]
+    pub sl_ord_px: String,
+    /// Stop-loss trigger price type (last, mark, index).
+    #[serde(default)]
+    pub sl_trigger_px_type: OKXTriggerType,
+    /// Take-profit trigger price for conditional close orders.
+    #[serde(default)]
+    pub tp_trigger_px: String,
+    /// Take-profit order price for conditional close orders.
+    #[serde(default)]
+    pub tp_ord_px: String,
+    /// Take-profit trigger price type (last, mark, index).
+    #[serde(default)]
+    pub tp_trigger_px_type: OKXTriggerType,
     /// Order price (-1 for market orders).
+    #[serde(default)]
     pub ord_px: String,
     /// Trade mode.
     pub td_mode: OKXTradeMode,
     /// Leverage.
     pub lever: String,
     /// Reduce only flag.
+    #[serde(default)]
     pub reduce_only: String,
+    /// Fraction of the position to close for close-order algos.
+    #[serde(default)]
+    pub close_fraction: String,
     /// Actual filled price.
+    #[serde(default)]
     pub actual_px: String,
     /// Actual filled size.
+    #[serde(default)]
     pub actual_sz: String,
     /// Notional USD value.
+    #[serde(default)]
     pub notional_usd: String,
     /// Creation time, Unix timestamp in milliseconds.
     #[serde(deserialize_with = "deserialize_string_to_u64")]
@@ -858,10 +1112,64 @@ pub struct OKXAlgoOrderMsg {
     #[serde(deserialize_with = "deserialize_string_to_u64")]
     pub u_time: u64,
     /// Trigger time (empty until triggered).
+    #[serde(default)]
     pub trigger_time: String,
     /// Tag.
     #[serde(default)]
     pub tag: String,
+    /// Callback price ratio for trailing stop (e.g. "0.01" for 1%).
+    #[serde(default)]
+    pub callback_ratio: String,
+    /// Callback price spread for trailing stop (absolute distance).
+    #[serde(default)]
+    pub callback_spread: String,
+    /// Activation price for trailing stop.
+    #[serde(default)]
+    pub active_px: String,
+    /// Currency.
+    #[serde(default, deserialize_with = "deserialize_empty_ustr_as_none")]
+    pub ccy: Option<Ustr>,
+    /// Target currency (base_ccy or quote_ccy).
+    #[serde(default, deserialize_with = "deserialize_target_currency_as_none")]
+    pub tgt_ccy: Option<OKXTargetCurrency>,
+    /// Fee amount.
+    #[serde(default)]
+    pub fee: Option<String>,
+    /// Fee currency.
+    #[serde(default, deserialize_with = "deserialize_empty_ustr_as_none")]
+    pub fee_ccy: Option<Ustr>,
+    /// Trigger order type (fok, ioc).
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
+    pub advance_ord_type: Option<String>,
+}
+
+/// Parameters for WebSocket place order operation.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Builder)]
+#[builder(default)]
+#[builder(setter(into, strip_option))]
+#[serde(rename_all = "camelCase")]
+pub struct WsAttachAlgoOrdParams {
+    /// Attached algo client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach_algo_cl_ord_id: Option<String>,
+    /// Stop-loss trigger price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sl_trigger_px: Option<String>,
+    /// Stop-loss order price (`-1` for market).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sl_ord_px: Option<String>,
+    /// Stop-loss trigger price type (last, mark, index).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sl_trigger_px_type: Option<OKXTriggerType>,
+    /// Take-profit trigger price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tp_trigger_px: Option<String>,
+    /// Take-profit order price (`-1` for market).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tp_ord_px: Option<String>,
+    /// Take-profit trigger price type (last, mark, index).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tp_trigger_px_type: Option<OKXTriggerType>,
 }
 
 /// Parameters for WebSocket place order operation.
@@ -873,8 +1181,8 @@ pub struct WsPostOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inst_type: Option<OKXInstrumentType>,
-    /// Instrument ID, e.g. "BTC-USDT".
-    pub inst_id: Ustr,
+    /// Instrument ID code (numeric). Replaced `instId` for WebSocket order operations.
+    pub inst_id_code: u64,
     /// Trading mode: cash, isolated, cross.
     pub td_mode: OKXTradeMode,
     /// Margin currency (only for isolated margin).
@@ -899,6 +1207,15 @@ pub struct WsPostOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub px: Option<String>,
+    /// Price in USD, only applicable to options. Mutually exclusive with `px` and `px_vol`.
+    #[builder(default)]
+    #[serde(rename = "pxUsd", skip_serializing_if = "Option::is_none")]
+    pub px_usd: Option<String>,
+    /// Price in implied volatility (1 = 100%), only applicable to options.
+    /// Mutually exclusive with `px` and `px_usd`.
+    #[builder(default)]
+    #[serde(rename = "pxVol", skip_serializing_if = "Option::is_none")]
+    pub px_vol: Option<String>,
     /// Reduce-only flag.
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -915,6 +1232,10 @@ pub struct WsPostOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// Attached TP/SL orders submitted with the parent order.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach_algo_ords: Option<Vec<WsAttachAlgoOrdParams>>,
 }
 
 /// Parameters for WebSocket cancel order operation (instType not included).
@@ -923,8 +1244,8 @@ pub struct WsPostOrderParams {
 #[builder(setter(into, strip_option))]
 #[serde(rename_all = "camelCase")]
 pub struct WsCancelOrderParams {
-    /// Instrument ID, e.g. "BTC-USDT".
-    pub inst_id: Ustr,
+    /// Instrument ID code (numeric). Replaced `instId` for WebSocket order operations.
+    pub inst_id_code: u64,
     /// Exchange-assigned order ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ord_id: Option<String>,
@@ -951,8 +1272,8 @@ pub struct WsMassCancelParams {
 #[builder(setter(into, strip_option))]
 #[serde(rename_all = "camelCase")]
 pub struct WsAmendOrderParams {
-    /// Instrument ID, e.g. "BTC-USDT".
-    pub inst_id: Ustr,
+    /// Instrument ID code (numeric). Replaced `instId` for WebSocket order operations.
+    pub inst_id_code: u64,
     /// Exchange-assigned order ID (optional if using clOrdId).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ord_id: Option<String>,
@@ -965,6 +1286,13 @@ pub struct WsAmendOrderParams {
     /// New order price (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_px: Option<String>,
+    /// New price in USD, only applicable to options. Must match the pricing mode used at placement.
+    #[serde(rename = "newPxUsd", skip_serializing_if = "Option::is_none")]
+    pub new_px_usd: Option<String>,
+    /// New price in implied volatility, only applicable to options.
+    /// Must match the pricing mode used at placement.
+    #[serde(rename = "newPxVol", skip_serializing_if = "Option::is_none")]
+    pub new_px_vol: Option<String>,
     /// New order size (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_sz: Option<String>,
@@ -975,8 +1303,8 @@ pub struct WsAmendOrderParams {
 #[builder(setter(into, strip_option))]
 #[serde(rename_all = "camelCase")]
 pub struct WsPostAlgoOrderParams {
-    /// Instrument ID, e.g. "BTC-USDT".
-    pub inst_id: Ustr,
+    /// Instrument ID code (numeric). Replaced `instId` for WebSocket order operations.
+    pub inst_id_code: u64,
     /// Trading mode: cash, isolated, cross.
     pub td_mode: OKXTradeMode,
     /// Order side: buy or sell.
@@ -1012,6 +1340,18 @@ pub struct WsPostAlgoOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// Callback rate for trailing stop (e.g., "0.01" for 1%).
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_ratio: Option<String>,
+    /// Callback spread for trailing stop (fixed price distance).
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_spread: Option<String>,
+    /// Activation price for trailing stop.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_px: Option<String>,
 }
 
 /// Parameters for WebSocket cancel algo order operation.
@@ -1019,8 +1359,8 @@ pub struct WsPostAlgoOrderParams {
 #[builder(setter(into, strip_option))]
 #[serde(rename_all = "camelCase")]
 pub struct WsCancelAlgoOrderParams {
-    /// Instrument ID, e.g. "BTC-USDT".
-    pub inst_id: Ustr,
+    /// Instrument ID code (numeric). Replaced `instId` for WebSocket order operations.
+    pub inst_id_code: u64,
     /// Algo order ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algo_id: Option<String>,
@@ -1082,10 +1422,10 @@ mod tests {
     fn test_deserialize_subscribe_confirmation() {
         let json_str = r#"{"event":"subscribe","arg":{"channel":"instruments","instType":"SPOT"},"connId":"380cfa6a"}"#;
 
-        let result: Result<OKXWsMessage, _> = serde_json::from_str(json_str);
+        let result: Result<OKXWsFrame, _> = serde_json::from_str(json_str);
         match result {
             Ok(msg) => {
-                if let OKXWsMessage::Subscription {
+                if let OKXWsFrame::Subscription {
                     event,
                     arg,
                     conn_id,
@@ -1109,10 +1449,10 @@ mod tests {
     fn test_deserialize_subscribe_with_inst_id() {
         let json_str = r#"{"event":"subscribe","arg":{"channel":"candle1m","instId":"ETH-USDT"},"connId":"358602f5"}"#;
 
-        let result: Result<OKXWsMessage, _> = serde_json::from_str(json_str);
+        let result: Result<OKXWsFrame, _> = serde_json::from_str(json_str);
         match result {
             Ok(msg) => {
-                if let OKXWsMessage::Subscription {
+                if let OKXWsFrame::Subscription {
                     event,
                     arg,
                     conn_id,
@@ -1153,9 +1493,9 @@ mod tests {
     #[rstest]
     fn test_order_response_with_enum_operation() {
         let json_str = r#"{"id":"req-123","op":"order","code":"0","msg":"","data":[]}"#;
-        let result: Result<OKXWsMessage, _> = serde_json::from_str(json_str);
+        let result: Result<OKXWsFrame, _> = serde_json::from_str(json_str);
         match result {
-            Ok(OKXWsMessage::OrderResponse {
+            Ok(OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1173,9 +1513,9 @@ mod tests {
         }
 
         let json_str = r#"{"id":"cancel-456","op":"cancel-order","code":"50001","msg":"Order not found","data":[]}"#;
-        let result: Result<OKXWsMessage, _> = serde_json::from_str(json_str);
+        let result: Result<OKXWsFrame, _> = serde_json::from_str(json_str);
         match result {
-            Ok(OKXWsMessage::OrderResponse {
+            Ok(OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1193,9 +1533,9 @@ mod tests {
         }
 
         let json_str = r#"{"id":"amend-789","op":"amend-order","code":"50002","msg":"Invalid price","data":[]}"#;
-        let result: Result<OKXWsMessage, _> = serde_json::from_str(json_str);
+        let result: Result<OKXWsFrame, _> = serde_json::from_str(json_str);
         match result {
-            Ok(OKXWsMessage::OrderResponse {
+            Ok(OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1242,10 +1582,10 @@ mod tests {
             "data": [{"sMsg": "Order placed successfully"}]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(success_response).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(success_response).unwrap();
 
         match parsed {
-            OKXWsMessage::OrderResponse {
+            OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1269,10 +1609,10 @@ mod tests {
             "data": [{"sMsg": "Order with client order ID not found"}]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(failure_response).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(failure_response).unwrap();
 
         match parsed {
-            OKXWsMessage::OrderResponse {
+            OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1300,10 +1640,10 @@ mod tests {
             "connId": "a4d3ae55"
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(subscription_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(subscription_json).unwrap();
 
         match parsed {
-            OKXWsMessage::Subscription {
+            OKXWsFrame::Subscription {
                 event,
                 arg,
                 conn_id,
@@ -1330,10 +1670,10 @@ mod tests {
             "connId": "a4d3ae55"
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(login_success).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(login_success).unwrap();
 
         match parsed {
-            OKXWsMessage::Login {
+            OKXWsFrame::Login {
                 event,
                 code,
                 msg,
@@ -1355,10 +1695,10 @@ mod tests {
             "msg": "Invalid request"
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(error_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(error_json).unwrap();
 
         match parsed {
-            OKXWsMessage::Error { code, msg } => {
+            OKXWsFrame::Error { code, msg } => {
                 assert_eq!(code, "60012");
                 assert_eq!(msg, "Invalid request");
             }
@@ -1375,10 +1715,10 @@ mod tests {
             "msg": "Invalid sign"
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(error_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(error_json).unwrap();
 
         match parsed {
-            OKXWsMessage::Error { code, msg } => {
+            OKXWsFrame::Error { code, msg } => {
                 assert_eq!(code, "60018");
                 assert_eq!(msg, "Invalid sign");
             }
@@ -1397,10 +1737,10 @@ mod tests {
             "connId": "a4d3ae55"
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(error_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(error_json).unwrap();
 
         match parsed {
-            OKXWsMessage::Error { code, msg } => {
+            OKXWsFrame::Error { code, msg } => {
                 assert_eq!(code, "60012");
                 assert_eq!(msg, "Invalid request: channel not found");
             }
@@ -1480,10 +1820,10 @@ mod tests {
         ];
 
         for (response_json, expected_msg) in responses {
-            let parsed: OKXWsMessage = serde_json::from_str(response_json).unwrap();
+            let parsed: OKXWsFrame = serde_json::from_str(response_json).unwrap();
 
             match parsed {
-                OKXWsMessage::OrderResponse {
+                OKXWsFrame::OrderResponse {
                     id: _,
                     op: _,
                     code,
@@ -1524,10 +1864,10 @@ mod tests {
             }]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(book_data_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(book_data_json).unwrap();
 
         match parsed {
-            OKXWsMessage::BookData { arg, action, data } => {
+            OKXWsFrame::BookData { arg, action, data } => {
                 assert_eq!(arg.channel, OKXWsChannel::Books);
                 assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT")));
                 assert_eq!(
@@ -1557,10 +1897,10 @@ mod tests {
             }]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(data_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(data_json).unwrap();
 
         match parsed {
-            OKXWsMessage::Data { arg, data } => {
+            OKXWsFrame::Data { arg, data } => {
                 assert_eq!(arg.channel, OKXWsChannel::Trades);
                 assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT")));
                 assert!(data.is_array());
@@ -1618,10 +1958,10 @@ mod tests {
             "data": [{"sMsg": "Order placed successfully"}]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(order_response_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(order_response_json).unwrap();
 
         match parsed {
-            OKXWsMessage::OrderResponse {
+            OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1648,10 +1988,10 @@ mod tests {
             "data": [{"sMsg": "Order with client order ID not found"}]
         }"#;
 
-        let parsed: OKXWsMessage = serde_json::from_str(order_response_json).unwrap();
+        let parsed: OKXWsFrame = serde_json::from_str(order_response_json).unwrap();
 
         match parsed {
-            OKXWsMessage::OrderResponse {
+            OKXWsFrame::OrderResponse {
                 id,
                 op,
                 code,
@@ -1690,5 +2030,217 @@ mod tests {
         assert_eq!(parsed["op"], "order");
         assert!(parsed["args"].is_array());
         assert_eq!(parsed["args"].as_array().unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn test_ws_post_order_params_serializes_inst_id_code() {
+        use super::WsPostOrderParamsBuilder;
+        use crate::common::enums::{OKXOrderType, OKXSide, OKXTradeMode};
+
+        let params = WsPostOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .td_mode(OKXTradeMode::Cross)
+            .side(OKXSide::Buy)
+            .ord_type(OKXOrderType::Limit)
+            .sz("0.01".to_string())
+            .px("50000".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"instIdCode\":10459"));
+        assert!(!json.contains("\"instId\""));
+    }
+
+    #[rstest]
+    fn test_ws_post_order_params_serializes_attached_tp_sl() {
+        use super::{WsAttachAlgoOrdParamsBuilder, WsPostOrderParamsBuilder};
+        use crate::common::enums::{OKXOrderType, OKXSide, OKXTradeMode, OKXTriggerType};
+
+        let params = WsPostOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .td_mode(OKXTradeMode::Cross)
+            .side(OKXSide::Buy)
+            .ord_type(OKXOrderType::Limit)
+            .sz("0.01".to_string())
+            .px("50000".to_string())
+            .attach_algo_ords(vec![
+                WsAttachAlgoOrdParamsBuilder::default()
+                    .attach_algo_cl_ord_id("O-bracket-sl")
+                    .sl_trigger_px("39000")
+                    .sl_ord_px("-1")
+                    .sl_trigger_px_type(OKXTriggerType::Last)
+                    .build()
+                    .unwrap(),
+                WsAttachAlgoOrdParamsBuilder::default()
+                    .attach_algo_cl_ord_id("O-bracket-tp")
+                    .tp_trigger_px("41000")
+                    .tp_ord_px("-1")
+                    .tp_trigger_px_type(OKXTriggerType::Last)
+                    .build()
+                    .unwrap(),
+            ])
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"attachAlgoOrds\""));
+        assert!(json.contains("\"attachAlgoClOrdId\":\"O-bracket-sl\""));
+        assert!(json.contains("\"slTriggerPx\":\"39000\""));
+        assert!(json.contains("\"slOrdPx\":\"-1\""));
+        assert!(json.contains("\"attachAlgoClOrdId\":\"O-bracket-tp\""));
+        assert!(json.contains("\"tpTriggerPx\":\"41000\""));
+        assert!(json.contains("\"tpOrdPx\":\"-1\""));
+    }
+
+    #[rstest]
+    fn test_ws_cancel_order_params_serializes_inst_id_code() {
+        use super::WsCancelOrderParamsBuilder;
+
+        let params = WsCancelOrderParamsBuilder::default()
+            .inst_id_code(10461u64)
+            .ord_id("12345678".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"instIdCode\":10461"));
+        assert!(!json.contains("\"instId\""));
+        assert!(json.contains("\"ordId\":\"12345678\""));
+    }
+
+    #[rstest]
+    fn test_ws_amend_order_params_serializes_inst_id_code() {
+        use super::WsAmendOrderParamsBuilder;
+
+        let params = WsAmendOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .cl_ord_id("client123".to_string())
+            .new_px("51000".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"instIdCode\":10459"));
+        assert!(!json.contains("\"instId\""));
+        assert!(json.contains("\"newPx\":\"51000\""));
+    }
+
+    #[rstest]
+    fn test_ws_post_algo_order_params_serializes_inst_id_code() {
+        use super::WsPostAlgoOrderParamsBuilder;
+        use crate::common::enums::{OKXAlgoOrderType, OKXSide, OKXTradeMode, OKXTriggerType};
+
+        let params = WsPostAlgoOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .td_mode(OKXTradeMode::Cross)
+            .side(OKXSide::Buy)
+            .ord_type(OKXAlgoOrderType::Trigger)
+            .sz("0.01".to_string())
+            .trigger_px("48000".to_string())
+            .trigger_px_type(OKXTriggerType::Last)
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"instIdCode\":10459"));
+        assert!(!json.contains("\"instId\""));
+        assert!(json.contains("\"triggerPx\":\"48000\""));
+    }
+
+    #[rstest]
+    fn test_ws_cancel_algo_order_params_serializes_inst_id_code() {
+        let params = WsCancelAlgoOrderParams {
+            inst_id_code: 10459,
+            algo_id: Some("987654321".to_string()),
+            algo_cl_ord_id: None,
+        };
+
+        let json = serde_json::to_string(&params).unwrap();
+
+        assert!(json.contains("\"instIdCode\":10459"));
+        assert!(!json.contains("\"instId\""));
+        assert!(json.contains("\"algoId\":\"987654321\""));
+    }
+
+    #[rstest]
+    fn test_ws_post_order_params_serializes_px_usd() {
+        use super::WsPostOrderParamsBuilder;
+        use crate::common::enums::{OKXOrderType, OKXSide, OKXTradeMode};
+
+        let params = WsPostOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .td_mode(OKXTradeMode::Cross)
+            .side(OKXSide::Buy)
+            .ord_type(OKXOrderType::Limit)
+            .sz("1".to_string())
+            .px_usd("100.5".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"pxUsd\":\"100.5\""));
+        assert!(!json.contains("\"pxVol\""));
+        assert!(!json.contains("\"px\":"));
+    }
+
+    #[rstest]
+    fn test_ws_post_order_params_serializes_px_vol() {
+        use super::WsPostOrderParamsBuilder;
+        use crate::common::enums::{OKXOrderType, OKXSide, OKXTradeMode};
+
+        let params = WsPostOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .td_mode(OKXTradeMode::Cross)
+            .side(OKXSide::Buy)
+            .ord_type(OKXOrderType::Limit)
+            .sz("1".to_string())
+            .px_vol("0.55".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"pxVol\":\"0.55\""));
+        assert!(!json.contains("\"pxUsd\""));
+        assert!(!json.contains("\"px\":"));
+    }
+
+    #[rstest]
+    fn test_ws_amend_order_params_serializes_new_px_usd() {
+        use super::WsAmendOrderParamsBuilder;
+
+        let params = WsAmendOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .cl_ord_id("client123".to_string())
+            .new_px_usd("105.0".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"newPxUsd\":\"105.0\""));
+        assert!(!json.contains("\"newPx\":"));
+        assert!(!json.contains("\"newPxVol\""));
+    }
+
+    #[rstest]
+    fn test_ws_amend_order_params_serializes_new_px_vol() {
+        use super::WsAmendOrderParamsBuilder;
+
+        let params = WsAmendOrderParamsBuilder::default()
+            .inst_id_code(10459u64)
+            .cl_ord_id("client123".to_string())
+            .new_px_vol("0.60".to_string())
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"newPxVol\":\"0.60\""));
+        assert!(!json.contains("\"newPx\":"));
+        assert!(!json.contains("\"newPxUsd\""));
     }
 }

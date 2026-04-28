@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -215,6 +215,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
             return  # Done
 
         scheduled_sizes: list[Quantity] = [qty_per_interval] * num_intervals
+
         if qty_remainder:
             scheduled_sizes.append(instrument.make_qty(qty_remainder))
 

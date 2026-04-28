@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,6 +18,8 @@ from nautilus_trader.backtest.data_client import BacktestMarketDataClient
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.data.messages import DataResponse
+from nautilus_trader.data.messages import RequestForwardPrices
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.model.data import OrderBookDepth10
@@ -259,6 +261,31 @@ class TestBacktestMarketDataClient:
         # Act & Assert - should not raise an exception (logs error instead)
         self.client.subscribe_order_book_depth(command)
 
+    def test_request_forward_prices_emits_empty_response(self):
+        # Arrange
+        responses = []
+        self.msgbus.register(endpoint="DataEngine.response", handler=responses.append)
+
+        request = RequestForwardPrices(
+            underlying="ESM4",
+            client_id=self.client.id,
+            venue=Venue("XCME"),
+            callback=None,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        # Act
+        self.client.request_forward_prices(request)
+
+        # Assert
+        assert len(responses) == 1
+        response = responses[0]
+        assert isinstance(response, DataResponse)
+        assert response.correlation_id == request.id
+        assert response.data == []
+        assert response.params == {}
+
     def test_unsubscribe_order_book_depth(self):
         # Arrange
         audusd = TestInstrumentProvider.default_fx_ccy("AUD/USD")
@@ -313,7 +340,7 @@ class TestBacktestMarketDataClientFuturesSpread:
         self.spread_instrument_id = new_generic_spread_id(
             [
                 (self.future1.id, -1),  # Short front month
-                (self.future2.id, 1),   # Long back month
+                (self.future2.id, 1),  # Long back month
             ],
         )
 
@@ -354,7 +381,8 @@ class TestBacktestMarketDataClientFuturesSpread:
         assert spread_instrument.asset_class == self.future1.asset_class
         # Should use minimum expiration
         assert spread_instrument.expiration_ns == min(
-            self.future1.expiration_ns, self.future2.expiration_ns,
+            self.future1.expiration_ns,
+            self.future2.expiration_ns,
         )
 
     def test_request_instrument_futures_spread_selects_minimum_price_increment(self):

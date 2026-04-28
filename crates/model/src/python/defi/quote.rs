@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,6 +18,7 @@ use pyo3::prelude::*;
 use crate::defi::pool_analysis::quote::SwapQuote;
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl SwapQuote {
     #[getter]
     #[pyo3(name = "amount0")]
@@ -85,21 +86,30 @@ impl SwapQuote {
         self.crossed_ticks.len()
     }
 
+    /// Determines swap direction from amount signs.
+    ///
+    /// Returns `true` if swapping token0 for token1 (`zero_for_one`).
     #[pyo3(name = "zero_for_one")]
     fn py_zero_for_one(&self) -> bool {
         self.zero_for_one()
     }
 
+    /// Returns the total fees paid in input token(LP fees + protocol fees).
     #[pyo3(name = "total_fee")]
     fn py_total_fee(&self) -> String {
         self.total_fee().to_string()
     }
 
+    /// Returns the number of tick boundaries crossed during this swap.
+    ///
+    /// This equals the length of the `crossed_ticks` vector and indicates
+    /// how much liquidity the swap traversed.
     #[pyo3(name = "total_crossed_ticks")]
     fn py_total_crossed_ticks(&self) -> u32 {
         self.total_crossed_ticks()
     }
 
+    /// Gets the output amount for the given swap direction.
     #[pyo3(name = "get_output_amount")]
     fn py_get_output_amount(&self) -> String {
         self.get_output_amount().to_string()

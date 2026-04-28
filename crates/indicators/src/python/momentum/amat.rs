@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,9 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl ArcherMovingAveragesTrends {
+    /// Creates a new `ArcherMovingAveragesTrends` instance.
     #[new]
     #[pyo3(signature = (fast_period, slow_period, signal_period, ma_type=None))]
     #[must_use]
@@ -89,6 +91,7 @@ impl ArcherMovingAveragesTrends {
         self.initialized
     }
 
+    /// Updates the indicator with a new raw price value.
     #[pyo3(name = "update_raw")]
     fn py_update_raw(&mut self, close: f64) {
         self.update_raw(close);

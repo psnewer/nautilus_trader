@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,10 +25,12 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl SocketConfig {
+    /// Configuration for TCP socket connection.
     #[new]
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (url, ssl, suffix, handler, heartbeat=None, reconnect_timeout_ms=10_000, reconnect_delay_initial_ms=2_000, reconnect_delay_max_ms=30_000, reconnect_backoff_factor=1.5, reconnect_jitter_ms=100, connection_max_retries=5, certs_dir=None, reconnect_max_attempts=None))]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[pyo3(signature = (url, ssl, suffix, handler, heartbeat=None, reconnect_timeout_ms=10_000, reconnect_delay_initial_ms=2_000, reconnect_delay_max_ms=30_000, reconnect_backoff_factor=1.5, reconnect_jitter_ms=100, connection_max_retries=5, reconnect_max_attempts=None, idle_timeout_ms=None, certs_dir=None))]
     fn py_new(
         url: String,
         ssl: bool,
@@ -41,8 +43,9 @@ impl SocketConfig {
         reconnect_backoff_factor: Option<f64>,
         reconnect_jitter_ms: Option<u64>,
         connection_max_retries: Option<u32>,
-        certs_dir: Option<String>,
         reconnect_max_attempts: Option<u32>,
+        idle_timeout_ms: Option<u64>,
+        certs_dir: Option<String>,
     ) -> Self {
         let mode = if ssl { Mode::Tls } else { Mode::Plain };
 
@@ -51,7 +54,7 @@ impl SocketConfig {
         let message_handler: TcpMessageHandler = std::sync::Arc::new(move |data: &[u8]| {
             Python::attach(|py| {
                 if let Err(e) = handler_clone.call1(py, (data,)) {
-                    tracing::error!("Error calling Python message handler: {e}");
+                    log::error!("Error calling Python message handler: {e}");
                 }
             });
         });
@@ -68,19 +71,17 @@ impl SocketConfig {
             reconnect_backoff_factor,
             reconnect_jitter_ms,
             connection_max_retries,
-            certs_dir,
             reconnect_max_attempts,
+            idle_timeout_ms,
+            certs_dir,
         }
     }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl SocketClient {
-    /// Create a socket client.
-    ///
-    /// # Errors
-    ///
-    /// - Throws an Exception if it is unable to make socket connection.
+    /// Connect to the server.
     #[staticmethod]
     #[pyo3(name = "connect")]
     #[pyo3(signature = (config, post_connection=None, post_reconnection=None, post_disconnection=None))]
@@ -97,7 +98,7 @@ impl SocketClient {
             std::sync::Arc::new(move || {
                 Python::attach(|py| {
                     if let Err(e) = callback_clone.call0(py) {
-                        tracing::error!("Error calling post_connection handler: {e}");
+                        log::error!("Error calling post_connection handler: {e}");
                     }
                 });
             }) as std::sync::Arc<dyn Fn() + Send + Sync>
@@ -108,7 +109,7 @@ impl SocketClient {
             std::sync::Arc::new(move || {
                 Python::attach(|py| {
                     if let Err(e) = callback_clone.call0(py) {
-                        tracing::error!("Error calling post_reconnection handler: {e}");
+                        log::error!("Error calling post_reconnection handler: {e}");
                     }
                 });
             }) as std::sync::Arc<dyn Fn() + Send + Sync>
@@ -119,7 +120,7 @@ impl SocketClient {
             std::sync::Arc::new(move || {
                 Python::attach(|py| {
                     if let Err(e) = callback_clone.call0(py) {
-                        tracing::error!("Error calling post_disconnection handler: {e}");
+                        log::error!("Error calling post_disconnection handler: {e}");
                     }
                 });
             }) as std::sync::Arc<dyn Fn() + Send + Sync>
@@ -137,62 +138,103 @@ impl SocketClient {
         })
     }
 
-    /// Check if the client is still alive.
+    /// Check if the client connection is active.
     ///
-    /// Even if the connection is disconnected the client will still be alive
-    /// and trying to reconnect.
-    ///
-    /// This is particularly useful for check why a `send` failed. It could
-    /// be because the connection disconnected and the client is still alive
-    /// and reconnecting. In such cases the send can be retried after some
-    /// delay
+    /// Returns `true` if the client is connected and has not been signalled to disconnect.
+    /// The client will automatically retry connection based on its configuration.
     #[pyo3(name = "is_active")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_is_active(slf: PyRef<'_, Self>) -> bool {
         slf.is_active()
     }
 
+    /// Check if the client is reconnecting.
+    ///
+    /// Returns `true` if the client lost connection and is attempting to reestablish it.
+    /// The client will automatically retry connection based on its configuration.
     #[pyo3(name = "is_reconnecting")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_is_reconnecting(slf: PyRef<'_, Self>) -> bool {
         slf.is_reconnecting()
     }
 
+    /// Check if the client is disconnecting.
+    ///
+    /// Returns `true` if the client is in disconnect mode.
     #[pyo3(name = "is_disconnecting")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_is_disconnecting(slf: PyRef<'_, Self>) -> bool {
         slf.is_disconnecting()
     }
 
+    /// Check if the client is closed.
+    ///
+    /// Returns `true` if the client has been explicitly disconnected or reached
+    /// maximum reconnection attempts. In this state, the client cannot be reused
+    /// and a new client must be created for further connections.
     #[pyo3(name = "is_closed")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_is_closed(slf: PyRef<'_, Self>) -> bool {
         slf.is_closed()
     }
 
     #[pyo3(name = "mode")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_mode(slf: PyRef<'_, Self>) -> String {
         slf.connection_mode().to_string()
     }
 
     /// Reconnect the client.
     #[pyo3(name = "reconnect")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_reconnect<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mode = slf.connection_mode.clone();
-        let mode_str = ConnectionMode::from_atomic(&mode).to_string();
-        tracing::debug!("Reconnect from mode {mode_str}");
+        let connection_mode = slf.connection_mode.clone();
+        let state_notify = slf.state_notify.clone();
+        let mode_str = ConnectionMode::from_atomic(&connection_mode).to_string();
+        log::debug!("Reconnect from mode {mode_str}");
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match ConnectionMode::from_atomic(&mode) {
+            match ConnectionMode::from_atomic(&connection_mode) {
                 ConnectionMode::Reconnect => {
-                    tracing::warn!("Cannot reconnect - socket already reconnecting");
+                    log::warn!("Cannot reconnect - socket already reconnecting");
                 }
                 ConnectionMode::Disconnect => {
-                    tracing::warn!("Cannot reconnect - socket disconnecting");
+                    log::warn!("Cannot reconnect - socket disconnecting");
                 }
                 ConnectionMode::Closed => {
-                    tracing::warn!("Cannot reconnect - socket closed");
+                    log::warn!("Cannot reconnect - socket closed");
                 }
-                _ => {
-                    mode.store(ConnectionMode::Reconnect.as_u8(), Ordering::SeqCst);
-                    while !ConnectionMode::from_atomic(&mode).is_active() {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                ConnectionMode::Active => {
+                    connection_mode.store(ConnectionMode::Reconnect.as_u8(), Ordering::SeqCst);
+                    state_notify.notify_one();
+
+                    let fallback_interval = Duration::from_millis(100);
+                    let timeout = tokio::time::timeout(Duration::from_secs(30), async {
+                        loop {
+                            let notified = state_notify.notified();
+
+                            let current = ConnectionMode::from_atomic(&connection_mode);
+                            if current.is_active() {
+                                return Ok(());
+                            }
+
+                            if current.is_closed() || current.is_disconnect() {
+                                return Err("Connection closed during reconnect");
+                            }
+
+                            tokio::select! {
+                                biased;
+                                () = notified => {}
+                                () = tokio::time::sleep(fallback_interval) => {}
+                            }
+                        }
+                    })
+                    .await;
+
+                    match timeout {
+                        Ok(Ok(())) => log::debug!("Reconnected successfully"),
+                        Ok(Err(e)) => log::warn!("Reconnect aborted: {e}"),
+                        Err(_) => log::error!("Reconnect timed out after 30s"),
                     }
                 }
             }
@@ -203,31 +245,38 @@ impl SocketClient {
 
     /// Close the client.
     ///
-    /// The connection is not completely closed until all references
-    /// to the client are gone and the client is dropped.
-    ///
-    /// # Safety
-    ///
-    /// - The client should not be used after closing it
-    /// - Any auto-reconnect job should be aborted before closing the client
+    /// Controller task will periodically check the disconnect mode
+    /// and shutdown the client if it is not alive.
     #[pyo3(name = "close")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_close<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mode = slf.connection_mode.clone();
-        let mode_str = ConnectionMode::from_atomic(&mode).to_string();
-        tracing::debug!("Close from mode {mode_str}");
+        let connection_mode = slf.connection_mode.clone();
+        let state_notify = slf.state_notify.clone();
+        let mode_str = ConnectionMode::from_atomic(&connection_mode).to_string();
+        log::debug!("Close from mode {mode_str}");
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match ConnectionMode::from_atomic(&mode) {
+            match ConnectionMode::from_atomic(&connection_mode) {
                 ConnectionMode::Closed => {
-                    tracing::debug!("Socket already closed");
+                    log::debug!("Socket already closed");
                 }
                 ConnectionMode::Disconnect => {
-                    tracing::debug!("Socket already disconnecting");
+                    log::debug!("Socket already disconnecting");
                 }
                 _ => {
-                    mode.store(ConnectionMode::Disconnect.as_u8(), Ordering::SeqCst);
-                    while !ConnectionMode::from_atomic(&mode).is_closed() {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    connection_mode.store(ConnectionMode::Disconnect.as_u8(), Ordering::SeqCst);
+                    state_notify.notify_one();
+
+                    let timeout = tokio::time::timeout(Duration::from_secs(5), async {
+                        while !ConnectionMode::from_atomic(&connection_mode).is_closed() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await;
+
+                    if timeout.is_err() {
+                        log::error!("Timeout waiting for socket to close, forcing closed state");
+                        connection_mode.store(ConnectionMode::Closed.as_u8(), Ordering::SeqCst);
                     }
                 }
             }
@@ -242,68 +291,80 @@ impl SocketClient {
     ///
     /// - Throws an Exception if it is not able to send data.
     #[pyo3(name = "send")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_send<'py>(
         slf: PyRef<'_, Self>,
         data: Vec<u8>,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        tracing::trace!("Sending {}", String::from_utf8_lossy(&data));
+        log::trace!("Sending {}", String::from_utf8_lossy(&data));
 
-        let mode = slf.connection_mode.clone();
+        let connection_mode = slf.connection_mode.clone();
+        let state_notify = slf.state_notify.clone();
         let writer_tx = slf.writer_tx.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            if ConnectionMode::from_atomic(&mode).is_closed() {
-                let msg = format!(
-                    "Cannot send data ({}): socket closed",
-                    String::from_utf8_lossy(&data)
-                );
+            match ConnectionMode::from_atomic(&connection_mode) {
+                ConnectionMode::Disconnect | ConnectionMode::Closed => {
+                    let msg = format!(
+                        "Cannot send data ({}): socket closed",
+                        String::from_utf8_lossy(&data)
+                    );
 
-                let io_err = std::io::Error::new(std::io::ErrorKind::NotConnected, msg);
-                return Err(to_pyruntime_err(io_err));
-            }
+                    let io_err = std::io::Error::new(std::io::ErrorKind::NotConnected, msg);
+                    return Err(to_pyruntime_err(io_err));
+                }
+                mode if !mode.is_active() => {
+                    let timeout = Duration::from_secs(2);
+                    let fallback_interval = Duration::from_millis(100);
 
-            let timeout = Duration::from_secs(2);
-            let check_interval = Duration::from_millis(1);
+                    log::debug!("Waiting for client to become ACTIVE before sending (2s)...");
 
-            if !ConnectionMode::from_atomic(&mode).is_active() {
-                tracing::debug!("Waiting for client to become ACTIVE before sending (2s)...");
-                match tokio::time::timeout(timeout, async {
-                    while !ConnectionMode::from_atomic(&mode).is_active() {
-                        if matches!(
-                            ConnectionMode::from_atomic(&mode),
-                            ConnectionMode::Disconnect | ConnectionMode::Closed
-                        ) {
-                            return Err("Client disconnected waiting to send");
+                    match tokio::time::timeout(timeout, async {
+                        loop {
+                            let notified = state_notify.notified();
+
+                            let mode = ConnectionMode::from_atomic(&connection_mode);
+                            if mode.is_active() {
+                                return Ok(());
+                            }
+
+                            if matches!(mode, ConnectionMode::Disconnect | ConnectionMode::Closed) {
+                                return Err("Client disconnected waiting to send");
+                            }
+
+                            tokio::select! {
+                                biased;
+                                () = notified => {}
+                                () = tokio::time::sleep(fallback_interval) => {}
+                            }
                         }
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => log::debug!("Client now active"),
+                        Ok(Err(e)) => {
+                            let err_msg = format!(
+                                "Failed sending data ({}): {e}",
+                                String::from_utf8_lossy(&data)
+                            );
 
-                        tokio::time::sleep(check_interval).await;
-                    }
+                            let io_err =
+                                std::io::Error::new(std::io::ErrorKind::NotConnected, err_msg);
+                            return Err(to_pyruntime_err(io_err));
+                        }
+                        Err(_) => {
+                            let err_msg = format!(
+                                "Failed sending data ({}): timeout waiting to become ACTIVE",
+                                String::from_utf8_lossy(&data)
+                            );
 
-                    Ok(())
-                })
-                .await
-                {
-                    Ok(Ok(())) => tracing::debug!("Client now active"),
-                    Ok(Err(e)) => {
-                        let err_msg = format!(
-                            "Failed sending data ({}): {e}",
-                            String::from_utf8_lossy(&data)
-                        );
-
-                        let io_err = std::io::Error::new(std::io::ErrorKind::NotConnected, err_msg);
-                        return Err(to_pyruntime_err(io_err));
-                    }
-                    Err(_) => {
-                        let err_msg = format!(
-                            "Failed sending data ({}): timeout waiting to become ACTIVE",
-                            String::from_utf8_lossy(&data)
-                        );
-
-                        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg);
-                        return Err(to_pyruntime_err(io_err));
+                            let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, err_msg);
+                            return Err(to_pyruntime_err(io_err));
+                        }
                     }
                 }
+                _ => {}
             }
 
             let msg = WriterCommand::Send(data.into());

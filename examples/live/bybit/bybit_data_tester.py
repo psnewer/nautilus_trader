@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,6 +16,7 @@
 
 from nautilus_trader.adapters.bybit import BYBIT
 from nautilus_trader.adapters.bybit import BybitDataClientConfig
+from nautilus_trader.adapters.bybit import BybitEnvironment
 from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
 from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
 from nautilus_trader.adapters.bybit import BybitProductType
@@ -54,13 +55,9 @@ config_node = TradingNodeConfig(
     ),
     data_clients={
         BYBIT: BybitDataClientConfig(
-            api_key=None,  # 'BYBIT_API_KEY' env var
-            api_secret=None,  # 'BYBIT_API_SECRET' env var
-            base_url_http=None,  # Override with custom endpoint
+            environment=BybitEnvironment.MAINNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
-            product_types=(product_type,),  # Will load all instruments
-            demo=False,  # If client uses the demo API
-            testnet=False,  # If client uses the testnet API
+            product_types=(product_type,),
         ),
     },
     timeout_connection=20.0,
@@ -81,6 +78,8 @@ config_tester = DataTesterConfig(
     # subscribe_book_at_interval=True,
     subscribe_quotes=True,
     subscribe_trades=True,
+    subscribe_mark_prices=True,
+    subscribe_index_prices=True,
     subscribe_funding_rates=True,
     subscribe_bars=True,
     # book_interval_ms=1,

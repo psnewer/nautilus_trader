@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,7 +42,6 @@ instrument_provider = InstrumentProviderConfig(load_all=True)
 # For correct subscription operation, you must specify all instruments to be immediately
 # subscribed for as part of the data client configuration.
 config_data = DatabentoDataClientConfig(
-    api_key=None,  # 'DATABENTO_API_KEY' env var
     http_gateway=None,
     instrument_provider=instrument_provider,
     use_exchange_as_venue=True,

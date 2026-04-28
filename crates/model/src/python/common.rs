@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,10 +14,9 @@
 // -------------------------------------------------------------------------------------------------
 
 use indexmap::IndexMap;
-use nautilus_core::python::IntoPyObjectNautilusExt;
+use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyvalue_err};
 use pyo3::{
     conversion::IntoPyObjectExt,
-    exceptions::PyValueError,
     prelude::*,
     types::{PyDict, PyList, PyNone},
 };
@@ -31,12 +30,14 @@ pub const PY_MODULE_MODEL: &str = "nautilus_trader.core.nautilus_pyo3.model";
 /// Python iterator over the variants of an enum.
 #[allow(missing_debug_implementations)]
 #[pyclass]
+#[pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")]
 pub struct EnumIterator {
     // Type erasure for code reuse, generic types can't be exposed to Python
     iter: Box<dyn Iterator<Item = Py<PyAny>> + Send + Sync>,
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl EnumIterator {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
@@ -73,10 +74,6 @@ impl EnumIterator {
 
 /// Converts a JSON `Value::Object` into a Python `dict`.
 ///
-/// # Panics
-///
-/// Panics if creating a Python list fails due to an invalid iterator.
-///
 /// # Errors
 ///
 /// Returns a `PyErr` if:
@@ -93,7 +90,7 @@ pub fn value_to_pydict(py: Python<'_>, val: &Value) -> PyResult<Py<PyAny>> {
             }
         }
         // This shouldn't be reached in this function, but we include it for completeness
-        _ => return Err(PyValueError::new_err("Expected JSON object")),
+        _ => return Err(to_pyvalue_err("Expected JSON object")),
     }
 
     dict.into_py_any(py)
@@ -118,10 +115,12 @@ pub fn value_to_pyobject(py: Python<'_>, val: &Value) -> PyResult<Py<PyAny>> {
         Value::Number(n) => {
             if n.is_i64() {
                 n.as_i64().unwrap().into_py_any(py)
+            } else if n.is_u64() {
+                n.as_u64().unwrap().into_py_any(py)
             } else if n.is_f64() {
                 n.as_f64().unwrap().into_py_any(py)
             } else {
-                Err(PyValueError::new_err("Unsupported JSON number type"))
+                Err(to_pyvalue_err("Unsupported JSON number type"))
             }
         }
         Value::Array(arr) => {
@@ -136,6 +135,12 @@ pub fn value_to_pyobject(py: Python<'_>, val: &Value) -> PyResult<Py<PyAny>> {
         Value::Object(_) => value_to_pydict(py, val),
     }
 }
+
+// Re-export centralized Params conversion functions from nautilus_core
+// Backward compatibility: re-export pydict_to_params as an alias
+pub use nautilus_core::{
+    from_pydict as pydict_to_params, from_pydict, python::params::params_to_pydict,
+};
 
 /// Converts a list of `Money` values into a Python list of strings, or `None` if empty.
 ///
@@ -157,8 +162,9 @@ pub fn commissions_from_vec(py: Python<'_>, commissions: Vec<Money>) -> PyResult
         Ok(PyNone::get(py).to_owned().into_any())
     } else {
         values.sort();
-        // SAFETY: Reasonable to expect `ExactSizeIterator` should be correctly implemented
-        Ok(PyList::new(py, &values).unwrap().into_any())
+        Ok(PyList::new(py, &values)
+            .expect("ExactSizeIterator")
+            .into_any())
     }
 }
 
@@ -167,10 +173,10 @@ pub fn commissions_from_vec(py: Python<'_>, commissions: Vec<Money>) -> PyResult
 /// # Errors
 ///
 /// Returns a `PyErr` if Python list creation or conversion fails.
-pub fn commissions_from_indexmap(
-    py: Python<'_>,
-    commissions: IndexMap<Currency, Money>,
-) -> PyResult<Bound<'_, PyAny>> {
+pub fn commissions_from_indexmap<'py>(
+    py: Python<'py>,
+    commissions: &IndexMap<Currency, Money>,
+) -> PyResult<Bound<'py, PyAny>> {
     commissions_from_vec(py, commissions.values().copied().collect())
 }
 

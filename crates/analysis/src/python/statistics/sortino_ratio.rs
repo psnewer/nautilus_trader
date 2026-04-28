@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,25 @@ use super::transform_returns;
 use crate::{statistic::PortfolioStatistic, statistics::sortino_ratio::SortinoRatio};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl SortinoRatio {
+    /// Calculates the Sortino ratio for portfolio returns.
+    ///
+    /// The Sortino ratio is a variation of the Sharpe ratio that only penalizes downside
+    /// volatility, making it more appropriate for strategies with asymmetric return distributions.
+    ///
+    /// Formula: `Mean Return / Downside Deviation * sqrt(period)`
+    ///
+    /// Where downside deviation is calculated as:
+    /// `sqrt(sum(negative_returns^2) / total_observations)`
+    ///
+    /// Note: Uses total observations count (not just negative returns) as per Sortino's methodology.
+    ///
+    /// # References
+    ///
+    /// - Sortino, F. A., & van der Meer, R. (1991). "Downside Risk". *Journal of Portfolio Management*, 17(4), 27-31.
+    /// - Sortino, F. A., & Price, L. N. (1994). "Performance Measurement in a Downside Risk Framework".
+    ///   *Journal of Investing*, 3(3), 59-64.
     #[new]
     #[pyo3(signature = (period=None))]
     fn py_new(period: Option<usize>) -> Self {
@@ -39,8 +57,9 @@ impl SortinoRatio {
     }
 
     #[pyo3(name = "calculate_from_returns")]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_calculate_from_returns(&mut self, raw_returns: BTreeMap<u64, f64>) -> Option<f64> {
-        self.calculate_from_returns(&transform_returns(raw_returns))
+        self.calculate_from_returns(&transform_returns(&raw_returns))
     }
 
     #[pyo3(name = "calculate_from_realized_pnls")]

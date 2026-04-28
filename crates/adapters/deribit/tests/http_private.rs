@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,10 +25,14 @@ use axum::{
 };
 use dashmap::DashMap;
 use nautilus_common::testing::wait_until_async;
-use nautilus_deribit::http::{
-    client::DeribitRawHttpClient, error::DeribitHttpError, query::GetAccountSummariesParams,
+use nautilus_deribit::{
+    common::enums::DeribitEnvironment,
+    http::{
+        client::DeribitRawHttpClient, error::DeribitHttpError, query::GetAccountSummariesParams,
+    },
 };
 use nautilus_network::http::{HttpClient, Method};
+use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 
 #[derive(Clone, Default)]
@@ -76,10 +80,6 @@ async fn wait_for_server(addr: SocketAddr) {
     )
     .await;
 }
-
-// ============================================================================
-// JSON-RPC Handlers
-// ============================================================================
 
 async fn handle_jsonrpc_request(
     State(state): State<TestServerState>,
@@ -160,10 +160,6 @@ async fn handle_method_not_found(id: u64) -> axum::response::Response {
     .into_response()
 }
 
-// ============================================================================
-// Router
-// ============================================================================
-
 fn create_router(state: TestServerState) -> Router {
     Router::new()
         .route("/api/v2", post(handle_jsonrpc_request))
@@ -182,11 +178,11 @@ async fn test_get_account_summaries_success() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        false,
-        Some(5),
-        None,
-        None,
-        None,
+        DeribitEnvironment::Mainnet,
+        5,
+        3,
+        1000,
+        10_000,
         None,
     )
     .unwrap();
@@ -204,19 +200,19 @@ async fn test_get_account_summaries_success() {
     // Verify BTC summary
     let btc = &summaries[0];
     assert_eq!(btc.currency.as_str(), "BTC");
-    assert_eq!(btc.equity, 302.61869214);
-    assert_eq!(btc.balance, 302.60065765);
-    assert_eq!(btc.available_funds, 301.38059622);
-    assert_eq!(btc.margin_balance, 302.62729214);
-    assert_eq!(btc.initial_margin, Some(1.24669592));
-    assert_eq!(btc.maintenance_margin, Some(0.8857841));
-    assert_eq!(btc.total_pl, Some(-0.33084225));
+    assert_eq!(btc.equity, dec!(302.61869214));
+    assert_eq!(btc.balance, dec!(302.60065765));
+    assert_eq!(btc.available_funds, dec!(301.38059622));
+    assert_eq!(btc.margin_balance, dec!(302.62729214));
+    assert_eq!(btc.initial_margin, Some(dec!(1.24669592)));
+    assert_eq!(btc.maintenance_margin, Some(dec!(0.8857841)));
+    assert_eq!(btc.total_pl, Some(dec!(-0.33084225)));
 
     // Verify ETH summary
     let eth = &summaries[1];
     assert_eq!(eth.currency.as_str(), "ETH");
-    assert_eq!(eth.equity, 100.0);
-    assert_eq!(eth.balance, 100.0);
+    assert_eq!(eth.equity, dec!(100.0));
+    assert_eq!(eth.balance, dec!(100.0));
 
     assert_eq!(
         *state
@@ -230,8 +226,16 @@ async fn test_get_account_summaries_success() {
 #[tokio::test]
 async fn test_get_account_summaries_missing_credentials() {
     let base_url = "http://127.0.0.1:0/api/v2".to_string();
-    let client =
-        DeribitRawHttpClient::new(Some(base_url), false, Some(5), None, None, None, None).unwrap();
+    let client = DeribitRawHttpClient::new(
+        Some(base_url),
+        DeribitEnvironment::Mainnet,
+        5,
+        3,
+        1000,
+        10_000,
+        None,
+    )
+    .unwrap();
 
     let params = GetAccountSummariesParams::default();
     let result = client.get_account_summaries(params).await;
@@ -241,7 +245,7 @@ async fn test_get_account_summaries_missing_credentials() {
         DeribitHttpError::MissingCredentials => {
             // Expected error type
         }
-        other => panic!("Expected MissingCredentials, got: {other:?}"),
+        other => panic!("Expected MissingCredentials, was: {other:?}"),
     }
 }
 

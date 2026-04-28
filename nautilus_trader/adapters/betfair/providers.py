@@ -1,5 +1,5 @@
 # -----------------------------------book--------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -174,6 +174,7 @@ class BetfairInstrumentProvider(InstrumentProvider):
                 min_notional=default_min_notional,
             )
         ]
+
         for instrument in instruments:
             self.add(instrument=instrument)
 
@@ -386,6 +387,7 @@ def get_market_book(client, market_ids):
         price_projection={"priceData": ["EX_TRADED"]},
     )
     data = []
+
     for market in resp:
         for runner in market["runners"]:
             data.append(

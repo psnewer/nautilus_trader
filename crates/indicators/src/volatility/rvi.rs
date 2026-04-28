@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,6 +29,10 @@ use crate::{
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators", unsendable)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct RelativeVolatilityIndex {
     pub period: usize,
@@ -135,6 +139,7 @@ impl RelativeVolatilityIndex {
         } else {
             let mean = self.ma.value();
             let mut var_sum = 0.0;
+
             for &price in &self.prices {
                 let diff = price - mean;
                 var_sum += diff * diff;
@@ -163,6 +168,7 @@ impl RelativeVolatilityIndex {
 
         if !self.initialized {
             self.has_inputs = true;
+
             if self.pos_ma.initialized() {
                 self.initialized = true;
             }

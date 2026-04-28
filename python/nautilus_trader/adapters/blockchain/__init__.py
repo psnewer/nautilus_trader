@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,18 +15,9 @@
 
 from __future__ import annotations
 
+from nautilus_trader._fixup import fixup_module_names
 from nautilus_trader._libnautilus.blockchain import *  # noqa: F403 (undefined-local-with-import-star)
 
 
-def _reassign_module_names() -> None:
-    for _name, _obj in list(globals().items()):
-        module = getattr(_obj, "__module__", "")
-        if module.startswith("nautilus_trader.core.nautilus_pyo3.blockchain"):
-            try:
-                _obj.__module__ = __name__
-            except (AttributeError, TypeError):
-                continue
-
-
-_reassign_module_names()
-del _reassign_module_names
+fixup_module_names(globals(), __name__)
+del fixup_module_names

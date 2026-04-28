@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,10 @@ use crate::factories::{BlockchainDataClientFactory, BlockchainExecutionClientFac
 
 #[pymethods]
 impl BlockchainDataClientFactory {
-    /// Creates a new `BlockchainDataClientFactory` instance.
+    /// Factory for creating blockchain data clients.
+    ///
+    /// This factory creates `BlockchainDataClient` instances configured for different blockchain networks
+    /// (Ethereum, Arbitrum, Base, Polygon) with appropriate RPC and HyperSync configurations.
     #[new]
     const fn py_new() -> Self {
         Self::new()
@@ -45,7 +48,7 @@ impl BlockchainDataClientFactory {
 
 #[pymethods]
 impl BlockchainExecutionClientFactory {
-    /// Creates a new `BlockchainExecutionClientFactory` instance.
+    /// Factory for creating blockchain execution clients.
     #[new]
     const fn py_new() -> Self {
         Self::new()

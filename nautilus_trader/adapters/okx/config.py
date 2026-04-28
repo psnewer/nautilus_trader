@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,6 +17,7 @@ from nautilus_trader.common.config import PositiveInt
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.core.nautilus_pyo3 import OKXContractType
+from nautilus_trader.core.nautilus_pyo3 import OKXEnvironment
 from nautilus_trader.core.nautilus_pyo3 import OKXInstrumentType
 from nautilus_trader.core.nautilus_pyo3 import OKXMarginMode
 from nautilus_trader.core.nautilus_pyo3 import OKXVipLevel
@@ -36,7 +37,7 @@ class OKXDataClientConfig(LiveDataClientConfig, frozen=True):
         If ``None`` then will source the `OKX_API_SECRET` environment variable.
     api_passphrase : str, [default=None]
         The passphrase used when creating the OKX API keys.
-        If ``None`` then will source the `OKX_PASSPHRASE` environment variable.
+        If ``None`` then will source the `OKX_API_PASSPHRASE` environment variable.
     instrument_types : tuple[OKXInstrumentType], default `(OKXInstrumentType.SPOT,)`
         The OKX instrument types of instruments to load.
         If None, all instrument types are loaded (subject to contract types and their compatibility with instrument types).
@@ -44,7 +45,7 @@ class OKXDataClientConfig(LiveDataClientConfig, frozen=True):
         The OKX instrument families to load (e.g., "BTC-USD", "ETH-USD").
         Required for OPTIONS. Optional for FUTURES/SWAP. Not applicable for SPOT/MARGIN.
         If None, all available instrument families will be attempted (may fail for OPTIONS).
-    contract_types : tuple[OKXInstrumentType], optional
+    contract_types : tuple[OKXContractType], optional
         The OKX contract types of instruments to load.
         If None, all contract types are loaded (subject to instrument types and their compatibility with contract types).
     base_url_http : str, optional
@@ -53,14 +54,15 @@ class OKXDataClientConfig(LiveDataClientConfig, frozen=True):
     base_url_ws : str, optional
         The base url to OKX's websocket API.
         If ``None`` then will source the url from `get_ws_base_url()`.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
+    environment : OKXEnvironment, optional
+        The OKX environment for the client (LIVE or DEMO).
+        If ``None`` then defaults to LIVE.
+        Takes precedence over ``is_demo`` if set.
     is_demo : bool, default False
         If the client is connecting to the OKX demo API.
+        Deprecated: use ``environment=OKXEnvironment.DEMO`` instead.
     update_instruments_interval_mins: PositiveInt or None, default 60
         The interval (minutes) between reloading instruments from the venue.
     vip_level : OKXVipLevel, optional
@@ -76,10 +78,10 @@ class OKXDataClientConfig(LiveDataClientConfig, frozen=True):
     instrument_types: tuple[OKXInstrumentType, ...] = (OKXInstrumentType.SPOT,)
     instrument_families: tuple[str, ...] | None = None
     contract_types: tuple[OKXContractType, ...] | None = None
+    environment: OKXEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
+    proxy_url: str | None = None
     is_demo: bool = False
     http_timeout_secs: PositiveInt | None = 60
     max_retries: PositiveInt | None = 3
@@ -103,11 +105,11 @@ class OKXExecClientConfig(LiveExecClientConfig, frozen=True):
         If ``None`` then will source the `OKX_API_SECRET` environment variable.
     api_passphrase : str, [default=None]
         The passphrase used when creating the OKX API keys.
-        If ``None`` then will source the `OKX_PASSPHRASE` environment variable.
+        If ``None`` then will source the `OKX_API_PASSPHRASE` environment variable.
     instrument_types : tuple[OKXInstrumentType], default `(OKXInstrumentType.SPOT,)`
         The OKX instrument types of instruments to load.
         If None, all instrument types are loaded (subject to contract types and their compatibility with instrument types).
-    contract_types : tuple[OKXInstrumentType], optional
+    contract_types : tuple[OKXContractType], optional
         The OKX contract types of instruments to load.
         If None, all contract types are loaded (subject to instrument types and their compatibility with contract types).
     instrument_families : tuple[str, ...], optional
@@ -120,14 +122,15 @@ class OKXExecClientConfig(LiveExecClientConfig, frozen=True):
     base_url_ws : str, optional
         The base url to OKX's websocket API.
         If ``None`` then will source the url from `get_ws_base_url()`.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
+    environment : OKXEnvironment, optional
+        The OKX environment for the client (LIVE or DEMO).
+        If ``None`` then defaults to LIVE.
+        Takes precedence over ``is_demo`` if set.
     is_demo : bool, default False
         If the client is connecting to the OKX demo API.
+        Deprecated: use ``environment=OKXEnvironment.DEMO`` instead.
     margin_mode : OKXMarginMode, optional
         The intended OKX account margin mode.
         - `ISOLATED`: Margin isolated to specific positions (default)
@@ -157,6 +160,8 @@ class OKXExecClientConfig(LiveExecClientConfig, frozen=True):
         (borrowing) as SHORT positions. This may lead to unintended liquidation of wallet assets
         if strategies are not designed to handle SPOT positions properly.
         If False, SPOT instruments return FLAT position reports (default behavior).
+    ws_auth_timeout_secs : PositiveInt, default 30
+        The timeout (seconds) for WebSocket authentication.
 
     """
 
@@ -166,10 +171,10 @@ class OKXExecClientConfig(LiveExecClientConfig, frozen=True):
     instrument_types: tuple[OKXInstrumentType, ...] = (OKXInstrumentType.SPOT,)
     contract_types: tuple[OKXContractType, ...] | None = None
     instrument_families: tuple[str, ...] | None = None
+    environment: OKXEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
+    proxy_url: str | None = None
     is_demo: bool = False
     margin_mode: OKXMarginMode | None = None
     use_spot_margin: bool = False
@@ -180,3 +185,4 @@ class OKXExecClientConfig(LiveExecClientConfig, frozen=True):
     use_fills_channel: bool = False
     use_mm_mass_cancel: bool = False
     use_spot_cash_position_reports: bool = False
+    ws_auth_timeout_secs: PositiveInt | None = 30

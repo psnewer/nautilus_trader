@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -33,18 +33,17 @@ use super::{IntoPyObjectNautilusExt, to_pyvalue_err};
 use crate::uuid::{UUID4, UUID4_LEN};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl UUID4 {
-    /// Creates a new [`UUID4`] instance.
-    ///
-    /// If a string value is provided, it attempts to parse it into a UUID.
-    /// If no value is provided, a new random UUID is generated.
+    /// Represents a Universally Unique Identifier (UUID)
+    /// version 4 based on a 128-bit label as specified in RFC 4122.
     #[new]
     fn py_new() -> Self {
         Self::new()
     }
 
     /// Sets the state of the `UUID4` instance during unpickling.
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "Python FFI requires owned types"
     )]
@@ -96,7 +95,7 @@ impl UUID4 {
 
     /// A safe constructor used during unpickling to ensure the correct initialization of `UUID4`.
     #[staticmethod]
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "Python FFI requires Result return type"
     )]
@@ -114,7 +113,7 @@ impl UUID4 {
     }
 
     /// Returns a hash value for the `UUID4` instance.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         reason = "Intentional cast for Python interop"
@@ -162,14 +161,14 @@ mod tests {
     fn ensure_python_initialized() {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            pyo3::prepare_freethreaded_python();
+            Python::initialize();
         });
     }
 
     #[rstest]
     fn test_setstate_rejects_invalid_uuid_bytes() {
         ensure_python_initialized();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut uuid = UUID4::new();
             let mut invalid = [b'a'; UUID4_LEN];
             invalid[UUID4_LEN - 1] = 0;
@@ -184,7 +183,7 @@ mod tests {
     #[rstest]
     fn test_setstate_rejects_missing_null_terminator() {
         ensure_python_initialized();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut uuid = UUID4::new();
             let mut bytes = uuid.value;
             bytes[UUID4_LEN - 1] = b'0';
@@ -202,7 +201,7 @@ mod tests {
     #[rstest]
     fn test_setstate_accepts_valid_state() {
         ensure_python_initialized();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let source = UUID4::new();
             let mut target = UUID4::new();
             let py_bytes = PyBytes::new(py, &source.value);

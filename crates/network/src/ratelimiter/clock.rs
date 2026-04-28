@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,16 +24,18 @@
 //! your [`Reference`] type:
 use std::{
     fmt::Debug,
+    future::Future,
     ops::Add,
     prelude::v1::*,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use super::nanos::Nanos;
+use crate::dst::time::Instant;
 
 /// A measurement from a clock.
 pub trait Reference:
@@ -59,6 +61,13 @@ pub trait Clock: Clone {
 
     /// Returns a measurement of the clock.
     fn now(&self) -> Self::Instant;
+
+    /// Waits for `duration` on this clock's time base.
+    ///
+    /// Implementations must advance on the same clock as [`Clock::now`] so
+    /// callers using `sleep` together with `now` observe consistent time
+    /// under both real and simulated runtimes.
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + '_;
 }
 
 impl Reference for Duration {
@@ -88,7 +97,8 @@ impl Add<Nanos> for Duration {
 /// what "now" is (relative to some point meaningful to the program),
 /// and returns that.
 ///
-/// # Thread safety
+/// # Thread Safety
+///
 /// The mock time is represented as an atomic u64 count of nanoseconds, behind an [`Arc`].
 /// Clones of this clock will all show the same time, even if the original advances.
 #[derive(Debug, Clone, Default)]
@@ -110,6 +120,7 @@ impl FakeRelativeClock {
 
         let mut prev = self.now.load(Ordering::Acquire);
         let mut next = prev + by;
+
         while let Err(e) =
             self.now
                 .compare_exchange_weak(prev, next, Ordering::Release, Ordering::Relaxed)
@@ -131,6 +142,11 @@ impl Clock for FakeRelativeClock {
 
     fn now(&self) -> Self::Instant {
         self.now.load(Ordering::Relaxed).into()
+    }
+
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + '_ {
+        self.advance(duration);
+        std::future::ready(())
     }
 }
 
@@ -167,6 +183,13 @@ impl Clock for MonotonicClock {
     fn now(&self) -> Self::Instant {
         Instant::now()
     }
+
+    async fn sleep(&self, duration: Duration) {
+        #[cfg(not(all(feature = "simulation", madsim)))]
+        tokio::time::sleep(duration).await;
+        #[cfg(all(feature = "simulation", madsim))]
+        madsim::time::sleep(duration).await;
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +206,7 @@ mod test {
         let threads = std::iter::repeat_n((), 10)
             .map(move |()| {
                 let clock = Arc::clone(&clock);
+
                 thread::spawn(move || {
                     for _ in 0..1_000_000 {
                         let now = clock.now();
@@ -192,6 +216,7 @@ mod test {
                 })
             })
             .collect::<Vec<_>>();
+
         for t in threads {
             t.join().unwrap();
         }
@@ -202,5 +227,23 @@ mod test {
         let d = Duration::from_secs(1);
         let one_ns = Nanos::from(1);
         assert!(d + one_ns > d);
+    }
+
+    // Under madsim, `MonotonicClock::sleep` runs on the virtual clock with
+    // sub-ms scheduling epsilon. If the cfg gate fell through to real tokio,
+    // `sleep` would block on the OS scheduler with ~5-15ms of jitter and the
+    // tight upper bound would fail.
+    #[cfg(all(feature = "simulation", madsim))]
+    #[madsim::test]
+    async fn test_monotonic_clock_sleep_uses_virtual_time() {
+        let clock = MonotonicClock;
+        let start = Instant::now();
+        clock.sleep(Duration::from_millis(100)).await;
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_millis(100));
+        assert!(
+            elapsed < Duration::from_millis(101),
+            "virtual sleep showed real-tokio jitter: {elapsed:?}"
+        );
     }
 }

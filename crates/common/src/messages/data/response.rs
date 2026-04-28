@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,10 +15,9 @@
 
 use std::{any::Any, sync::Arc};
 
-use indexmap::IndexMap;
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{Params, UUID4, UnixNanos};
 use nautilus_model::{
-    data::{Bar, BarType, DataType, QuoteTick, TradeTick},
+    data::{Bar, BarType, DataType, ForwardPrice, FundingRateUpdate, QuoteTick, TradeTick},
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::InstrumentAny,
     orderbook::OrderBook,
@@ -36,12 +35,12 @@ pub struct CustomDataResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl CustomDataResponse {
     /// Creates a new [`CustomDataResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new<T: Any + Send + Sync>(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -51,7 +50,7 @@ impl CustomDataResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -81,7 +80,7 @@ pub struct InstrumentResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl InstrumentResponse {
@@ -91,7 +90,7 @@ impl InstrumentResponse {
     }
 
     /// Creates a new [`InstrumentResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -100,7 +99,7 @@ impl InstrumentResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -124,7 +123,7 @@ pub struct InstrumentsResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl InstrumentsResponse {
@@ -134,7 +133,7 @@ impl InstrumentsResponse {
     }
 
     /// Creates a new [`InstrumentsResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -143,7 +142,7 @@ impl InstrumentsResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -167,7 +166,7 @@ pub struct BookResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl BookResponse {
@@ -177,7 +176,7 @@ impl BookResponse {
     }
 
     /// Creates a new [`BookResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -186,7 +185,7 @@ impl BookResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -210,7 +209,7 @@ pub struct QuotesResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl QuotesResponse {
@@ -220,7 +219,7 @@ impl QuotesResponse {
     }
 
     /// Creates a new [`QuotesResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -229,7 +228,7 @@ impl QuotesResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -253,7 +252,7 @@ pub struct TradesResponse {
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl TradesResponse {
@@ -263,7 +262,7 @@ impl TradesResponse {
     }
 
     /// Creates a new [`TradesResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -272,7 +271,7 @@ impl TradesResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
@@ -288,6 +287,80 @@ impl TradesResponse {
 }
 
 #[derive(Clone, Debug)]
+pub struct FundingRatesResponse {
+    pub correlation_id: UUID4,
+    pub client_id: ClientId,
+    pub instrument_id: InstrumentId,
+    pub data: Vec<FundingRateUpdate>,
+    pub start: Option<UnixNanos>,
+    pub end: Option<UnixNanos>,
+    pub ts_init: UnixNanos,
+    pub params: Option<Params>,
+}
+
+impl FundingRatesResponse {
+    /// Converts to a dyn Any trait object for messaging.
+    pub fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    /// Creates a new [`FundingRatesResponse`] instance.
+    #[expect(clippy::too_many_arguments)]
+    pub fn new(
+        correlation_id: UUID4,
+        client_id: ClientId,
+        instrument_id: InstrumentId,
+        data: Vec<FundingRateUpdate>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        ts_init: UnixNanos,
+        params: Option<Params>,
+    ) -> Self {
+        Self {
+            correlation_id,
+            client_id,
+            instrument_id,
+            data,
+            start,
+            end,
+            ts_init,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardPricesResponse {
+    pub correlation_id: UUID4,
+    pub client_id: ClientId,
+    pub venue: Venue,
+    pub data: Vec<ForwardPrice>,
+    pub ts_init: UnixNanos,
+    pub params: Option<Params>,
+}
+
+impl ForwardPricesResponse {
+    /// Creates a new [`ForwardPricesResponse`] instance.
+    pub fn new(
+        correlation_id: UUID4,
+        client_id: ClientId,
+        venue: Venue,
+        data: Vec<ForwardPrice>,
+        ts_init: UnixNanos,
+        params: Option<Params>,
+    ) -> Self {
+        Self {
+            correlation_id,
+            client_id,
+            venue,
+            data,
+            ts_init,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct BarsResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -296,7 +369,7 @@ pub struct BarsResponse {
     pub ts_init: UnixNanos,
     pub start: Option<UnixNanos>,
     pub end: Option<UnixNanos>,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl BarsResponse {
@@ -306,7 +379,7 @@ impl BarsResponse {
     }
 
     /// Creates a new [`BarsResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -315,16 +388,16 @@ impl BarsResponse {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             correlation_id,
             client_id,
             bar_type,
             data,
+            ts_init,
             start,
             end,
-            ts_init,
             params,
         }
     }

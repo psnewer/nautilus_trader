@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,6 +28,10 @@ use crate::{
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators", unsendable)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct AverageTrueRange {
     pub period: usize,
@@ -136,6 +140,7 @@ impl AverageTrueRange {
 
         if !self.initialized {
             self.has_inputs = true;
+
             if self.count >= self.period {
                 self.initialized = true;
             }
@@ -225,6 +230,7 @@ mod tests {
         let mut atr = AverageTrueRange::new(10, Some(MovingAverageType::Simple), None, None);
         let mut high = 1.00010;
         let mut low = 1.0;
+
         for _ in 0..1000 {
             high += 0.00010;
             low += 0.00010;
@@ -239,6 +245,7 @@ mod tests {
         let mut atr = AverageTrueRange::new(10, Some(MovingAverageType::Simple), None, None);
         let mut high = 1.00010;
         let mut low = 1.0;
+
         for _ in 0..1000 {
             high -= 0.00010;
             low -= 0.00010;
@@ -253,6 +260,7 @@ mod tests {
         let floor = 0.00005;
         let mut floored_atr =
             AverageTrueRange::new(10, Some(MovingAverageType::Simple), None, Some(floor));
+
         for _ in 0..20 {
             floored_atr.update_raw(1.0, 1.0, 1.0);
         }
@@ -267,6 +275,7 @@ mod tests {
         let mut high = 1.00020;
         let low = 1.0;
         let close = 1.0;
+
         for _ in 0..20 {
             high -= (high - low) / 2.0;
             floored_atr.update_raw(high, low, close);

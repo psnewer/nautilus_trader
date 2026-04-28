@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,9 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{any::Any, cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use nautilus_common::msgbus::handler::MessageHandler;
+use nautilus_common::msgbus::Handler;
 use nautilus_core::WeakCell;
 use nautilus_model::data::{Bar, BarType, QuoteTick, TradeTick};
 use ustr::Ustr;
@@ -34,29 +34,23 @@ pub struct BarQuoteHandler {
 }
 
 impl BarQuoteHandler {
-    pub(crate) fn new(aggregator: Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
+    pub(crate) fn new(aggregator: &Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
         Self {
-            aggregator: WeakCell::from(Rc::downgrade(&aggregator)),
+            aggregator: WeakCell::from(Rc::downgrade(aggregator)),
             bar_type,
         }
     }
 }
 
-impl MessageHandler for BarQuoteHandler {
+impl Handler<QuoteTick> for BarQuoteHandler {
     fn id(&self) -> Ustr {
         Ustr::from(&format!("BarQuoteHandler|{}", self.bar_type))
     }
 
-    fn handle(&self, msg: &dyn Any) {
-        if let Some(quote) = msg.downcast_ref::<QuoteTick>()
-            && let Some(agg) = self.aggregator.upgrade()
-        {
+    fn handle(&self, quote: &QuoteTick) {
+        if let Some(agg) = self.aggregator.upgrade() {
             agg.borrow_mut().handle_quote(*quote);
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -72,29 +66,23 @@ pub struct BarTradeHandler {
 }
 
 impl BarTradeHandler {
-    pub(crate) fn new(aggregator: Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
+    pub(crate) fn new(aggregator: &Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
         Self {
-            aggregator: WeakCell::from(Rc::downgrade(&aggregator)),
+            aggregator: WeakCell::from(Rc::downgrade(aggregator)),
             bar_type,
         }
     }
 }
 
-impl MessageHandler for BarTradeHandler {
+impl Handler<TradeTick> for BarTradeHandler {
     fn id(&self) -> Ustr {
         Ustr::from(&format!("BarTradeHandler|{}", self.bar_type))
     }
 
-    fn handle(&self, msg: &dyn Any) {
-        if let Some(trade) = msg.downcast_ref::<TradeTick>()
-            && let Some(agg) = self.aggregator.upgrade()
-        {
+    fn handle(&self, trade: &TradeTick) {
+        if let Some(agg) = self.aggregator.upgrade() {
             agg.borrow_mut().handle_trade(*trade);
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -111,28 +99,22 @@ pub struct BarBarHandler {
 }
 
 impl BarBarHandler {
-    pub(crate) fn new(aggregator: Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
+    pub(crate) fn new(aggregator: &Rc<RefCell<Box<dyn BarAggregator>>>, bar_type: BarType) -> Self {
         Self {
-            aggregator: WeakCell::from(Rc::downgrade(&aggregator)),
+            aggregator: WeakCell::from(Rc::downgrade(aggregator)),
             bar_type,
         }
     }
 }
 
-impl MessageHandler for BarBarHandler {
+impl Handler<Bar> for BarBarHandler {
     fn id(&self) -> Ustr {
         Ustr::from(&format!("BarBarHandler|{}", self.bar_type))
     }
 
-    fn handle(&self, msg: &dyn Any) {
-        if let Some(bar) = msg.downcast_ref::<Bar>()
-            && let Some(agg) = self.aggregator.upgrade()
-        {
+    fn handle(&self, bar: &Bar) {
+        if let Some(agg) = self.aggregator.upgrade() {
             agg.borrow_mut().handle_bar(*bar);
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }

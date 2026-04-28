@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,7 +15,6 @@
 
 use std::fmt::{Debug, Display};
 
-use derive_builder::Builder;
 use indexmap::IndexMap;
 use nautilus_core::{UUID4, UnixNanos};
 use rust_decimal::Decimal;
@@ -43,12 +42,15 @@ use crate::{
 /// 'over the wire' and have a valid order created with exactly the same
 /// properties as if it had been instantiated locally.
 #[repr(C)]
-#[derive(Clone, PartialEq, Eq, Builder, Serialize, Deserialize)]
-#[builder(default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct OrderInitialized {
     /// The trader ID associated with the event.
@@ -119,50 +121,14 @@ pub struct OrderInitialized {
     pub tags: Option<Vec<Ustr>>,
 }
 
-impl Default for OrderInitialized {
-    /// Creates a new default [`OrderInitialized`] instance for testing.
-    fn default() -> Self {
-        Self {
-            trader_id: TraderId::default(),
-            strategy_id: StrategyId::default(),
-            instrument_id: InstrumentId::default(),
-            client_order_id: ClientOrderId::default(),
-            order_side: OrderSide::Buy,
-            order_type: OrderType::Market,
-            quantity: Quantity::new(100_000.0, 0),
-            price: Default::default(),
-            trigger_price: Default::default(),
-            trigger_type: Default::default(),
-            time_in_force: TimeInForce::Day,
-            expire_time: Default::default(),
-            post_only: Default::default(),
-            reduce_only: Default::default(),
-            display_qty: Default::default(),
-            quote_quantity: Default::default(),
-            limit_offset: Default::default(),
-            trailing_offset: Default::default(),
-            trailing_offset_type: Default::default(),
-            emulation_trigger: Default::default(),
-            trigger_instrument_id: Default::default(),
-            contingency_type: Default::default(),
-            order_list_id: Default::default(),
-            linked_order_ids: Default::default(),
-            parent_order_id: Default::default(),
-            exec_algorithm_id: Default::default(),
-            exec_algorithm_params: Default::default(),
-            exec_spawn_id: Default::default(),
-            tags: Default::default(),
-            event_id: Default::default(),
-            ts_event: Default::default(),
-            ts_init: Default::default(),
-            reconciliation: Default::default(),
-        }
-    }
-}
-
 impl OrderInitialized {
     /// Creates a new [`OrderInitialized`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "domain event constructor requires multiple boolean flags"
+    )]
+    #[must_use]
     pub fn new(
         trader_id: TraderId,
         strategy_id: StrategyId,
@@ -417,7 +383,7 @@ impl OrderEvent for OrderInitialized {
         self.event_id
     }
 
-    fn kind(&self) -> &str {
+    fn type_name(&self) -> &'static str {
         stringify!(OrderInitialized)
     }
 
@@ -614,5 +580,13 @@ mod test {
             contingency_type=OTO, order_list_id=1, linked_order_ids=[O-2020872378424], parent_order_id=None, \
             exec_algorithm_id=None, exec_algorithm_params=None, exec_spawn_id=None, tags=None)"
         );
+    }
+
+    #[rstest]
+    fn test_order_initialized_serialization() {
+        let original = OrderInitialized::default();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: OrderInitialized = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
     }
 }

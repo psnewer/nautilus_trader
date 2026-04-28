@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,7 +17,7 @@ use std::{cmp::max, collections::HashSet};
 
 use alloy::primitives::Address;
 use futures_util::StreamExt;
-use nautilus_core::formatting::Separable;
+use nautilus_core::string::formatting::Separable;
 use nautilus_model::defi::{
     SharedDex,
     amm::Pool,
@@ -44,7 +44,7 @@ const POOL_DB_BATCH_SIZE: usize = 2000;
 /// This function strips null bytes (0x00) and other problematic control characters that are
 /// invalid in PostgreSQL's UTF-8 text fields. Common with malformed on-chain token metadata.
 /// Preserves printable characters and common whitespace (space, tab, newline).
-fn sanitize_string(s: String) -> String {
+fn sanitize_string(s: &str) -> String {
     s.chars()
         .filter(|c| {
             // Keep printable characters and common whitespace, but filter null bytes
@@ -128,7 +128,7 @@ impl<'a> PoolDiscoveryService<'a> {
 
         // Skip sync if already up to date
         if effective_from_block > to_block {
-            tracing::info!(
+            log::info!(
                 "DEX {} already synced to block {} (current: {}), skipping sync",
                 dex.dex.name,
                 last_synced_block.unwrap_or(0).separate_with_commas(),
@@ -138,7 +138,7 @@ impl<'a> PoolDiscoveryService<'a> {
         }
 
         let total_blocks = to_block.saturating_sub(effective_from_block) + 1;
-        tracing::info!(
+        log::info!(
             "Syncing DEX exchange pools from {} to {} (total: {} blocks){}",
             effective_from_block.separate_with_commas(),
             to_block.separate_with_commas(),
@@ -152,7 +152,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 String::new()
             },
         );
-        tracing::info!(
+        log::info!(
             "Syncing {} pool creation events from factory contract {} on chain {}",
             dex.dex.name,
             dex.factory,
@@ -161,7 +161,7 @@ impl<'a> PoolDiscoveryService<'a> {
 
         // Enable performance settings for sync operations
         if let Err(e) = self.cache.toggle_performance_settings(true).await {
-            tracing::warn!("Failed to enable performance settings: {e}");
+            log::warn!("Failed to enable performance settings: {e}");
         }
 
         let mut metrics = BlockchainSyncReporter::new(
@@ -204,7 +204,7 @@ impl<'a> PoolDiscoveryService<'a> {
         let cancellation_token = self.cancellation_token.clone();
         let sync_result = tokio::select! {
             () = cancellation_token.cancelled() => {
-                tracing::info!("Exchange pool sync cancelled");
+                log::info!("Exchange pool sync cancelled");
                 Err(anyhow::anyhow!("Sync cancelled"))
             }
 
@@ -235,6 +235,7 @@ impl<'a> PoolDiscoveryService<'a> {
                     if self.cache.get_token(&pool.token0).is_none() {
                         token_rpc_buffer.insert(pool.token0);
                     }
+
                     if self.cache.get_token(&pool.token1).is_none() {
                         token_rpc_buffer.insert(pool.token1);
                     }
@@ -317,7 +318,7 @@ impl<'a> PoolDiscoveryService<'a> {
                     .update_dex_last_synced_block(&dex.dex.name, to_block)
                     .await?;
 
-                tracing::info!(
+                log::info!(
                     "Successfully synced DEX {} pools up to block {} | Summary: discovered={}, saved={}, skipped_exists={}, skipped_invalid_tokens={}",
                     dex.dex.name,
                     to_block.separate_with_commas(),
@@ -335,7 +336,7 @@ impl<'a> PoolDiscoveryService<'a> {
 
         // Restore default safe settings after sync completion
         if let Err(e) = self.cache.toggle_performance_settings(false).await {
-            tracing::warn!("Failed to restore default settings: {e}");
+            log::warn!("Failed to restore default settings: {e}");
         }
 
         Ok(())
@@ -365,8 +366,8 @@ impl<'a> PoolDiscoveryService<'a> {
             match token_info {
                 Ok(token_info) => {
                     // Sanitize token metadata to remove null bytes and invalid UTF-8 characters
-                    let sanitized_name = sanitize_string(token_info.name);
-                    let sanitized_symbol = sanitize_string(token_info.symbol);
+                    let sanitized_name = sanitize_string(&token_info.name);
+                    let sanitized_symbol = sanitize_string(&token_info.symbol);
 
                     let token = Token::new(
                         self.chain.clone(),
@@ -385,7 +386,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 Err(token_info_error) => {
                     self.cache.insert_invalid_token_in_memory(token_address);
                     if let Some(database) = &self.cache.database {
-                        let sanitized_error = sanitize_string(token_info_error.to_string());
+                        let sanitized_error = sanitize_string(&token_info_error.to_string());
                         database
                             .add_invalid_token(
                                 self.chain.chain_id,
@@ -410,7 +411,7 @@ impl<'a> PoolDiscoveryService<'a> {
     /// Logs errors for pools that cannot be constructed (missing tokens),
     /// but does not fail the entire batch.
     async fn construct_pools_batch(
-        &mut self,
+        &self,
         pool_events: &mut Vec<PoolCreatedEvent>,
         dex: &SharedDex,
     ) -> anyhow::Result<Vec<Pool>> {
@@ -422,7 +423,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 Some(token) => token.clone(),
                 None => {
                     if !self.cache.is_invalid_token(&pool_event.token0) {
-                        tracing::warn!(
+                        log::warn!(
                             "Skipping pool {}: Token0 {} not in cache and not marked as invalid",
                             pool_event.pool_address,
                             pool_event.token0
@@ -436,7 +437,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 Some(token) => token.clone(),
                 None => {
                     if !self.cache.is_invalid_token(&pool_event.token1) {
-                        tracing::warn!(
+                        log::warn!(
                             "Skipping pool {}: Token1 {} not in cache and not marked as invalid",
                             pool_event.pool_address,
                             pool_event.token1

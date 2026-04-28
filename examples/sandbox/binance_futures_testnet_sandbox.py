@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -80,8 +80,6 @@ async def main():
         # ),
         data_clients={
             BINANCE: BinanceDataClientConfig(
-                api_key=None,  # 'BINANCE_API_KEY' env var
-                api_secret=None,  # 'BINANCE_API_SECRET' env var
                 account_type=BinanceAccountType.USDT_FUTURES,
                 base_url_http=None,  # Override with custom endpoint
                 base_url_ws=None,  # Override with custom endpoint

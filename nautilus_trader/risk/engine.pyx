@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -38,7 +38,6 @@ from nautilus_trader.core.datetime cimport unix_nanos_to_dt
 from nautilus_trader.core.message cimport Command
 from nautilus_trader.core.message cimport Event
 from nautilus_trader.core.rust.model cimport AccountType
-from nautilus_trader.core.rust.model cimport InstrumentClass
 from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport OrderType
@@ -48,8 +47,6 @@ from nautilus_trader.core.rust.model cimport TradingState
 from nautilus_trader.core.rust.model cimport TrailingOffsetType
 from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.execution.messages cimport CancelAllOrders
-from nautilus_trader.execution.messages cimport CancelOrder
 from nautilus_trader.execution.messages cimport ModifyOrder
 from nautilus_trader.execution.messages cimport SubmitOrder
 from nautilus_trader.execution.messages cimport SubmitOrderList
@@ -57,17 +54,16 @@ from nautilus_trader.execution.messages cimport TradingCommand
 from nautilus_trader.execution.trailing cimport TrailingStopCalculator
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
-from nautilus_trader.model.events.order cimport OrderCancelRejected
 from nautilus_trader.model.events.order cimport OrderDenied
 from nautilus_trader.model.events.order cimport OrderModifyRejected
 from nautilus_trader.model.functions cimport order_type_to_str
 from nautilus_trader.model.functions cimport trading_state_to_str
 from nautilus_trader.model.functions cimport trailing_offset_type_to_str
+from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ComponentId
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.instruments.base cimport NEGATIVE_PRICE_INSTRUMENT_CLASSES
 from nautilus_trader.model.instruments.base cimport Instrument
-from nautilus_trader.model.instruments.currency_pair cimport CurrencyPair
 from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
@@ -484,7 +480,7 @@ cdef class RiskEngine(Component):
 
         if not self._check_orders_risk(instrument, command.order_list.orders):
             # Deny all orders in list
-            self._deny_order_list(command.order_list, "OrderList {command.order_list.id.to_str()} DENIED")
+            self._deny_order_list(command.order_list, f"OrderList {command.order_list.id.to_str()} DENIED")
             return # Denied
 
         self._execution_gateway(instrument, command)
@@ -635,6 +631,27 @@ cdef class RiskEngine(Component):
         # RISK CHECKS
         ########################################################################
 
+        # Group orders by account_id to handle multiple accounts per instrument
+        cdef dict orders_by_account = {}  # type: dict[AccountId, list]
+        cdef:
+            Order order
+            AccountId account_id
+        for order in orders:
+            if order.account_id not in orders_by_account:
+                orders_by_account[order.account_id] = []
+
+            orders_by_account[order.account_id].append(order)
+
+        # Check each account group separately
+        cdef list account_orders
+        for account_id, account_orders in orders_by_account.items():
+            if not self._check_orders_risk_for_account(instrument, account_orders, account_id):
+                return False  # Denied
+
+        return True  # All checks passed
+
+    cpdef bint _check_orders_risk_for_account(self, Instrument instrument, list orders, AccountId account_id):
+        # Check orders for a specific account (or venue-based lookup if account_id is None)
         cdef QuoteTick last_quote = None
         cdef TradeTick last_trade = None
         cdef Price last_px = None
@@ -649,10 +666,13 @@ cdef class RiskEngine(Component):
             max_notional = Money(float(max_notional_setting), instrument.quote_currency)
 
         # Get account for risk checks
-        cdef Account account = self._cache.account_for_venue(instrument.id.venue)
+        cdef Account account = self._cache.account_for_venue(instrument.id.venue, account_id)
 
         if account is None:
-            self._log.debug(f"Cannot find account for venue {instrument.id.venue}")
+            self._log.debug(
+                f"Cannot find account for venue {instrument.id.venue} "
+                f"(account_id={account_id.get_issuer() if account_id is not None else None})"
+            )
             return True  # TODO: Temporary early return until handling routing/multiple venues
 
         if account.is_margin_account:
@@ -851,20 +871,25 @@ cdef class RiskEngine(Component):
             else:
                 effective_quantity = order.quantity
 
-            # Check min/max quantity against effective quantity
-            if instrument.max_quantity and effective_quantity > instrument.max_quantity:
-                self._deny_order(
-                    order=order,
-                    reason=f"QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={instrument.max_quantity}",
-                )
-                return False  # Denied
+            # Base-quantity bounds (`min_quantity`/`max_quantity`) do not apply to
+            # quote-denominated orders: the client-side conversion uses an estimated
+            # price and may differ from the venue fill, and some venues enforce
+            # distinct per-order-type minimums. The venue is authoritative for
+            # quote-denominated sizing; rely on `min_notional`/`max_notional` below.
+            if not order.is_quote_quantity:
+                if instrument.max_quantity and effective_quantity > instrument.max_quantity:
+                    self._deny_order(
+                        order=order,
+                        reason=f"QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={instrument.max_quantity}",
+                    )
+                    return False  # Denied
 
-            if instrument.min_quantity and effective_quantity < instrument.min_quantity:
-                self._deny_order(
-                    order=order,
-                    reason=f"QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={instrument.min_quantity}",
-                )
-                return False  # Denied
+                if instrument.min_quantity and effective_quantity < instrument.min_quantity:
+                    self._deny_order(
+                        order=order,
+                        reason=f"QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={instrument.min_quantity}",
+                    )
+                    return False  # Denied
 
             notional = instrument.notional_value(effective_quantity, last_px, use_quote_for_inverse=True)
 
@@ -1170,4 +1195,5 @@ cdef class RiskEngine(Component):
     cpdef void _handle_event(self, Event event):
         if self.debug:
             self._log.debug(f"{RECV}{EVT} {event}", LogColor.MAGENTA)
+
         self.event_count += 1

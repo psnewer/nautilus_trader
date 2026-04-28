@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,8 +25,11 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OrderSubmitted {
-    #[allow(clippy::too_many_arguments)]
+    /// Represents an event where an order has been submitted by the system to the
+    /// trading venue.
+    #[expect(clippy::too_many_arguments)]
     #[new]
     fn py_new(
         trader_id: TraderId,

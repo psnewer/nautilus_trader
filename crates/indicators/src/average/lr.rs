@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,6 +27,10 @@ const MAX_PERIOD: usize = 16_384;
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators")
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct LinearRegression {
     pub period: usize,
@@ -134,6 +138,7 @@ impl LinearRegression {
         let _ = self.inputs.push_back(close);
 
         self.has_inputs = true;
+
         if self.inputs.len() < self.period {
             return;
         }
@@ -145,6 +150,7 @@ impl LinearRegression {
         let divisor = self.divisor;
 
         let (mut y_sum, mut xy_sum) = (0.0, 0.0);
+
         for (i, &y) in self.inputs.iter().enumerate() {
             let x = (i + 1) as f64;
             y_sum += y;
@@ -155,6 +161,7 @@ impl LinearRegression {
         self.intercept = y_sum.mul_add(x_mul_sum, -(x_sum * xy_sum)) / divisor;
 
         let (mut sse, mut y_last, mut e_last) = (0.0, 0.0, 0.0);
+
         for (i, &y) in self.inputs.iter().enumerate() {
             let x = (i + 1) as f64;
             let y_hat = self.slope.mul_add(x, self.intercept);

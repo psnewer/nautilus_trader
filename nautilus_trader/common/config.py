@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -35,6 +35,8 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import OtoTriggerMode
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import Identifier
@@ -98,7 +100,7 @@ def nautilus_schema_hook(type_: type[Any]) -> dict[str, Any]:
         return {"type": "string", "format": "date-time"}
     if type_ == pd.Timedelta:
         return {"type": "string"}
-    if type_ == Environment:
+    if type_ in (Environment, TimeInForce):
         return {"type": "string"}
     if type_ is type:  # Handle <class 'type'>
         return {"type": "string"}  # Represent type objects as strings
@@ -121,7 +123,7 @@ def msgspec_encoding_hook(obj: Any) -> Any:  # noqa: C901 (too complex)
         return str(obj)
     if isinstance(obj, (Price | Quantity | Money | Currency)):
         return str(obj)
-    if isinstance(obj, (OmsType | AccountType | BookType)):
+    if isinstance(obj, (OmsType | AccountType | BookType | OtoTriggerMode | TimeInForce)):
         return obj.name
     if isinstance(obj, (pd.Timestamp | pd.Timedelta)):
         return obj.isoformat()
@@ -161,6 +163,10 @@ def msgspec_decoding_hook(obj_type: type, obj: Any) -> Any:  # noqa: C901 (too c
         return AccountType[obj]
     if obj_type == BookType:
         return BookType[obj]
+    if obj_type == OtoTriggerMode:
+        return OtoTriggerMode[obj]
+    if obj_type == TimeInForce:
+        return TimeInForce[obj]
     if obj_type == TriggerType:
         return TriggerType[obj]
     if obj_type == Environment:
@@ -186,7 +192,11 @@ def tokenize_config(obj: NautilusConfig) -> str:
     return hashlib.sha256(obj.json()).hexdigest()
 
 
-class NautilusConfig(msgspec.Struct, kw_only=True, frozen=True):
+def pyo3_config_json(config: NautilusConfig) -> bytes:
+    return msgspec.json.encode(config, enc_hook=msgspec_encoding_hook)
+
+
+class NautilusConfig(msgspec.Struct, kw_only=True, frozen=True, forbid_unknown_fields=True):
     """
     The base class for all Nautilus configuration objects.
     """
@@ -315,8 +325,18 @@ class DatabaseConfig(NautilusConfig, frozen=True):
         If a value is provided then it will be redacted in the string repr for this object.
     ssl : bool, default False
         If socket should use an SSL (TLS encryption) enabled connection.
-    timeout : int, default 20
+    connection_timeout : int, default 20
         The timeout (seconds) to wait for a new connection.
+    response_timeout : int, default 20
+        The timeout (seconds) to wait for a database response.
+    number_of_retries : int, default 100
+        The number of retry attempts for connection failures.
+    exponent_base : int, default 2
+        The base value for exponential backoff.
+    max_delay : int, default 1000
+        The maximum retry delay in seconds.
+    factor : int, default 2
+        The multiplier applied to each retry delay step.
 
     Notes
     -----
@@ -330,10 +350,16 @@ class DatabaseConfig(NautilusConfig, frozen=True):
     username: str | None = None
     password: str | None = None
     ssl: bool = False
-    timeout: int | None = 20
+    connection_timeout: int = 20
+    response_timeout: int = 20
+    number_of_retries: int = 100
+    exponent_base: int = 2
+    max_delay: int = 1000
+    factor: int = 2
 
     def __repr__(self) -> str:
         redacted_password = "None"
+
         if self.password:
             if len(self.password) >= 4:
                 redacted_password = f"{self.password[:2]}...{self.password[-2:]}"
@@ -347,7 +373,12 @@ class DatabaseConfig(NautilusConfig, frozen=True):
             f"username={self.username}, "
             f"password={redacted_password}, "
             f"ssl={self.ssl}, "
-            f"timeout={self.timeout})"
+            f"connection_timeout={self.connection_timeout}, "
+            f"response_timeout={self.response_timeout}, "
+            f"number_of_retries={self.number_of_retries}, "
+            f"exponent_base={self.exponent_base}, "
+            f"max_delay={self.max_delay}, "
+            f"factor={self.factor})"
         )
 
 
@@ -584,7 +615,11 @@ class LoggingConfig(NautilusConfig, frozen=True):
         If all logging should be bypassed.
     print_config : bool, default False
         If the core logging configuration should be printed to stdout at initialization.
-    use_pyo3: bool, default False
+    use_tracing : bool, default False
+        If the tracing subscriber should be enabled for capturing logs from external Rust
+        crates that use the `tracing` crate. Use the ``RUST_LOG`` environment variable
+        to control which crates emit tracing events (e.g., ``RUST_LOG=hyper_util=debug``).
+    use_pyo3 : bool, default False
         If the logging subsystem should be initialized via pyo3,
         this isn't recommended for backtesting as the performance is much lower
         but can be useful for seeing logs originating from Rust.
@@ -606,6 +641,7 @@ class LoggingConfig(NautilusConfig, frozen=True):
     log_components_only: bool = False
     bypass_logging: bool = False
     print_config: bool = False
+    use_tracing: bool = False
     use_pyo3: bool = False
     clear_log_file: bool = False
 

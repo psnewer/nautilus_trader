@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,13 +14,11 @@
 // -------------------------------------------------------------------------------------------------
 
 use std::{
-    collections::HashMap,
-    env,
     fmt::Display,
-    str::FromStr,
     sync::{Mutex, OnceLock, atomic::Ordering, mpsc::SendError},
 };
 
+use ahash::AHashMap;
 use indexmap::IndexMap;
 use log::{
     Level, LevelFilter, Log, STATIC_MAX_LEVEL,
@@ -36,12 +34,16 @@ use nautilus_model::identifiers::TraderId;
 use serde::{Deserialize, Serialize, Serializer};
 use ustr::Ustr;
 
+pub use super::config::LoggerConfig;
 use super::{LOGGING_BYPASSED, LOGGING_GUARDS_ACTIVE, LOGGING_INITIALIZED, LOGGING_REALTIME};
+#[cfg(not(all(feature = "simulation", madsim)))]
+use crate::logging::writer::{FileWriter, LogWriter, StderrWriter, StdoutWriter};
 use crate::{
     enums::{LogColor, LogLevel},
-    logging::writer::{FileWriter, FileWriterConfig, LogWriter, StderrWriter, StdoutWriter},
+    logging::writer::FileWriterConfig,
 };
 
+#[cfg(not(all(feature = "simulation", madsim)))]
 const LOGGING: &str = "logging";
 const KV_COLOR: &str = "color";
 const KV_COMPONENT: &str = "component";
@@ -51,112 +53,6 @@ static LOGGER_TX: OnceLock<std::sync::mpsc::Sender<LogEvent>> = OnceLock::new();
 
 /// Global handle to the logging thread - only one thread exists per process.
 static LOGGER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-
-#[cfg_attr(
-    feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common")
-)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoggerConfig {
-    /// Maximum log level to write to stdout.
-    pub stdout_level: LevelFilter,
-    /// Maximum log level to write to file (disabled is `Off`).
-    pub fileout_level: LevelFilter,
-    /// Per-component log levels, allowing finer-grained control.
-    component_level: HashMap<Ustr, LevelFilter>,
-    /// If only components with explicit component-level filters should be logged.
-    pub log_components_only: bool,
-    /// If logger is using ANSI color codes.
-    pub is_colored: bool,
-    /// If the configuration should be printed to stdout at initialization.
-    pub print_config: bool,
-}
-
-impl Default for LoggerConfig {
-    /// Creates a new default [`LoggerConfig`] instance.
-    fn default() -> Self {
-        Self {
-            stdout_level: LevelFilter::Info,
-            fileout_level: LevelFilter::Off,
-            component_level: HashMap::new(),
-            log_components_only: false,
-            is_colored: true,
-            print_config: false,
-        }
-    }
-}
-
-impl LoggerConfig {
-    /// Creates a new [`LoggerConfig`] instance.
-    #[must_use]
-    pub const fn new(
-        stdout_level: LevelFilter,
-        fileout_level: LevelFilter,
-        component_level: HashMap<Ustr, LevelFilter>,
-        log_components_only: bool,
-        is_colored: bool,
-        print_config: bool,
-    ) -> Self {
-        Self {
-            stdout_level,
-            fileout_level,
-            component_level,
-            log_components_only,
-            is_colored,
-            print_config,
-        }
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the spec string is invalid.
-    pub fn from_spec(spec: &str) -> anyhow::Result<Self> {
-        let mut config = Self::default();
-        for kv in spec.split(';') {
-            let kv = kv.trim();
-            if kv.is_empty() {
-                continue;
-            }
-            let kv_lower = kv.to_lowercase(); // For case-insensitive comparison
-
-            if kv_lower == "log_components_only" {
-                config.log_components_only = true;
-            } else if kv_lower == "is_colored" {
-                config.is_colored = true;
-            } else if kv_lower == "print_config" {
-                config.print_config = true;
-            } else {
-                let parts: Vec<&str> = kv.split('=').collect();
-                if parts.len() != 2 {
-                    anyhow::bail!("Invalid spec pair: {kv}");
-                }
-                let k = parts[0].trim(); // Trim key
-                let v = parts[1].trim(); // Trim value
-                let lvl = LevelFilter::from_str(v)
-                    .map_err(|_| anyhow::anyhow!("Invalid log level: {v}"))?;
-                let k_lower = k.to_lowercase(); // Case-insensitive key matching
-                match k_lower.as_str() {
-                    "stdout" => config.stdout_level = lvl,
-                    "fileout" => config.fileout_level = lvl,
-                    _ => {
-                        config.component_level.insert(Ustr::from(k), lvl);
-                    }
-                }
-            }
-        }
-        Ok(config)
-    }
-
-    /// Retrieves the logger configuration from the "`NAUTILUS_LOG`" environment variable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the variable is unset or invalid.
-    pub fn from_env() -> anyhow::Result<Self> {
-        let spec = env::var("NAUTILUS_LOG")?;
-        Self::from_spec(&spec)
-    }
-}
 
 /// A high-performance logger utilizing a MPSC channel under the hood.
 ///
@@ -336,6 +232,7 @@ impl Log for Logger {
                 component,
                 message: format!("{}", record.args()),
             };
+
             if let Err(SendError(LogEvent::Log(line))) = self.tx.send(LogEvent::Log(line)) {
                 eprintln!("Error sending log event (receiver closed): {line}");
             }
@@ -354,7 +251,6 @@ impl Log for Logger {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 impl Logger {
     /// Initializes the logger based on the `NAUTILUS_LOG` environment variable.
     ///
@@ -372,15 +268,6 @@ impl Logger {
 
     /// Initializes the logger with the given configuration.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let config = LoggerConfig::from_spec("stdout=Info;fileout=Debug;RiskEngine=Error");
-    /// let file_config = FileWriterConfig::default();
-    /// let log_guard = Logger::init_with_config(trader_id, instance_id, config, file_config);
-    /// ```
-    /// Initializes the logger with the given `LoggerConfig` and `FileWriterConfig`.
-    ///
     /// # Errors
     ///
     /// Returns an error if the logger fails to register or initialize the background thread.
@@ -390,6 +277,12 @@ impl Logger {
         config: LoggerConfig,
         file_config: FileWriterConfig,
     ) -> anyhow::Result<LogGuard> {
+        // Fast path: already initialized
+        if super::LOGGING_INITIALIZED.load(Ordering::SeqCst) {
+            return LogGuard::new()
+                .ok_or_else(|| anyhow::anyhow!("Logging already initialized but sender missing"));
+        }
+
         let (tx, rx) = std::sync::mpsc::channel::<LogEvent>();
 
         let logger_tx = tx.clone();
@@ -408,31 +301,50 @@ impl Logger {
             );
         }
 
+        if config.bypass_logging {
+            super::logging_set_bypass();
+        }
+
+        let is_colored = config.is_colored;
+
         let print_config = config.print_config;
         if print_config {
             println!("STATIC_MAX_LEVEL={STATIC_MAX_LEVEL}");
             println!("Logger initialized with {config:?} {file_config:?}");
         }
 
-        let handle = std::thread::Builder::new()
-            .name(LOGGING.to_string())
-            .spawn(move || {
-                Self::handle_messages(
-                    trader_id.to_string(),
-                    instance_id.to_string(),
-                    config,
-                    file_config,
-                    rx,
-                );
-            })?;
+        #[cfg(not(all(feature = "simulation", madsim)))]
+        {
+            let handle = std::thread::Builder::new()
+                .name(LOGGING.to_string())
+                .spawn(move || {
+                    Self::handle_messages(
+                        trader_id.to_string(),
+                        instance_id.to_string(),
+                        config,
+                        file_config,
+                        rx,
+                    );
+                })?;
 
-        // Store the handle globally
-        if let Ok(mut handle_guard) = LOGGER_HANDLE.lock() {
-            debug_assert!(
-                handle_guard.is_none(),
-                "LOGGER_HANDLE already set - re-initialization not supported"
-            );
-            *handle_guard = Some(handle);
+            // Store the handle globally
+            if let Ok(mut handle_guard) = LOGGER_HANDLE.lock() {
+                debug_assert!(
+                    handle_guard.is_none(),
+                    "LOGGER_HANDLE already set - re-initialization not supported"
+                );
+                *handle_guard = Some(handle);
+            }
+        }
+
+        #[cfg(all(feature = "simulation", madsim))]
+        {
+            // Under simulation, the background writer thread would escape the
+            // madsim scheduler. Drop the receiver so the channel closes cleanly
+            // and force the bypass flag so subsequent log calls no-op without
+            // SendError noise.
+            let _ = (trader_id, instance_id, config, file_config, rx);
+            super::logging_set_bypass();
         }
 
         let max_level = log::LevelFilter::Trace;
@@ -442,10 +354,15 @@ impl Logger {
             println!("Logger set as `log` implementation with max level {max_level}");
         }
 
+        super::LOGGING_INITIALIZED.store(true, Ordering::SeqCst);
+        super::LOGGING_COLORED.store(is_colored, Ordering::SeqCst);
+
         LogGuard::new()
             .ok_or_else(|| anyhow::anyhow!("Failed to create LogGuard from global sender"))
     }
 
+    #[cfg(not(all(feature = "simulation", madsim)))]
+    #[expect(clippy::needless_pass_by_value)]
     fn handle_messages(
         trader_id: String,
         instance_id: String,
@@ -457,10 +374,20 @@ impl Logger {
             stdout_level,
             fileout_level,
             component_level,
+            module_level,
             log_components_only,
             is_colored,
             print_config: _,
+            use_tracing: _,
+            bypass_logging: _,
+            file_config: _,
+            clear_log_file: _,
         } = config;
+
+        // Pre-sort module filters by descending path length for O(n) longest-prefix lookup
+        let mut module_filters_sorted: Vec<(Ustr, LevelFilter)> =
+            module_level.into_iter().collect();
+        module_filters_sorted.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
         let trader_id_cache = Ustr::from(&trader_id);
 
@@ -481,15 +408,13 @@ impl Logger {
                              file_writer_opt: &mut Option<FileWriter>| {
             match event {
                 LogEvent::Log(line) => {
-                    let component_filter_level = component_level.get(&line.component);
-
-                    if log_components_only && component_filter_level.is_none() {
-                        return;
-                    }
-
-                    if let Some(&filter_level) = component_filter_level
-                        && line.level > filter_level
-                    {
+                    if should_filter_log(
+                        &line.component,
+                        line.level,
+                        &module_filters_sorted,
+                        &component_level,
+                        log_components_only,
+                    ) {
                         return;
                     }
 
@@ -582,6 +507,46 @@ impl Logger {
     }
 }
 
+/// Determines if a log line should be filtered out based on module and component filters.
+///
+/// Returns `true` if the line should be skipped (filtered out), `false` if it should be logged.
+///
+/// The `module_filters_sorted` slice must be pre-sorted by descending path length so the
+/// first `starts_with` match is the longest prefix.
+#[must_use]
+pub fn should_filter_log(
+    component: &Ustr,
+    line_level: log::Level,
+    module_filters_sorted: &[(Ustr, LevelFilter)],
+    component_level: &AHashMap<Ustr, LevelFilter>,
+    log_components_only: bool,
+) -> bool {
+    if module_filters_sorted.is_empty() && component_level.is_empty() {
+        return log_components_only;
+    }
+
+    // Module filter: first match in sorted list is longest prefix
+    let module_filter = module_filters_sorted
+        .iter()
+        .find(|(path, _)| component.starts_with(path.as_str()))
+        .map(|(_, level)| *level);
+
+    let component_filter = component_level.get(component).copied();
+
+    if log_components_only && module_filter.is_none() && component_filter.is_none() {
+        return true;
+    }
+
+    // Module filter takes precedence over component filter
+    if let Some(filter_level) = module_filter.or(component_filter)
+        && line_level > filter_level
+    {
+        return true;
+    }
+
+    false
+}
+
 /// Gracefully shuts down the logging subsystem.
 ///
 /// Performs the same shutdown sequence as dropping the last `LogGuard`, but can be called
@@ -663,6 +628,10 @@ pub fn log<T: AsRef<str>>(level: LogLevel, color: LogColor, component: Ustr, mes
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common")
 )]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.common")
+)]
 #[derive(Debug)]
 pub struct LogGuard {
     tx: std::sync::mpsc::Sender<LogEvent>,
@@ -702,9 +671,7 @@ impl Drop for LogGuard {
     fn drop(&mut self) {
         let previous_count = LOGGING_GUARDS_ACTIVE
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                if count == 0 {
-                    panic!("LogGuard reference count underflow");
-                }
+                assert!(count != 0, "LogGuard reference count underflow");
                 Some(count - 1)
             })
             .expect("Failed to decrement LogGuard count");
@@ -743,8 +710,7 @@ impl Drop for LogGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Duration};
-
+    use ahash::AHashMap;
     use log::LevelFilter;
     use nautilus_core::UUID4;
     use nautilus_model::identifiers::TraderId;
@@ -754,11 +720,7 @@ mod tests {
     use ustr::Ustr;
 
     use super::*;
-    use crate::{
-        enums::LogColor,
-        logging::{logging_clock_set_static_mode, logging_clock_set_static_time},
-        testing::wait_until,
-    };
+    use crate::enums::LogColor;
 
     #[rstest]
     fn log_message_serialization() {
@@ -788,13 +750,16 @@ mod tests {
             LoggerConfig {
                 stdout_level: LevelFilter::Info,
                 fileout_level: LevelFilter::Debug,
-                component_level: HashMap::from_iter(vec![(
+                component_level: AHashMap::from_iter(vec![(
                     Ustr::from("RiskEngine"),
                     LevelFilter::Error
                 )]),
+                module_level: AHashMap::new(),
                 log_components_only: false,
                 is_colored: true,
                 print_config: false,
+                use_tracing: false,
+                ..Default::default()
             }
         );
     }
@@ -807,10 +772,13 @@ mod tests {
             LoggerConfig {
                 stdout_level: LevelFilter::Warn,
                 fileout_level: LevelFilter::Error,
-                component_level: HashMap::new(),
+                component_level: AHashMap::new(),
+                module_level: AHashMap::new(),
                 log_components_only: false,
                 is_colored: true,
                 print_config: true,
+                use_tracing: false,
+                ..Default::default()
             }
         );
     }
@@ -824,20 +792,348 @@ mod tests {
             LoggerConfig {
                 stdout_level: LevelFilter::Info,
                 fileout_level: LevelFilter::Off,
-                component_level: HashMap::from_iter(vec![(
+                component_level: AHashMap::from_iter(vec![(
                     Ustr::from("RiskEngine"),
                     LevelFilter::Debug
                 )]),
+                module_level: AHashMap::new(),
                 log_components_only: true,
                 is_colored: true,
                 print_config: false,
+                use_tracing: false,
+                ..Default::default()
             }
         );
     }
 
-    // These tests need to run serially because they use global logging state
+    #[rstest]
+    fn test_log_line_wrapper_plain_string() {
+        let line = LogLine {
+            timestamp: 1_650_000_000_000_000_000.into(),
+            level: log::Level::Info,
+            color: LogColor::Normal,
+            component: Ustr::from("TestComponent"),
+            message: "Test message".to_string(),
+        };
+
+        let mut wrapper = LogLineWrapper::new(line, Ustr::from("TRADER-001"));
+        let result = wrapper.get_string();
+
+        assert!(result.contains("TRADER-001"));
+        assert!(result.contains("TestComponent"));
+        assert!(result.contains("Test message"));
+        assert!(result.contains("[INFO]"));
+        assert!(result.ends_with('\n'));
+        // Should NOT contain ANSI codes
+        assert!(!result.contains("\x1b["));
+    }
+
+    #[rstest]
+    fn test_log_line_wrapper_colored_string() {
+        let line = LogLine {
+            timestamp: 1_650_000_000_000_000_000.into(),
+            level: log::Level::Info,
+            color: LogColor::Green,
+            component: Ustr::from("TestComponent"),
+            message: "Test message".to_string(),
+        };
+
+        let mut wrapper = LogLineWrapper::new(line, Ustr::from("TRADER-001"));
+        let result = wrapper.get_colored();
+
+        assert!(result.contains("TRADER-001"));
+        assert!(result.contains("TestComponent"));
+        assert!(result.contains("Test message"));
+        // Should contain ANSI codes
+        assert!(result.contains("\x1b["));
+        assert!(result.ends_with('\n'));
+    }
+
+    #[rstest]
+    fn test_log_line_wrapper_json_output() {
+        let line = LogLine {
+            timestamp: 1_650_000_000_000_000_000.into(),
+            level: log::Level::Warn,
+            color: LogColor::Yellow,
+            component: Ustr::from("RiskEngine"),
+            message: "Warning message".to_string(),
+        };
+
+        let wrapper = LogLineWrapper::new(line, Ustr::from("TRADER-002"));
+        let json = wrapper.get_json();
+
+        let parsed: Value = serde_json::from_str(json.trim()).unwrap();
+        assert_eq!(parsed["trader_id"], "TRADER-002");
+        assert_eq!(parsed["component"], "RiskEngine");
+        assert_eq!(parsed["message"], "Warning message");
+        assert_eq!(parsed["level"], "WARN");
+        assert_eq!(parsed["color"], "YELLOW");
+    }
+
+    #[rstest]
+    fn test_log_line_wrapper_caches_string() {
+        let line = LogLine {
+            timestamp: 1_650_000_000_000_000_000.into(),
+            level: log::Level::Info,
+            color: LogColor::Normal,
+            component: Ustr::from("Test"),
+            message: "Cached".to_string(),
+        };
+
+        let mut wrapper = LogLineWrapper::new(line, Ustr::from("TRADER"));
+        let first = wrapper.get_string().to_string();
+        let second = wrapper.get_string().to_string();
+
+        assert_eq!(first, second);
+    }
+
+    #[rstest]
+    fn test_log_line_display() {
+        let line = LogLine {
+            timestamp: 0.into(),
+            level: log::Level::Error,
+            color: LogColor::Red,
+            component: Ustr::from("Component"),
+            message: "Error occurred".to_string(),
+        };
+
+        let display = format!("{line}");
+        assert_eq!(display, "[ERROR] Component: Error occurred");
+    }
+
+    /// Helper to convert module level map to sorted vec (descending by path length)
+    fn sorted_module_filters(map: AHashMap<Ustr, LevelFilter>) -> Vec<(Ustr, LevelFilter)> {
+        let mut v: Vec<_> = map.into_iter().collect();
+        v.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
+        v
+    }
+
+    #[rstest]
+    fn test_filter_no_filters_passes_all() {
+        let module_filters = vec![];
+        let component_level = AHashMap::new();
+
+        assert!(!should_filter_log(
+            &Ustr::from("anything"),
+            Level::Trace,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_component_exact_match() {
+        let module_filters = vec![];
+        let component_level = AHashMap::from_iter([(Ustr::from("RiskEngine"), LevelFilter::Error)]);
+
+        assert!(should_filter_log(
+            &Ustr::from("RiskEngine"),
+            Level::Info,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("RiskEngine"),
+            Level::Error,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("Portfolio"),
+            Level::Info,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_module_prefix_match() {
+        let module_filters = vec![(Ustr::from("nautilus_okx::websocket"), LevelFilter::Debug)];
+        let component_level = AHashMap::new();
+
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::websocket"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::websocket::handler"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("nautilus_okx::websocket::handler"),
+            Level::Trace,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_binance::data"),
+            Level::Trace,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_longest_prefix_wins() {
+        let module_filters = sorted_module_filters(AHashMap::from_iter([
+            (Ustr::from("nautilus_okx"), LevelFilter::Error),
+            (Ustr::from("nautilus_okx::websocket"), LevelFilter::Debug),
+        ]));
+        let component_level = AHashMap::new();
+
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::websocket::handler"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("nautilus_okx::data"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::data"),
+            Level::Error,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_module_precedence_over_component() {
+        let module_filters = vec![(Ustr::from("nautilus_okx::websocket"), LevelFilter::Debug)];
+        let component_level =
+            AHashMap::from_iter([(Ustr::from("nautilus_okx::websocket"), LevelFilter::Error)]);
+
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::websocket"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_log_components_only_blocks_unknown() {
+        let module_filters = vec![];
+        let component_level = AHashMap::from_iter([(Ustr::from("RiskEngine"), LevelFilter::Debug)]);
+
+        assert!(should_filter_log(
+            &Ustr::from("Portfolio"),
+            Level::Info,
+            &module_filters,
+            &component_level,
+            true
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("RiskEngine"),
+            Level::Info,
+            &module_filters,
+            &component_level,
+            true
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_log_components_only_with_module() {
+        let module_filters = vec![(Ustr::from("nautilus_okx"), LevelFilter::Debug)];
+        let component_level = AHashMap::new();
+
+        assert!(!should_filter_log(
+            &Ustr::from("nautilus_okx::websocket"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            true
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("nautilus_binance::data"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            true
+        ));
+    }
+
+    #[rstest]
+    fn test_filter_level_comparison() {
+        let module_filters = vec![];
+        let component_level = AHashMap::from_iter([(Ustr::from("Test"), LevelFilter::Warn)]);
+
+        assert!(!should_filter_log(
+            &Ustr::from("Test"),
+            Level::Error,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(!should_filter_log(
+            &Ustr::from("Test"),
+            Level::Warn,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("Test"),
+            Level::Info,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("Test"),
+            Level::Debug,
+            &module_filters,
+            &component_level,
+            false
+        ));
+        assert!(should_filter_log(
+            &Ustr::from("Test"),
+            Level::Trace,
+            &module_filters,
+            &component_level,
+            false
+        ));
+    }
+
+    // These tests use global logging state (one logger per process).
+    // They run correctly with cargo-nextest which isolates each test in its own process.
+    //
+    // Gated out under `cfg(madsim)`: every test here drives the file-logging writer
+    // thread, which is itself gated out under simulation (see `Logger::init_with_config`),
+    // so log events are dropped and these tests would either hang on `wait_until` or
+    // assert against an empty log file. Logging is outside the determinism contract.
+    #[cfg(not(all(feature = "simulation", madsim)))]
     mod serial_tests {
+        use std::{sync::atomic::Ordering, time::Duration};
+
         use super::*;
+        use crate::{
+            logging::{
+                LOGGING_BYPASSED, logging_clock_set_static_mode, logging_clock_set_static_time,
+                logging_is_initialized, logging_set_bypass,
+            },
+            testing::wait_until,
+        };
 
         #[rstest]
         fn test_logging_to_file() {
@@ -864,7 +1160,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             let mut log_contents = String::new();
@@ -898,12 +1194,14 @@ mod tests {
 
             assert_eq!(
                 log_contents,
-                "1970-01-20T02:20:00.000000000Z [INFO] TRADER-001.RiskEngine: This is a test.\n"
+                "1970-01-20T02:20:00.000000000Z [INFO] TRADER-001.RiskEngine: This is a test\n"
             );
         }
 
         #[rstest]
         fn test_shutdown_drains_backlog_tail() {
+            const N: usize = 1000;
+
             // Configure file logging at Info level
             let config = LoggerConfig {
                 stdout_level: LevelFilter::Off,
@@ -930,7 +1228,6 @@ mod tests {
             logging_clock_set_static_time(1_700_000_000_000_000);
 
             // Enqueue a known number of messages synchronously
-            const N: usize = 1000;
             for i in 0..N {
                 log::info!(component = "TailDrain"; "BacklogTest {i}");
             }
@@ -990,7 +1287,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             drop(log_guard); // Ensure log buffers are flushed
@@ -1047,7 +1344,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             let mut log_contents = String::new();
@@ -1074,7 +1371,226 @@ mod tests {
 
             assert_eq!(
                 log_contents,
-                "{\"timestamp\":\"1970-01-20T02:20:00.000000000Z\",\"trader_id\":\"TRADER-001\",\"level\":\"INFO\",\"color\":\"NORMAL\",\"component\":\"RiskEngine\",\"message\":\"This is a test.\"}\n"
+                "{\"timestamp\":\"1970-01-20T02:20:00.000000000Z\",\"trader_id\":\"TRADER-001\",\"level\":\"INFO\",\"color\":\"NORMAL\",\"component\":\"RiskEngine\",\"message\":\"This is a test\"}\n"
+            );
+        }
+
+        #[rstest]
+        fn test_init_sets_logging_is_initialized_flag() {
+            let config = LoggerConfig::default();
+            let file_config = FileWriterConfig::default();
+
+            let guard = Logger::init_with_config(
+                TraderId::from("TRADER-001"),
+                UUID4::new(),
+                config,
+                file_config,
+            );
+            assert!(guard.is_ok());
+            assert!(logging_is_initialized());
+
+            drop(guard);
+            assert!(!logging_is_initialized());
+        }
+
+        #[rstest]
+        fn test_reinit_after_guard_drop_fails() {
+            let config = LoggerConfig::default();
+            let file_config = FileWriterConfig::default();
+
+            let guard1 = Logger::init_with_config(
+                TraderId::from("TRADER-001"),
+                UUID4::new(),
+                config.clone(),
+                file_config.clone(),
+            );
+            assert!(guard1.is_ok());
+            drop(guard1);
+
+            // Re-init fails because log crate's set_boxed_logger only works once per process
+            let guard2 = Logger::init_with_config(
+                TraderId::from("TRADER-002"),
+                UUID4::new(),
+                config,
+                file_config,
+            );
+            assert!(guard2.is_err());
+        }
+
+        #[rstest]
+        fn test_bypass_before_init_prevents_logging() {
+            logging_set_bypass();
+            assert!(LOGGING_BYPASSED.load(Ordering::Relaxed));
+
+            let temp_dir = tempdir().expect("Failed to create temporary directory");
+            let config = LoggerConfig {
+                fileout_level: LevelFilter::Debug,
+                ..Default::default()
+            };
+            let file_config = FileWriterConfig {
+                directory: Some(temp_dir.path().to_str().unwrap().to_string()),
+                ..Default::default()
+            };
+
+            let guard = Logger::init_with_config(
+                TraderId::from("TRADER-001"),
+                UUID4::new(),
+                config,
+                file_config,
+            );
+            assert!(guard.is_ok());
+
+            log::info!(
+                component = "TestComponent";
+                "This should be bypassed"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+            drop(guard);
+
+            // Bypass flag remains permanently set (no reset mechanism)
+            assert!(LOGGING_BYPASSED.load(Ordering::Relaxed));
+        }
+
+        #[rstest]
+        fn test_module_level_filtering() {
+            // Configure module-level filters (note: requires :: to be a module filter):
+            // - nautilus::adapters=Warn (general adapter logs at Warn+)
+            // - nautilus::adapters::okx=Debug (OKX adapter logs at Debug+)
+            let config = LoggerConfig::from_spec(
+                "stdout=Off;fileout=Trace;nautilus::adapters=Warn;nautilus::adapters::okx=Debug",
+            )
+            .unwrap();
+
+            let temp_dir = tempdir().expect("Failed to create temporary directory");
+            let file_config = FileWriterConfig {
+                directory: Some(temp_dir.path().to_str().unwrap().to_string()),
+                ..Default::default()
+            };
+
+            let log_guard = Logger::init_with_config(
+                TraderId::from("TRADER-MOD"),
+                UUID4::new(),
+                config,
+                file_config,
+            )
+            .expect("Failed to initialize logger");
+
+            logging_clock_set_static_mode();
+            logging_clock_set_static_time(1_650_000_000_000_000);
+
+            // Log from nautilus::adapters::okx::websocket - should pass (Debug allowed)
+            log::debug!(
+                component = "nautilus::adapters::okx::websocket";
+                "OKX debug message"
+            );
+
+            // Log from nautilus::adapters::okx - should pass (Debug allowed)
+            log::info!(
+                component = "nautilus::adapters::okx";
+                "OKX info message"
+            );
+
+            // Log from nautilus::adapters::binance - should be filtered (only Warn+ allowed)
+            log::info!(
+                component = "nautilus::adapters::binance";
+                "Binance info message SHOULD NOT APPEAR"
+            );
+
+            // Log from nautilus::adapters::binance at Warn - should pass
+            log::warn!(
+                component = "nautilus::adapters::binance";
+                "Binance warn message"
+            );
+
+            // Log from unrelated component - should pass (no filter)
+            log::trace!(
+                component = "Portfolio";
+                "Portfolio trace message"
+            );
+
+            drop(log_guard);
+
+            wait_until(
+                || {
+                    std::fs::read_dir(&temp_dir)
+                        .expect("Failed to read directory")
+                        .filter_map(Result::ok)
+                        .any(|entry| entry.path().is_file())
+                },
+                Duration::from_secs(3),
+            );
+
+            let log_file_path = std::fs::read_dir(&temp_dir)
+                .expect("Failed to read directory")
+                .filter_map(Result::ok)
+                .find(|entry| entry.path().is_file())
+                .expect("No log file found")
+                .path();
+
+            let log_contents =
+                std::fs::read_to_string(log_file_path).expect("Error reading log file");
+
+            assert!(
+                log_contents.contains("OKX debug message"),
+                "OKX debug should pass (longer prefix wins)"
+            );
+            assert!(
+                log_contents.contains("OKX info message"),
+                "OKX info should pass"
+            );
+            assert!(
+                log_contents.contains("Binance warn message"),
+                "Binance warn should pass"
+            );
+            assert!(
+                log_contents.contains("Portfolio trace message"),
+                "Unfiltered component should pass"
+            );
+            assert!(
+                !log_contents.contains("SHOULD NOT APPEAR"),
+                "Binance info should be filtered (adapters=Warn)"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "simulation", madsim))]
+    mod sim_tests {
+        use std::sync::atomic::Ordering;
+
+        use super::*;
+        use crate::logging::LOGGING_BYPASSED;
+
+        #[rstest]
+        fn test_init_under_madsim_skips_writer_thread_and_forces_bypass() {
+            let config = LoggerConfig {
+                bypass_logging: false,
+                ..Default::default()
+            };
+            let temp_dir = tempdir().expect("Failed to create temporary directory");
+            let file_config = FileWriterConfig {
+                directory: Some(temp_dir.path().to_str().unwrap().to_string()),
+                ..Default::default()
+            };
+
+            let _guard = Logger::init_with_config(
+                TraderId::from("TRADER-SIM"),
+                UUID4::new(),
+                config,
+                file_config,
+            )
+            .expect("init should succeed under simulation");
+
+            assert!(LOGGING_INITIALIZED.load(Ordering::SeqCst));
+            assert!(
+                LOGGING_BYPASSED.load(Ordering::SeqCst),
+                "bypass must be forced under cfg(madsim) even when config disables it"
+            );
+            assert!(
+                LOGGER_HANDLE
+                    .lock()
+                    .expect("LOGGER_HANDLE mutex should not be poisoned")
+                    .is_none(),
+                "writer thread must not be spawned under cfg(madsim)"
             );
         }
     }

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -108,6 +108,7 @@ def market_change_to_updates(  # noqa: C901
     # Handle market data updates
     book_updates: list[OrderBookDeltas] = []
     bsp_book_updates: list[BSPOrderBookDelta] = []
+
     if mc.rc is not None:
         for rc in mc.rc:
             instrument_id = betfair_instrument_id(
@@ -125,6 +126,7 @@ def market_change_to_updates(  # noqa: C901
                     ts_event,
                     ts_init,
                 )
+
                 if snapshot is not None:
                     updates.append(snapshot)
             else:
@@ -160,6 +162,7 @@ def market_change_to_updates(  # noqa: C901
                 ts_event,
                 ts_init,
             )
+
             if bsp_deltas is not None:
                 bsp_book_updates.extend(bsp_deltas)
 
@@ -213,6 +216,7 @@ def market_definition_to_instrument_closes(
     ts_init: int,
 ) -> list[InstrumentClose]:
     updates = []
+
     for runner in market_definition.runners:
         close = runner_to_instrument_close(runner, market_id, ts_event, ts_init)
         if close is not None:
@@ -261,6 +265,7 @@ def market_definition_to_betfair_starting_prices(
     ts_init: int,
 ) -> list[BetfairStartingPrice]:
     updates: list[BetfairStartingPrice] = []
+
     for runner in market_definition.runners:
         sp = runner_to_betfair_starting_price(runner, market_id, ts_event, ts_init)
         if sp is not None:
@@ -316,8 +321,12 @@ def runner_change_to_order_book_snapshot(
     Convert a RunnerChange to a OrderBookDeltas snapshot.
     """
     # Check for incorrect data types
-    assert not rc.bdatb, "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
-    assert not rc.bdatl, "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    assert not rc.bdatb, (
+        "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    )
+    assert not rc.bdatl, (
+        "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    )
     assert not rc.batb, "Incorrect orderbook data found (best) should only be `atb` and `atl`"
     assert not rc.batl, "Incorrect orderbook data found (best) should only be `atb` and `atl`"
 
@@ -330,15 +339,20 @@ def runner_change_to_order_book_snapshot(
         ),
     ]
 
+    bids_len = len(rc.atb) if rc.atb is not None else 0
+    asks_len = len(rc.atl) if rc.atl is not None else 0
+
     # Bids are available to back (atb)
     if rc.atb is not None:
-        for bid in rc.atb:
+        for idx, bid in enumerate(rc.atb):
+            is_last = idx == bids_len - 1 and asks_len == 0
+            flags = RecordFlag.F_SNAPSHOT | RecordFlag.F_LAST if is_last else RecordFlag.F_SNAPSHOT
             book_order = _price_volume_to_book_order(bid, OrderSide.BUY)
             delta = OrderBookDelta(
                 instrument_id,
                 BookAction.UPDATE if bid.volume > 0.0 else BookAction.DELETE,
                 book_order,
-                flags=RecordFlag.F_SNAPSHOT,
+                flags=flags,
                 sequence=0,
                 ts_event=ts_event,
                 ts_init=ts_init,
@@ -347,13 +361,15 @@ def runner_change_to_order_book_snapshot(
 
     # Asks are available to back (atl)
     if rc.atl is not None:
-        for ask in rc.atl:
+        for idx, ask in enumerate(rc.atl):
+            is_last = idx == asks_len - 1
+            flags = RecordFlag.F_SNAPSHOT | RecordFlag.F_LAST if is_last else RecordFlag.F_SNAPSHOT
             book_order = _price_volume_to_book_order(ask, OrderSide.SELL)
             delta = OrderBookDelta(
                 instrument_id,
                 BookAction.UPDATE if ask.volume > 0.0 else BookAction.DELETE,
                 book_order,
-                flags=RecordFlag.F_SNAPSHOT,
+                flags=flags,
                 sequence=0,
                 ts_event=ts_event,
                 ts_init=ts_init,
@@ -371,6 +387,7 @@ def runner_change_to_trade_ticks(
     ts_init: int,
 ) -> list[TradeTick]:
     trade_ticks: list[TradeTick] = []
+
     for trd in rc.trd:
         if trd.volume == 0:
             continue
@@ -404,8 +421,12 @@ def runner_change_to_order_book_deltas(
     """
     Convert a RunnerChange to a list of OrderBookDeltas.
     """
-    assert not rc.bdatb, "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
-    assert not rc.bdatl, "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    assert not rc.bdatb, (
+        "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    )
+    assert not rc.bdatl, (
+        "Incorrect orderbook data found (best display), should only be `atb` and `atl`"
+    )
     assert not rc.batb, "Incorrect orderbook data found (best) should only be `atb` and `atl`"
     assert not rc.batl, "Incorrect orderbook data found (best) should only be `atb` and `atl`"
 
@@ -418,6 +439,7 @@ def runner_change_to_order_book_deltas(
     if rc.atb is not None:
         for idx, bid in enumerate(rc.atb):
             flags = 0
+
             if idx == bids_len - 1 and asks_len == 0:
                 # F_LAST, 1 << 7
                 # Last message in the book event or packet from the venue for a given `instrument_id`
@@ -439,6 +461,7 @@ def runner_change_to_order_book_deltas(
     if rc.atl is not None:
         for idx, ask in enumerate(rc.atl):
             flags = 0
+
             if idx == asks_len - 1:
                 # F_LAST, 1 << 7
                 # Last message in the book event or packet from the venue for a given `instrument_id`
@@ -475,6 +498,7 @@ def runner_change_to_betfair_ticker(
         None,
         None,
     )
+
     if runner.ltp:
         last_traded_price = runner.ltp
     if runner.tv:
@@ -512,6 +536,7 @@ def runner_change_to_bsp_order_book_deltas(
     if rc.spl is not None:
         for idx, spl in enumerate(rc.spl):
             flags = 0
+
             if idx == bids_len - 1 and asks_len == 0:
                 # F_LAST, 1 << 7
                 # Last message in the book event or packet from the venue for a given `instrument_id`
@@ -532,6 +557,7 @@ def runner_change_to_bsp_order_book_deltas(
     if rc.spb is not None:
         for idx, spb in enumerate(rc.spb):
             flags = 0
+
             if idx == asks_len - 1:
                 # F_LAST, 1 << 7
                 # Last message in the book event or packet from the venue for a given `instrument_id`
@@ -579,6 +605,7 @@ async def generate_trades_list(
     filled: list[ClearedOrderSummary] = self.client().betting.list_cleared_orders(
         bet_ids=[venue_order_id],
     )
+
     if not filled:
         self._log.warn(f"Found no existing order for {venue_order_id}")
         return []

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,8 +17,9 @@
 #[cfg(feature = "redis")]
 #[cfg(target_os = "linux")] // Databases only tested and supported on Linux
 mod serial_tests {
-    use std::time::Duration;
+    use std::{sync::OnceLock, time::Duration};
 
+    use bytes::Bytes;
     use nautilus_common::{
         cache::{CacheConfig, database::CacheDatabaseAdapter},
         enums::SerializationEncoding,
@@ -28,12 +29,22 @@ mod serial_tests {
     use nautilus_core::UUID4;
     use nautilus_infrastructure::redis::cache::{RedisCacheDatabase, RedisCacheDatabaseAdapter};
     use nautilus_model::{
+        data::{
+            DataType,
+            stubs::{ensure_stub_custom_data_registered, stub_custom_data},
+        },
         enums::{OrderSide, OrderType},
         identifiers::{ClientOrderId, PositionId, TraderId},
         instruments::stubs::crypto_perpetual_ethusdt,
         orders::{Order, builder::OrderTestBuilder},
         types::Quantity,
     };
+    use redis::AsyncCommands;
+
+    fn redis_test_mutex() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     async fn get_redis_cache_adapter()
     -> Result<RedisCacheDatabaseAdapter, Box<dyn std::error::Error>> {
@@ -74,6 +85,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_delete_order() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -89,7 +101,6 @@ mod serial_tests {
         let expected_key = format!("{}:orders:{}", adapter.database.trader_key, client_order_id);
 
         // Set up test data in Redis to verify deletion
-        use redis::AsyncCommands;
         let mut conn = adapter.database.con.clone();
         let _: () = conn.set(&expected_key, "test_data").await.unwrap();
 
@@ -140,6 +151,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_delete_position() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -148,7 +160,6 @@ mod serial_tests {
         let expected_key = format!("{}:positions:{}", adapter.database.trader_key, position_id);
 
         // Set up test data in Redis to verify deletion
-        use redis::AsyncCommands;
         let mut conn = adapter.database.con.clone();
         let _: () = conn.set(&expected_key, "test_data").await.unwrap();
 
@@ -199,6 +210,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_flush_database() {
+        let _guard = redis_test_mutex().lock().await;
         let mut adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -208,6 +220,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_delete_operations_are_idempotent() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -227,6 +240,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_delete_order_cleans_up_indexes() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -243,7 +257,6 @@ mod serial_tests {
         let trader_key = &adapter.database.trader_key;
 
         // Set up test data in Redis indexes to verify deletion
-        use redis::AsyncCommands;
         let mut conn = adapter.database.con.clone();
 
         // Add to various indexes
@@ -266,6 +279,7 @@ mod serial_tests {
             format!("{trader_key}:index:order_position"),
             format!("{trader_key}:index:order_client"),
         ];
+
         for hash_key in &hash_keys {
             let _: () = conn
                 .hset(hash_key, &order_id_str, "test_value")
@@ -311,6 +325,7 @@ mod serial_tests {
             let exists: bool = conn.sismember(index_key, &order_id_str).await.unwrap();
             assert!(exists, "Order ID should exist in index {index_key}");
         }
+
         for hash_key in &hash_keys {
             let exists: bool = conn.hexists(hash_key, &order_id_str).await.unwrap();
             assert!(exists, "Order ID should exist in hash {hash_key}");
@@ -357,6 +372,7 @@ mod serial_tests {
             let exists: bool = conn.sismember(index_key, &order_id_str).await.unwrap();
             assert!(!exists, "Order ID should be removed from index {index_key}");
         }
+
         for hash_key in &hash_keys {
             let exists: bool = conn.hexists(hash_key, &order_id_str).await.unwrap();
             assert!(!exists, "Order ID should be removed from hash {hash_key}");
@@ -369,6 +385,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_delete_position_cleans_up_indexes() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -378,7 +395,6 @@ mod serial_tests {
         let trader_key = &adapter.database.trader_key;
 
         // Set up test data in Redis indexes to verify deletion
-        use redis::AsyncCommands;
         let mut conn = adapter.database.con.clone();
 
         // Add to position indexes
@@ -405,6 +421,7 @@ mod serial_tests {
                     for index_key in &index_keys {
                         let exists: bool =
                             conn.sismember(index_key, &position_id_str).await.unwrap();
+
                         if !exists {
                             return false;
                         }
@@ -438,6 +455,7 @@ mod serial_tests {
                     for index_key in &index_keys {
                         let exists: bool =
                             conn.sismember(index_key, &position_id_str).await.unwrap();
+
                         if exists {
                             return false;
                         }
@@ -465,6 +483,7 @@ mod serial_tests {
 
     #[tokio::test]
     async fn test_debug_real_index_deletion() {
+        let _guard = redis_test_mutex().lock().await;
         let adapter = get_redis_cache_adapter()
             .await
             .expect("Failed to create adapter");
@@ -480,7 +499,6 @@ mod serial_tests {
         let order_id_str = client_order_id.to_string();
         let trader_key = &adapter.database.trader_key;
 
-        use redis::AsyncCommands;
         let mut conn = adapter.database.con.clone();
 
         // Set up test data exactly like real usage - just one index to test
@@ -544,6 +562,278 @@ mod serial_tests {
         assert!(!exists_after, "Order ID should be removed from index");
 
         // Final cleanup
+        let mut adapter = adapter;
+        adapter.flush().unwrap();
+    }
+
+    /// Tests that the buffer flushes on a timer even when no new messages arrive.
+    /// This verifies the fix for issue #3426 where blocking on channel receive
+    /// prevented time-based buffer flushing during idle periods.
+    #[tokio::test]
+    async fn test_buffer_flushes_on_interval_when_idle() {
+        let _guard = redis_test_mutex().lock().await;
+        let trader_id = TraderId::from("test-trader");
+        let instance_id = UUID4::new();
+
+        let config = CacheConfig {
+            database: Some(DatabaseConfig {
+                database_type: "redis".to_string(),
+                host: Some("localhost".to_string()),
+                port: Some(6379),
+                username: None,
+                password: None,
+                ssl: false,
+                connection_timeout: 20,
+                response_timeout: 20,
+                number_of_retries: 100,
+                exponent_base: 2,
+                max_delay: 1000,
+                factor: 2,
+            }),
+            buffer_interval_ms: Some(50),
+            ..Default::default()
+        };
+
+        let mut database = RedisCacheDatabase::new(trader_id, instance_id, config)
+            .await
+            .expect("Failed to create database");
+        database.flushdb().await;
+
+        let trader_key = database.trader_key.clone();
+        let test_key = "general:test_key";
+
+        let expected_key = format!("{trader_key}:{test_key}");
+
+        database
+            .insert(test_key.to_string(), Some(vec![Bytes::from("test_data")]))
+            .unwrap();
+
+        // Buffer should flush on timer even with no further messages
+        let conn = database.con.clone();
+        let expected_key_clone = expected_key.clone();
+        wait_until_async(
+            move || {
+                let mut conn = conn.clone();
+                let expected_key = expected_key_clone.clone();
+                async move { conn.exists(&expected_key).await.unwrap_or(false) }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
+        let mut conn = database.con.clone();
+        let exists: bool = conn.exists(&expected_key).await.unwrap();
+
+        assert!(
+            exists,
+            "Data should be flushed to Redis after buffer interval even when idle"
+        );
+    }
+
+    /// Tests that with `buffer_interval_ms = 0`, data is flushed immediately
+    /// without waiting for a timer.
+    #[tokio::test]
+    async fn test_buffer_flushes_immediately_with_zero_interval() {
+        let _guard = redis_test_mutex().lock().await;
+        let trader_id = TraderId::from("test-trader");
+        let instance_id = UUID4::new();
+
+        let config = CacheConfig {
+            database: Some(DatabaseConfig {
+                database_type: "redis".to_string(),
+                host: Some("localhost".to_string()),
+                port: Some(6379),
+                username: None,
+                password: None,
+                ssl: false,
+                connection_timeout: 20,
+                response_timeout: 20,
+                number_of_retries: 100,
+                exponent_base: 2,
+                max_delay: 1000,
+                factor: 2,
+            }),
+            buffer_interval_ms: Some(0),
+            ..Default::default()
+        };
+
+        let mut database = RedisCacheDatabase::new(trader_id, instance_id, config)
+            .await
+            .expect("Failed to create database");
+        database.flushdb().await;
+
+        let trader_key = database.trader_key.clone();
+        let test_key = "general:immediate_test";
+
+        let expected_key = format!("{trader_key}:{test_key}");
+
+        database
+            .insert(test_key.to_string(), Some(vec![Bytes::from("test_data")]))
+            .unwrap();
+
+        // Brief delay for async task processing
+        let conn = database.con.clone();
+        let expected_key_clone = expected_key.clone();
+        wait_until_async(
+            move || {
+                let mut conn = conn.clone();
+                let expected_key = expected_key_clone.clone();
+                async move { conn.exists(&expected_key).await.unwrap_or(false) }
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+
+        let mut conn = database.con.clone();
+        let exists: bool = conn.exists(&expected_key).await.unwrap();
+
+        assert!(
+            exists,
+            "Data should be flushed immediately with zero buffer interval"
+        );
+    }
+
+    /// Tests that pending buffered data is drained when close is called.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_buffer_drains_on_close() {
+        let _guard = redis_test_mutex().lock().await;
+        let trader_id = TraderId::from("test-trader");
+        let instance_id = UUID4::new();
+
+        let config = CacheConfig {
+            database: Some(DatabaseConfig {
+                database_type: "redis".to_string(),
+                host: Some("localhost".to_string()),
+                port: Some(6379),
+                username: None,
+                password: None,
+                ssl: false,
+                connection_timeout: 20,
+                response_timeout: 20,
+                number_of_retries: 100,
+                exponent_base: 2,
+                max_delay: 1000,
+                factor: 2,
+            }),
+            buffer_interval_ms: Some(10000),
+            ..Default::default()
+        };
+
+        let mut database = RedisCacheDatabase::new(trader_id, instance_id, config)
+            .await
+            .expect("Failed to create database");
+        database.flushdb().await;
+
+        let trader_key = database.trader_key.clone();
+        let test_key = "general:close_test";
+        let expected_key = format!("{trader_key}:{test_key}");
+
+        database
+            .insert(test_key.to_string(), Some(vec![Bytes::from("test_data")]))
+            .unwrap();
+
+        // Data should NOT be in Redis yet (buffer interval is 10 seconds)
+        let mut conn = database.con.clone();
+        let exists_before: bool = conn.exists(&expected_key).await.unwrap();
+        assert!(
+            !exists_before,
+            "Data should be buffered, not yet flushed to Redis"
+        );
+
+        database.close();
+
+        let exists_after: bool = conn.exists(&expected_key).await.unwrap();
+        assert!(
+            exists_after,
+            "Data should be flushed to Redis when close is called"
+        );
+    }
+
+    /// Tests add_custom_data and load_custom_data roundtrip with filtering by type_name and identifier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_add_and_load_custom_data_roundtrip() {
+        let _guard = redis_test_mutex().lock().await;
+        ensure_stub_custom_data_registered();
+        let adapter = get_redis_cache_adapter()
+            .await
+            .expect("Failed to create adapter");
+
+        let data = stub_custom_data(1000, 42, None, Some("id1".to_string()));
+        let data_type = DataType::new("StubCustomData", None, Some("id1".to_string()));
+
+        adapter
+            .add_custom_data(&data)
+            .expect("add_custom_data failed");
+
+        let conn = adapter.database.con.clone();
+        let custom_pattern = format!("{}:custom:*", adapter.database.trader_key);
+        wait_until_async(
+            move || {
+                let mut conn = conn.clone();
+                let custom_pattern = custom_pattern.clone();
+                async move {
+                    let keys: Vec<String> = conn.keys(custom_pattern).await.unwrap_or_default();
+                    keys.len() == 1
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let loaded = adapter
+            .load_custom_data(&data_type)
+            .expect("load_custom_data failed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], data);
+
+        let mut adapter = adapter;
+        adapter.flush().unwrap();
+    }
+
+    /// Tests that load_custom_data returns only items matching the requested DataType (identifier filter).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_load_custom_data_filters_by_identifier() {
+        let _guard = redis_test_mutex().lock().await;
+        ensure_stub_custom_data_registered();
+        let adapter = get_redis_cache_adapter()
+            .await
+            .expect("Failed to create adapter");
+
+        let data1 = stub_custom_data(2000, 1, None, Some("id1".to_string()));
+        let data2 = stub_custom_data(2001, 2, None, Some("id2".to_string()));
+        adapter.add_custom_data(&data1).unwrap();
+        adapter.add_custom_data(&data2).unwrap();
+
+        let data_type1 = DataType::new("StubCustomData", None, Some("id1".to_string()));
+        let data_type2 = DataType::new("StubCustomData", None, Some("id2".to_string()));
+
+        let conn = adapter.database.con.clone();
+        let custom_pattern = format!("{}:custom:*", adapter.database.trader_key);
+        wait_until_async(
+            move || {
+                let mut conn = conn.clone();
+                let custom_pattern = custom_pattern.clone();
+                async move {
+                    let keys: Vec<String> = conn.keys(custom_pattern).await.unwrap_or_default();
+                    keys.len() == 2
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let loaded_id1 = adapter
+            .load_custom_data(&data_type1)
+            .expect("load_custom_data failed");
+        assert_eq!(loaded_id1.len(), 1);
+        assert_eq!(loaded_id1[0].data_type.identifier(), Some("id1"));
+
+        let loaded_id2 = adapter
+            .load_custom_data(&data_type2)
+            .expect("load_custom_data failed");
+        assert_eq!(loaded_id2.len(), 1);
+        assert_eq!(loaded_id2[0].data_type.identifier(), Some("id2"));
+
         let mut adapter = adapter;
         adapter.flush().unwrap();
     }

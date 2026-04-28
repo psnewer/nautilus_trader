@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,17 +24,7 @@ def get_test_data_path(file_name: str) -> Path:
     """
     Get path to test data file in the tardis test data directory.
     """
-    path = (
-        PACKAGE_ROOT
-        / "crates"
-        / "adapters"
-        / "tardis"
-        / "src"
-        / "tests"
-        / "data"
-        / "csv"
-        / file_name
-    )
+    path = PACKAGE_ROOT / "crates" / "adapters" / "tardis" / "test_data" / "csv" / file_name
     assert path.exists(), f"Test data file not found: {path}"
     return path
 

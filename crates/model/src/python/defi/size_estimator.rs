@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,6 +20,7 @@ use pyo3::prelude::*;
 use crate::defi::pool_analysis::size_estimator::SizeForImpactResult;
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl SizeForImpactResult {
     #[getter]
     #[pyo3(name = "target_impact_bps")]
@@ -81,11 +82,16 @@ impl SizeForImpactResult {
         self.final_high.to_string()
     }
 
+    /// Check if the result is within the specified tolerance.
     #[pyo3(name = "within_tolerance")]
     fn py_within_tolerance(&self, tolerance_bps: u32) -> bool {
         self.within_tolerance(tolerance_bps)
     }
 
+    /// Get the convergence quality as a percentage.
+    ///
+    /// # Returns
+    /// Accuracy percentage (100.0 = perfect match, lower = less accurate)
     #[pyo3(name = "accuracy_percent")]
     fn py_accuracy_percent(&self) -> f64 {
         self.accuracy_percent()

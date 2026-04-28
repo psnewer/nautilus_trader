@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,10 +13,41 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Databento message decoding functions.
+//!
+//! # Sentinel Values
+//!
+//! Databento uses sentinel values to represent undefined/null fields:
+//!
+//! | Sentinel          | Value      | Usage                       |
+//! |-------------------|------------|-----------------------------|
+//! | `UNDEF_PRICE`     | `i64::MAX` | Undefined price fields.     |
+//! | `UNDEF_TIMESTAMP` | `u64::MAX` | Undefined timestamp fields. |
+//!
+//! # Fields Potentially Undefined
+//!
+//! According to Databento documentation, the following fields can contain sentinel values:
+//!
+//! | Message Type       | Field                          | Handling                           |
+//! |--------------------|--------------------------------|------------------------------------|
+//! | `MboMsg`           | `price`                        | Passed through as `PRICE_UNDEF`.   |
+//! | `TradeMsg`         | `price`                        | Passed through as `PRICE_UNDEF`.   |
+//! | `OhlcvMsg`         | `open`, `high`, `low`, `close` | Passed through as `PRICE_UNDEF`.   |
+//! | `Mbp1Msg`          | `bid_px`, `ask_px`             | Quote skipped if either undefined. |
+//! | `InstrumentDefMsg` | `activation`                   | Defaults to 0 (epoch).             |
+//! | `InstrumentDefMsg` | `expiration`                   | Returns error if undefined.        |
+//! | `InstrumentDefMsg` | `strike_price`                 | Returns error if undefined.        |
+//!
+//! # References
+//!
+//! - [`UNDEF_PRICE`](https://docs.rs/dbn/latest/dbn/constant.UNDEF_PRICE.html)
+//! - [`UNDEF_TIMESTAMP`](https://docs.rs/dbn/latest/dbn/constant.UNDEF_TIMESTAMP.html)
+//! - [Databento DBN Schema](https://databento.com/docs/schemas)
+
 use std::{ffi::c_char, num::NonZeroUsize};
 
-use databento::dbn::{self};
-use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_SECOND, uuid::UUID4};
+use databento::dbn;
+use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_SECOND};
 use nautilus_model::{
     data::{
         Bar, BarSpecification, BarType, BookOrder, DEPTH10_LEN, Data, InstrumentStatus,
@@ -26,13 +57,13 @@ use nautilus_model::{
         AggregationSource, AggressorSide, AssetClass, BarAggregation, BookAction, FromU8, FromU16,
         InstrumentClass, MarketStatusAction, OptionKind, OrderSide, PriceType,
     },
-    identifiers::{InstrumentId, TradeId},
+    identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
         Equity, FuturesContract, FuturesSpread, InstrumentAny, OptionContract, OptionSpread,
     },
     types::{
         Currency, Price, Quantity,
-        price::{PRICE_UNDEF, PriceRaw, decode_raw_price_i64},
+        price::{PRICE_UNDEF, decode_raw_price_i64},
     },
 };
 use ustr::Ustr;
@@ -42,7 +73,6 @@ use super::{
     types::{DatabentoImbalance, DatabentoStatistics},
 };
 
-// SAFETY: Known valid value
 const STEP_ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 
 const BAR_SPEC_1S: BarSpecification = BarSpecification {
@@ -71,6 +101,10 @@ const BAR_CLOSE_ADJUSTMENT_1M: u64 = NANOSECONDS_IN_SECOND * 60;
 const BAR_CLOSE_ADJUSTMENT_1H: u64 = NANOSECONDS_IN_SECOND * 60 * 60;
 const BAR_CLOSE_ADJUSTMENT_1D: u64 = NANOSECONDS_IN_SECOND * 60 * 60 * 24;
 
+// FNV-1a 64-bit constants (see http://www.isthe.com/chongo/tech/comp/fnv/).
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
 #[must_use]
 pub const fn parse_optional_bool(c: c_char) -> Option<bool> {
     match c as u8 as char {
@@ -96,6 +130,38 @@ pub const fn parse_aggressor_side(c: c_char) -> AggressorSide {
         'B' => AggressorSide::Buyer,
         _ => AggressorSide::NoAggressor,
     }
+}
+
+fn fnv1a_mix(hash: &mut u64, bytes: &[u8]) {
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    *hash ^= 0xff;
+    *hash = hash.wrapping_mul(FNV_PRIME);
+}
+
+/// Derives a deterministic [`TradeId`] for Databento schemas that do not
+/// publish a native trade identifier (e.g. CMBP1, TCBBO).
+///
+/// The hash combines the instrument, timestamps, price, size and aggressor
+/// side so that replayed data yields the same identifier across runs.
+fn derive_cmbp_trade_id(
+    instrument_id: InstrumentId,
+    ts_event: u64,
+    ts_recv: u64,
+    price: i64,
+    size: u32,
+    side: c_char,
+) -> TradeId {
+    let mut hash: u64 = FNV_OFFSET_BASIS;
+    fnv1a_mix(&mut hash, instrument_id.to_string().as_bytes());
+    fnv1a_mix(&mut hash, &ts_event.to_le_bytes());
+    fnv1a_mix(&mut hash, &ts_recv.to_le_bytes());
+    fnv1a_mix(&mut hash, &price.to_le_bytes());
+    fnv1a_mix(&mut hash, &size.to_le_bytes());
+    fnv1a_mix(&mut hash, &[side as u8]);
+    TradeId::new(format!("{hash:016x}"))
 }
 
 /// Parses a Databento book action character into a `BookAction` enum.
@@ -130,12 +196,12 @@ pub fn parse_option_kind(c: c_char) -> anyhow::Result<OptionKind> {
 fn parse_currency_or_usd_default(value: Result<&str, impl std::error::Error>) -> Currency {
     match value {
         Ok(value) if !value.is_empty() => Currency::try_from_str(value).unwrap_or_else(|| {
-            tracing::warn!("Unknown currency code '{value}', defaulting to USD");
+            log::warn!("Unknown currency code '{value}', defaulting to USD");
             Currency::USD()
         }),
         Ok(_) => Currency::USD(),
         Err(e) => {
-            tracing::error!("Error parsing currency: {e}");
+            log::error!("Error parsing currency: {e}");
             Currency::USD()
         }
     }
@@ -143,15 +209,12 @@ fn parse_currency_or_usd_default(value: Result<&str, impl std::error::Error>) ->
 
 /// Parses a CFI (Classification of Financial Instruments) code to extract asset and instrument classes.
 ///
-/// # Errors
-///
-/// Returns an error if `value` has fewer than 3 characters.
-pub fn parse_cfi_iso10926(
-    value: &str,
-) -> anyhow::Result<(Option<AssetClass>, Option<InstrumentClass>)> {
+/// Returns `(None, None)` if `value` has fewer than 3 characters.
+#[must_use]
+pub fn parse_cfi_iso10926(value: &str) -> (Option<AssetClass>, Option<InstrumentClass>) {
     let chars: Vec<char> = value.chars().collect();
     if chars.len() < 3 {
-        anyhow::bail!("Value string is too short");
+        return (None, None);
     }
 
     // TODO: A proper CFI parser would be useful: https://en.wikipedia.org/wiki/ISO_10962
@@ -178,7 +241,20 @@ pub fn parse_cfi_iso10926(
         asset_class = Some(AssetClass::Index);
     }
 
-    Ok((asset_class, instrument_class))
+    (asset_class, instrument_class)
+}
+
+fn decode_underlying(underlying_str: &str, symbol: &Symbol) -> Ustr {
+    if underlying_str.is_empty() {
+        // Fall back to first whitespace-separated token from symbol
+        symbol
+            .as_str()
+            .split_whitespace()
+            .next()
+            .map_or_else(|| symbol.inner(), Ustr::from)
+    } else {
+        Ustr::from(underlying_str)
+    }
 }
 
 /// Parses a Databento status reason code into a human-readable string.
@@ -248,52 +324,85 @@ pub fn parse_status_trading_event(value: u16) -> anyhow::Result<Option<Ustr>> {
     Ok(Some(Ustr::from(value_str)))
 }
 
-/// Decodes a raw price from an i64 value and returns the appropriate precision.
+/// Decodes a price, returning an error if undefined.
 ///
-/// If the decoded raw value equals `PRICE_UNDEF`, precision is forced to 0
-/// as required by the `Price` type invariants.
+/// Databento uses `i64::MAX` as a sentinel value for unset/null prices (see
+/// [`UNDEF_PRICE`](https://docs.rs/dbn/latest/dbn/constant.UNDEF_PRICE.html)).
+///
+/// # Errors
+///
+/// Returns an error if `value` is `i64::MAX` (undefined).
+#[inline(always)]
+pub fn decode_price(value: i64, precision: u8, field_name: &str) -> anyhow::Result<Price> {
+    if value == i64::MAX {
+        anyhow::bail!("Missing required price for `{field_name}`")
+    } else {
+        Ok(Price::from_raw(decode_raw_price_i64(value), precision))
+    }
+}
+
+/// Decodes a price from the given optional value, expressed in units of 1e-9.
 ///
 /// Databento uses `i64::MAX` as a sentinel value for unset/null prices (see
 /// [`UNDEF_PRICE`](https://docs.rs/dbn/latest/dbn/constant.UNDEF_PRICE.html)).
 #[inline(always)]
 #[must_use]
-fn decode_raw_price_with_precision(value: i64, precision: u8) -> (PriceRaw, u8) {
-    let raw = if value == i64::MAX {
-        PRICE_UNDEF
+pub fn decode_optional_price(value: i64, precision: u8) -> Option<Price> {
+    if value == i64::MAX {
+        None
     } else {
-        decode_raw_price_i64(value)
-    };
-
-    // PRICE_UNDEF must always have precision 0
-    let precision = if raw == PRICE_UNDEF { 0 } else { precision };
-    (raw, precision)
+        Some(Price::from_raw(decode_raw_price_i64(value), precision))
+    }
 }
 
-/// Decodes a price from the given value, expressed in units of 1e-9.
+/// Decodes a price, returning `PRICE_UNDEF` if the value is undefined.
+///
+/// This is used for market data where undefined prices should pass through
+/// as `PRICE_UNDEF` rather than causing an error.
 #[inline(always)]
 #[must_use]
-pub fn decode_price(value: i64, precision: u8) -> Price {
-    let (raw, precision) = decode_raw_price_with_precision(value, precision);
-    Price::from_raw(raw, precision)
+pub fn decode_price_or_undef(value: i64, precision: u8) -> Price {
+    if value == i64::MAX {
+        Price::from_raw(PRICE_UNDEF, 0)
+    } else {
+        Price::from_raw(decode_raw_price_i64(value), precision)
+    }
+}
+
+/// Computes the minimum decimal precision needed to represent a raw price value
+/// expressed in units of 1e-9, by counting trailing decimal zeros.
+///
+/// For example, a raw value of `3_906_250` (representing 0.00390625) has 1 trailing
+/// zero, so the precision is `9 - 1 = 8`.
+#[inline(always)]
+#[must_use]
+pub fn precision_from_raw(value: i64) -> u8 {
+    let mut v = value.unsigned_abs();
+    if v == 0 {
+        return 0;
+    }
+    let mut trailing = 0u8;
+    while trailing < 9 && v.is_multiple_of(10) {
+        v /= 10;
+        trailing += 1;
+    }
+    9 - trailing
 }
 
 /// Decodes a minimum price increment from the given value, expressed in units of 1e-9.
+///
+/// The precision is derived from the actual tick value to avoid truncation of
+/// fractional tick sizes (e.g., treasury futures with 1/256 or 1/32 ticks).
+/// The derived precision is floored at `precision` (typically the currency precision).
 #[inline(always)]
 #[must_use]
 pub fn decode_price_increment(value: i64, precision: u8) -> Price {
     match value {
         0 | i64::MAX => Price::new(10f64.powi(-i32::from(precision)), precision),
-        _ => decode_price(value, precision),
-    }
-}
-
-/// Decodes a price from the given optional value, expressed in units of 1e-9.
-#[inline(always)]
-#[must_use]
-pub fn decode_optional_price(value: i64, precision: u8) -> Option<Price> {
-    match value {
-        i64::MAX => None,
-        _ => Some(decode_price(value, precision)),
+        _ => {
+            let derived = precision_from_raw(value).max(precision);
+            Price::from_raw(decode_raw_price_i64(value), derived)
+        }
     }
 }
 
@@ -314,6 +423,35 @@ pub fn decode_optional_quantity(value: i64) -> Option<Quantity> {
     }
 }
 
+/// Decodes a timestamp, returning an error if undefined.
+///
+/// Databento uses `u64::MAX` as `UNDEF_TIMESTAMP` sentinel for null timestamps.
+///
+/// # Errors
+///
+/// Returns an error if `value` is `u64::MAX` (undefined).
+#[inline(always)]
+pub fn decode_timestamp(value: u64, field_name: &str) -> anyhow::Result<UnixNanos> {
+    if value == dbn::UNDEF_TIMESTAMP {
+        anyhow::bail!("Missing required timestamp for `{field_name}`")
+    } else {
+        Ok(UnixNanos::from(value))
+    }
+}
+
+/// Decodes a timestamp from the given optional value.
+///
+/// Databento uses `u64::MAX` as `UNDEF_TIMESTAMP` sentinel for null timestamps.
+#[inline(always)]
+#[must_use]
+pub fn decode_optional_timestamp(value: u64) -> Option<UnixNanos> {
+    if value == dbn::UNDEF_TIMESTAMP {
+        None
+    } else {
+        Some(UnixNanos::from(value))
+    }
+}
+
 /// Decodes a multiplier from the given value, expressed in units of 1e-9.
 /// Uses exact integer arithmetic to avoid precision loss in financial calculations.
 ///
@@ -321,6 +459,8 @@ pub fn decode_optional_quantity(value: i64) -> Option<Quantity> {
 ///
 /// Returns an error if value is negative (invalid multiplier).
 pub fn decode_multiplier(value: i64) -> anyhow::Result<Quantity> {
+    const SCALE: u128 = 1_000_000_000;
+
     match value {
         0 | i64::MAX => Ok(Quantity::from(1)),
         v if v < 0 => anyhow::bail!("Invalid negative multiplier: {v}"),
@@ -328,8 +468,6 @@ pub fn decode_multiplier(value: i64) -> anyhow::Result<Quantity> {
             // Work in integers: v is fixed-point with 9 fractional digits.
             // Build a canonical decimal string without floating-point.
             let abs = v as u128;
-
-            const SCALE: u128 = 1_000_000_000;
             let int_part = abs / SCALE;
             let frac_part = abs % SCALE;
 
@@ -394,7 +532,7 @@ pub fn decode_mbo_msg(
     let side = parse_order_side(msg.side);
     if is_trade_msg(msg.action) {
         if include_trades && msg.size > 0 {
-            let price = decode_price(msg.price, price_precision);
+            let price = decode_price_or_undef(msg.price, price_precision);
             let size = decode_quantity(msg.size as u64);
             let aggressor_side = parse_aggressor_side(msg.side);
             let trade_id = TradeId::new(itoa::Buffer::new().format(msg.sequence));
@@ -417,8 +555,7 @@ pub fn decode_mbo_msg(
     }
 
     let action = parse_book_action(msg.action)?;
-    let (raw_price, precision) = decode_raw_price_with_precision(msg.price, price_precision);
-    let price = Price::from_raw(raw_price, precision);
+    let price = decode_price_or_undef(msg.price, price_precision);
     let size = decode_quantity(msg.size as u64);
     let order = BookOrder::new(side, price, size, msg.order_id);
 
@@ -454,7 +591,7 @@ pub fn decode_trade_msg(
 
     let trade = TradeTick::new(
         instrument_id,
-        decode_price(msg.price, price_precision),
+        decode_price_or_undef(msg.price, price_precision),
         decode_quantity(msg.size as u64),
         parse_aggressor_side(msg.side),
         TradeId::new(itoa::Buffer::new().format(msg.sequence)),
@@ -486,8 +623,8 @@ pub fn decode_tbbo_msg(
     let maybe_quote = if has_valid_bid_ask(top_level.bid_px, top_level.ask_px) {
         Some(QuoteTick::new(
             instrument_id,
-            decode_price(top_level.bid_px, price_precision),
-            decode_price(top_level.ask_px, price_precision),
+            decode_price_or_undef(top_level.bid_px, price_precision),
+            decode_price_or_undef(top_level.ask_px, price_precision),
             decode_quantity(top_level.bid_sz as u64),
             decode_quantity(top_level.ask_sz as u64),
             ts_event,
@@ -499,7 +636,7 @@ pub fn decode_tbbo_msg(
 
     let trade = TradeTick::new(
         instrument_id,
-        decode_price(msg.price, price_precision),
+        decode_price_or_undef(msg.price, price_precision),
         decode_quantity(msg.size as u64),
         parse_aggressor_side(msg.side),
         TradeId::new(itoa::Buffer::new().format(msg.sequence)),
@@ -531,8 +668,8 @@ pub fn decode_mbp1_msg(
     let maybe_quote = if has_valid_bid_ask(top_level.bid_px, top_level.ask_px) {
         Some(QuoteTick::new(
             instrument_id,
-            decode_price(top_level.bid_px, price_precision),
-            decode_price(top_level.ask_px, price_precision),
+            decode_price_or_undef(top_level.bid_px, price_precision),
+            decode_price_or_undef(top_level.ask_px, price_precision),
             decode_quantity(top_level.bid_sz as u64),
             decode_quantity(top_level.ask_sz as u64),
             ts_event,
@@ -545,7 +682,7 @@ pub fn decode_mbp1_msg(
     let maybe_trade = if include_trades && is_trade_msg(msg.action) {
         Some(TradeTick::new(
             instrument_id,
-            decode_price(msg.price, price_precision),
+            decode_price_or_undef(msg.price, price_precision),
             decode_quantity(msg.size as u64),
             parse_aggressor_side(msg.side),
             TradeId::new(itoa::Buffer::new().format(msg.sequence)),
@@ -582,8 +719,8 @@ pub fn decode_bbo_msg(
 
     let quote = QuoteTick::new(
         instrument_id,
-        decode_price(top_level.bid_px, price_precision),
-        decode_price(top_level.ask_px, price_precision),
+        decode_price_or_undef(top_level.bid_px, price_precision),
+        decode_price_or_undef(top_level.ask_px, price_precision),
         decode_quantity(top_level.bid_sz as u64),
         decode_quantity(top_level.ask_sz as u64),
         ts_event,
@@ -612,14 +749,14 @@ pub fn decode_mbp10_msg(
     for level in &msg.levels {
         let bid_order = BookOrder::new(
             OrderSide::Buy,
-            decode_price(level.bid_px, price_precision),
+            decode_price_or_undef(level.bid_px, price_precision),
             decode_quantity(level.bid_sz as u64),
             0,
         );
 
         let ask_order = BookOrder::new(
             OrderSide::Sell,
-            decode_price(level.ask_px, price_precision),
+            decode_price_or_undef(level.ask_px, price_precision),
             decode_quantity(level.ask_sz as u64),
             0,
         );
@@ -698,8 +835,8 @@ pub fn decode_cmbp1_msg(
     let maybe_quote = if has_valid_bid_ask(top_level.bid_px, top_level.ask_px) {
         Some(QuoteTick::new(
             instrument_id,
-            decode_price(top_level.bid_px, price_precision),
-            decode_price(top_level.ask_px, price_precision),
+            decode_price_or_undef(top_level.bid_px, price_precision),
+            decode_price_or_undef(top_level.ask_px, price_precision),
             decode_quantity(top_level.bid_sz as u64),
             decode_quantity(top_level.ask_sz as u64),
             ts_event,
@@ -710,13 +847,21 @@ pub fn decode_cmbp1_msg(
     };
 
     let maybe_trade = if include_trades && is_trade_msg(msg.action) {
-        // Use UUID4 for trade ID as CMBP1 doesn't have a sequence field
+        // CMBP1 does not publish a native trade ID; derive a deterministic one
+        let trade_id = derive_cmbp_trade_id(
+            instrument_id,
+            msg.hd.ts_event,
+            msg.ts_recv,
+            msg.price,
+            msg.size,
+            msg.side,
+        );
         Some(TradeTick::new(
             instrument_id,
-            decode_price(msg.price, price_precision),
+            decode_price_or_undef(msg.price, price_precision),
             decode_quantity(msg.size as u64),
             parse_aggressor_side(msg.side),
-            TradeId::new(UUID4::new().as_str()),
+            trade_id,
             ts_event,
             ts_init,
         ))
@@ -750,8 +895,8 @@ pub fn decode_cbbo_msg(
 
     let quote = QuoteTick::new(
         instrument_id,
-        decode_price(top_level.bid_px, price_precision),
-        decode_price(top_level.ask_px, price_precision),
+        decode_price_or_undef(top_level.bid_px, price_precision),
+        decode_price_or_undef(top_level.ask_px, price_precision),
         decode_quantity(top_level.bid_sz as u64),
         decode_quantity(top_level.ask_sz as u64),
         ts_event,
@@ -782,8 +927,8 @@ pub fn decode_tcbbo_msg(
     let maybe_quote = if has_valid_bid_ask(top_level.bid_px, top_level.ask_px) {
         Some(QuoteTick::new(
             instrument_id,
-            decode_price(top_level.bid_px, price_precision),
-            decode_price(top_level.ask_px, price_precision),
+            decode_price_or_undef(top_level.bid_px, price_precision),
+            decode_price_or_undef(top_level.ask_px, price_precision),
             decode_quantity(top_level.bid_sz as u64),
             decode_quantity(top_level.ask_sz as u64),
             ts_event,
@@ -793,13 +938,21 @@ pub fn decode_tcbbo_msg(
         None
     };
 
-    // Use UUID4 for trade ID as TCBBO doesn't have a sequence field
+    // TCBBO does not publish a native trade ID; derive a deterministic one
+    let trade_id = derive_cmbp_trade_id(
+        instrument_id,
+        msg.hd.ts_event,
+        msg.ts_recv,
+        msg.price,
+        msg.size,
+        msg.side,
+    );
     let trade = TradeTick::new(
         instrument_id,
-        decode_price(msg.price, price_precision),
+        decode_price_or_undef(msg.price, price_precision),
         decode_quantity(msg.size as u64),
         parse_aggressor_side(msg.side),
-        TradeId::new(UUID4::new().as_str()),
+        trade_id,
         ts_event,
         ts_init,
     );
@@ -899,10 +1052,10 @@ pub fn decode_ohlcv_msg(
 
     let bar = Bar::new(
         bar_type,
-        decode_price(msg.open, price_precision),
-        decode_price(msg.high, price_precision),
-        decode_price(msg.low, price_precision),
-        decode_price(msg.close, price_precision),
+        decode_price_or_undef(msg.open, price_precision),
+        decode_price_or_undef(msg.high, price_precision),
+        decode_price_or_undef(msg.low, price_precision),
+        decode_price_or_undef(msg.close, price_precision),
         decode_quantity(msg.volume),
         ts_event,
         ts_init,
@@ -965,6 +1118,7 @@ pub fn decode_record(
             Some(ts_init),
             include_trades,
         )?;
+
         match result {
             (Some(delta), None) => (Some(Data::Delta(delta)), None),
             (None, Some(trade)) => (Some(Data::Trade(trade)), None),
@@ -1119,14 +1273,15 @@ pub fn decode_equity(
         price_increment.precision,
         price_increment,
         Some(lot_size),
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     ))
@@ -1144,38 +1299,39 @@ pub fn decode_futures_contract(
 ) -> anyhow::Result<FuturesContract> {
     let currency = parse_currency_or_usd_default(msg.currency());
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.asset()?);
-    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+    let underlying = decode_underlying(msg.asset()?, &instrument_id.symbol);
+    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
     let price_increment = decode_price_increment(msg.min_price_increment, currency.precision);
     let multiplier = decode_multiplier(msg.unit_of_measure_qty)?;
     let lot_size = decode_lot_size(msg.min_lot_size_round_lot);
     let ts_event = UnixNanos::from(msg.ts_recv); // More accurate and reliable timestamp
     let ts_init = ts_init.unwrap_or(ts_event);
 
-    FuturesContract::new_checked(
+    Ok(FuturesContract::new_checked(
         instrument_id,
         instrument_id.symbol,
         asset_class.unwrap_or(AssetClass::Commodity),
         Some(exchange),
         underlying,
-        msg.activation.into(),
-        msg.expiration.into(),
+        decode_optional_timestamp(msg.activation).unwrap_or_default(),
+        decode_timestamp(msg.expiration, "expiration")?,
         currency,
         price_increment.precision,
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
-    )
+    )?)
 }
 
 /// Decodes a Databento instrument definition message into a `FuturesSpread` instrument.
@@ -1189,8 +1345,8 @@ pub fn decode_futures_spread(
     ts_init: Option<UnixNanos>,
 ) -> anyhow::Result<FuturesSpread> {
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.asset()?);
-    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+    let underlying = decode_underlying(msg.asset()?, &instrument_id.symbol);
+    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
     let strategy_type = Ustr::from(msg.secsubtype()?);
     let currency = parse_currency_or_usd_default(msg.currency());
     let price_increment = decode_price_increment(msg.min_price_increment, currency.precision);
@@ -1199,31 +1355,32 @@ pub fn decode_futures_spread(
     let ts_event = UnixNanos::from(msg.ts_recv); // More accurate and reliable timestamp
     let ts_init = ts_init.unwrap_or(ts_event);
 
-    FuturesSpread::new_checked(
+    Ok(FuturesSpread::new_checked(
         instrument_id,
         instrument_id.symbol,
         asset_class.unwrap_or(AssetClass::Commodity),
         Some(exchange),
         underlying,
         strategy_type,
-        msg.activation.into(),
-        msg.expiration.into(),
+        decode_optional_timestamp(msg.activation).unwrap_or_default(),
+        decode_timestamp(msg.expiration, "expiration")?,
         currency,
         price_increment.precision,
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
-    )
+    )?)
 }
 
 /// Decodes a Databento instrument definition message into an `OptionContract` instrument.
@@ -1239,25 +1396,26 @@ pub fn decode_option_contract(
     let currency = parse_currency_or_usd_default(msg.currency());
     let strike_price_currency = parse_currency_or_usd_default(msg.strike_price_currency());
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.underlying()?);
+    let underlying = decode_underlying(msg.underlying()?, &instrument_id.symbol);
     let asset_class_opt = if instrument_id.venue.as_str() == "OPRA" {
         Some(AssetClass::Equity)
     } else {
-        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
         asset_class
     };
     let option_kind = parse_option_kind(msg.instrument_class)?;
-    let strike_price = Price::from_raw(
-        decode_raw_price_i64(msg.strike_price),
+    let strike_price = decode_price(
+        msg.strike_price,
         strike_price_currency.precision,
-    );
+        "strike_price",
+    )?;
     let price_increment = decode_price_increment(msg.min_price_increment, currency.precision);
     let multiplier = decode_multiplier(msg.unit_of_measure_qty)?;
     let lot_size = decode_lot_size(msg.min_lot_size_round_lot);
     let ts_event = UnixNanos::from(msg.ts_recv); // More accurate and reliable timestamp
     let ts_init = ts_init.unwrap_or(ts_event);
 
-    OptionContract::new_checked(
+    Ok(OptionContract::new_checked(
         instrument_id,
         instrument_id.symbol,
         asset_class_opt.unwrap_or(AssetClass::Commodity),
@@ -1266,23 +1424,24 @@ pub fn decode_option_contract(
         option_kind,
         strike_price,
         currency,
-        msg.activation.into(),
-        msg.expiration.into(),
+        decode_optional_timestamp(msg.activation).unwrap_or_default(),
+        decode_timestamp(msg.expiration, "expiration")?,
         price_increment.precision,
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
-    )
+    )?)
 }
 
 /// Decodes a Databento instrument definition message into an `OptionSpread` instrument.
@@ -1296,11 +1455,11 @@ pub fn decode_option_spread(
     ts_init: Option<UnixNanos>,
 ) -> anyhow::Result<OptionSpread> {
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.underlying()?);
+    let underlying = decode_underlying(msg.underlying()?, &instrument_id.symbol);
     let asset_class_opt = if instrument_id.venue.as_str() == "OPRA" {
         Some(AssetClass::Equity)
     } else {
-        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
         asset_class
     };
     let strategy_type = Ustr::from(msg.secsubtype()?);
@@ -1311,31 +1470,32 @@ pub fn decode_option_spread(
     let ts_event = msg.ts_recv.into(); // More accurate and reliable timestamp
     let ts_init = ts_init.unwrap_or(ts_event);
 
-    OptionSpread::new_checked(
+    Ok(OptionSpread::new_checked(
         instrument_id,
         instrument_id.symbol,
         asset_class_opt.unwrap_or(AssetClass::Commodity),
         Some(exchange),
         underlying,
         strategy_type,
-        msg.activation.into(),
-        msg.expiration.into(),
+        decode_optional_timestamp(msg.activation).unwrap_or_default(),
+        decode_timestamp(msg.expiration, "expiration")?,
         currency,
         price_increment.precision,
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
-    )
+    )?)
 }
 
 /// Decodes a Databento imbalance message into a `DatabentoImbalance` event.
@@ -1354,9 +1514,9 @@ pub fn decode_imbalance_msg(
 
     Ok(DatabentoImbalance::new(
         instrument_id,
-        decode_price(msg.ref_price, price_precision),
-        decode_price(msg.cont_book_clr_price, price_precision),
-        decode_price(msg.auct_interest_clr_price, price_precision),
+        decode_price_or_undef(msg.ref_price, price_precision),
+        decode_price_or_undef(msg.cont_book_clr_price, price_precision),
+        decode_price_or_undef(msg.auct_interest_clr_price, price_precision),
         Quantity::new(f64::from(msg.paired_qty), 0),
         Quantity::new(f64::from(msg.total_imbalance_qty), 0),
         parse_order_side(msg.side),
@@ -1456,6 +1616,115 @@ mod tests {
     }
 
     #[rstest]
+    fn test_derive_cmbp_trade_id_is_deterministic() {
+        let instrument_id = InstrumentId::from("ES.c.0.GLBX");
+        let first = derive_cmbp_trade_id(instrument_id, 1, 2, 100, 5, 'B' as c_char);
+        let second = derive_cmbp_trade_id(instrument_id, 1, 2, 100, 5, 'B' as c_char);
+        assert_eq!(first, second);
+    }
+
+    #[rstest]
+    fn test_derive_cmbp_trade_id_format_is_16_hex_chars() {
+        let instrument_id = InstrumentId::from("ES.c.0.GLBX");
+        let trade_id = derive_cmbp_trade_id(instrument_id, 0, 0, 0, 0, 'B' as c_char);
+        let value = trade_id.as_str();
+        assert_eq!(value.len(), 16);
+        assert!(
+            value
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
+    }
+
+    #[rstest]
+    #[case::ts_event_changed(
+        derive_cmbp_trade_id(InstrumentId::from("ES.c.0.GLBX"), 2, 2, 100, 5, 'B' as c_char),
+    )]
+    #[case::ts_recv_changed(
+        derive_cmbp_trade_id(InstrumentId::from("ES.c.0.GLBX"), 1, 3, 100, 5, 'B' as c_char),
+    )]
+    #[case::price_changed(
+        derive_cmbp_trade_id(InstrumentId::from("ES.c.0.GLBX"), 1, 2, 101, 5, 'B' as c_char),
+    )]
+    #[case::size_changed(
+        derive_cmbp_trade_id(InstrumentId::from("ES.c.0.GLBX"), 1, 2, 100, 6, 'B' as c_char),
+    )]
+    #[case::side_changed(
+        derive_cmbp_trade_id(InstrumentId::from("ES.c.0.GLBX"), 1, 2, 100, 5, 'A' as c_char),
+    )]
+    #[case::instrument_changed(
+        derive_cmbp_trade_id(InstrumentId::from("NQ.c.0.GLBX"), 1, 2, 100, 5, 'B' as c_char),
+    )]
+    fn test_derive_cmbp_trade_id_each_field_affects_output(#[case] altered: TradeId) {
+        let baseline = derive_cmbp_trade_id(
+            InstrumentId::from("ES.c.0.GLBX"),
+            1,
+            2,
+            100,
+            5,
+            'B' as c_char,
+        );
+        assert_ne!(baseline, altered);
+    }
+
+    #[rstest]
+    fn test_derive_cmbp_trade_id_field_delimiter_prevents_collision() {
+        let instrument_id = InstrumentId::from("ES.c.0.GLBX");
+        // If fields were concatenated without delimiters, these two triples
+        // would produce the same input stream.
+        let a = derive_cmbp_trade_id(instrument_id, 0x100, 0, 0, 0, 'B' as c_char);
+        let b = derive_cmbp_trade_id(instrument_id, 0, 0x100, 0, 0, 'B' as c_char);
+        assert_ne!(a, b);
+    }
+
+    mod cmbp_trade_id_property_tests {
+        use proptest::prelude::*;
+        use rstest::rstest;
+
+        use super::*;
+
+        proptest! {
+            #[rstest]
+            fn prop_derive_cmbp_trade_id_is_stable_for_same_inputs(
+                ts_event in any::<u64>(),
+                ts_recv in any::<u64>(),
+                price in any::<i64>(),
+                size in any::<u32>(),
+                side_byte in 0u8..128,
+            ) {
+                let instrument_id = InstrumentId::from("ES.c.0.GLBX");
+                let side = side_byte as c_char;
+
+                let first = derive_cmbp_trade_id(
+                    instrument_id, ts_event, ts_recv, price, size, side,
+                );
+                let second = derive_cmbp_trade_id(
+                    instrument_id, ts_event, ts_recv, price, size, side,
+                );
+                prop_assert_eq!(first, second);
+            }
+
+            #[rstest]
+            fn prop_derive_cmbp_trade_id_output_is_16_hex_chars(
+                ts_event in any::<u64>(),
+                ts_recv in any::<u64>(),
+                price in any::<i64>(),
+                size in any::<u32>(),
+                side_byte in 0u8..128,
+            ) {
+                let instrument_id = InstrumentId::from("ES.c.0.GLBX");
+                let side = side_byte as c_char;
+                let id = derive_cmbp_trade_id(
+                    instrument_id, ts_event, ts_recv, price, size, side,
+                );
+                let value = id.as_str();
+                prop_assert_eq!(value.len(), 16);
+                prop_assert!(value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+            }
+        }
+    }
+
+    #[rstest]
     #[case('A' as c_char, Ok(BookAction::Add))]
     #[case('C' as c_char, Ok(BookAction::Delete))]
     #[case('F' as c_char, Ok(BookAction::Update))]
@@ -1494,19 +1763,52 @@ mod tests {
     }
 
     #[rstest]
-    #[case("DII", Ok((Some(AssetClass::Index), Some(InstrumentClass::Future))))]
-    #[case("EII", Ok((Some(AssetClass::Index), Some(InstrumentClass::Future))))]
-    #[case("EIA", Ok((Some(AssetClass::Equity), Some(InstrumentClass::Future))))]
-    #[case("XXX", Ok((None, None)))]
-    #[case("D", Err("Value string is too short"))]
+    #[case("DII", (Some(AssetClass::Index), Some(InstrumentClass::Future)))]
+    #[case("EII", (Some(AssetClass::Index), Some(InstrumentClass::Future)))]
+    #[case("EIA", (Some(AssetClass::Equity), Some(InstrumentClass::Future)))]
+    #[case("XXX", (None, None))]
+    #[case("D", (None, None))]
+    #[case("", (None, None))]
     fn test_parse_cfi_iso10926(
         #[case] input: &str,
-        #[case] expected: Result<(Option<AssetClass>, Option<InstrumentClass>), &'static str>,
+        #[case] expected: (Option<AssetClass>, Option<InstrumentClass>),
     ) {
-        match parse_cfi_iso10926(input) {
-            Ok(result) => assert_eq!(Ok(result), expected),
-            Err(e) => assert_eq!(Err(e.to_string().as_str()), expected),
-        }
+        let result = parse_cfi_iso10926(input);
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case(0, 2, Price::from_raw(0, 2))]
+    #[case(
+        1_000_000_000,
+        2,
+        Price::from_raw(decode_raw_price_i64(1_000_000_000), 2)
+    )]
+    fn test_decode_price(#[case] value: i64, #[case] precision: u8, #[case] expected: Price) {
+        let actual = decode_price(value, precision, "test_field").unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[rstest]
+    fn test_decode_price_undefined_errors() {
+        let result = decode_price(i64::MAX, 2, "strike_price");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("strike_price"));
+    }
+
+    #[rstest]
+    #[case(0, 0)]
+    #[case(1, 9)] // 0.000000001 needs 9 decimal places
+    #[case(10, 8)] // 0.00000001 needs 8
+    #[case(3_906_250, 8)] // ZT: 1/256 = 0.00390625
+    #[case(7_812_500, 7)] // ZF: 1/128 = 0.0078125
+    #[case(15_625_000, 6)] // ZN: 1/64 = 0.015625
+    #[case(31_250_000, 5)] // ZB: 1/32 = 0.03125
+    #[case(250_000_000, 2)] // ES: 0.25
+    #[case(1_000_000_000, 0)] // 1.0
+    #[case(10_000_000_000, 0)] // 10.0
+    fn test_precision_from_raw(#[case] value: i64, #[case] expected: u8) {
+        assert_eq!(precision_from_raw(value), expected);
     }
 
     #[rstest]
@@ -1516,8 +1818,17 @@ mod tests {
         10_000_000_000,
         2,
         Price::from_raw(decode_raw_price_i64(10_000_000_000), 2)
-    )]
-    fn test_decode_price(#[case] value: i64, #[case] precision: u8, #[case] expected: Price) {
+    )] // 10.0: derived=0, max(0,2)=2
+    #[case(3_906_250, 2, Price::from_raw(decode_raw_price_i64(3_906_250), 8))] // ZT 1/256: derived=8, max(8,2)=8
+    #[case(7_812_500, 2, Price::from_raw(decode_raw_price_i64(7_812_500), 7))] // ZF 1/128: derived=7, max(7,2)=7
+    #[case(15_625_000, 2, Price::from_raw(decode_raw_price_i64(15_625_000), 6))] // ZN 1/64: derived=6, max(6,2)=6
+    #[case(31_250_000, 2, Price::from_raw(decode_raw_price_i64(31_250_000), 5))] // ZB 1/32: derived=5, max(5,2)=5
+    #[case(250_000_000, 2, Price::from_raw(decode_raw_price_i64(250_000_000), 2))] // ES 0.25: derived=2, max(2,2)=2
+    fn test_decode_price_increment(
+        #[case] value: i64,
+        #[case] precision: u8,
+        #[case] expected: Price,
+    ) {
         let actual = decode_price_increment(value, precision);
         assert_eq!(actual, expected);
     }
@@ -1540,11 +1851,52 @@ mod tests {
     }
 
     #[rstest]
+    #[case(0, 2, Price::from_raw(0, 2))]
+    #[case(
+        1_000_000_000,
+        2,
+        Price::from_raw(decode_raw_price_i64(1_000_000_000), 2)
+    )]
+    #[case(i64::MAX, 2, Price::from_raw(PRICE_UNDEF, 0))] // Sentinel becomes PRICE_UNDEF
+    fn test_decode_price_or_undef(
+        #[case] value: i64,
+        #[case] precision: u8,
+        #[case] expected: Price,
+    ) {
+        let actual = decode_price_or_undef(value, precision);
+        assert_eq!(actual, expected);
+    }
+
+    #[rstest]
     #[case(i64::MAX, None)] // None for i32::MAX
     #[case(0, Some(Quantity::new(0.0, 0)))] // 0 is valid quantity
     #[case(10, Some(Quantity::new(10.0, 0)))] // Arbitrary valid quantity
     fn test_decode_optional_quantity(#[case] value: i64, #[case] expected: Option<Quantity>) {
         let actual = decode_optional_quantity(value);
+        assert_eq!(actual, expected);
+    }
+
+    #[rstest]
+    #[case(0, UnixNanos::from(0))]
+    #[case(1_000_000_000, UnixNanos::from(1_000_000_000))]
+    fn test_decode_timestamp(#[case] value: u64, #[case] expected: UnixNanos) {
+        let actual = decode_timestamp(value, "test_field").unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[rstest]
+    fn test_decode_timestamp_undefined_errors() {
+        let result = decode_timestamp(dbn::UNDEF_TIMESTAMP, "expiration");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expiration"));
+    }
+
+    #[rstest]
+    #[case(0, Some(UnixNanos::from(0)))]
+    #[case(1_000_000_000, Some(UnixNanos::from(1_000_000_000)))]
+    #[case(dbn::UNDEF_TIMESTAMP, None)]
+    fn test_decode_optional_timestamp(#[case] value: u64, #[case] expected: Option<UnixNanos>) {
+        let actual = decode_optional_timestamp(value);
         assert_eq!(actual, expected);
     }
 
@@ -1583,22 +1935,6 @@ mod tests {
     #[case(5, Quantity::from(5))]
     fn test_decode_quantity(#[case] value: u64, #[case] expected: Quantity) {
         assert_eq!(decode_quantity(value), expected);
-    }
-
-    #[rstest]
-    #[case(0, 2, Price::new(0.01, 2))] // Default for 0
-    #[case(i64::MAX, 2, Price::new(0.01, 2))] // Default for i64::MAX
-    #[case(
-        10_000_000_000,
-        2,
-        Price::from_raw(decode_raw_price_i64(10_000_000_000), 2)
-    )]
-    fn test_decode_price_increment(
-        #[case] value: i64,
-        #[case] precision: u8,
-        #[case] expected: Price,
-    ) {
-        assert_eq!(decode_price_increment(value, precision), expected);
     }
 
     #[rstest]

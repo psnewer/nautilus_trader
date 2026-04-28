@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,58 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Python bindings for dYdX enums.
-//!
-//! This module provides Python access to dYdX-specific enum types
-//! used throughout the adapter.
+//! dYdX enumerations Python bindings.
+
+use std::str::FromStr;
+
+use nautilus_core::python::to_pyvalue_err;
+use pyo3::{PyTypeInfo, prelude::*, types::PyType};
+use strum::IntoEnumIterator;
+
+use crate::common::enums::DydxNetwork;
+
+#[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+impl DydxNetwork {
+    /// dYdX network environment (mainnet vs testnet).
+    ///
+    /// This selects the underlying Cosmos chain for transaction submission.
+    #[new]
+    fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let t = Self::type_object(py);
+        Self::py_from_str(&t, value)
+    }
+
+    const fn __hash__(&self) -> isize {
+        *self as isize
+    }
+
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
+    #[getter]
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.to_string()
+    }
+
+    #[getter]
+    #[must_use]
+    pub fn value(&self) -> u8 {
+        *self as u8
+    }
+
+    #[classmethod]
+    #[must_use]
+    fn variants(_: &Bound<'_, PyType>) -> Vec<String> {
+        Self::iter().map(|x| x.to_string()).collect()
+    }
+
+    #[classmethod]
+    #[pyo3(name = "from_str")]
+    fn py_from_str(_cls: &Bound<'_, PyType>, data: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let data_str: String = data.str()?.extract()?;
+        Self::from_str(&data_str).map_err(to_pyvalue_err)
+    }
+}

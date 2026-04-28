@@ -27,9 +27,11 @@ ignore = [
   # TODO: Monitor upstream TLS dependencies for migration
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained, transitive via nautilus-network (not a security vulnerability)" },
 
-  # unic-* crates are unmaintained, pulled in via pyo3-stub-gen→rustpython-parser
+  # unic-* crates are unmaintained, pulled in via pyo3-stub-gen->rustpython-parser
   # This is dev-time only for generating .pyi stub files, not a runtime security risk
+  # RUSTSEC-0000-0000 is the blanket advisory for all unic crates (rustsec/advisory-db#2414)
   # TODO: Monitor https://github.com/Jij-Inc/pyo3-stub-gen for migration away from rustpython-parser
+  { id = "RUSTSEC-0000-0000", reason = "blanket unic-* unmaintained advisory, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0075", reason = "unic-char-range unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0080", reason = "unic-ucd-ident unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0081", reason = "unic-char-property unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
@@ -37,11 +39,17 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
 
-  # ruint reciprocal_mg10 unsoundness - transitive via alloy/nybbles
-  # We do not use reciprocal_mg10 directly, and alloy only uses ruint for bigint operations
-  # No fix available upstream
-  # TODO: Monitor https://github.com/recmo/uint/issues/550 for fix
-  { id = "RUSTSEC-2025-0137", reason = "ruint via alloy, we don't use reciprocal_mg10 (not affected)" },
+  # bincode is unmaintained, pulled in via hypersync-client (blockchain adapter)
+  # The team considers 1.3.3 a complete version, not a security vulnerability
+  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for migration to alternative serialization
+  { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained, transitive via hypersync-client (not a security vulnerability)" },
+
+  # capnp unsound APIs in constant::Reader and StructSchema
+  # Transitive via hypersync-client, fix requires upstream update to capnp >= 0.24.0
+  # Low risk: only affects internal schema handling, not directly exposed
+  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for capnp update
+  { id = "RUSTSEC-2025-0143", reason = "capnp unsound APIs, transitive via hypersync-client, awaiting upstream fix" },
+
 ]
 
 # =============================================================================
@@ -70,6 +78,7 @@ allow = [
   "LGPL-3.0-or-later",
   "OpenSSL",
   "Unlicense",
+  "bzip2-1.0.6",
 ]
 
 confidence-threshold = 0.8
@@ -123,7 +132,7 @@ deny = []
 
 # Skip certain crates during duplicate detection.
 # These are transitive duplicates from upstream crates outside our control.
-# Last reviewed: 2025-11-29
+# Last reviewed: 2026-03-25
 skip = [
   # Crypto ecosystem - version-locked together, pulled by various blockchain crates
   { crate = "block-buffer" },
@@ -132,6 +141,7 @@ skip = [
 
   # RNG ecosystem - version-locked together, pulled by crypto and blockchain crates
   { crate = "getrandom" },
+  { crate = "r-efi" },
   { crate = "rand" },
   { crate = "rand_chacha" },
   { crate = "rand_core" },
@@ -143,16 +153,43 @@ skip = [
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
 
+  # syn 1 and strsim 0.10 - transitive via madsim -> darling 0.14 (dev-only simulator)
+  { crate = "syn" },
+  { crate = "strsim" },
+
+  # Enum derive macros - strum 0.27 (alloy, hypersync) vs 0.28 (nautilus)
+  { crate = "strum" },
+  { crate = "strum_macros" },
+
   # Case conversion - version fragmentation via derive_more
   { crate = "convert_case" },
 
+  # Arrow/Parquet ecosystem - hypersync pins arrow 57, nautilus uses arrow 58
+  { crate = "lz4_flex" },
+  { crate = "arrow" },
+  { crate = "arrow-arith" },
+  { crate = "arrow-array" },
+  { crate = "arrow-buffer" },
+  { crate = "arrow-cast" },
+  { crate = "arrow-csv" },
+  { crate = "arrow-data" },
+  { crate = "arrow-ipc" },
+  { crate = "arrow-json" },
+  { crate = "arrow-ord" },
+  { crate = "arrow-row" },
+  { crate = "arrow-schema" },
+  { crate = "arrow-select" },
+  { crate = "arrow-string" },
+  { crate = "parquet" },
+
+  # Redox OS syscall - parking_lot (0.5.x) vs sqlx-postgres/whoami (0.7.x)
+  { crate = "redox_syscall" },
+
   # Common utility crates with version fragmentation across ecosystem
-  { crate = "base64" },
   { crate = "hashbrown" },
   { crate = "itertools" },
   { crate = "foldhash" },
   { crate = "rustc-hash" },
-  { crate = "ordered-float" },
   { crate = "petgraph" },
   { crate = "socket2" },
 
@@ -164,20 +201,33 @@ skip = [
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
 
+  # CPU feature detection - cpufeatures 0.2 vs 0.3 (const-hex vs chacha20/rand)
+  { crate = "cpufeatures" },
+
+  # HTTP client - reqwest 0.12 vs 0.13 transition (databento, hypersync, object_store on 0.12)
+  { crate = "reqwest" },
+  { crate = "wasm-streams" },
+
+  # WASI bindings - getrandom pulls distinct wit-bindgen generations via wasip2/wasip3
+  { crate = "wit-bindgen" },
+
+  # Cap'n Proto - hypersync-client uses 0.23.x, nautilus-serialization uses 0.25.0
+  { crate = "capnp" },
+
+  # TOML parser - cbindgen requires 0.9.x, pyo3-stub-gen requires 1.0.x
+  { crate = "toml" },
+  { crate = "toml_datetime" },
+  { crate = "winnow" },
+
   # TLS roots - version fragmentation in TLS ecosystem
   { crate = "webpki-roots" },
 
   # Windows platform crates - notoriously fragmented across Windows SDK versions
-  { crate = "windows-core" },
-  { crate = "windows-link" },
-  { crate = "windows-result" },
-  { crate = "windows-strings" },
   { crate = "windows-sys" },
   { crate = "windows-targets" },
   { crate = "windows_aarch64_gnullvm" },
   { crate = "windows_aarch64_msvc" },
   { crate = "windows_i686_gnu" },
-  { crate = "windows_i686_gnullvm" },
   { crate = "windows_i686_msvc" },
   { crate = "windows_x86_64_gnu" },
   { crate = "windows_x86_64_gnullvm" },

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -49,4 +49,13 @@ pub enum BookIntegrityError {
     TooManyLevels(OrderSide, usize),
     #[error("Integrity error: instrument ID mismatch: book={0}, delta={1}")]
     InstrumentMismatch(InstrumentId, InstrumentId),
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum BookViewError {
+    #[error("Instrument ID mismatch: book={0}, own_book={1}")]
+    InstrumentMismatch(InstrumentId, InstrumentId),
+
+    #[error("Opposite own book must have different instrument ID: book={0}, opposite={1}")]
+    OppositeInstrumentMatch(InstrumentId, InstrumentId),
 }

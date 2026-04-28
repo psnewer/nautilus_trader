@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -83,7 +83,6 @@ config_node = TradingNodeConfig(
     # heartbeat_interval=1.0,
     data_clients={
         TARDIS: TardisDataClientConfig(
-            api_key=None,  # 'TARDIS_API_KEY' env var
             instrument_provider=instrument_provider_config,
         ),
     },

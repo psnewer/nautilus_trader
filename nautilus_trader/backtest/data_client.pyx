@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,6 +28,7 @@ from nautilus_trader.data.client cimport DataClient
 from nautilus_trader.data.client cimport MarketDataClient
 from nautilus_trader.data.messages cimport RequestBars
 from nautilus_trader.data.messages cimport RequestData
+from nautilus_trader.data.messages cimport RequestForwardPrices
 from nautilus_trader.data.messages cimport RequestInstrument
 from nautilus_trader.data.messages cimport RequestInstruments
 from nautilus_trader.data.messages cimport RequestOrderBookSnapshot
@@ -42,6 +43,7 @@ from nautilus_trader.data.messages cimport SubscribeInstrumentClose
 from nautilus_trader.data.messages cimport SubscribeInstruments
 from nautilus_trader.data.messages cimport SubscribeInstrumentStatus
 from nautilus_trader.data.messages cimport SubscribeMarkPrices
+from nautilus_trader.data.messages cimport SubscribeOptionGreeks
 from nautilus_trader.data.messages cimport SubscribeOrderBook
 from nautilus_trader.data.messages cimport SubscribeQuoteTicks
 from nautilus_trader.data.messages cimport SubscribeTradeTicks
@@ -54,6 +56,7 @@ from nautilus_trader.data.messages cimport UnsubscribeInstrumentClose
 from nautilus_trader.data.messages cimport UnsubscribeInstruments
 from nautilus_trader.data.messages cimport UnsubscribeInstrumentStatus
 from nautilus_trader.data.messages cimport UnsubscribeMarkPrices
+from nautilus_trader.data.messages cimport UnsubscribeOptionGreeks
 from nautilus_trader.data.messages cimport UnsubscribeOrderBook
 from nautilus_trader.data.messages cimport UnsubscribeQuoteTicks
 from nautilus_trader.data.messages cimport UnsubscribeTradeTicks
@@ -238,20 +241,7 @@ cdef class BacktestMarketDataClient(MarketDataClient):
             return
 
         self._add_subscription_order_book_deltas(command.instrument_id)
-        # Do nothing else for backtest
-
-    cpdef void subscribe_order_book_snapshots(self, SubscribeOrderBook command):
-        Condition.not_none(command.instrument_id, "instrument_id")
-
-        if not self._cache.instrument(command.instrument_id):
-            self._log.error(
-                f"Cannot find instrument {command.instrument_id} to subscribe for `OrderBook` data, "
-                "no data has been loaded for this instrument.",
-            )
-            return
-
-        self._add_subscription_order_book_snapshots(command.instrument_id)
-        # Do nothing else for backtest
+        self._msgbus.send(endpoint="BacktestEngine.execute", msg=command)
 
     cpdef void subscribe_order_book_depth(self, SubscribeOrderBook command):
         Condition.not_none(command.instrument_id, "instrument_id")
@@ -263,7 +253,7 @@ cdef class BacktestMarketDataClient(MarketDataClient):
             )
             return
 
-        self._add_subscription_order_book_snapshots(command.instrument_id)
+        self._add_subscription_order_book_depth(command.instrument_id)
         self._msgbus.send(endpoint="BacktestEngine.execute", msg=command)
 
     cpdef void subscribe_quote_ticks(self, SubscribeQuoteTicks command):
@@ -350,6 +340,11 @@ cdef class BacktestMarketDataClient(MarketDataClient):
         self._add_subscription_instrument_status(command.instrument_id)
         # Do nothing else for backtest
 
+    cpdef void subscribe_option_greeks(self, SubscribeOptionGreeks command):
+        Condition.not_none(command.instrument_id, "instrument_id")
+
+        self._add_subscription_option_greeks(command.instrument_id)
+
     cpdef void subscribe_instrument_close(self, SubscribeInstrumentClose command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
@@ -372,16 +367,10 @@ cdef class BacktestMarketDataClient(MarketDataClient):
         self._remove_subscription_order_book_deltas(command.instrument_id)
         # Do nothing else for backtest
 
-    cpdef void unsubscribe_order_book_snapshots(self, UnsubscribeOrderBook command):
-        Condition.not_none(command.instrument_id, "instrument_id")
-
-        self._remove_subscription_order_book_snapshots(command.instrument_id)
-        # Do nothing else for backtest
-
     cpdef void unsubscribe_order_book_depth(self, UnsubscribeOrderBook command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
-        self._remove_subscription_order_book_snapshots(command.instrument_id)
+        self._remove_subscription_order_book_depth(command.instrument_id)
         # Do nothing else for backtest
 
     cpdef void unsubscribe_quote_ticks(self, UnsubscribeQuoteTicks command):
@@ -426,6 +415,11 @@ cdef class BacktestMarketDataClient(MarketDataClient):
         self._remove_subscription_instrument_status(command.instrument_id)
         # Do nothing else for backtest
 
+    cpdef void unsubscribe_option_greeks(self, UnsubscribeOptionGreeks command):
+        Condition.not_none(command.instrument_id, "instrument_id")
+
+        self._remove_subscription_option_greeks(command.instrument_id)
+
     cpdef void unsubscribe_instrument_close(self, UnsubscribeInstrumentClose command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
@@ -457,6 +451,7 @@ cdef class BacktestMarketDataClient(MarketDataClient):
                         instrument = self._create_option_spread_from_components(request.instrument_id, spread_legs)
 
                 if instrument is not None:
+                    # Adding to the cache only for easier testing
                     self._cache.add_instrument(instrument)
                     self._log.info(f"Created {spread_type} instrument {request.instrument_id} from components")
                 else:
@@ -623,3 +618,7 @@ cdef class BacktestMarketDataClient(MarketDataClient):
     cpdef void request_bars(self, RequestBars request):
         # Do nothing else for backtest
         pass
+
+    cpdef void request_forward_prices(self, RequestForwardPrices request):
+        # No live ATM source in backtest; emit empty response so the engine creates the manager without initial ATM
+        self._handle_forward_prices([], request.id, request.params or {})

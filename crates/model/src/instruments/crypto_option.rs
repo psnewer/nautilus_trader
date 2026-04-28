@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,8 +16,8 @@
 use std::hash::{Hash, Hasher};
 
 use nautilus_core::{
-    UnixNanos,
-    correctness::{FAILED, check_equal_u8},
+    Params, UnixNanos,
+    correctness::{CorrectnessResult, CorrectnessResultExt, FAILED, check_equal_u8},
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -37,10 +37,14 @@ use crate::{
 
 /// Represents a generic option contract instrument.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct CryptoOption {
     /// The instrument ID.
@@ -95,6 +99,8 @@ pub struct CryptoOption {
     pub max_price: Option<Price>,
     /// The minimum allowable quoted price.
     pub min_price: Option<Price>,
+    /// Additional instrument metadata as a JSON-serializable dictionary.
+    pub info: Option<Params>,
     /// UNIX timestamp (nanoseconds) when the data event occurred.
     pub ts_event: UnixNanos,
     /// UNIX timestamp (nanoseconds) when the data object was initialized.
@@ -110,7 +116,7 @@ impl CryptoOption {
     /// # Errors
     ///
     /// Returns an error if any input validation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -138,9 +144,10 @@ impl CryptoOption {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
-    ) -> anyhow::Result<Self> {
+    ) -> CorrectnessResult<Self> {
         check_equal_u8(
             price_precision,
             price_increment.precision,
@@ -154,6 +161,8 @@ impl CryptoOption {
             stringify!(size_increment.precision),
         )?;
         check_positive_price(price_increment, stringify!(price_increment))?;
+        check_positive_quantity(size_increment, stringify!(size_increment))?;
+
         if let Some(multiplier) = multiplier {
             check_positive_quantity(multiplier, stringify!(multiplier))?;
         }
@@ -185,6 +194,7 @@ impl CryptoOption {
             min_quantity: Some(min_quantity.unwrap_or(1.into())),
             max_price,
             min_price,
+            info,
             ts_event,
             ts_init,
         })
@@ -195,7 +205,8 @@ impl CryptoOption {
     /// # Panics
     ///
     /// Panics if any parameter is invalid (see `new_checked`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -223,6 +234,7 @@ impl CryptoOption {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
     ) -> Self {
@@ -253,10 +265,11 @@ impl CryptoOption {
             margin_maint,
             maker_fee,
             taker_fee,
+            info,
             ts_event,
             ts_init,
         )
-        .expect(FAILED)
+        .expect_display(FAILED)
     }
 }
 
@@ -394,17 +407,108 @@ impl Instrument for CryptoOption {
     fn ts_init(&self) -> UnixNanos {
         self.ts_init
     }
+
+    fn margin_init(&self) -> Decimal {
+        self.margin_init
+    }
+
+    fn margin_maint(&self) -> Decimal {
+        self.margin_maint
+    }
+
+    fn maker_fee(&self) -> Decimal {
+        self.maker_fee
+    }
+
+    fn taker_fee(&self) -> Decimal {
+        self.taker_fee
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
 
-    use crate::instruments::{CryptoOption, stubs::*};
+    use crate::{
+        enums::{AssetClass, InstrumentClass, OptionKind},
+        identifiers::{InstrumentId, Symbol},
+        instruments::{CryptoOption, Instrument, stubs::*},
+        types::{Currency, Price, Quantity},
+    };
 
     #[rstest]
-    fn test_equality(crypto_option_btc_deribit: CryptoOption) {
-        let crypto_option = crypto_option_btc_deribit;
-        assert_eq!(crypto_option_btc_deribit, crypto_option);
+    fn test_trait_accessors(crypto_option_btc_deribit: CryptoOption) {
+        assert_eq!(
+            crypto_option_btc_deribit.id(),
+            InstrumentId::from("BTC-13JAN23-16000-P.DERIBIT"),
+        );
+        assert_eq!(
+            crypto_option_btc_deribit.asset_class(),
+            AssetClass::Cryptocurrency
+        );
+        assert_eq!(
+            crypto_option_btc_deribit.instrument_class(),
+            InstrumentClass::Option
+        );
+        assert_eq!(
+            crypto_option_btc_deribit.option_kind(),
+            Some(OptionKind::Put)
+        );
+        assert_eq!(
+            crypto_option_btc_deribit.strike_price(),
+            Some(Price::from("16000.000"))
+        );
+        assert!(!crypto_option_btc_deribit.is_inverse());
+        assert_eq!(crypto_option_btc_deribit.price_precision(), 3);
+        assert_eq!(crypto_option_btc_deribit.size_precision(), 1);
+        assert_eq!(
+            crypto_option_btc_deribit.min_quantity(),
+            Some(Quantity::from("0.1"))
+        );
+        assert!(crypto_option_btc_deribit.activation_ns().is_some());
+        assert!(crypto_option_btc_deribit.expiration_ns().is_some());
+    }
+
+    #[rstest]
+    fn test_new_checked_price_precision_mismatch() {
+        let result = CryptoOption::new_checked(
+            InstrumentId::from("TEST.DERIBIT"),
+            Symbol::from("TEST"),
+            Currency::BTC(),
+            Currency::USD(),
+            Currency::BTC(),
+            false,
+            OptionKind::Call,
+            Price::from("50000.0"),
+            0.into(),
+            0.into(),
+            4, // mismatch
+            1,
+            Price::from("0.001"),
+            Quantity::from("0.1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.into(),
+            0.into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_serialization_roundtrip(crypto_option_btc_deribit: CryptoOption) {
+        let json = serde_json::to_string(&crypto_option_btc_deribit).unwrap();
+        let deserialized: CryptoOption = serde_json::from_str(&json).unwrap();
+        assert_eq!(crypto_option_btc_deribit, deserialized);
     }
 }

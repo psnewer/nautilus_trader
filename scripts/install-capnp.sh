@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Read version from capnp-version file (single source of truth)
+# Read version from tools.toml (single source of truth)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CAPNP_VERSION_FILE="$REPO_ROOT/capnp-version"
+CAPNP_VERSION="$(bash "$SCRIPT_DIR/tool-version.sh" capnp)"
 
-if [[ -f "$CAPNP_VERSION_FILE" ]]; then
-  CAPNP_VERSION=$(cat "$CAPNP_VERSION_FILE" | tr -d '[:space:]')
-else
-  echo "Error: capnp-version file not found at $CAPNP_VERSION_FILE"
-  exit 1
-fi
+# Helper to parse capnp version consistently
+get_capnp_version() {
+  capnp --version 2> /dev/null | awk '{print $NF}' || echo ""
+}
 
 # Detect OS
 OS="$(uname -s)"
@@ -28,19 +25,21 @@ if [[ "${OS_TYPE}" == "Linux" ]]; then
 
   # Check if already installed to save time
   if command -v capnp &> /dev/null; then
-    INSTALLED_VER=$(capnp --version | cut -d' ' -f4)
+    INSTALLED_VER=$(get_capnp_version)
     if [[ "$INSTALLED_VER" == "$CAPNP_VERSION" ]]; then
       echo "Cap'n Proto $CAPNP_VERSION is already installed."
       exit 0
     fi
   fi
 
-  # Create a temp directory
+  # Create a temp directory with cleanup trap
   TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "$TMP_DIR"' EXIT
+
   pushd "$TMP_DIR"
 
   echo "Downloading Cap'n Proto ${CAPNP_VERSION}..."
-  curl --retry 5 --retry-delay 5 -sO "https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz"
+  curl --retry 5 --retry-delay 5 -fLsO "https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz"
   tar zxf "capnproto-c++-${CAPNP_VERSION}.tar.gz"
   cd "capnproto-c++-${CAPNP_VERSION}"
 
@@ -66,14 +65,13 @@ if [[ "${OS_TYPE}" == "Linux" ]]; then
   fi
 
   popd
-  rm -rf "$TMP_DIR"
 
 elif [[ "${OS_TYPE}" == "macOS" ]]; then
   echo "Installing Cap'n Proto on macOS..."
 
   # Check if already installed with correct version
   if command -v capnp &> /dev/null; then
-    INSTALLED_VER=$(capnp --version | awk '{print $NF}')
+    INSTALLED_VER=$(get_capnp_version)
     if [[ "$INSTALLED_VER" == "$CAPNP_VERSION" ]]; then
       echo "Cap'n Proto $CAPNP_VERSION is already installed."
       exit 0
@@ -87,7 +85,7 @@ elif [[ "${OS_TYPE}" == "macOS" ]]; then
     MAX_ATTEMPTS=3
     for ((i = 1; i <= MAX_ATTEMPTS; i++)); do
       if brew install capnp 2> /dev/null || brew upgrade capnp 2> /dev/null; then
-        INSTALLED_VER=$(capnp --version | awk '{print $NF}')
+        INSTALLED_VER=$(get_capnp_version)
         if [[ "$INSTALLED_VER" == "$CAPNP_VERSION" ]]; then
           echo "Homebrew installed correct version."
           break
@@ -103,14 +101,16 @@ elif [[ "${OS_TYPE}" == "macOS" ]]; then
   fi
 
   # Verify version, build from source if needed
-  INSTALLED_VER=$(capnp --version 2> /dev/null | awk '{print $NF}' || echo "")
+  INSTALLED_VER=$(get_capnp_version)
   if [[ "$INSTALLED_VER" != "$CAPNP_VERSION" ]]; then
     echo "Building Cap'n Proto ${CAPNP_VERSION} from source on macOS..."
 
     TMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
     pushd "$TMP_DIR"
 
-    curl --retry 5 --retry-delay 5 -sO "https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz"
+    curl --retry 5 --retry-delay 5 -fLsO "https://capnproto.org/capnproto-c++-${CAPNP_VERSION}.tar.gz"
     tar zxf "capnproto-c++-${CAPNP_VERSION}.tar.gz"
     cd "capnproto-c++-${CAPNP_VERSION}"
 
@@ -119,11 +119,20 @@ elif [[ "${OS_TYPE}" == "macOS" ]]; then
     sudo make install
 
     popd
-    rm -rf "$TMP_DIR"
   fi
 
 else
   echo "Unsupported OS: ${OS_TYPE}"
+  exit 1
+fi
+
+# Final verification that correct version is installed and in PATH
+FINAL_VER=$(get_capnp_version)
+if [[ "$FINAL_VER" != "$CAPNP_VERSION" ]]; then
+  echo "Error: Version mismatch after install!"
+  echo "  Required: $CAPNP_VERSION"
+  echo "  Found: $FINAL_VER (at $(command -v capnp))"
+  echo "Check your PATH - another capnp binary may be masking the new install."
   exit 1
 fi
 

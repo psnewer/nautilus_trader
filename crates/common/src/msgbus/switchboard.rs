@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,31 +18,31 @@ use std::{num::NonZeroUsize, sync::OnceLock};
 use ahash::AHashMap;
 use nautilus_model::{
     data::{BarType, DataType},
-    identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
+    identifiers::{ClientOrderId, InstrumentId, OptionSeriesId, PositionId, StrategyId, Venue},
 };
 
-use super::core::{Endpoint, MStr, Topic};
+use super::mstr::{Endpoint, MStr, Pattern, Topic};
 use crate::msgbus::get_message_bus;
 
 pub const CLOSE_TOPIC: &str = "CLOSE";
 
-////////////////////////////////////////////////////////////////////////////////
-// Built-in endpoint constants
-////////////////////////////////////////////////////////////////////////////////
-// These are static endpoint addresses.
-// They use OnceLock for thread-safe lazy initialization without instance state.
-
-static DATA_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_QUEUE_COMMAND_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static DATA_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_PROCESS_ANY_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_PROCESS_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+#[cfg(feature = "defi")]
+static DATA_PROCESS_DEFI_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_RESPONSE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_QUEUE_COMMAND_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_RECONCILE_REPORT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static EXEC_RECONCILE_MASS_STATUS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static RISK_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static ORDER_EMULATOR_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static PORTFOLIO_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static SHUTDOWN_SYSTEM_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
 
 macro_rules! define_switchboard {
     ($(
@@ -57,6 +57,9 @@ macro_rules! define_switchboard {
             $(
                 $field: AHashMap<$key_ty, MStr<Topic>>,
             )*
+            instruments_patterns: AHashMap<Venue, MStr<Pattern>>,
+            signal_topics: AHashMap<String, MStr<Topic>>,
+            signal_patterns: AHashMap<String, MStr<Pattern>>,
             #[cfg(feature = "defi")]
             pub(crate) defi: crate::defi::switchboard::DefiSwitchboard,
         }
@@ -68,6 +71,9 @@ macro_rules! define_switchboard {
                     $(
                         $field: AHashMap::new(),
                     )*
+                    instruments_patterns: AHashMap::new(),
+                    signal_topics: AHashMap::new(),
+                    signal_patterns: AHashMap::new(),
                     #[cfg(feature = "defi")]
                     defi: crate::defi::switchboard::DefiSwitchboard::default(),
                 }
@@ -79,7 +85,7 @@ macro_rules! define_switchboard {
             #[inline]
             #[must_use]
             pub fn data_engine_queue_execute() -> MStr<Endpoint> {
-                *DATA_QUEUE_EXECUTE_ENDPOINT.get_or_init(|| "DataEngine.queue_execute".into())
+                *DATA_QUEUE_COMMAND_ENDPOINT.get_or_init(|| "DataEngine.queue_execute".into())
             }
 
             #[inline]
@@ -91,7 +97,21 @@ macro_rules! define_switchboard {
             #[inline]
             #[must_use]
             pub fn data_engine_process() -> MStr<Endpoint> {
-                *DATA_PROCESS_ENDPOINT.get_or_init(|| "DataEngine.process".into())
+                *DATA_PROCESS_ANY_ENDPOINT.get_or_init(|| "DataEngine.process".into())
+            }
+
+            #[inline]
+            #[must_use]
+            pub fn data_engine_process_data() -> MStr<Endpoint> {
+                *DATA_PROCESS_DATA_ENDPOINT.get_or_init(|| "DataEngine.process_data".into())
+            }
+
+            #[cfg(feature = "defi")]
+            #[inline]
+            #[must_use]
+            pub fn data_engine_process_defi_data() -> MStr<Endpoint> {
+                *DATA_PROCESS_DEFI_DATA_ENDPOINT
+                    .get_or_init(|| "DataEngine.process_defi_data".into())
             }
 
             #[inline]
@@ -108,6 +128,12 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
+            pub fn exec_engine_queue_execute() -> MStr<Endpoint> {
+                *EXEC_QUEUE_COMMAND_ENDPOINT.get_or_init(|| "ExecEngine.queue_execute".into())
+            }
+
+            #[inline]
+            #[must_use]
             pub fn exec_engine_process() -> MStr<Endpoint> {
                 *EXEC_PROCESS_ENDPOINT.get_or_init(|| "ExecEngine.process".into())
             }
@@ -120,15 +146,17 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
-            pub fn exec_engine_reconcile_execution_mass_status() -> MStr<Endpoint> {
-                *EXEC_RECONCILE_MASS_STATUS_ENDPOINT
-                    .get_or_init(|| "ExecEngine.reconcile_execution_mass_status".into())
-            }
-
-            #[inline]
-            #[must_use]
             pub fn risk_engine_execute() -> MStr<Endpoint> {
                 *RISK_EXECUTE_ENDPOINT.get_or_init(|| "RiskEngine.execute".into())
+            }
+
+            /// Queued endpoint for deferred command execution (re-entrancy safe).
+            /// Falls back to direct endpoint when no `TradingCommandSender` is
+            /// available (backtest / test environments).
+            #[inline]
+            #[must_use]
+            pub fn risk_engine_queue_execute() -> MStr<Endpoint> {
+                *RISK_QUEUE_EXECUTE_ENDPOINT.get_or_init(|| "RiskEngine.queue_execute".into())
             }
 
             #[inline]
@@ -139,8 +167,73 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
+            pub fn order_emulator_execute() -> MStr<Endpoint> {
+                *ORDER_EMULATOR_ENDPOINT.get_or_init(|| "OrderEmulator.execute".into())
+            }
+
+            #[inline]
+            #[must_use]
             pub fn portfolio_update_account() -> MStr<Endpoint> {
-                *PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT.get_or_init(|| "Portfolio.update_account".into())
+                *PORTFOLIO_ACCOUNT_ENDPOINT.get_or_init(|| "Portfolio.update_account".into())
+            }
+
+            /// Pub/sub topic carrying `ShutdownSystem` commands published by
+            /// actors, engines, and strategies.
+            ///
+            /// Matches the Python topic. The kernel subscribes to validate the
+            /// command and signal graceful shutdown; additional components may
+            /// subscribe to react to the same signal.
+            #[inline]
+            #[must_use]
+            pub fn shutdown_system_topic() -> MStr<Topic> {
+                *SHUTDOWN_SYSTEM_TOPIC.get_or_init(|| "commands.system.shutdown".into())
+            }
+
+            /// Returns a wildcard pattern for matching all instrument topics for a venue.
+            #[must_use]
+            pub fn instruments_pattern(&mut self, venue: Venue) -> MStr<Pattern> {
+                *self.instruments_patterns
+                    .entry(venue)
+                    .or_insert_with(|| format!("data.instrument.{venue}.*").into())
+            }
+
+            /// Returns the exact signal publish topic for `name`
+            /// (`data.Signal<TitleName>`).
+            ///
+            /// The title-cased encoding mirrors the v1 Python convention so
+            /// subscribers keyed on either a specific name or the global
+            /// `data.Signal*` wildcard receive published signals.
+            #[must_use]
+            pub fn signal_topic(&mut self, name: &str) -> MStr<Topic> {
+                *self
+                    .signal_topics
+                    .entry(name.to_string())
+                    .or_insert_with(|| {
+                        format!(
+                            "data.Signal{}",
+                            nautilus_core::string::conversions::title_case(name)
+                        )
+                        .into()
+                    })
+            }
+
+            /// Returns the subscription pattern for `name`
+            /// (`data.Signal<TitleName>*`).
+            ///
+            /// An empty `name` yields the wildcard `data.Signal*` that matches
+            /// every signal topic.
+            #[must_use]
+            pub fn signal_pattern(&mut self, name: &str) -> MStr<Pattern> {
+                *self
+                    .signal_patterns
+                    .entry(name.to_string())
+                    .or_insert_with(|| {
+                        format!(
+                            "data.Signal{}*",
+                            nautilus_core::string::conversions::title_case(name)
+                        )
+                        .into()
+                    })
             }
 
             // Dynamic topics
@@ -214,6 +307,14 @@ define_switchboard! {
     get_instrument_close_topic(instrument_id: InstrumentId) -> instrument_id,
     "data.close.{}.{}", instrument_id.venue, instrument_id.symbol;
 
+    option_greeks_topics: InstrumentId,
+    get_option_greeks_topic(instrument_id: InstrumentId) -> instrument_id,
+    "data.option_greeks.{}.{}", instrument_id.venue, instrument_id.symbol;
+
+    option_chain_topics: OptionSeriesId,
+    get_option_chain_topic(series_id: OptionSeriesId) -> series_id,
+    "data.option_chain.{}", series_id;
+
     order_fills_topics: InstrumentId,
     get_order_fills_topic(instrument_id: InstrumentId) -> instrument_id,
     "events.fills.{}", instrument_id;
@@ -274,6 +375,8 @@ define_wrappers! {
     get_funding_rate_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_status_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_close_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_option_greeks_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_option_chain_topic(series_id: OptionSeriesId) -> MStr<Topic>,
     get_order_fills_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_cancels_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_snapshots_topic(client_order_id: ClientOrderId) -> MStr<Topic>,
@@ -282,15 +385,49 @@ define_wrappers! {
     get_event_positions_topic(strategy_id: StrategyId) -> MStr<Topic>,
 }
 
+/// Returns a wildcard subscription pattern that matches all instrument topics
+/// for the given `venue`.
+///
+/// For example, venue `BINANCE` produces pattern `data.instrument.BINANCE.*`,
+/// which matches per-instrument topics like `data.instrument.BINANCE.BTCUSDT`.
+#[must_use]
+pub fn get_instruments_pattern(venue: Venue) -> MStr<Pattern> {
+    get_message_bus()
+        .borrow_mut()
+        .switchboard
+        .instruments_pattern(venue)
+}
+
+/// Returns the exact signal publish topic for `name` (`data.Signal<TitleName>`).
+#[must_use]
+pub fn get_signal_topic(name: &str) -> MStr<Topic> {
+    get_message_bus()
+        .borrow_mut()
+        .switchboard
+        .signal_topic(name)
+}
+
+/// Returns the signal subscription pattern for `name` (`data.Signal<TitleName>*`).
+///
+/// An empty `name` yields the wildcard `data.Signal*` matching every signal topic.
+#[must_use]
+pub fn get_signal_pattern(name: &str) -> MStr<Pattern> {
+    get_message_bus()
+        .borrow_mut()
+        .switchboard
+        .signal_pattern(name)
+}
+
 #[cfg(test)]
 mod tests {
     use nautilus_model::{
         data::{BarType, DataType},
-        identifiers::InstrumentId,
+        identifiers::{InstrumentId, Venue},
     };
     use rstest::*;
 
     use super::*;
+    use crate::msgbus::matching::is_matching_backtracking;
 
     #[fixture]
     fn switchboard() -> MessagingSwitchboard {
@@ -304,7 +441,7 @@ mod tests {
 
     #[rstest]
     fn test_get_custom_topic(mut switchboard: MessagingSwitchboard) {
-        let data_type = DataType::new("ExampleDataType", None);
+        let data_type = DataType::new("ExampleDataType", None, None);
         let expected_topic = "data.ExampleDataType".into();
         let result = switchboard.get_custom_topic(&data_type);
         assert_eq!(result, expected_topic);
@@ -397,5 +534,26 @@ mod tests {
                 .order_snapshots_topics
                 .contains_key(&client_order_id)
         );
+    }
+
+    #[rstest]
+    fn test_instruments_pattern_matches_instrument_topic(
+        mut switchboard: MessagingSwitchboard,
+        instrument_id: InstrumentId,
+    ) {
+        let venue = instrument_id.venue;
+        let pattern = switchboard.instruments_pattern(venue);
+        let topic = switchboard.get_instrument_topic(instrument_id);
+
+        assert_eq!(pattern.as_ref(), "data.instrument.XCME.*");
+        assert!(is_matching_backtracking(topic, pattern));
+    }
+
+    #[rstest]
+    fn test_instruments_pattern_does_not_match_other_venue(mut switchboard: MessagingSwitchboard) {
+        let pattern = switchboard.instruments_pattern(Venue::from("BINANCE"));
+        let topic = switchboard.get_instrument_topic(InstrumentId::from("ESZ24.XCME"));
+
+        assert!(!is_matching_backtracking(topic, pattern));
     }
 }

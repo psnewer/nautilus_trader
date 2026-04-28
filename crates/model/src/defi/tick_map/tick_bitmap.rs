@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -35,8 +35,14 @@ pub struct TickBitmap {
 }
 
 impl TickBitmap {
-    /// Create a new empty bitmap
+    /// Create a new empty bitmap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tick_spacing` is zero.
+    #[must_use]
     pub fn new(tick_spacing: u32) -> Self {
+        assert!(tick_spacing > 0, "Tick spacing must be greater than zero");
         Self {
             words: AHashMap::new(),
             tick_spacing: tick_spacing as i32,
@@ -54,12 +60,13 @@ impl TickBitmap {
     /// Panics if `tick` is not a multiple of the configured tick spacing.
     pub fn flip_tick(&mut self, tick: i32) {
         let remainder = tick % self.tick_spacing;
-        if remainder != 0 {
-            panic!(
-                "Tick must be multiple of tick spacing: tick={}, tick_spacing={}, remainder={}",
-                tick, self.tick_spacing, remainder
-            );
-        }
+        assert!(
+            remainder == 0,
+            "Tick must be multiple of tick spacing: tick={}, tick_spacing={}, remainder={}",
+            tick,
+            self.tick_spacing,
+            remainder
+        );
 
         let compressed_tick = self.compress_tick(tick);
         let (word_position, bit_position) = tick_position(compressed_tick);
@@ -76,6 +83,7 @@ impl TickBitmap {
     }
 
     /// Check if a tick is initialized (bit is set) in the bitmap
+    #[must_use]
     pub fn is_initialized(&self, tick: i32) -> bool {
         let compressed_tick = self.compress_tick(tick);
         let (word_position, bit_position) = tick_position(compressed_tick);
@@ -89,6 +97,7 @@ impl TickBitmap {
 
     /// Returns the next initialized tick contained in the same word (or adjacent word) as the tick that is either
     /// to the left (less than or equal to) or right (greater than) of the given tick
+    #[must_use]
     pub fn next_initialized_tick_within_one_word(
         &self,
         tick: i32,
@@ -112,10 +121,10 @@ impl TickBitmap {
             let initialized = !masked.is_zero();
             // overflow/underflow is possible, but prevented externally by limiting both tickSpacing and tick
             let next = if initialized {
-                (compressed_tick - (bit_pos as i32) + most_significant_bit(masked))
+                (compressed_tick - i32::from(bit_pos) + most_significant_bit(masked))
                     * self.tick_spacing
             } else {
-                (compressed_tick - (bit_pos as i32)) * self.tick_spacing
+                (compressed_tick - i32::from(bit_pos)) * self.tick_spacing
             };
             (next, initialized)
         } else {
@@ -130,10 +139,10 @@ impl TickBitmap {
             let initialized = !masked.is_zero();
             // overflow/underflow is possible, but prevented externally by limiting both tickSpacing and tick
             let next = if initialized {
-                (compressed_tick + 1 + least_significant_bit(masked) - (bit_pos as i32))
+                (compressed_tick + 1 + least_significant_bit(masked) - i32::from(bit_pos))
                     * self.tick_spacing
             } else {
-                (compressed_tick + 1 + (255i32) - (bit_pos as i32)) * self.tick_spacing // type(uint8).max = 255
+                (compressed_tick + 1 + (255i32) - i32::from(bit_pos)) * self.tick_spacing // type(uint8).max = 255
             };
             (next, initialized)
         }

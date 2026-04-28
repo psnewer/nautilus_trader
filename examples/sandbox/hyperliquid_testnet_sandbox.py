@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,6 +29,7 @@ import uuid
 
 from nautilus_trader.core.nautilus_pyo3 import UUID4
 from nautilus_trader.core.nautilus_pyo3 import ClientOrderId
+from nautilus_trader.core.nautilus_pyo3 import HyperliquidEnvironment
 from nautilus_trader.core.nautilus_pyo3 import HyperliquidHttpClient
 from nautilus_trader.core.nautilus_pyo3 import LimitOrder
 from nautilus_trader.core.nautilus_pyo3 import OrderSide
@@ -52,7 +53,7 @@ async def main():
         http_client = HyperliquidHttpClient(
             private_key=private_key,
             vault_address=None,
-            is_testnet=True,
+            environment=HyperliquidEnvironment.TESTNET,
             timeout_secs=None,
         )
 
@@ -60,7 +61,7 @@ async def main():
         address = http_client.get_user_address()
 
         instruments = await http_client.load_instrument_definitions(
-            include_perp=True,
+            include_perps=True,
             include_spot=False,
         )
         instrument = next((i for i in instruments if "BTC-USD-PERP" in str(i.id.symbol)), None)

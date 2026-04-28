@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,6 +28,7 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
+from nautilus_trader.core.nautilus_pyo3 import BitmexEnvironment
 from nautilus_trader.data.messages import RequestBars
 from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import RequestInstruments
@@ -35,12 +36,14 @@ from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
 from nautilus_trader.data.messages import SubscribeInstrument
 from nautilus_trader.data.messages import SubscribeInstruments
+from nautilus_trader.data.messages import SubscribeInstrumentStatus
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
 from nautilus_trader.data.messages import UnsubscribeInstrument
 from nautilus_trader.data.messages import UnsubscribeInstruments
+from nautilus_trader.data.messages import UnsubscribeInstrumentStatus
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
@@ -49,6 +52,7 @@ from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import FundingRateUpdate
+from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import AggregationSource
@@ -108,8 +112,13 @@ class BitmexDataClient(LiveMarketDataClient):
         # Configuration
         self._config = config
         self._active_only = True  # Always use active instruments for live clients
+        self._env = (
+            config.environment
+            if config.environment is not None
+            else (BitmexEnvironment.TESTNET if config.testnet else BitmexEnvironment.MAINNET)
+        )
 
-        self._log.info(f"{config.testnet=}", LogColor.BLUE)
+        self._log.info(f"environment={self._env}", LogColor.BLUE)
         self._log.info(f"{config.http_timeout_secs=}", LogColor.BLUE)
         self._log.info(f"{config.max_retries=}", LogColor.BLUE)
         self._log.info(f"{config.retry_delay_initial_ms=}", LogColor.BLUE)
@@ -118,8 +127,7 @@ class BitmexDataClient(LiveMarketDataClient):
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
         self._log.info(f"{config.max_requests_per_second=}", LogColor.BLUE)
         self._log.info(f"{config.max_requests_per_minute=}", LogColor.BLUE)
-        self._log.info(f"{config.http_proxy_url=}", LogColor.BLUE)
-        self._log.info(f"{config.ws_proxy_url=}", LogColor.BLUE)
+        self._log.info(f"{config.proxy_url=}", LogColor.BLUE)
 
         # HTTP API
         self._http_client = client
@@ -135,7 +143,8 @@ class BitmexDataClient(LiveMarketDataClient):
             api_secret=config.api_secret,
             account_id=None,  # Not required for data
             heartbeat=30,
-            testnet=config.testnet,
+            environment=self._env,
+            proxy_url=config.proxy_url,
         )
         self._ws_client_futures: set[asyncio.Future] = set()
         self._log.info(f"WebSocket URL {ws_url}", LogColor.BLUE)
@@ -152,6 +161,7 @@ class BitmexDataClient(LiveMarketDataClient):
         instruments = self.instrument_provider.instruments_pyo3()
 
         await self._ws_client.connect(
+            self._loop,
             instruments,
             self._handle_msg,
         )
@@ -188,7 +198,7 @@ class BitmexDataClient(LiveMarketDataClient):
     def _determine_ws_url(self, config: BitmexDataClientConfig) -> str:
         if config.base_url_ws:
             return config.base_url_ws
-        elif config.testnet:
+        elif self._env == BitmexEnvironment.TESTNET:
             return "wss://testnet.bitmex.com/realtime"
         else:
             return "wss://ws.bitmex.com/realtime"
@@ -200,6 +210,8 @@ class BitmexDataClient(LiveMarketDataClient):
 
         for inst in instruments_pyo3:
             self._http_client.cache_instrument(inst)
+            if self._ws_client is not None:
+                self._ws_client.cache_instrument(inst)
 
         self._log.debug("Cached instruments", LogColor.MAGENTA)
 
@@ -231,25 +243,6 @@ class BitmexDataClient(LiveMarketDataClient):
             await self._ws_client.subscribe_book_25(pyo3_instrument_id)
         else:
             await self._ws_client.subscribe_book(pyo3_instrument_id)
-
-    async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
-        if command.book_type != BookType.L2_MBP:
-            self._log.warning(
-                f"Book type {book_type_to_str(command.book_type)} not supported by BitMEX, skipping subscription",
-            )
-            return
-
-        if command.depth not in (0, 10):
-            self._log.error(
-                "Cannot subscribe to order book snapshots: "
-                f"invalid `depth`, was {command.depth}; "
-                "valid depths are 0 (default 10), or 10",
-            )
-            return
-
-        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-
-        await self._ws_client.subscribe_book_depth10(pyo3_instrument_id)
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -284,14 +277,14 @@ class BitmexDataClient(LiveMarketDataClient):
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         await self._ws_client.subscribe_bars(pyo3_bar_type)
 
+    async def _subscribe_instrument_status(self, command: SubscribeInstrumentStatus) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._ws_client.subscribe_instrument(pyo3_instrument_id)
+
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.unsubscribe_book(pyo3_instrument_id)
         await self._ws_client.unsubscribe_book_25(pyo3_instrument_id)
-
-    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
-        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
-        await self._ws_client.unsubscribe_book_depth10(pyo3_instrument_id)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -326,23 +319,34 @@ class BitmexDataClient(LiveMarketDataClient):
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.unsubscribe_funding_rates(pyo3_instrument_id)
 
+    async def _unsubscribe_instrument_status(self, command: UnsubscribeInstrumentStatus) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        await self._ws_client.unsubscribe_instrument(pyo3_instrument_id)
+
     async def _request_instruments(self, request: RequestInstruments) -> None:
-        instruments = await self._http_client.request_instruments(self._active_only)
-        for instrument in instruments:
-            self._handle_instrument(instrument)
-        self._send_response(
-            msg_type=type(request),
-            correlation_id=request.id,
+        pyo3_instruments = await self._http_client.request_instruments(self._active_only)
+        instruments = [transform_instrument_from_pyo3(i) for i in pyo3_instruments]
+        self._handle_instruments(
+            request.venue,
+            instruments,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
         )
 
     async def _request_instrument(self, request: RequestInstrument) -> None:
-        instruments = await self._http_client.request_instruments(self._active_only)
-        for instrument in instruments:
-            if instrument.id == request.instrument_id:
-                self._handle_instrument(instrument)
-                self._send_response(
-                    msg_type=type(request),
-                    correlation_id=request.id,
+        pyo3_instruments = await self._http_client.request_instruments(self._active_only)
+        pyo3_target_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
+        for pyo3_instrument in pyo3_instruments:
+            if pyo3_instrument.id == pyo3_target_id:
+                instrument = transform_instrument_from_pyo3(pyo3_instrument)
+                self._handle_instrument(
+                    instrument,
+                    request.id,
+                    request.start,
+                    request.end,
+                    request.params,
                 )
                 return
 
@@ -404,6 +408,7 @@ class BitmexDataClient(LiveMarketDataClient):
             or (spec.aggregation == BarAggregation.HOUR and spec.step == 1)
             or (spec.aggregation == BarAggregation.DAY and spec.step == 1)
         )
+
         if not supported:
             self._log.error(
                 f"Cannot request {bar_type} bars: unsupported BitMEX specification",
@@ -457,6 +462,7 @@ class BitmexDataClient(LiveMarketDataClient):
                 )
                 await asyncio.sleep(interval_mins * 60)
                 await self._instrument_provider.initialize(reload=True)
+                self._cache_instruments()
                 self._send_all_instruments_to_data_engine()
             except asyncio.CancelledError:
                 self._log.debug("Canceled task 'update_instruments'")
@@ -472,6 +478,8 @@ class BitmexDataClient(LiveMarketDataClient):
                 # to `Data` is still owned and managed by Rust.
                 data = capsule_to_data(msg)
                 self._handle_data(data)
+            elif isinstance(msg, nautilus_pyo3.InstrumentStatus):
+                self._handle_data(InstrumentStatus.from_pyo3(msg))
             elif isinstance(msg, BITMEX_INSTRUMENT_TYPES):
                 self._handle_instrument_update(msg)
             elif isinstance(msg, nautilus_pyo3.FundingRateUpdate):

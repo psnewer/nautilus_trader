@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use nautilus_core::correctness::{check_in_range_inclusive_f64, check_predicate_true};
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Clone, Debug)]
 pub struct ExponentialBackoff {
@@ -102,7 +102,7 @@ impl ExponentialBackoff {
         }
 
         // Generate random jitter
-        let jitter = rand::rng().random_range(0..=self.jitter_ms);
+        let jitter = rand::rng().random_range(0..=self.jitter_ms); // dst-ok: transport-layer reconnect jitter, out of DST scope
         let delay_with_jitter = self.delay_current + Duration::from_millis(jitter);
 
         // Clamp the returned delay to never exceed delay_max
@@ -216,7 +216,7 @@ mod tests {
     #[rstest]
     fn test_jitter_within_bounds() {
         let initial = Duration::from_millis(100);
-        let max = Duration::from_millis(1000);
+        let max = Duration::from_secs(1);
         let factor = 2.0;
         let jitter = 50;
         // Run several iterations to ensure that jitter stays within bounds
@@ -267,7 +267,7 @@ mod tests {
     #[rstest]
     fn test_max_delay_is_respected() {
         let initial = Duration::from_millis(500);
-        let max = Duration::from_millis(1000);
+        let max = Duration::from_secs(1);
         let factor = 3.0;
         let jitter = 0;
         let mut backoff = ExponentialBackoff::new(initial, max, factor, jitter, false).unwrap();
@@ -278,11 +278,11 @@ mod tests {
 
         // 2nd call: would be 500 * 3 = 1500ms but is capped to 1000ms
         let d2 = backoff.next_duration();
-        assert_eq!(d2, Duration::from_millis(1000));
+        assert_eq!(d2, Duration::from_secs(1));
 
         // Subsequent calls should continue to return the max delay
         let d3 = backoff.next_duration();
-        assert_eq!(d3, Duration::from_millis(1000));
+        assert_eq!(d3, Duration::from_secs(1));
     }
 
     #[rstest]
@@ -307,8 +307,7 @@ mod tests {
 
     #[rstest]
     fn test_validation_zero_initial_delay() {
-        let result =
-            ExponentialBackoff::new(Duration::ZERO, Duration::from_millis(1000), 2.0, 0, false);
+        let result = ExponentialBackoff::new(Duration::ZERO, Duration::from_secs(1), 2.0, 0, false);
         assert!(result.is_err());
         assert!(
             result
@@ -321,7 +320,7 @@ mod tests {
     #[rstest]
     fn test_validation_max_less_than_initial() {
         let result = ExponentialBackoff::new(
-            Duration::from_millis(1000),
+            Duration::from_secs(1),
             Duration::from_millis(500),
             2.0,
             0,
@@ -340,7 +339,7 @@ mod tests {
     fn test_validation_factor_too_small() {
         let result = ExponentialBackoff::new(
             Duration::from_millis(100),
-            Duration::from_millis(1000),
+            Duration::from_secs(1),
             0.5,
             0,
             false,
@@ -353,7 +352,7 @@ mod tests {
     fn test_validation_factor_too_large() {
         let result = ExponentialBackoff::new(
             Duration::from_millis(100),
-            Duration::from_millis(1000),
+            Duration::from_secs(1),
             150.0,
             0,
             false,
@@ -440,7 +439,7 @@ mod tests {
     #[rstest]
     fn test_jitter_never_exceeds_max_delay() {
         let initial = Duration::from_millis(100);
-        let max = Duration::from_millis(1000);
+        let max = Duration::from_secs(1);
         let factor = 2.0;
         let jitter = 500;
 

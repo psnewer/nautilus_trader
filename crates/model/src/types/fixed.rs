@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,7 +18,7 @@
 //! This module provides constants and functions that enforce a fixed-point precision strategy,
 //! ensuring consistent precision and scaling across various types and calculations.
 //!
-//! # Raw value requirements
+//! # Raw Value Requirements
 //!
 //! When constructing value types like [`Price`] or [`Quantity`] using `from_raw`, the raw value
 //! **must** be a valid multiple of the scale factor for the given precision. Valid raw values
@@ -31,7 +31,7 @@
 //! Raw values that are not valid multiples will cause a panic on construction in debug builds,
 //! and may result in incorrect values in release builds.
 //!
-//! # Legacy catalog data and floating-point errors
+//! # Legacy Catalog Data and Floating-Point Errors
 //!
 //! Data written to catalogs using V2 wranglers before 16th December 2025 may contain raw values with
 //! floating-point precision errors. This occurred because the wranglers used:
@@ -46,7 +46,7 @@
 //! round(value * 10^precision) * scale  # Correct
 //! ```
 //!
-//! # Raw value correction
+//! # Raw Value Correction
 //!
 //! To handle legacy data with floating-point errors, the Arrow decode path uses correction
 //! functions ([`correct_raw_i64`], [`correct_raw_i128`], etc.) to round raw values to the
@@ -60,7 +60,9 @@
 
 use std::fmt::Display;
 
-use nautilus_core::correctness::FAILED;
+use nautilus_core::correctness::{
+    CorrectnessError, CorrectnessResult, CorrectnessResultExt, FAILED,
+};
 
 use crate::types::{price::PriceRaw, quantity::QuantityRaw};
 
@@ -141,7 +143,7 @@ pub const PRECISION_DIFF_SCALAR: f64 = 1.0;
 
 /// Precomputed powers of 10 for fast scale lookup.
 ///
-/// Index i contains 10^i. Table covers 10^0 through 10^16 (sufficient for FIXED_PRECISION).
+/// Index i contains 10^i. Table covers 10^0 through 10^16 (sufficient for `FIXED_PRECISION`).
 /// Used by `check_fixed_raw_*` functions to avoid runtime exponentiation.
 const POWERS_OF_10: [u64; 17] = [
     1,                      // 10^0
@@ -189,35 +191,55 @@ pub const MAX_FLOAT_PRECISION: u8 = 16;
 /// Returns an error if `precision` exceeds the maximum allowed:
 /// - With `defi` feature: [`WEI_PRECISION`](crate::defi::WEI_PRECISION) (18)
 /// - Without `defi` feature: [`FIXED_PRECISION`]
-pub fn check_fixed_precision(precision: u8) -> anyhow::Result<()> {
+pub fn check_fixed_precision(precision: u8) -> CorrectnessResult<()> {
     #[cfg(feature = "defi")]
     if precision > crate::defi::WEI_PRECISION {
-        anyhow::bail!("`precision` exceeded maximum `WEI_PRECISION` (18), was {precision}")
+        return Err(CorrectnessError::PredicateViolation {
+            message: format!("`precision` exceeded maximum `WEI_PRECISION` (18), was {precision}"),
+        });
     }
 
     #[cfg(not(feature = "defi"))]
     if precision > FIXED_PRECISION {
-        anyhow::bail!(
-            "`precision` exceeded maximum `FIXED_PRECISION` ({FIXED_PRECISION}), was {precision}"
-        )
+        return Err(CorrectnessError::PredicateViolation {
+            message: format!(
+                "`precision` exceeded maximum `FIXED_PRECISION` ({FIXED_PRECISION}), was {precision}"
+            ),
+        });
     }
 
     Ok(())
+}
+
+/// Returns `true` when two precisions encode their `raw` values at the same scale.
+///
+/// The effective scale for a given precision is `max(precision, FIXED_PRECISION)`:
+/// - Standard precisions (`<= FIXED_PRECISION`) all store raw at `FIXED_SCALAR` scale.
+/// - Defi precisions (`> FIXED_PRECISION`, e.g. 17 or 18) each store raw at their own
+///   native `10^precision` scale via constructors like `Price::from_wei` /
+///   `Quantity::from_u256`.
+///
+/// Two precisions match iff their effective scales are identical. Mixing different
+/// scales in raw arithmetic produces wrong results.
+#[inline]
+#[must_use]
+pub fn raw_scales_match(a: u8, b: u8) -> bool {
+    a.max(FIXED_PRECISION) == b.max(FIXED_PRECISION)
 }
 
 // -----------------------------------------------------------------------------
 // Raw value validation
 // -----------------------------------------------------------------------------
 
-/// Returns `Ok(true)` if validation should be skipped, `Ok(false)` to proceed.
+/// Returns `true` if validation should be skipped, `false` to proceed.
 ///
-/// Validation is skipped when precision >= FIXED_PRECISION because every bit of the raw
-/// value is significant. For precision > FIXED_PRECISION without the defi feature,
+/// Validation is skipped when precision >= `FIXED_PRECISION` because every bit of the raw
+/// value is significant. For precision > `FIXED_PRECISION` without the defi feature,
 /// a debug assertion fires to surface potential misuse during development.
 #[inline(always)]
-fn should_skip_validation(precision: u8) -> anyhow::Result<bool> {
+fn should_skip_validation(precision: u8) -> bool {
     if precision == FIXED_PRECISION {
-        return Ok(true);
+        return true;
     }
 
     if precision > FIXED_PRECISION {
@@ -228,10 +250,10 @@ fn should_skip_validation(precision: u8) -> anyhow::Result<bool> {
             "precision {precision} exceeds FIXED_PRECISION {FIXED_PRECISION}: \
              raw value validation is not possible at this precision"
         );
-        return Ok(true);
+        return true;
     }
 
-    Ok(false)
+    false
 }
 
 /// Builds the error for invalid fixed-point raw values (cold path).
@@ -252,11 +274,11 @@ fn invalid_raw_error(
 
 /// Checks that a raw unsigned fixed-point value has no spurious bits beyond the precision scale.
 ///
-/// For a given precision P where P < FIXED_PRECISION, valid raw values must be exact
-/// multiples of 10^(FIXED_PRECISION - P). Any non-zero remainder indicates data corruption
+/// For a given precision P where P < `FIXED_PRECISION`, valid raw values must be exact
+/// multiples of `10^(FIXED_PRECISION` - P). Any non-zero remainder indicates data corruption
 /// or incorrect scaling upstream.
 ///
-/// # Precision limits
+/// # Precision Limits
 ///
 /// This check only validates when `precision < FIXED_PRECISION`:
 /// - When `precision == FIXED_PRECISION`, every bit of the raw value is significant and
@@ -271,9 +293,9 @@ fn invalid_raw_error(
 ///
 /// # Example
 ///
-/// With FIXED_PRECISION=9 and precision=0:
-/// - Valid: raw=120_000_000_000 (120 * 10^9, divisible by 10^9)
-/// - Invalid: raw=119_582_001_968_421_736 (remainder 968_421_736 when divided by 10^9)
+/// With `FIXED_PRECISION=9` and precision=0:
+/// - Valid: `raw=120_000_000_000` (120 * 10^9, divisible by 10^9)
+/// - Invalid: `raw=119_582_001_968_421_736` (remainder `968_421_736` when divided by 10^9)
 ///
 /// # Errors
 ///
@@ -281,7 +303,7 @@ fn invalid_raw_error(
 /// (only when `precision < FIXED_PRECISION`).
 #[inline(always)]
 pub fn check_fixed_raw_u128(raw: u128, precision: u8) -> anyhow::Result<()> {
-    if should_skip_validation(precision)? {
+    if should_skip_validation(precision) {
         return Ok(());
     }
 
@@ -306,7 +328,7 @@ pub fn check_fixed_raw_u128(raw: u128, precision: u8) -> anyhow::Result<()> {
 /// Returns an error if the raw value has non-zero bits beyond the precision scale.
 #[inline(always)]
 pub fn check_fixed_raw_u64(raw: u64, precision: u8) -> anyhow::Result<()> {
-    if should_skip_validation(precision)? {
+    if should_skip_validation(precision) {
         return Ok(());
     }
 
@@ -323,11 +345,11 @@ pub fn check_fixed_raw_u64(raw: u64, precision: u8) -> anyhow::Result<()> {
 
 /// Checks that a raw signed fixed-point value has no spurious bits beyond the precision scale.
 ///
-/// For a given precision P where P < FIXED_PRECISION, valid raw values must be exact
-/// multiples of 10^(FIXED_PRECISION - P). Any non-zero remainder indicates data corruption
+/// For a given precision P where P < `FIXED_PRECISION`, valid raw values must be exact
+/// multiples of `10^(FIXED_PRECISION` - P). Any non-zero remainder indicates data corruption
 /// or incorrect scaling upstream.
 ///
-/// # Precision limits
+/// # Precision Limits
 ///
 /// This check only validates when `precision < FIXED_PRECISION`:
 /// - When `precision == FIXED_PRECISION`, every bit of the raw value is significant and
@@ -342,9 +364,9 @@ pub fn check_fixed_raw_u64(raw: u64, precision: u8) -> anyhow::Result<()> {
 ///
 /// # Example
 ///
-/// With FIXED_PRECISION=9 and precision=0:
-/// - Valid: raw=120_000_000_000 (120 * 10^9, divisible by 10^9)
-/// - Invalid: raw=119_582_001_968_421_736 (remainder 968_421_736 when divided by 10^9)
+/// With `FIXED_PRECISION=9` and precision=0:
+/// - Valid: `raw=120_000_000_000` (120 * 10^9, divisible by 10^9)
+/// - Invalid: `raw=119_582_001_968_421_736` (remainder `968_421_736` when divided by 10^9)
 ///
 /// # Errors
 ///
@@ -352,7 +374,7 @@ pub fn check_fixed_raw_u64(raw: u64, precision: u8) -> anyhow::Result<()> {
 /// (only when `precision < FIXED_PRECISION`).
 #[inline(always)]
 pub fn check_fixed_raw_i128(raw: i128, precision: u8) -> anyhow::Result<()> {
-    if should_skip_validation(precision)? {
+    if should_skip_validation(precision) {
         return Ok(());
     }
 
@@ -377,7 +399,7 @@ pub fn check_fixed_raw_i128(raw: i128, precision: u8) -> anyhow::Result<()> {
 /// Returns an error if the raw value has non-zero bits beyond the precision scale.
 #[inline(always)]
 pub fn check_fixed_raw_i64(raw: i64, precision: u8) -> anyhow::Result<()> {
-    if should_skip_validation(precision)? {
+    if should_skip_validation(precision) {
         return Ok(());
     }
 
@@ -543,6 +565,86 @@ pub fn correct_quantity_raw(raw: QuantityRaw, precision: u8) -> QuantityRaw {
     }
 }
 
+/// Rounds a mantissa by removing `excess` decimal digits using banker's rounding (half to even).
+///
+/// Given a mantissa representing a number with `excess` extra decimal places beyond the desired
+/// precision, divides by `10^excess` and rounds the result using round-half-to-even semantics.
+#[must_use]
+#[inline]
+pub fn bankers_round(mantissa: i128, excess: u32) -> i128 {
+    if excess == 0 {
+        return mantissa;
+    }
+
+    // 10^39 overflows i128, and any i64-origin mantissa divided by 10^39+ is 0
+    if excess >= 39 {
+        return 0;
+    }
+
+    let divisor = 10i128.pow(excess);
+    let quotient = mantissa / divisor;
+    let remainder = mantissa % divisor;
+    let half = divisor / 2;
+
+    if remainder.abs() > half || (remainder.abs() == half && quotient % 2 != 0) {
+        quotient + mantissa.signum()
+    } else {
+        quotient
+    }
+}
+
+/// Converts a mantissa/exponent pair to a raw fixed-point `i128` value at the given precision.
+///
+/// The value is `mantissa * 10^exponent`. Uses pure integer arithmetic with banker's rounding
+/// when fractional digits exceed `precision`. The result is scaled to [`FIXED_PRECISION`].
+///
+/// This is the shared core for `from_decimal`, `from_decimal_dp`, and `from_mantissa_exponent`
+/// across Money, Price, and Quantity.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `precision` exceeds the maximum allowed by [`check_fixed_precision`].
+/// - The scale factor exceeds `10^38` (i128 range).
+/// - Overflow occurs during multiplication.
+pub fn mantissa_exponent_to_fixed_i128(
+    mantissa: i128,
+    exponent: i8,
+    precision: u8,
+) -> CorrectnessResult<i128> {
+    check_fixed_precision(precision)?;
+
+    let precision_i16 = i16::from(precision);
+    let target_scale = i16::from(FIXED_PRECISION).max(precision_i16);
+    let frac_digits = -i16::from(exponent);
+
+    let mantissa = if frac_digits > precision_i16 {
+        let excess = (frac_digits - precision_i16) as u32;
+        bankers_round(mantissa, excess)
+    } else {
+        mantissa
+    };
+
+    let scale_after_rounding = frac_digits.min(precision_i16);
+    let scale_exp = target_scale - scale_after_rounding;
+    if scale_exp > 38 {
+        return Err(CorrectnessError::PredicateViolation {
+            message: format!(
+                "Exponent {exponent} produces scale factor 10^{scale_exp} which exceeds i128 range"
+            ),
+        });
+    }
+
+    if scale_exp >= 0 {
+        mantissa.checked_mul(10i128.pow(scale_exp as u32))
+    } else {
+        Some(mantissa / 10i128.pow((-scale_exp) as u32))
+    }
+    .ok_or_else(|| CorrectnessError::PredicateViolation {
+        message: "Overflow when scaling mantissa to fixed precision".to_string(),
+    })
+}
+
 /// Converts an `f64` value to a raw fixed-point `i64` representation with a specified precision.
 ///
 /// # Precision and Rounding
@@ -557,7 +659,7 @@ pub fn correct_quantity_raw(raw: QuantityRaw, precision: u8) -> QuantityRaw {
 /// Panics if `precision` exceeds [`FIXED_PRECISION`].
 #[must_use]
 pub fn f64_to_fixed_i64(value: f64, precision: u8) -> i64 {
-    check_fixed_precision(precision).expect(FAILED);
+    check_fixed_precision(precision).expect_display(FAILED);
     let pow1 = 10_i64.pow(u32::from(precision));
     let pow2 = 10_i64.pow(u32::from(FIXED_PRECISION - precision));
     let rounded = (value * pow1 as f64).round() as i64;
@@ -569,8 +671,9 @@ pub fn f64_to_fixed_i64(value: f64, precision: u8) -> i64 {
 /// # Panics
 ///
 /// Panics if `precision` exceeds [`FIXED_PRECISION`].
+#[must_use]
 pub fn f64_to_fixed_i128(value: f64, precision: u8) -> i128 {
-    check_fixed_precision(precision).expect(FAILED);
+    check_fixed_precision(precision).expect_display(FAILED);
     let pow1 = 10_i128.pow(u32::from(precision));
     let pow2 = 10_i128.pow(u32::from(FIXED_PRECISION - precision));
     let rounded = (value * pow1 as f64).round() as i128;
@@ -584,7 +687,7 @@ pub fn f64_to_fixed_i128(value: f64, precision: u8) -> i128 {
 /// Panics if `precision` exceeds [`FIXED_PRECISION`].
 #[must_use]
 pub fn f64_to_fixed_u64(value: f64, precision: u8) -> u64 {
-    check_fixed_precision(precision).expect(FAILED);
+    check_fixed_precision(precision).expect_display(FAILED);
     let pow1 = 10_u64.pow(u32::from(precision));
     let pow2 = 10_u64.pow(u32::from(FIXED_PRECISION - precision));
     let rounded = (value * pow1 as f64).round() as u64;
@@ -598,7 +701,7 @@ pub fn f64_to_fixed_u64(value: f64, precision: u8) -> u64 {
 /// Panics if `precision` exceeds [`FIXED_PRECISION`].
 #[must_use]
 pub fn f64_to_fixed_u128(value: f64, precision: u8) -> u128 {
-    check_fixed_precision(precision).expect(FAILED);
+    check_fixed_precision(precision).expect_display(FAILED);
     let pow1 = 10_u128.pow(u32::from(precision));
     let pow2 = 10_u128.pow(u32::from(FIXED_PRECISION - precision));
     let rounded = (value * pow1 as f64).round() as u128;
@@ -668,8 +771,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case(1000000.0)]
-    #[case(-1000000.0)]
+    #[case(1_000_000.0)]
+    #[case(-1_000_000.0)]
     fn test_large_value_roundtrip(#[case] value: f64) {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_i128(value, precision);
@@ -679,16 +782,16 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0, 123456.0)]
-    #[case(0, 123456.7)]
-    #[case(1, 123456.7)]
-    #[case(2, 123456.78)]
-    #[case(8, 123456.12345678)]
+    #[case(0, 123_456.0)]
+    #[case(0, 123_456.7)]
+    #[case(1, 123_456.7)]
+    #[case(2, 123_456.78)]
+    #[case(8, 123_456.123_456_78)]
     fn test_precision_specific_values_basic(#[case] precision: u8, #[case] value: f64) {
         let result = f64_to_fixed_i128(value, precision);
         let back_converted = fixed_i128_to_f64(result);
         // Round-trip should preserve the value up to the specified precision
-        let scale = 10.0_f64.powi(precision as i32);
+        let scale = 10.0_f64.powi(i32::from(precision));
         let expected_rounded = (value * scale).round() / scale;
         assert!((back_converted - expected_rounded).abs() < 1e-10);
     }
@@ -696,7 +799,7 @@ mod tests {
     #[rstest]
     fn test_max_precision_values() {
         // Test with maximum precision that the current feature set supports
-        let test_value = 123456.123456789;
+        let test_value = 123_456.123_456_789;
         let result = f64_to_fixed_i128(test_value, FIXED_PRECISION);
         let back_converted = fixed_i128_to_f64(result);
         // For maximum precision, we expect some floating-point limitations
@@ -706,7 +809,7 @@ mod tests {
     #[rstest]
     #[case(0.0)]
     #[case(1.0)]
-    #[case(1000000.0)]
+    #[case(1_000_000.0)]
     fn test_unsigned_basic_roundtrip(#[case] value: f64) {
         for precision in 0..=FIXED_PRECISION {
             let fixed = f64_to_fixed_u128(value, precision);
@@ -738,6 +841,54 @@ mod tests {
         let precision = WEI_PRECISION + 1;
         let result = check_fixed_precision(precision);
         assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "defi"))]
+    #[rstest]
+    fn test_check_fixed_precision_returns_typed_error_with_stable_display() {
+        let error = check_fixed_precision(FIXED_PRECISION + 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            CorrectnessError::PredicateViolation {
+                message: format!(
+                    "`precision` exceeded maximum `FIXED_PRECISION` ({FIXED_PRECISION}), was {}",
+                    FIXED_PRECISION + 1
+                ),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`precision` exceeded maximum `FIXED_PRECISION` ({FIXED_PRECISION}), was {}",
+                FIXED_PRECISION + 1
+            )
+        );
+    }
+
+    #[cfg(feature = "defi")]
+    #[rstest]
+    fn test_check_fixed_precision_returns_typed_error_with_stable_display() {
+        use crate::defi::WEI_PRECISION;
+
+        let error = check_fixed_precision(WEI_PRECISION + 1).unwrap_err();
+
+        assert_eq!(
+            error,
+            CorrectnessError::PredicateViolation {
+                message: format!(
+                    "`precision` exceeded maximum `WEI_PRECISION` (18), was {}",
+                    WEI_PRECISION + 1
+                ),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "`precision` exceeded maximum `WEI_PRECISION` (18), was {}",
+                WEI_PRECISION + 1
+            )
+        );
     }
 
     #[rstest]
@@ -795,38 +946,38 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0, 5.555555555555555)]
-    #[case(1, 5.555555555555555)]
-    #[case(2, 5.555555555555555)]
-    #[case(3, 5.555555555555555)]
-    #[case(4, 5.555555555555555)]
-    #[case(5, 5.555555555555555)]
-    #[case(6, 5.555555555555555)]
-    #[case(7, 5.555555555555555)]
-    #[case(8, 5.555555555555555)]
-    #[case(9, 5.555555555555555)]
-    #[case(10, 5.555555555555555)]
-    #[case(11, 5.555555555555555)]
-    #[case(12, 5.555555555555555)]
-    #[case(13, 5.555555555555555)]
-    #[case(14, 5.555555555555555)]
-    #[case(15, 5.555555555555555)]
-    #[case(0, -5.555555555555555)]
-    #[case(1, -5.555555555555555)]
-    #[case(2, -5.555555555555555)]
-    #[case(3, -5.555555555555555)]
-    #[case(4, -5.555555555555555)]
-    #[case(5, -5.555555555555555)]
-    #[case(6, -5.555555555555555)]
-    #[case(7, -5.555555555555555)]
-    #[case(8, -5.555555555555555)]
-    #[case(9, -5.555555555555555)]
-    #[case(10, -5.555555555555555)]
-    #[case(11, -5.555555555555555)]
-    #[case(12, -5.555555555555555)]
-    #[case(13, -5.555555555555555)]
-    #[case(14, -5.555555555555555)]
-    #[case(15, -5.555555555555555)]
+    #[case(0, 5.555_555_555_555_555)]
+    #[case(1, 5.555_555_555_555_555)]
+    #[case(2, 5.555_555_555_555_555)]
+    #[case(3, 5.555_555_555_555_555)]
+    #[case(4, 5.555_555_555_555_555)]
+    #[case(5, 5.555_555_555_555_555)]
+    #[case(6, 5.555_555_555_555_555)]
+    #[case(7, 5.555_555_555_555_555)]
+    #[case(8, 5.555_555_555_555_555)]
+    #[case(9, 5.555_555_555_555_555)]
+    #[case(10, 5.555_555_555_555_555)]
+    #[case(11, 5.555_555_555_555_555)]
+    #[case(12, 5.555_555_555_555_555)]
+    #[case(13, 5.555_555_555_555_555)]
+    #[case(14, 5.555_555_555_555_555)]
+    #[case(15, 5.555_555_555_555_555)]
+    #[case(0, -5.555_555_555_555_555)]
+    #[case(1, -5.555_555_555_555_555)]
+    #[case(2, -5.555_555_555_555_555)]
+    #[case(3, -5.555_555_555_555_555)]
+    #[case(4, -5.555_555_555_555_555)]
+    #[case(5, -5.555_555_555_555_555)]
+    #[case(6, -5.555_555_555_555_555)]
+    #[case(7, -5.555_555_555_555_555)]
+    #[case(8, -5.555_555_555_555_555)]
+    #[case(9, -5.555_555_555_555_555)]
+    #[case(10, -5.555_555_555_555_555)]
+    #[case(11, -5.555_555_555_555_555)]
+    #[case(12, -5.555_555_555_555_555)]
+    #[case(13, -5.555_555_555_555_555)]
+    #[case(14, -5.555_555_555_555_555)]
+    #[case(15, -5.555_555_555_555_555)]
     fn test_f64_to_fixed_i128(#[case] precision: u8, #[case] value: f64) {
         // Only test up to the current FIXED_PRECISION
         if precision > FIXED_PRECISION {
@@ -848,23 +999,23 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0, 5.555555555555555)]
-    #[case(1, 5.555555555555555)]
-    #[case(2, 5.555555555555555)]
-    #[case(3, 5.555555555555555)]
-    #[case(4, 5.555555555555555)]
-    #[case(5, 5.555555555555555)]
-    #[case(6, 5.555555555555555)]
-    #[case(7, 5.555555555555555)]
-    #[case(8, 5.555555555555555)]
-    #[case(9, 5.555555555555555)]
-    #[case(10, 5.555555555555555)]
-    #[case(11, 5.555555555555555)]
-    #[case(12, 5.555555555555555)]
-    #[case(13, 5.555555555555555)]
-    #[case(14, 5.555555555555555)]
-    #[case(15, 5.555555555555555)]
-    #[case(16, 5.555555555555555)]
+    #[case(0, 5.555_555_555_555_555)]
+    #[case(1, 5.555_555_555_555_555)]
+    #[case(2, 5.555_555_555_555_555)]
+    #[case(3, 5.555_555_555_555_555)]
+    #[case(4, 5.555_555_555_555_555)]
+    #[case(5, 5.555_555_555_555_555)]
+    #[case(6, 5.555_555_555_555_555)]
+    #[case(7, 5.555_555_555_555_555)]
+    #[case(8, 5.555_555_555_555_555)]
+    #[case(9, 5.555_555_555_555_555)]
+    #[case(10, 5.555_555_555_555_555)]
+    #[case(11, 5.555_555_555_555_555)]
+    #[case(12, 5.555_555_555_555_555)]
+    #[case(13, 5.555_555_555_555_555)]
+    #[case(14, 5.555_555_555_555_555)]
+    #[case(15, 5.555_555_555_555_555)]
+    #[case(16, 5.555_555_555_555_555)]
     fn test_f64_to_fixed_u64(#[case] precision: u8, #[case] value: f64) {
         // Only test up to the current FIXED_PRECISION
         if precision > FIXED_PRECISION {
@@ -1027,12 +1178,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0, 123456.0, 123456_000000000)]
-    #[case(0, 123456.7, 123457_000000000)]
-    #[case(1, 123456.7, 123456_700000000)]
-    #[case(2, 123456.78, 123456_780000000)]
-    #[case(8, 123456.12345678, 123456_123456780)]
-    #[case(9, 123456.123456789, 123456_123456789)]
+    #[case(0, 123456.0, 123_456_000_000_000)]
+    #[case(0, 123456.7, 123_457_000_000_000)]
+    #[case(1, 123456.7, 123_456_700_000_000)]
+    #[case(2, 123456.78, 123_456_780_000_000)]
+    #[case(8, 123456.123_456_78, 123_456_123_456_780)]
+    #[case(9, 123456.123_456_789, 123_456_123_456_789)]
     fn test_precision_specific_values(
         #[case] precision: u8,
         #[case] value: f64,
@@ -1132,14 +1283,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case(0, 123_456.0, 123_456_000_000_000)]
-    #[case(0, 123_456.7, 123_457_000_000_000)]
+    #[case(0, 123456.0, 123_456_000_000_000)]
+    #[case(0, 123456.7, 123_457_000_000_000)]
     #[case(0, 123_456.4, 123_456_000_000_000)]
-    #[case(1, 123_456.0, 123_456_000_000_000)]
-    #[case(1, 123_456.7, 123_456_700_000_000)]
+    #[case(1, 123456.0, 123_456_000_000_000)]
+    #[case(1, 123456.7, 123_456_700_000_000)]
     #[case(1, 123_456.4, 123_456_400_000_000)]
-    #[case(2, 123_456.0, 123_456_000_000_000)]
-    #[case(2, 123_456.7, 123_456_700_000_000)]
+    #[case(2, 123456.0, 123_456_000_000_000)]
+    #[case(2, 123456.7, 123_456_700_000_000)]
     #[case(2, 123_456.4, 123_456_400_000_000)]
     fn test_f64_to_fixed_i64_with_precision(
         #[case] precision: u8,
@@ -1281,5 +1432,172 @@ mod tests {
         assert!(check_fixed_raw_i64(-1, FIXED_PRECISION).is_ok());
         assert!(check_fixed_raw_i64(i64::MAX, FIXED_PRECISION).is_ok());
         assert!(check_fixed_raw_i64(i64::MIN, FIXED_PRECISION).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod bankers_round_tests {
+    use std::str::FromStr;
+
+    use rstest::rstest;
+    use rust_decimal::{Decimal, RoundingStrategy};
+
+    use super::*;
+
+    #[rstest]
+    // Excess=0: no rounding, identity
+    #[case(0, 0, 0)]
+    #[case(1, 0, 1)]
+    #[case(5, 0, 5)]
+    #[case(99, 0, 99)]
+    #[case(-7, 0, -7)]
+    // Excess >= 39: overflow guard returns 0
+    #[case(12345, 39, 0)]
+    #[case(i128::from(i64::MAX), 100, 0)]
+    #[case(-99999, 50, 0)]
+    // Excess=1: halfway cases (remainder == 5, half of 10)
+    #[case(15, 1, 2)] // 1.5 -> 2 (round up to even)
+    #[case(25, 1, 2)] // 2.5 -> 2 (round down to even)
+    #[case(35, 1, 4)] // 3.5 -> 4 (round up to even)
+    #[case(45, 1, 4)] // 4.5 -> 4 (round down to even)
+    #[case(55, 1, 6)] // 5.5 -> 6 (round up to even)
+    #[case(65, 1, 6)] // 6.5 -> 6 (round down to even)
+    #[case(75, 1, 8)] // 7.5 -> 8 (round up to even)
+    #[case(85, 1, 8)] // 8.5 -> 8 (round down to even)
+    #[case(95, 1, 10)] // 9.5 -> 10 (round up to even)
+    #[case(105, 1, 10)] // 10.5 -> 10 (round down to even)
+    // Excess=1: non-halfway cases
+    #[case(14, 1, 1)] // 1.4 -> 1 (truncate)
+    #[case(16, 1, 2)] // 1.6 -> 2 (round up)
+    #[case(24, 1, 2)] // 2.4 -> 2 (truncate)
+    #[case(26, 1, 3)] // 2.6 -> 3 (round up)
+    #[case(11, 1, 1)] // 1.1 -> 1 (truncate)
+    #[case(19, 1, 2)] // 1.9 -> 2 (round up)
+    // Excess=2: halfway cases (remainder == 50, half of 100)
+    #[case(150, 2, 2)] // 1.50 -> 2 (round up to even)
+    #[case(250, 2, 2)] // 2.50 -> 2 (round down to even)
+    #[case(350, 2, 4)] // 3.50 -> 4 (round up to even)
+    #[case(450, 2, 4)] // 4.50 -> 4 (round down to even)
+    #[case(550, 2, 6)] // 5.50 -> 6 (round up to even)
+    #[case(1050, 2, 10)] // 10.50 -> 10 (round down to even)
+    #[case(1150, 2, 12)] // 11.50 -> 12 (round up to even)
+    // Excess=2: non-halfway cases
+    #[case(149, 2, 1)] // 1.49 -> 1 (truncate)
+    #[case(151, 2, 2)] // 1.51 -> 2 (round up)
+    #[case(199, 2, 2)] // 1.99 -> 2 (round up)
+    #[case(101, 2, 1)] // 1.01 -> 1 (truncate)
+    // Excess=3: halfway cases (remainder == 500, half of 1000)
+    #[case(1500, 3, 2)] // 1.500 -> 2 (round up to even)
+    #[case(2500, 3, 2)] // 2.500 -> 2 (round down to even)
+    #[case(3500, 3, 4)] // 3.500 -> 4 (round up to even)
+    #[case(10500, 3, 10)] // 10.500 -> 10 (round down to even)
+    #[case(11500, 3, 12)] // 11.500 -> 12 (round up to even)
+    // Excess=3: non-halfway cases
+    #[case(1499, 3, 1)] // 1.499 -> 1 (truncate)
+    #[case(1501, 3, 2)] // 1.501 -> 2 (round up)
+    // Negative halfway cases
+    #[case(-15, 1, -2)] // -1.5 -> -2 (round away from zero to even)
+    #[case(-25, 1, -2)] // -2.5 -> -2 (round toward zero to even)
+    #[case(-35, 1, -4)] // -3.5 -> -4 (round away from zero to even)
+    #[case(-45, 1, -4)] // -4.5 -> -4 (round toward zero to even)
+    #[case(-55, 1, -6)] // -5.5 -> -6 (round away from zero to even)
+    #[case(-65, 1, -6)] // -6.5 -> -6 (round toward zero to even)
+    #[case(-150, 2, -2)] // -1.50 -> -2 (round away from zero to even)
+    #[case(-250, 2, -2)] // -2.50 -> -2 (round toward zero to even)
+    #[case(-350, 2, -4)] // -3.50 -> -4 (round away from zero to even)
+    // Negative non-halfway cases
+    #[case(-14, 1, -1)] // -1.4 -> -1 (truncate toward zero)
+    #[case(-16, 1, -2)] // -1.6 -> -2 (round away from zero)
+    #[case(-24, 1, -2)] // -2.4 -> -2 (truncate toward zero)
+    #[case(-26, 1, -3)] // -2.6 -> -3 (round away from zero)
+    // Zero mantissa
+    #[case(0, 1, 0)]
+    #[case(0, 2, 0)]
+    #[case(0, 5, 0)]
+    // Large excess values
+    #[case(123_456_789, 3, 123_457)] // 123456.789 -> 123457
+    #[case(123_456_500, 3, 123_456)] // 123456.500 -> 123456 (half, even quotient)
+    #[case(123_457_500, 3, 123_458)] // 123457.500 -> 123458 (half, odd quotient)
+    #[case(100_005, 1, 10_000)] // 10000.5 -> 10000 (half, even quotient)
+    #[case(100_015, 1, 10_002)] // 10001.5 -> 10002 (half, odd quotient)
+    // Large mantissa values
+    #[case(999_999_999_999_999_995, 1, 100_000_000_000_000_000)]
+    #[case(1_000_000_000_000_000_005, 1, 100_000_000_000_000_000)]
+    fn test_bankers_round(#[case] mantissa: i128, #[case] excess: u32, #[case] expected: i128) {
+        assert_eq!(
+            bankers_round(mantissa, excess),
+            expected,
+            "bankers_round({mantissa}, {excess}) expected {expected}"
+        );
+    }
+
+    // Symmetry: bankers_round(-x, e) == -bankers_round(x, e) for all positive x
+    #[rstest]
+    #[case(15, 1)]
+    #[case(25, 1)]
+    #[case(35, 1)]
+    #[case(150, 2)]
+    #[case(250, 2)]
+    #[case(1500, 3)]
+    #[case(2500, 3)]
+    #[case(123_456_789, 3)]
+    #[case(14, 1)]
+    #[case(16, 1)]
+    fn test_bankers_round_negative_symmetry(#[case] mantissa: i128, #[case] excess: u32) {
+        assert_eq!(
+            bankers_round(-mantissa, excess),
+            -bankers_round(mantissa, excess),
+            "Negative symmetry failed for mantissa={mantissa}, excess={excess}"
+        );
+    }
+
+    // Verify consistency with Rust Decimal's banker's rounding
+    #[rstest]
+    #[case("1.005", 2, "1.00")] // 0.005 remainder, even quotient -> truncate
+    #[case("1.015", 2, "1.02")] // 0.005 remainder, odd quotient -> round up
+    #[case("1.025", 2, "1.02")] // 0.005 remainder, even quotient -> truncate
+    #[case("1.035", 2, "1.04")] // 0.005 remainder, odd quotient -> round up
+    #[case("1.045", 2, "1.04")] // 0.005 remainder, even quotient -> truncate
+    #[case("2.5", 0, "2")] // 0.5 remainder, even quotient -> truncate
+    #[case("3.5", 0, "4")] // 0.5 remainder, odd quotient -> round up
+    #[case("-2.5", 0, "-2")]
+    #[case("-3.5", 0, "-4")]
+    #[case("123.456", 2, "123.46")]
+    #[case("123.455", 2, "123.46")] // Odd quotient at half
+    #[case("123.445", 2, "123.44")] // Even quotient at half
+    fn test_bankers_round_matches_decimal(
+        #[case] input: &str,
+        #[case] target_precision: u8,
+        #[case] expected: &str,
+    ) {
+        let dec = Decimal::from_str(input).unwrap();
+        let expected_dec = Decimal::from_str(expected).unwrap();
+
+        let decimal_rounded = dec.round_dp_with_strategy(
+            u32::from(target_precision),
+            RoundingStrategy::MidpointNearestEven,
+        );
+        assert_eq!(
+            decimal_rounded, expected_dec,
+            "Decimal rounding sanity check failed for {input}"
+        );
+
+        let mantissa = dec.mantissa();
+        let scale = dec.scale() as u8;
+        let excess = u32::from(scale.saturating_sub(target_precision));
+        if excess > 0 {
+            let rounded = bankers_round(mantissa, excess);
+
+            // Reconstruct expected mantissa at target precision
+            let expected_mantissa = expected_dec.mantissa();
+            let expected_scale = expected_dec.scale() as u8;
+            let scale_diff = u32::from(target_precision.saturating_sub(expected_scale));
+            let normalized_expected = expected_mantissa * 10i128.pow(scale_diff);
+
+            assert_eq!(
+                rounded, normalized_expected,
+                "bankers_round disagrees with Decimal for {input} at precision {target_precision}"
+            );
+        }
     }
 }

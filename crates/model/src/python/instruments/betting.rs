@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,8 +18,9 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use nautilus_core::python::{
-    IntoPyObjectNautilusExt, serialization::from_dict_pyo3, to_pyvalue_err,
+use nautilus_core::{
+    from_pydict,
+    python::{IntoPyObjectNautilusExt, serialization::from_dict_pyo3, to_pyvalue_err},
 };
 use pyo3::{basic::CompareOp, prelude::*, types::PyDict};
 use rust_decimal::Decimal;
@@ -33,10 +34,12 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BettingInstrument {
-    #[allow(clippy::too_many_arguments)]
+    /// Represents a betting instrument with complete market and selection details.
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     #[new]
-    #[pyo3(signature = (instrument_id, raw_symbol, event_type_id, event_type_name, competition_id, competition_name, event_id, event_name, event_country_code, event_open_date, betting_type, market_id, market_name, market_type, market_start_time, selection_id, selection_name, selection_handicap, currency, price_precision, size_precision, price_increment, size_increment, ts_event, ts_init, max_quantity=None, min_quantity=None, max_notional=None, min_notional=None, max_price=None, min_price=None, margin_init=None, margin_maint=None, maker_fee=None, taker_fee=None))]
+    #[pyo3(signature = (instrument_id, raw_symbol, event_type_id, event_type_name, competition_id, competition_name, event_id, event_name, event_country_code, event_open_date, betting_type, market_id, market_name, market_type, market_start_time, selection_id, selection_name, selection_handicap, currency, price_precision, size_precision, price_increment, size_increment, ts_event, ts_init, max_quantity=None, min_quantity=None, max_notional=None, min_notional=None, max_price=None, min_price=None, margin_init=None, margin_maint=None, maker_fee=None, taker_fee=None, info=None))]
     fn py_new(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -73,7 +76,15 @@ impl BettingInstrument {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Py<PyDict>>,
     ) -> PyResult<Self> {
+        // Convert Python dict to Params
+        let info_map = if let Some(info_dict) = info {
+            Python::attach(|py| from_pydict(py, info_dict))?
+        } else {
+            None
+        };
+
         Self::new_checked(
             instrument_id,
             raw_symbol,
@@ -108,6 +119,7 @@ impl BettingInstrument {
             margin_maint,
             maker_fee,
             taker_fee,
+            info_map,
             ts_event.into(),
             ts_init.into(),
         )
@@ -129,7 +141,7 @@ impl BettingInstrument {
     }
 
     #[getter]
-    fn type_str(&self) -> &str {
+    fn type_name(&self) -> &'static str {
         stringify!(BettingInstrument)
     }
 
@@ -248,7 +260,7 @@ impl BettingInstrument {
     }
 
     #[getter]
-    #[pyo3(name = "selection_name")]
+    #[pyo3(name = "selection_handicap")]
     fn py_selection_handicap(&self) -> f64 {
         self.selection_handicap
     }
@@ -333,8 +345,22 @@ impl BettingInstrument {
 
     #[getter]
     #[pyo3(name = "info")]
-    fn py_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(PyDict::new(py).into())
+    fn py_info(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        // Convert HashMap<String, serde_json::Value> back to Python dict
+        if let Some(ref info_map) = self.info {
+            let py_dict = PyDict::new(py);
+
+            for (key, value) in info_map {
+                // Convert serde_json::Value back to Python object via JSON
+                let json_str = serde_json::to_string(value).map_err(to_pyvalue_err)?;
+                let py_value =
+                    PyModule::import(py, "json")?.call_method("loads", (json_str,), None)?;
+                py_dict.set_item(key, py_value)?;
+            }
+            Ok(py_dict.unbind())
+        } else {
+            Ok(PyDict::new(py).unbind())
+        }
     }
 
     #[getter]
@@ -388,27 +414,46 @@ impl BettingInstrument {
         dict.set_item("taker_fee", self.taker_fee.to_string())?;
         dict.set_item("ts_event", self.ts_event.as_u64())?;
         dict.set_item("ts_init", self.ts_init.as_u64())?;
-        dict.set_item("info", PyDict::new(py))?;
+        // Serialize info dict
+        if let Some(ref info_map) = self.info {
+            let info_dict = PyDict::new(py);
+
+            for (key, value) in info_map {
+                let json_str = serde_json::to_string(value).map_err(to_pyvalue_err)?;
+                let py_value =
+                    PyModule::import(py, "json")?.call_method("loads", (json_str,), None)?;
+                info_dict.set_item(key, py_value)?;
+            }
+            dict.set_item("info", info_dict)?;
+        } else {
+            dict.set_item("info", PyDict::new(py))?;
+        }
+
         match self.max_quantity {
             Some(value) => dict.set_item("max_quantity", value.to_string())?,
             None => dict.set_item("max_quantity", py.None())?,
         }
+
         match self.min_quantity {
             Some(value) => dict.set_item("min_quantity", value.to_string())?,
             None => dict.set_item("min_quantity", py.None())?,
         }
+
         match self.max_notional {
             Some(value) => dict.set_item("max_notional", value.to_string())?,
             None => dict.set_item("max_notional", py.None())?,
         }
+
         match self.min_notional {
             Some(value) => dict.set_item("min_notional", value.to_string())?,
             None => dict.set_item("min_notional", py.None())?,
         }
+
         match self.max_price {
             Some(value) => dict.set_item("max_price", value.to_string())?,
             None => dict.set_item("max_price", py.None())?,
         }
+
         match self.min_price {
             Some(value) => dict.set_item("min_price", value.to_string())?,
             None => dict.set_item("min_price", py.None())?,

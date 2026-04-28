@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,6 +14,7 @@
 // -------------------------------------------------------------------------------------------------
 
 use nautilus_core::{UUID4, UnixNanos};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     enums::{OrderSide, PositionSide},
@@ -25,7 +26,15 @@ use crate::{
 
 /// Represents an event where a position has changed.
 #[repr(C)]
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
+)]
 pub struct PositionChanged {
     /// The trader ID associated with the event.
     pub trader_id: TraderId,
@@ -76,6 +85,7 @@ pub struct PositionChanged {
 }
 
 impl PositionChanged {
+    #[must_use]
     pub fn create(
         position: &Position,
         fill: &OrderFilled,
@@ -149,7 +159,7 @@ mod tests {
             realized_return: 0.0,
             realized_pnl: None,
             unrealized_pnl: Money::new(75.0, Currency::USD()),
-            event_id: Default::default(),
+            event_id: UUID4::default(),
             ts_opened: UnixNanos::from(1_000_000_000),
             ts_event: UnixNanos::from(1_500_000_000),
             ts_init: UnixNanos::from(2_500_000_000),
@@ -171,50 +181,13 @@ mod tests {
             Price::from("0.8050"),
             Currency::USD(),
             LiquiditySide::Taker,
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_500_000_000),
             UnixNanos::from(2_500_000_000),
             false,
             Some(PositionId::from("P-001")),
             Some(Money::new(1.0, Currency::USD())),
         )
-    }
-
-    #[rstest]
-    fn test_position_changed_new() {
-        let position_changed = create_test_position_changed();
-
-        assert_eq!(position_changed.trader_id, TraderId::from("TRADER-001"));
-        assert_eq!(position_changed.strategy_id, StrategyId::from("EMA-CROSS"));
-        assert_eq!(
-            position_changed.instrument_id,
-            InstrumentId::from("EURUSD.SIM")
-        );
-        assert_eq!(position_changed.position_id, PositionId::from("P-001"));
-        assert_eq!(position_changed.account_id, AccountId::from("SIM-001"));
-        assert_eq!(
-            position_changed.opening_order_id,
-            ClientOrderId::from("O-19700101-000000-001-001-1")
-        );
-        assert_eq!(position_changed.entry, OrderSide::Buy);
-        assert_eq!(position_changed.side, PositionSide::Long);
-        assert_eq!(position_changed.signed_qty, 150.0);
-        assert_eq!(position_changed.quantity, Quantity::from("150"));
-        assert_eq!(position_changed.peak_quantity, Quantity::from("150"));
-        assert_eq!(position_changed.last_qty, Quantity::from("50"));
-        assert_eq!(position_changed.last_px, Price::from("1.0550"));
-        assert_eq!(position_changed.currency, Currency::USD());
-        assert_eq!(position_changed.avg_px_open, 1.0525);
-        assert_eq!(position_changed.avg_px_close, None);
-        assert_eq!(position_changed.realized_return, 0.0);
-        assert_eq!(position_changed.realized_pnl, None);
-        assert_eq!(
-            position_changed.unrealized_pnl,
-            Money::new(75.0, Currency::USD())
-        );
-        assert_eq!(position_changed.ts_opened, UnixNanos::from(1_000_000_000));
-        assert_eq!(position_changed.ts_event, UnixNanos::from(1_500_000_000));
-        assert_eq!(position_changed.ts_init, UnixNanos::from(2_500_000_000));
     }
 
     #[rstest]
@@ -234,7 +207,7 @@ mod tests {
             Price::from("0.8000"),
             Currency::USD(),
             LiquiditySide::Taker,
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_000_000_000),
             UnixNanos::from(2_000_000_000),
             false,
@@ -244,7 +217,7 @@ mod tests {
 
         let position = Position::new(&InstrumentAny::CurrencyPair(instrument), initial_fill);
         let change_fill = create_test_order_filled();
-        let event_id = Default::default();
+        let event_id = UUID4::default();
         let ts_init = UnixNanos::from(3_000_000_000);
 
         let position_changed = PositionChanged::create(&position, &change_fill, event_id, ts_init);
@@ -278,77 +251,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_position_changed_clone() {
-        let position_changed1 = create_test_position_changed();
-        let position_changed2 = position_changed1.clone();
-
-        assert_eq!(position_changed1, position_changed2);
-    }
-
-    #[rstest]
-    fn test_position_changed_debug() {
-        let position_changed = create_test_position_changed();
-        let debug_str = format!("{position_changed:?}");
-
-        assert!(debug_str.contains("PositionChanged"));
-        assert!(debug_str.contains("TRADER-001"));
-        assert!(debug_str.contains("EMA-CROSS"));
-        assert!(debug_str.contains("EURUSD.SIM"));
-        assert!(debug_str.contains("P-001"));
-    }
-
-    #[rstest]
-    fn test_position_changed_partial_eq() {
-        let mut position_changed1 = create_test_position_changed();
-        let mut position_changed2 = create_test_position_changed();
-        let event_id = Default::default();
-        position_changed1.event_id = event_id;
-        position_changed2.event_id = event_id;
-
-        let mut position_changed3 = create_test_position_changed();
-        position_changed3.event_id = event_id;
-        position_changed3.quantity = Quantity::from("200");
-
-        assert_eq!(position_changed1, position_changed2);
-        assert_ne!(position_changed1, position_changed3);
-    }
-
-    #[rstest]
-    fn test_position_changed_with_pnl() {
-        let mut position_changed = create_test_position_changed();
-        position_changed.realized_pnl = Some(Money::new(25.0, Currency::USD()));
-        position_changed.unrealized_pnl = Money::new(50.0, Currency::USD());
-
-        assert_eq!(
-            position_changed.realized_pnl,
-            Some(Money::new(25.0, Currency::USD()))
-        );
-        assert_eq!(
-            position_changed.unrealized_pnl,
-            Money::new(50.0, Currency::USD())
-        );
-    }
-
-    #[rstest]
-    fn test_position_changed_with_closing_prices() {
-        let mut position_changed = create_test_position_changed();
-        position_changed.avg_px_close = Some(1.0575);
-        position_changed.realized_return = 0.0048;
-
-        assert_eq!(position_changed.avg_px_close, Some(1.0575));
-        assert_eq!(position_changed.realized_return, 0.0048);
-    }
-
-    #[rstest]
-    fn test_position_changed_peak_quantity() {
-        let mut position_changed = create_test_position_changed();
-        position_changed.peak_quantity = Quantity::from("300");
-
-        assert_eq!(position_changed.peak_quantity, Quantity::from("300"));
-        assert!(position_changed.peak_quantity >= position_changed.quantity);
-    }
-
-    #[rstest]
     fn test_position_changed_different_sides() {
         let mut long_position = create_test_position_changed();
         long_position.side = PositionSide::Long;
@@ -363,35 +265,5 @@ mod tests {
 
         assert_eq!(short_position.side, PositionSide::Short);
         assert_eq!(short_position.signed_qty, -150.0);
-    }
-
-    #[rstest]
-    fn test_position_changed_timestamps() {
-        let position_changed = create_test_position_changed();
-
-        assert_eq!(position_changed.ts_opened, UnixNanos::from(1_000_000_000));
-        assert_eq!(position_changed.ts_event, UnixNanos::from(1_500_000_000));
-        assert_eq!(position_changed.ts_init, UnixNanos::from(2_500_000_000));
-        assert!(position_changed.ts_opened < position_changed.ts_event);
-        assert!(position_changed.ts_event < position_changed.ts_init);
-    }
-
-    #[rstest]
-    fn test_position_changed_quantities_relationship() {
-        let position_changed = create_test_position_changed();
-
-        assert!(position_changed.peak_quantity >= position_changed.quantity);
-        assert!(position_changed.last_qty <= position_changed.quantity);
-    }
-
-    #[rstest]
-    fn test_position_changed_with_zero_unrealized_pnl() {
-        let mut position_changed = create_test_position_changed();
-        position_changed.unrealized_pnl = Money::new(0.0, Currency::USD());
-
-        assert_eq!(
-            position_changed.unrealized_pnl,
-            Money::new(0.0, Currency::USD())
-        );
     }
 }

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -30,6 +30,23 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Run socket test
 
 def _server_url(server: TestServer) -> str:
     return f"ws://{server.host}:{server.port}/ws"
+
+
+def test_websocket_config_accepts_proxy_url():
+    # Pin the pyo3 binding signature: a regression that drops the kwarg from
+    # the Rust constructor would surface here as a TypeError.
+    config = WebSocketConfig(
+        url="ws://example.invalid/ws",
+        headers=[],
+        proxy_url="http://127.0.0.1:9999",
+    )
+    assert config is not None
+
+
+def test_websocket_config_proxy_url_omitted():
+    # Default path: no proxy specified, the kwarg falls back to None.
+    config = WebSocketConfig(url="ws://example.invalid/ws", headers=[])
+    assert config is not None
 
 
 @pytest.mark.asyncio

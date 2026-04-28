@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,8 +32,13 @@ use crate::indicator::Indicator;
         eq,
         eq_int,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.indicators"
+        module = "nautilus_trader.core.nautilus_pyo3.indicators",
+        from_py_object,
     )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.indicators")
 )]
 pub enum CandleBodySize {
     None = 0,
@@ -54,8 +59,13 @@ pub enum CandleBodySize {
         eq,
         eq_int,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.indicators"
+        module = "nautilus_trader.core.nautilus_pyo3.indicators",
+        from_py_object,
     )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.indicators")
 )]
 pub enum CandleDirection {
     Bull = 1,
@@ -74,8 +84,13 @@ pub enum CandleDirection {
         eq,
         eq_int,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.indicators"
+        module = "nautilus_trader.core.nautilus_pyo3.indicators",
+        from_py_object,
     )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.indicators")
 )]
 pub enum CandleSize {
     None = 0,
@@ -98,8 +113,13 @@ pub enum CandleSize {
         eq,
         eq_int,
         hash,
-        module = "nautilus_trader.core.nautilus_pyo3.indicators"
+        module = "nautilus_trader.core.nautilus_pyo3.indicators",
+        from_py_object,
     )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.indicators")
 )]
 pub enum CandleWickSize {
     None = 0,
@@ -112,7 +132,14 @@ pub enum CandleWickSize {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators")
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.indicators",
+        from_py_object
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct FuzzyCandle {
     pub direction: CandleDirection,
@@ -158,6 +185,10 @@ const MAX_CAPACITY: usize = 1024;
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators")
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct FuzzyCandlesticks {
     pub period: usize,
@@ -393,6 +424,7 @@ impl FuzzyCandlesticks {
             mean_length + self.threshold2 * sd_lengths, // Large
             mean_length + self.threshold3 * sd_lengths, // VeryLarge
         ];
+
         if length <= thresholds[0] {
             CandleSize::VerySmall
         } else if length <= thresholds[1] {

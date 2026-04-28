@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,9 +13,18 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::Value;
+
+use crate::{
+    common::enums::HyperliquidInfoRequestType,
+    http::query::{ExchangeAction, ExchangeActionParams, InfoRequest},
+};
 
 #[derive(Debug)]
 pub struct WeightedLimiter {
@@ -46,6 +55,7 @@ impl WeightedLimiter {
     /// Acquire `weight` tokens, sleeping until available.
     pub async fn acquire(&self, weight: u32) {
         let need = weight as f64;
+
         loop {
             let mut st = self.state.lock().await;
             Self::refill_locked(&mut st, self.refill_per_sec, self.capacity);
@@ -96,45 +106,42 @@ pub struct RateLimitSnapshot {
 }
 
 pub fn backoff_full_jitter(attempt: u32, base: Duration, cap: Duration) -> Duration {
-    use std::{
-        collections::hash_map::DefaultHasher,
-        hash::{Hash, Hasher},
-    };
-
-    // Simple pseudo-random based on attempt and time
     let mut hasher = DefaultHasher::new();
     attempt.hash(&mut hasher);
-    Instant::now().elapsed().as_nanos().hash(&mut hasher);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    nanos.hash(&mut hasher);
     let hash = hasher.finish();
 
     let max = (base.as_millis() as u64)
         .saturating_mul(1u64 << attempt.min(16))
         .min(cap.as_millis() as u64)
         .max(base.as_millis() as u64);
-    Duration::from_millis(hash % max)
+
+    // Floor at 1ms to prevent zero-duration backoff
+    Duration::from_millis((hash % max).max(1))
 }
 
-/// Classify Info requests into weight classes based on request_type.
-/// Since InfoRequest uses struct with request_type string, we match on that.
-pub fn info_base_weight(req: &crate::http::query::InfoRequest) -> u32 {
-    match req.request_type.as_str() {
-        // Cheap (2)
-        "l2Book"
-        | "allMids"
-        | "clearinghouseState"
-        | "orderStatus"
-        | "spotClearinghouseState"
-        | "exchangeStatus" => 2,
-        // Very expensive (60)
-        "userRole" => 60,
-        // Default (20)
+/// Classify Info requests into weight classes based on request type.
+pub fn info_base_weight(req: &InfoRequest) -> u32 {
+    match req.request_type {
+        HyperliquidInfoRequestType::L2Book
+        | HyperliquidInfoRequestType::AllMids
+        | HyperliquidInfoRequestType::ClearinghouseState
+        | HyperliquidInfoRequestType::OrderStatus
+        | HyperliquidInfoRequestType::SpotClearinghouseState
+        | HyperliquidInfoRequestType::ExchangeStatus
+        | HyperliquidInfoRequestType::UserFees => 2,
+        HyperliquidInfoRequestType::UserRole => 60,
         _ => 20,
     }
 }
 
 /// Extra weight for heavy Info endpoints: +1 per 20 (most), +1 per 60 for candleSnapshot.
 /// We count the largest array in the response (robust to schema variants).
-pub fn info_extra_weight(req: &crate::http::query::InfoRequest, json: &Value) -> u32 {
+pub fn info_extra_weight(req: &InfoRequest, json: &Value) -> u32 {
     let items = match json {
         Value::Array(a) => a.len(),
         Value::Object(m) => m
@@ -145,30 +152,27 @@ pub fn info_extra_weight(req: &crate::http::query::InfoRequest, json: &Value) ->
         _ => 0,
     };
 
-    let unit = match req.request_type.as_str() {
-        "candleSnapshot" => 60usize, // +1 per 60
-        "recentTrades"
-        | "historicalOrders"
-        | "userFills"
-        | "userFillsByTime"
-        | "fundingHistory"
-        | "userFunding"
-        | "nonUserFundingUpdates"
-        | "twapHistory"
-        | "userTwapSliceFills"
-        | "userTwapSliceFillsByTime"
-        | "delegatorHistory"
-        | "delegatorRewards"
-        | "validatorStats" => 20usize, // +1 per 20
+    let unit = match req.request_type {
+        HyperliquidInfoRequestType::CandleSnapshot => 60usize,
+        HyperliquidInfoRequestType::HistoricalOrders
+        | HyperliquidInfoRequestType::UserFills
+        | HyperliquidInfoRequestType::UserFillsByTime
+        | HyperliquidInfoRequestType::FundingHistory
+        | HyperliquidInfoRequestType::UserFunding
+        | HyperliquidInfoRequestType::NonUserFundingUpdates
+        | HyperliquidInfoRequestType::TwapHistory
+        | HyperliquidInfoRequestType::UserTwapSliceFills
+        | HyperliquidInfoRequestType::UserTwapSliceFillsByTime
+        | HyperliquidInfoRequestType::DelegatorHistory
+        | HyperliquidInfoRequestType::DelegatorRewards
+        | HyperliquidInfoRequestType::ValidatorStats => 20usize,
         _ => return 0,
     };
     (items / unit) as u32
 }
 
 /// Exchange: 1 + floor(batch_len / 40)
-pub fn exchange_weight(action: &crate::http::query::ExchangeAction) -> u32 {
-    use crate::http::query::ExchangeActionParams;
-
+pub fn exchange_weight(action: &ExchangeAction) -> u32 {
     // Extract batch size from typed params
     let batch_size = match &action.params {
         ExchangeActionParams::Order(params) => params.orders.len(),
@@ -187,8 +191,16 @@ pub fn exchange_weight(action: &crate::http::query::ExchangeAction) -> u32 {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
-    use super::*;
+    use super::{
+        super::models::{
+            Cloid, HyperliquidExecCancelByCloidRequest, HyperliquidExecGrouping,
+            HyperliquidExecLimitParams, HyperliquidExecOrderKind, HyperliquidExecPlaceOrderRequest,
+            HyperliquidExecTif,
+        },
+        *,
+    };
     use crate::http::query::{
         CancelParams, ExchangeAction, ExchangeActionParams, ExchangeActionType, OrderParams,
         UpdateLeverageParams,
@@ -204,13 +216,6 @@ mod tests {
         #[case] array_len: usize,
         #[case] expected_weight: u32,
     ) {
-        use rust_decimal::Decimal;
-
-        use super::super::models::{
-            Cloid, HyperliquidExecGrouping, HyperliquidExecLimitParams, HyperliquidExecOrderKind,
-            HyperliquidExecPlaceOrderRequest, HyperliquidExecTif,
-        };
-
         let orders: Vec<HyperliquidExecPlaceOrderRequest> = (0..array_len)
             .map(|_| HyperliquidExecPlaceOrderRequest {
                 asset: 0,
@@ -232,6 +237,7 @@ mod tests {
             params: ExchangeActionParams::Order(OrderParams {
                 orders,
                 grouping: HyperliquidExecGrouping::Na,
+                builder: None,
             }),
         };
         assert_eq!(exchange_weight(&action), expected_weight);
@@ -239,8 +245,6 @@ mod tests {
 
     #[rstest]
     fn test_exchange_weight_cancel() {
-        use super::super::models::{Cloid, HyperliquidExecCancelByCloidRequest};
-
         let cancels: Vec<HyperliquidExecCancelByCloidRequest> = (0..40)
             .map(|_| HyperliquidExecCancelByCloidRequest {
                 asset: 0,
@@ -325,7 +329,7 @@ mod tests {
 
         let delay = backoff_full_jitter(attempt, base, cap);
 
-        // Should be in expected ranges (allowing for jitter)
+        assert!(delay.as_millis() >= 1);
         assert!(delay.as_millis() <= max_expected_ms as u128);
     }
 

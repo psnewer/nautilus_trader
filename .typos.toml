@@ -23,6 +23,7 @@ ot = "ot" # Order tag variable naming convention
 HIGHTER = "HIGHTER" # Binance API error code (their official typo)
 cummulative = "cummulative" # Binance API: cummulativeQuoteQty field (their official typo)
 cummulativeQuoteQty = "cummulativeQuoteQty" # Binance API field name
+SETTELMENT = "SETTELMENT" # Binance API: DELIVERED_SETTELMENT income type (their official typo)
 Alo = "Alo" # Hyperliquid API: Add Liquidity Only (post-only TIF)
 BadAloPx = "BadAloPx" # Hyperliquid API: rejection code for post-only orders
 
@@ -34,6 +35,8 @@ SUPERSEED = "SUPERSEED" # Superseed blockchain constant
 ba = "ba" # Hex digit in UUID test strings
 BA = "BA" # Base64/encoded characters in test data
 datas = "datas" # Intentional plural variable naming for vectors
+UE = "UE" # Base64 encoded certificate data (GA1UE pattern)
+Fo = "Fo" # Base64 encoded certificate data
 
 # NumPy/scientific computing functions
 arange = "arange" # NumPy array range function (not a typo of "arrange")

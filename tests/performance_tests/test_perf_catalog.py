@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -117,6 +117,7 @@ def test_load_multi_stream_catalog_v2(benchmark) -> None:
 
     def run(result):
         count = 0
+
         for chunk in result:
             ticks = capsule_to_list(chunk)
             count += len(ticks)

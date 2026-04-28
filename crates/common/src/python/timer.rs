@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,7 +27,7 @@ use pyo3::{
 };
 use ustr::Ustr;
 
-use crate::timer::{TimeEvent, TimeEventCallback, TimeEventHandlerV2};
+use crate::timer::{TimeEvent, TimeEventCallback, TimeEventHandler};
 
 #[pyo3::pyclass(
     module = "nautilus_trader.core.nautilus_pyo3.common",
@@ -39,8 +39,8 @@ use crate::timer::{TimeEvent, TimeEventCallback, TimeEventHandlerV2};
 ///
 /// `TimeEventHandler` associates a `TimeEvent` with a callback function that is triggered
 /// when the event's timestamp is reached.
-#[allow(non_camel_case_types)]
 #[derive(Debug)]
+#[allow(non_camel_case_types)]
 pub struct TimeEventHandler_Py {
     /// The time event.
     pub event: TimeEvent,
@@ -48,12 +48,12 @@ pub struct TimeEventHandler_Py {
     pub callback: Py<PyAny>,
 }
 
-impl From<TimeEventHandlerV2> for TimeEventHandler_Py {
+impl From<TimeEventHandler> for TimeEventHandler_Py {
     /// # Panics
     ///
-    /// Panics if the provided `TimeEventHandlerV2` contains a Rust callback,
+    /// Panics if the provided `TimeEventHandler` contains a Rust callback,
     /// since only Python callbacks are supported by this handler.
-    fn from(value: TimeEventHandlerV2) -> Self {
+    fn from(value: TimeEventHandler) -> Self {
         Self {
             event: value.event,
             callback: match value.callback {
@@ -68,7 +68,15 @@ impl From<TimeEventHandlerV2> for TimeEventHandler_Py {
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl TimeEvent {
+    /// Creates a valid nanoseconds interval that is guaranteed to be positive.
+    ///
+    /// Coerces zero to one to ensure a valid `NonZeroU64`.
+    /// Represents a time event occurring at the event timestamp.
+    ///
+    /// A `TimeEvent` carries metadata such as the event's name, a unique event ID,
+    /// and timestamps indicating when the event was scheduled to occur and when it was initialized.
     #[new]
     fn py_new(name: &str, event_id: UUID4, ts_event: u64, ts_init: u64) -> Self {
         Self::new(Ustr::from(name), event_id, ts_event.into(), ts_init.into())
@@ -180,16 +188,15 @@ mod tests {
     };
 
     #[pyfunction]
-    const fn receive_event(_py: Python, _event: TimeEvent) -> PyResult<()> {
+    const fn receive_event(_py: Python, _event: TimeEvent) {
         // TODO: Assert the length of a handler vec
-        Ok(())
     }
 
     #[derive(Debug)]
     struct TestTimeEventSender;
 
     impl TimeEventSender for TestTimeEventSender {
-        fn send(&self, _handler: crate::timer::TimeEventHandlerV2) {
+        fn send(&self, _handler: crate::timer::TimeEventHandler) {
             // Test implementation - just ignore the events
         }
     }

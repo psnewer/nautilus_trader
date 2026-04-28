@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -36,7 +36,11 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct OrderSnapshot {
     /// The trader ID associated with the order.
@@ -171,5 +175,60 @@ impl From<OrderAny> for OrderSnapshot {
             ts_init: order.ts_init(),
             ts_last: order.ts_last(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+    use crate::orders::OrderTestBuilder;
+
+    #[rstest]
+    fn test_snapshot_from_market_order() {
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(InstrumentId::from("EURUSD.SIM"))
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from(100))
+            .build();
+
+        let snapshot = OrderSnapshot::from(order.clone());
+
+        assert_eq!(snapshot.trader_id, order.trader_id());
+        assert_eq!(snapshot.strategy_id, order.strategy_id());
+        assert_eq!(snapshot.instrument_id, order.instrument_id());
+        assert_eq!(snapshot.client_order_id, order.client_order_id());
+        assert_eq!(snapshot.venue_order_id, order.venue_order_id());
+        assert_eq!(snapshot.order_side, order.order_side());
+        assert_eq!(snapshot.order_type, order.order_type());
+        assert_eq!(snapshot.quantity, order.quantity());
+        assert_eq!(snapshot.status, order.status());
+        assert_eq!(snapshot.ts_init, order.ts_init());
+        assert_eq!(snapshot.ts_last, order.ts_last());
+        assert_eq!(snapshot.filled_qty, order.filled_qty());
+        assert!(!snapshot.is_post_only);
+        assert!(!snapshot.is_quote_quantity);
+    }
+
+    #[rstest]
+    fn test_snapshot_from_limit_order() {
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.5"))
+            .price(Price::from("50000"))
+            .build();
+
+        let snapshot = OrderSnapshot::from(order);
+
+        assert_eq!(snapshot.order_type, OrderType::Limit);
+        assert_eq!(snapshot.order_side, OrderSide::Sell);
+        assert_eq!(snapshot.price, Some(Price::from("50000")));
+        assert_eq!(
+            snapshot.instrument_id,
+            InstrumentId::from("BTCUSDT.BINANCE")
+        );
+        assert_eq!(snapshot.quantity, Quantity::from("0.5"));
     }
 }

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -36,6 +36,7 @@ fn topic_from_parts(
 
     if let Some(inst_id) = inst_id {
         let inst_id = inst_id.as_str();
+
         if let Some(bar) = bar {
             format!("{base}:{inst_id}:{}", bar.as_str())
         } else {

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,11 +16,13 @@
 //! Represents a valid client order ID (assigned by the Nautilus system).
 
 use std::{
-    fmt::{Debug, Display, Formatter},
+    fmt::{Debug, Display},
     hash::Hash,
 };
 
-use nautilus_core::correctness::{FAILED, check_valid_string_ascii};
+use nautilus_core::correctness::{
+    CorrectnessResult, CorrectnessResultExt, FAILED, check_valid_string_ascii,
+};
 use ustr::Ustr;
 
 /// Represents a valid client order ID (assigned by the Nautilus system).
@@ -28,7 +30,11 @@ use ustr::Ustr;
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct ClientOrderId(Ustr);
 
@@ -42,7 +48,7 @@ impl ClientOrderId {
     /// # Notes
     ///
     /// PyO3 requires a `Result` type for proper error handling and stacktrace printing in Python.
-    pub fn new_checked<T: AsRef<str>>(value: T) -> anyhow::Result<Self> {
+    pub fn new_checked<T: AsRef<str>>(value: T) -> CorrectnessResult<Self> {
         let value = value.as_ref();
         check_valid_string_ascii(value, stringify!(value))?;
         Ok(Self(Ustr::from(value)))
@@ -54,7 +60,7 @@ impl ClientOrderId {
     ///
     /// Panics if `value` is not a valid string.
     pub fn new<T: AsRef<str>>(value: T) -> Self {
-        Self::new_checked(value).expect(FAILED)
+        Self::new_checked(value).expect_display(FAILED)
     }
 
     /// Sets the inner identifier value.
@@ -74,16 +80,28 @@ impl ClientOrderId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Creates an external client order ID used when no ID was provided.
+    #[must_use]
+    pub fn external() -> Self {
+        Self::new("EXTERNAL")
+    }
+
+    /// Returns whether this client order ID is external.
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        self.0.as_str() == "EXTERNAL"
+    }
 }
 
 impl Debug for ClientOrderId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"{}\"", self.0)
     }
 }
 
 impl Display for ClientOrderId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -128,6 +146,12 @@ mod tests {
     fn test_string_reprs(client_order_id: ClientOrderId) {
         assert_eq!(client_order_id.as_str(), "O-19700101-000000-001-001-1");
         assert_eq!(format!("{client_order_id}"), "O-19700101-000000-001-001-1");
+    }
+
+    #[rstest]
+    #[should_panic(expected = "Condition failed: invalid string for 'value', was empty")]
+    fn test_new_with_empty_string_panics_with_display_format() {
+        let _ = ClientOrderId::new("");
     }
 
     #[rstest]

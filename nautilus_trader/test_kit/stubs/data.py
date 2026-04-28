@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -545,6 +545,7 @@ class TestDataStubs:
     def l1_feed():
         provider = TestDataProvider()
         updates = []
+
         for _, row in provider.read_csv_ticks("truefx/usdjpy-ticks.csv").iterrows():
             for side, order_side in zip(
                 ("bid", "ask"),

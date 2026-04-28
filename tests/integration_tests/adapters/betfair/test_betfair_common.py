@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -146,6 +146,8 @@ def test_is_session_error_returns_true(error_msg):
     [
         "PERMISSION_DENIED: Business rules do not allow order to be placed",
         "INSUFFICIENT_FUNDS: Not enough funds available",
+        "JSON_PARSE_ERROR: JSON is malformed: invalid character (byte 0)",
+        "JSON_PARSE_ERROR: Empty response body",
         "",
     ],
 )

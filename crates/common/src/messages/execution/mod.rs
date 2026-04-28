@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,32 +21,38 @@ pub mod query;
 pub mod report;
 pub mod submit;
 
-use nautilus_core::UnixNanos;
+use nautilus_core::{Params, UnixNanos};
 use nautilus_model::{
     identifiers::{ClientId, InstrumentId, StrategyId},
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
 };
 use strum::Display;
 
-// Re-exports
 pub use self::{
-    cancel::BatchCancelOrders, cancel::CancelAllOrders, cancel::CancelOrder, modify::ModifyOrder,
-    query::QueryAccount, query::QueryOrder, report::GenerateFillReports,
-    report::GenerateOrderStatusReport, report::GeneratePositionReports, submit::SubmitOrder,
-    submit::SubmitOrderList,
+    cancel::{BatchCancelOrders, CancelAllOrders, CancelOrder},
+    modify::ModifyOrder,
+    query::{QueryAccount, QueryOrder},
+    report::{
+        GenerateExecutionMassStatus, GenerateExecutionMassStatusBuilder, GenerateFillReports,
+        GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReportBuilder,
+        GenerateOrderStatusReports, GenerateOrderStatusReportsBuilder,
+        GeneratePositionStatusReports, GeneratePositionStatusReportsBuilder,
+    },
+    submit::{SubmitOrder, SubmitOrderList},
 };
 
 /// Execution report variants for reconciliation.
 #[derive(Clone, Debug, Display)]
 pub enum ExecutionReport {
-    OrderStatus(Box<OrderStatusReport>),
+    Order(Box<OrderStatusReport>),
     Fill(Box<FillReport>),
+    OrderWithFills(Box<OrderStatusReport>, Vec<FillReport>),
     Position(Box<PositionStatusReport>),
-    Mass(Box<ExecutionMassStatus>),
+    MassStatus(Box<ExecutionMassStatus>),
 }
 
 // TODO
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq, Display)]
 pub enum TradingCommand {
     SubmitOrder(SubmitOrder),
@@ -61,7 +67,7 @@ pub enum TradingCommand {
 
 impl TradingCommand {
     #[must_use]
-    pub const fn client_id(&self) -> ClientId {
+    pub const fn client_id(&self) -> Option<ClientId> {
         match self {
             Self::SubmitOrder(command) => command.client_id,
             Self::SubmitOrderList(command) => command.client_id,
@@ -118,6 +124,20 @@ impl TradingCommand {
             Self::BatchCancelOrders(command) => Some(command.strategy_id),
             Self::QueryOrder(command) => Some(command.strategy_id),
             Self::QueryAccount(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn params(&self) -> Option<&Params> {
+        match self {
+            Self::SubmitOrder(command) => command.params.as_ref(),
+            Self::SubmitOrderList(command) => command.params.as_ref(),
+            Self::ModifyOrder(command) => command.params.as_ref(),
+            Self::CancelOrder(command) => command.params.as_ref(),
+            Self::CancelAllOrders(command) => command.params.as_ref(),
+            Self::BatchCancelOrders(command) => command.params.as_ref(),
+            Self::QueryOrder(command) => command.params.as_ref(),
+            Self::QueryAccount(command) => command.params.as_ref(),
         }
     }
 }

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,8 +20,10 @@
 //! and system control messages.
 
 use nautilus_model::{
-    data::Data,
-    events::{AccountState, OrderEventAny},
+    data::{Data, FundingRateUpdate, InstrumentStatus, option_chain::OptionGreeks},
+    events::{
+        AccountState, OrderAcceptedBatch, OrderCanceledBatch, OrderEventAny, OrderSubmittedBatch,
+    },
     instruments::InstrumentAny,
 };
 use strum::Display;
@@ -44,16 +46,22 @@ pub enum DataEvent {
     Response(DataResponse),
     Data(Data),
     Instrument(InstrumentAny), // TODO: Eventually this can be `Data` once Cython is gone
+    FundingRate(FundingRateUpdate),
+    InstrumentStatus(InstrumentStatus),
+    OptionGreeks(OptionGreeks),
     // nautilus-import-ok: conditional compilation import
     #[cfg(feature = "defi")]
     DeFi(nautilus_model::defi::data::DefiData),
 }
 
 /// Execution event variants for order events and reports.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Display)]
 pub enum ExecutionEvent {
     Order(OrderEventAny),
+    OrderSubmittedBatch(OrderSubmittedBatch),
+    OrderAcceptedBatch(OrderAcceptedBatch),
+    OrderCanceledBatch(OrderCanceledBatch),
     Report(ExecutionReport),
     Account(AccountState),
 }

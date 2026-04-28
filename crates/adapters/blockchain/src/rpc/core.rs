@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,7 +20,7 @@ use nautilus_model::defi::{Block, Chain, rpc::RpcNodeWssResponse};
 use nautilus_network::{
     RECONNECTED,
     http::USER_AGENT,
-    websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
+    websocket::{TransportBackend, WebSocketClient, WebSocketConfig, channel_message_handler},
 };
 use tokio_tungstenite::tungstenite::Message;
 
@@ -58,11 +58,15 @@ pub struct CoreBlockchainRpcClient {
     wss_consumer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Message>>,
     /// Tracks confirmed subscriptions that need to be re-established on reconnection.
     subscriptions: Arc<tokio::sync::RwLock<HashMap<RpcEventType, String>>>,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    transport_backend: TransportBackend,
+    /// Optional proxy URL for the WebSocket connection.
+    proxy_url: Option<String>,
 }
 
 impl Debug for CoreBlockchainRpcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CoreBlockchainRpcClient")
+        f.debug_struct(stringify!(CoreBlockchainRpcClient))
             .field("chain", &self.chain)
             .field("wss_rpc_url", &self.wss_rpc_url)
             .field("request_id", &self.request_id)
@@ -86,7 +90,7 @@ impl Debug for CoreBlockchainRpcClient {
 
 impl CoreBlockchainRpcClient {
     #[must_use]
-    pub fn new(chain: Chain, wss_rpc_url: String) -> Self {
+    pub fn new(chain: Chain, wss_rpc_url: String, proxy_url: Option<String>) -> Self {
         Self {
             chain,
             wss_rpc_url,
@@ -96,7 +100,21 @@ impl CoreBlockchainRpcClient {
             subscription_event_types: HashMap::new(),
             wss_consumer_rx: None,
             subscriptions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            transport_backend: TransportBackend::default(),
+            proxy_url,
         }
+    }
+
+    /// Sets the transport backend for the next [`Self::connect`].
+    #[must_use]
+    pub fn with_transport_backend(mut self, backend: TransportBackend) -> Self {
+        self.transport_backend = backend;
+        self
+    }
+
+    /// Updates the transport backend in place.
+    pub fn set_transport_backend(&mut self, backend: TransportBackend) {
+        self.transport_backend = backend;
     }
 
     /// Establishes a WebSocket connection to the blockchain node and sets up the message channel.
@@ -109,14 +127,13 @@ impl CoreBlockchainRpcClient {
     /// Returns an error if the WebSocket connection fails.
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         let (handler, rx) = channel_message_handler();
-        let user_agent = (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string());
 
         // Most blockchain RPC nodes require a heartbeat to keep the connection alive
         let heartbeat_interval = 30;
 
         let config = WebSocketConfig {
             url: self.wss_rpc_url.clone(),
-            headers: vec![user_agent],
+            headers: vec![(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())],
             heartbeat: Some(heartbeat_interval),
             heartbeat_msg: None,
             reconnect_timeout_ms: Some(10_000),
@@ -125,6 +142,9 @@ impl CoreBlockchainRpcClient {
             reconnect_backoff_factor: Some(2.0),
             reconnect_jitter_ms: Some(1_000),
             reconnect_max_attempts: None,
+            idle_timeout_ms: None,
+            backend: self.transport_backend,
+            proxy_url: self.proxy_url.clone(),
         };
 
         let client =
@@ -157,6 +177,7 @@ impl CoreBlockchainRpcClient {
             self.pending_subscription_request
                 .insert(self.request_id, event_type.clone());
             self.request_id += 1;
+
             if let Err(e) = client.send_text(msg.to_string(), None).await {
                 log::error!("Error sending subscribe message: {e:?}");
             }
@@ -239,6 +260,7 @@ impl CoreBlockchainRpcClient {
                 "jsonrpc": "2.0",
                 "params": [subscription_id]
             });
+
             if let Err(e) = client.send_text(msg.to_string(), None).await {
                 log::error!("Error sending unsubscribe message: {e:?}");
             }
@@ -277,6 +299,7 @@ impl CoreBlockchainRpcClient {
                 Message::Text(text) => {
                     if text == RECONNECTED {
                         log::info!("Detected reconnection for chain '{}'", self.chain.name);
+
                         if let Err(e) = self.resubscribe_all().await {
                             log::error!("Failed to re-establish subscriptions: {e:?}");
                         }
@@ -308,6 +331,7 @@ impl CoreBlockchainRpcClient {
                                     ));
                                     }
                                 };
+
                                 if let Some(event_type) =
                                     self.subscription_event_types.get(subscription_id)
                                 {
@@ -350,9 +374,7 @@ impl CoreBlockchainRpcClient {
                         }
                     }
                 }
-                Message::Pong(_) => {
-                    continue;
-                }
+                Message::Pong(_) => {}
                 _ => {
                     return Err(BlockchainRpcClientError::UnsupportedRpcResponseType(
                         msg.to_string(),

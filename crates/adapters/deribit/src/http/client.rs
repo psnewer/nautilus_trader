@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,14 +15,20 @@
 
 //! Deribit HTTP client implementation.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
+use ahash::AHashSet;
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
-use nautilus_core::{nanos::UnixNanos, time::get_atomic_clock_realtime};
+use nautilus_core::{
+    AtomicMap, AtomicTime, datetime::nanos_to_millis, nanos::UnixNanos,
+    time::get_atomic_clock_realtime,
+};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{AggregationSource, BarAggregation},
@@ -30,27 +36,42 @@ use nautilus_model::{
     identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
+    reports::{FillReport, OrderStatusReport, PositionStatusReport},
 };
 use nautilus_network::{
     http::{HttpClient, Method},
+    ratelimiter::quota::Quota,
     retry::{RetryConfig, RetryManager},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use strum::IntoEnumIterator;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
 
 use super::{
     error::DeribitHttpError,
     models::{
-        DeribitAccountSummariesResponse, DeribitCurrency, DeribitInstrument, DeribitJsonRpcRequest,
-        DeribitJsonRpcResponse,
+        DeribitAccountSummariesResponse, DeribitBookSummary, DeribitCurrency, DeribitInstrument,
+        DeribitJsonRpcRequest, DeribitJsonRpcResponse, DeribitPosition, DeribitProductType,
+        DeribitTicker, DeribitUserTradesResponse,
     },
-    query::{GetAccountSummariesParams, GetInstrumentParams, GetInstrumentsParams},
+    query::{
+        GetAccountSummariesParams, GetBookSummaryByCurrencyParams, GetInstrumentParams,
+        GetInstrumentsParams, GetOpenOrdersByInstrumentParams, GetOpenOrdersParams,
+        GetOrderHistoryByCurrencyParams, GetOrderHistoryByInstrumentParams, GetOrderStateParams,
+        GetPositionsParams, GetTickerParams, GetUserTradesByCurrencyAndTimeParams,
+        GetUserTradesByInstrumentAndTimeParams,
+    },
 };
 use crate::{
     common::{
-        consts::{DERIBIT_API_PATH, JSONRPC_VERSION, should_retry_error_code},
-        credential::Credential,
+        consts::{
+            DERIBIT_ACCOUNT_RATE_KEY, DERIBIT_API_PATH, DERIBIT_GLOBAL_RATE_KEY,
+            DERIBIT_HTTP_ACCOUNT_QUOTA, DERIBIT_HTTP_ORDER_QUOTA, DERIBIT_HTTP_REST_QUOTA,
+            DERIBIT_ORDER_RATE_KEY, JSONRPC_VERSION, should_retry_error_code,
+        },
+        credential::{Credential, credential_env_vars},
+        enums::DeribitEnvironment,
         parse::{
             extract_server_timestamp, parse_account_state, parse_bars,
             parse_deribit_instrument_any, parse_order_book, parse_trade_tick,
@@ -64,10 +85,87 @@ use crate::{
             GetTradingViewChartDataParams,
         },
     },
+    websocket::{
+        messages::{DeribitOrderMsg, DeribitUserTradeMsg},
+        parse::{parse_position_status_report, parse_user_order_msg, parse_user_trade_msg},
+    },
 };
 
-#[allow(dead_code)]
-const DERIBIT_SUCCESS_CODE: i64 = 0;
+/// Maximum number of trades per request for Deribit's historical trades API.
+/// Deribit's default is 10 which is insufficient for most use cases.
+/// The API maximum is 1000.
+pub const DERIBIT_HISTORICAL_TRADES_MAX_COUNT: u32 = 1000;
+
+// Dedup and cursor state for timestamp-based trade pagination.
+// Deribit provides no offset cursor, so when multiple trades share
+// one millisecond we use trade-ID dedup to avoid reprocessing.
+// If an entire page contains only seen IDs we advance past that
+// millisecond, which can skip trades when >1000 share one timestamp.
+struct TradePaginator {
+    seen_ids: AHashSet<String>,
+    cursor: i64,
+    end: i64,
+}
+
+impl TradePaginator {
+    fn new(start: i64, end: i64) -> Self {
+        Self {
+            seen_ids: AHashSet::new(),
+            cursor: start,
+            end,
+        }
+    }
+
+    // Returns indices of new (unseen) items and advances the cursor.
+    // Returns None when the page is empty (pagination should stop).
+    fn advance(
+        &mut self,
+        ids: &[String],
+        timestamps: &[i64],
+        has_more: bool,
+    ) -> Option<Vec<usize>> {
+        if ids.is_empty() {
+            return None;
+        }
+
+        let prev_seen = self.seen_ids.len();
+        let mut new_indices = Vec::new();
+        let mut last_ts = self.cursor;
+
+        for (i, id) in ids.iter().enumerate() {
+            last_ts = timestamps[i];
+
+            if self.seen_ids.insert(id.clone()) {
+                new_indices.push(i);
+            }
+        }
+
+        if !has_more {
+            return Some(new_indices);
+        }
+
+        let new_count = self.seen_ids.len() - prev_seen;
+
+        if new_count == 0 {
+            self.cursor = last_ts + 1;
+        } else {
+            self.cursor = last_ts;
+        }
+
+        Some(new_indices)
+    }
+
+    // Strict greater-than so pages at exactly end_ms are still
+    // fetched (Deribit treats start_timestamp as inclusive).
+    fn is_exhausted(&self) -> bool {
+        self.cursor > self.end
+    }
+
+    fn reset(&mut self, start: i64) {
+        self.seen_ids.clear();
+        self.cursor = start;
+    }
+}
 
 /// Low-level Deribit HTTP client for raw API operations.
 ///
@@ -89,22 +187,21 @@ impl DeribitRawHttpClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be created.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: Option<String>,
-        is_testnet: bool,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-        retry_delay_ms: Option<u64>,
-        retry_delay_max_ms: Option<u64>,
+        environment: DeribitEnvironment,
+        timeout_secs: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        retry_delay_max_ms: u64,
         proxy_url: Option<String>,
     ) -> Result<Self, DeribitHttpError> {
         let base_url = base_url
-            .unwrap_or_else(|| format!("{}{}", get_http_base_url(is_testnet), DERIBIT_API_PATH));
+            .unwrap_or_else(|| format!("{}{}", get_http_base_url(environment), DERIBIT_API_PATH));
         let retry_config = RetryConfig {
-            max_retries: max_retries.unwrap_or(3),
-            initial_delay_ms: retry_delay_ms.unwrap_or(1000),
-            max_delay_ms: retry_delay_max_ms.unwrap_or(10_000),
+            max_retries,
+            initial_delay_ms: retry_delay_ms,
+            max_delay_ms: retry_delay_max_ms,
             backoff_factor: 2.0,
             jitter_ms: 1000,
             operation_timeout_ms: Some(60_000),
@@ -117,11 +214,11 @@ impl DeribitRawHttpClient {
         Ok(Self {
             base_url,
             client: HttpClient::new(
-                std::collections::HashMap::new(), // headers
-                Vec::new(),                       // header_keys
-                Vec::new(),                       // keyed_quotas
-                None,                             // default_quota
-                timeout_secs,
+                HashMap::new(),
+                Vec::new(),
+                Self::rate_limiter_quotas(),
+                Some(*DERIBIT_HTTP_REST_QUOTA),
+                Some(timeout_secs),
                 proxy_url,
             )
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?,
@@ -140,7 +237,81 @@ impl DeribitRawHttpClient {
     /// Returns whether this client is connected to testnet.
     #[must_use]
     pub fn is_testnet(&self) -> bool {
-        self.base_url.contains("test")
+        self.base_url.contains("test.")
+    }
+
+    /// Returns the rate limiter quotas for the HTTP client.
+    ///
+    /// Quotas are organized by:
+    /// - Global: Overall rate limit for all requests
+    /// - Orders: Matching engine operations (buy, sell, cancel, etc.)
+    /// - Account: Account information endpoints
+    fn rate_limiter_quotas() -> Vec<(String, Quota)> {
+        vec![
+            (
+                DERIBIT_GLOBAL_RATE_KEY.to_string(),
+                *DERIBIT_HTTP_REST_QUOTA,
+            ),
+            (
+                DERIBIT_ORDER_RATE_KEY.to_string(),
+                *DERIBIT_HTTP_ORDER_QUOTA,
+            ),
+            (
+                DERIBIT_ACCOUNT_RATE_KEY.to_string(),
+                *DERIBIT_HTTP_ACCOUNT_QUOTA,
+            ),
+        ]
+    }
+
+    /// Returns rate limit keys for a given RPC method.
+    ///
+    /// Maps Deribit JSON-RPC methods to appropriate rate limit buckets.
+    fn rate_limit_keys(method: &str) -> Vec<String> {
+        let mut keys = vec![DERIBIT_GLOBAL_RATE_KEY.to_string()];
+
+        // Categorize by method type
+        if Self::is_order_method(method) {
+            keys.push(DERIBIT_ORDER_RATE_KEY.to_string());
+        } else if Self::is_account_method(method) {
+            keys.push(DERIBIT_ACCOUNT_RATE_KEY.to_string());
+        }
+
+        // Add method-specific key
+        keys.push(format!("deribit:{method}"));
+
+        keys
+    }
+
+    /// Returns true if the method is an order operation (matching engine).
+    fn is_order_method(method: &str) -> bool {
+        matches!(
+            method,
+            "private/buy"
+                | "private/sell"
+                | "private/edit"
+                | "private/cancel"
+                | "private/cancel_all"
+                | "private/cancel_all_by_currency"
+                | "private/cancel_all_by_instrument"
+                | "private/cancel_by_label"
+                | "private/close_position"
+        )
+    }
+
+    /// Returns true if the method accesses account information.
+    fn is_account_method(method: &str) -> bool {
+        matches!(
+            method,
+            "private/get_account_summaries"
+                | "private/get_account_summary"
+                | "private/get_positions"
+                | "private/get_position"
+                | "private/get_open_orders_by_currency"
+                | "private/get_open_orders_by_instrument"
+                | "private/get_order_state"
+                | "private/get_user_trades_by_currency"
+                | "private/get_user_trades_by_instrument"
+        )
     }
 
     /// Creates a new [`DeribitRawHttpClient`] with explicit credentials.
@@ -148,24 +319,24 @@ impl DeribitRawHttpClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be created.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn with_credentials(
         api_key: String,
         api_secret: String,
         base_url: Option<String>,
-        is_testnet: bool,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-        retry_delay_ms: Option<u64>,
-        retry_delay_max_ms: Option<u64>,
+        environment: DeribitEnvironment,
+        timeout_secs: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        retry_delay_max_ms: u64,
         proxy_url: Option<String>,
     ) -> Result<Self, DeribitHttpError> {
         let base_url = base_url
-            .unwrap_or_else(|| format!("{}{}", get_http_base_url(is_testnet), DERIBIT_API_PATH));
+            .unwrap_or_else(|| format!("{}{}", get_http_base_url(environment), DERIBIT_API_PATH));
         let retry_config = RetryConfig {
-            max_retries: max_retries.unwrap_or(3),
-            initial_delay_ms: retry_delay_ms.unwrap_or(1000),
-            max_delay_ms: retry_delay_max_ms.unwrap_or(10_000),
+            max_retries,
+            initial_delay_ms: retry_delay_ms,
+            max_delay_ms: retry_delay_max_ms,
             backoff_factor: 2.0,
             jitter_ms: 1000,
             operation_timeout_ms: Some(60_000),
@@ -179,11 +350,11 @@ impl DeribitRawHttpClient {
         Ok(Self {
             base_url,
             client: HttpClient::new(
-                std::collections::HashMap::new(),
+                HashMap::new(),
                 Vec::new(),
-                Vec::new(),
-                None,
-                timeout_secs,
+                Self::rate_limiter_quotas(),
+                Some(*DERIBIT_HTTP_REST_QUOTA),
+                Some(timeout_secs),
                 proxy_url,
             )
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?,
@@ -205,23 +376,20 @@ impl DeribitRawHttpClient {
     /// Returns an error if:
     /// - The HTTP client cannot be created
     /// - Credentials are not provided and environment variables are not set
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_with_env(
         api_key: Option<String>,
         api_secret: Option<String>,
-        is_testnet: bool,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-        retry_delay_ms: Option<u64>,
-        retry_delay_max_ms: Option<u64>,
+        base_url: Option<String>,
+        environment: DeribitEnvironment,
+        timeout_secs: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        retry_delay_max_ms: u64,
         proxy_url: Option<String>,
     ) -> Result<Self, DeribitHttpError> {
         // Determine environment variable names based on environment
-        let (key_env, secret_env) = if is_testnet {
-            ("DERIBIT_TESTNET_API_KEY", "DERIBIT_TESTNET_API_SECRET")
-        } else {
-            ("DERIBIT_API_KEY", "DERIBIT_API_SECRET")
-        };
+        let (key_env, secret_env) = credential_env_vars(environment);
 
         // Resolve credentials from explicit params or environment
         let api_key = nautilus_core::env::get_or_env_var_opt(api_key, key_env);
@@ -232,8 +400,8 @@ impl DeribitRawHttpClient {
             Self::with_credentials(
                 key,
                 secret,
-                None,
-                is_testnet,
+                base_url,
+                environment,
                 timeout_secs,
                 max_retries,
                 retry_delay_ms,
@@ -243,8 +411,8 @@ impl DeribitRawHttpClient {
         } else {
             // No credentials - create unauthenticated client
             Self::new(
-                None,
-                is_testnet,
+                base_url,
+                environment,
                 timeout_secs,
                 max_retries,
                 retry_delay_ms,
@@ -267,9 +435,11 @@ impl DeribitRawHttpClient {
     {
         // Create operation identifier combining URL and RPC method
         let operation_id = format!("{}#{}", self.base_url, method);
+        let params_clone = serde_json::to_value(&params)?;
+
         let operation = || {
             let method = method.to_string();
-            let params_clone = serde_json::to_value(&params).unwrap();
+            let params_clone = params_clone.clone();
 
             async move {
                 // Build JSON-RPC request
@@ -284,7 +454,7 @@ impl DeribitRawHttpClient {
                 let body = serde_json::to_vec(&request)?;
 
                 // Build headers
-                let mut headers = std::collections::HashMap::new();
+                let mut headers = HashMap::new();
                 headers.insert("Content-Type".to_string(), "application/json".to_string());
 
                 // Add authentication headers if required
@@ -297,6 +467,7 @@ impl DeribitRawHttpClient {
                     headers.extend(auth_headers);
                 }
 
+                let rate_limit_keys = Self::rate_limit_keys(&method);
                 let resp = self
                     .client
                     .request(
@@ -306,7 +477,7 @@ impl DeribitRawHttpClient {
                         Some(headers),
                         Some(body),
                         None,
-                        None,
+                        Some(rate_limit_keys),
                     )
                     .await
                     .map_err(|e| DeribitHttpError::NetworkError(e.to_string()))?;
@@ -321,10 +492,9 @@ impl DeribitRawHttpClient {
                     Err(_) => {
                         // Not valid JSON - treat as HTTP error
                         let error_body = String::from_utf8_lossy(&resp.body);
-                        tracing::error!(
-                            method = %method,
-                            status = resp.status.as_u16(),
-                            "Non-JSON response: {error_body}"
+                        log::error!(
+                            "Non-JSON response: method={method}, status={}, body={error_body}",
+                            resp.status.as_u16()
                         );
                         return Err(DeribitHttpError::UnexpectedStatus {
                             status: resp.status.as_u16(),
@@ -336,13 +506,11 @@ impl DeribitRawHttpClient {
                 // Try to parse as JSON-RPC response
                 let json_rpc_response: DeribitJsonRpcResponse<T> =
                     serde_json::from_value(json_value.clone()).map_err(|e| {
-                        tracing::error!(
-                            method = %method,
-                            status = resp.status.as_u16(),
-                            error = %e,
-                            "Failed to deserialize Deribit JSON-RPC response"
+                        log::error!(
+                            "Failed to deserialize Deribit JSON-RPC response: method={method}, status={}, error={e}",
+                            resp.status.as_u16()
                         );
-                        tracing::debug!(
+                        log::debug!(
                             "Response JSON (first 2000 chars): {}",
                             &json_value
                                 .to_string()
@@ -358,27 +526,25 @@ impl DeribitRawHttpClient {
                     Ok(json_rpc_response)
                 } else if let Some(error) = &json_rpc_response.error {
                     // JSON-RPC error (may come with any HTTP status)
-                    tracing::warn!(
-                        method = %method,
-                        http_status = resp.status.as_u16(),
-                        error_code = error.code,
-                        error_message = %error.message,
-                        error_data = ?error.data,
-                        "Deribit RPC error response"
+                    log::warn!(
+                        "Deribit RPC error response: method={method}, http_status={}, error_code={}, error_message={}, error_data={:?}",
+                        resp.status.as_u16(),
+                        error.code,
+                        error.message,
+                        error.data
                     );
 
                     // Map JSON-RPC error to appropriate error variant
                     Err(DeribitHttpError::from_jsonrpc_error(
                         error.code,
                         error.message.clone(),
-                        error.data.clone(),
+                        error.data.as_ref(),
                     ))
                 } else {
-                    tracing::error!(
-                        method = %method,
-                        status = resp.status.as_u16(),
-                        request_id = ?json_rpc_response.id,
-                        "Response contains neither result nor error field"
+                    log::error!(
+                        "Response contains neither result nor error field: method={method}, status={}, request_id={:?}",
+                        resp.status.as_u16(),
+                        json_rpc_response.id
                     );
                     Err(DeribitHttpError::JsonError(
                         "Response contains neither result nor error".to_string(),
@@ -511,6 +677,163 @@ impl DeribitRawHttpClient {
         self.send_request("public/get_order_book", params, false)
             .await
     }
+
+    /// Gets a single order by its ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_order_state(
+        &self,
+        params: GetOrderStateParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitOrderMsg>, DeribitHttpError> {
+        self.send_request("private/get_order_state", params, true)
+            .await
+    }
+
+    /// Gets all open orders across all currencies and instruments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_open_orders(
+        &self,
+        params: GetOpenOrdersParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitOrderMsg>>, DeribitHttpError> {
+        self.send_request("private/get_open_orders", params, true)
+            .await
+    }
+
+    /// Gets open orders for a specific instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_open_orders_by_instrument(
+        &self,
+        params: GetOpenOrdersByInstrumentParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitOrderMsg>>, DeribitHttpError> {
+        self.send_request("private/get_open_orders_by_instrument", params, true)
+            .await
+    }
+
+    /// Gets historical orders for a specific instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_order_history_by_instrument(
+        &self,
+        params: GetOrderHistoryByInstrumentParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitOrderMsg>>, DeribitHttpError> {
+        self.send_request("private/get_order_history_by_instrument", params, true)
+            .await
+    }
+
+    /// Gets historical orders for a specific currency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_order_history_by_currency(
+        &self,
+        params: GetOrderHistoryByCurrencyParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitOrderMsg>>, DeribitHttpError> {
+        self.send_request("private/get_order_history_by_currency", params, true)
+            .await
+    }
+
+    /// Gets user trades for a specific instrument within a time range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_user_trades_by_instrument_and_time(
+        &self,
+        params: GetUserTradesByInstrumentAndTimeParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitUserTradesResponse>, DeribitHttpError> {
+        self.send_request(
+            "private/get_user_trades_by_instrument_and_time",
+            params,
+            true,
+        )
+        .await
+    }
+
+    /// Gets user trades for a specific currency within a time range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_user_trades_by_currency_and_time(
+        &self,
+        params: GetUserTradesByCurrencyAndTimeParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitUserTradesResponse>, DeribitHttpError> {
+        self.send_request("private/get_user_trades_by_currency_and_time", params, true)
+            .await
+    }
+
+    /// Gets book summaries for all instruments of a given currency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_book_summary_by_currency(
+        &self,
+        params: GetBookSummaryByCurrencyParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitBookSummary>>, DeribitHttpError> {
+        self.send_request("public/get_book_summary_by_currency", params, false)
+            .await
+    }
+
+    /// Gets ticker data for a single instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_ticker(
+        &self,
+        params: GetTickerParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitTicker>, DeribitHttpError> {
+        self.send_request("public/ticker", params, false).await
+    }
+
+    /// Gets positions for a specific currency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing ([`DeribitHttpError::MissingCredentials`])
+    /// - Authentication fails (invalid signature, expired timestamp)
+    /// - The request fails or the response cannot be parsed
+    pub async fn get_positions(
+        &self,
+        params: GetPositionsParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitPosition>>, DeribitHttpError> {
+        self.send_request("private/get_positions", params, true)
+            .await
+    }
 }
 
 /// High-level Deribit HTTP client with domain-level abstractions.
@@ -520,11 +843,16 @@ impl DeribitRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.deribit")
 )]
 pub struct DeribitHttpClient {
     pub(crate) inner: Arc<DeribitRawHttpClient>,
-    pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    pub(crate) instruments_cache: Arc<AtomicMap<Ustr, InstrumentAny>>,
+    clock: &'static AtomicTime,
     cache_initialized: AtomicBool,
 }
 
@@ -541,6 +869,7 @@ impl Clone for DeribitHttpClient {
             inner: self.inner.clone(),
             instruments_cache: self.instruments_cache.clone(),
             cache_initialized,
+            clock: self.clock,
         }
     }
 }
@@ -550,24 +879,23 @@ impl DeribitHttpClient {
     ///
     /// # Parameters
     /// - `base_url`: Optional custom base URL (for testing)
-    /// - `is_testnet`: Whether to use the testnet environment
+    /// - `environment`: The Deribit environment to connect to
     ///
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be created.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: Option<String>,
-        is_testnet: bool,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-        retry_delay_ms: Option<u64>,
-        retry_delay_max_ms: Option<u64>,
+        environment: DeribitEnvironment,
+        timeout_secs: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        retry_delay_max_ms: u64,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
         let raw_client = Arc::new(DeribitRawHttpClient::new(
             base_url,
-            is_testnet,
+            environment,
             timeout_secs,
             max_retries,
             retry_delay_ms,
@@ -577,8 +905,9 @@ impl DeribitHttpClient {
 
         Ok(Self {
             inner: raw_client,
-            instruments_cache: Arc::new(DashMap::new()),
+            instruments_cache: Arc::new(AtomicMap::new()),
             cache_initialized: AtomicBool::new(false),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -593,21 +922,23 @@ impl DeribitHttpClient {
     /// Returns an error if:
     /// - The HTTP client cannot be created
     /// - Credentials are not provided and environment variables are not set
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_with_env(
         api_key: Option<String>,
         api_secret: Option<String>,
-        is_testnet: bool,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-        retry_delay_ms: Option<u64>,
-        retry_delay_max_ms: Option<u64>,
+        base_url: Option<String>,
+        environment: DeribitEnvironment,
+        timeout_secs: u64,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        retry_delay_max_ms: u64,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
         let raw_client = Arc::new(DeribitRawHttpClient::new_with_env(
             api_key,
             api_secret,
-            is_testnet,
+            base_url,
+            environment,
             timeout_secs,
             max_retries,
             retry_delay_ms,
@@ -617,8 +948,9 @@ impl DeribitHttpClient {
 
         Ok(Self {
             inner: raw_client,
-            instruments_cache: Arc::new(DashMap::new()),
+            instruments_cache: Arc::new(AtomicMap::new()),
             cache_initialized: AtomicBool::new(false),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -630,11 +962,11 @@ impl DeribitHttpClient {
     pub async fn request_instruments(
         &self,
         currency: DeribitCurrency,
-        kind: Option<super::models::DeribitInstrumentKind>,
+        product_type: Option<DeribitProductType>,
     ) -> anyhow::Result<Vec<InstrumentAny>> {
         // Build parameters
-        let params = if let Some(k) = kind {
-            GetInstrumentsParams::with_kind(currency, k)
+        let params = if let Some(pt) = product_type {
+            GetInstrumentsParams::with_kind(currency, pt)
         } else {
             GetInstrumentsParams::new(currency)
         };
@@ -660,7 +992,7 @@ impl DeribitHttpClient {
                 Ok(None) => {
                     // Unsupported instrument type (e.g., combos)
                     skipped_count += 1;
-                    tracing::debug!(
+                    log::debug!(
                         "Skipped unsupported instrument type: {} (kind: {:?})",
                         raw_instrument.instrument_name,
                         raw_instrument.kind
@@ -668,7 +1000,7 @@ impl DeribitHttpClient {
                 }
                 Err(e) => {
                     error_count += 1;
-                    tracing::warn!(
+                    log::warn!(
                         "Failed to parse instrument {}: {}",
                         raw_instrument.instrument_name,
                         e
@@ -677,7 +1009,7 @@ impl DeribitHttpClient {
             }
         }
 
-        tracing::info!(
+        log::info!(
             "Parsed {} instruments ({} skipped, {} errors)",
             instruments.len(),
             skipped_count,
@@ -739,6 +1071,12 @@ impl DeribitHttpClient {
     /// Returns an error if:
     /// - The request fails
     /// - Trade parsing fails
+    ///
+    /// # Pagination
+    ///
+    /// When `limit` is `None`, this function automatically paginates through all available
+    /// trades in the time range using the `has_more` field from the API response.
+    /// When `limit` is specified, pagination stops once that many trades are collected.
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
@@ -751,66 +1089,100 @@ impl DeribitHttpClient {
             if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
                 (instrument.price_precision(), instrument.size_precision())
             } else {
-                tracing::warn!(
-                    "Instrument {} not in cache, skipping trades request",
-                    instrument_id
-                );
+                log::warn!("Instrument {instrument_id} not in cache, skipping trades request");
                 anyhow::bail!("Instrument {instrument_id} not in cache");
             };
 
         // Convert timestamps to milliseconds
-        let start_timestamp = start.map_or_else(
-            || Utc::now().timestamp_millis() - 3_600_000, // Default: 1 hour ago
-            |dt| dt.timestamp_millis(),
-        );
+        let now = Utc::now();
+        let end_dt = end.unwrap_or(now);
+        let start_dt = start.unwrap_or(end_dt - chrono::Duration::hours(1));
 
-        let end_timestamp = end.map_or_else(
-            || Utc::now().timestamp_millis(), // Default: now
-            |dt| dt.timestamp_millis(),
-        );
+        if let (Some(s), Some(e)) = (start, end) {
+            anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
+        }
 
-        let params = GetLastTradesByInstrumentAndTimeParams::new(
-            instrument_id.symbol.to_string(),
-            start_timestamp,
-            end_timestamp,
-            limit,
-            Some("asc".to_string()), // Sort ascending for historical data
-        );
-
-        let full_response = self
-            .inner
-            .get_last_trades_by_instrument_and_time(params)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        let response_data = full_response
-            .result
-            .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
-
+        let start_ms = start_dt.timestamp_millis();
+        let end_ms = end_dt.timestamp_millis();
         let ts_init = self.generate_ts_init();
-        let mut trades = Vec::with_capacity(response_data.trades.len());
+        let mut all_trades = Vec::new();
+        let mut paginator = TradePaginator::new(start_ms, end_ms);
 
-        for raw_trade in &response_data.trades {
-            match parse_trade_tick(
-                raw_trade,
-                instrument_id,
-                price_precision,
-                size_precision,
-                ts_init,
-            ) {
-                Ok(trade) => trades.push(trade),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse trade {} for {}: {}",
-                        raw_trade.trade_id,
-                        instrument_id,
-                        e
-                    );
+        loop {
+            let params = GetLastTradesByInstrumentAndTimeParams::new(
+                instrument_id.symbol.to_string(),
+                paginator.cursor,
+                end_ms,
+                Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                Some("asc".to_string()),
+            );
+
+            let full_response = self
+                .inner
+                .get_last_trades_by_instrument_and_time(params)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            let response_data = full_response
+                .result
+                .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
+
+            let ids: Vec<String> = response_data
+                .trades
+                .iter()
+                .map(|t| t.trade_id.clone())
+                .collect();
+            let timestamps: Vec<i64> = response_data.trades.iter().map(|t| t.timestamp).collect();
+
+            let Some(new_indices) = paginator.advance(&ids, &timestamps, response_data.has_more)
+            else {
+                break;
+            };
+
+            for i in &new_indices {
+                let raw_trade = &response_data.trades[*i];
+
+                match parse_trade_tick(
+                    raw_trade,
+                    instrument_id,
+                    price_precision,
+                    size_precision,
+                    ts_init,
+                ) {
+                    Ok(trade) => {
+                        all_trades.push(trade);
+
+                        if let Some(max) = limit
+                            && all_trades.len() >= max as usize
+                        {
+                            return Ok(all_trades);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse trade {} for {}: {}",
+                            raw_trade.trade_id,
+                            instrument_id,
+                            e
+                        );
+                    }
                 }
+            }
+
+            if !response_data.has_more || paginator.is_exhausted() {
+                break;
             }
         }
 
-        Ok(trades)
+        log::info!(
+            "Fetched {} historical trades for {} from {} to {}",
+            all_trades.len(),
+            instrument_id,
+            start_dt,
+            end_dt
+        );
+
+        Ok(all_trades)
     }
 
     /// Requests historical bars (OHLCV) for an instrument.
@@ -832,7 +1204,7 @@ impl DeribitHttpClient {
         bar_type: BarType,
         start: Option<DateTime<Utc>>,
         end: Option<DateTime<Utc>>,
-        _limit: Option<u32>,
+        limit: Option<u32>,
     ) -> anyhow::Result<Vec<Bar>> {
         anyhow::ensure!(
             bar_type.aggregation_source() == AggregationSource::External,
@@ -863,6 +1235,7 @@ impl DeribitHttpClient {
         let supported_resolutions = [
             "1", "3", "5", "10", "15", "30", "60", "120", "180", "360", "720", "1D",
         ];
+
         if !supported_resolutions.contains(&resolution.as_str()) {
             anyhow::bail!(
                 "Deribit does not support resolution '{resolution}'. Supported: {supported_resolutions:?}"
@@ -886,7 +1259,7 @@ impl DeribitHttpClient {
             .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
 
         if chart_data.status == "no_data" {
-            tracing::debug!("No bar data returned for {}", bar_type);
+            log::debug!("No bar data returned for {bar_type}");
             return Ok(Vec::new());
         }
 
@@ -896,15 +1269,12 @@ impl DeribitHttpClient {
             if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
                 (instrument.price_precision(), instrument.size_precision())
             } else {
-                tracing::warn!(
-                    "Instrument {} not in cache, skipping bars request",
-                    instrument_id
-                );
+                log::warn!("Instrument {instrument_id} not in cache, skipping bars request");
                 anyhow::bail!("Instrument {instrument_id} not in cache");
             };
 
         let ts_init = self.generate_ts_init();
-        let bars = parse_bars(
+        let mut bars = parse_bars(
             &chart_data,
             bar_type,
             price_precision,
@@ -912,7 +1282,14 @@ impl DeribitHttpClient {
             ts_init,
         )?;
 
-        tracing::info!("Parsed {} bars for {}", bars.len(), bar_type);
+        if let Some(max) = limit {
+            let max = max as usize;
+            if bars.len() > max {
+                bars.drain(..bars.len() - max);
+            }
+        }
+
+        log::info!("Parsed {} bars for {}", bars.len(), bar_type);
 
         Ok(bars)
     }
@@ -936,17 +1313,11 @@ impl DeribitHttpClient {
         instrument_id: InstrumentId,
         depth: Option<u32>,
     ) -> anyhow::Result<OrderBook> {
-        // Get instrument from cache to determine precisions
         let (price_precision, size_precision) =
             if let Some(instrument) = self.get_instrument(&instrument_id.symbol.inner()) {
                 (instrument.price_precision(), instrument.size_precision())
             } else {
-                // Default precisions if instrument not cached
-                tracing::warn!(
-                    "Instrument {} not in cache, using default precisions",
-                    instrument_id
-                );
-                (8u8, 8u8)
+                anyhow::bail!("Instrument {instrument_id} not in cache");
             };
 
         let params = GetOrderBookParams::new(instrument_id.symbol.to_string(), depth);
@@ -969,7 +1340,7 @@ impl DeribitHttpClient {
             ts_init,
         )?;
 
-        tracing::info!(
+        log::info!(
             "Fetched order book for {} with {} bids and {} asks",
             instrument_id,
             order_book_data.bids.len(),
@@ -1010,24 +1381,23 @@ impl DeribitHttpClient {
 
     /// Generates a timestamp for initialization.
     fn generate_ts_init(&self) -> UnixNanos {
-        get_atomic_clock_realtime().get_time_ns()
+        self.clock.get_time_ns()
     }
 
     /// Caches instruments for later retrieval.
-    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
-        for inst in instruments {
-            self.instruments_cache
-                .insert(inst.raw_symbol().inner(), inst);
-        }
+    pub fn cache_instruments(&self, instruments: &[InstrumentAny]) {
+        self.instruments_cache.rcu(|m| {
+            for inst in instruments {
+                m.insert(inst.raw_symbol().inner(), inst.clone());
+            }
+        });
         self.cache_initialized.store(true, Ordering::Release);
     }
 
     /// Retrieves a cached instrument by symbol.
     #[must_use]
     pub fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
-        self.instruments_cache
-            .get(symbol)
-            .map(|entry| entry.value().clone())
+        self.instruments_cache.get_cloned(symbol)
     }
 
     /// Checks if the instrument cache has been initialized.
@@ -1040,5 +1410,516 @@ impl DeribitHttpClient {
     #[must_use]
     pub fn is_testnet(&self) -> bool {
         self.inner.is_testnet()
+    }
+
+    /// Requests order status reports for reconciliation.
+    ///
+    /// Fetches order statuses from Deribit and converts them to Nautilus [`OrderStatusReport`].
+    ///
+    /// # Strategy
+    /// - Uses `/private/get_open_orders` for all open orders (single efficient API call)
+    /// - Uses `/private/get_open_orders_by_instrument` when specific instrument is provided
+    /// - For historical orders (when `open_only=false`), iterates over currencies
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or parsing fails.
+    pub async fn request_order_status_reports(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        open_only: bool,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        let ts_init = self.generate_ts_init();
+        let mut reports = Vec::new();
+        let mut seen_order_ids = AHashSet::new();
+
+        let mut parse_and_add = |order: &DeribitOrderMsg| {
+            let symbol = Ustr::from(&order.instrument_name);
+            if let Some(instrument) = self.get_instrument(&symbol) {
+                match parse_user_order_msg(order, &instrument, account_id, ts_init) {
+                    Ok(report) => {
+                        // Apply time range filter based on ts_last
+                        let ts_last = report.ts_last;
+                        let in_range = match (start, end) {
+                            (Some(s), Some(e)) => ts_last >= s && ts_last <= e,
+                            (Some(s), None) => ts_last >= s,
+                            (None, Some(e)) => ts_last <= e,
+                            (None, None) => true,
+                        };
+                        // Only deduplicate if in range (prevents dropping valid historical reports)
+                        if in_range && seen_order_ids.insert(order.order_id.clone()) {
+                            reports.push(report);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse order {} for {}: {}",
+                            order.order_id,
+                            order.instrument_name,
+                            e
+                        );
+                    }
+                }
+            } else {
+                log::debug!(
+                    "Skipping order {} - instrument {} not in cache",
+                    order.order_id,
+                    order.instrument_name
+                );
+            }
+        };
+
+        if let Some(instrument_id) = instrument_id {
+            // Use instrument-specific endpoint (efficient)
+            let instrument_name = instrument_id.symbol.to_string();
+
+            // Get open orders for this instrument
+            let open_params = GetOpenOrdersByInstrumentParams {
+                instrument_name: instrument_name.clone(),
+                r#type: None,
+            };
+
+            if let Some(orders) = self
+                .inner
+                .get_open_orders_by_instrument(open_params)
+                .await?
+                .result
+            {
+                for order in &orders {
+                    parse_and_add(order);
+                }
+            }
+
+            if !open_only {
+                const PAGE_SIZE: u32 = 100;
+                let mut offset: u32 = 0;
+
+                loop {
+                    let history_params = GetOrderHistoryByInstrumentParams {
+                        instrument_name: instrument_name.clone(),
+                        count: Some(PAGE_SIZE),
+                        offset: Some(offset),
+                        include_old: Some(true),
+                        include_unfilled: Some(true),
+                    };
+                    let orders = self
+                        .inner
+                        .get_order_history_by_instrument(history_params)
+                        .await?
+                        .result
+                        .unwrap_or_default();
+
+                    let count = orders.len() as u32;
+                    for order in &orders {
+                        parse_and_add(order);
+                    }
+
+                    if count < PAGE_SIZE {
+                        break;
+                    }
+                    offset += count;
+                }
+            }
+        } else {
+            // Use get_open_orders for ALL open orders - single API call!
+            let open_params = GetOpenOrdersParams::default();
+            if let Some(orders) = self.inner.get_open_orders(open_params).await?.result {
+                for order in &orders {
+                    parse_and_add(order);
+                }
+            }
+
+            if !open_only {
+                const PAGE_SIZE: u32 = 100;
+
+                for currency in DeribitCurrency::iter().filter(|c| *c != DeribitCurrency::ANY) {
+                    let mut offset: u32 = 0;
+
+                    loop {
+                        let history_params = GetOrderHistoryByCurrencyParams {
+                            currency,
+                            kind: None,
+                            count: Some(PAGE_SIZE),
+                            offset: Some(offset),
+                            include_old: Some(true),
+                            include_unfilled: Some(true),
+                        };
+                        let orders = self
+                            .inner
+                            .get_order_history_by_currency(history_params)
+                            .await?
+                            .result
+                            .unwrap_or_default();
+
+                        let count = orders.len() as u32;
+                        for order in &orders {
+                            parse_and_add(order);
+                        }
+
+                        if count < PAGE_SIZE {
+                            break;
+                        }
+                        offset += count;
+                    }
+                }
+            }
+        }
+
+        log::debug!("Generated {} order status reports", reports.len());
+        Ok(reports)
+    }
+
+    /// Requests fill reports for reconciliation.
+    ///
+    /// Fetches user trades from Deribit and converts them to Nautilus [`FillReport`].
+    /// Automatically paginates through all results using time-cursor advancement.
+    ///
+    /// # Strategy
+    /// - Uses `/private/get_user_trades_by_instrument_and_time` when instrument is provided
+    /// - Otherwise iterates over currencies using `/private/get_user_trades_by_currency_and_time`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or parsing fails.
+    pub async fn request_fill_reports(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        let ts_init = self.generate_ts_init();
+        let now_ms = Utc::now().timestamp_millis();
+
+        // Convert UnixNanos to milliseconds for Deribit API
+        let start_ms = start.map_or(0, |ns| nanos_to_millis(ns.as_u64()) as i64);
+        let end_ms = end.map_or(now_ms, |ns| nanos_to_millis(ns.as_u64()) as i64);
+        let mut reports = Vec::new();
+
+        // Helper closure to parse trade and add to reports
+        let mut parse_and_add = |trade: &DeribitUserTradeMsg| {
+            let symbol = Ustr::from(&trade.instrument_name);
+            if let Some(instrument) = self.get_instrument(&symbol) {
+                match parse_user_trade_msg(trade, &instrument, account_id, ts_init) {
+                    Ok(report) => reports.push(report),
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse trade {} for {}: {}",
+                            trade.trade_id,
+                            trade.instrument_name,
+                            e
+                        );
+                    }
+                }
+            } else {
+                log::debug!(
+                    "Skipping trade {} - instrument {} not in cache",
+                    trade.trade_id,
+                    trade.instrument_name
+                );
+            }
+        };
+
+        let mut paginator = TradePaginator::new(start_ms, end_ms);
+
+        if let Some(instrument_id) = instrument_id {
+            loop {
+                let params = GetUserTradesByInstrumentAndTimeParams {
+                    instrument_name: instrument_id.symbol.to_string(),
+                    start_timestamp: paginator.cursor,
+                    end_timestamp: end_ms,
+                    count: Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                    sorting: Some("asc".to_string()),
+                };
+                let response = self
+                    .inner
+                    .get_user_trades_by_instrument_and_time(params)
+                    .await?;
+
+                let Some(data) = response.result else { break };
+
+                let ids: Vec<String> = data.trades.iter().map(|t| t.trade_id.clone()).collect();
+                let timestamps: Vec<i64> = data.trades.iter().map(|t| t.timestamp as i64).collect();
+
+                let Some(new_indices) = paginator.advance(&ids, &timestamps, data.has_more) else {
+                    break;
+                };
+
+                for i in &new_indices {
+                    parse_and_add(&data.trades[*i]);
+                }
+
+                if !data.has_more || paginator.is_exhausted() {
+                    break;
+                }
+            }
+        } else {
+            for currency in DeribitCurrency::iter().filter(|c| *c != DeribitCurrency::ANY) {
+                paginator.reset(start_ms);
+
+                loop {
+                    let params = GetUserTradesByCurrencyAndTimeParams {
+                        currency,
+                        start_timestamp: paginator.cursor,
+                        end_timestamp: end_ms,
+                        kind: None,
+                        count: Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                        sorting: Some("asc".to_string()),
+                    };
+                    let response = self
+                        .inner
+                        .get_user_trades_by_currency_and_time(params)
+                        .await?;
+
+                    let Some(data) = response.result else { break };
+
+                    let ids: Vec<String> = data.trades.iter().map(|t| t.trade_id.clone()).collect();
+                    let timestamps: Vec<i64> =
+                        data.trades.iter().map(|t| t.timestamp as i64).collect();
+
+                    let Some(new_indices) = paginator.advance(&ids, &timestamps, data.has_more)
+                    else {
+                        break;
+                    };
+
+                    for i in &new_indices {
+                        parse_and_add(&data.trades[*i]);
+                    }
+
+                    if !data.has_more || paginator.is_exhausted() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        log::debug!("Generated {} fill reports", reports.len());
+        Ok(reports)
+    }
+
+    /// Requests ticker data for a single instrument.
+    ///
+    /// Returns the `DeribitTicker` which includes `underlying_price` (forward price).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn request_ticker(&self, instrument_name: &str) -> anyhow::Result<DeribitTicker> {
+        let params = GetTickerParams {
+            instrument_name: instrument_name.to_string(),
+        };
+        let response = self
+            .inner
+            .get_ticker(params)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in ticker response"))
+    }
+
+    /// Requests book summaries for options of a given currency.
+    ///
+    /// Returns raw `DeribitBookSummary` items which include `underlying_price`
+    /// (the forward price) for each option instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn request_book_summaries(
+        &self,
+        currency: &str,
+    ) -> anyhow::Result<Vec<DeribitBookSummary>> {
+        let params = GetBookSummaryByCurrencyParams::options(currency);
+        let full_response = self
+            .inner
+            .get_book_summary_by_currency(params)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        full_response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in book summary response"))
+    }
+
+    /// Requests position status reports for reconciliation.
+    ///
+    /// Fetches positions from Deribit and converts them to Nautilus [`PositionStatusReport`].
+    ///
+    /// # Strategy
+    /// - Uses `currency=any` to fetch all positions in one call
+    /// - Filters by instrument_id if provided
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or parsing fails.
+    pub async fn request_position_status_reports(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        let ts_init = self.generate_ts_init();
+        let mut reports = Vec::new();
+
+        // Use ANY to get all positions across all currencies in one call
+        let params = GetPositionsParams {
+            currency: DeribitCurrency::ANY,
+            kind: None,
+        };
+
+        if let Some(positions) = self.inner.get_positions(params).await?.result {
+            for position in &positions {
+                // Skip flat positions (size == 0)
+                if position.size.is_zero() {
+                    continue;
+                }
+
+                let symbol = position.instrument_name;
+                if let Some(instrument) = self.get_instrument(&symbol) {
+                    let report =
+                        parse_position_status_report(position, &instrument, account_id, ts_init);
+                    reports.push(report);
+                } else {
+                    log::debug!(
+                        "Skipping position - instrument {} not in cache",
+                        position.instrument_name
+                    );
+                }
+            }
+        }
+
+        // Filter by instrument if provided
+        if let Some(instrument_id) = instrument_id {
+            reports.retain(|r| r.instrument_id == instrument_id);
+        }
+
+        log::debug!("Generated {} position status reports", reports.len());
+        Ok(reports)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+    use crate::common::consts::{
+        DERIBIT_ACCOUNT_RATE_KEY, DERIBIT_GLOBAL_RATE_KEY, DERIBIT_ORDER_RATE_KEY,
+    };
+
+    #[rstest]
+    #[case("private/buy", true, false)]
+    #[case("private/cancel", true, false)]
+    #[case("private/get_account_summaries", false, true)]
+    #[case("private/get_positions", false, true)]
+    #[case("public/get_instruments", false, false)]
+    fn test_method_classification(
+        #[case] method: &str,
+        #[case] is_order: bool,
+        #[case] is_account: bool,
+    ) {
+        assert_eq!(DeribitRawHttpClient::is_order_method(method), is_order);
+        assert_eq!(DeribitRawHttpClient::is_account_method(method), is_account);
+    }
+
+    #[rstest]
+    #[case("private/buy", vec![DERIBIT_GLOBAL_RATE_KEY, DERIBIT_ORDER_RATE_KEY])]
+    #[case("private/get_account_summaries", vec![DERIBIT_GLOBAL_RATE_KEY, DERIBIT_ACCOUNT_RATE_KEY])]
+    #[case("public/get_instruments", vec![DERIBIT_GLOBAL_RATE_KEY])]
+    fn test_rate_limit_keys(#[case] method: &str, #[case] expected_keys: Vec<&str>) {
+        let keys = DeribitRawHttpClient::rate_limit_keys(method);
+
+        for key in &expected_keys {
+            assert!(keys.contains(&key.to_string()));
+        }
+        assert!(keys.contains(&format!("deribit:{method}")));
+    }
+
+    #[rstest]
+    fn test_paginator_empty_page_returns_none() {
+        let mut p = TradePaginator::new(100, 200);
+        assert!(p.advance(&[], &[], true).is_none());
+    }
+
+    #[rstest]
+    fn test_paginator_single_page_no_more() {
+        let mut p = TradePaginator::new(100, 200);
+        let ids = vec!["t1".into(), "t2".into()];
+        let ts = vec![150, 160];
+
+        let result = p.advance(&ids, &ts, false);
+        assert_eq!(result, Some(vec![0, 1]));
+    }
+
+    #[rstest]
+    fn test_paginator_dedup_across_pages() {
+        let mut p = TradePaginator::new(100, 200);
+
+        // First page: two new trades
+        let ids1 = vec!["t1".into(), "t2".into()];
+        let ts1 = vec![150, 150];
+        let r1 = p.advance(&ids1, &ts1, true);
+        assert_eq!(r1, Some(vec![0, 1]));
+        assert_eq!(p.cursor, 150);
+
+        // Second page: t2 repeated, t3 new
+        let ids2 = vec!["t2".into(), "t3".into()];
+        let ts2 = vec![150, 150];
+        let r2 = p.advance(&ids2, &ts2, false);
+        assert_eq!(r2, Some(vec![1])); // Only t3 is new
+    }
+
+    #[rstest]
+    fn test_paginator_all_duplicates_advances_past_timestamp() {
+        let mut p = TradePaginator::new(100, 200);
+
+        // First page
+        let ids = vec!["t1".into(), "t2".into()];
+        let ts = vec![150, 150];
+        p.advance(&ids, &ts, true);
+        assert_eq!(p.cursor, 150);
+
+        // Second page: same trades again (all duplicates)
+        let r2 = p.advance(&ids, &ts, true);
+        assert_eq!(r2, Some(vec![])); // No new items
+        assert_eq!(p.cursor, 151); // Advanced past 150
+    }
+
+    #[rstest]
+    fn test_paginator_is_exhausted_strict_greater_than() {
+        let mut p = TradePaginator::new(100, 150);
+
+        let ids = vec!["t1".into()];
+        let ts = vec![150];
+        p.advance(&ids, &ts, true);
+
+        // Cursor at end (150) should NOT be exhausted
+        assert_eq!(p.cursor, 150);
+        assert!(!p.is_exhausted());
+
+        // All duplicates: cursor advances to 151
+        p.advance(&ids, &ts, true);
+        assert_eq!(p.cursor, 151);
+        assert!(p.is_exhausted());
+    }
+
+    #[rstest]
+    fn test_paginator_reset_clears_state() {
+        let mut p = TradePaginator::new(100, 200);
+
+        let ids = vec!["t1".into()];
+        let ts = vec![150];
+        p.advance(&ids, &ts, true);
+        assert_eq!(p.seen_ids.len(), 1);
+
+        p.reset(100);
+        assert_eq!(p.cursor, 100);
+        assert!(p.seen_ids.is_empty());
+
+        // Same ID is now treated as new
+        let r = p.advance(&ids, &ts, false);
+        assert_eq!(r, Some(vec![0]));
     }
 }

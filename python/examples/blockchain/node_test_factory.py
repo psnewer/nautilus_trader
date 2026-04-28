@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,9 +17,9 @@
 import os
 
 from nautilus_trader.common import Environment
-from nautilus_trader.common import ImportableActorConfig  # type: ignore[attr-defined]
+from nautilus_trader.common import ImportableActorConfig
 from nautilus_trader.infrastructure import PostgresConnectOptions
-from nautilus_trader.live import LiveNode  # type: ignore[attr-defined]
+from nautilus_trader.live import LiveNode
 from nautilus_trader.model import TraderId
 
 

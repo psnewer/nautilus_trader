@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,6 +16,7 @@
 use std::{borrow::Cow, fmt::Display, str::FromStr, sync::Arc};
 
 use alloy_primitives::{Address, keccak256};
+use nautilus_core::hex;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
@@ -31,14 +32,26 @@ use crate::{
     Debug,
     Clone,
     Copy,
+    Hash,
     PartialEq,
+    Eq,
     Serialize,
     Deserialize,
     strum::EnumString,
     strum::Display,
     strum::EnumIter,
 )]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "nautilus_trader.model"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        frozen,
+        eq,
+        eq_int,
+        module = "nautilus_trader.model",
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE",
+    )
+)]
 #[cfg_attr(feature = "python", pyo3_stub_gen::derive::gen_stub_pyclass_enum)]
 #[non_exhaustive]
 pub enum AmmType {
@@ -48,7 +61,7 @@ pub enum AmmType {
     CLAMM,
     /// Concentrated liquidity AMM **with hooks** (e.g. upcoming Uniswap v4).
     CLAMEnhanced,
-    /// Specialized Constant-Sum AMM for low-volatility assets (Curve-style “StableSwap”).
+    /// Specialized Constant-Sum AMM for low-volatility assets (Curve-style “`StableSwap`”).
     StableSwap,
     /// AMM with customizable token weights (e.g., Balancer style).
     WeightedPool,
@@ -72,7 +85,17 @@ pub enum AmmType {
     Serialize,
     Deserialize,
 )]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "nautilus_trader.model"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        frozen,
+        eq,
+        eq_int,
+        module = "nautilus_trader.model",
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE",
+    )
+)]
 #[cfg_attr(feature = "python", pyo3_stub_gen::derive::gen_stub_pyclass_enum)]
 pub enum DexType {
     AerodromeSlipstream,
@@ -96,6 +119,7 @@ pub enum DexType {
 
 impl DexType {
     /// Returns a reference to the `DexType` corresponding to the given dex name, or `None` if it is not found.
+    #[must_use]
     pub fn from_dex_name(dex_name: &str) -> Option<Self> {
         Self::from_str(dex_name).ok()
     }
@@ -103,7 +127,10 @@ impl DexType {
 
 /// Represents a decentralized exchange (DEX) in a blockchain ecosystem.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "nautilus_trader.model"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.model", from_py_object)
+)]
 #[cfg_attr(feature = "python", pyo3_stub_gen::derive::gen_stub_pyclass)]
 pub struct Dex {
     /// The blockchain network where this DEX operates.
@@ -145,7 +172,7 @@ impl Dex {
     ///
     /// Panics if the provided factory address is invalid.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         chain: Chain,
         name: DexType,
@@ -158,31 +185,12 @@ impl Dex {
         burn_event: &str,
         collect_event: &str,
     ) -> Self {
-        let pool_created_event_hash = keccak256(pool_created_event.as_bytes());
-        let encoded_pool_created_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(pool_created_event_hash)
-        );
-        let swap_event_hash: alloy_primitives::FixedBytes<32> = keccak256(swap_event.as_bytes());
-        let encoded_swap_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(swap_event_hash)
-        );
-        let mint_event_hash = keccak256(mint_event.as_bytes());
-        let encoded_mint_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(mint_event_hash)
-        );
-        let burn_event_hash = keccak256(burn_event.as_bytes());
-        let encoded_burn_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(burn_event_hash)
-        );
-        let collect_event_hash = keccak256(collect_event.as_bytes());
-        let encoded_collect_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(collect_event_hash)
-        );
+        let encoded_pool_created_event =
+            hex::encode_prefixed(keccak256(pool_created_event.as_bytes()));
+        let encoded_swap_event = hex::encode_prefixed(keccak256(swap_event.as_bytes()));
+        let encoded_mint_event = hex::encode_prefixed(keccak256(mint_event.as_bytes()));
+        let encoded_burn_event = hex::encode_prefixed(keccak256(burn_event.as_bytes()));
+        let encoded_collect_event = hex::encode_prefixed(keccak256(collect_event.as_bytes()));
         let factory_address = match validate_address(factory) {
             Ok(address) => address,
             Err(e) => panic!(
@@ -207,28 +215,19 @@ impl Dex {
     }
 
     /// Returns a unique identifier for this DEX, combining chain and protocol name.
+    #[must_use]
     pub fn id(&self) -> String {
         format!("{}:{}", self.chain.name, self.name)
     }
 
     /// Sets the pool initialization event signature by hashing and encoding the provided event string.
     pub fn set_initialize_event(&mut self, event: &str) {
-        let initialize_event_hash = keccak256(event.as_bytes());
-        let encoded_initialized_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(initialize_event_hash)
-        );
-        self.initialize_event = Some(encoded_initialized_event.into());
+        self.initialize_event = Some(hex::encode_prefixed(keccak256(event.as_bytes())).into());
     }
 
     /// Sets the flash loan event signature by hashing and encoding the provided event string.
     pub fn set_flash_event(&mut self, event: &str) {
-        let flash_event_hash = keccak256(event.as_bytes());
-        let encoded_flash_event = format!(
-            "0x{encoded_hash}",
-            encoded_hash = hex::encode(flash_event_hash)
-        );
-        self.flash_created_event = Some(encoded_flash_event.into());
+        self.flash_created_event = Some(hex::encode_prefixed(keccak256(event.as_bytes())).into());
     }
 }
 
@@ -246,8 +245,8 @@ impl From<Pool> for CurrencyPair {
         let size_precision = p.token0.decimals.min(FIXED_PRECISION);
         let price_precision = p.token1.decimals.min(FIXED_PRECISION);
 
-        let price_increment = Price::new(10f64.powi(-(price_precision as i32)), price_precision);
-        let size_increment = Quantity::new(10f64.powi(-(size_precision as i32)), size_precision);
+        let price_increment = Price::new(10f64.powi(-i32::from(price_precision)), price_precision);
+        let size_increment = Quantity::new(10f64.powi(-i32::from(size_precision)), size_precision);
 
         Self::new(
             id,
@@ -258,6 +257,7 @@ impl From<Pool> for CurrencyPair {
             size_precision,
             price_increment,
             size_increment,
+            None,
             None,
             None,
             None,

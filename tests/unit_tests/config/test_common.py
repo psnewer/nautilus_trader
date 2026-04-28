@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,6 +24,7 @@ from nautilus_trader.common import Environment
 from nautilus_trader.common.config import CUSTOM_DECODINGS
 from nautilus_trader.common.config import CUSTOM_ENCODINGS
 from nautilus_trader.common.config import ActorConfig
+from nautilus_trader.common.config import pyo3_config_json
 from nautilus_trader.config import DatabaseConfig
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.config import ImportableStrategyConfig
@@ -38,6 +39,7 @@ from nautilus_trader.examples.strategies.ema_cross import EMACrossConfig
 from nautilus_trader.live.config import TradingNodeConfig
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
@@ -53,7 +55,9 @@ def test_repr_with_redacted_password() -> None:
     # Act, Assert
     assert (
         repr(config)
-        == "DatabaseConfig(type=redis, host=None, port=None, username=username, password=pa...rd, ssl=False, timeout=20)"
+        == "DatabaseConfig(type=redis, host=None, port=None, username=username, password=pa...rd, "
+        "ssl=False, connection_timeout=20, response_timeout=20, number_of_retries=100, "
+        "exponent_base=2, max_delay=1000, factor=2)"
     )
 
 
@@ -68,7 +72,9 @@ def test_equality_hash_repr() -> None:
     assert isinstance(hash(config1), int)
     assert (
         repr(config1)
-        == "DatabaseConfig(type=redis, host=None, port=None, username=None, password=None, ssl=False, timeout=20)"
+        == "DatabaseConfig(type=redis, host=None, port=None, username=None, password=None, "
+        "ssl=False, connection_timeout=20, response_timeout=20, number_of_retries=100, "
+        "exponent_base=2, max_delay=1000, factor=2)"
     )
 
 
@@ -77,7 +83,7 @@ def test_config_id() -> None:
     config = DatabaseConfig()
 
     # Act, Assert
-    assert config.id == "c3fad60cbcd4eb9d9f19081f6f342f04a77f1328e9487f11696f9abc119ff0e1"
+    assert config.id == "486c81c7fe7b02b2c49d3adbdf8e32589062d4a542cbb5ea134d47c915882403"
 
 
 def test_fully_qualified_name() -> None:
@@ -103,6 +109,23 @@ def test_json_schema(config_cls):
     assert isinstance(schema, dict), f"Schema for {config_cls.__name__} is not a dict"
 
 
+def test_parse_rejects_unknown_field() -> None:
+    # Arrange
+    raw = msgspec.json.encode(
+        {
+            "type": "redis",
+            "unexpected": True,
+        },
+    )
+
+    # Act, Assert
+    with pytest.raises(
+        msgspec.ValidationError,
+        match="Object contains unknown field `unexpected`",
+    ):
+        DatabaseConfig.parse(raw)
+
+
 def test_dict() -> None:
     # Arrange
     config = DatabaseConfig()
@@ -115,7 +138,12 @@ def test_dict() -> None:
         "username": None,
         "password": None,
         "ssl": False,
-        "timeout": 20,
+        "connection_timeout": 20,
+        "response_timeout": 20,
+        "number_of_retries": 100,
+        "exponent_base": 2,
+        "max_delay": 1000,
+        "factor": 2,
     }
 
 
@@ -126,8 +154,51 @@ def test_json() -> None:
     # Act, Assert
     assert (
         config.json()
-        == b'{"type":"redis","host":null,"port":null,"username":null,"password":null,"ssl":false,"timeout":20}'
+        == b'{"type":"redis","host":null,"port":null,"username":null,"password":null,"ssl":false,'
+        b'"connection_timeout":20,"response_timeout":20,"number_of_retries":100,'
+        b'"exponent_base":2,"max_delay":1000,"factor":2}'
     )
+
+
+def test_parse_rejects_legacy_database_timeout_field() -> None:
+    # Arrange
+    raw = msgspec.json.encode(
+        {
+            "type": "redis",
+            "timeout": 7,
+        },
+    )
+
+    # Act, Assert
+    with pytest.raises(
+        msgspec.ValidationError,
+        match="Object contains unknown field `timeout`",
+    ):
+        DatabaseConfig.parse(raw)
+
+
+def test_pyo3_config_json_preserves_database_timeouts() -> None:
+    # Arrange
+    config = DatabaseConfig(connection_timeout=7, response_timeout=11)
+
+    # Act
+    encoded = pyo3_config_json(config)
+
+    # Assert
+    assert msgspec.json.decode(encoded) == {
+        "type": "redis",
+        "host": None,
+        "port": None,
+        "username": None,
+        "password": None,
+        "ssl": False,
+        "connection_timeout": 7,
+        "response_timeout": 11,
+        "number_of_retries": 100,
+        "exponent_base": 2,
+        "max_delay": 1000,
+        "factor": 2,
+    }
 
 
 def test_json_primitives() -> None:
@@ -161,6 +232,27 @@ def test_importable_config_simple() -> None:
 
     # Assert
     assert config.api_key == "abc"
+
+
+def test_importable_config_rejects_unknown_nested_field() -> None:
+    # Arrange
+    raw = msgspec.json.encode(
+        {
+            "path": "nautilus_trader.live.config:LiveDataClientConfig",
+            "config": {
+                "instrument_provider": {
+                    "instrument_provider": {"load_all": False},
+                },
+            },
+        },
+    )
+
+    # Act, Assert
+    with pytest.raises(
+        msgspec.ValidationError,
+        match="Object contains unknown field `instrument_provider`",
+    ):
+        msgspec.json.decode(raw, type=ImportableConfig).create()
 
 
 def test_importable_strategy_config_typing() -> None:
@@ -459,6 +551,29 @@ def test_decoding_environment() -> None:
 
     # Assert
     assert result == Environment(obj)
+
+
+def test_encoding_time_in_force() -> None:
+    # Arrange
+    obj = TimeInForce.GTC
+
+    # Act
+    result = msgspec_encoding_hook(obj)
+
+    # Assert
+    assert result == "GTC"
+
+
+def test_decoding_time_in_force() -> None:
+    # Arrange
+    obj_type = TimeInForce
+    obj = "GTC"
+
+    # Act
+    result = msgspec_decoding_hook(obj_type, obj)
+
+    # Assert
+    assert result == TimeInForce.GTC
 
 
 def test_encoding_type_with_fully_qualified_name() -> None:

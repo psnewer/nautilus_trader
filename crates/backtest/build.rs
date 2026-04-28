@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,10 +23,6 @@
 #[cfg(feature = "ffi")]
 use std::env;
 
-#[allow(
-    clippy::expect_used,
-    reason = "Build script may panic on misconfiguration"
-)]
 fn main() {
     // Skip file generation if we're in the docs.rs environment
     if std::env::var("DOCS_RS").is_ok() {

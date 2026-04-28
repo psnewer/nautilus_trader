@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,6 +25,7 @@ from nautilus_trader.adapters.binance import BINANCE
 from nautilus_trader.adapters.binance import BinanceAccountType
 from nautilus_trader.adapters.binance import BinanceDataClientConfig
 from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
@@ -53,9 +54,7 @@ config_node = TradingNodeConfig(
     logging=LoggingConfig(log_level="INFO", use_pyo3=True),
     data_clients={
         BINANCE: BinanceDataClientConfig(
-            # No API key required for public market data
-            api_key=None,
-            api_secret=None,
+            environment=BinanceEnvironment.LIVE,
             account_type=account_type,
             instrument_provider=InstrumentProviderConfig(load_ids=frozenset([instrument_id])),
         ),

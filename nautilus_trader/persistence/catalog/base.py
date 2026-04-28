@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,6 +26,7 @@ from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.data import OrderBookDelta
@@ -55,8 +56,33 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
     @classmethod
     @abstractmethod
     def from_uri(
-        cls, uri: str, storage_options: dict[str, str] | None = None,
+        cls,
+        uri: str,
+        fs_storage_options: dict[str, str] | None = None,
+        fs_rust_storage_options: dict[str, str] | None = None,
     ) -> BaseDataCatalog:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_missing_intervals_for_request(
+        self,
+        start: int,
+        end: int,
+        data_cls: type,
+        identifier: str | None = None,
+    ) -> list[tuple[int, int]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def write_data(
+        self,
+        data: list,
+        start: int | None = None,
+        end: int | None = None,
+        data_cls: type | None = None,
+        identifier: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         raise NotImplementedError
 
     # -- QUERIES -----------------------------------------------------------------------------------
@@ -103,7 +129,9 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         **kwargs: Any,
     ) -> list[InstrumentStatus]:
         return self.query(
-            data_cls=InstrumentStatus, identifiers=instrument_ids, **kwargs,
+            data_cls=InstrumentStatus,
+            identifiers=instrument_ids,
+            **kwargs,
         )
 
     def instrument_closes(
@@ -112,7 +140,9 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         **kwargs: Any,
     ) -> list[InstrumentClose]:
         return self.query(
-            data_cls=InstrumentClose, identifiers=instrument_ids, **kwargs,
+            data_cls=InstrumentClose,
+            identifiers=instrument_ids,
+            **kwargs,
         )
 
     def order_book_deltas(
@@ -131,7 +161,9 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         **kwargs: Any,
     ) -> list[OrderBookDepth10]:
         return self.query(
-            data_cls=OrderBookDepth10, identifiers=instrument_ids, **kwargs,
+            data_cls=OrderBookDepth10,
+            identifiers=instrument_ids,
+            **kwargs,
         )
 
     def quote_ticks(
@@ -148,6 +180,13 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
     ) -> list[TradeTick]:
         return self.query(data_cls=TradeTick, identifiers=instrument_ids, **kwargs)
 
+    def funding_rates(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[FundingRateUpdate]:
+        return self.query(data_cls=FundingRateUpdate, identifiers=instrument_ids, **kwargs)
+
     def bars(
         self,
         bar_types: list[str] | None = None,
@@ -155,7 +194,9 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         **kwargs: Any,
     ) -> list[Bar]:
         return self.query(
-            data_cls=Bar, identifiers=(bar_types or instrument_ids), **kwargs,
+            data_cls=Bar,
+            identifiers=(bar_types or instrument_ids),
+            **kwargs,
         )
 
     def custom_data(
@@ -172,10 +213,7 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
             if data is None:
                 return []
 
-            return [
-                CustomData(data_type=DataType(cls, metadata=metadata), data=d)
-                for d in data
-            ]
+            return [CustomData(data_type=DataType(cls, metadata=metadata), data=d) for d in data]
 
         return data
 
@@ -227,12 +265,16 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
 
     @abstractmethod
     def read_live_run(
-        self, instance_id: str, **kwargs: Any,
+        self,
+        instance_id: str,
+        **kwargs: Any,
     ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError
 
     @abstractmethod
     def read_backtest(
-        self, instance_id: str, **kwargs: Any,
+        self,
+        instance_id: str,
+        **kwargs: Any,
     ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError

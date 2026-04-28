@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -2438,6 +2438,12 @@ cdef class MessageBus:
 
         """
         self._log.debug("Closing message bus")
+
+        self._endpoints.clear()
+        self._patterns.clear()
+        self._subscriptions.clear()
+        self._correlation_index.clear()
+        self._listeners.clear()
 
         if self._database is not None:
             self._database.close()

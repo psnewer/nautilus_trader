@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -36,7 +36,11 @@ use crate::identifiers::InstrumentId;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct OrderBookDeltas {
     /// The instrument ID for the book.
@@ -60,7 +64,6 @@ impl OrderBookDeltas {
     ///
     /// Panics if `deltas` is empty and correctness check fails.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(instrument_id: InstrumentId, deltas: Vec<OrderBookDelta>) -> Self {
         Self::new_checked(instrument_id, deltas).expect(FAILED)
     }
@@ -70,23 +73,18 @@ impl OrderBookDeltas {
     /// # Notes
     ///
     /// PyO3 requires a `Result` type for proper error handling and stacktrace printing in Python.
-    #[allow(clippy::too_many_arguments)]
     /// Creates a new [`OrderBookDeltas`] instance with correctness checking.
     ///
     /// # Errors
     ///
     /// Returns an error if `deltas` is empty.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `deltas` is empty when unwrapping the last element.
+    #[expect(clippy::missing_panics_doc)] // Guarded by predicate check above
     pub fn new_checked(
         instrument_id: InstrumentId,
         deltas: Vec<OrderBookDelta>,
     ) -> anyhow::Result<Self> {
         check_predicate_true(!deltas.is_empty(), "`deltas` cannot be empty")?;
-        // SAFETY: We asserted `deltas` is not empty
-        let last = deltas.last().unwrap();
+        let last = deltas.last().expect("deltas not empty");
         let flags = last.flags;
         let sequence = last.sequence;
         let ts_event = last.ts_event;

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,90 +23,39 @@ use std::{
     },
 };
 
-use ahash::AHashMap;
-use nautilus_common::cache::quote::QuoteCache;
-use nautilus_core::{AtomicTime, UUID4, UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_model::{
-    data::{Bar, Data, OrderBookDeltas, QuoteTick},
-    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
-    instruments::{Instrument, InstrumentAny},
-    types::{Price, Quantity},
-};
 use nautilus_network::{
     RECONNECTED,
     websocket::{SubscriptionState, WebSocketClient},
 };
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
-use ustr::Ustr;
 
 use super::{
-    enums::{KrakenExecType, KrakenWsChannel},
+    enums::{KrakenWsChannel, KrakenWsMessageType},
     messages::{
-        KrakenWsBookData, KrakenWsExecutionData, KrakenWsMessage, KrakenWsOhlcData,
-        KrakenWsResponse, KrakenWsTickerData, KrakenWsTradeData, NautilusWsMessage,
-    },
-    parse::{
-        parse_book_deltas, parse_quote_tick, parse_trade_tick, parse_ws_bar, parse_ws_fill_report,
-        parse_ws_order_status_report,
+        KrakenSpotWsMessage, KrakenWsBookData, KrakenWsExecutionData, KrakenWsMessage,
+        KrakenWsOhlcData, KrakenWsResponse, KrakenWsTickerData, KrakenWsTradeData,
     },
 };
 
-/// Cached information about a client order needed for event generation.
-#[derive(Debug, Clone)]
-struct CachedOrderInfo {
-    instrument_id: InstrumentId,
-    trader_id: TraderId,
-    strategy_id: StrategyId,
-}
-
 /// Commands sent from the outer client to the inner message handler.
 #[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Commands are ephemeral and immediately consumed"
-)]
 pub enum SpotHandlerCommand {
     SetClient(WebSocketClient),
     Disconnect,
-    SendText {
-        payload: String,
-    },
-    InitializeInstruments(Vec<InstrumentAny>),
-    UpdateInstrument(InstrumentAny),
-    SetAccountId(AccountId),
-    CacheClientOrder {
-        client_order_id: ClientOrderId,
-        instrument_id: InstrumentId,
-        trader_id: TraderId,
-        strategy_id: StrategyId,
-    },
+    Subscribe { payload: String },
+    Unsubscribe { payload: String },
+    Ping { payload: String },
 }
 
-/// Key for buffering OHLC bars: (symbol, interval).
-type OhlcBufferKey = (Ustr, u32);
-
-/// Buffered OHLC bar with its interval start time for period detection.
-type OhlcBufferEntry = (Bar, UnixNanos);
-
-/// WebSocket message handler for Kraken.
+/// WebSocket message handler for Kraken Spot v2.
 pub(super) struct SpotFeedHandler {
-    clock: &'static AtomicTime,
     signal: Arc<AtomicBool>,
-    client: Option<WebSocketClient>,
+    inner: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<SpotHandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
     subscriptions: SubscriptionState,
-    instruments_cache: AHashMap<Ustr, InstrumentAny>,
-    client_order_cache: AHashMap<String, CachedOrderInfo>,
-    order_qty_cache: AHashMap<String, f64>,
-    quote_cache: QuoteCache,
-    book_sequence: u64,
-    pending_quotes: Vec<QuoteTick>,
-    pending_messages: VecDeque<NautilusWsMessage>,
-    account_id: Option<AccountId>,
-    ohlc_buffer: AHashMap<OhlcBufferKey, OhlcBufferEntry>,
+    pending_messages: VecDeque<KrakenSpotWsMessage>,
 }
 
 impl SpotFeedHandler {
@@ -118,21 +67,12 @@ impl SpotFeedHandler {
         subscriptions: SubscriptionState,
     ) -> Self {
         Self {
-            clock: get_atomic_clock_realtime(),
             signal,
-            client: None,
+            inner: None,
             cmd_rx,
             raw_rx,
             subscriptions,
-            instruments_cache: AHashMap::new(),
-            client_order_cache: AHashMap::new(),
-            order_qty_cache: AHashMap::new(),
-            quote_cache: QuoteCache::new(),
-            book_sequence: 0,
-            pending_quotes: Vec::new(),
             pending_messages: VecDeque::new(),
-            account_id: None,
-            ohlc_buffer: AHashMap::new(),
         }
     }
 
@@ -140,46 +80,14 @@ impl SpotFeedHandler {
         self.signal.load(Ordering::Relaxed)
     }
 
-    /// Checks if a topic is active (confirmed or pending subscribe).
     fn is_subscribed(&self, topic: &str) -> bool {
         self.subscriptions.all_topics().iter().any(|t| t == topic)
     }
 
-    fn get_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
-        self.instruments_cache.get(symbol).cloned()
-    }
-
-    /// Flushes all buffered OHLC bars to pending messages.
-    ///
-    /// Called when the stream ends to ensure the last bar for each symbol/interval
-    /// is not lost.
-    fn flush_ohlc_buffer(&mut self) {
-        if self.ohlc_buffer.is_empty() {
-            return;
-        }
-
-        let bars: Vec<Data> = self
-            .ohlc_buffer
-            .drain()
-            .map(|(_, (bar, _))| Data::Bar(bar))
-            .collect();
-
-        if !bars.is_empty() {
-            tracing::debug!("Flushing {} buffered OHLC bars on stream end", bars.len());
-            self.pending_messages
-                .push_back(NautilusWsMessage::Data(bars));
-        }
-    }
-
     /// Processes messages and commands, returning when stopped or stream ends.
-    pub(super) async fn next(&mut self) -> Option<NautilusWsMessage> {
-        // Check for pending messages first (e.g., from multi-message scenarios like trades)
+    pub(super) async fn next(&mut self) -> Option<KrakenSpotWsMessage> {
         if let Some(msg) = self.pending_messages.pop_front() {
             return Some(msg);
-        }
-
-        if let Some(quote) = self.pending_quotes.pop() {
-            return Some(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
         }
 
         loop {
@@ -187,84 +95,51 @@ impl SpotFeedHandler {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
                         SpotHandlerCommand::SetClient(client) => {
-                            tracing::debug!("WebSocketClient received by handler");
-                            self.client = Some(client);
+                            log::debug!("WebSocketClient received by handler");
+                            self.inner = Some(client);
                         }
                         SpotHandlerCommand::Disconnect => {
-                            tracing::debug!("Disconnect command received");
-                            if let Some(client) = self.client.take() {
+                            log::debug!("Disconnect command received");
+
+                            if let Some(client) = self.inner.take() {
                                 client.disconnect().await;
                             }
                         }
-                        SpotHandlerCommand::SendText { payload } => {
-                            if let Some(client) = &self.client
+                        SpotHandlerCommand::Subscribe { payload }
+                        | SpotHandlerCommand::Unsubscribe { payload }
+                        | SpotHandlerCommand::Ping { payload } => {
+                            if let Some(client) = &self.inner
                                 && let Err(e) = client.send_text(payload.clone(), None).await
                             {
-                                tracing::error!(error = %e, "Failed to send text");
+                                log::error!("Failed to send text: {e}");
                             }
-                        }
-                        SpotHandlerCommand::InitializeInstruments(instruments) => {
-                            for inst in instruments {
-                                // Cache by symbol (ISO 4217-A3 format like "ETH/USD")
-                                // which matches what v2 WebSocket messages use
-                                self.instruments_cache.insert(inst.symbol().inner(), inst);
-                            }
-                        }
-                        SpotHandlerCommand::UpdateInstrument(inst) => {
-                            self.instruments_cache.insert(inst.symbol().inner(), inst);
-                        }
-                        SpotHandlerCommand::SetAccountId(account_id) => {
-                            tracing::debug!(%account_id, "Account ID set for execution reports");
-                            self.account_id = Some(account_id);
-                        }
-                        SpotHandlerCommand::CacheClientOrder {
-                            client_order_id,
-                            instrument_id,
-                            trader_id,
-                            strategy_id,
-                        } => {
-                            tracing::debug!(
-                                %client_order_id,
-                                %instrument_id,
-                                "Cached client order info"
-                            );
-                            self.client_order_cache.insert(
-                                client_order_id.to_string(),
-                                CachedOrderInfo {
-                                    instrument_id,
-                                    trader_id,
-                                    strategy_id,
-                                },
-                            );
                         }
                     }
-                    continue;
                 }
 
                 msg = self.raw_rx.recv() => {
                     let msg = match msg {
                         Some(msg) => msg,
                         None => {
-                            tracing::debug!("WebSocket stream closed");
-                            self.flush_ohlc_buffer();
-                            return self.pending_messages.pop_front();
+                            log::debug!("WebSocket stream closed");
+                            return None;
                         }
                     };
 
                     if let Message::Ping(data) = &msg {
-                        tracing::trace!("Received ping frame with {} bytes", data.len());
-                        if let Some(client) = &self.client
+                        log::trace!("Received ping frame with {} bytes", data.len());
+
+                        if let Some(client) = &self.inner
                             && let Err(e) = client.send_pong(data.to_vec()).await
                         {
-                            tracing::warn!(error = %e, "Failed to send pong frame");
+                            log::warn!("Failed to send pong frame: {e}");
                         }
                         continue;
                     }
 
                     if self.signal.load(Ordering::Relaxed) {
-                        tracing::debug!("Stop signal received");
-                        self.flush_ohlc_buffer();
-                        return self.pending_messages.pop_front();
+                        log::debug!("Stop signal received");
+                        return None;
                     }
 
                     let text = match msg {
@@ -273,55 +148,49 @@ impl SpotFeedHandler {
                             match String::from_utf8(data.to_vec()) {
                                 Ok(text) => text,
                                 Err(e) => {
-                                    tracing::warn!("Failed to decode binary message: {e}");
+                                    log::warn!("Failed to decode binary message: {e}");
                                     continue;
                                 }
                             }
                         }
                         Message::Pong(_) => {
-                            tracing::trace!("Received pong");
+                            log::trace!("Received pong");
                             continue;
                         }
                         Message::Close(_) => {
-                            tracing::info!("WebSocket connection closed");
-                            self.flush_ohlc_buffer();
-                            return self.pending_messages.pop_front();
+                            log::info!("WebSocket connection closed");
+                            return None;
                         }
                         Message::Frame(_) => {
-                            tracing::trace!("Received raw frame");
+                            log::trace!("Received raw frame");
                             continue;
                         }
                         _ => continue,
                     };
 
                     if text == RECONNECTED {
-                        tracing::info!("Received WebSocket reconnected signal");
-                        self.quote_cache.clear();
-                        return Some(NautilusWsMessage::Reconnected);
+                        log::info!("Received WebSocket reconnected signal");
+                        return Some(KrakenSpotWsMessage::Reconnected);
                     }
 
-                    let ts_init = self.clock.get_time_ns();
-
-                    if let Some(nautilus_msg) = self.parse_message(&text, ts_init) {
-                        return Some(nautilus_msg);
+                    if let Some(msg) = self.parse_message(&text) {
+                        return Some(msg);
                     }
-
-                    continue;
                 }
             }
         }
     }
 
-    fn parse_message(&mut self, text: &str, ts_init: UnixNanos) -> Option<NautilusWsMessage> {
+    fn parse_message(&self, text: &str) -> Option<KrakenSpotWsMessage> {
         // Fast pre-filter for high-frequency control messages (no JSON parsing)
-        // Heartbeats and status messages are short and share common prefix
         if text.len() < 50 && text.starts_with("{\"channel\":\"") {
             if text.contains("heartbeat") {
-                tracing::trace!("Received heartbeat");
+                log::trace!("Received heartbeat");
                 return None;
             }
+
             if text.contains("status") {
-                tracing::debug!("Received status message");
+                log::debug!("Received status message");
                 return None;
             }
         }
@@ -329,7 +198,7 @@ impl SpotFeedHandler {
         let value: Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("Failed to parse message: {e}");
+                log::warn!("Failed to parse message: {e}");
                 return None;
             }
         };
@@ -343,15 +212,15 @@ impl SpotFeedHandler {
         // Data messages have "channel" and "data" fields
         if value.get("channel").is_some() && value.get("data").is_some() {
             match serde_json::from_value::<KrakenWsMessage>(value) {
-                Ok(msg) => return self.handle_data_message(msg, ts_init),
+                Ok(msg) => return self.handle_data_message(msg),
                 Err(e) => {
-                    tracing::debug!("Failed to parse data message: {e}");
+                    log::debug!("Failed to parse data message: {e}");
                     return None;
                 }
             }
         }
 
-        tracing::debug!("Unhandled message structure: {text}");
+        log::debug!("Unhandled message structure: {text}");
         None
     }
 
@@ -361,576 +230,393 @@ impl SpotFeedHandler {
                 KrakenWsResponse::Subscribe(sub) => {
                     if sub.success {
                         if let Some(result) = &sub.result {
-                            tracing::debug!(
-                                channel = ?result.channel,
-                                req_id = ?sub.req_id,
-                                "Subscription confirmed"
+                            log::debug!(
+                                "Subscription confirmed: channel={:?}, req_id={:?}",
+                                result.channel,
+                                sub.req_id
                             );
                         } else {
-                            tracing::debug!(req_id = ?sub.req_id, "Subscription confirmed");
+                            log::debug!("Subscription confirmed: req_id={:?}", sub.req_id);
                         }
                     } else {
-                        tracing::warn!(
-                            error = ?sub.error,
-                            req_id = ?sub.req_id,
-                            "Subscription failed"
+                        log::warn!(
+                            "Subscription failed: error={:?}, req_id={:?}",
+                            sub.error,
+                            sub.req_id
                         );
                     }
                 }
                 KrakenWsResponse::Unsubscribe(unsub) => {
                     if unsub.success {
-                        tracing::debug!(req_id = ?unsub.req_id, "Unsubscription confirmed");
+                        log::debug!("Unsubscription confirmed: req_id={:?}", unsub.req_id);
                     } else {
-                        tracing::warn!(
-                            error = ?unsub.error,
-                            req_id = ?unsub.req_id,
-                            "Unsubscription failed"
+                        log::warn!(
+                            "Unsubscription failed: error={:?}, req_id={:?}",
+                            unsub.error,
+                            unsub.req_id
                         );
                     }
                 }
                 KrakenWsResponse::Pong(pong) => {
-                    tracing::trace!(req_id = ?pong.req_id, "Received pong");
+                    log::trace!("Received pong: req_id={:?}", pong.req_id);
                 }
                 KrakenWsResponse::Other => {
-                    tracing::debug!("Received unknown control response");
+                    log::debug!("Received unknown control response");
                 }
             },
             Err(_) => {
-                tracing::debug!("Received control message (failed to parse details)");
+                log::debug!("Received control message (failed to parse details)");
             }
         }
     }
 
-    fn handle_data_message(
-        &mut self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
+    fn handle_data_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
         match msg.channel {
-            KrakenWsChannel::Book => self.handle_book_message(msg, ts_init),
-            KrakenWsChannel::Ticker => self.handle_ticker_message(msg, ts_init),
-            KrakenWsChannel::Trade => self.handle_trade_message(msg, ts_init),
-            KrakenWsChannel::Ohlc => self.handle_ohlc_message(msg, ts_init),
-            KrakenWsChannel::Executions => self.handle_executions_message(msg, ts_init),
+            KrakenWsChannel::Book => self.handle_book_message(msg),
+            KrakenWsChannel::Ticker => self.handle_ticker_message(msg),
+            KrakenWsChannel::Trade => self.handle_trade_message(msg),
+            KrakenWsChannel::Ohlc => self.handle_ohlc_message(msg),
+            KrakenWsChannel::Executions => self.handle_executions_message(msg),
             _ => {
-                tracing::warn!("Unhandled channel: {:?}", msg.channel);
+                log::warn!("Unhandled channel: {:?}", msg.channel);
                 None
             }
         }
     }
 
-    fn handle_book_message(
-        &mut self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        let mut all_deltas = Vec::new();
-        let mut instrument_id = None;
+    fn handle_book_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
+        let is_snapshot = msg.event_type == KrakenWsMessageType::Snapshot;
+        let mut book_data = Vec::new();
 
         for data in msg.data {
             match serde_json::from_value::<KrakenWsBookData>(data) {
-                Ok(book_data) => {
-                    let symbol = &book_data.symbol;
-                    let instrument = self.get_instrument(symbol)?;
-                    instrument_id = Some(instrument.id());
-
-                    let price_precision = instrument.price_precision();
-                    let size_precision = instrument.size_precision();
-
-                    let has_book = self.is_subscribed(&format!("book:{symbol}"));
-                    let has_quotes = self.is_subscribed(&format!("quotes:{symbol}"));
-
-                    if has_quotes {
-                        let best_bid = book_data.bids.as_ref().and_then(|bids| bids.first());
-                        let best_ask = book_data.asks.as_ref().and_then(|asks| asks.first());
-
-                        let bid_price = best_bid.map(|b| Price::new(b.price, price_precision));
-                        let ask_price = best_ask.map(|a| Price::new(a.price, price_precision));
-                        let bid_size = best_bid.map(|b| Quantity::new(b.qty, size_precision));
-                        let ask_size = best_ask.map(|a| Quantity::new(a.qty, size_precision));
-
-                        if let Ok(quote) = self.quote_cache.process(
-                            instrument.id(),
-                            bid_price,
-                            ask_price,
-                            bid_size,
-                            ask_size,
-                            ts_init,
-                            ts_init,
-                        ) {
-                            self.pending_quotes.push(quote);
-                        }
+                Ok(bd) => {
+                    if !self.is_subscribed(&format!("book:{}", bd.symbol)) {
+                        continue;
                     }
-
-                    if has_book {
-                        match parse_book_deltas(
-                            &book_data,
-                            &instrument,
-                            self.book_sequence,
-                            ts_init,
-                        ) {
-                            Ok(mut deltas) => {
-                                self.book_sequence += deltas.len() as u64;
-                                all_deltas.append(&mut deltas);
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to parse book deltas: {e}");
-                            }
-                        }
-                    }
+                    book_data.push(bd);
                 }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize book data: {e}");
-                }
+                Err(e) => log::error!("Failed to deserialize book data: {e}"),
             }
         }
 
-        if all_deltas.is_empty() {
-            if let Some(quote) = self.pending_quotes.pop() {
-                return Some(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
-            }
+        if book_data.is_empty() {
             None
         } else {
-            let deltas = OrderBookDeltas::new(instrument_id?, all_deltas);
-            Some(NautilusWsMessage::Deltas(deltas))
+            Some(KrakenSpotWsMessage::Book {
+                data: book_data,
+                is_snapshot,
+            })
         }
     }
 
-    fn handle_ticker_message(
-        &self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        let mut quotes = Vec::new();
+    fn handle_ticker_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
+        let mut tickers = Vec::new();
 
         for data in msg.data {
             match serde_json::from_value::<KrakenWsTickerData>(data) {
-                Ok(ticker_data) => {
-                    let instrument = self.get_instrument(&ticker_data.symbol)?;
-
-                    match parse_quote_tick(&ticker_data, &instrument, ts_init) {
-                        Ok(quote) => quotes.push(Data::Quote(quote)),
-                        Err(e) => {
-                            tracing::error!("Failed to parse quote tick: {e}");
-                        }
+                Ok(td) => {
+                    let symbol = &td.symbol;
+                    let quotes_key = format!("quotes:{symbol}");
+                    let ticker_key = format!("ticker:{symbol}");
+                    if !self.is_subscribed(&quotes_key) && !self.is_subscribed(&ticker_key) {
+                        continue;
                     }
+                    tickers.push(td);
                 }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize ticker data: {e}");
-                }
+                Err(e) => log::error!("Failed to deserialize ticker data: {e}"),
             }
         }
 
-        if quotes.is_empty() {
+        if tickers.is_empty() {
             None
         } else {
-            Some(NautilusWsMessage::Data(quotes))
+            Some(KrakenSpotWsMessage::Ticker(tickers))
         }
     }
 
-    fn handle_trade_message(
-        &self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
+    fn handle_trade_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
         let mut trades = Vec::new();
 
         for data in msg.data {
             match serde_json::from_value::<KrakenWsTradeData>(data) {
-                Ok(trade_data) => {
-                    let instrument = self.get_instrument(&trade_data.symbol)?;
-
-                    match parse_trade_tick(&trade_data, &instrument, ts_init) {
-                        Ok(trade) => trades.push(Data::Trade(trade)),
-                        Err(e) => {
-                            tracing::error!("Failed to parse trade tick: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize trade data: {e}");
-                }
+                Ok(td) => trades.push(td),
+                Err(e) => log::error!("Failed to deserialize trade data: {e}"),
             }
         }
 
         if trades.is_empty() {
             None
         } else {
-            Some(NautilusWsMessage::Data(trades))
+            Some(KrakenSpotWsMessage::Trade(trades))
         }
     }
 
-    fn handle_ohlc_message(
-        &mut self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        let mut closed_bars = Vec::new();
+    fn handle_ohlc_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
+        let mut ohlc_data = Vec::new();
 
         for data in msg.data {
             match serde_json::from_value::<KrakenWsOhlcData>(data) {
-                Ok(ohlc_data) => {
-                    let instrument = self.get_instrument(&ohlc_data.symbol)?;
-
-                    match parse_ws_bar(&ohlc_data, &instrument, ts_init) {
-                        Ok(new_bar) => {
-                            let key = (ohlc_data.symbol, ohlc_data.interval);
-                            let new_interval_begin = UnixNanos::from(
-                                ohlc_data.interval_begin.timestamp_nanos_opt().unwrap_or(0) as u64,
-                            );
-
-                            // Check if we have a buffered bar for this symbol/interval
-                            if let Some((buffered_bar, buffered_interval_begin)) =
-                                self.ohlc_buffer.get(&key)
-                            {
-                                // If interval_begin changed, the buffered bar is closed
-                                if new_interval_begin != *buffered_interval_begin {
-                                    closed_bars.push(Data::Bar(*buffered_bar));
-                                }
-                            }
-
-                            // Update buffer with the new (potentially incomplete) bar
-                            self.ohlc_buffer.insert(key, (new_bar, new_interval_begin));
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to parse bar: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize OHLC data: {e}");
-                }
+                Ok(od) => ohlc_data.push(od),
+                Err(e) => log::error!("Failed to deserialize OHLC data: {e}"),
             }
         }
 
-        if closed_bars.is_empty() {
+        if ohlc_data.is_empty() {
             None
         } else {
-            Some(NautilusWsMessage::Data(closed_bars))
+            Some(KrakenSpotWsMessage::Ohlc(ohlc_data))
         }
     }
 
-    fn handle_executions_message(
-        &mut self,
-        msg: KrakenWsMessage,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        let Some(account_id) = self.account_id else {
-            tracing::warn!("Cannot process execution message: account_id not set");
-            return None;
-        };
+    fn handle_executions_message(&self, msg: KrakenWsMessage) -> Option<KrakenSpotWsMessage> {
+        let mut executions = Vec::new();
 
-        // Process all executions in batch and queue them (snapshots can have many records)
         for data in msg.data {
             match serde_json::from_value::<KrakenWsExecutionData>(data) {
-                Ok(exec_data) => {
-                    tracing::debug!(
-                        exec_type = ?exec_data.exec_type,
-                        order_id = %exec_data.order_id,
-                        order_status = ?exec_data.order_status,
-                        order_qty = ?exec_data.order_qty,
-                        cum_qty = ?exec_data.cum_qty,
-                        last_qty = ?exec_data.last_qty,
-                        "Received execution message"
-                    );
-
-                    // Cache order_qty for subsequent messages that may not include it
-                    if let Some(qty) = exec_data.order_qty {
-                        self.order_qty_cache.insert(exec_data.order_id.clone(), qty);
-                    }
-
-                    // Resolve instrument and cached order info
-                    let (instrument, cached_info) = if let Some(ref symbol) = exec_data.symbol {
-                        let symbol_ustr = Ustr::from(symbol.as_str());
-                        let inst = self.instruments_cache.get(&symbol_ustr).cloned();
-                        if inst.is_none() {
-                            tracing::warn!(
-                                symbol = %symbol,
-                                order_id = %exec_data.order_id,
-                                "No instrument found for symbol"
-                            );
-                        }
-                        let cached = exec_data
-                            .cl_ord_id
-                            .as_ref()
-                            .and_then(|id| self.client_order_cache.get(id).cloned());
-                        (inst, cached)
-                    } else if let Some(ref cl_ord_id) = exec_data.cl_ord_id {
-                        let cached = self.client_order_cache.get(cl_ord_id).cloned();
-                        let inst = cached.as_ref().and_then(|info| {
-                            self.instruments_cache
-                                .iter()
-                                .find(|(_, inst)| inst.id() == info.instrument_id)
-                                .map(|(_, inst)| inst.clone())
-                        });
-                        (inst, cached)
-                    } else {
-                        (None, None)
-                    };
-
-                    let Some(instrument) = instrument else {
-                        tracing::debug!(
-                            order_id = %exec_data.order_id,
-                            cl_ord_id = ?exec_data.cl_ord_id,
-                            exec_type = ?exec_data.exec_type,
-                            "Execution missing symbol and order not in cache (external order)"
-                        );
-                        continue;
-                    };
-
-                    let cached_order_qty = self.order_qty_cache.get(&exec_data.order_id).copied();
-                    let ts_event = chrono::DateTime::parse_from_rfc3339(&exec_data.timestamp)
-                        .map(|t| UnixNanos::from(t.timestamp_nanos_opt().unwrap_or(0) as u64))
-                        .unwrap_or(ts_init);
-
-                    // Emit proper order events when we have cached info, otherwise fall back
-                    // to OrderStatusReport for external orders or reconciliation
-                    if let Some(ref info) = cached_info {
-                        let client_order_id = exec_data
-                            .cl_ord_id
-                            .as_ref()
-                            .map(ClientOrderId::new)
-                            .expect("cl_ord_id should exist if cached");
-                        let venue_order_id = VenueOrderId::new(&exec_data.order_id);
-
-                        match exec_data.exec_type {
-                            KrakenExecType::PendingNew => {
-                                // Order received and validated - emit accepted
-                                let accepted = OrderAccepted::new(
-                                    info.trader_id,
-                                    info.strategy_id,
-                                    instrument.id(),
-                                    client_order_id,
-                                    venue_order_id,
-                                    account_id,
-                                    UUID4::new(),
-                                    ts_event,
-                                    ts_init,
-                                    false,
-                                );
-                                self.pending_messages
-                                    .push_back(NautilusWsMessage::OrderAccepted(accepted));
-                            }
-                            KrakenExecType::New => {
-                                // Order is now live - already accepted, skip
-                            }
-                            KrakenExecType::Canceled => {
-                                // Check if this is a post-only rejection based on reason
-                                // Kraken sends reason="Post only order" for post-only rejections
-                                let is_post_only_rejection = exec_data
-                                    .reason
-                                    .as_ref()
-                                    .is_some_and(|r| r.eq_ignore_ascii_case("Post only order"));
-
-                                if is_post_only_rejection {
-                                    let reason = exec_data
-                                        .reason
-                                        .as_deref()
-                                        .unwrap_or("Post-only order would have crossed");
-                                    let rejected = OrderRejected::new(
-                                        info.trader_id,
-                                        info.strategy_id,
-                                        instrument.id(),
-                                        client_order_id,
-                                        account_id,
-                                        Ustr::from(reason),
-                                        UUID4::new(),
-                                        ts_event,
-                                        ts_init,
-                                        false,
-                                        true, // due_post_only
-                                    );
-                                    self.pending_messages
-                                        .push_back(NautilusWsMessage::OrderRejected(rejected));
-                                } else {
-                                    let canceled = OrderCanceled::new(
-                                        info.trader_id,
-                                        info.strategy_id,
-                                        instrument.id(),
-                                        client_order_id,
-                                        UUID4::new(),
-                                        ts_event,
-                                        ts_init,
-                                        false,
-                                        Some(venue_order_id),
-                                        Some(account_id),
-                                    );
-                                    self.pending_messages
-                                        .push_back(NautilusWsMessage::OrderCanceled(canceled));
-                                }
-                            }
-                            KrakenExecType::Expired => {
-                                let expired = OrderExpired::new(
-                                    info.trader_id,
-                                    info.strategy_id,
-                                    instrument.id(),
-                                    client_order_id,
-                                    UUID4::new(),
-                                    ts_event,
-                                    ts_init,
-                                    false,
-                                    Some(venue_order_id),
-                                    Some(account_id),
-                                );
-                                self.pending_messages
-                                    .push_back(NautilusWsMessage::OrderExpired(expired));
-                            }
-                            KrakenExecType::Amended | KrakenExecType::Restated => {
-                                // For modifications, emit OrderUpdated
-                                if let Some(order_qty) = exec_data.order_qty.or(cached_order_qty) {
-                                    let updated = OrderUpdated::new(
-                                        info.trader_id,
-                                        info.strategy_id,
-                                        instrument.id(),
-                                        client_order_id,
-                                        Quantity::new(order_qty, instrument.size_precision()),
-                                        UUID4::new(),
-                                        ts_event,
-                                        ts_init,
-                                        false,
-                                        Some(venue_order_id),
-                                        Some(account_id),
-                                        None, // price
-                                        None, // trigger_price
-                                        None, // protection_price
-                                    );
-                                    self.pending_messages
-                                        .push_back(NautilusWsMessage::OrderUpdated(updated));
-                                }
-                            }
-                            KrakenExecType::Trade | KrakenExecType::Filled => {
-                                // Trades use OrderStatusReport + FillReport
-                                let has_complete_trade_data =
-                                    exec_data.last_qty.is_some_and(|q| q > 0.0)
-                                        && exec_data.last_price.is_some_and(|p| p > 0.0);
-
-                                if let Ok(status_report) = parse_ws_order_status_report(
-                                    &exec_data,
-                                    &instrument,
-                                    account_id,
-                                    cached_order_qty,
-                                    ts_init,
-                                ) {
-                                    self.pending_messages.push_back(
-                                        NautilusWsMessage::OrderStatusReport(Box::new(
-                                            status_report,
-                                        )),
-                                    );
-                                }
-
-                                if has_complete_trade_data
-                                    && let Ok(fill_report) = parse_ws_fill_report(
-                                        &exec_data,
-                                        &instrument,
-                                        account_id,
-                                        ts_init,
-                                    )
-                                {
-                                    self.pending_messages
-                                        .push_back(NautilusWsMessage::FillReport(Box::new(
-                                            fill_report,
-                                        )));
-                                }
-                            }
-                            KrakenExecType::IcebergRefill => {
-                                // Iceberg order refill - treat similar to order update
-                                if let Some(order_qty) = exec_data.order_qty.or(cached_order_qty) {
-                                    let updated = OrderUpdated::new(
-                                        info.trader_id,
-                                        info.strategy_id,
-                                        instrument.id(),
-                                        client_order_id,
-                                        Quantity::new(order_qty, instrument.size_precision()),
-                                        UUID4::new(),
-                                        ts_event,
-                                        ts_init,
-                                        false,
-                                        Some(venue_order_id),
-                                        Some(account_id),
-                                        None,
-                                        None,
-                                        None,
-                                    );
-                                    self.pending_messages
-                                        .push_back(NautilusWsMessage::OrderUpdated(updated));
-                                }
-                            }
-                            KrakenExecType::Status => {
-                                // Status update without state change - emit OrderStatusReport
-                                if let Ok(status_report) = parse_ws_order_status_report(
-                                    &exec_data,
-                                    &instrument,
-                                    account_id,
-                                    cached_order_qty,
-                                    ts_init,
-                                ) {
-                                    self.pending_messages.push_back(
-                                        NautilusWsMessage::OrderStatusReport(Box::new(
-                                            status_report,
-                                        )),
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        // No cached info - external order or reconciliation, use OrderStatusReport
-                        if exec_data.exec_type == KrakenExecType::Trade
-                            || exec_data.exec_type == KrakenExecType::Filled
-                        {
-                            let has_order_data = exec_data.order_qty.is_some()
-                                || cached_order_qty.is_some()
-                                || exec_data.cum_qty.is_some();
-
-                            let has_complete_trade_data =
-                                exec_data.last_qty.is_some_and(|q| q > 0.0)
-                                    && exec_data.last_price.is_some_and(|p| p > 0.0);
-
-                            if has_order_data
-                                && let Ok(status_report) = parse_ws_order_status_report(
-                                    &exec_data,
-                                    &instrument,
-                                    account_id,
-                                    cached_order_qty,
-                                    ts_init,
-                                )
-                            {
-                                self.pending_messages.push_back(
-                                    NautilusWsMessage::OrderStatusReport(Box::new(status_report)),
-                                );
-                            }
-
-                            if has_complete_trade_data
-                                && let Ok(fill_report) = parse_ws_fill_report(
-                                    &exec_data,
-                                    &instrument,
-                                    account_id,
-                                    ts_init,
-                                )
-                            {
-                                self.pending_messages
-                                    .push_back(NautilusWsMessage::FillReport(Box::new(
-                                        fill_report,
-                                    )));
-                            }
-                        } else if let Ok(report) = parse_ws_order_status_report(
-                            &exec_data,
-                            &instrument,
-                            account_id,
-                            cached_order_qty,
-                            ts_init,
-                        ) {
-                            self.pending_messages
-                                .push_back(NautilusWsMessage::OrderStatusReport(Box::new(report)));
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to deserialize execution data: {e}");
-                }
+                Ok(ed) => executions.push(ed),
+                Err(e) => log::error!("Failed to deserialize execution data: {e}"),
             }
         }
 
-        // Return first queued message (rest returned via next() pending check)
-        self.pending_messages.pop_front()
+        if executions.is_empty() {
+            None
+        } else {
+            Some(KrakenSpotWsMessage::Execution(executions))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    fn create_test_handler() -> SpotFeedHandler {
+        let signal = Arc::new(AtomicBool::new(false));
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscriptions = SubscriptionState::new(':');
+
+        SpotFeedHandler::new(signal, cmd_rx, raw_rx, subscriptions)
+    }
+
+    #[rstest]
+    fn test_ticker_message_filtered_without_quotes_subscription() {
+        let handler = create_test_handler();
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24,
+                "timestamp": "2022-12-25T09:30:59.123456Z"
+            }]
+        }"#;
+
+        let result = handler.parse_message(json);
+        assert!(
+            result.is_none(),
+            "Ticker message should be filtered when no quotes subscription exists"
+        );
+    }
+
+    #[rstest]
+    fn test_ticker_message_passes_with_quotes_subscription() {
+        let handler = create_test_handler();
+        handler.subscriptions.mark_subscribe("quotes:BTC/USD");
+        handler.subscriptions.confirm_subscribe("quotes:BTC/USD");
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24,
+                "timestamp": "2022-12-25T09:30:59.123456Z"
+            }]
+        }"#;
+
+        let result = handler.parse_message(json);
+        assert!(
+            result.is_some(),
+            "Ticker message should pass with quotes subscription"
+        );
+
+        match result.unwrap() {
+            KrakenSpotWsMessage::Ticker(data) => {
+                assert!(!data.is_empty(), "Should have ticker data");
+            }
+            _ => panic!("Expected Ticker message"),
+        }
+    }
+
+    #[rstest]
+    fn test_ticker_message_passes_with_ticker_subscription() {
+        let handler = create_test_handler();
+        handler.subscriptions.mark_subscribe("ticker:BTC/USD");
+        handler.subscriptions.confirm_subscribe("ticker:BTC/USD");
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24,
+                "timestamp": "2022-12-25T09:30:59.123456Z"
+            }]
+        }"#;
+
+        let result = handler.parse_message(json);
+        assert!(
+            result.is_some(),
+            "Ticker message should pass with ticker: subscription"
+        );
+
+        match result.unwrap() {
+            KrakenSpotWsMessage::Ticker(data) => {
+                assert!(!data.is_empty(), "Should have ticker data");
+            }
+            _ => panic!("Expected Ticker message"),
+        }
+    }
+
+    #[rstest]
+    fn test_book_message_filtered_without_book_subscription() {
+        let handler = create_test_handler();
+
+        let json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345,
+                "timestamp": "2023-10-06T17:35:55.440295Z"
+            }]
+        }"#;
+
+        let result = handler.parse_message(json);
+        assert!(
+            result.is_none(),
+            "Book message should be filtered when no book subscription exists"
+        );
+    }
+
+    #[rstest]
+    fn test_book_message_passes_with_book_subscription() {
+        let handler = create_test_handler();
+        handler.subscriptions.mark_subscribe("book:BTC/USD");
+        handler.subscriptions.confirm_subscribe("book:BTC/USD");
+
+        let json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345,
+                "timestamp": "2023-10-06T17:35:55.440295Z"
+            }]
+        }"#;
+
+        let result = handler.parse_message(json);
+        assert!(
+            result.is_some(),
+            "Book message should pass with book subscription"
+        );
+
+        match result.unwrap() {
+            KrakenSpotWsMessage::Book { data, is_snapshot } => {
+                assert!(!data.is_empty());
+                assert!(is_snapshot);
+            }
+            _ => panic!("Expected Book message"),
+        }
+    }
+
+    #[rstest]
+    fn test_quotes_and_book_subscriptions_independent() {
+        let handler = create_test_handler();
+        handler.subscriptions.mark_subscribe("quotes:BTC/USD");
+        handler.subscriptions.confirm_subscribe("quotes:BTC/USD");
+
+        let book_json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345,
+                "timestamp": "2023-10-06T17:35:55.440295Z"
+            }]
+        }"#;
+
+        let book_result = handler.parse_message(book_json);
+        assert!(
+            book_result.is_none(),
+            "Book message should be filtered without book: subscription"
+        );
+
+        let ticker_json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24,
+                "timestamp": "2022-12-25T09:30:59.123456Z"
+            }]
+        }"#;
+
+        let ticker_result = handler.parse_message(ticker_json);
+        assert!(
+            ticker_result.is_some(),
+            "Ticker should pass with quotes subscription"
+        );
     }
 }

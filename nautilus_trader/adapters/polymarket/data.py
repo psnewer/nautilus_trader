@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -122,30 +122,45 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._log.info(f"{config.funder=}", LogColor.BLUE)
         self._log.info(f"{config.ws_connection_initial_delay_secs=}", LogColor.BLUE)
         self._log.info(f"{config.ws_connection_delay_secs=}", LogColor.BLUE)
+        self._log.info(f"{config.ws_max_subscriptions_per_connection=}", LogColor.BLUE)
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
         self._log.info(f"{config.compute_effective_deltas=}", LogColor.BLUE)
+        self._log.info(f"{config.auto_load_missing_instruments=}", LogColor.BLUE)
+        self._log.info(f"{config.auto_load_debounce_ms=}", LogColor.BLUE)
 
         # HTTP API
         self._http_client = http_client
 
         # WebSocket API
-        self._ws_clients: list[PolymarketWebSocketClient] = []
-        self._ws_client_pending_connection: PolymarketWebSocketClient | None = None
-
+        self._ws_client: PolymarketWebSocketClient = PolymarketWebSocketClient(
+            self._clock,
+            base_url=self._config.base_url_ws,
+            channel=PolymarketWebSocketChannel.MARKET,
+            handler=self._handle_raw_ws_message,
+            handler_reconnect=None,
+            loop=self._loop,
+            max_subscriptions_per_connection=self._config.ws_max_subscriptions_per_connection,
+            proxy_url=self._config.proxy_url,
+        )
         self._decoder_market_msg = msgspec.json.Decoder(MARKET_WS_MESSAGE)
 
         # Tasks
         self._update_instruments_task: asyncio.Task | None = None
-        self._delayed_ws_client_connection_tasks: set[asyncio.Task] = set()
-
-        # Synchronization
-        self._subscribe_lock = asyncio.Lock()
+        self._ws_connect_task: asyncio.Task | None = None
+        self._auto_load_task: asyncio.Task | None = None
+        self._auto_load_tasks: set[asyncio.Task] = set()
 
         # Hot caches
         self._last_quotes: dict[InstrumentId, QuoteTick] = {}
         self._local_books: dict[InstrumentId, OrderBook] = {}
 
+        # Auto-load coordination
+        self._pending_instrument_loads: dict[InstrumentId, asyncio.Future[None]] = {}
+        self._disconnecting: bool = False
+
     async def _connect(self) -> None:
+        self._disconnecting = False
+
         self._log.info("Initializing instruments...")
         await self._instrument_provider.initialize()
         self._send_all_instruments_to_data_engine()
@@ -156,41 +171,48 @@ class PolymarketDataClient(LiveMarketDataClient):
             )
 
     async def _disconnect(self) -> None:
-        # Cancel background tasks
+        self._disconnecting = True
+
         if self._update_instruments_task:
             self._update_instruments_task.cancel()
             self._update_instruments_task = None
 
-        # Cancel all pending connection tasks and wait for them to finish
-        for task in self._delayed_ws_client_connection_tasks:
+        if self._ws_connect_task:
+            self._ws_connect_task.cancel()
+            self._ws_connect_task = None
+
+        # Cancel every spawned flush task, not just the most recent one; a
+        # previous iteration may still be awaiting `load_ids_async` and could
+        # otherwise reopen WS subscriptions during shutdown.
+        self._auto_load_task = None
+        for task in list(self._auto_load_tasks):
             task.cancel()
-        if self._delayed_ws_client_connection_tasks:
-            await asyncio.gather(*self._delayed_ws_client_connection_tasks, return_exceptions=True)
-            self._delayed_ws_client_connection_tasks.clear()
+        self._auto_load_tasks.clear()
 
-        # Disconnect all clients (hold lock during shutdown - no performance concern)
-        async with self._subscribe_lock:
-            all_clients = list(self._ws_clients)
-            if self._ws_client_pending_connection:
-                all_clients.append(self._ws_client_pending_connection)
-            self._ws_client_pending_connection = None
+        for future in self._pending_instrument_loads.values():
+            if not future.done():
+                future.cancel()
+        self._pending_instrument_loads.clear()
 
-            disconnect_tasks = [c.disconnect() for c in all_clients if c.is_connected()]
-            if disconnect_tasks:
-                await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-
+        await self._ws_client.disconnect()
         self._cleanup_expired_books()
 
-    def _create_websocket_client(self) -> PolymarketWebSocketClient:
-        self._log.info("Creating new PolymarketWebSocketClient", LogColor.MAGENTA)
-        return PolymarketWebSocketClient(
-            self._clock,
-            base_url=self._config.base_url_ws,
-            channel=PolymarketWebSocketChannel.MARKET,
-            handler=self._handle_raw_ws_message,
-            handler_reconnect=None,
-            loop=self._loop,
+    def _schedule_delayed_connect(self) -> None:
+        if self._ws_connect_task is not None:
+            return
+
+        delay_secs = (
+            self._config.ws_connection_initial_delay_secs
+            if not self._ws_client.is_connected()
+            else self._config.ws_connection_delay_secs
         )
+        self._ws_connect_task = self.create_task(self._delayed_connect(delay_secs))
+
+    async def _delayed_connect(self, delay_secs: float) -> None:
+        self._log.info(f"Delaying websocket connections start for {delay_secs}s...")
+        await asyncio.sleep(delay_secs)
+        self._ws_connect_task = None
+        await self._ws_client.connect()
 
     def _create_local_book(self, instrument_id: InstrumentId) -> OrderBook:
         local_book = OrderBook(instrument_id, book_type=BookType.L2_MBP)
@@ -219,6 +241,77 @@ class PolymarketDataClient(LiveMarketDataClient):
         for currency in self._instrument_provider.currencies().values():
             self._cache.add_currency(currency)
 
+    async def _ensure_instrument_loaded(self, instrument_id: InstrumentId) -> bool:
+        if self._cache.instrument(instrument_id) is not None:
+            return True
+
+        if not self._config.auto_load_missing_instruments:
+            self._log.error(
+                f"Cannot find instrument for {instrument_id}, "
+                "and `auto_load_missing_instruments` is disabled",
+            )
+            return False
+
+        if self._disconnecting:
+            return False
+
+        future = self._pending_instrument_loads.get(instrument_id)
+        if future is None:
+            future = self._loop.create_future()
+            self._pending_instrument_loads[instrument_id] = future
+
+        if self._auto_load_task is None or self._auto_load_task.done():
+            task = self.create_task(self._flush_pending_loads())
+            if task is not None:
+                self._auto_load_tasks.add(task)
+                task.add_done_callback(self._auto_load_tasks.discard)
+                self._auto_load_task = task
+
+        try:
+            await future
+        except asyncio.CancelledError:
+            return False
+        except Exception as e:
+            self._log.error(f"Auto-load failed for {instrument_id}: {e}")
+            return False
+
+        return self._cache.instrument(instrument_id) is not None
+
+    async def _flush_pending_loads(self) -> None:
+        await asyncio.sleep(self._config.auto_load_debounce_ms / 1000)
+
+        pending = self._pending_instrument_loads
+        self._pending_instrument_loads = {}
+        # Clear the task handle so misses arriving during the async load below
+        # can spawn a fresh flush rather than deadlock on the in-flight task.
+        self._auto_load_task = None
+
+        if not pending:
+            return
+
+        instrument_ids = list(pending.keys())
+        self._log.info(
+            f"Auto-loading {len(instrument_ids)} missing instrument(s): {instrument_ids}",
+            LogColor.BLUE,
+        )
+
+        try:
+            await self._instrument_provider.load_ids_async(instrument_ids)
+        except Exception as e:
+            self._log.error(f"Auto-load batch failed: {e}")
+
+            for future in pending.values():
+                if not future.done():
+                    future.set_exception(e)
+            return
+
+        for instrument_id, future in pending.items():
+            instrument = self._instrument_provider.find(instrument_id)
+            if instrument is not None:
+                self._handle_data(instrument)
+            if not future.done():
+                future.set_result(None)
+
     async def _update_instruments(self, interval_mins: int) -> None:
         try:
             while True:
@@ -231,77 +324,6 @@ class PolymarketDataClient(LiveMarketDataClient):
         except asyncio.CancelledError:
             self._log.debug("Canceled task 'update_instruments'")
 
-    async def _delayed_ws_client_connection(
-        self,
-        ws_client: PolymarketWebSocketClient,
-        delay_secs: float,
-    ) -> None:
-        try:
-            self._log.info(f"Delaying websocket connections start for {delay_secs}s...")
-
-            await asyncio.sleep(delay_secs)
-
-            # Clear pending client atomically (so new subscriptions create a new client)
-            async with self._subscribe_lock:
-                # It could have been another client already
-                if self._ws_client_pending_connection is ws_client:
-                    self._ws_client_pending_connection = None
-
-            # Don't hold the lock during connect
-            try:
-                await ws_client.connect()
-            except Exception as e:
-                self._log.error(f"Failed to connect WebSocket client: {e}")
-                return
-
-            # Add to active clients list atomically
-            async with self._subscribe_lock:
-                self._ws_clients.append(ws_client)
-        finally:
-            current_task = asyncio.current_task()
-            if current_task:
-                self._delayed_ws_client_connection_tasks.discard(current_task)
-
-    async def _subscribe_asset_book(self, instrument_id):
-        # Compute token_id outside lock (pure function, no shared state)
-        token_id = get_polymarket_token_id(instrument_id)
-
-        ws_client = None
-        delay = None
-
-        # Critical section: need to synchronize all operations on the pending connection client
-        async with self._subscribe_lock:
-            # Polymarket only supports 500 subscriptions per client
-            if (
-                self._ws_client_pending_connection is None
-                or len(self._ws_client_pending_connection.asset_subscriptions()) >= 500
-                or self._ws_client_pending_connection.is_connected()
-            ):
-                # Create new client if: no pending client, client is full (>=500 subs), or already connected
-                self._ws_client_pending_connection = self._create_websocket_client()
-                ws_client = self._ws_client_pending_connection
-                delay = (
-                    self._config.ws_connection_delay_secs
-                    if self._ws_clients
-                    else self._config.ws_connection_initial_delay_secs
-                )
-
-            if token_id in self._ws_client_pending_connection.asset_subscriptions():
-                return  # Already subscribed
-
-            self._ws_client_pending_connection.subscribe_book(token_id)
-
-        # End of critical section: no need to lock to create task
-        if ws_client is not None:
-            task = self.create_task(
-                self._delayed_ws_client_connection(ws_client, delay),
-                log_msg="Delayed start PolymarketWebSocketClient connection",
-                success_msg="Finished delaying start of PolymarketWebSocketClient connection",
-            )
-
-            async with self._subscribe_lock:
-                self._delayed_ws_client_connection_tasks.add(task)
-
     async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
         if command.book_type == BookType.L3_MBO:
             self._log.error(
@@ -311,19 +333,55 @@ class PolymarketDataClient(LiveMarketDataClient):
             )
             return
 
+        if not await self._ensure_instrument_loaded(command.instrument_id):
+            return
+
+        if command.instrument_id not in self.subscribed_order_book_deltas():
+            return
+
         if command.instrument_id not in self._local_books:
             self._create_local_book(command.instrument_id)
 
-        await self._subscribe_asset_book(command.instrument_id)
+        token_id = get_polymarket_token_id(command.instrument_id)
+
+        if self._ws_client.is_connected():
+            await self._ws_client.subscribe(token_id)
+        else:
+            self._ws_client.add_subscription(token_id)
+            self._schedule_delayed_connect()
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
+        if not await self._ensure_instrument_loaded(command.instrument_id):
+            return
+
+        if command.instrument_id not in self.subscribed_quote_ticks():
+            return
+
         if command.instrument_id not in self._local_books:
             self._create_local_book(command.instrument_id)
 
-        await self._subscribe_asset_book(command.instrument_id)
+        token_id = get_polymarket_token_id(command.instrument_id)
+
+        if self._ws_client.is_connected():
+            await self._ws_client.subscribe(token_id)
+        else:
+            self._ws_client.add_subscription(token_id)
+            self._schedule_delayed_connect()
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
-        await self._subscribe_asset_book(command.instrument_id)
+        if not await self._ensure_instrument_loaded(command.instrument_id):
+            return
+
+        if command.instrument_id not in self.subscribed_trade_ticks():
+            return
+
+        token_id = get_polymarket_token_id(command.instrument_id)
+
+        if self._ws_client.is_connected():
+            await self._ws_client.subscribe(token_id)
+        else:
+            self._ws_client.add_subscription(token_id)
+            self._schedule_delayed_connect()
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
         self._log.error(
@@ -331,24 +389,16 @@ class PolymarketDataClient(LiveMarketDataClient):
         )
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
-        self._log.error(
-            f"Cannot unsubscribe from {command.instrument_id} order book deltas: unsubscribing not supported by Polymarket",
-        )
-
-    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
-        self._log.error(
-            f"Cannot unsubscribe from {command.instrument_id} order book snapshots: unsubscribing not supported by Polymarket",
-        )
+        token_id = get_polymarket_token_id(command.instrument_id)
+        await self._ws_client.unsubscribe(token_id)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
-        self._log.error(
-            f"Cannot unsubscribe from {command.instrument_id} quotes: unsubscribing not supported by Polymarket",
-        )
+        token_id = get_polymarket_token_id(command.instrument_id)
+        await self._ws_client.unsubscribe(token_id)
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
-        self._log.error(
-            f"Cannot unsubscribe from {command.instrument_id} trades: unsubscribing not supported by Polymarket",
-        )
+        token_id = get_polymarket_token_id(command.instrument_id)
+        await self._ws_client.unsubscribe(token_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         self._log.error(
@@ -367,6 +417,14 @@ class PolymarketDataClient(LiveMarketDataClient):
             )
 
         instrument: BinaryOption | None = self._instrument_provider.find(request.instrument_id)
+
+        if (
+            instrument is None
+            and self._config.auto_load_missing_instruments
+            and await self._ensure_instrument_loaded(request.instrument_id)
+        ):
+            instrument = self._instrument_provider.find(request.instrument_id)
+
         if instrument is None:
             self._log.error(f"Cannot find instrument for {request.instrument_id}")
             return
@@ -386,6 +444,7 @@ class PolymarketDataClient(LiveMarketDataClient):
 
         all_instruments = self._instrument_provider.get_all()
         target_instruments = []
+
         for instrument in all_instruments.values():
             if instrument.venue == request.venue:
                 target_instruments.append(instrument)
@@ -469,6 +528,7 @@ class PolymarketDataClient(LiveMarketDataClient):
                 ts_init=now_ns,
                 drop_quotes_missing_side=self._config.drop_quotes_missing_side,
             )
+
             if quote is None:
                 self._log.warning(
                     f"Dropping QuoteTick for {instrument.id}: missing bid or ask prices in snapshot",
@@ -677,6 +737,7 @@ class PolymarketDataClient(LiveMarketDataClient):
                 ts_init=ts_init,
                 drop_quotes_missing_side=self._config.drop_quotes_missing_side,
             )
+
             if quote is not None:
                 self._last_quotes[instrument.id] = quote
                 self._handle_data(quote)

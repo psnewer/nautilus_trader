@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -53,7 +53,7 @@ async def test_load_all_async_populates_provider(monkeypatch, instrument):
 
 
 @pytest.mark.asyncio
-async def test_load_ids_async_loads_all_instruments(monkeypatch, instrument, venue):
+async def test_load_ids_async_filters_to_requested_ids(monkeypatch, instrument, venue):
     # Arrange
     mock_http_client = MagicMock()
     pyo3_instruments = [MagicMock(name="py_a"), MagicMock(name="py_b")]
@@ -90,8 +90,7 @@ async def test_load_ids_async_loads_all_instruments(monkeypatch, instrument, ven
     # Assert
     mock_http_client.request_instruments.assert_awaited_once()
     assert provider.get_all().get(instrument.id) is instrument
-    # Note: Kraken loads all instruments and filters client-side
-    assert provider.get_all().get(other_instrument.id) is other_instrument
+    assert provider.get_all().get(other_instrument.id) is None
     assert provider.instruments_pyo3() == pyo3_instruments
 
 

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,7 +42,7 @@ use std::{
 /// fail-fast guarantee with effectively no debugging downside (the panic
 /// message is still logged before the abort).
 #[inline]
-pub(crate) fn abort_on_panic<F, R>(f: F) -> R
+pub fn abort_on_panic<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {

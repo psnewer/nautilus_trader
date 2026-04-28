@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,6 +21,7 @@ from nautilus_trader.adapters.binance import BinanceDataClientConfig
 from nautilus_trader.adapters.binance import BinanceExecClientConfig
 from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.cache.config import CacheConfig
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
@@ -77,49 +78,27 @@ config_node = TradingNodeConfig(
     data_clients={
         "BINANCE_SPOT": BinanceDataClientConfig(
             venue=Venue("BINANCE_SPOT"),
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.SPOT,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=False,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
         ),
         "BINANCE_FUTURES": BinanceDataClientConfig(
             venue=Venue("BINANCE_FUTURES"),
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.USDT_FUTURES,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=True,  # If client uses the testnet
+            environment=BinanceEnvironment.TESTNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
         ),
     },
     exec_clients={
         "BINANCE_SPOT": BinanceExecClientConfig(
             venue=Venue("BINANCE_SPOT"),
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.SPOT,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=False,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
             max_retries=3,
         ),
         "BINANCE_FUTURES": BinanceExecClientConfig(
             venue=Venue("BINANCE_FUTURES"),
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.USDT_FUTURES,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=True,  # If client uses the testnet
+            environment=BinanceEnvironment.TESTNET,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             max_retries=3,
         ),

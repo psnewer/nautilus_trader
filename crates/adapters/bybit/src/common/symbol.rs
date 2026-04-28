@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,10 +15,7 @@
 
 //! Helpers for working with Bybit-specific symbol strings.
 
-use std::{
-    borrow::Cow,
-    fmt::{Display, Formatter},
-};
+use std::{borrow::Cow, fmt::Display};
 
 use nautilus_model::identifiers::{InstrumentId, Symbol};
 use ustr::Ustr;
@@ -70,19 +67,14 @@ impl BybitSymbol {
     }
 
     /// Returns the product type identified by the suffix.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the symbol has no valid suffix (unreachable after construction).
     #[must_use]
     pub fn product_type(&self) -> BybitProductType {
-        if self.value.ends_with("-SPOT") {
-            BybitProductType::Spot
-        } else if self.value.ends_with("-LINEAR") {
-            BybitProductType::Linear
-        } else if self.value.ends_with("-INVERSE") {
-            BybitProductType::Inverse
-        } else if self.value.ends_with("-OPTION") {
-            BybitProductType::Option
-        } else {
-            unreachable!("symbol checked for suffix during construction")
-        }
+        BybitProductType::from_suffix(self.value.as_str())
+            .expect("symbol checked for suffix during construction")
     }
 
     /// Returns the instrument identifier corresponding to this symbol.
@@ -99,7 +91,7 @@ impl BybitSymbol {
 }
 
 impl Display for BybitSymbol {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.value.as_str())
     }
 }

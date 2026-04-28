@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -820,6 +820,50 @@ class TestOrderEmulatorWithSingleOrders:
         order = self.cache.order(order.client_order_id)  # Recover transformed order from cache
         assert order.order_type == OrderType.TRAILING_STOP_MARKET
         assert order.emulation_trigger == TriggerType.BID_ASK
+        assert order.is_active_local
+        assert len(order.events) == 3
+        assert isinstance(order.events[0], OrderInitialized)
+        assert isinstance(order.events[1], OrderUpdated)
+        assert isinstance(order.events[2], OrderEmulated)
+        assert order.trigger_price == expected_trigger_price
+
+    @pytest.mark.parametrize(
+        ("order_side", "expected_trigger_price"),
+        [
+            [OrderSide.BUY, ETHUSDT_PERP_BINANCE.make_price(5_070)],
+            [OrderSide.SELL, ETHUSDT_PERP_BINANCE.make_price(5_060)],
+        ],
+    )
+    def test_submit_trailing_stop_market_order_last_price_with_no_trigger_price_then_updates(
+        self,
+        order_side: OrderSide,
+        expected_trigger_price: Price,
+    ) -> None:
+        # Arrange
+        order = self.strategy.order_factory.trailing_stop_market(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=order_side,
+            quantity=Quantity.from_int(10),
+            trigger_type=TriggerType.LAST_PRICE,
+            trailing_offset=Decimal(5),
+            trailing_offset_type=TrailingOffsetType.PRICE,
+            emulation_trigger=TriggerType.LAST_PRICE,
+        )
+
+        tick = TestDataStubs.trade_tick(
+            instrument=ETHUSDT_PERP_BINANCE,
+            price=5_065.0,
+        )
+
+        self.data_engine.process(tick)
+
+        # Act
+        self.strategy.submit_order(order)
+
+        # Assert
+        order = self.cache.order(order.client_order_id)  # Recover transformed order from cache
+        assert order.order_type == OrderType.TRAILING_STOP_MARKET
+        assert order.emulation_trigger == TriggerType.LAST_PRICE
         assert order.is_active_local
         assert len(order.events) == 3
         assert isinstance(order.events[0], OrderInitialized)

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -38,13 +38,69 @@ use crate::{
 #[pyo3::pyclass(
     module = "nautilus_trader.core.nautilus_pyo3.common",
     name = "Clock",
-    unsendable
+    unsendable,
+    from_py_object
 )]
+#[pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.common")]
 #[derive(Debug, Clone)]
 pub struct PyClock(Rc<RefCell<dyn Clock>>);
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl PyClock {
+    #[staticmethod]
+    #[pyo3(name = "new_test")]
+    fn py_new_test() -> Self {
+        Self(Rc::new(RefCell::new(TestClock::default())))
+    }
+
+    /// Returns the current UNIX timestamp in nanoseconds (ns).
+    #[pyo3(name = "timestamp_ns")]
+    fn py_timestamp_ns(&self) -> u64 {
+        self.0.borrow().timestamp_ns().as_u64()
+    }
+
+    /// Returns the current UNIX timestamp in microseconds (μs).
+    #[pyo3(name = "timestamp_us")]
+    fn py_timestamp_us(&self) -> u64 {
+        self.0.borrow().timestamp_us()
+    }
+
+    /// Returns the current UNIX timestamp in milliseconds (ms).
+    #[pyo3(name = "timestamp_ms")]
+    fn py_timestamp_ms(&self) -> u64 {
+        self.0.borrow().timestamp_ms()
+    }
+
+    /// Returns the current UNIX timestamp in seconds.
+    #[pyo3(name = "timestamp")]
+    fn py_timestamp(&self) -> f64 {
+        self.0.borrow().timestamp()
+    }
+
+    /// Returns the current date and time as a timezone-aware `DateTime<UTC>`.
+    #[pyo3(name = "utc_now")]
+    fn py_utc_now(&self) -> DateTime<Utc> {
+        self.0.borrow().utc_now()
+    }
+
+    /// Returns the names of active timers in the clock.
+    #[pyo3(name = "timer_names")]
+    fn py_timer_names(&self) -> Vec<String> {
+        self.0
+            .borrow()
+            .timer_names()
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    /// Returns the count of active timers in the clock.
+    #[pyo3(name = "timer_count")]
+    fn py_timer_count(&self) -> usize {
+        self.0.borrow().timer_count()
+    }
+
     #[pyo3(name = "register_default_handler")]
     fn py_register_default_handler(&mut self, callback: Py<PyAny>) {
         self.0
@@ -96,7 +152,7 @@ impl PyClock {
             .map_err(to_pyvalue_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[pyo3(
         name = "set_timer",
         signature = (name, interval, start_time=None, stop_time=None, callback=None, allow_past=None, fire_immediately=None)
@@ -113,11 +169,10 @@ impl PyClock {
     ) -> PyResult<()> {
         let interval_ns_i64 = interval
             .num_nanoseconds()
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Interval too large"))?;
+            .ok_or_else(|| to_pyvalue_err("Interval too large"))?;
+
         if interval_ns_i64 <= 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Interval must be positive",
-            ));
+            return Err(to_pyvalue_err("Interval must be positive"));
         }
         let interval_ns = interval_ns_i64 as u64;
 
@@ -135,7 +190,7 @@ impl PyClock {
             .map_err(to_pyvalue_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[pyo3(
         name = "set_timer_ns",
         signature = (name, interval_ns, start_time_ns=None, stop_time_ns=None, callback=None, allow_past=None, fire_immediately=None)
@@ -187,6 +242,12 @@ impl PyClock {
         Self(rc)
     }
 
+    /// Gets the inner `Rc<RefCell<dyn Clock>>` for use in Rust code.
+    #[must_use]
+    pub fn clock_rc(&self) -> Rc<RefCell<dyn Clock>> {
+        self.0.clone()
+    }
+
     /// Creates a clock backed by [`TestClock`].
     #[must_use]
     pub fn new_test() -> Self {
@@ -225,7 +286,7 @@ mod tests {
         clock::{Clock, TestClock},
         python::clock::PyClock,
         runner::{TimeEventSender, set_time_event_sender},
-        timer::{TimeEventCallback, TimeEventHandlerV2},
+        timer::{TimeEventCallback, TimeEventHandler},
     };
 
     fn ensure_sender() {
@@ -239,7 +300,7 @@ mod tests {
     struct DummySender;
 
     impl TimeEventSender for DummySender {
-        fn send(&self, _handler: TimeEventHandlerV2) {}
+        fn send(&self, _handler: TimeEventHandler) {}
     }
 
     #[fixture]

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -33,7 +33,9 @@ from nautilus_trader.model.instruments.futures_spread import FuturesSpread
 from nautilus_trader.model.instruments.index import IndexInstrument
 from nautilus_trader.model.instruments.option_contract import OptionContract
 from nautilus_trader.model.instruments.option_spread import OptionSpread
+from nautilus_trader.model.instruments.perpetual_contract import PerpetualContract
 from nautilus_trader.model.instruments.synthetic import SyntheticInstrument
+from nautilus_trader.model.instruments.tokenized_asset import TokenizedAsset
 
 
 __all__ = [
@@ -52,6 +54,8 @@ __all__ = [
     "Instrument",
     "OptionContract",
     "OptionSpread",
+    "PerpetualContract",
     "SyntheticInstrument",
+    "TokenizedAsset",
     "instruments_from_pyo3",
 ]

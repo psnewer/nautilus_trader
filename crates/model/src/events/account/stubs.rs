@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -130,6 +130,44 @@ pub fn cash_account_state_multi_changed_btc() -> AccountState {
         0.into(),
         0.into(),
         None, // multi cash account
+    )
+}
+
+#[fixture]
+pub fn betting_account_state() -> AccountState {
+    AccountState::new(
+        account_id(),
+        AccountType::Betting,
+        vec![AccountBalance::new(
+            Money::from("1000 GBP"),
+            Money::from("0 GBP"),
+            Money::from("1000 GBP"),
+        )],
+        vec![],
+        true,
+        uuid4(),
+        0.into(),
+        0.into(),
+        Some(Currency::GBP()),
+    )
+}
+
+#[fixture]
+pub fn betting_account_state_changed() -> AccountState {
+    AccountState::new(
+        account_id(),
+        AccountType::Betting,
+        vec![AccountBalance::new(
+            Money::from("900 GBP"),
+            Money::from("50 GBP"),
+            Money::from("850 GBP"),
+        )],
+        vec![],
+        true,
+        uuid4(),
+        0.into(),
+        0.into(),
+        Some(Currency::GBP()),
     )
 }
 

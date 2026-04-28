@@ -148,7 +148,6 @@ class MinimalStrategy(Strategy):
 
 
 if __name__ == "__main__":
-
     engine = BacktestEngine(
         config=BacktestEngineConfig(
             trader_id="TESTER-001",
@@ -183,6 +182,7 @@ if __name__ == "__main__":
 
     timestamp_base = dt_to_unix_nanos(datetime(2024, 1, 1, tzinfo=UTC))
     bars = []
+
     for i in range(12):
         bar = Bar(
             bar_type=bar_type,

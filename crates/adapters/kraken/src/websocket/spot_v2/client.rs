@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,23 +15,28 @@
 
 //! WebSocket client for the Kraken v2 streaming API.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
 };
 
 use arc_swap::ArcSwap;
 use nautilus_common::live::get_runtime;
+use nautilus_core::AtomicMap;
 use nautilus_model::{
     data::BarType,
     enums::BarAggregation,
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
-    instruments::InstrumentAny,
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
+    instruments::{Instrument, InstrumentAny},
 };
 use nautilus_network::{
     mode::ConnectionMode,
     websocket::{
-        AuthTracker, SubscriptionState, WebSocketClient, WebSocketConfig, channel_message_handler,
+        AuthTracker, SubscriptionState, TransportBackend, WebSocketClient, WebSocketConfig,
+        channel_message_handler,
     },
 };
 use tokio_util::sync::CancellationToken;
@@ -45,10 +50,13 @@ pub const KRAKEN_SPOT_WS_TOPIC_DELIMITER: char = ':';
 use super::{
     enums::{KrakenWsChannel, KrakenWsMethod},
     handler::{SpotFeedHandler, SpotHandlerCommand},
-    messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
+    messages::{KrakenSpotWsMessage, KrakenWsParams, KrakenWsRequest},
 };
 use crate::{
-    config::KrakenDataClientConfig, http::KrakenSpotHttpClient, websocket::error::KrakenWsError,
+    common::parse::normalize_spot_symbol,
+    config::KrakenDataClientConfig,
+    http::{KrakenSpotHttpClient, spot::client::KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND},
+    websocket::error::KrakenWsError,
 };
 
 const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
@@ -57,7 +65,11 @@ const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.kraken")
 )]
 pub struct KrakenSpotWebSocketClient {
     url: String,
@@ -65,13 +77,19 @@ pub struct KrakenSpotWebSocketClient {
     signal: Arc<AtomicBool>,
     connection_mode: Arc<ArcSwap<AtomicU8>>,
     cmd_tx: Arc<tokio::sync::RwLock<tokio::sync::mpsc::UnboundedSender<SpotHandlerCommand>>>,
-    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>>,
+    out_rx: Option<Arc<tokio::sync::mpsc::UnboundedReceiver<KrakenSpotWsMessage>>>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: SubscriptionState,
+    subscription_payloads: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
     auth_tracker: AuthTracker,
     cancellation_token: CancellationToken,
     req_id_counter: Arc<tokio::sync::RwLock<u64>>,
     auth_token: Arc<tokio::sync::RwLock<Option<String>>>,
+    account_id: Arc<RwLock<Option<AccountId>>>,
+    truncated_id_map: Arc<AtomicMap<String, ClientOrderId>>,
+    instruments: Arc<AtomicMap<InstrumentId, InstrumentAny>>,
+    transport_backend: TransportBackend,
+    proxy_url: Option<String>,
 }
 
 impl Clone for KrakenSpotWebSocketClient {
@@ -85,17 +103,27 @@ impl Clone for KrakenSpotWebSocketClient {
             out_rx: self.out_rx.clone(),
             task_handle: self.task_handle.clone(),
             subscriptions: self.subscriptions.clone(),
+            subscription_payloads: Arc::clone(&self.subscription_payloads),
             auth_tracker: self.auth_tracker.clone(),
             cancellation_token: self.cancellation_token.clone(),
             req_id_counter: self.req_id_counter.clone(),
             auth_token: self.auth_token.clone(),
+            account_id: Arc::clone(&self.account_id),
+            truncated_id_map: Arc::clone(&self.truncated_id_map),
+            instruments: Arc::clone(&self.instruments),
+            transport_backend: self.transport_backend,
+            proxy_url: self.proxy_url.clone(),
         }
     }
 }
 
 impl KrakenSpotWebSocketClient {
     /// Creates a new client with the given configuration.
-    pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
+    pub fn new(
+        mut config: KrakenDataClientConfig,
+        cancellation_token: CancellationToken,
+        proxy_url: Option<String>,
+    ) -> Self {
         // Prefer private URL if explicitly set (for authenticated endpoints)
         let url = if config.ws_private_url.is_some() {
             config.ws_private_url()
@@ -106,6 +134,13 @@ impl KrakenSpotWebSocketClient {
         let initial_mode = AtomicU8::new(ConnectionMode::Closed.as_u8());
         let connection_mode = Arc::new(ArcSwap::from_pointee(initial_mode));
 
+        let transport_backend = config.transport_backend;
+
+        // Keep the config's proxy_url in sync with the constructor argument so
+        // refresh_auth_token() (which reads config.proxy_url) goes through the
+        // same proxy as the WebSocket connection.
+        config.proxy_url = proxy_url.clone();
+
         Self {
             url,
             config,
@@ -115,10 +150,16 @@ impl KrakenSpotWebSocketClient {
             out_rx: None,
             task_handle: None,
             subscriptions: SubscriptionState::new(KRAKEN_SPOT_WS_TOPIC_DELIMITER),
+            subscription_payloads: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             auth_tracker: AuthTracker::new(),
             cancellation_token,
             req_id_counter: Arc::new(tokio::sync::RwLock::new(0)),
             auth_token: Arc::new(tokio::sync::RwLock::new(None)),
+            account_id: Arc::new(RwLock::new(None)),
+            truncated_id_map: Arc::new(AtomicMap::new()),
+            instruments: Arc::new(AtomicMap::new()),
+            transport_backend,
+            proxy_url,
         }
     }
 
@@ -130,7 +171,7 @@ impl KrakenSpotWebSocketClient {
 
     /// Connects to the WebSocket server.
     pub async fn connect(&mut self) -> Result<(), KrakenWsError> {
-        tracing::debug!("Connecting to {}", self.url);
+        log::debug!("Connecting to {}", self.url);
 
         self.signal.store(false, Ordering::Relaxed);
 
@@ -139,7 +180,7 @@ impl KrakenSpotWebSocketClient {
         let ws_config = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![],
-            heartbeat: self.config.heartbeat_interval_secs,
+            heartbeat: Some(self.config.heartbeat_interval_secs),
             heartbeat_msg: Some(WS_PING_MSG.to_string()),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: Some(500),
@@ -147,6 +188,9 @@ impl KrakenSpotWebSocketClient {
             reconnect_backoff_factor: Some(1.5),
             reconnect_jitter_ms: Some(250),
             reconnect_max_attempts: None,
+            idle_timeout_ms: None,
+            backend: self.transport_backend,
+            proxy_url: self.proxy_url.clone(),
         };
 
         let ws_client = WebSocketClient::connect(
@@ -164,7 +208,7 @@ impl KrakenSpotWebSocketClient {
         self.connection_mode
             .store(ws_client.connection_mode_atomic());
 
-        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<KrakenSpotWsMessage>();
         self.out_rx = Some(Arc::new(out_rx));
 
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SpotHandlerCommand>();
@@ -178,9 +222,10 @@ impl KrakenSpotWebSocketClient {
 
         let signal = self.signal.clone();
         let subscriptions = self.subscriptions.clone();
+        let subscription_payloads = self.subscription_payloads.clone();
         let config_for_reconnect = self.config.clone();
         let auth_token_for_reconnect = self.auth_token.clone();
-        let req_id_counter_for_reconnect = self.req_id_counter.clone();
+        let auth_tracker_for_reconnect = self.auth_tracker.clone();
         let cmd_tx_for_reconnect = cmd_tx.clone();
 
         let stream_handle = get_runtime().spawn(async move {
@@ -189,160 +234,80 @@ impl KrakenSpotWebSocketClient {
 
             loop {
                 match handler.next().await {
-                    Some(NautilusWsMessage::Reconnected) => {
+                    Some(KrakenSpotWsMessage::Reconnected) => {
                         if signal.load(Ordering::Relaxed) {
                             continue;
                         }
-                        tracing::info!("WebSocket reconnected, resubscribing");
+                        log::info!("WebSocket reconnected, resubscribing");
 
-                        // Mark all confirmed subscriptions as failed to transition to pending
                         let confirmed_topics = subscriptions.all_topics();
                         for topic in &confirmed_topics {
                             subscriptions.mark_failure(topic);
                         }
 
-                        let topics = subscriptions.all_topics();
-                        if topics.is_empty() {
-                            tracing::debug!("No subscriptions to restore after reconnection");
+                        let payloads = subscription_payloads.read().await;
+                        if payloads.is_empty() {
+                            log::debug!("No subscriptions to restore after reconnection");
                         } else {
-                            // Check if we need to re-authenticate (had a token before)
                             let had_auth = auth_token_for_reconnect.read().await.is_some();
 
                             if had_auth && config_for_reconnect.has_api_credentials() {
-                                tracing::debug!("Re-authenticating after reconnect");
+                                log::debug!("Re-authenticating after reconnect");
+
+                                auth_tracker_for_reconnect.invalidate();
+                                let _rx = auth_tracker_for_reconnect.begin();
 
                                 match refresh_auth_token(&config_for_reconnect).await {
                                     Ok(new_token) => {
                                         *auth_token_for_reconnect.write().await = Some(new_token);
-                                        tracing::debug!("Re-authentication successful");
+                                        auth_tracker_for_reconnect.succeed();
+                                        log::debug!("Re-authentication successful");
                                     }
                                     Err(e) => {
-                                        tracing::error!(
-                                            error = %e,
-                                            "Failed to re-authenticate after reconnect"
+                                        log::error!(
+                                            "Failed to re-authenticate after reconnect: {e}"
                                         );
-                                        // Clear auth token since it's invalid
                                         *auth_token_for_reconnect.write().await = None;
+                                        auth_tracker_for_reconnect.fail(e.to_string());
                                     }
                                 }
                             }
 
-                            tracing::info!(
-                                count = topics.len(),
-                                "Resubscribing after reconnection"
+                            log::info!(
+                                "Resubscribing after reconnection: count={}",
+                                payloads.len()
                             );
 
-                            // Replay subscriptions
-                            for topic in &topics {
-                                let auth_token = auth_token_for_reconnect.read().await.clone();
-
-                                // Handle special "executions" topic first
-                                if topic == "executions" {
-                                    if let Some(ref token) = auth_token {
-                                        let mut counter =
-                                            req_id_counter_for_reconnect.write().await;
-                                        *counter += 1;
-                                        let req_id = *counter;
-
-                                        let request = KrakenWsRequest {
-                                            method: KrakenWsMethod::Subscribe,
-                                            params: Some(KrakenWsParams {
-                                                channel: KrakenWsChannel::Executions,
-                                                symbol: None,
-                                                snapshot: None,
-                                                depth: None,
-                                                interval: None,
-                                                token: Some(token.clone()),
-                                                snap_orders: Some(true),
-                                                snap_trades: Some(true),
-                                            }),
-                                            req_id: Some(req_id),
-                                        };
-
-                                        if let Ok(payload) = serde_json::to_string(&request)
-                                            && let Err(e) = cmd_tx_for_reconnect
-                                                .send(SpotHandlerCommand::SendText { payload })
-                                        {
-                                            tracing::error!(
-                                                error = %e,
-                                                "Failed to send executions resubscribe"
-                                            );
+                            for (topic, payload) in payloads.iter() {
+                                let payload = if topic == "executions" {
+                                    let auth_token = auth_token_for_reconnect.read().await.clone();
+                                    match auth_token {
+                                        Some(token) => {
+                                            match update_auth_token_in_payload(payload, &token) {
+                                                Ok(p) => p,
+                                                Err(e) => {
+                                                    log::error!("Failed to update auth token: {e}");
+                                                    continue;
+                                                }
+                                            }
                                         }
-
-                                        subscriptions.mark_subscribe(topic);
-                                    } else {
-                                        tracing::warn!(
-                                            "Cannot resubscribe to executions: no auth token"
-                                        );
+                                        None => {
+                                            log::warn!(
+                                                "Cannot resubscribe to executions: no auth token"
+                                            );
+                                            continue;
+                                        }
                                     }
-                                    continue;
-                                }
-
-                                // Parse topic format: "Channel:symbol" or "Channel:symbol:interval"
-                                let parts: Vec<&str> = topic.splitn(3, ':').collect();
-                                if parts.len() < 2 {
-                                    tracing::warn!(topic, "Invalid topic format for resubscribe");
-                                    continue;
-                                }
-
-                                let channel_str = parts[0];
-                                let channel = match channel_str {
-                                    "Book" => Some(KrakenWsChannel::Book),
-                                    "Trade" => Some(KrakenWsChannel::Trade),
-                                    "Ticker" => Some(KrakenWsChannel::Ticker),
-                                    "Ohlc" => Some(KrakenWsChannel::Ohlc),
-                                    "book" => Some(KrakenWsChannel::Book),
-                                    "quotes" => Some(KrakenWsChannel::Book),
-                                    _ => None,
-                                };
-
-                                let Some(channel) = channel else {
-                                    tracing::warn!(topic, "Unknown channel for resubscribe");
-                                    continue;
-                                };
-
-                                let mut counter = req_id_counter_for_reconnect.write().await;
-                                *counter += 1;
-                                let req_id = *counter;
-
-                                let depth = if channel_str == "quotes" {
-                                    Some(10)
                                 } else {
-                                    None
+                                    payload.clone()
                                 };
 
-                                // Extract symbol and optional interval
-                                let (symbol_str, interval) = if parts.len() == 3 {
-                                    // Format: "Ohlc:BTC/USD:1" -> symbol="BTC/USD", interval=1
-                                    (parts[1], parts[2].parse::<u32>().ok())
-                                } else {
-                                    // Format: "Book:BTC/USD" -> symbol="BTC/USD", interval=None
-                                    (parts[1], None)
-                                };
-
-                                let request = KrakenWsRequest {
-                                    method: KrakenWsMethod::Subscribe,
-                                    params: Some(KrakenWsParams {
-                                        channel,
-                                        symbol: Some(vec![Ustr::from(symbol_str)]),
-                                        snapshot: None,
-                                        depth,
-                                        interval,
-                                        token: None,
-                                        snap_orders: None,
-                                        snap_trades: None,
-                                    }),
-                                    req_id: Some(req_id),
-                                };
-
-                                if let Ok(payload) = serde_json::to_string(&request)
-                                    && let Err(e) = cmd_tx_for_reconnect
-                                        .send(SpotHandlerCommand::SendText { payload })
+                                if let Err(e) = cmd_tx_for_reconnect
+                                    .send(SpotHandlerCommand::Subscribe { payload })
                                 {
-                                    tracing::error!(
-                                        error = %e,
-                                        topic,
-                                        "Failed to send resubscribe command"
+                                    log::error!(
+                                        "Failed to send resubscribe command: error={e}, \
+                                        topic={topic}"
                                     );
                                 }
 
@@ -350,41 +315,40 @@ impl KrakenSpotWebSocketClient {
                             }
                         }
 
-                        if out_tx.send(NautilusWsMessage::Reconnected).is_err() {
-                            tracing::error!("Failed to send message (receiver dropped)");
+                        if out_tx.send(KrakenSpotWsMessage::Reconnected).is_err() {
+                            log::error!("Failed to send message (receiver dropped)");
                             break;
                         }
-                        continue;
                     }
                     Some(msg) => {
                         if out_tx.send(msg).is_err() {
-                            tracing::error!("Failed to send message (receiver dropped)");
+                            log::error!("Failed to send message (receiver dropped)");
                             break;
                         }
                     }
                     None => {
                         if handler.is_stopped() {
-                            tracing::debug!("Stop signal received, ending message processing");
+                            log::debug!("Stop signal received, ending message processing");
                             break;
                         }
-                        tracing::warn!("WebSocket stream ended unexpectedly");
+                        log::warn!("WebSocket stream ended unexpectedly");
                         break;
                     }
                 }
             }
 
-            tracing::debug!("Handler task exiting");
+            log::debug!("Handler task exiting");
         });
 
         self.task_handle = Some(Arc::new(stream_handle));
 
-        tracing::debug!("WebSocket connected successfully");
+        log::debug!("WebSocket connected successfully");
         Ok(())
     }
 
     /// Disconnects from the WebSocket server.
     pub async fn disconnect(&mut self) -> Result<(), KrakenWsError> {
-        tracing::debug!("Disconnecting WebSocket");
+        log::debug!("Disconnecting WebSocket");
 
         self.signal.store(true, Ordering::Relaxed);
 
@@ -394,7 +358,7 @@ impl KrakenSpotWebSocketClient {
             .await
             .send(SpotHandlerCommand::Disconnect)
         {
-            tracing::debug!(
+            log::debug!(
                 "Failed to send disconnect command (handler may already be shut down): {e}"
             );
         }
@@ -402,29 +366,30 @@ impl KrakenSpotWebSocketClient {
         if let Some(task_handle) = self.task_handle.take() {
             match Arc::try_unwrap(task_handle) {
                 Ok(handle) => {
-                    tracing::debug!("Waiting for task handle to complete");
+                    log::debug!("Waiting for task handle to complete");
                     match tokio::time::timeout(tokio::time::Duration::from_secs(2), handle).await {
-                        Ok(Ok(())) => tracing::debug!("Task handle completed successfully"),
-                        Ok(Err(e)) => tracing::error!("Task handle encountered an error: {e:?}"),
+                        Ok(Ok(())) => log::debug!("Task handle completed successfully"),
+                        Ok(Err(e)) => log::error!("Task handle encountered an error: {e:?}"),
                         Err(_) => {
-                            tracing::warn!(
+                            log::warn!(
                                 "Timeout waiting for task handle, task may still be running"
                             );
                         }
                     }
                 }
                 Err(arc_handle) => {
-                    tracing::debug!(
+                    log::debug!(
                         "Cannot take ownership of task handle - other references exist, aborting task"
                     );
                     arc_handle.abort();
                 }
             }
         } else {
-            tracing::debug!("No task handle to await");
+            log::debug!("No task handle to await");
         }
 
         self.subscriptions.clear();
+        self.subscription_payloads.write().await.clear();
         self.auth_tracker.fail("Disconnected");
 
         Ok(())
@@ -454,6 +419,27 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Returns true if the WebSocket is authenticated for private subscriptions.
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        self.auth_tracker.is_authenticated()
+    }
+
+    /// Waits until the WebSocket is authenticated or the timeout elapses.
+    ///
+    /// Returns an error on timeout or explicit auth failure.
+    pub async fn wait_until_authenticated(&self, timeout_secs: f64) -> Result<(), KrakenWsError> {
+        let timeout = tokio::time::Duration::from_secs_f64(timeout_secs);
+
+        if self.auth_tracker.wait_for_authenticated(timeout).await {
+            Ok(())
+        } else {
+            Err(KrakenWsError::AuthenticationError(format!(
+                "Authentication not completed within {timeout_secs} seconds"
+            )))
+        }
+    }
+
     /// Authenticates with the Kraken API to enable private subscriptions.
     pub async fn authenticate(&self) -> Result<(), KrakenWsError> {
         if !self.config.has_api_credentials() {
@@ -462,101 +448,19 @@ impl KrakenSpotWebSocketClient {
             ));
         }
 
-        let api_key = self
-            .config
-            .api_key
-            .clone()
-            .ok_or_else(|| KrakenWsError::AuthenticationError("Missing API key".to_string()))?;
-        let api_secret =
-            self.config.api_secret.clone().ok_or_else(|| {
-                KrakenWsError::AuthenticationError("Missing API secret".to_string())
-            })?;
+        let _receiver = self.auth_tracker.begin();
 
-        let http_client = KrakenSpotHttpClient::with_credentials(
-            api_key,
-            api_secret,
-            self.config.environment,
-            Some(self.config.http_base_url()),
-            self.config.timeout_secs,
-            None,
-            None,
-            None,
-            self.config.http_proxy.clone(),
-            self.config.max_requests_per_second,
-        )
-        .map_err(|e| {
-            KrakenWsError::AuthenticationError(format!("Failed to create HTTP client: {e}"))
-        })?;
-
-        let ws_token = http_client.get_websockets_token().await.map_err(|e| {
-            KrakenWsError::AuthenticationError(format!("Failed to get WebSocket token: {e}"))
-        })?;
-
-        tracing::debug!(
-            token_length = ws_token.token.len(),
-            expires = ws_token.expires,
-            "WebSocket authentication token received"
-        );
-
-        let mut auth_token = self.auth_token.write().await;
-        *auth_token = Some(ws_token.token);
-
-        Ok(())
-    }
-
-    /// Caches multiple instruments for symbol lookup.
-    pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
-        // Before connect() the handler isn't running; this send will fail and that's expected
-        if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(SpotHandlerCommand::InitializeInstruments(instruments))
-        {
-            tracing::debug!("Failed to send instruments to handler: {e}");
-        }
-    }
-
-    /// Caches a single instrument for symbol lookup.
-    pub fn cache_instrument(&self, instrument: InstrumentAny) {
-        // Before connect() the handler isn't running; this send will fail and that's expected
-        if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(SpotHandlerCommand::UpdateInstrument(instrument))
-        {
-            tracing::debug!("Failed to send instrument update to handler: {e}");
-        }
-    }
-
-    /// Sets the account ID for execution reports.
-    ///
-    /// Must be called before subscribing to executions to properly generate
-    /// OrderStatusReport and FillReport objects.
-    pub fn set_account_id(&self, account_id: AccountId) {
-        if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(SpotHandlerCommand::SetAccountId(account_id))
-        {
-            tracing::debug!("Failed to send account ID to handler: {e}");
-        }
-    }
-
-    /// Caches order info for order tracking.
-    ///
-    /// This should be called BEFORE submitting an order via HTTP to handle the
-    /// race condition where WebSocket execution messages arrive before the
-    /// HTTP response (which contains the venue_order_id).
-    pub fn cache_client_order(
-        &self,
-        client_order_id: ClientOrderId,
-        instrument_id: InstrumentId,
-        trader_id: TraderId,
-        strategy_id: StrategyId,
-    ) {
-        if let Ok(cmd_tx) = self.cmd_tx.try_read()
-            && let Err(e) = cmd_tx.send(SpotHandlerCommand::CacheClientOrder {
-                client_order_id,
-                instrument_id,
-                trader_id,
-                strategy_id,
-            })
-        {
-            tracing::debug!("Failed to send cache client order command to handler: {e}");
+        match refresh_auth_token(&self.config).await {
+            Ok(token) => {
+                *self.auth_token.write().await = Some(token);
+                self.auth_tracker.succeed();
+                Ok(())
+            }
+            Err(e) => {
+                *self.auth_token.write().await = None;
+                self.auth_tracker.fail(e.to_string());
+                Err(e)
+            }
         }
     }
 
@@ -578,8 +482,9 @@ impl KrakenSpotWebSocketClient {
         depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_subscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{:?}:{}", channel, symbol);
+            let key = format!("{channel_str}:{symbol}");
             if self.subscriptions.add_reference(&key) {
                 self.subscriptions.mark_subscribe(&key);
                 symbols_to_subscribe.push(*symbol);
@@ -614,6 +519,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth,
                 interval: None,
+                event_trigger: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -621,11 +527,15 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await?;
+        let payload = self.send_command(&request).await?;
 
         for symbol in &symbols_to_subscribe {
-            let key = format!("{:?}:{}", channel, symbol);
+            let key = format!("{channel_str}:{symbol}");
             self.subscriptions.confirm_subscribe(&key);
+            self.subscription_payloads
+                .write()
+                .await
+                .insert(key, payload.clone());
         }
 
         Ok(())
@@ -639,8 +549,9 @@ impl KrakenSpotWebSocketClient {
         interval: u32,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_subscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             if self.subscriptions.add_reference(&key) {
                 self.subscriptions.mark_subscribe(&key);
                 symbols_to_subscribe.push(*symbol);
@@ -657,9 +568,10 @@ impl KrakenSpotWebSocketClient {
             params: Some(KrakenWsParams {
                 channel,
                 symbol: Some(symbols_to_subscribe.clone()),
-                snapshot: None,
+                snapshot: Some(false),
                 depth: None,
                 interval: Some(interval),
+                event_trigger: None,
                 token: None,
                 snap_orders: None,
                 snap_trades: None,
@@ -667,11 +579,15 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await?;
+        let payload = self.send_command(&request).await?;
 
         for symbol in &symbols_to_subscribe {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             self.subscriptions.confirm_subscribe(&key);
+            self.subscription_payloads
+                .write()
+                .await
+                .insert(key, payload.clone());
         }
 
         Ok(())
@@ -685,8 +601,9 @@ impl KrakenSpotWebSocketClient {
         interval: u32,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_unsubscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             if self.subscriptions.remove_reference(&key) {
                 self.subscriptions.mark_unsubscribe(&key);
                 symbols_to_unsubscribe.push(*symbol);
@@ -706,6 +623,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: Some(interval),
+                event_trigger: None,
                 token: None,
                 snap_orders: None,
                 snap_trades: None,
@@ -713,11 +631,12 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await?;
+        self.send_command(&request).await?;
 
         for symbol in &symbols_to_unsubscribe {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             self.subscriptions.confirm_unsubscribe(&key);
+            self.subscription_payloads.write().await.remove(&key);
         }
 
         Ok(())
@@ -730,16 +649,15 @@ impl KrakenSpotWebSocketClient {
         symbols: Vec<Ustr>,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_unsubscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{:?}:{}", channel, symbol);
+            let key = format!("{channel_str}:{symbol}");
             if self.subscriptions.remove_reference(&key) {
                 self.subscriptions.mark_unsubscribe(&key);
                 symbols_to_unsubscribe.push(*symbol);
             } else {
-                tracing::debug!(
-                    "Channel {:?} symbol {} still has active subscriptions, not unsubscribing",
-                    channel,
-                    symbol
+                log::debug!(
+                    "Channel {channel_str} symbol {symbol} still has active subscriptions, not unsubscribing"
                 );
             }
         }
@@ -772,6 +690,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: None,
+                event_trigger: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -779,11 +698,12 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await?;
+        self.send_command(&request).await?;
 
         for symbol in &symbols_to_unsubscribe {
-            let key = format!("{:?}:{}", channel, symbol);
+            let key = format!("{channel_str}:{symbol}");
             self.subscriptions.confirm_unsubscribe(&key);
+            self.subscription_payloads.write().await.remove(&key);
         }
 
         Ok(())
@@ -799,22 +719,35 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await
+        self.send_command(&request).await?;
+        Ok(())
     }
 
-    async fn send_request(&self, request: &KrakenWsRequest) -> Result<(), KrakenWsError> {
+    async fn send_command(&self, request: &KrakenWsRequest) -> Result<String, KrakenWsError> {
         let payload =
             serde_json::to_string(request).map_err(|e| KrakenWsError::JsonError(e.to_string()))?;
 
-        tracing::trace!("Sending message: {payload}");
+        log::trace!("Sending message: {payload}");
+
+        let cmd = match request.method {
+            KrakenWsMethod::Subscribe => SpotHandlerCommand::Subscribe {
+                payload: payload.clone(),
+            },
+            KrakenWsMethod::Unsubscribe => SpotHandlerCommand::Unsubscribe {
+                payload: payload.clone(),
+            },
+            KrakenWsMethod::Ping | KrakenWsMethod::Pong => SpotHandlerCommand::Ping {
+                payload: payload.clone(),
+            },
+        };
 
         self.cmd_tx
             .read()
             .await
-            .send(SpotHandlerCommand::SendText { payload })
+            .send(cmd)
             .map_err(|e| KrakenWsError::ConnectionError(format!("Failed to send request: {e}")))?;
 
-        Ok(())
+        Ok(payload)
     }
 
     /// Returns true if connected (not closed).
@@ -847,18 +780,76 @@ impl KrakenSpotWebSocketClient {
         self.subscriptions.all_topics()
     }
 
+    /// Sets the account ID for execution report parsing.
+    pub fn set_account_id(&self, account_id: AccountId) {
+        if let Ok(mut guard) = self.account_id.write() {
+            *guard = Some(account_id);
+        }
+    }
+
+    /// Returns the account ID if set.
+    #[must_use]
+    pub fn account_id(&self) -> Option<AccountId> {
+        self.account_id.read().ok().and_then(|g| *g)
+    }
+
+    /// Caches an instrument for execution report parsing.
+    pub fn cache_instrument(&self, instrument: InstrumentAny) {
+        self.instruments.insert(instrument.id(), instrument);
+    }
+
+    /// Returns a shared reference to the account ID.
+    pub fn account_id_shared(&self) -> &Arc<RwLock<Option<AccountId>>> {
+        &self.account_id
+    }
+
+    /// Returns a shared reference to the truncated ID map.
+    pub fn truncated_id_map(&self) -> &Arc<AtomicMap<String, ClientOrderId>> {
+        &self.truncated_id_map
+    }
+
+    /// Caches a client order for truncated ID resolution.
+    pub fn cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        _venue_order_id: Option<VenueOrderId>,
+        _instrument_id: InstrumentId,
+        _trader_id: TraderId,
+        _strategy_id: StrategyId,
+    ) {
+        let truncated = crate::common::parse::truncate_cl_ord_id(&client_order_id);
+
+        if truncated != client_order_id.as_str() {
+            self.truncated_id_map.insert(truncated, client_order_id);
+        }
+    }
+
     /// Returns a stream of WebSocket messages.
-    pub fn stream(&mut self) -> impl futures_util::Stream<Item = NautilusWsMessage> + use<> {
-        let rx = self
-            .out_rx
-            .take()
-            .expect("Stream receiver already taken or client not connected");
-        let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");
-        async_stream::stream! {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The stream receiver has already been taken
+    /// - Other clones of this client still hold references to the receiver
+    pub fn stream(
+        &mut self,
+    ) -> Result<impl futures_util::Stream<Item = KrakenSpotWsMessage> + use<>, KrakenWsError> {
+        let rx = self.out_rx.take().ok_or_else(|| {
+            KrakenWsError::ChannelError(
+                "Stream receiver already taken or client not connected".to_string(),
+            )
+        })?;
+        let mut rx = Arc::try_unwrap(rx).map_err(|_| {
+            KrakenWsError::ChannelError(
+                "Cannot take ownership of stream - other client clones still hold references"
+                    .to_string(),
+            )
+        })?;
+        Ok(async_stream::stream! {
             while let Some(msg) = rx.recv().await {
                 yield msg;
             }
-        }
+        })
     }
 
     /// Subscribes to order book updates for the given instrument.
@@ -867,41 +858,54 @@ impl KrakenSpotWebSocketClient {
         instrument_id: InstrumentId,
         depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
-        // Kraken v2 WebSocket expects ISO 4217-A3 format (e.g., "ETH/USD")
-        let symbol = instrument_id.symbol.inner();
-        let book_key = format!("book:{symbol}");
-
-        if !self.subscriptions.add_reference(&book_key) {
-            return Ok(());
-        }
-
-        self.subscriptions.mark_subscribe(&book_key);
-        self.subscriptions.confirm_subscribe(&book_key);
-
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.subscribe(KrakenWsChannel::Book, vec![symbol], depth)
             .await
     }
 
     /// Subscribes to quote updates for the given instrument.
     ///
-    /// Uses the order book channel with depth 10 for low-latency top-of-book quotes
-    /// instead of the throttled ticker feed.
+    /// Uses the Ticker channel with `event_trigger: "bbo"` for updates only on
+    /// best bid/offer changes.
     pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let quotes_key = format!("quotes:{symbol}");
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        let key = format!("quotes:{symbol}");
 
-        if !self.subscriptions.add_reference(&quotes_key) {
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.mark_subscribe(&quotes_key);
-        self.subscriptions.confirm_subscribe(&quotes_key);
-        self.ensure_book_subscribed(symbol).await
+        self.subscriptions.mark_subscribe(&key);
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Subscribe,
+            params: Some(KrakenWsParams {
+                channel: KrakenWsChannel::Ticker,
+                symbol: Some(vec![symbol]),
+                snapshot: None,
+                depth: None,
+                interval: None,
+                event_trigger: Some("bbo".to_string()),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        let payload = self.send_command(&request).await?;
+        self.subscriptions.confirm_subscribe(&key);
+        self.subscription_payloads
+            .write()
+            .await
+            .insert(key, payload);
+        Ok(())
     }
 
     /// Subscribes to trade updates for the given instrument.
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.subscribe(KrakenWsChannel::Trade, vec![symbol], None)
             .await
     }
@@ -912,7 +916,7 @@ impl KrakenSpotWebSocketClient {
     ///
     /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = bar_type.instrument_id().symbol.inner();
+        let symbol = to_ws_v2_symbol(bar_type.instrument_id().symbol.inner());
         let interval = bar_type_to_ws_interval(bar_type)?;
         self.subscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
             .await
@@ -943,6 +947,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: None,
+                event_trigger: None,
                 token: Some(token),
                 snap_orders: Some(snap_orders),
                 snap_trades: Some(snap_trades),
@@ -950,31 +955,25 @@ impl KrakenSpotWebSocketClient {
             req_id: Some(req_id),
         };
 
-        self.send_request(&request).await?;
+        let payload = self.send_command(&request).await?;
 
         let key = "executions";
         if self.subscriptions.add_reference(key) {
             self.subscriptions.mark_subscribe(key);
             self.subscriptions.confirm_subscribe(key);
+            self.subscription_payloads
+                .write()
+                .await
+                .insert(key.to_string(), payload);
         }
 
         Ok(())
     }
 
     /// Unsubscribes from order book updates for the given instrument.
-    ///
-    /// Note: Will only actually unsubscribe if quotes are not also subscribed.
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let book_key = format!("book:{symbol}");
-
-        if !self.subscriptions.remove_reference(&book_key) {
-            return Ok(());
-        }
-
-        self.subscriptions.mark_unsubscribe(&book_key);
-        self.subscriptions.confirm_unsubscribe(&book_key);
-        self.maybe_unsubscribe_book(symbol).await
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
     }
 
     /// Unsubscribes from quote updates for the given instrument.
@@ -982,16 +981,36 @@ impl KrakenSpotWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let quotes_key = format!("quotes:{symbol}");
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        let key = format!("quotes:{symbol}");
 
-        if !self.subscriptions.remove_reference(&quotes_key) {
+        if !self.subscriptions.remove_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.mark_unsubscribe(&quotes_key);
-        self.subscriptions.confirm_unsubscribe(&quotes_key);
-        self.maybe_unsubscribe_book(symbol).await
+        self.subscriptions.mark_unsubscribe(&key);
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Unsubscribe,
+            params: Some(KrakenWsParams {
+                channel: KrakenWsChannel::Ticker,
+                symbol: Some(vec![symbol]),
+                snapshot: None,
+                depth: None,
+                interval: None,
+                event_trigger: Some("bbo".to_string()),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_command(&request).await?;
+        self.subscriptions.confirm_unsubscribe(&key);
+        self.subscription_payloads.write().await.remove(&key);
+        Ok(())
     }
 
     /// Unsubscribes from trade updates for the given instrument.
@@ -999,7 +1018,7 @@ impl KrakenSpotWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.unsubscribe(KrakenWsChannel::Trade, vec![symbol]).await
     }
 
@@ -1009,25 +1028,10 @@ impl KrakenSpotWebSocketClient {
     ///
     /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = bar_type.instrument_id().symbol.inner();
+        let symbol = to_ws_v2_symbol(bar_type.instrument_id().symbol.inner());
         let interval = bar_type_to_ws_interval(bar_type)?;
         self.unsubscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
             .await
-    }
-
-    /// Ensures book channel is subscribed for the given symbol (used internally by quotes).
-    ///
-    /// Reference counting is handled by `subscribe` method.
-    async fn ensure_book_subscribed(&self, symbol: Ustr) -> Result<(), KrakenWsError> {
-        self.subscribe(KrakenWsChannel::Book, vec![symbol], Some(10))
-            .await
-    }
-
-    /// Unsubscribes from book channel if no more dependent subscriptions.
-    ///
-    /// Reference counting is handled by `unsubscribe` method.
-    async fn maybe_unsubscribe_book(&self, symbol: Ustr) -> Result<(), KrakenWsError> {
-        self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
     }
 }
 
@@ -1051,8 +1055,10 @@ async fn refresh_auth_token(config: &KrakenDataClientConfig) -> Result<String, K
         None,
         None,
         None,
-        config.http_proxy.clone(),
-        config.max_requests_per_second,
+        config.proxy_url.clone(),
+        config
+            .max_requests_per_second
+            .unwrap_or(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND),
     )
     .map_err(|e| {
         KrakenWsError::AuthenticationError(format!("Failed to create HTTP client: {e}"))
@@ -1062,20 +1068,34 @@ async fn refresh_auth_token(config: &KrakenDataClientConfig) -> Result<String, K
         KrakenWsError::AuthenticationError(format!("Failed to get WebSocket token: {e}"))
     })?;
 
-    tracing::debug!(
-        token_length = ws_token.token.len(),
-        expires = ws_token.expires,
-        "WebSocket authentication token refreshed"
+    log::debug!(
+        "WebSocket authentication token refreshed: token_length={}, expires={}",
+        ws_token.token.len(),
+        ws_token.expires
     );
 
     Ok(ws_token.token)
 }
 
-/// Converts a Nautilus BarType to Kraken WebSocket OHLC interval (in minutes).
-///
-/// Supported intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
-/// (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w).
+fn update_auth_token_in_payload(payload: &str, new_token: &str) -> Result<String, KrakenWsError> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|e| KrakenWsError::JsonError(e.to_string()))?;
+
+    if let Some(params) = value.get_mut("params") {
+        params["token"] = serde_json::Value::String(new_token.to_string());
+    }
+
+    serde_json::to_string(&value).map_err(|e| KrakenWsError::JsonError(e.to_string()))
+}
+
+#[inline]
+fn to_ws_v2_symbol(symbol: Ustr) -> Ustr {
+    Ustr::from(&normalize_spot_symbol(symbol.as_str()))
+}
+
 fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
+    const VALID_INTERVALS: [u32; 9] = [1, 5, 15, 30, 60, 240, 1440, 10080, 21600];
+
     let spec = bar_type.spec();
     let step = spec.step.get() as u32;
 
@@ -1093,7 +1113,6 @@ fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
 
     let interval = base_minutes * step;
 
-    const VALID_INTERVALS: [u32; 9] = [1, 5, 15, 30, 60, 240, 1440, 10080, 21600];
     if !VALID_INTERVALS.contains(&interval) {
         return Err(KrakenWsError::SubscriptionError(format!(
             "Invalid bar interval {interval} minutes for Kraken OHLC streaming. \
@@ -1102,4 +1121,93 @@ fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
     }
 
     Ok(interval)
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case("XBT/EUR", "BTC/EUR")]
+    #[case("XBT/USD", "BTC/USD")]
+    #[case("XBT/USDT", "BTC/USDT")]
+    #[case("ETH/USD", "ETH/USD")]
+    #[case("ETH/XBT", "ETH/BTC")]
+    #[case("SOL/XBT", "SOL/BTC")]
+    #[case("SOL/USD", "SOL/USD")]
+    #[case("BTC/USD", "BTC/USD")]
+    #[case("ETH/BTC", "ETH/BTC")]
+    fn test_to_kraken_ws_v2_symbol(#[case] input: &str, #[case] expected: &str) {
+        let symbol = Ustr::from(input);
+        let result = to_ws_v2_symbol(symbol);
+        assert_eq!(result.as_str(), expected);
+    }
+
+    fn test_client_without_credentials() -> KrakenSpotWebSocketClient {
+        KrakenSpotWebSocketClient::new(
+            KrakenDataClientConfig::default(),
+            CancellationToken::new(),
+            None,
+        )
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_authenticate_without_credentials_errors() {
+        let client = test_client_without_credentials();
+
+        let err = client.authenticate().await.expect_err("should fail");
+        assert!(
+            matches!(err, KrakenWsError::AuthenticationError(ref msg) if msg.contains("API credentials required")),
+            "unexpected error: {err:?}"
+        );
+        assert!(!client.is_authenticated());
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_wait_until_authenticated_times_out() {
+        let client = test_client_without_credentials();
+
+        let err = client
+            .wait_until_authenticated(0.05)
+            .await
+            .expect_err("should time out");
+        assert!(matches!(err, KrakenWsError::AuthenticationError(_)));
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_wait_until_authenticated_resolves_after_succeed() {
+        let client = test_client_without_credentials();
+
+        let tracker = client.auth_tracker.clone();
+        let _rx = tracker.begin();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            tracker.succeed();
+        });
+
+        client
+            .wait_until_authenticated(1.0)
+            .await
+            .expect("should resolve once tracker succeeds");
+        assert!(client.is_authenticated());
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_is_authenticated_flips_on_fail() {
+        let client = test_client_without_credentials();
+
+        let _rx = client.auth_tracker.begin();
+        client.auth_tracker.succeed();
+        assert!(client.is_authenticated());
+
+        client.auth_tracker.fail("test failure");
+        assert!(!client.is_authenticated());
+    }
 }

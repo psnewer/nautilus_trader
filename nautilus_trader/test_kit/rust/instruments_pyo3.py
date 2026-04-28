@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,6 +22,8 @@ from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.nautilus_pyo3 import AssetClass
 from nautilus_trader.core.nautilus_pyo3 import BettingInstrument
 from nautilus_trader.core.nautilus_pyo3 import BinaryOption
+from nautilus_trader.core.nautilus_pyo3 import Cfd
+from nautilus_trader.core.nautilus_pyo3 import Commodity
 from nautilus_trader.core.nautilus_pyo3 import CryptoFuture
 from nautilus_trader.core.nautilus_pyo3 import CryptoOption
 from nautilus_trader.core.nautilus_pyo3 import CryptoPerpetual
@@ -30,11 +32,13 @@ from nautilus_trader.core.nautilus_pyo3 import CurrencyPair
 from nautilus_trader.core.nautilus_pyo3 import Equity
 from nautilus_trader.core.nautilus_pyo3 import FuturesContract
 from nautilus_trader.core.nautilus_pyo3 import FuturesSpread
+from nautilus_trader.core.nautilus_pyo3 import IndexInstrument
 from nautilus_trader.core.nautilus_pyo3 import InstrumentId
 from nautilus_trader.core.nautilus_pyo3 import Money
 from nautilus_trader.core.nautilus_pyo3 import OptionContract
 from nautilus_trader.core.nautilus_pyo3 import OptionKind
 from nautilus_trader.core.nautilus_pyo3 import OptionSpread
+from nautilus_trader.core.nautilus_pyo3 import PerpetualContract
 from nautilus_trader.core.nautilus_pyo3 import Price
 from nautilus_trader.core.nautilus_pyo3 import Quantity
 from nautilus_trader.core.nautilus_pyo3 import Symbol
@@ -282,6 +286,7 @@ class TestInstrumentProviderPyo3:
     ) -> CryptoFuture:
         if activation is None:
             activation = pd.Timestamp("2021-12-25", tz=pytz.utc)
+
         if expiration is None:
             expiration = pd.Timestamp("2022-3-25", tz=pytz.utc)
         symbol = f"BTCUSDT_{expiration.strftime('%y%m%d')}"
@@ -397,6 +402,7 @@ class TestInstrumentProviderPyo3:
     ) -> OptionContract:
         if activation is None:
             activation = pd.Timestamp("2021-9-17", tz=pytz.utc)
+
         if expiration is None:
             expiration = pd.Timestamp("2021-12-17", tz=pytz.utc)
         return OptionContract(
@@ -429,6 +435,7 @@ class TestInstrumentProviderPyo3:
     ) -> FuturesContract:
         if activation is None:
             activation = pd.Timestamp("2021-9-17", tz=pytz.utc)
+
         if expiration is None:
             expiration = pd.Timestamp("2021-12-17", tz=pytz.utc)
         return FuturesContract(
@@ -459,6 +466,7 @@ class TestInstrumentProviderPyo3:
     ) -> FuturesSpread:
         if activation is None:
             activation = pd.Timestamp("2022-6-21T13:30:00", tz=pytz.utc)
+
         if expiration is None:
             expiration = pd.Timestamp("2024-6-21T13:30:00", tz=pytz.utc)
         return FuturesSpread(
@@ -490,6 +498,7 @@ class TestInstrumentProviderPyo3:
     ) -> OptionSpread:
         if activation is None:
             activation = pd.Timestamp("2023-11-06T20:54:07", tz=pytz.utc)
+
         if expiration is None:
             expiration = pd.Timestamp("2024-02-23T22:59:00", tz=pytz.utc)
         return OptionSpread(
@@ -510,6 +519,80 @@ class TestInstrumentProviderPyo3:
             min_quantity=None,
             max_price=None,
             min_price=None,
+            ts_event=0,
+            ts_init=0,
+        )
+
+    @staticmethod
+    def commodity() -> Commodity:
+        return Commodity(
+            instrument_id=InstrumentId(symbol=Symbol("CL"), venue=Venue("NYMEX")),
+            raw_symbol=Symbol("CL"),
+            asset_class=AssetClass.COMMODITY,
+            quote_currency=_USD,
+            price_precision=2,
+            size_precision=0,
+            price_increment=Price.from_str("0.01"),
+            size_increment=Quantity.from_int(1),
+            lot_size=Quantity.from_int(1),
+            ts_event=0,
+            ts_init=0,
+        )
+
+    @staticmethod
+    def index_instrument() -> IndexInstrument:
+        return IndexInstrument(
+            instrument_id=InstrumentId(symbol=Symbol("SPX"), venue=Venue("INDEX")),
+            raw_symbol=Symbol("SPX"),
+            currency=_USD,
+            price_precision=2,
+            size_precision=0,
+            price_increment=Price.from_str("0.01"),
+            size_increment=Quantity.from_int(1),
+            ts_event=0,
+            ts_init=0,
+        )
+
+    @staticmethod
+    def perpetual_contract_eurusd() -> PerpetualContract:
+        return PerpetualContract(
+            instrument_id=InstrumentId.from_str("EURUSD-PERP.AX"),
+            raw_symbol=Symbol("EURUSD-PERP"),
+            underlying="EURUSD",
+            asset_class=AssetClass.FX,
+            quote_currency=_USD,
+            settlement_currency=_USD,
+            is_inverse=False,
+            price_precision=5,
+            size_precision=0,
+            price_increment=Price.from_str("0.00001"),
+            size_increment=Quantity.from_int(1),
+            ts_event=0,
+            ts_init=0,
+            base_currency=Currency.from_str("EUR"),
+            margin_init=Decimal("0.03"),
+            margin_maint=Decimal("0.03"),
+            maker_fee=Decimal("0.00002"),
+            taker_fee=Decimal("0.00002"),
+        )
+
+    @staticmethod
+    def cfd() -> Cfd:
+        return Cfd(
+            instrument_id=InstrumentId.from_str("AUDUSD.OANDA"),
+            raw_symbol=Symbol("AUD/USD"),
+            asset_class=AssetClass.FX,
+            quote_currency=_USD,
+            base_currency=Currency.from_str("AUD"),
+            price_precision=5,
+            size_precision=0,
+            price_increment=Price.from_str("0.00001"),
+            size_increment=Quantity.from_int(1),
+            lot_size=Quantity.from_int(1000),
+            margin_init=Decimal("0.03"),
+            margin_maint=Decimal("0.03"),
+            maker_fee=Decimal("0.00002"),
+            taker_fee=Decimal("0.00002"),
             ts_event=0,
             ts_init=0,
         )

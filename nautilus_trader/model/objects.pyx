@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -168,22 +168,38 @@ cdef class Quantity:
     def __ge__(self, other) -> bool:
         return Quantity._compare(self, other, Py_GE)
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            return (<Quantity>a).add(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Quantity._extract_decimal(a) + Quantity._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            return (<Quantity>a).add(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Quantity._extract_decimal(a) + Quantity._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            if (<Quantity>b)._mem.raw > (<Quantity>a)._mem.raw:
+                raise ValueError(
+                    f"Quantity subtraction would result in negative value: {a} - {b}"
+                )
+            return (<Quantity>a).sub(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Quantity._extract_decimal(a) - Quantity._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            if (<Quantity>b)._mem.raw > (<Quantity>a)._mem.raw:
+                raise ValueError(
+                    f"Quantity subtraction would result in negative value: {a} - {b}"
+                )
+            return (<Quantity>a).sub(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Quantity._extract_decimal(a) - Quantity._extract_decimal(b)
@@ -231,11 +247,11 @@ cdef class Quantity:
     def __neg__(self) -> decimal.Decimal:
         return self.as_decimal().__neg__()
 
-    def __pos__(self) -> decimal.Decimal:
-        return self.as_decimal().__pos__()
+    def __pos__(self) -> Quantity:
+        return self
 
-    def __abs__(self) -> decimal.Decimal:
-        return abs(self.as_decimal())
+    def __abs__(self) -> Quantity:
+        return self
 
     def __round__(self, ndigits = None) -> decimal.Decimal:
         return round(self.as_decimal(), ndigits)
@@ -313,23 +329,15 @@ cdef class Quantity:
         return self._mem.raw > 0
 
     cdef Quantity add(self, Quantity other):
-        return Quantity.from_raw_c(self._mem.raw + other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Quantity.from_raw_c(self._mem.raw + other._mem.raw, precision)
 
     cdef Quantity sub(self, Quantity other):
-        return Quantity.from_raw_c(self._mem.raw - other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Quantity.from_raw_c(self._mem.raw - other._mem.raw, precision)
 
-    cdef Quantity saturating_sub(self, Quantity other):
+    cpdef Quantity saturating_sub(self, Quantity other):
         return Quantity.from_mem_c(quantity_saturating_sub(self._mem, other._mem))
-
-    cdef void add_assign(self, Quantity other):
-        self._mem.raw += other._mem.raw
-        if self._mem.precision == 0:
-            self._mem.precision = other.precision
-
-    cdef void sub_assign(self, Quantity other):
-        self._mem.raw -= other._mem.raw
-        if self._mem.precision == 0:
-            self._mem.precision = other.precision
 
     cdef QuantityRaw raw_uint_c(self):
         return self._mem.raw
@@ -356,6 +364,27 @@ cdef class Quantity:
         cdef Quantity quantity = Quantity.__new__(Quantity)
         quantity._mem = quantity_from_raw(raw, precision)
         return quantity
+
+    @staticmethod
+    cdef Quantity from_decimal_c(amount, uint8_t precision):
+        if precision > FIXED_PRECISION:
+            raise ValueError(
+                f"invalid `precision` greater than max {FIXED_PRECISION}, was {precision}"
+            )
+        if amount < 0:
+            raise ValueError(
+                f"invalid negative quantity, was {amount}"
+            )
+        cdef uint8_t precision_diff = FIXED_PRECISION - precision
+        scaled = amount * (10 ** precision)
+        integral = scaled.to_integral_value(rounding=decimal.ROUND_HALF_EVEN)
+        raw_py = int(integral) * (10 ** precision_diff)
+        if raw_py > QUANTITY_RAW_MAX:
+            raise ValueError(
+                f"invalid raw quantity value exceeds max {QUANTITY_RAW_MAX}, was {raw_py}"
+            )
+        cdef QuantityRaw raw = <QuantityRaw>(raw_py)
+        return Quantity.from_raw_c(raw, precision)
 
     @staticmethod
     cdef object _extract_decimal(object obj):
@@ -580,7 +609,13 @@ cdef class Quantity:
         """
         Condition.not_none(value, "value")
 
-        return Quantity.from_str_c(str(value))
+        sign, digits, exponent = value.as_tuple()
+        precision_int = max(0, -exponent)
+        if precision_int > FIXED_PRECISION:
+            raise ValueError(
+                f"invalid `precision` greater than max {FIXED_PRECISION}, was {precision_int}"
+            )
+        return Quantity.from_decimal_c(value, <uint8_t>precision_int)
 
     cpdef str to_formatted_str(self):
         """
@@ -698,22 +733,30 @@ cdef class Price:
     def __ge__(self, other) -> bool:
         return Price._compare(self, other, Py_GE)
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).add(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Price._extract_decimal(a) + Price._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).add(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Price._extract_decimal(a) + Price._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).sub(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Price._extract_decimal(a) - Price._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).sub(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Price._extract_decimal(a) - Price._extract_decimal(b)
@@ -758,14 +801,16 @@ cdef class Price:
             return float(a) % float(b)
         return Price._extract_decimal(a) % Price._extract_decimal(b)
 
-    def __neg__(self) -> decimal.Decimal:
-        return self.as_decimal().__neg__()
+    def __neg__(self) -> Price:
+        return Price.from_raw_c(-self._mem.raw, self._mem.precision)
 
-    def __pos__(self) -> decimal.Decimal:
-        return self.as_decimal().__pos__()
+    def __pos__(self) -> Price:
+        return self
 
-    def __abs__(self) -> decimal.Decimal:
-        return abs(self.as_decimal())
+    def __abs__(self) -> Price:
+        if self._mem.raw < 0:
+            return Price.from_raw_c(-self._mem.raw, self._mem.precision)
+        return self
 
     def __round__(self, ndigits = None) -> decimal.Decimal:
         return round(self.as_decimal(), ndigits)
@@ -820,6 +865,23 @@ cdef class Price:
         cdef Price price = Price.__new__(Price)
         price._mem = price_from_raw(raw, precision)
         return price
+
+    @staticmethod
+    cdef Price from_decimal_c(amount, uint8_t precision):
+        if precision > FIXED_PRECISION:
+            raise ValueError(
+                f"invalid `precision` greater than max {FIXED_PRECISION}, was {precision}"
+            )
+        cdef uint8_t precision_diff = FIXED_PRECISION - precision
+        scaled = amount * (10 ** precision)
+        integral = scaled.to_integral_value(rounding=decimal.ROUND_HALF_EVEN)
+        raw_py = int(integral) * (10 ** precision_diff)
+        if raw_py < PRICE_RAW_MIN or raw_py > PRICE_RAW_MAX:
+            raise ValueError(
+                f"invalid raw price value outside range [{PRICE_RAW_MIN}, {PRICE_RAW_MAX}], was {raw_py}"
+            )
+        cdef PriceRaw raw = <PriceRaw>(raw_py)
+        return Price.from_raw_c(raw, precision)
 
     @staticmethod
     cdef object _extract_decimal(object obj):
@@ -908,16 +970,12 @@ cdef class Price:
         return self._mem.raw > 0
 
     cdef Price add(self, Price other):
-        return Price.from_raw_c(self._mem.raw + other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Price.from_raw_c(self._mem.raw + other._mem.raw, precision)
 
     cdef Price sub(self, Price other):
-        return Price.from_raw_c(self._mem.raw - other._mem.raw, self._mem.precision)
-
-    cdef void add_assign(self, Price other):
-        self._mem.raw += other._mem.raw
-
-    cdef void sub_assign(self, Price other):
-        self._mem.raw -= other._mem.raw
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Price.from_raw_c(self._mem.raw - other._mem.raw, precision)
 
     cdef PriceRaw raw_int_c(self):
         return self._mem.raw
@@ -1062,7 +1120,13 @@ cdef class Price:
         """
         Condition.not_none(value, "value")
 
-        return Price.from_str_c(str(value))
+        sign, digits, exponent = value.as_tuple()
+        precision_int = max(0, -exponent)
+        if precision_int > FIXED_PRECISION:
+            raise ValueError(
+                f"invalid `precision` greater than max {FIXED_PRECISION}, was {precision_int}"
+            )
+        return Price.from_decimal_c(value, <uint8_t>precision_int)
 
     cpdef str to_formatted_str(self):
         """
@@ -1177,22 +1241,30 @@ cdef class Money:
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw >= other._mem.raw
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).add(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Money._extract_decimal(a) + Money._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).add(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Money._extract_decimal(a) + Money._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).sub(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Money._extract_decimal(a) - Money._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).sub(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Money._extract_decimal(a) - Money._extract_decimal(b)
@@ -1237,14 +1309,16 @@ cdef class Money:
             return float(a) % float(b)
         return Money._extract_decimal(a) % Money._extract_decimal(b)
 
-    def __neg__(self) -> decimal.Decimal:
-        return self.as_decimal().__neg__()
+    def __neg__(self) -> Money:
+        return Money.from_raw_c(-self._mem.raw, self.currency)
 
-    def __pos__(self) -> decimal.Decimal:
-        return self.as_decimal().__pos__()
+    def __pos__(self) -> Money:
+        return self
 
-    def __abs__(self) -> decimal.Decimal:
-        return abs(self.as_decimal())
+    def __abs__(self) -> Money:
+        if self._mem.raw < 0:
+            return Money.from_raw_c(-self._mem.raw, self.currency)
+        return self
 
     def __round__(self, ndigits = None) -> decimal.Decimal:
         return round(self.as_decimal(), ndigits)
@@ -1299,6 +1373,20 @@ cdef class Money:
         return money
 
     @staticmethod
+    cdef Money from_decimal_c(amount, Currency currency):
+        cdef uint8_t precision = currency._mem.precision
+        cdef uint8_t precision_diff = FIXED_PRECISION - precision
+        scaled = amount * (10 ** precision)
+        integral = scaled.to_integral_value(rounding=decimal.ROUND_HALF_EVEN)
+        raw_py = int(integral) * (10 ** precision_diff)
+        if raw_py < MONEY_RAW_MIN or raw_py > MONEY_RAW_MAX:
+            raise ValueError(
+                f"invalid raw money value outside range [{MONEY_RAW_MIN}, {MONEY_RAW_MAX}], was {raw_py}"
+            )
+        cdef MoneyRaw raw = <MoneyRaw>(raw_py)
+        return Money.from_raw_c(raw, currency)
+
+    @staticmethod
     cdef object _extract_decimal(object obj):
         assert not isinstance(obj, float)  # Design-time error
         if hasattr(obj, "as_decimal"):
@@ -1351,16 +1439,6 @@ cdef class Money:
         Condition.not_none(other, "other")
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return Money.from_raw_c(self._mem.raw - other._mem.raw, self.currency)
-
-    cdef void add_assign(self, Money other):
-        Condition.not_none(other, "other")
-        Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
-        self._mem.raw += other._mem.raw
-
-    cdef void sub_assign(self, Money other):
-        Condition.not_none(other, "other")
-        Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
-        self._mem.raw -= other._mem.raw
 
     cdef MoneyRaw raw_int_c(self):
         return self._mem.raw
@@ -1466,7 +1544,7 @@ cdef class Money:
         Condition.not_none(amount, "amount")
         Condition.not_none(currency, "currency")
 
-        return Money.from_str_c(f"{amount} {currency.code}")
+        return Money.from_decimal_c(amount, currency)
 
     cpdef str to_formatted_str(self):
         """

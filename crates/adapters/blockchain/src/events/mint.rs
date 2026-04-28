@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -54,7 +54,7 @@ pub struct MintEvent {
 impl MintEvent {
     /// Creates a new [`MintEvent`] instance with the specified parameters.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         dex: SharedDex,
         pool_identifier: PoolIdentifier,
@@ -88,7 +88,6 @@ impl MintEvent {
     }
 
     /// Converts a mint event into a `PoolLiquidityUpdate`.
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn to_pool_liquidity_update(
         &self,

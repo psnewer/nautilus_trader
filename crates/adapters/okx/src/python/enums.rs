@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,12 +22,14 @@ use pyo3::{PyTypeInfo, prelude::*, types::PyType};
 use strum::IntoEnumIterator;
 
 use crate::common::enums::{
-    OKXContractType, OKXInstrumentType, OKXMarginMode, OKXOrderStatus, OKXPositionMode,
-    OKXTradeMode, OKXVipLevel,
+    OKXContractType, OKXEnvironment, OKXInstrumentType, OKXMarginMode, OKXOrderStatus,
+    OKXPositionMode, OKXTradeMode, OKXVipLevel,
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXInstrumentType {
+    /// Represents instrument types on OKX.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -75,46 +77,12 @@ impl OKXInstrumentType {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "ANY")]
-    fn py_any() -> Self {
-        Self::Any
-    }
-
-    #[classattr]
-    #[pyo3(name = "SPOT")]
-    fn py_spot() -> Self {
-        Self::Spot
-    }
-
-    #[classattr]
-    #[pyo3(name = "MARGIN")]
-    fn py_margin() -> Self {
-        Self::Margin
-    }
-
-    #[classattr]
-    #[pyo3(name = "SWAP")]
-    fn py_swap() -> Self {
-        Self::Swap
-    }
-
-    #[classattr]
-    #[pyo3(name = "FUTURES")]
-    fn py_futures() -> Self {
-        Self::Futures
-    }
-
-    #[classattr]
-    #[pyo3(name = "OPTION")]
-    fn py_option() -> Self {
-        Self::Option
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXContractType {
+    /// Represents an instrument contract type on OKX.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -162,28 +130,18 @@ impl OKXContractType {
     fn variants() -> Vec<String> {
         Self::iter().map(|x| x.to_string()).collect()
     }
-
-    #[classattr]
-    #[pyo3(name = "NONE")]
-    fn py_none() -> Self {
-        Self::None
-    }
-
-    #[classattr]
-    #[pyo3(name = "LINEAR")]
-    fn py_linear() -> Self {
-        Self::Linear
-    }
-
-    #[classattr]
-    #[pyo3(name = "INVERSE")]
-    fn py_inverse() -> Self {
-        Self::Inverse
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXMarginMode {
+    /// Represents the margin mode for OKX accounts.
+    ///
+    /// # Reference
+    ///
+    /// - <https://www.okx.com/en-au/help/iv-isolated-margin-mode>
+    /// - <https://www.okx.com/en-au/help/iii-single-currency-margin-cross-margin-trading>
+    /// - <https://www.okx.com/en-au/help/iv-multi-currency-margin-mode-cross-margin-trading>
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -231,28 +189,12 @@ impl OKXMarginMode {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "NONE")]
-    fn py_none() -> Self {
-        Self::None
-    }
-
-    #[classattr]
-    #[pyo3(name = "ISOLATED")]
-    fn py_isolated() -> Self {
-        Self::Isolated
-    }
-
-    #[classattr]
-    #[pyo3(name = "CROSS")]
-    fn py_cross() -> Self {
-        Self::Cross
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXTradeMode {
+    /// Represents the trading mode for OKX orders.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -300,34 +242,16 @@ impl OKXTradeMode {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "CASH")]
-    fn py_cash() -> Self {
-        Self::Cash
-    }
-
-    #[classattr]
-    #[pyo3(name = "ISOLATED")]
-    fn py_isolated() -> Self {
-        Self::Isolated
-    }
-
-    #[classattr]
-    #[pyo3(name = "CROSS")]
-    fn py_cross() -> Self {
-        Self::Cross
-    }
-
-    #[classattr]
-    #[pyo3(name = "SPOT_ISOLATED")]
-    fn py_spot_isolated() -> Self {
-        Self::SpotIsolated
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXPositionMode {
+    /// Represents the position mode for OKX accounts.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#trading-account-rest-api-set-position-mode>
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -375,22 +299,12 @@ impl OKXPositionMode {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "NET_MODE")]
-    fn py_net_mode() -> Self {
-        Self::NetMode
-    }
-
-    #[classattr]
-    #[pyo3(name = "LONG_SHORT_MODE")]
-    fn py_long_short_mode() -> Self {
-        Self::LongShortMode
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXOrderStatus {
+    /// Represents the possible states of an order throughout its lifecycle.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -438,52 +352,24 @@ impl OKXOrderStatus {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "CANCELED")]
-    fn py_canceled() -> Self {
-        Self::Canceled
-    }
-
-    #[classattr]
-    #[pyo3(name = "LIVE")]
-    fn py_live() -> Self {
-        Self::Live
-    }
-
-    #[classattr]
-    #[pyo3(name = "EFFECTIVE")]
-    fn py_effective() -> Self {
-        Self::Effective
-    }
-
-    #[classattr]
-    #[pyo3(name = "PARTIALLY_FILLED")]
-    fn py_partially_filled() -> Self {
-        Self::PartiallyFilled
-    }
-
-    #[classattr]
-    #[pyo3(name = "FILLED")]
-    fn py_filled() -> Self {
-        Self::Filled
-    }
-
-    #[classattr]
-    #[pyo3(name = "MMP_CANCELED")]
-    fn py_mmp_canceled() -> Self {
-        Self::MmpCanceled
-    }
-
-    #[classattr]
-    #[pyo3(name = "ORDER_PLACED")]
-    fn py_order_placed() -> Self {
-        Self::OrderPlaced
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OKXVipLevel {
+    /// Represents OKX VIP level tiers for trading fee structure and API limits.
+    ///
+    /// VIP levels determine:
+    /// - Trading fee discounts.
+    /// - API rate limits.
+    /// - Access to advanced order book channels (L2/L3 depth).
+    ///
+    /// Higher VIP levels (VIP4+) get access to:
+    /// - "books50-l2-tbt" channel (50 depth, 10ms updates).
+    /// - "bbo-tbt" channel (1 depth, 10ms updates).
+    ///
+    /// VIP5+ get access to:
+    /// - "books-l2-tbt" channel (400 depth, 10ms updates).
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -531,64 +417,48 @@ impl OKXVipLevel {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
+}
 
-    #[classattr]
-    #[pyo3(name = "VIP0")]
-    fn py_vip0() -> Self {
-        Self::Vip0
+#[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+impl OKXEnvironment {
+    /// OKX API environment.
+    #[new]
+    fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let t = Self::type_object(py);
+        Self::py_from_str(&t, value)
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP1")]
-    fn py_vip1() -> Self {
-        Self::Vip1
+    const fn __hash__(&self) -> isize {
+        *self as isize
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP2")]
-    fn py_vip2() -> Self {
-        Self::Vip2
+    fn __str__(&self) -> String {
+        self.to_string()
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP3")]
-    fn py_vip3() -> Self {
-        Self::Vip3
+    #[getter]
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.to_string()
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP4")]
-    fn py_vip4() -> Self {
-        Self::Vip4
+    #[getter]
+    #[must_use]
+    pub fn value(&self) -> u8 {
+        *self as u8
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP5")]
-    fn py_vip5() -> Self {
-        Self::Vip5
+    #[classmethod]
+    #[must_use]
+    fn variants(_: &Bound<'_, PyType>) -> Vec<String> {
+        Self::iter().map(|x| x.to_string()).collect()
     }
 
-    #[classattr]
-    #[pyo3(name = "VIP6")]
-    fn py_vip6() -> Self {
-        Self::Vip6
-    }
-
-    #[classattr]
-    #[pyo3(name = "VIP7")]
-    fn py_vip7() -> Self {
-        Self::Vip7
-    }
-
-    #[classattr]
-    #[pyo3(name = "VIP8")]
-    fn py_vip8() -> Self {
-        Self::Vip8
-    }
-
-    #[classattr]
-    #[pyo3(name = "VIP9")]
-    fn py_vip9() -> Self {
-        Self::Vip9
+    #[classmethod]
+    #[pyo3(name = "from_str")]
+    fn py_from_str(_cls: &Bound<'_, PyType>, data: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let data_str: String = data.str()?.extract()?;
+        Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
 }

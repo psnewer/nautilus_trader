@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -52,7 +52,7 @@ pub struct CollectEvent {
 impl CollectEvent {
     /// Creates a new [`CollectEvent`] instance with the specified parameters.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         dex: SharedDex,
         pool_identifier: PoolIdentifier,
@@ -84,7 +84,6 @@ impl CollectEvent {
     }
 
     /// Converts a collect event into a `PoolFeeCollect`.
-    #[allow(clippy::too_many_arguments)]
     pub fn to_pool_fee_collect(
         &self,
         chain: SharedChain,

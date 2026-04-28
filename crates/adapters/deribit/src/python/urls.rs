@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,38 +17,23 @@
 
 use pyo3::prelude::*;
 
-use crate::common::consts::{
-    DERIBIT_HTTP_URL, DERIBIT_TESTNET_HTTP_URL, DERIBIT_TESTNET_WS_URL, DERIBIT_WS_URL,
+use crate::common::{
+    enums::DeribitEnvironment,
+    urls::{get_http_base_url, get_ws_url},
 };
 
-/// Returns the Deribit HTTP base URL.
-///
-/// # Arguments
-///
-/// * `is_testnet` - If true, returns the testnet URL.
 #[pyfunction]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.deribit")]
 #[pyo3(name = "get_deribit_http_base_url")]
 #[must_use]
-pub fn py_get_deribit_http_base_url(is_testnet: bool) -> String {
-    if is_testnet {
-        DERIBIT_TESTNET_HTTP_URL.to_string()
-    } else {
-        DERIBIT_HTTP_URL.to_string()
-    }
+pub fn py_get_deribit_http_base_url(environment: DeribitEnvironment) -> String {
+    get_http_base_url(environment).to_string()
 }
 
-/// Returns the Deribit WebSocket URL.
-///
-/// # Arguments
-///
-/// * `is_testnet` - If true, returns the testnet URL.
 #[pyfunction]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.deribit")]
 #[pyo3(name = "get_deribit_ws_url")]
 #[must_use]
-pub fn py_get_deribit_ws_url(is_testnet: bool) -> String {
-    if is_testnet {
-        DERIBIT_TESTNET_WS_URL.to_string()
-    } else {
-        DERIBIT_WS_URL.to_string()
-    }
+pub fn py_get_deribit_ws_url(environment: DeribitEnvironment) -> String {
+    get_ws_url(environment).to_string()
 }

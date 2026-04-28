@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,10 +15,10 @@
 
 //! Common functions to support Databento adapter operations.
 
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
 use databento::historical::DateTimeRange;
-use nautilus_core::UnixNanos;
+use nautilus_core::{UnixNanos, string::secret::REDACTED};
 use time::OffsetDateTime;
 use zeroize::ZeroizeOnDrop;
 
@@ -32,9 +32,9 @@ pub struct Credential {
 }
 
 impl Debug for Credential {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credential")
-            .field("api_key", &"<redacted>")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(Credential))
+            .field("api_key", &REDACTED)
             .finish()
     }
 }
@@ -58,8 +58,7 @@ impl Credential {
     /// having been created from a String.
     #[must_use]
     pub fn api_key(&self) -> &str {
-        // SAFETY: The API key is always valid UTF-8 since it was created from a String
-        std::str::from_utf8(&self.api_key).unwrap()
+        std::str::from_utf8(&self.api_key).expect("API key is valid UTF-8")
     }
 
     /// Returns a masked version of the API key for logging purposes.
@@ -68,7 +67,7 @@ impl Credential {
     /// For keys shorter than 8 characters, shows asterisks only.
     #[must_use]
     pub fn api_key_masked(&self) -> String {
-        nautilus_core::string::mask_api_key(self.api_key())
+        nautilus_core::string::secret::mask_api_key(self.api_key())
     }
 }
 
@@ -120,7 +119,7 @@ mod tests {
     fn test_credential_debug_redaction() {
         let credential = Credential::new("test_api_key");
         let debug_str = format!("{credential:?}");
-        assert!(debug_str.contains("<redacted>"));
+        assert!(debug_str.contains(REDACTED));
         assert!(!debug_str.contains("test_api_key"));
     }
 }

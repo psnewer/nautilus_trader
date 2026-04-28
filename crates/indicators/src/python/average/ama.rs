@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,7 +25,13 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl AdaptiveMovingAverage {
+    /// An indicator which calculates an adaptive moving average (AMA) across a
+    /// rolling window. Developed by Perry Kaufman, the AMA is a moving average
+    /// designed to account for market noise and volatility. The AMA will closely
+    /// follow prices when the price swings are relatively small and the noise is
+    /// low. The AMA will increase lag when the price swings increase.
     #[new]
     #[pyo3(signature = (period_efficiency_ratio, period_fast, period_slow, price_type=None))]
     #[must_use]

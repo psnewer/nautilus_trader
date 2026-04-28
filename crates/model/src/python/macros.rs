@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,6 +19,7 @@
 macro_rules! identifier_for_python {
     ($ty:ty) => {
         #[pymethods]
+        #[pyo3_stub_gen::derive::gen_stub_pymethods]
         impl $ty {
             #[new]
             fn py_new(value: &str) -> PyResult<Self> {

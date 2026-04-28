@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,9 +26,11 @@ use axum::{
 };
 use chrono::Utc;
 use nautilus_bybit::{
-    common::enums::{BybitAccountType, BybitProductType},
+    common::enums::{
+        BybitAccountType, BybitMarginMode, BybitProductType, BybitUnifiedMarginStatus,
+    },
     http::{
-        client::BybitHttpClient,
+        client::{BybitHttpClient, BybitRawHttpClient},
         query::{
             BybitFeeRateParams, BybitInstrumentsInfoParamsBuilder, BybitPositionListParamsBuilder,
             BybitWalletBalanceParams,
@@ -38,8 +40,8 @@ use nautilus_bybit::{
 use nautilus_common::testing::wait_until_async;
 use nautilus_model::{
     data::BarType,
-    enums::PositionSideSpecified,
-    identifiers::AccountId,
+    enums::{OrderSide, OrderType, PositionSideSpecified, TimeInForce, TriggerType},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, Venue},
     instruments::{CurrencyPair, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
@@ -49,6 +51,25 @@ use serde_json::{Value, json};
 
 type SettleCoinQueries = Arc<tokio::sync::Mutex<Vec<(String, Option<String>)>>>;
 
+/// Captured order submission for validation in tests.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
+struct CapturedOrder {
+    category: String,
+    symbol: String,
+    side: String,
+    order_type: String,
+    qty: String,
+    price: Option<String>,
+    trigger_price: Option<String>,
+    trigger_direction: Option<String>,
+    time_in_force: Option<String>,
+    market_unit: Option<String>,
+    reduce_only: Option<bool>,
+    is_leverage: Option<i32>,
+    order_link_id: Option<String>,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 struct TestServerState {
@@ -57,6 +78,7 @@ struct TestServerState {
     settle_coin_queries: SettleCoinQueries,
     realtime_requests: Arc<tokio::sync::Mutex<usize>>,
     history_requests: Arc<tokio::sync::Mutex<usize>>,
+    order_submissions: Arc<tokio::sync::Mutex<Vec<CapturedOrder>>>,
 }
 
 impl Default for TestServerState {
@@ -66,6 +88,7 @@ impl Default for TestServerState {
             settle_coin_queries: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             realtime_requests: Arc::new(tokio::sync::Mutex::new(0)),
             history_requests: Arc::new(tokio::sync::Mutex::new(0)),
+            order_submissions: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -291,6 +314,138 @@ async fn handle_post_order(headers: axum::http::HeaderMap, body: axum::body::Byt
     .into_response()
 }
 
+/// Stateful order handler that captures order details for test validation.
+#[allow(dead_code)]
+async fn handle_post_order_with_capture(
+    State(state): State<TestServerState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !headers.contains_key("X-BAPI-API-KEY")
+        || !headers.contains_key("X-BAPI-SIGN")
+        || !headers.contains_key("X-BAPI-TIMESTAMP")
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "retCode": 10003,
+                "retMsg": "Invalid API key",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    let Ok(order_req): Result<Value, _> = serde_json::from_slice(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "retCode": 10001,
+                "retMsg": "Invalid JSON body",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    };
+
+    if order_req.get("category").is_none()
+        || order_req.get("symbol").is_none()
+        || order_req.get("side").is_none()
+        || order_req.get("orderType").is_none()
+        || order_req.get("qty").is_none()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "retCode": 10001,
+                "retMsg": "Missing required order parameters",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    let captured = CapturedOrder {
+        category: order_req
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        symbol: order_req
+            .get("symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        side: order_req
+            .get("side")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        order_type: order_req
+            .get("orderType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        qty: order_req
+            .get("qty")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        price: order_req
+            .get("price")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        trigger_price: order_req
+            .get("triggerPrice")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        trigger_direction: order_req
+            .get("triggerDirection")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string()),
+        time_in_force: order_req
+            .get("timeInForce")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        market_unit: order_req
+            .get("marketUnit")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        reduce_only: order_req.get("reduceOnly").and_then(|v| v.as_bool()),
+        is_leverage: order_req
+            .get("isLeverage")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        order_link_id: order_req
+            .get("orderLinkId")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    };
+
+    {
+        let mut orders = state.order_submissions.lock().await;
+        orders.push(captured);
+    }
+
+    Json(json!({
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "orderId": "test-order-id-12345",
+            "orderLinkId": order_req.get("orderLinkId").and_then(|v| v.as_str()).unwrap_or("")
+        },
+        "retExtInfo": {},
+        "time": 1704470400123i64
+    }))
+    .into_response()
+}
+
 #[allow(dead_code)]
 async fn handle_get_wallet_balance(headers: axum::http::HeaderMap) -> Response {
     // Check for authentication headers
@@ -313,6 +468,30 @@ async fn handle_get_wallet_balance(headers: axum::http::HeaderMap) -> Response {
 
     let wallet = load_test_data("http_get_wallet_balance.json");
     Json(wallet).into_response()
+}
+
+#[allow(dead_code)]
+async fn handle_get_account_info(headers: axum::http::HeaderMap) -> Response {
+    // Check for authentication headers
+    if !headers.contains_key("X-BAPI-API-KEY")
+        || !headers.contains_key("X-BAPI-SIGN")
+        || !headers.contains_key("X-BAPI-TIMESTAMP")
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "retCode": 10003,
+                "retMsg": "Invalid API key",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    let account_info = load_test_data("http_get_account_info.json");
+    Json(account_info).into_response()
 }
 
 #[allow(dead_code)]
@@ -711,6 +890,7 @@ fn create_test_router(state: TestServerState) -> Router {
         .route("/v5/order/create", post(handle_post_order))
         .route("/v5/order/cancel", post(handle_cancel_order))
         .route("/v5/account/wallet-balance", get(handle_get_wallet_balance))
+        .route("/v5/account/info", get(handle_get_account_info))
         .route("/v5/position/list", get(handle_get_positions))
         .route("/v5/account/fee-rate", get(handle_get_fee_rate))
         .route(
@@ -741,7 +921,7 @@ async fn start_test_server()
 #[rstest]
 #[tokio::test]
 async fn test_client_creation() {
-    let client = BybitHttpClient::new(None, Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(None, 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     assert!(client.base_url().contains("bybit.com"));
     assert!(client.credential().is_none());
@@ -754,11 +934,11 @@ async fn test_client_with_credentials() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some("https://api.bybit.com".to_string()),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -771,11 +951,11 @@ async fn test_client_with_credentials() {
 async fn test_testnet_urls() {
     let client = BybitHttpClient::new(
         Some("https://api-testnet.bybit.com".to_string()),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -789,11 +969,11 @@ async fn test_custom_base_url() {
     let custom_url = "https://custom.bybit.com";
     let client = BybitHttpClient::new(
         Some(custom_url.to_string()),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -807,8 +987,7 @@ async fn test_get_server_time() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let response = client.get_server_time().await.unwrap();
     assert!(!response.result.time_second.is_empty());
@@ -821,8 +1000,7 @@ async fn test_get_instruments_linear() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitInstrumentsInfoParamsBuilder::default()
         .category(BybitProductType::Linear)
@@ -839,8 +1017,7 @@ async fn test_get_instruments_spot() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitInstrumentsInfoParamsBuilder::default()
         .category(BybitProductType::Spot)
@@ -857,8 +1034,7 @@ async fn test_get_instruments_inverse() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitInstrumentsInfoParamsBuilder::default()
         .category(BybitProductType::Inverse)
@@ -875,8 +1051,7 @@ async fn test_get_instruments_option() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitInstrumentsInfoParamsBuilder::default()
         .category(BybitProductType::Option)
@@ -897,11 +1072,11 @@ async fn test_place_order() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -928,8 +1103,7 @@ async fn test_authenticated_endpoint_requires_credentials() {
     let base_url = format!("http://{addr}");
 
     // Create client without credentials
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     // Should fail when trying to call authenticated endpoint without credentials
     let result = client
@@ -959,17 +1133,18 @@ async fn test_rate_limiting_returns_error() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     // Make multiple requests to trigger rate limit (mock server limits after 5)
     let mut last_error = None;
+
     for _ in 0..10 {
         match client
             .get_open_orders(
@@ -986,7 +1161,7 @@ async fn test_rate_limiting_returns_error() {
             )
             .await
         {
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(e) => {
                 last_error = Some(e);
                 break;
@@ -1010,11 +1185,11 @@ async fn test_get_open_orders_with_symbol() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1049,11 +1224,11 @@ async fn test_get_open_orders_without_symbol() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1084,8 +1259,7 @@ async fn test_get_wallet_balance_requires_credentials() {
     let base_url = format!("http://{addr}");
 
     // Create client without credentials
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitWalletBalanceParams {
         account_type: BybitAccountType::Unified,
@@ -1107,11 +1281,11 @@ async fn test_get_wallet_balance_with_credentials() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1137,8 +1311,7 @@ async fn test_get_positions_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitPositionListParamsBuilder::default()
         .category(BybitProductType::Linear)
@@ -1159,11 +1332,11 @@ async fn test_get_positions_with_credentials() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1184,8 +1357,7 @@ async fn test_get_fee_rate_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitFeeRateParams {
         category: BybitProductType::Linear,
@@ -1207,11 +1379,11 @@ async fn test_get_fee_rate_with_credentials() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1226,6 +1398,51 @@ async fn test_get_fee_rate_with_credentials() {
 
     assert_eq!(response.ret_code, 0);
     assert!(!response.result.list.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_account_info_requires_credentials() {
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
+
+    let result = client.get_account_info().await;
+    assert!(result.is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_account_info_with_credentials() {
+    use nautilus_bybit::http::models::BybitAccountInfoResponse;
+
+    let (addr, _state) = start_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let response: BybitAccountInfoResponse = client.get_account_info().await.unwrap();
+
+    assert_eq!(response.ret_code, 0);
+    assert_eq!(response.result.margin_mode, BybitMarginMode::RegularMargin);
+    assert_eq!(
+        response.result.unified_margin_status,
+        BybitUnifiedMarginStatus::UnifiedTradingAccount10Pro
+    );
+    assert!(!response.result.is_master_trader);
+    assert!(!response.result.spot_hedging_status);
 }
 // Create router with separate handlers for reconciliation testing
 #[allow(dead_code)]
@@ -1268,18 +1485,18 @@ async fn test_request_order_status_reports_calls_both_endpoints() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     // Required for parsing order reports
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
 
@@ -1334,19 +1551,20 @@ async fn test_request_order_status_reports_requires_settle_coin_for_linear() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1379,19 +1597,20 @@ async fn test_order_deduplication_by_order_id() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1400,7 +1619,6 @@ async fn test_order_deduplication_by_order_id() {
 
     // Test deduplication by querying both realtime and history for a specific instrument
     // This avoids the settle coin iteration complexity
-    use nautilus_model::identifiers::{InstrumentId, Symbol, Venue};
     let instrument_id = InstrumentId::new(Symbol::from("ETHUSDT-LINEAR"), Venue::from("BYBIT"));
 
     let reports = client
@@ -1439,19 +1657,20 @@ async fn test_request_order_status_reports_linear_queries_all_settle_coins() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1478,10 +1697,11 @@ async fn test_request_order_status_reports_linear_queries_all_settle_coins() {
         .map(|(_, coin)| coin)
         .collect();
 
+    // 2 settle coins x 2 order filters (regular + StopOrder) = 4 queries
     assert_eq!(
         realtime_queries.len(),
-        2,
-        "Should query realtime endpoint twice (once per settle coin)"
+        4,
+        "Should query realtime endpoint for each settle coin and order filter"
     );
     assert!(
         realtime_queries.contains(&&Some("USDT".to_string())),
@@ -1503,19 +1723,20 @@ async fn test_request_order_status_reports_respects_limit_across_settle_coins() 
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1550,7 +1771,11 @@ async fn test_request_order_status_reports_respects_limit_across_settle_coins() 
         .filter(|(endpoint, _)| endpoint == "realtime")
         .count();
 
-    assert_eq!(realtime_query_count, 2, "Should query both settle coins");
+    // At least 2 queries (both settle coins), up to 4 with StopOrder filter passes
+    assert!(
+        realtime_query_count >= 2,
+        "Should query both settle coins, was {realtime_query_count}",
+    );
 }
 
 #[rstest]
@@ -1563,19 +1788,20 @@ async fn test_request_order_status_reports_stops_before_next_coin() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1628,19 +1854,20 @@ async fn test_request_order_status_reports_combines_orders_from_each_settle_coin
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -1667,7 +1894,12 @@ async fn test_request_order_status_reports_combines_orders_from_each_settle_coin
         .map(|(_, coin)| coin)
         .collect();
 
-    assert_eq!(realtime_queries.len(), 2, "Should query both USDT and USDC");
+    // 2 settle coins x 2 order filters (regular + StopOrder) = 4 queries
+    assert_eq!(
+        realtime_queries.len(),
+        4,
+        "Should query both USDT and USDC with both order filters"
+    );
     assert!(
         realtime_queries.contains(&&Some("USDT".to_string())),
         "Should query USDT"
@@ -1720,11 +1952,11 @@ async fn test_repay_spot_borrow_with_amount() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1747,11 +1979,11 @@ async fn test_repay_spot_borrow_without_amount() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1770,8 +2002,7 @@ async fn test_repay_spot_borrow_requires_credentials() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let amount = Quantity::new_checked(0.5, 8).unwrap();
     let result = client.repay_spot_borrow("ETH", Some(amount)).await;
@@ -1788,11 +2019,11 @@ async fn test_get_spot_borrow_amount_returns_zero_when_no_borrow() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        None,
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1813,11 +2044,11 @@ async fn test_get_spot_borrow_amount_returns_zero_when_coin_not_found() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        None,
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1838,11 +2069,11 @@ async fn test_spot_position_report_short_from_borrowed_balance() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        None,
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
@@ -1860,6 +2091,7 @@ async fn test_spot_position_report_short_from_borrowed_balance() {
         5,
         Price::from("0.01"),
         Quantity::from("0.00001"),
+        None,
         None,
         None,
         None,
@@ -1902,17 +2134,17 @@ async fn test_request_order_status_reports_with_time_filtering() {
         "test_api_key".to_string(),
         "test_api_secret".to_string(),
         Some(base_url),
-        Some(60),
-        None,
-        None,
-        None,
-        None,
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
         None,
     )
     .unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
 
@@ -1947,16 +2179,12 @@ async fn test_request_order_status_reports_with_time_filtering() {
     );
 }
 
-// =====================================================
-// Tests for request_tickers
-// =====================================================
-
 #[tokio::test]
 #[ignore] // Requires real Bybit API access
 async fn test_request_tickers_spot_live() {
     use nautilus_bybit::http::query::BybitTickersParamsBuilder;
 
-    let client = BybitHttpClient::new(None, None, None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(None, 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitTickersParamsBuilder::default()
         .category(BybitProductType::Spot)
@@ -2024,7 +2252,7 @@ async fn test_request_tickers_spot_live() {
 async fn test_request_tickers_linear_live() {
     use nautilus_bybit::http::query::BybitTickersParamsBuilder;
 
-    let client = BybitHttpClient::new(None, None, None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(None, 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitTickersParamsBuilder::default()
         .category(BybitProductType::Linear)
@@ -2117,7 +2345,7 @@ async fn test_request_tickers_linear_live() {
 async fn test_request_tickers_inverse_live() {
     use nautilus_bybit::http::query::BybitTickersParamsBuilder;
 
-    let client = BybitHttpClient::new(None, None, None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(None, 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let params = BybitTickersParamsBuilder::default()
         .category(BybitProductType::Inverse)
@@ -2168,7 +2396,7 @@ async fn test_request_tickers_inverse_live() {
 async fn test_request_tickers_with_symbol_filter() {
     use nautilus_bybit::http::query::BybitTickersParamsBuilder;
 
-    let client = BybitHttpClient::new(None, None, None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(None, 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     // Test with specific symbol
     let params = BybitTickersParamsBuilder::default()
@@ -2300,13 +2528,13 @@ async fn test_request_bars_continues_pagination_when_first_page_only_partial() {
     let (addr, state) = start_partial_first_page_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client =
-        BybitHttpClient::new(Some(base_url), Some(60), None, None, None, None, None).unwrap();
+    let client = BybitHttpClient::new(Some(base_url), 60, 3, 1000, 10_000, 5_000, None).unwrap();
 
     let instruments = client
-        .request_instruments(BybitProductType::Linear, None)
+        .request_instruments(BybitProductType::Linear, None, None)
         .await
         .unwrap();
+
     for instrument in instruments {
         client.cache_instrument(instrument);
     }
@@ -2326,5 +2554,1552 @@ async fn test_request_bars_continues_pagination_when_first_page_only_partial() {
     assert!(
         request_count >= 2,
         "Should have made at least 2 requests to paginate past partial bars"
+    );
+}
+
+#[allow(dead_code)]
+fn create_order_capture_test_router(state: TestServerState) -> Router {
+    Router::new()
+        .route("/v5/market/time", get(handle_get_server_time))
+        .route("/v5/market/instruments-info", get(handle_get_instruments))
+        .route("/v5/order/create", post(handle_post_order_with_capture))
+        .route("/v5/order/realtime", get(handle_get_orders))
+        .route("/v5/account/fee-rate", get(handle_get_fee_rate))
+        .with_state(state)
+}
+
+async fn start_order_capture_test_server()
+-> Result<(SocketAddr, TestServerState), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = TestServerState::default();
+    let router = create_order_capture_test_router(state.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    wait_for_server(addr, "/v5/market/time").await;
+
+    Ok((addr, state))
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_stop_market_with_trigger_price() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("stop-market-test-1");
+    let quantity = Quantity::new(0.001, 3);
+    let trigger_price = Price::new(100_000.0, 2);
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::StopMarket,
+            quantity,
+            None, // time_in_force
+            None, // price (not used for market orders)
+            Some(trigger_price),
+            None,  // post_only
+            false, // reduce_only
+            false, // is_quote_quantity
+            false, // is_leverage
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1, "Should have captured one order");
+
+    let order = &orders[0];
+    assert_eq!(order.category, "linear");
+    assert_eq!(order.symbol, "BTCUSDT");
+    assert_eq!(order.side, "Buy");
+    assert_eq!(order.order_type, "Market");
+    assert_eq!(
+        order.trigger_price.as_deref(),
+        Some("100000.00"),
+        "Should have trigger price"
+    );
+
+    // Buy stop triggers on rise (triggerDirection=1)
+    assert_eq!(
+        order.trigger_direction.as_deref(),
+        Some("1"),
+        "Buy stop should trigger on rise"
+    );
+
+    // Market orders don't send timeInForce
+    assert!(
+        order.time_in_force.is_none(),
+        "Market orders should not have timeInForce"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_stop_limit_with_trigger_price_and_limit_price() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("stop-limit-test-1");
+    let quantity = Quantity::new(0.001, 3);
+    let trigger_price = Price::new(99_000.0, 2);
+    let limit_price = Price::new(98_500.0, 2);
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Sell,
+            OrderType::StopLimit,
+            quantity,
+            Some(TimeInForce::Gtc),
+            Some(limit_price),
+            Some(trigger_price),
+            None,  // post_only
+            true,  // reduce_only
+            false, // is_quote_quantity
+            false, // is_leverage
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1, "Should have captured one order");
+
+    let order = &orders[0];
+    assert_eq!(order.category, "linear");
+    assert_eq!(order.symbol, "BTCUSDT");
+    assert_eq!(order.side, "Sell");
+    assert_eq!(order.order_type, "Limit");
+    assert_eq!(
+        order.price.as_deref(),
+        Some("98500.00"),
+        "Should have limit price"
+    );
+    assert_eq!(
+        order.trigger_price.as_deref(),
+        Some("99000.00"),
+        "Should have trigger price"
+    );
+
+    // Sell stop triggers on fall (triggerDirection=2)
+    assert_eq!(
+        order.trigger_direction.as_deref(),
+        Some("2"),
+        "Sell stop should trigger on fall"
+    );
+    assert_eq!(order.time_in_force.as_deref(), Some("GTC"));
+    assert_eq!(order.reduce_only, Some(true));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_market_if_touched_trigger_direction() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("mit-test-1");
+    let quantity = Quantity::new(0.001, 3);
+    let trigger_price = Price::new(95_000.0, 2);
+
+    // MarketIfTouched Buy triggers on FALL (opposite of stop)
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::MarketIfTouched,
+            quantity,
+            None,
+            None,
+            Some(trigger_price),
+            None,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+
+    // Buy MIT triggers on fall (triggerDirection=2) - opposite of Buy Stop
+    assert_eq!(
+        order.trigger_direction.as_deref(),
+        Some("2"),
+        "Buy MIT should trigger on fall"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_post_only() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("post-only-test-1");
+    let quantity = Quantity::new(0.001, 3);
+    let price = Price::new(100_000.0, 2);
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::Limit,
+            quantity,
+            Some(TimeInForce::Gtc), // This will be overridden by post_only
+            Some(price),
+            None,
+            Some(true), // post_only
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+    assert_eq!(order.order_type, "Limit");
+    assert_eq!(
+        order.time_in_force.as_deref(),
+        Some("PostOnly"),
+        "Post-only orders should have timeInForce=PostOnly"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_spot_market_base_quantity() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Spot, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-SPOT"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("spot-base-qty-test-1");
+    let quantity = Quantity::new(0.001, 3);
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Spot,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::Market,
+            quantity,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false, // is_quote_quantity=false -> baseCoin
+            true,  // is_leverage
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+    assert_eq!(order.category, "spot");
+    assert_eq!(order.order_type, "Market");
+    assert_eq!(
+        order.market_unit.as_deref(),
+        Some("baseCoin"),
+        "SPOT market order with is_quote_quantity=false should use baseCoin"
+    );
+    assert_eq!(
+        order.is_leverage,
+        Some(1),
+        "is_leverage=true should send isLeverage=1"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_spot_market_quote_quantity() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Spot, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-SPOT"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("spot-quote-qty-test-1");
+    let quantity = Quantity::new(100.0, 2); // 100 USDT worth
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Spot,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::Market,
+            quantity,
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,  // is_quote_quantity=true -> quoteCoin
+            false, // is_leverage
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+    assert_eq!(order.category, "spot");
+    assert_eq!(order.order_type, "Market");
+    assert_eq!(
+        order.market_unit.as_deref(),
+        Some("quoteCoin"),
+        "SPOT market order with is_quote_quantity=true should use quoteCoin"
+    );
+    assert_eq!(
+        order.is_leverage,
+        Some(0),
+        "is_leverage=false should send isLeverage=0"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_linear_does_not_send_market_unit() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("linear-market-test-1");
+    let quantity = Quantity::new(0.001, 3);
+
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Buy,
+            OrderType::Market,
+            quantity,
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,  // is_quote_quantity - should be ignored for LINEAR
+            false, // is_leverage - only for SPOT
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+    assert_eq!(order.category, "linear");
+    assert!(
+        order.market_unit.is_none(),
+        "LINEAR market orders should not have marketUnit"
+    );
+    assert!(
+        order.is_leverage.is_none(),
+        "LINEAR orders should not have isLeverage"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_submit_order_limit_if_touched_trigger_direction() {
+    let (addr, state) = start_order_capture_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+    let client_order_id = ClientOrderId::from("lit-test-1");
+    let quantity = Quantity::new(0.001, 3);
+    let trigger_price = Price::new(105_000.0, 2);
+    let limit_price = Price::new(105_500.0, 2);
+
+    // LimitIfTouched Sell triggers on RISE (opposite of stop)
+    let result = client
+        .submit_order(
+            account_id,
+            BybitProductType::Linear,
+            instrument_id,
+            client_order_id,
+            OrderSide::Sell,
+            OrderType::LimitIfTouched,
+            quantity,
+            Some(TimeInForce::Gtc),
+            Some(limit_price),
+            Some(trigger_price),
+            None,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    assert!(result.is_ok(), "Order submission should succeed");
+
+    let orders = state.order_submissions.lock().await;
+    assert_eq!(orders.len(), 1);
+
+    let order = &orders[0];
+    assert_eq!(order.order_type, "Limit");
+    assert_eq!(
+        order.trigger_price.as_deref(),
+        Some("105000.00"),
+        "Should have trigger price"
+    );
+    assert_eq!(
+        order.price.as_deref(),
+        Some("105500.00"),
+        "Should have limit price"
+    );
+
+    // Sell LIT triggers on rise (triggerDirection=1) - opposite of Sell Stop
+    assert_eq!(
+        order.trigger_direction.as_deref(),
+        Some("1"),
+        "Sell LIT should trigger on rise"
+    );
+}
+
+async fn handle_empty_orders(headers: axum::http::HeaderMap) -> Response {
+    if !headers.contains_key("X-BAPI-API-KEY") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "retCode": 10003,
+                "retMsg": "Invalid API key",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    Json(json!({
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {
+            "list": [],
+            "nextPageCursor": ""
+        },
+        "retExtInfo": {},
+        "time": 1704470400123i64
+    }))
+    .into_response()
+}
+
+fn create_empty_orders_test_router(state: TestServerState) -> Router {
+    Router::new()
+        .route("/v5/market/time", get(handle_get_server_time))
+        .route("/v5/market/instruments-info", get(handle_get_instruments))
+        .route("/v5/account/fee-rate", get(handle_get_fee_rate))
+        .route("/v5/order/realtime", get(handle_empty_orders))
+        .route("/v5/order/history", get(handle_empty_orders))
+        .with_state(state)
+}
+
+async fn start_empty_orders_test_server()
+-> Result<(SocketAddr, TestServerState), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = TestServerState::default();
+    let router = create_empty_orders_test_router(state.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    wait_for_server(addr, "/v5/market/time").await;
+    Ok((addr, state))
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_query_order_option_not_found_returns_none() {
+    let (addr, _state) = start_empty_orders_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Option, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(
+        Symbol::from("BTC-27MAR26-70000-C-OPTION"),
+        Venue::from("BYBIT"),
+    );
+    let client_order_id = ClientOrderId::from("option-query-test-1");
+
+    let result = client
+        .query_order(
+            account_id,
+            BybitProductType::Option,
+            instrument_id,
+            Some(client_order_id),
+            None,
+        )
+        .await;
+
+    assert!(result.is_ok(), "query_order should not error for options");
+    assert!(
+        result.unwrap().is_none(),
+        "query_order should return None when option order not found"
+    );
+}
+
+// Handler that returns TP/SL orders for StopOrder filter, empty for regular
+#[allow(dead_code)]
+async fn handle_get_orders_realtime_tp_sl(
+    query: Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if !headers.contains_key("X-BAPI-API-KEY") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "retCode": 10003,
+                "retMsg": "Invalid API key",
+                "result": {},
+                "retExtInfo": {},
+                "time": 1704470400123i64
+            })),
+        )
+            .into_response();
+    }
+
+    let order_filter = query.get("orderFilter").map(String::as_str);
+    if order_filter == Some("StopOrder") {
+        let orders = load_test_data("http_get_orders_realtime_tp_sl.json");
+        Json(orders).into_response()
+    } else {
+        Json(json!({
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": { "list": [], "nextPageCursor": "" },
+            "retExtInfo": {},
+            "time": 1704470400123i64
+        }))
+        .into_response()
+    }
+}
+
+#[allow(dead_code)]
+fn create_tp_sl_test_router() -> Router {
+    Router::new()
+        .route("/v5/market/time", get(handle_get_server_time))
+        .route("/v5/market/instruments-info", get(handle_get_instruments))
+        .route("/v5/account/fee-rate", get(handle_get_fee_rate))
+        .route("/v5/order/realtime", get(handle_get_orders_realtime_tp_sl))
+}
+
+#[allow(dead_code)]
+async fn start_tp_sl_test_server() -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let router = create_tp_sl_test_router();
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    wait_for_server(addr, "/v5/market/time").await;
+    Ok(addr)
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_request_order_status_reports_tp_sl_orders() {
+    let addr = start_tp_sl_test_server().await.unwrap();
+    let base_url = format!("http://{addr}");
+
+    let client = BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap();
+
+    let instruments = client
+        .request_instruments(BybitProductType::Linear, None, None)
+        .await
+        .unwrap();
+
+    for instrument in instruments {
+        client.cache_instrument(instrument);
+    }
+
+    let account_id = AccountId::from("BYBIT-UNIFIED");
+    let instrument_id = InstrumentId::new(Symbol::from("BTCUSDT-LINEAR"), Venue::from("BYBIT"));
+
+    let reports = client
+        .request_order_status_reports(
+            account_id,
+            BybitProductType::Linear,
+            Some(instrument_id),
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Should get 2 orders: TakeProfit + StopLoss from the StopOrder filter
+    assert_eq!(reports.len(), 2, "Should have 2 TP/SL orders");
+
+    // First order: TakeProfit sell (RisesTo) -> MarketIfTouched
+    let tp_report = reports
+        .iter()
+        .find(|r| r.venue_order_id.as_str() == "tp-order-001")
+        .unwrap();
+    assert_eq!(tp_report.order_type, OrderType::MarketIfTouched);
+    assert_eq!(tp_report.order_side, OrderSide::Sell);
+    assert_eq!(tp_report.trigger_price, Some(Price::from("55000.00")));
+    assert_eq!(tp_report.trigger_type, Some(TriggerType::LastPrice));
+    assert!(tp_report.reduce_only);
+
+    // Second order: StopLoss limit sell (FallsTo) -> StopLimit
+    let sl_report = reports
+        .iter()
+        .find(|r| r.venue_order_id.as_str() == "sl-order-001")
+        .unwrap();
+    assert_eq!(sl_report.order_type, OrderType::StopLimit);
+    assert_eq!(sl_report.order_side, OrderSide::Sell);
+    assert_eq!(sl_report.trigger_price, Some(Price::from("48000.00")));
+    assert_eq!(sl_report.price, Some(Price::from("47500.00")));
+    assert_eq!(sl_report.trigger_type, Some(TriggerType::LastPrice));
+    assert!(sl_report.reduce_only);
+}
+
+// -------------------------------------------------------------------------------------------------
+// User API endpoints (/v5/user/*) wire-up tests
+//
+// These tests verify the client-layer wiring of the user-management endpoints:
+//   - the request hits the expected route,
+//   - authentication headers are attached,
+//   - query strings and request bodies carry the expected fields,
+//   - responses decode into the typed DTOs.
+// Deserialization details are covered by the unit tests in
+// `src/http/models.rs` and are not duplicated here.
+// -------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+struct UserApiCapture {
+    last_query: Arc<tokio::sync::Mutex<Option<String>>>,
+    last_body: Arc<tokio::sync::Mutex<Option<Value>>>,
+}
+
+/// Rejects requests lacking Bybit signed auth headers with 401.
+fn require_bybit_auth(headers: &axum::http::HeaderMap) -> Option<Response> {
+    if !headers.contains_key("X-BAPI-API-KEY")
+        || !headers.contains_key("X-BAPI-SIGN")
+        || !headers.contains_key("X-BAPI-TIMESTAMP")
+    {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "retCode": 10003,
+                    "retMsg": "Invalid API key",
+                    "result": {},
+                    "retExtInfo": {},
+                    "time": 1700000000000i64
+                })),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+async fn user_handle_sub_members(headers: axum::http::HeaderMap) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    Json(load_test_data("http_get_user_sub_members.json")).into_response()
+}
+
+async fn user_handle_sub_members_paged(
+    State(cap): State<UserApiCapture>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    *cap.last_query.lock().await = uri.query().map(str::to_owned);
+    Json(load_test_data("http_get_user_sub_members_paged.json")).into_response()
+}
+
+async fn user_handle_escrow_sub_members(
+    State(cap): State<UserApiCapture>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    *cap.last_query.lock().await = uri.query().map(str::to_owned);
+    Json(load_test_data("http_get_user_escrow_sub_members.json")).into_response()
+}
+
+async fn user_handle_sub_apikeys(
+    State(cap): State<UserApiCapture>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    *cap.last_query.lock().await = uri.query().map(str::to_owned);
+    Json(load_test_data("http_get_user_sub_apikeys.json")).into_response()
+}
+
+async fn user_handle_update_sub_api(
+    State(cap): State<UserApiCapture>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+
+    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
+        *cap.last_body.lock().await = Some(value);
+    }
+    Json(load_test_data("http_post_user_update_sub_api.json")).into_response()
+}
+
+async fn user_handle_update_master_api(
+    State(cap): State<UserApiCapture>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+
+    if let Ok(value) = serde_json::from_slice::<Value>(&body) {
+        *cap.last_body.lock().await = Some(value);
+    }
+    Json(load_test_data("http_post_user_update_master_api.json")).into_response()
+}
+
+fn create_user_api_router(cap: UserApiCapture) -> Router {
+    Router::new()
+        .route("/v5/user/query-sub-members", get(user_handle_sub_members))
+        .route("/v5/user/submembers", get(user_handle_sub_members_paged))
+        .route(
+            "/v5/user/escrow_sub_members",
+            get(user_handle_escrow_sub_members),
+        )
+        .route("/v5/user/sub-apikeys", get(user_handle_sub_apikeys))
+        .route("/v5/user/update-sub-api", post(user_handle_update_sub_api))
+        .route("/v5/user/update-api", post(user_handle_update_master_api))
+        // Exposed so the readiness probe can reach a known endpoint.
+        .route("/v5/market/time", get(handle_get_server_time))
+        .with_state(cap)
+}
+
+async fn start_user_api_server()
+-> Result<(SocketAddr, UserApiCapture), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cap = UserApiCapture::default();
+    let router = create_user_api_router(cap.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    wait_for_server(addr, "/v5/market/time").await;
+    Ok((addr, cap))
+}
+
+fn user_test_client(base_url: String) -> BybitHttpClient {
+    BybitHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap()
+}
+
+fn user_raw_test_client(base_url: String) -> BybitRawHttpClient {
+    BybitRawHttpClient::with_credentials(
+        "test_api_key".to_string(),
+        "test_api_secret".to_string(),
+        Some(base_url),
+        60,
+        3,
+        1000,
+        10_000,
+        5_000,
+        None,
+    )
+    .unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_sub_members_no_params() {
+    use nautilus_bybit::http::models::BybitSubMembersResponse;
+
+    let (addr, _cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let response: BybitSubMembersResponse = client.get_sub_members().await.unwrap();
+    assert_eq!(response.ret_code, 0);
+    assert_eq!(response.result.sub_members.len(), 2);
+    assert_eq!(response.result.sub_members[0].uid, "106314365");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_sub_members_paged_sends_cursor_and_size() {
+    use nautilus_bybit::http::query::BybitSubMembersPageParamsBuilder;
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let params = BybitSubMembersPageParamsBuilder::default()
+        .page_size(50u32)
+        .next_cursor("page-token-xyz".to_string())
+        .build()
+        .unwrap();
+
+    let response = client.get_sub_members_paged(&params).await.unwrap();
+    assert_eq!(response.result.sub_members.len(), 2);
+    assert_eq!(response.result.next_cursor.as_deref(), Some("0"));
+
+    let q = cap.last_query.lock().await.clone().expect("query captured");
+    assert!(
+        q.contains("pageSize=50"),
+        "query should carry pageSize: {q}"
+    );
+    assert!(
+        q.contains("nextCursor=page-token-xyz"),
+        "query should carry nextCursor: {q}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_escrow_sub_members_hits_escrow_route() {
+    use nautilus_bybit::http::query::BybitSubMembersPageParamsBuilder;
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let params = BybitSubMembersPageParamsBuilder::default()
+        .page_size(20u32)
+        .build()
+        .unwrap();
+
+    let response = client.get_escrow_sub_members(&params).await.unwrap();
+    assert_eq!(response.result.sub_members[0].member_type, 12);
+    // A non-`"0"` cursor indicates more pages remain to be fetched.
+    assert_eq!(response.result.next_cursor.as_deref(), Some("344"));
+
+    let q = cap.last_query.lock().await.clone().expect("query captured");
+    assert!(
+        q.contains("pageSize=20"),
+        "query should carry pageSize: {q}"
+    );
+    assert!(
+        !q.contains("nextCursor"),
+        "nextCursor should be omitted when None: {q}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_get_sub_api_keys_sends_required_params() {
+    use nautilus_bybit::http::query::BybitSubApiKeysParamsBuilder;
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let params = BybitSubApiKeysParamsBuilder::default()
+        .sub_member_id("533285".to_string())
+        .limit(10u32)
+        .cursor("next-token".to_string())
+        .build()
+        .unwrap();
+
+    let response = client.get_sub_api_keys(&params).await.unwrap();
+    assert_eq!(response.result.keys.len(), 1);
+    assert!(!response.result.keys[0].read_only);
+    assert_eq!(response.result.keys[0].secret, None);
+
+    let q = cap.last_query.lock().await.clone().expect("query captured");
+    assert!(q.contains("subMemberId=533285"), "query: {q}");
+    assert!(q.contains("limit=10"), "query: {q}");
+    assert!(q.contains("cursor=next-token"), "query: {q}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_update_sub_api_key_omits_none_permissions() {
+    use nautilus_bybit::http::query::BybitUpdateSubApiParamsBuilder;
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let params = BybitUpdateSubApiParamsBuilder::default()
+        .read_only(true)
+        .build()
+        .unwrap();
+
+    let response = client.update_sub_api_key(&params).await.unwrap();
+    assert!(!response.result.read_only);
+
+    let body = cap.last_body.lock().await.clone().expect("body captured");
+    let obj = body.as_object().expect("json object");
+    assert_eq!(obj.get("readOnly").and_then(Value::as_i64), Some(1));
+    assert!(
+        !obj.contains_key("permissions"),
+        "permissions must be skipped when None: {body}"
+    );
+    assert!(
+        !obj.contains_key("apiKey"),
+        "apiKey must be skipped when None: {body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_update_sub_api_key_serializes_permissions_pascal_case() {
+    use nautilus_bybit::http::query::{
+        BybitApiKeyPermissionUpdateBuilder, BybitUpdateSubApiParamsBuilder,
+    };
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let permissions = BybitApiKeyPermissionUpdateBuilder::default()
+        .spot(vec!["SpotTrade".to_string()])
+        .wallet(vec!["AccountTransfer".to_string()])
+        .build()
+        .unwrap();
+
+    let params = BybitUpdateSubApiParamsBuilder::default()
+        .api_key("sub-key-id".to_string())
+        .permissions(permissions)
+        .build()
+        .unwrap();
+
+    client.update_sub_api_key(&params).await.unwrap();
+
+    let body = cap.last_body.lock().await.clone().expect("body captured");
+    let perms = body
+        .get("permissions")
+        .and_then(Value::as_object)
+        .expect("permissions object");
+    // Permission keys must be serialised in PascalCase and must contain only
+    // the buckets that were explicitly set on the builder.
+    assert!(perms.contains_key("Spot"));
+    assert!(perms.contains_key("Wallet"));
+    assert!(
+        !perms.contains_key("ContractTrade"),
+        "unset permission keys must be skipped: {body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_update_master_api_key_emits_renamed_permission_keys() {
+    // Regression guard: `NFT`, `FiatP2P` and `ByXPost` carry non-standard
+    // casing that the struct-level `rename_all = "PascalCase"` rule would
+    // otherwise mangle into `Nft`, `FiatP2p`, `ByxPost` — which Bybit would
+    // silently ignore.
+    use nautilus_bybit::http::query::{
+        BybitApiKeyPermissionUpdateBuilder, BybitUpdateMasterApiParamsBuilder,
+    };
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let permissions = BybitApiKeyPermissionUpdateBuilder::default()
+        .nft(vec!["NFTQueryProductList".to_string()])
+        .fiat_p2p(vec!["P2PDeposit".to_string()])
+        .byx_post(vec!["PostContent".to_string()])
+        .build()
+        .unwrap();
+
+    let params = BybitUpdateMasterApiParamsBuilder::default()
+        .permissions(permissions)
+        .build()
+        .unwrap();
+
+    client.update_master_api_key(&params).await.unwrap();
+
+    let body = cap.last_body.lock().await.clone().expect("body captured");
+    let perms = body
+        .get("permissions")
+        .and_then(Value::as_object)
+        .expect("permissions object");
+    assert!(perms.contains_key("NFT"), "expected key `NFT`: {body}");
+    assert!(
+        perms.contains_key("FiatP2P"),
+        "expected key `FiatP2P`: {body}"
+    );
+    assert!(
+        perms.contains_key("ByXPost"),
+        "expected key `ByXPost`: {body}"
+    );
+    assert!(
+        !perms.contains_key("Nft")
+            && !perms.contains_key("FiatP2p")
+            && !perms.contains_key("ByxPost"),
+        "default PascalCase casing must not leak through: {body}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_update_master_api_key_body_has_no_ips() {
+    // Regression guard: the Bybit docs explicitly exclude `ips` from the
+    // `update-api` request parameters, even though it appears in the response.
+    use nautilus_bybit::http::query::{
+        BybitApiKeyPermissionUpdateBuilder, BybitUpdateMasterApiParamsBuilder,
+    };
+
+    let (addr, cap) = start_user_api_server().await.unwrap();
+    let client = user_test_client(format!("http://{addr}"));
+
+    let permissions = BybitApiKeyPermissionUpdateBuilder::default()
+        .contract_trade(vec!["Order".to_string(), "Position".to_string()])
+        .build()
+        .unwrap();
+
+    let params = BybitUpdateMasterApiParamsBuilder::default()
+        .read_only(false)
+        .permissions(permissions)
+        .build()
+        .unwrap();
+
+    let response = client.update_master_api_key(&params).await.unwrap();
+    // `nft` exercises the explicit `#[serde(rename = "NFT")]` on the response
+    // side; the fixture carries a non-empty value so a rename regression
+    // surfaces as a length mismatch rather than a silent empty `Vec`.
+    assert_eq!(response.result.permissions.nft, vec!["NFTQueryProductList"]);
+
+    let body = cap.last_body.lock().await.clone().expect("body captured");
+    let obj = body.as_object().expect("json object");
+    assert!(
+        !obj.contains_key("ips"),
+        "update-api must not send ips: {body}"
+    );
+    assert!(
+        !obj.contains_key("apiKey"),
+        "update-api has no apiKey: {body}"
+    );
+    assert_eq!(obj.get("readOnly").and_then(Value::as_i64), Some(0));
+}
+
+async fn paged_sub_members_handler(
+    State(calls): State<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    let query = uri.query().unwrap_or_default().to_string();
+    let mut log = calls.lock().await;
+    log.push(query.clone());
+
+    // First request has no cursor, second carries `nextCursor=page-2`,
+    // final page uses the `"0"` end-of-pages sentinel.
+    let body = if query.contains("nextCursor=page-2") {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "subMembers": [{
+                    "uid": "300",
+                    "username": "third",
+                    "memberType": 1,
+                    "status": 1,
+                    "accountMode": 5
+                }],
+                "nextCursor": "0"
+            },
+            "retExtInfo": {},
+            "time": 1760388041006i64
+        })
+    } else {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "subMembers": [
+                    {"uid": "100", "username": "first", "memberType": 1, "status": 1, "accountMode": 5},
+                    {"uid": "200", "username": "second", "memberType": 1, "status": 1, "accountMode": 6}
+                ],
+                "nextCursor": "page-2"
+            },
+            "retExtInfo": {},
+            "time": 1760388041006i64
+        })
+    };
+    Json(body).into_response()
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_fetch_all_sub_members_paged_walks_cursor() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let calls: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::default();
+    let router = Router::new()
+        .route("/v5/user/submembers", get(paged_sub_members_handler))
+        .route("/v5/market/time", get(handle_get_server_time))
+        .with_state(calls.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    wait_for_server(addr, "/v5/market/time").await;
+
+    let client = user_raw_test_client(format!("http://{addr}"));
+    let members = client.fetch_all_sub_members_paged(Some(2)).await.unwrap();
+
+    assert_eq!(members.len(), 3);
+    assert_eq!(members[0].uid, "100");
+    assert_eq!(members[2].uid, "300");
+
+    let log = calls.lock().await.clone();
+    assert_eq!(log.len(), 2, "expected exactly two page requests: {log:?}");
+    assert!(
+        !log[0].contains("nextCursor"),
+        "first page must not carry a cursor: {log:?}"
+    );
+    assert!(
+        log[1].contains("nextCursor=page-2"),
+        "second page must carry cursor: {log:?}"
+    );
+}
+
+async fn paged_escrow_sub_members_handler(
+    State(calls): State<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    let query = uri.query().unwrap_or_default().to_string();
+    calls.lock().await.push(query.clone());
+
+    let body = if query.contains("nextCursor=escrow-2") {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "subMembers": [{
+                    "uid": "777",
+                    "username": "Fund3",
+                    "memberType": 12,
+                    "status": 1,
+                    "remark": "earn fund",
+                    "accountMode": 3
+                }],
+                "nextCursor": "0"
+            },
+            "retExtInfo": {},
+            "time": 1760388041006i64
+        })
+    } else {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "subMembers": [
+                    {"uid": "555", "username": "Fund1", "memberType": 12, "status": 1, "remark": "earn fund", "accountMode": 3},
+                    {"uid": "666", "username": "Fund2", "memberType": 12, "status": 1, "remark": "earn fund", "accountMode": 3}
+                ],
+                "nextCursor": "escrow-2"
+            },
+            "retExtInfo": {},
+            "time": 1760388041006i64
+        })
+    };
+    Json(body).into_response()
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_fetch_all_escrow_sub_members_walks_cursor() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let calls: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::default();
+    let router = Router::new()
+        .route(
+            "/v5/user/escrow_sub_members",
+            get(paged_escrow_sub_members_handler),
+        )
+        .route("/v5/market/time", get(handle_get_server_time))
+        .with_state(calls.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    wait_for_server(addr, "/v5/market/time").await;
+
+    let client = user_raw_test_client(format!("http://{addr}"));
+    let members = client.fetch_all_escrow_sub_members(Some(50)).await.unwrap();
+
+    assert_eq!(members.len(), 3);
+    assert_eq!(members[0].uid, "555");
+    assert_eq!(members[2].uid, "777");
+    assert_eq!(members[2].member_type, 12);
+
+    let log = calls.lock().await.clone();
+    assert_eq!(log.len(), 2, "expected exactly two page requests: {log:?}");
+    assert!(
+        log[1].contains("nextCursor=escrow-2"),
+        "second page must carry cursor: {log:?}"
+    );
+}
+
+async fn paged_sub_apikeys_handler(
+    State(calls): State<Arc<tokio::sync::Mutex<Vec<String>>>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = require_bybit_auth(&headers) {
+        return r;
+    }
+    let query = uri.query().unwrap_or_default().to_string();
+    calls.lock().await.push(query.clone());
+
+    // Final-page sentinel on this endpoint is `""`, not `"0"`.
+    let body = if query.contains("cursor=keys-2") {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "result": [{
+                    "id": "33", "ips": ["*"], "apiKey": "K3", "note": "",
+                    "status": 1, "createdAt": "2026-01-01T00:00:00Z",
+                    "type": 1, "permissions": {}, "secret": "******",
+                    "readOnly": true, "flag": "hmac"
+                }],
+                "nextPageCursor": ""
+            },
+            "retExtInfo": {},
+            "time": 1699515251698i64
+        })
+    } else {
+        json!({
+            "retCode": 0,
+            "retMsg": "",
+            "result": {
+                "result": [
+                    {"id": "11", "ips": ["*"], "apiKey": "K1", "note": "", "status": 1, "createdAt": "2026-01-01T00:00:00Z", "type": 1, "permissions": {}, "secret": "******", "readOnly": false, "flag": "hmac"},
+                    {"id": "22", "ips": ["*"], "apiKey": "K2", "note": "", "status": 1, "createdAt": "2026-01-01T00:00:00Z", "type": 1, "permissions": {}, "secret": "******", "readOnly": false, "flag": "hmac"}
+                ],
+                "nextPageCursor": "keys-2"
+            },
+            "retExtInfo": {},
+            "time": 1699515251698i64
+        })
+    };
+    Json(body).into_response()
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_fetch_all_sub_api_keys_walks_cursor() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let calls: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::default();
+    let router = Router::new()
+        .route("/v5/user/sub-apikeys", get(paged_sub_apikeys_handler))
+        .route("/v5/market/time", get(handle_get_server_time))
+        .with_state(calls.clone());
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    wait_for_server(addr, "/v5/market/time").await;
+
+    let client = user_raw_test_client(format!("http://{addr}"));
+    let keys = client
+        .fetch_all_sub_api_keys("533285", Some(10))
+        .await
+        .unwrap();
+
+    assert_eq!(keys.len(), 3);
+    assert_eq!(keys[0].id, "11");
+    assert_eq!(keys[2].id, "33");
+    assert!(keys[2].read_only);
+
+    let log = calls.lock().await.clone();
+    assert_eq!(log.len(), 2, "expected exactly two page requests: {log:?}");
+    assert!(
+        log[0].contains("subMemberId=533285"),
+        "subMemberId must be sent: {log:?}"
+    );
+    assert!(log[0].contains("limit=10"), "limit must be sent: {log:?}");
+    assert!(
+        !log[0].contains("cursor="),
+        "first page must not carry a cursor: {log:?}"
+    );
+    assert!(
+        log[1].contains("cursor=keys-2"),
+        "second page must carry cursor: {log:?}"
     );
 }

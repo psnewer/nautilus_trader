@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,21 +21,23 @@ pub mod config;
 pub mod factories;
 
 #[cfg(feature = "hypersync")]
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory},
-    get_global_pyo3_registry,
-};
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
+#[cfg(feature = "hypersync")]
+use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
+#[cfg(feature = "hypersync")]
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::prelude::*;
 
 /// Extractor function for `BlockchainDataClientFactory`.
 #[cfg(feature = "hypersync")]
+#[expect(clippy::needless_pass_by_value)] // Must match FactoryExtractor function pointer signature
 fn extract_blockchain_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
 ) -> PyResult<Box<dyn DataClientFactory>> {
     match factory.extract::<crate::factories::BlockchainDataClientFactory>(py) {
         Ok(concrete_factory) => Ok(Box::new(concrete_factory)),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        Err(e) => Err(to_pyvalue_err(format!(
             "Failed to extract BlockchainDataClientFactory: {e}"
         ))),
     }
@@ -43,10 +45,11 @@ fn extract_blockchain_factory(
 
 /// Extractor function for `BlockchainDataClientConfig`.
 #[cfg(feature = "hypersync")]
+#[expect(clippy::needless_pass_by_value)] // Must match ConfigExtractor function pointer signature
 fn extract_blockchain_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dyn ClientConfig>> {
     match config.extract::<crate::config::BlockchainDataClientConfig>(py) {
         Ok(concrete_config) => Ok(Box::new(concrete_config)),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        Err(e) => Err(to_pyvalue_err(format!(
             "Failed to extract BlockchainDataClientConfig: {e}"
         ))),
     }
@@ -72,7 +75,7 @@ pub fn blockchain(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         if let Err(e) = registry
             .register_factory_extractor("BLOCKCHAIN".to_string(), extract_blockchain_factory)
         {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            return Err(to_pyruntime_err(format!(
                 "Failed to register blockchain factory extractor: {e}"
             )));
         }
@@ -81,7 +84,7 @@ pub fn blockchain(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
             "BlockchainDataClientConfig".to_string(),
             extract_blockchain_config,
         ) {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            return Err(to_pyruntime_err(format!(
                 "Failed to register blockchain config extractor: {e}"
             )));
         }

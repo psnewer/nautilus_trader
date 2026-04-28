@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,9 +16,10 @@
 use std::hash::{Hash, Hasher};
 
 use nautilus_core::{
-    UnixNanos,
+    Params, UnixNanos,
     correctness::{
-        FAILED, check_equal_u8, check_valid_string_ascii, check_valid_string_ascii_optional,
+        CorrectnessResult, CorrectnessResultExt, FAILED, check_equal_u8, check_valid_string_ascii,
+        check_valid_string_ascii_optional,
     },
 };
 use rust_decimal::Decimal;
@@ -39,10 +40,14 @@ use crate::{
 
 /// Represents a generic option contract instrument.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct OptionContract {
     /// The instrument ID.
@@ -93,6 +98,8 @@ pub struct OptionContract {
     pub max_price: Option<Price>,
     /// The minimum allowable quoted price.
     pub min_price: Option<Price>,
+    /// Additional instrument metadata as a JSON-serializable dictionary.
+    pub info: Option<Params>,
     /// UNIX timestamp (nanoseconds) when the data event occurred.
     pub ts_event: UnixNanos,
     /// UNIX timestamp (nanoseconds) when the data object was initialized.
@@ -108,7 +115,7 @@ impl OptionContract {
     /// # Errors
     ///
     /// Returns an error if any input validation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -132,10 +139,11 @@ impl OptionContract {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
-    ) -> anyhow::Result<Self> {
-        check_valid_string_ascii_optional(exchange.map(|u| u.as_str()), stringify!(isin))?;
+    ) -> CorrectnessResult<Self> {
+        check_valid_string_ascii_optional(exchange.map(|u| u.as_str()), stringify!(exchange))?;
         check_valid_string_ascii(underlying.as_str(), stringify!(underlying))?;
         check_equal_u8(
             price_precision,
@@ -168,6 +176,7 @@ impl OptionContract {
             margin_maint: margin_maint.unwrap_or_default(),
             maker_fee: maker_fee.unwrap_or_default(),
             taker_fee: taker_fee.unwrap_or_default(),
+            info,
             max_quantity,
             min_quantity: Some(min_quantity.unwrap_or(1.into())),
             max_price,
@@ -182,7 +191,8 @@ impl OptionContract {
     /// # Panics
     ///
     /// Panics if any input parameter is invalid (see `new_checked`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -206,6 +216,7 @@ impl OptionContract {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
     ) -> Self {
@@ -232,10 +243,11 @@ impl OptionContract {
             margin_maint,
             maker_fee,
             taker_fee,
+            info,
             ts_event,
             ts_init,
         )
-        .expect(FAILED)
+        .expect_display(FAILED)
     }
 }
 
@@ -372,17 +384,134 @@ impl Instrument for OptionContract {
     fn ts_init(&self) -> UnixNanos {
         self.ts_init
     }
+
+    fn margin_init(&self) -> Decimal {
+        self.margin_init
+    }
+
+    fn margin_maint(&self) -> Decimal {
+        self.margin_maint
+    }
+
+    fn maker_fee(&self) -> Decimal {
+        self.maker_fee
+    }
+
+    fn taker_fee(&self) -> Decimal {
+        self.taker_fee
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use ustr::Ustr;
 
-    use crate::instruments::{OptionContract, stubs::*};
+    use crate::{
+        enums::{AssetClass, InstrumentClass, OptionKind},
+        identifiers::{InstrumentId, Symbol},
+        instruments::{Instrument, OptionContract, stubs::*},
+        types::{Currency, Price, Quantity},
+    };
 
     #[rstest]
-    fn test_equality(option_contract_appl: OptionContract) {
-        let option_contract_appl2 = option_contract_appl;
-        assert_eq!(option_contract_appl, option_contract_appl2);
+    fn test_trait_accessors(option_contract_appl: OptionContract) {
+        assert_eq!(
+            option_contract_appl.id(),
+            InstrumentId::from("AAPL211217C00150000.OPRA"),
+        );
+        assert_eq!(option_contract_appl.asset_class(), AssetClass::Equity);
+        assert_eq!(
+            option_contract_appl.instrument_class(),
+            InstrumentClass::Option
+        );
+        assert_eq!(option_contract_appl.quote_currency(), Currency::USD());
+        assert!(!option_contract_appl.is_inverse());
+        assert_eq!(option_contract_appl.option_kind(), Some(OptionKind::Call));
+        assert_eq!(
+            option_contract_appl.strike_price(),
+            Some(Price::from("149.0"))
+        );
+        assert_eq!(option_contract_appl.underlying(), Some(Ustr::from("AAPL")));
+        assert_eq!(option_contract_appl.exchange(), Some(Ustr::from("GMNI")));
+        assert!(option_contract_appl.activation_ns().is_some());
+        assert!(option_contract_appl.expiration_ns().is_some());
+        assert_eq!(option_contract_appl.size_precision(), 0);
+        assert_eq!(option_contract_appl.size_increment(), Quantity::from("1"));
+        assert_eq!(
+            option_contract_appl.min_quantity(),
+            Some(Quantity::from("1"))
+        );
+    }
+
+    #[rstest]
+    fn test_new_checked_price_precision_mismatch() {
+        let result = OptionContract::new_checked(
+            InstrumentId::from("TEST.OPRA"),
+            Symbol::from("TEST"),
+            AssetClass::Equity,
+            Some(Ustr::from("GMNI")),
+            Ustr::from("AAPL"),
+            OptionKind::Call,
+            Price::from("150.0"),
+            Currency::USD(),
+            0.into(),
+            0.into(),
+            4, // mismatch
+            Price::from("0.01"),
+            Quantity::from(1),
+            Quantity::from(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.into(),
+            0.into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_new_checked_zero_multiplier() {
+        let result = OptionContract::new_checked(
+            InstrumentId::from("TEST.OPRA"),
+            Symbol::from("TEST"),
+            AssetClass::Equity,
+            Some(Ustr::from("GMNI")),
+            Ustr::from("AAPL"),
+            OptionKind::Call,
+            Price::from("150.0"),
+            Currency::USD(),
+            0.into(),
+            0.into(),
+            2,
+            Price::from("0.01"),
+            Quantity::from("0"), // zero multiplier
+            Quantity::from(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.into(),
+            0.into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_serialization_roundtrip(option_contract_appl: OptionContract) {
+        let json = serde_json::to_string(&option_contract_appl).unwrap();
+        let deserialized: OptionContract = serde_json::from_str(&json).unwrap();
+        assert_eq!(option_contract_appl, deserialized);
     }
 }

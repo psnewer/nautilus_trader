@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,61 +15,83 @@
 
 //! Live execution client implementation for the Hyperliquid adapter.
 
-use std::{str::FromStr, sync::Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_common::{
+    cache::fifo::FifoCache,
+    clients::ExecutionClient,
     live::{runner::get_exec_event_sender, runtime::get_runtime},
-    messages::{
-        ExecutionEvent, ExecutionReport as NautilusExecutionReport,
-        execution::{
-            BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
-            GenerateOrderStatusReport, GeneratePositionReports, ModifyOrder, QueryAccount,
-            QueryOrder, SubmitOrder, SubmitOrderList,
-        },
+    messages::execution::{
+        BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
+        GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
+        ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
     },
 };
-use nautilus_core::{MUTEX_POISONED, UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::client::LiveExecutionClient;
+use nautilus_core::{
+    MUTEX_POISONED, Params, UUID4, UnixNanos,
+    time::{AtomicTime, get_atomic_clock_realtime},
+};
+use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{OmsType, OrderType},
-    identifiers::{AccountId, ClientId, Venue},
+    enums::{AccountType, OmsType, OrderSide, OrderStatus, OrderType},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue, VenueOrderId,
+    },
     orders::{Order, any::OrderAny},
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance},
 };
-use serde_json;
 use tokio::task::JoinHandle;
+use ustr::Ustr;
 
 use crate::{
     common::{
-        HyperliquidProductType,
-        consts::HYPERLIQUID_VENUE,
+        consts::{HYPERLIQUID_VENUE, NAUTILUS_BUILDER_ADDRESS},
         credential::Secrets,
         parse::{
-            client_order_id_to_cancel_request, extract_error_message, is_response_successful,
-            order_any_to_hyperliquid_request, orders_to_hyperliquid_requests,
+            clamp_price_to_precision, client_order_id_to_cancel_request_with_asset,
+            derive_limit_from_trigger, derive_market_order_price, extract_error_message,
+            extract_inner_error, extract_inner_errors, normalize_price,
+            order_to_hyperliquid_request_with_asset, parse_combined_account_balances_and_margins,
+            round_to_sig_figs,
         },
     },
     config::HyperliquidExecClientConfig,
-    http::{client::HyperliquidHttpClient, models::ClearinghouseState, query::ExchangeAction},
-    websocket::{ExecutionReport, NautilusWsMessage, client::HyperliquidWebSocketClient},
+    http::{
+        client::HyperliquidHttpClient,
+        models::{
+            ClearinghouseState, Cloid, HyperliquidExecAction, HyperliquidExecBuilderFee,
+            HyperliquidExecGrouping, HyperliquidExecModifyOrderRequest, HyperliquidExecOrderKind,
+            SpotClearinghouseState,
+        },
+    },
+    websocket::{
+        ExecutionReport, NautilusWsMessage,
+        client::HyperliquidWebSocketClient,
+        dispatch::{
+            DispatchOutcome, OrderIdentity, WsDispatchState, dispatch_fill_report,
+            dispatch_order_status_report,
+        },
+    },
 };
 
 #[derive(Debug)]
 pub struct HyperliquidExecutionClient {
     core: ExecutionClientCore,
+    clock: &'static AtomicTime,
     config: HyperliquidExecClientConfig,
+    emitter: ExecutionEventEmitter,
     http_client: HyperliquidHttpClient,
     ws_client: HyperliquidWebSocketClient,
-    started: bool,
-    connected: bool,
-    instruments_initialized: bool,
     pending_tasks: Mutex<Vec<JoinHandle<()>>>,
     ws_stream_handle: Mutex<Option<JoinHandle<()>>>,
+    ws_dispatch_state: Arc<WsDispatchState>,
 }
 
 impl HyperliquidExecutionClient {
@@ -78,20 +100,40 @@ impl HyperliquidExecutionClient {
         &self.config
     }
 
-    /// Validates order before submission to catch issues early.
+    /// Returns a reference to the shared WebSocket dispatch state.
     ///
-    /// # Errors
+    /// Exposes the identity map, pending-modify markers, and cached venue
+    /// order ids used by the two-tier dispatch contract. The state is
+    /// read-write via an [`Arc`]; callers must not mutate it directly, but
+    /// it is useful for inspection in tests and for live debugging.
+    #[must_use]
+    pub fn ws_dispatch_state(&self) -> &Arc<WsDispatchState> {
+        &self.ws_dispatch_state
+    }
+
+    /// Returns `true` when every background task spawned via `spawn_task`
+    /// has completed.
     ///
-    /// Returns an error if the order cannot be submitted to Hyperliquid.
-    ///
-    /// # Supported Order Types
-    ///
-    /// - `Market`: Standard market orders
-    /// - `Limit`: Limit orders with GTC/IOC/ALO time-in-force
-    /// - `StopMarket`: Stop loss / protective stop with market execution
-    /// - `StopLimit`: Stop loss / protective stop with limit price
-    /// - `MarketIfTouched`: Profit taking / entry order with market execution
-    /// - `LimitIfTouched`: Profit taking / entry order with limit price
+    /// Used in tests to wait for submit / modify / cancel HTTP round-trips
+    /// that fire on the runtime to finish before asserting on dispatch
+    /// state, avoiding bare `sleep` calls when a negative condition needs
+    /// to be checked after the spawned work is done.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "pending_tasks mutex poisoning is not expected"
+    )]
+    #[must_use]
+    pub fn pending_tasks_all_finished(&self) -> bool {
+        let tasks = self.pending_tasks.lock().expect(MUTEX_POISONED);
+        tasks.iter().all(|h| h.is_finished())
+    }
+
+    fn resolve_slippage_bps(&self, params: Option<&Params>) -> u32 {
+        params
+            .and_then(|p| p.get_u64("market_order_slippage_bps"))
+            .map_or(self.config.market_order_slippage_bps, |v| v as u32)
+    }
+
     fn validate_order_submission(&self, order: &OrderAny) -> anyhow::Result<()> {
         // Check if instrument symbol is supported
         // Hyperliquid instruments: {base}-USD-PERP or {base}-{quote}-SPOT
@@ -156,48 +198,71 @@ impl HyperliquidExecutionClient {
         core: ExecutionClientCore,
         config: HyperliquidExecClientConfig,
     ) -> anyhow::Result<Self> {
-        if !config.has_credentials() {
-            anyhow::bail!("Hyperliquid execution client requires private key");
-        }
+        let secrets = Secrets::resolve(
+            config.private_key.as_deref(),
+            config.vault_address.as_deref(),
+            config.environment,
+        )
+        .context("Hyperliquid execution client requires private key")?;
 
-        let secrets = Secrets::from_json(&format!(
-            r#"{{"privateKey": "{}", "isTestnet": {}}}"#,
-            config.private_key, config.is_testnet
-        ))
-        .context("failed to create secrets from private key")?;
-
-        let http_client = HyperliquidHttpClient::with_credentials(
+        let mut http_client = HyperliquidHttpClient::with_secrets(
             &secrets,
-            Some(config.http_timeout_secs),
-            config.http_proxy_url.clone(),
+            config.http_timeout_secs,
+            config.proxy_url.clone(),
         )
         .context("failed to create Hyperliquid HTTP client")?;
 
-        // Create WebSocket client (will connect when needed)
-        // Note: For execution WebSocket (private account messages), product type is less critical
-        // since messages are account-scoped. Defaulting to Perp.
+        http_client.set_account_id(core.account_id);
+        http_client.set_account_address(config.account_address.clone());
+        http_client.set_normalize_prices(config.normalize_prices);
+        http_client.set_market_order_slippage_bps(config.market_order_slippage_bps);
+
+        // Apply URL overrides from config (used for testing with mock servers)
+        if let Some(url) = &config.base_url_http {
+            http_client.set_base_info_url(url.clone());
+        }
+
+        if let Some(url) = &config.base_url_exchange {
+            http_client.set_base_exchange_url(url.clone());
+        }
+
+        let ws_url = config.base_url_ws.clone();
         let ws_client = HyperliquidWebSocketClient::new(
-            None,
-            config.is_testnet,
-            HyperliquidProductType::Perp,
+            ws_url,
+            config.environment,
             Some(core.account_id),
+            config.transport_backend,
+            config.proxy_url.clone(),
+        );
+
+        let clock = get_atomic_clock_realtime();
+        let emitter = ExecutionEventEmitter::new(
+            clock,
+            core.trader_id,
+            core.account_id,
+            AccountType::Margin,
+            None,
         );
 
         Ok(Self {
             core,
+            clock,
             config,
+            emitter,
             http_client,
             ws_client,
-            started: false,
-            connected: false,
-            instruments_initialized: false,
             pending_tasks: Mutex::new(Vec::new()),
             ws_stream_handle: Mutex::new(None),
+            ws_dispatch_state: Arc::new(WsDispatchState::new()),
         })
     }
 
-    async fn ensure_instruments_initialized_async(&mut self) -> anyhow::Result<()> {
-        if self.instruments_initialized {
+    fn register_order_identity(&self, order: &OrderAny) {
+        register_order_identity_into(&self.ws_dispatch_state, order);
+    }
+
+    async fn ensure_instruments_initialized_async(&self) -> anyhow::Result<()> {
+        if self.core.instruments_initialized() {
             return Ok(());
         }
 
@@ -208,88 +273,115 @@ impl HyperliquidExecutionClient {
             .context("failed to request Hyperliquid instruments")?;
 
         if instruments.is_empty() {
-            tracing::warn!(
+            log::warn!(
                 "Instrument bootstrap yielded no instruments; WebSocket submissions may fail"
             );
         } else {
-            tracing::info!("Initialized {} instruments", instruments.len());
+            log::info!("Initialized {} instruments", instruments.len());
 
             for instrument in &instruments {
-                self.http_client.cache_instrument(instrument.clone());
+                self.http_client.cache_instrument(instrument);
             }
         }
 
-        self.instruments_initialized = true;
+        self.core.set_instruments_initialized();
         Ok(())
     }
 
-    fn ensure_instruments_initialized(&mut self) -> anyhow::Result<()> {
-        if self.instruments_initialized {
-            return Ok(());
-        }
+    async fn refresh_account_state(&self) -> anyhow::Result<()> {
+        let account_address = self.get_account_address()?;
 
-        let runtime = get_runtime();
-        runtime.block_on(self.ensure_instruments_initialized_async())
+        let (perp_state, spot_state) = self
+            .fetch_combined_clearinghouse_state(&account_address)
+            .await?;
+
+        log::debug!(
+            "Received clearinghouse state: cross_margin_summary={:?}, asset_positions={}, spot_balances={}",
+            perp_state.cross_margin_summary,
+            perp_state.asset_positions.len(),
+            spot_state.balances.len(),
+        );
+
+        let (balances, margins) =
+            parse_combined_account_balances_and_margins(&perp_state, &spot_state)
+                .context("failed to parse combined account balances and margins")?;
+
+        // Emit even when both sides are empty so the account registers for
+        // await_account_registered on unfunded wallets.
+        let ts_event = self.clock.get_time_ns();
+        self.emitter
+            .emit_account_state(balances, margins, true, ts_event);
+
+        log::info!("Account state updated successfully");
+        Ok(())
     }
 
-    async fn refresh_account_state(&self) -> anyhow::Result<()> {
-        // Get account information from Hyperliquid using the user address
-        // We need to derive the user address from the private key in the config
-        let user_address = self.get_user_address()?;
-
-        // Use vault address if configured, otherwise use user address
-        let account_address = self.config.vault_address.as_ref().unwrap_or(&user_address);
-
-        // Query clearinghouseState endpoint to get balances and margin info
-        let clearinghouse_state = self
+    async fn fetch_combined_clearinghouse_state(
+        &self,
+        account_address: &str,
+    ) -> anyhow::Result<(ClearinghouseState, SpotClearinghouseState)> {
+        let perp_json = self
             .http_client
             .info_clearinghouse_state(account_address)
             .await
             .context("failed to fetch clearinghouse state")?;
-
-        // Deserialize the response
-        let state: ClearinghouseState = serde_json::from_value(clearinghouse_state)
+        let perp_state: ClearinghouseState = serde_json::from_value(perp_json)
             .context("failed to deserialize clearinghouse state")?;
 
-        tracing::debug!(
-            "Received clearinghouse state: cross_margin_summary={:?}, asset_positions={}",
-            state.cross_margin_summary,
-            state.asset_positions.len()
-        );
+        let spot_json = self
+            .http_client
+            .info_spot_clearinghouse_state(account_address)
+            .await
+            .context("failed to fetch spot clearinghouse state")?;
+        let spot_state: SpotClearinghouseState = serde_json::from_value(spot_json)
+            .context("failed to deserialize spot clearinghouse state")?;
 
-        // Parse balances and margins from cross margin summary
-        if let Some(ref cross_margin_summary) = state.cross_margin_summary {
-            let (balances, margins) =
-                crate::common::parse::parse_account_balances_and_margins(cross_margin_summary)
-                    .context("failed to parse account balances and margins")?;
+        Ok((perp_state, spot_state))
+    }
 
-            let ts_event = if let Some(time_ms) = state.time {
-                nautilus_core::UnixNanos::from(time_ms * 1_000_000)
-            } else {
-                nautilus_core::time::get_atomic_clock_realtime().get_time_ns()
-            };
+    async fn await_account_registered(&self, timeout_secs: f64) -> anyhow::Result<()> {
+        let account_id = self.core.account_id;
 
-            // Generate account state event
-            self.core.generate_account_state(
-                balances, margins, true, // reported
-                ts_event,
-            )?;
-
-            tracing::info!("Account state updated successfully");
-        } else {
-            tracing::warn!("No cross margin summary in clearinghouse state");
+        if self.core.cache().account(&account_id).is_some() {
+            log::info!("Account {account_id} registered");
+            return Ok(());
         }
 
-        Ok(())
+        let start = Instant::now();
+        let timeout = Duration::from_secs_f64(timeout_secs);
+        let interval = Duration::from_millis(10);
+
+        loop {
+            tokio::time::sleep(interval).await;
+
+            if self.core.cache().account(&account_id).is_some() {
+                log::info!("Account {account_id} registered");
+                return Ok(());
+            }
+
+            if start.elapsed() >= timeout {
+                anyhow::bail!(
+                    "Timeout waiting for account {account_id} to be registered after {timeout_secs}s"
+                );
+            }
+        }
     }
 
     fn get_user_address(&self) -> anyhow::Result<String> {
-        let address = self
-            .http_client
+        self.http_client
             .get_user_address()
-            .context("failed to get user address from HTTP client")?;
+            .context("failed to get user address from HTTP client")
+    }
 
-        Ok(address)
+    fn get_account_address(&self) -> anyhow::Result<String> {
+        if let Some(addr) = &self.config.account_address {
+            return Ok(addr.clone());
+        }
+
+        match &self.config.vault_address {
+            Some(vault) => Ok(vault.clone()),
+            None => self.get_user_address(),
+        }
     }
 
     fn spawn_task<F>(&self, description: &'static str, fut: F)
@@ -299,7 +391,7 @@ impl HyperliquidExecutionClient {
         let runtime = get_runtime();
         let handle = runtime.spawn(async move {
             if let Err(e) = fut.await {
-                tracing::warn!("{description} failed: {e:?}");
+                log::warn!("{description} failed: {e:?}");
             }
         });
 
@@ -314,17 +406,12 @@ impl HyperliquidExecutionClient {
             handle.abort();
         }
     }
-
-    fn update_account_state(&self) -> anyhow::Result<()> {
-        let runtime = get_runtime();
-        runtime.block_on(self.refresh_account_state())
-    }
 }
 
 #[async_trait(?Send)]
 impl ExecutionClient for HyperliquidExecutionClient {
     fn is_connected(&self) -> bool {
-        self.connected
+        self.core.is_connected()
     }
 
     fn client_id(&self) -> ClientId {
@@ -344,7 +431,7 @@ impl ExecutionClient for HyperliquidExecutionClient {
     }
 
     fn get_account(&self) -> Option<AccountAny> {
-        self.core.get_account()
+        self.core.cache().account(&self.core.account_id).cloned()
     }
 
     fn generate_account_state(
@@ -354,193 +441,199 @@ impl ExecutionClient for HyperliquidExecutionClient {
         reported: bool,
         ts_event: UnixNanos,
     ) -> anyhow::Result<()> {
-        self.core
-            .generate_account_state(balances, margins, reported, ts_event)
+        self.emitter
+            .emit_account_state(balances, margins, reported, ts_event);
+        Ok(())
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        if self.started {
+        if self.core.is_started() {
             return Ok(());
         }
 
-        tracing::info!(
-            client_id = %self.core.client_id,
-            account_id = %self.core.account_id,
-            is_testnet = self.config.is_testnet,
-            vault_address = ?self.config.vault_address,
-            http_proxy_url = ?self.config.http_proxy_url,
-            ws_proxy_url = ?self.config.ws_proxy_url,
-            "Starting Hyperliquid execution client"
+        let sender = get_exec_event_sender();
+        self.emitter.set_sender(sender);
+        self.core.set_started();
+
+        log::info!(
+            "Started: client_id={}, account_id={}, environment={:?}, vault_address={:?}, proxy_url={:?}",
+            self.core.client_id,
+            self.core.account_id,
+            self.config.environment,
+            self.config.vault_address,
+            self.config.proxy_url,
         );
 
-        // Ensure instruments are initialized
-        self.ensure_instruments_initialized()?;
-
-        // Initialize account state
-        if let Err(e) = self.update_account_state() {
-            tracing::warn!("Failed to initialize account state: {e}");
-        }
-
-        self.connected = true;
-        self.started = true;
-
-        // Start WebSocket stream for execution updates
-        if let Err(e) = get_runtime().block_on(self.start_ws_stream()) {
-            tracing::warn!("Failed to start WebSocket stream: {e}");
-        }
-
-        tracing::info!("Hyperliquid execution client started");
         Ok(())
     }
+
     fn stop(&mut self) -> anyhow::Result<()> {
-        if !self.started {
+        if self.core.is_stopped() {
             return Ok(());
         }
 
-        tracing::info!("Stopping Hyperliquid execution client");
+        log::info!("Stopping Hyperliquid execution client");
 
-        // Stop WebSocket stream
         if let Some(handle) = self.ws_stream_handle.lock().expect(MUTEX_POISONED).take() {
             handle.abort();
         }
 
-        // Abort any pending tasks
         self.abort_pending_tasks();
+        self.ws_client.abort();
 
-        // Disconnect WebSocket
-        if self.connected {
-            let runtime = get_runtime();
-            runtime.block_on(async {
-                if let Err(e) = self.ws_client.disconnect().await {
-                    tracing::warn!("Error disconnecting WebSocket client: {e}");
-                }
-            });
-        }
+        self.core.set_disconnected();
+        self.core.set_stopped();
 
-        self.connected = false;
-        self.started = false;
-
-        tracing::info!("Hyperliquid execution client stopped");
+        log::info!("Hyperliquid execution client stopped");
         Ok(())
     }
 
-    fn submit_order(&self, command: &SubmitOrder) -> anyhow::Result<()> {
-        let order = &command.order;
+    fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
+        let order = self
+            .core
+            .cache()
+            .order(&cmd.client_order_id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Order not found in cache for {}", cmd.client_order_id)
+            })?;
 
         if order.is_closed() {
-            tracing::warn!("Cannot submit closed order {}", order.client_order_id());
+            log::warn!("Cannot submit closed order {}", order.client_order_id());
             return Ok(());
         }
 
-        if let Err(e) = self.validate_order_submission(order) {
-            self.core.generate_order_rejected(
-                order.strategy_id(),
-                order.instrument_id(),
-                order.client_order_id(),
-                &format!("validation-error: {e}"),
-                command.ts_init,
-                false,
-            );
+        if let Err(e) = self.validate_order_submission(&order) {
+            self.emitter
+                .emit_order_denied(&order, &format!("Validation failed: {e}"));
             return Err(e);
         }
 
-        self.core.generate_order_submitted(
-            order.strategy_id(),
-            order.instrument_id(),
-            order.client_order_id(),
-            command.ts_init,
-        );
-
         let http_client = self.http_client.clone();
-        let order_clone = order.clone();
+        let symbol = order.instrument_id().symbol.to_string();
 
-        self.spawn_task("submit_order", async move {
-            match order_any_to_hyperliquid_request(&order_clone) {
-                Ok(hyperliquid_order) => {
-                    // Create exchange action for order placement with typed struct
-                    let action = ExchangeAction::order(vec![hyperliquid_order]);
+        // Validate asset index exists before marking as submitted
+        let asset = match http_client.get_asset_index(&symbol) {
+            Some(a) => a,
+            None => {
+                self.emitter
+                    .emit_order_denied(&order, &format!("Asset index not found for {symbol}"));
+                return Ok(());
+            }
+        };
 
-                    match http_client.post_action(&action).await {
-                        Ok(response) => {
-                            if is_response_successful(&response) {
-                                tracing::info!("Order submitted successfully: {:?}", response);
-                                // Order acceptance/rejection events will be generated from WebSocket updates
-                                // which provide the venue_order_id and definitive status
-                            } else {
-                                let error_msg = extract_error_message(&response);
-                                tracing::warn!(
-                                    "Order submission rejected by exchange: {}",
-                                    error_msg
-                                );
-                                // Order rejection event will be generated from WebSocket updates
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Order submission HTTP request failed: {e}");
-                            // WebSocket reconnection and order reconciliation will handle recovery
-                        }
-                    }
+        // Validate order conversion before marking as submitted
+        let price_decimals = http_client.get_price_precision(&symbol).unwrap_or(2);
+        let slippage_bps = self.resolve_slippage_bps(cmd.params.as_ref());
+        let mut hyperliquid_order = match order_to_hyperliquid_request_with_asset(
+            &order,
+            asset,
+            price_decimals,
+            self.config.normalize_prices,
+            slippage_bps,
+        ) {
+            Ok(req) => req,
+            Err(e) => {
+                self.emitter
+                    .emit_order_denied(&order, &format!("Order conversion failed: {e}"));
+                return Ok(());
+            }
+        };
+
+        // Market orders need a limit price derived from the cached quote
+        if order.order_type() == OrderType::Market {
+            let instrument_id = order.instrument_id();
+            let cache = self.core.cache();
+            match cache.quote(&instrument_id) {
+                Some(quote) => {
+                    let is_buy = order.order_side() == OrderSide::Buy;
+                    hyperliquid_order.price =
+                        derive_market_order_price(quote, is_buy, price_decimals, slippage_bps);
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to convert order to Hyperliquid format: {e}");
-                    // This indicates a client-side bug or unsupported order configuration
+                None => {
+                    self.emitter.emit_order_denied(
+                        &order,
+                        &format!(
+                            "No cached quote for {instrument_id}: \
+                             subscribe to quote data before submitting market orders"
+                        ),
+                    );
+                    return Ok(());
                 }
             }
-
-            Ok(())
-        });
-
-        Ok(())
-    }
-
-    fn submit_order_list(&self, command: &SubmitOrderList) -> anyhow::Result<()> {
-        tracing::debug!(
-            "Submitting order list with {} orders",
-            command.order_list.orders.len()
-        );
-
-        let http_client = self.http_client.clone();
-        let orders: Vec<OrderAny> = command.order_list.orders.clone();
-
-        // Generate submitted events for all orders
-        for order in &orders {
-            self.core.generate_order_submitted(
-                order.strategy_id(),
-                order.instrument_id(),
-                order.client_order_id(),
-                command.ts_init,
-            );
         }
 
-        self.spawn_task("submit_order_list", async move {
-            // Convert all orders to Hyperliquid format
-            let order_refs: Vec<&OrderAny> = orders.iter().collect();
-            match orders_to_hyperliquid_requests(&order_refs) {
-                Ok(hyperliquid_orders) => {
-                    // Create exchange action for order placement with typed struct
-                    let action = ExchangeAction::order(hyperliquid_orders);
-                    match http_client.post_action(&action).await {
-                        Ok(response) => {
-                            if is_response_successful(&response) {
-                                tracing::info!("Order list submitted successfully: {:?}", response);
-                                // Order acceptance/rejection events will be generated from WebSocket updates
-                            } else {
-                                let error_msg = extract_error_message(&response);
-                                tracing::warn!(
-                                    "Order list submission rejected by exchange: {}",
-                                    error_msg
-                                );
-                                // Individual order rejection events will be generated from WebSocket updates
-                            }
+        log::info!(
+            "Submitting order: id={}, type={:?}, side={:?}, price={}, size={}, kind={:?}",
+            order.client_order_id(),
+            order.order_type(),
+            order.order_side(),
+            hyperliquid_order.price,
+            hyperliquid_order.size,
+            hyperliquid_order.kind,
+        );
+
+        // Cache cloid mapping before emitting submitted so WS handler
+        // can resolve order/fill reports back to this client_order_id
+        let cloid = Cloid::from_client_order_id(order.client_order_id());
+        self.ws_client
+            .cache_cloid_mapping(Ustr::from(&cloid.to_hex()), order.client_order_id());
+
+        self.register_order_identity(&order);
+
+        self.emitter.emit_order_submitted(&order);
+
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+        let ws_client = self.ws_client.clone();
+        let cloid_hex = Ustr::from(&cloid.to_hex());
+        let dispatch_state = self.ws_dispatch_state.clone();
+        let client_order_id = order.client_order_id();
+
+        // Vaults cannot approve builder fees, so skip builder attribution
+        // for vault orders to avoid "Builder fee has not been approved" rejection
+        let builder = if self.http_client.has_vault_address() {
+            None
+        } else {
+            Some(HyperliquidExecBuilderFee {
+                address: NAUTILUS_BUILDER_ADDRESS.to_string(),
+                fee_tenths_bp: 0,
+            })
+        };
+
+        self.spawn_task("submit_order", async move {
+            let action = HyperliquidExecAction::Order {
+                orders: vec![hyperliquid_order],
+                grouping: HyperliquidExecGrouping::Na,
+                builder,
+            };
+
+            match http_client.post_action_exec(&action).await {
+                Ok(response) => {
+                    if response.is_ok() {
+                        if let Some(inner_error) = extract_inner_error(&response) {
+                            log::warn!("Order submission rejected by exchange: {inner_error}");
+                            let ts = clock.get_time_ns();
+                            emitter.emit_order_rejected(&order, &inner_error, ts, false);
+                            ws_client.remove_cloid_mapping(&cloid_hex);
+                            dispatch_state.cleanup_terminal(&client_order_id);
+                        } else {
+                            log::info!("Order submitted successfully: {response:?}");
                         }
-                        Err(e) => {
-                            tracing::warn!("Order list submission HTTP request failed: {e}");
-                            // WebSocket reconciliation will handle recovery
-                        }
+                    } else {
+                        let error_msg = extract_error_message(&response);
+                        log::warn!("Order submission rejected by exchange: {error_msg}");
+                        let ts = clock.get_time_ns();
+                        emitter.emit_order_rejected(&order, &error_msg, ts, false);
+                        ws_client.remove_cloid_mapping(&cloid_hex);
+                        dispatch_state.cleanup_terminal(&client_order_id);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to convert order list to Hyperliquid format: {e}");
+                    // Don't reject on transport errors: the order may have
+                    // landed and WS events will drive the lifecycle. If it
+                    // didn't land, reconciliation on reconnect resolves it.
+                    log::error!("Order submission HTTP request failed: {e}");
                 }
             }
 
@@ -550,114 +643,416 @@ impl ExecutionClient for HyperliquidExecutionClient {
         Ok(())
     }
 
-    fn modify_order(&self, command: &ModifyOrder) -> anyhow::Result<()> {
-        tracing::debug!("Modifying order: {:?}", command);
+    fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
+        log::debug!(
+            "Submitting order list with {} orders",
+            cmd.order_list.client_order_ids.len()
+        );
 
-        // Parse venue_order_id as u64
-        let oid: u64 = match command.venue_order_id.as_str().parse() {
+        let http_client = self.http_client.clone();
+        let slippage_bps = self.resolve_slippage_bps(cmd.params.as_ref());
+
+        let orders = self.core.get_orders_for_list(&cmd.order_list)?;
+
+        // Validate all orders synchronously and collect valid ones
+        let mut valid_orders = Vec::new();
+        let mut hyperliquid_orders = Vec::new();
+
+        for order in &orders {
+            let symbol = order.instrument_id().symbol.to_string();
+            let asset = match http_client.get_asset_index(&symbol) {
+                Some(a) => a,
+                None => {
+                    self.emitter
+                        .emit_order_denied(order, &format!("Asset index not found for {symbol}"));
+                    continue;
+                }
+            };
+
+            let price_decimals = http_client.get_price_precision(&symbol).unwrap_or(2);
+
+            match order_to_hyperliquid_request_with_asset(
+                order,
+                asset,
+                price_decimals,
+                self.config.normalize_prices,
+                slippage_bps,
+            ) {
+                Ok(req) => {
+                    hyperliquid_orders.push(req);
+                    valid_orders.push(order.clone());
+                }
+                Err(e) => {
+                    self.emitter
+                        .emit_order_denied(order, &format!("Order conversion failed: {e}"));
+                }
+            }
+        }
+
+        if valid_orders.is_empty() {
+            log::warn!("No valid orders to submit in order list");
+            return Ok(());
+        }
+
+        let grouping = determine_order_list_grouping(&valid_orders);
+        log::info!("Order list grouping: {grouping:?}");
+
+        for order in &valid_orders {
+            let cloid = Cloid::from_client_order_id(order.client_order_id());
+            self.ws_client
+                .cache_cloid_mapping(Ustr::from(&cloid.to_hex()), order.client_order_id());
+            self.register_order_identity(order);
+            self.emitter.emit_order_submitted(order);
+        }
+
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+        let ws_client = self.ws_client.clone();
+        let dispatch_state = self.ws_dispatch_state.clone();
+        let cloid_hexes: Vec<Ustr> = valid_orders
+            .iter()
+            .map(|o| Ustr::from(&Cloid::from_client_order_id(o.client_order_id()).to_hex()))
+            .collect();
+        let client_order_ids: Vec<ClientOrderId> =
+            valid_orders.iter().map(|o| o.client_order_id()).collect();
+
+        let builder = if self.http_client.has_vault_address() {
+            None
+        } else {
+            Some(HyperliquidExecBuilderFee {
+                address: NAUTILUS_BUILDER_ADDRESS.to_string(),
+                fee_tenths_bp: 0,
+            })
+        };
+
+        self.spawn_task("submit_order_list", async move {
+            let action = HyperliquidExecAction::Order {
+                orders: hyperliquid_orders,
+                grouping,
+                builder,
+            };
+
+            match http_client.post_action_exec(&action).await {
+                Ok(response) => {
+                    if response.is_ok() {
+                        let inner_errors = extract_inner_errors(&response);
+
+                        // For grouped orders (NormalTpsl/PositionTpsl), the
+                        // exchange returns a single status for the whole group
+                        // rather than one per order. If fewer statuses than
+                        // orders are returned, broadcast the first error (if
+                        // any) to all orders, or treat all as successful.
+                        if inner_errors.len() < valid_orders.len() {
+                            if let Some(error_msg) = inner_errors.iter().find_map(|e| e.as_ref()) {
+                                let ts = clock.get_time_ns();
+
+                                for ((order, cloid_hex), cid) in valid_orders
+                                    .iter()
+                                    .zip(cloid_hexes.iter())
+                                    .zip(client_order_ids.iter())
+                                {
+                                    log::warn!(
+                                        "Order {} rejected by exchange: {error_msg}",
+                                        order.client_order_id(),
+                                    );
+                                    emitter.emit_order_rejected(order, error_msg, ts, false);
+                                    ws_client.remove_cloid_mapping(cloid_hex);
+                                    dispatch_state.cleanup_terminal(cid);
+                                }
+                            } else {
+                                log::info!("Order list submitted successfully: {response:?}");
+                            }
+                        } else if inner_errors.iter().any(|e| e.is_some()) {
+                            let ts = clock.get_time_ns();
+
+                            for (i, error) in inner_errors.iter().enumerate() {
+                                if let Some(error_msg) = error {
+                                    if let Some(order) = valid_orders.get(i) {
+                                        log::warn!(
+                                            "Order {} rejected by exchange: {error_msg}",
+                                            order.client_order_id(),
+                                        );
+                                        emitter.emit_order_rejected(order, error_msg, ts, false);
+                                    }
+
+                                    if let Some(cloid_hex) = cloid_hexes.get(i) {
+                                        ws_client.remove_cloid_mapping(cloid_hex);
+                                    }
+
+                                    if let Some(cid) = client_order_ids.get(i) {
+                                        dispatch_state.cleanup_terminal(cid);
+                                    }
+                                }
+                            }
+                        } else {
+                            log::info!("Order list submitted successfully: {response:?}");
+                        }
+                    } else {
+                        let error_msg = extract_error_message(&response);
+                        log::warn!("Order list submission rejected by exchange: {error_msg}");
+                        let ts = clock.get_time_ns();
+                        for order in &valid_orders {
+                            emitter.emit_order_rejected(order, &error_msg, ts, false);
+                        }
+
+                        for cloid_hex in &cloid_hexes {
+                            ws_client.remove_cloid_mapping(cloid_hex);
+                        }
+
+                        for cid in &client_order_ids {
+                            dispatch_state.cleanup_terminal(cid);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Don't reject on transport errors: orders may have
+                    // landed and WS events will drive the lifecycle. If they
+                    // didn't land, reconciliation on reconnect resolves it.
+                    log::error!("Order list submission HTTP request failed: {e}");
+                }
+            }
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
+        log::debug!("Modifying order: {cmd:?}");
+
+        let venue_order_id = match cmd.venue_order_id {
+            Some(id) => id,
+            None => {
+                let reason = "venue_order_id is required for modify";
+                log::warn!("Cannot modify order {}: {reason}", cmd.client_order_id);
+                self.emitter.emit_order_modify_rejected_event(
+                    cmd.strategy_id,
+                    cmd.instrument_id,
+                    cmd.client_order_id,
+                    None,
+                    reason,
+                    self.clock.get_time_ns(),
+                );
+                return Ok(());
+            }
+        };
+
+        let oid: u64 = match venue_order_id.as_str().parse() {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(
-                    "Failed to parse venue_order_id '{}' as u64: {}",
-                    command.venue_order_id,
-                    e
+                let reason = format!("Failed to parse venue_order_id '{venue_order_id}': {e}");
+                log::warn!("{reason}");
+                self.emitter.emit_order_modify_rejected_event(
+                    cmd.strategy_id,
+                    cmd.instrument_id,
+                    cmd.client_order_id,
+                    Some(venue_order_id),
+                    &reason,
+                    self.clock.get_time_ns(),
+                );
+                return Ok(());
+            }
+        };
+
+        // Look up cached order to get side, reduce_only, post_only, TIF
+        let order = match self.core.cache().order(&cmd.client_order_id).cloned() {
+            Some(o) => o,
+            None => {
+                let reason = "order not found in cache";
+                log::warn!("Cannot modify order {}: {reason}", cmd.client_order_id);
+                self.emitter.emit_order_modify_rejected_event(
+                    cmd.strategy_id,
+                    cmd.instrument_id,
+                    cmd.client_order_id,
+                    Some(venue_order_id),
+                    reason,
+                    self.clock.get_time_ns(),
                 );
                 return Ok(());
             }
         };
 
         let http_client = self.http_client.clone();
-        let price = command.price;
-        let quantity = command.quantity;
-        let symbol = command.instrument_id.symbol.inner();
+        let symbol = cmd.instrument_id.symbol.to_string();
+        let should_normalize = self.config.normalize_prices;
+        let slippage_bps = self.resolve_slippage_bps(cmd.params.as_ref());
+
+        let quantity = cmd.quantity.unwrap_or(order.leaves_qty());
+        let price_decimals = http_client.get_price_precision(&symbol).unwrap_or(2);
+        let asset = match http_client.get_asset_index(&symbol) {
+            Some(a) => a,
+            None => {
+                log::warn!(
+                    "Asset index not found for symbol {symbol}, ensure instruments are loaded",
+                );
+                return Ok(());
+            }
+        };
+
+        // Build base request from cached order (derives slippage-adjusted
+        // limit for trigger-market types like StopMarket/MarketIfTouched)
+        let hyperliquid_order = match order_to_hyperliquid_request_with_asset(
+            &order,
+            asset,
+            price_decimals,
+            should_normalize,
+            slippage_bps,
+        ) {
+            Ok(mut req) => {
+                // Only override price when explicitly provided
+                if let Some(p) = cmd.price.or(order.price()) {
+                    let price_dec = p.as_decimal();
+                    req.price = if should_normalize {
+                        normalize_price(price_dec, price_decimals).normalize()
+                    } else {
+                        price_dec.normalize()
+                    };
+                } else if let Some(tp) = cmd.trigger_price {
+                    // Trigger changed but no explicit price: re-derive the
+                    // slippage-adjusted limit from the new trigger
+                    let is_buy = order.order_side() == OrderSide::Buy;
+                    let base = tp.as_decimal().normalize();
+                    let derived = derive_limit_from_trigger(base, is_buy, slippage_bps);
+                    let sig_rounded = round_to_sig_figs(derived, 5);
+                    req.price =
+                        clamp_price_to_precision(sig_rounded, price_decimals, is_buy).normalize();
+                }
+                // else: keep the derived price from order_to_hyperliquid_request
+
+                req.size = quantity.as_decimal().normalize();
+
+                // Update trigger_px if the command provides a new trigger
+                if let (Some(tp), HyperliquidExecOrderKind::Trigger { trigger }) =
+                    (cmd.trigger_price, &mut req.kind)
+                {
+                    let tp_dec = tp.as_decimal();
+                    trigger.trigger_px = if should_normalize {
+                        normalize_price(tp_dec, price_decimals).normalize()
+                    } else {
+                        tp_dec.normalize()
+                    };
+                }
+
+                req
+            }
+            Err(e) => {
+                log::warn!("Order conversion failed for modify: {e}");
+                return Ok(());
+            }
+        };
+
+        let dispatch_state = self.ws_dispatch_state.clone();
+        let client_order_id = cmd.client_order_id;
+        let old_venue_order_id = venue_order_id;
 
         self.spawn_task("modify_order", async move {
-            use crate::{
-                common::parse::extract_asset_id_from_symbol,
-                http::models::HyperliquidExecModifyOrderRequest,
+            let action = HyperliquidExecAction::Modify {
+                modify: HyperliquidExecModifyOrderRequest {
+                    oid,
+                    order: hyperliquid_order,
+                },
             };
 
-            // Extract asset ID from instrument symbol
-            let asset = match extract_asset_id_from_symbol(&symbol) {
-                Ok(asset) => asset,
+            match http_client.post_action_exec(&action).await {
+                Ok(response) => {
+                    if response.is_ok() {
+                        if let Some(inner_error) = extract_inner_error(&response) {
+                            log::warn!("Order modification rejected by exchange: {inner_error}");
+                        } else {
+                            // Mark the old venue_order_id as in-flight only
+                            // after a confirmed HTTP success. A failed modify
+                            // never leaves stale race state behind, so the
+                            // cancel-before-accept branch never fires on a
+                            // cancel following an independent failed modify.
+                            dispatch_state.mark_pending_modify(client_order_id, old_venue_order_id);
+                            log::info!("Order modified successfully: {response:?}");
+                        }
+                    } else {
+                        let error_msg = extract_error_message(&response);
+                        log::warn!("Order modification rejected by exchange: {error_msg}");
+                    }
+                }
                 Err(e) => {
-                    tracing::warn!("Failed to extract asset ID from symbol {}: {}", symbol, e);
+                    log::warn!("Order modification HTTP request failed: {e}");
+                }
+            }
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
+        log::debug!("Cancelling order: {cmd:?}");
+
+        let http_client = self.http_client.clone();
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+        let client_order_id = cmd.client_order_id;
+        let client_order_id_str = cmd.client_order_id.to_string();
+        let strategy_id = cmd.strategy_id;
+        let instrument_id = cmd.instrument_id;
+        let venue_order_id = cmd.venue_order_id;
+        let symbol = cmd.instrument_id.symbol.to_string();
+
+        self.spawn_task("cancel_order", async move {
+            let asset = match http_client.get_asset_index(&symbol) {
+                Some(a) => a,
+                None => {
+                    emitter.emit_order_cancel_rejected_event(
+                        strategy_id,
+                        instrument_id,
+                        client_order_id,
+                        venue_order_id,
+                        &format!("Asset index not found for symbol {symbol}"),
+                        clock.get_time_ns(),
+                    );
                     return Ok(());
                 }
             };
 
-            // Build typed modify request with new price and/or quantity
-            let modify_request = HyperliquidExecModifyOrderRequest {
-                asset,
-                oid,
-                price: price.map(|p| (*p).into()),
-                size: quantity.map(|q| (*q).into()),
-                reduce_only: None,
-                kind: None,
+            let cancel_request =
+                client_order_id_to_cancel_request_with_asset(&client_order_id_str, asset);
+            let action = HyperliquidExecAction::CancelByCloid {
+                cancels: vec![cancel_request],
             };
 
-            let action = ExchangeAction::modify(oid, modify_request);
-
-            match http_client.post_action(&action).await {
+            match http_client.post_action_exec(&action).await {
                 Ok(response) => {
-                    if is_response_successful(&response) {
-                        tracing::info!("Order modified successfully: {:?}", response);
-                        // Order update events will be generated from WebSocket updates
+                    if response.is_ok() {
+                        if let Some(inner_error) = extract_inner_error(&response) {
+                            emitter.emit_order_cancel_rejected_event(
+                                strategy_id,
+                                instrument_id,
+                                client_order_id,
+                                venue_order_id,
+                                &inner_error,
+                                clock.get_time_ns(),
+                            );
+                        } else {
+                            log::info!("Order cancelled successfully: {response:?}");
+                        }
                     } else {
-                        let error_msg = extract_error_message(&response);
-                        tracing::warn!("Order modification rejected by exchange: {}", error_msg);
-                        // Order modify rejected events will be generated from WebSocket updates
+                        emitter.emit_order_cancel_rejected_event(
+                            strategy_id,
+                            instrument_id,
+                            client_order_id,
+                            venue_order_id,
+                            &extract_error_message(&response),
+                            clock.get_time_ns(),
+                        );
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Order modification HTTP request failed: {e}");
-                    // WebSocket reconciliation will handle recovery
-                }
-            }
-
-            Ok(())
-        });
-
-        Ok(())
-    }
-
-    fn cancel_order(&self, command: &CancelOrder) -> anyhow::Result<()> {
-        tracing::debug!("Cancelling order: {:?}", command);
-
-        let http_client = self.http_client.clone();
-        let client_order_id = command.client_order_id.inner();
-        let symbol = command.instrument_id.symbol.inner();
-
-        self.spawn_task("cancel_order", async move {
-            match client_order_id_to_cancel_request(&client_order_id, &symbol) {
-                Ok(cancel_request) => {
-                    // Create exchange action for order cancellation with typed struct
-                    let action = ExchangeAction::cancel_by_cloid(vec![cancel_request]);
-                    match http_client.post_action(&action).await {
-                        Ok(response) => {
-                            if is_response_successful(&response) {
-                                tracing::info!("Order cancelled successfully: {:?}", response);
-                                // Order cancelled events will be generated from WebSocket updates
-                                // which provide definitive confirmation and venue_order_id
-                            } else {
-                                let error_msg = extract_error_message(&response);
-                                tracing::warn!(
-                                    "Order cancellation rejected by exchange: {}",
-                                    error_msg
-                                );
-                                // Order cancel rejected events will be generated from WebSocket updates
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Order cancellation HTTP request failed: {e}");
-                            // WebSocket reconnection and reconciliation will handle recovery
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to convert order to Hyperliquid cancel format: {:?}",
-                        e
+                    emitter.emit_order_cancel_rejected_event(
+                        strategy_id,
+                        instrument_id,
+                        client_order_id,
+                        venue_order_id,
+                        &format!("Cancel HTTP request failed: {e}"),
+                        clock.get_time_ns(),
                     );
                 }
             }
@@ -668,214 +1063,417 @@ impl ExecutionClient for HyperliquidExecutionClient {
         Ok(())
     }
 
-    fn cancel_all_orders(&self, command: &CancelAllOrders) -> anyhow::Result<()> {
-        tracing::debug!("Cancelling all orders: {:?}", command);
+    fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
+        log::debug!("Cancelling all orders: {cmd:?}");
 
-        // Query cache for all open orders matching the instrument and side
-        let cache = self.core.cache().borrow();
+        let cache = self.core.cache();
         let open_orders = cache.orders_open(
             Some(&self.core.venue),
-            Some(&command.instrument_id),
+            Some(&cmd.instrument_id),
             None,
-            Some(command.order_side),
+            None,
+            Some(cmd.order_side),
         );
 
         if open_orders.is_empty() {
-            tracing::debug!("No open orders to cancel for {:?}", command.instrument_id);
+            log::debug!("No open orders to cancel for {:?}", cmd.instrument_id);
             return Ok(());
         }
 
-        // Convert orders to cancel requests
-        let mut cancel_requests = Vec::new();
-        let symbol = command.instrument_id.symbol.inner();
-        for order in open_orders {
-            let client_order_id = order.client_order_id().inner();
+        let symbol = cmd.instrument_id.symbol.to_string();
+        let instrument_id = cmd.instrument_id;
+        let strategy_id = cmd.strategy_id;
+        let entries: Vec<CancelEntry> = open_orders
+            .iter()
+            .map(|o| CancelEntry {
+                strategy_id,
+                instrument_id,
+                client_order_id: o.client_order_id(),
+                venue_order_id: o.venue_order_id(),
+                symbol: symbol.clone(),
+            })
+            .collect();
 
-            match client_order_id_to_cancel_request(&client_order_id, &symbol) {
-                Ok(req) => cancel_requests.push(req),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to convert order {} to cancel request: {}",
-                        client_order_id,
-                        e
-                    );
-                    continue;
-                }
-            }
-        }
-
-        if cancel_requests.is_empty() {
-            tracing::debug!("No valid cancel requests to send");
-            return Ok(());
-        }
-
-        // Create exchange action for cancellation with typed struct
-        let action = ExchangeAction::cancel_by_cloid(cancel_requests);
-
-        // Send cancel request via HTTP API
-        // Note: The WebSocket connection will authoritatively handle the OrderCancelled events
         let http_client = self.http_client.clone();
-        let runtime = get_runtime();
-        runtime.spawn(async move {
-            if let Err(e) = http_client.post_action(&action).await {
-                tracing::warn!("Failed to send cancel all orders request: {e}");
-            }
-        });
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
 
-        Ok(())
-    }
+        self.spawn_task("cancel_all_orders", async move {
+            let asset = match http_client.get_asset_index(&symbol) {
+                Some(a) => a,
+                None => {
+                    let reason = format!("Asset index not found for symbol {symbol}");
+                    log::warn!("{reason}");
+                    let ts = clock.get_time_ns();
 
-    fn batch_cancel_orders(&self, command: &BatchCancelOrders) -> anyhow::Result<()> {
-        tracing::debug!("Batch cancelling orders: {:?}", command);
-
-        if command.cancels.is_empty() {
-            tracing::debug!("No orders to cancel in batch");
-            return Ok(());
-        }
-
-        // Convert each CancelOrder to a cancel request
-        let mut cancel_requests = Vec::new();
-        for cancel_cmd in &command.cancels {
-            let client_order_id = cancel_cmd.client_order_id.inner();
-            let symbol = cancel_cmd.instrument_id.symbol.inner();
-
-            match client_order_id_to_cancel_request(&client_order_id, &symbol) {
-                Ok(req) => cancel_requests.push(req),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to convert order {} to cancel request: {}",
-                        client_order_id,
-                        e
-                    );
-                    continue;
+                    for entry in &entries {
+                        emitter.emit_order_cancel_rejected_event(
+                            entry.strategy_id,
+                            entry.instrument_id,
+                            entry.client_order_id,
+                            entry.venue_order_id,
+                            &reason,
+                            ts,
+                        );
+                    }
+                    return Ok(());
                 }
-            }
-        }
+            };
 
-        if cancel_requests.is_empty() {
-            tracing::warn!("No valid cancel requests in batch");
-            return Ok(());
-        }
+            let cancel_requests: Vec<_> = entries
+                .iter()
+                .map(|e| {
+                    client_order_id_to_cancel_request_with_asset(e.client_order_id.as_ref(), asset)
+                })
+                .collect();
 
-        let action = ExchangeAction::cancel_by_cloid(cancel_requests);
-
-        // Send batch cancel request via HTTP API
-        // Note: The WebSocket connection will authoritatively handle the OrderCancelled events
-        let http_client = self.http_client.clone();
-        let runtime = get_runtime();
-        runtime.spawn(async move {
-            if let Err(e) = http_client.post_action(&action).await {
-                tracing::warn!("Failed to send batch cancel orders request: {e}");
-            }
-        });
-
-        Ok(())
-    }
-
-    fn query_account(&self, command: &QueryAccount) -> anyhow::Result<()> {
-        tracing::debug!("Querying account: {:?}", command);
-
-        // Use existing infrastructure to refresh account state
-        let runtime = get_runtime();
-        runtime.block_on(async {
-            if let Err(e) = self.refresh_account_state().await {
-                tracing::warn!("Failed to query account state: {e}");
-            }
-        });
-
-        Ok(())
-    }
-
-    fn query_order(&self, command: &QueryOrder) -> anyhow::Result<()> {
-        tracing::debug!("Querying order: {:?}", command);
-
-        // Get venue order ID from cache
-        let cache = self.core.cache().borrow();
-        let venue_order_id = cache.venue_order_id(&command.client_order_id);
-
-        let venue_order_id = match venue_order_id {
-            Some(oid) => *oid,
-            None => {
-                tracing::warn!(
-                    "No venue order ID found for client order {}",
-                    command.client_order_id
-                );
+            if cancel_requests.is_empty() {
                 return Ok(());
             }
-        };
-        drop(cache);
 
-        // Parse venue order ID to u64
-        let oid = match u64::from_str(venue_order_id.as_ref()) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!("Failed to parse venue order ID {}: {}", venue_order_id, e);
-                return Ok(());
-            }
-        };
+            let action = HyperliquidExecAction::CancelByCloid {
+                cancels: cancel_requests,
+            };
 
-        // Get user address for the query
-        let user_address = self.get_user_address()?;
+            match http_client.post_action_exec(&action).await {
+                Ok(response) => {
+                    if response.is_ok() {
+                        let inner_errors = extract_inner_errors(&response);
+                        let ts = clock.get_time_ns();
 
-        // Query order status via HTTP API
-        // Note: The WebSocket connection is the authoritative source for order updates,
-        // this is primarily for reconciliation or when WebSocket is unavailable
-        let http_client = self.http_client.clone();
-        let runtime = get_runtime();
-        runtime.spawn(async move {
-            match http_client.info_order_status(&user_address, oid).await {
-                Ok(status) => {
-                    tracing::debug!("Order status for oid {}: {:?}", oid, status);
+                        if inner_errors.is_empty() {
+                            log::info!("Cancel-all submitted successfully: {response:?}");
+                        } else {
+                            for (i, entry) in entries.iter().enumerate() {
+                                if let Some(Some(error_msg)) = inner_errors.get(i) {
+                                    log::warn!(
+                                        "Cancel for {} rejected by exchange: {error_msg}",
+                                        entry.client_order_id,
+                                    );
+                                    emitter.emit_order_cancel_rejected_event(
+                                        entry.strategy_id,
+                                        entry.instrument_id,
+                                        entry.client_order_id,
+                                        entry.venue_order_id,
+                                        error_msg,
+                                        ts,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        let error_msg = extract_error_message(&response);
+                        log::warn!("Cancel-all rejected by exchange: {error_msg}");
+                        let ts = clock.get_time_ns();
+
+                        for entry in &entries {
+                            emitter.emit_order_cancel_rejected_event(
+                                entry.strategy_id,
+                                entry.instrument_id,
+                                entry.client_order_id,
+                                entry.venue_order_id,
+                                &error_msg,
+                                ts,
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to query order status for oid {}: {}", oid, e);
+                    let reason = format!("Cancel-all HTTP request failed: {e}");
+                    log::warn!("{reason}");
+                    let ts = clock.get_time_ns();
+
+                    for entry in &entries {
+                        emitter.emit_order_cancel_rejected_event(
+                            entry.strategy_id,
+                            entry.instrument_id,
+                            entry.client_order_id,
+                            entry.venue_order_id,
+                            &reason,
+                            ts,
+                        );
+                    }
                 }
             }
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
+        log::debug!("Batch cancelling orders: {cmd:?}");
+
+        if cmd.cancels.is_empty() {
+            log::debug!("No orders to cancel in batch");
+            return Ok(());
+        }
+
+        let entries: Vec<CancelEntry> = cmd
+            .cancels
+            .iter()
+            .map(|c| CancelEntry {
+                strategy_id: c.strategy_id,
+                instrument_id: c.instrument_id,
+                client_order_id: c.client_order_id,
+                venue_order_id: c.venue_order_id,
+                symbol: c.instrument_id.symbol.to_string(),
+            })
+            .collect();
+
+        let http_client = self.http_client.clone();
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+
+        self.spawn_task("batch_cancel_orders", async move {
+            let mut cancel_requests = Vec::new();
+            let mut sent_entries: Vec<&CancelEntry> = Vec::new();
+
+            for entry in &entries {
+                let asset = match http_client.get_asset_index(&entry.symbol) {
+                    Some(a) => a,
+                    None => {
+                        let reason = format!("Asset index not found for symbol {}", entry.symbol);
+                        log::warn!("{reason}, skipping cancel for {}", entry.client_order_id);
+                        emitter.emit_order_cancel_rejected_event(
+                            entry.strategy_id,
+                            entry.instrument_id,
+                            entry.client_order_id,
+                            entry.venue_order_id,
+                            &reason,
+                            clock.get_time_ns(),
+                        );
+                        continue;
+                    }
+                };
+                cancel_requests.push(client_order_id_to_cancel_request_with_asset(
+                    entry.client_order_id.as_ref(),
+                    asset,
+                ));
+                sent_entries.push(entry);
+            }
+
+            if cancel_requests.is_empty() {
+                log::warn!("No valid cancel requests in batch");
+                return Ok(());
+            }
+
+            let action = HyperliquidExecAction::CancelByCloid {
+                cancels: cancel_requests,
+            };
+
+            match http_client.post_action_exec(&action).await {
+                Ok(response) => {
+                    if response.is_ok() {
+                        let inner_errors = extract_inner_errors(&response);
+                        let ts = clock.get_time_ns();
+
+                        if inner_errors.is_empty() {
+                            log::info!("Batch cancel submitted successfully: {response:?}");
+                        } else {
+                            for (i, entry) in sent_entries.iter().enumerate() {
+                                if let Some(Some(error_msg)) = inner_errors.get(i) {
+                                    log::warn!(
+                                        "Cancel for {} rejected by exchange: {error_msg}",
+                                        entry.client_order_id,
+                                    );
+                                    emitter.emit_order_cancel_rejected_event(
+                                        entry.strategy_id,
+                                        entry.instrument_id,
+                                        entry.client_order_id,
+                                        entry.venue_order_id,
+                                        error_msg,
+                                        ts,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        let error_msg = extract_error_message(&response);
+                        log::warn!("Batch cancel rejected by exchange: {error_msg}");
+                        let ts = clock.get_time_ns();
+
+                        for entry in &sent_entries {
+                            emitter.emit_order_cancel_rejected_event(
+                                entry.strategy_id,
+                                entry.instrument_id,
+                                entry.client_order_id,
+                                entry.venue_order_id,
+                                &error_msg,
+                                ts,
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    let reason = format!("Batch cancel HTTP request failed: {e}");
+                    log::warn!("{reason}");
+                    let ts = clock.get_time_ns();
+
+                    for entry in &sent_entries {
+                        emitter.emit_order_cancel_rejected_event(
+                            entry.strategy_id,
+                            entry.instrument_id,
+                            entry.client_order_id,
+                            entry.venue_order_id,
+                            &reason,
+                            ts,
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
+        let http_client = self.http_client.clone();
+        let account_address = self.get_account_address()?;
+        let emitter = self.emitter.clone();
+        let clock = self.clock;
+
+        self.spawn_task("query_account", async move {
+            let perp_json = http_client
+                .info_clearinghouse_state(&account_address)
+                .await
+                .context("failed to fetch clearinghouse state")?;
+
+            let perp_state: ClearinghouseState = serde_json::from_value(perp_json)
+                .context("failed to deserialize clearinghouse state")?;
+
+            let spot_json = http_client
+                .info_spot_clearinghouse_state(&account_address)
+                .await
+                .context("failed to fetch spot clearinghouse state")?;
+            let spot_state: SpotClearinghouseState = serde_json::from_value(spot_json)
+                .context("failed to deserialize spot clearinghouse state")?;
+
+            let (balances, margins) =
+                parse_combined_account_balances_and_margins(&perp_state, &spot_state)
+                    .context("failed to parse combined account balances and margins")?;
+            let ts_event = clock.get_time_ns();
+            emitter.emit_account_state(balances, margins, true, ts_event);
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn query_order(&self, cmd: QueryOrder) -> anyhow::Result<()> {
+        log::debug!("Querying order: {cmd:?}");
+
+        let client_order_id = cmd.client_order_id;
+        let venue_order_id = match cmd.venue_order_id {
+            Some(voi) => Some(voi),
+            None => self.core.cache().venue_order_id(&client_order_id).copied(),
+        };
+
+        let account_address = self.get_account_address()?;
+        let http_client = self.http_client.clone();
+        let emitter = self.emitter.clone();
+
+        self.spawn_task("query_order", async move {
+            // Search open orders by cloid first so modify/cancel-replace
+            // resolves to the live replacement rather than a stale cached oid.
+            // Request errors here are logged and the oid fallback is still tried;
+            // a transient frontendOpenOrders failure must not abort the whole query.
+            match http_client
+                .request_order_status_report_by_client_order_id(&account_address, &client_order_id)
+                .await
+            {
+                Ok(Some(report)) => {
+                    log::info!("Queried order status for {client_order_id}");
+                    emitter.send_order_status_report(report);
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!(
+                        "Failed to query order status for {client_order_id}: {e}; falling back to oid lookup"
+                    );
+                }
+            }
+
+            let Some(venue_order_id) = venue_order_id else {
+                log::info!("No order status report found for {client_order_id}");
+                return Ok(());
+            };
+
+            let oid: u64 = match venue_order_id.as_str().parse() {
+                Ok(oid) => oid,
+                Err(e) => {
+                    log::warn!("Failed to parse venue order ID {venue_order_id}: {e}");
+                    return Ok(());
+                }
+            };
+
+            match http_client
+                .request_order_status_report(&account_address, oid)
+                .await
+            {
+                Ok(Some(report)) => {
+                    log::info!("Queried order status for oid {oid}");
+                    emitter.send_order_status_report(report);
+                }
+                Ok(None) => {
+                    log::info!("No order status report found for oid {oid}");
+                }
+                Err(e) => {
+                    log::warn!("Failed to query order status for oid {oid}: {e}");
+                }
+            }
+
+            Ok(())
         });
 
         Ok(())
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        if self.connected {
+        if self.core.is_connected() {
             return Ok(());
         }
 
-        tracing::info!("Connecting Hyperliquid execution client");
+        log::info!("Connecting Hyperliquid execution client");
 
         // Ensure instruments are initialized
         self.ensure_instruments_initialized_async().await?;
 
-        // Connect WebSocket client
-        self.ws_client.connect().await?;
+        // Start WebSocket stream (connects and subscribes to user channels)
+        self.start_ws_stream().await?;
 
-        // Subscribe to user-specific order updates and fills
-        let user_address = self.get_user_address()?;
-        self.ws_client
-            .subscribe_all_user_channels(&user_address)
-            .await?;
+        // Post-WS setup: if any step fails, tear down WS before returning
+        let post_ws = async {
+            self.refresh_account_state().await?;
+            self.await_account_registered(30.0).await?;
 
-        // Initialize account state
-        self.refresh_account_state().await?;
+            Ok::<(), anyhow::Error>(())
+        };
 
-        self.connected = true;
-        self.core.set_connected(true);
-
-        // Start WebSocket stream for execution updates
-        if let Err(e) = self.start_ws_stream().await {
-            tracing::warn!("Failed to start WebSocket stream: {e}");
+        if let Err(e) = post_ws.await {
+            log::warn!("Connect failed after WS started, tearing down: {e}");
+            let _ = self.ws_client.disconnect().await;
+            self.abort_pending_tasks();
+            return Err(e);
         }
 
-        tracing::info!(client_id = %self.core.client_id, "Connected");
+        self.core.set_connected();
+
+        log::info!("Connected: client_id={}", self.core.client_id);
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if !self.connected {
+        if self.core.is_disconnected() {
             return Ok(());
         }
 
-        tracing::info!("Disconnecting Hyperliquid execution client");
+        log::info!("Disconnecting Hyperliquid execution client");
 
         // Disconnect WebSocket
         self.ws_client.disconnect().await?;
@@ -883,53 +1481,112 @@ impl ExecutionClient for HyperliquidExecutionClient {
         // Abort any pending tasks
         self.abort_pending_tasks();
 
-        self.connected = false;
-        self.core.set_connected(false);
+        self.core.set_disconnected();
 
-        tracing::info!(client_id = %self.core.client_id, "Disconnected");
+        log::info!("Disconnected: client_id={}", self.core.client_id);
         Ok(())
     }
-}
 
-#[async_trait(?Send)]
-impl LiveExecutionClient for HyperliquidExecutionClient {
     async fn generate_order_status_report(
         &self,
-        _cmd: &GenerateOrderStatusReport,
+        cmd: &GenerateOrderStatusReport,
     ) -> anyhow::Result<Option<OrderStatusReport>> {
-        // NOTE: Single order status report generation requires instrument cache integration.
-        // The HTTP client methods and parsing functions are implemented and ready to use.
-        // When implemented: query via info_order_status(), parse with parse_order_status_report_from_basic().
-        tracing::warn!("generate_order_status_report not yet fully implemented");
-        Ok(None)
+        let account_address = self.get_account_address()?;
+
+        if cmd.venue_order_id.is_none() && cmd.client_order_id.is_none() {
+            log::warn!(
+                "Cannot generate order status report without venue_order_id or client_order_id"
+            );
+            return Ok(None);
+        }
+
+        // Search open orders by cloid first when supplied. Hyperliquid modify
+        // produces a new venue oid while preserving cloid, so a cached oid can
+        // point at the canceled leg rather than the live replacement.
+        if let Some(client_order_id) = &cmd.client_order_id
+            && let Some(report) = self
+                .http_client
+                .request_order_status_report_by_client_order_id(&account_address, client_order_id)
+                .await
+                .context("failed to generate order status report by client_order_id")?
+        {
+            log::info!("Generated order status report for {client_order_id}");
+            return Ok(Some(report));
+        }
+
+        let oid = match &cmd.venue_order_id {
+            Some(venue_order_id) => venue_order_id
+                .as_str()
+                .parse::<u64>()
+                .context("failed to parse venue_order_id as oid")?,
+            None => match &cmd.client_order_id {
+                Some(client_order_id) => {
+                    let cached_oid: Option<u64> = self
+                        .core
+                        .cache()
+                        .venue_order_id(client_order_id)
+                        .and_then(|v| v.as_str().parse::<u64>().ok());
+
+                    match cached_oid {
+                        Some(oid) => oid,
+                        None => {
+                            log::info!("No order status report found for {client_order_id}");
+                            return Ok(None);
+                        }
+                    }
+                }
+                None => unreachable!("cmd must carry at least one identifier"),
+            },
+        };
+
+        let report = self
+            .http_client
+            .request_order_status_report(&account_address, oid)
+            .await
+            .context("failed to generate order status report")?;
+
+        if report.is_some() {
+            log::info!("Generated order status report for oid {oid}");
+        } else {
+            log::info!("No order status report found for oid {oid}");
+        }
+        Ok(report)
     }
 
     async fn generate_order_status_reports(
         &self,
-        cmd: &GenerateOrderStatusReport,
+        cmd: &GenerateOrderStatusReports,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
-        let user_address = self.get_user_address()?;
+        let account_address = self.get_account_address()?;
 
         let reports = self
             .http_client
-            .request_order_status_reports(&user_address, cmd.instrument_id)
+            .request_order_status_reports(&account_address, cmd.instrument_id)
             .await
             .context("failed to generate order status reports")?;
 
-        // Filter by client_order_id if specified
-        let reports = if let Some(client_order_id) = cmd.client_order_id {
+        // Filter by open_only if specified
+        let reports = if cmd.open_only {
             reports
                 .into_iter()
-                .filter(|r| r.client_order_id == Some(client_order_id))
+                .filter(|r| r.order_status.is_open())
                 .collect()
         } else {
             reports
         };
 
-        // Note: cmd.venue_order_id is Option<ClientOrderId> in the struct definition,
-        // but report venue_order_id is VenueOrderId - type mismatch prevents filtering here
+        // Filter by time range if specified
+        let reports = match (cmd.start, cmd.end) {
+            (Some(start), Some(end)) => reports
+                .into_iter()
+                .filter(|r| r.ts_last >= start && r.ts_last <= end)
+                .collect(),
+            (Some(start), None) => reports.into_iter().filter(|r| r.ts_last >= start).collect(),
+            (None, Some(end)) => reports.into_iter().filter(|r| r.ts_last <= end).collect(),
+            (None, None) => reports,
+        };
 
-        tracing::info!("Generated {} order status reports", reports.len());
+        log::info!("Generated {} order status reports", reports.len());
         Ok(reports)
     }
 
@@ -937,11 +1594,11 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
         &self,
         cmd: GenerateFillReports,
     ) -> anyhow::Result<Vec<FillReport>> {
-        let user_address = self.get_user_address()?;
+        let account_address = self.get_account_address()?;
 
         let reports = self
             .http_client
-            .request_fill_reports(&user_address, cmd.instrument_id)
+            .request_fill_reports(&account_address, cmd.instrument_id)
             .await
             .context("failed to generate fill reports")?;
 
@@ -962,23 +1619,24 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
             reports
         };
 
-        tracing::info!("Generated {} fill reports", reports.len());
+        log::info!("Generated {} fill reports", reports.len());
         Ok(reports)
     }
 
     async fn generate_position_status_reports(
         &self,
-        cmd: &GeneratePositionReports,
+        cmd: &GeneratePositionStatusReports,
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
-        let user_address = self.get_user_address()?;
+        let account_address = self.get_account_address()?;
 
+        // request_position_status_reports already merges spot holdings
         let reports = self
             .http_client
-            .request_position_status_reports(&user_address, cmd.instrument_id)
+            .request_position_status_reports(&account_address, cmd.instrument_id)
             .await
             .context("failed to generate position status reports")?;
 
-        tracing::info!("Generated {} position status reports", reports.len());
+        log::info!("Generated {} position status reports", reports.len());
         Ok(reports)
     }
 
@@ -986,15 +1644,57 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
         &self,
         lookback_mins: Option<u64>,
     ) -> anyhow::Result<Option<ExecutionMassStatus>> {
-        tracing::warn!(
-            "generate_mass_status not yet implemented (lookback_mins={lookback_mins:?})"
+        let ts_init = self.clock.get_time_ns();
+
+        let order_cmd = GenerateOrderStatusReports::new(
+            UUID4::new(),
+            ts_init,
+            true, // open_only
+            None,
+            None,
+            None,
+            None,
+            None,
         );
-        // Full implementation would require:
-        // 1. Query all orders within lookback window
-        // 2. Query all fills within lookback window
-        // 3. Query all positions
-        // 4. Combine into ExecutionMassStatus
-        Ok(None)
+        let fill_cmd =
+            GenerateFillReports::new(UUID4::new(), ts_init, None, None, None, None, None, None);
+        let position_cmd =
+            GeneratePositionStatusReports::new(UUID4::new(), ts_init, None, None, None, None, None);
+
+        let order_reports = self.generate_order_status_reports(&order_cmd).await?;
+        let mut fill_reports = self.generate_fill_reports(fill_cmd).await?;
+        let position_reports = self.generate_position_status_reports(&position_cmd).await?;
+
+        // Apply lookback filter to fills only (positions are current state,
+        // and open orders must always be included for correct reconciliation)
+        if let Some(mins) = lookback_mins {
+            let cutoff_ns = ts_init
+                .as_u64()
+                .saturating_sub(mins.saturating_mul(60).saturating_mul(1_000_000_000));
+            let cutoff = UnixNanos::from(cutoff_ns);
+
+            fill_reports.retain(|r| r.ts_event >= cutoff);
+        }
+
+        let mut mass_status = ExecutionMassStatus::new(
+            self.core.client_id,
+            self.core.account_id,
+            self.core.venue,
+            ts_init,
+            None,
+        );
+        mass_status.add_order_reports(order_reports);
+        mass_status.add_fill_reports(fill_reports);
+        mass_status.add_position_reports(position_reports);
+
+        log::info!(
+            "Generated mass status: {} orders, {} fills, {} positions",
+            mass_status.order_reports().len(),
+            mass_status.fill_reports().len(),
+            mass_status.position_reports().len(),
+        );
+
+        Ok(Some(mass_status))
     }
 }
 
@@ -1008,7 +1708,17 @@ impl HyperliquidExecutionClient {
         }
 
         let user_address = self.get_user_address()?;
-        let _account_id = self.core.account_id;
+
+        // Use account_address (agent wallet) or vault address for WS subscriptions,
+        // otherwise order/fill updates will be missed
+        let subscription_address = self
+            .config
+            .account_address
+            .as_ref()
+            .or(self.config.vault_address.as_ref())
+            .unwrap_or(&user_address)
+            .clone();
+
         let mut ws_client = self.ws_client.clone();
 
         let instruments = self
@@ -1021,58 +1731,73 @@ impl HyperliquidExecutionClient {
             ws_client.cache_instrument(instrument);
         }
 
+        // Connect and subscribe before spawning the event loop
+        ws_client.connect().await?;
+        ws_client
+            .subscribe_order_updates(&subscription_address)
+            .await?;
+        ws_client
+            .subscribe_user_events(&subscription_address)
+            .await?;
+        log::info!("Subscribed to Hyperliquid execution updates for {subscription_address}");
+
+        // Transfer task handle to original so disconnect() can await it
+        if let Some(handle) = ws_client.take_task_handle() {
+            self.ws_client.set_task_handle(handle);
+        }
+
+        let emitter = self.emitter.clone();
+        let dispatch_state = self.ws_dispatch_state.clone();
+        let clock = self.clock;
         let runtime = get_runtime();
         let handle = runtime.spawn(async move {
-            if let Err(e) = ws_client.connect().await {
-                tracing::warn!("Failed to connect WebSocket: {e}");
-                return;
-            }
-
-            if let Err(e) = ws_client.subscribe_order_updates(&user_address).await {
-                tracing::warn!("Failed to subscribe to order updates: {e}");
-                return;
-            }
-
-            if let Err(e) = ws_client.subscribe_user_events(&user_address).await {
-                tracing::warn!("Failed to subscribe to user events: {e}");
-                return;
-            }
-
-            tracing::info!("Subscribed to Hyperliquid execution updates");
-
-            let _clock = get_atomic_clock_realtime();
+            // Cloids for external / untracked orders that reach a terminal
+            // state: we evict their mapping immediately so long-running
+            // sessions do not leak. Tracked orders clear their own cloid
+            // mapping from the dispatch `cleanup_terminal` path below.
+            //
+            // For a tracked order that hits a status-only `FILLED` marker
+            // without an accompanying fill, we defer the cloid cleanup until
+            // the matching `FillReport` arrives so partial fills do not lose
+            // their `client_order_id` link. The bounded FIFO cache keeps
+            // orphaned entries from growing unbounded.
+            let mut pending_filled_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
 
             loop {
                 let event = ws_client.next_event().await;
 
                 match event {
-                    Some(msg) => {
-                        match msg {
-                            NautilusWsMessage::ExecutionReports(reports) => {
-                                // Handler already parsed the messages, just dispatch them
-                                for report in reports {
-                                    dispatch_execution_report(report);
-                                }
+                    Some(msg) => match msg {
+                        NautilusWsMessage::ExecutionReports(reports) => {
+                            for report in reports {
+                                handle_execution_report(
+                                    report,
+                                    &dispatch_state,
+                                    &emitter,
+                                    &ws_client,
+                                    &mut pending_filled_cloids,
+                                    clock.get_time_ns(),
+                                );
                             }
-                            NautilusWsMessage::Reconnected => {
-                                tracing::info!("WebSocket reconnected");
-                                // TODO: Resubscribe to user channels if needed
-                            }
-                            NautilusWsMessage::Error(e) => {
-                                tracing::error!("WebSocket error: {e}");
-                            }
-                            // Handled by data client
-                            NautilusWsMessage::Trades(_)
-                            | NautilusWsMessage::Quote(_)
-                            | NautilusWsMessage::Deltas(_)
-                            | NautilusWsMessage::Candle(_)
-                            | NautilusWsMessage::MarkPrice(_)
-                            | NautilusWsMessage::IndexPrice(_)
-                            | NautilusWsMessage::FundingRate(_) => {}
                         }
-                    }
+                        // Reconnected is handled by WS client internally
+                        // (resubscribe_all) and never forwarded here
+                        NautilusWsMessage::Reconnected => {}
+                        NautilusWsMessage::Error(e) => {
+                            log::error!("WebSocket error: {e}");
+                        }
+                        // Handled by data client
+                        NautilusWsMessage::Trades(_)
+                        | NautilusWsMessage::Quote(_)
+                        | NautilusWsMessage::Deltas(_)
+                        | NautilusWsMessage::Depth10(_)
+                        | NautilusWsMessage::Candle(_)
+                        | NautilusWsMessage::MarkPrice(_)
+                        | NautilusWsMessage::IndexPrice(_)
+                        | NautilusWsMessage::FundingRate(_) => {}
+                    },
                     None => {
-                        tracing::warn!("WebSocket next_event returned None");
+                        log::debug!("WebSocket next_event returned None, stream closed");
                         break;
                     }
                 }
@@ -1080,25 +1805,692 @@ impl HyperliquidExecutionClient {
         });
 
         *self.ws_stream_handle.lock().expect(MUTEX_POISONED) = Some(handle);
-        tracing::info!("Hyperliquid WebSocket execution stream started");
+        log::info!("Hyperliquid WebSocket execution stream started");
         Ok(())
     }
 }
 
-fn dispatch_execution_report(report: ExecutionReport) {
-    let sender = get_exec_event_sender();
+/// Registers an order's identity in the dispatch state so its subsequent
+/// WebSocket lifecycle can route through the typed-event path.
+///
+/// Quote-quantity orders submit a quote amount (e.g. 100 USD) but the venue
+struct CancelEntry {
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    client_order_id: ClientOrderId,
+    venue_order_id: Option<VenueOrderId>,
+    symbol: String,
+}
+
+/// reports fills in base units. Comparing those two when deciding whether an
+/// order is fully filled would leave the order stuck "open" forever, so they
+/// flow through the untracked path and the engine reconciles them from
+/// status reports instead.
+fn register_order_identity_into(state: &WsDispatchState, order: &OrderAny) {
+    if order.is_quote_quantity() {
+        return;
+    }
+    state.register_identity(
+        order.client_order_id(),
+        OrderIdentity {
+            strategy_id: order.strategy_id(),
+            instrument_id: order.instrument_id(),
+            order_side: order.order_side(),
+            order_type: order.order_type(),
+            quantity: order.quantity(),
+            price: order.price(),
+        },
+    );
+}
+
+/// Routes a single execution report through the two-tier dispatch.
+///
+/// For tracked orders this emits typed `OrderEventAny` events via the
+/// dispatch module; external / untracked orders fall back to the raw report
+/// so the engine can reconcile. Cloid-mapping cleanup is handled here so
+/// long-running sessions do not leak mapping entries.
+fn handle_execution_report(
+    report: ExecutionReport,
+    dispatch_state: &WsDispatchState,
+    emitter: &ExecutionEventEmitter,
+    ws_client: &HyperliquidWebSocketClient,
+    pending_filled_cloids: &mut FifoCache<ClientOrderId, 10_000>,
+    ts_init: UnixNanos,
+) {
     match report {
         ExecutionReport::Order(order_report) => {
-            let exec_report = NautilusExecutionReport::OrderStatus(Box::new(order_report));
-            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
-                tracing::warn!("Failed to send order status report: {e}");
+            let is_filled_marker = matches!(order_report.order_status, OrderStatus::Filled);
+            let is_open = order_report.order_status.is_open();
+            let client_order_id = order_report.client_order_id;
+
+            let outcome =
+                dispatch_order_status_report(&order_report, dispatch_state, emitter, ts_init);
+
+            if outcome == DispatchOutcome::External {
+                emitter.send_order_status_report(order_report);
+            }
+
+            // Cloid cleanup:
+            //
+            // * `Skip` (stale cancel leg of a cancel-replace, cancel-before-accept
+            //   race, or replay after terminal): leave the mapping intact. The
+            //   still-open replacement order depends on it for subsequent events,
+            //   and a genuinely terminal replay had its mapping evicted earlier.
+            // * `Tracked` + status-only FILLED marker: defer the eviction until
+            //   the matching `FillReport` lands so the partial fill preceding it
+            //   keeps its client-order-id link.
+            // * `Tracked` non-marker terminal and `External` terminal: evict now
+            //   so long-running sessions do not leak cloid mappings.
+            if let Some(id) = client_order_id
+                && !is_open
+            {
+                match outcome {
+                    DispatchOutcome::Skip => {}
+                    DispatchOutcome::Tracked if is_filled_marker => {
+                        pending_filled_cloids.add(id);
+                    }
+                    DispatchOutcome::Tracked | DispatchOutcome::External => {
+                        let cloid = Cloid::from_client_order_id(id);
+                        ws_client.remove_cloid_mapping(&Ustr::from(&cloid.to_hex()));
+                    }
+                }
             }
         }
         ExecutionReport::Fill(fill_report) => {
-            let exec_report = NautilusExecutionReport::Fill(Box::new(fill_report));
-            if let Err(e) = sender.send(ExecutionEvent::Report(exec_report)) {
-                tracing::warn!("Failed to send fill report: {e}");
+            let client_order_id = fill_report.client_order_id;
+
+            let outcome = dispatch_fill_report(&fill_report, dispatch_state, emitter, ts_init);
+
+            if outcome == DispatchOutcome::External {
+                emitter.send_fill_report(fill_report);
+            }
+
+            // If this fill matches a deferred FILLED marker, drop the cloid
+            // mapping now that the fill has landed.
+            if let Some(id) = client_order_id
+                && pending_filled_cloids.contains(&id)
+            {
+                pending_filled_cloids.remove(&id);
+                let cloid = Cloid::from_client_order_id(id);
+                ws_client.remove_cloid_mapping(&Ustr::from(&cloid.to_hex()));
             }
         }
+    }
+}
+
+use crate::common::parse::determine_order_list_grouping;
+
+#[cfg(test)]
+mod tests {
+    use nautilus_common::messages::ExecutionEvent;
+    use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
+    use nautilus_live::ExecutionEventEmitter;
+    use nautilus_model::{
+        enums::{
+            AccountType, ContingencyType, LiquiditySide, OrderSide, OrderStatus, OrderType,
+            TimeInForce, TriggerType,
+        },
+        events::OrderEventAny,
+        identifiers::{
+            AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
+        },
+        orders::{OrderAny, limit::LimitOrder, stop_market::StopMarketOrder},
+        reports::{FillReport, OrderStatusReport},
+        types::{Currency, Money, Price, Quantity},
+    };
+    use nautilus_network::websocket::TransportBackend;
+    use rstest::rstest;
+    use ustr::Ustr;
+
+    use super::{
+        Cloid, ExecutionReport, FifoCache, HyperliquidWebSocketClient, OrderIdentity,
+        WsDispatchState, determine_order_list_grouping, handle_execution_report,
+        register_order_identity_into,
+    };
+    use crate::{common::enums::HyperliquidEnvironment, http::models::HyperliquidExecGrouping};
+
+    const TEST_INSTRUMENT_ID: &str = "BTC-USD-PERP.HYPERLIQUID";
+
+    fn test_emitter() -> (
+        ExecutionEventEmitter,
+        tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
+    ) {
+        let clock = get_atomic_clock_realtime();
+        let mut emitter = ExecutionEventEmitter::new(
+            clock,
+            TraderId::from("TESTER-001"),
+            AccountId::from("HYPERLIQUID-001"),
+            AccountType::Margin,
+            None,
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        emitter.set_sender(tx);
+        (emitter, rx)
+    }
+
+    fn drain_events(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
+    ) -> Vec<ExecutionEvent> {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
+    fn make_ws_client() -> HyperliquidWebSocketClient {
+        // `HyperliquidWebSocketClient::new` does not connect, so this is a
+        // cheap unit-test shim that still exercises the real `cloid_cache`
+        // mapping APIs used by `handle_execution_report`.
+        HyperliquidWebSocketClient::new(
+            Some("wss://test.invalid".to_string()),
+            HyperliquidEnvironment::Testnet,
+            None,
+            TransportBackend::default(),
+            None,
+        )
+    }
+
+    fn test_identity() -> OrderIdentity {
+        OrderIdentity {
+            strategy_id: StrategyId::from("S-001"),
+            instrument_id: InstrumentId::from(TEST_INSTRUMENT_ID),
+            order_side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            quantity: Quantity::from("0.0001"),
+            price: Some(Price::from("56730.0")),
+        }
+    }
+
+    fn make_status_report(
+        client_order_id: Option<&str>,
+        venue_order_id: &str,
+        status: OrderStatus,
+    ) -> OrderStatusReport {
+        OrderStatusReport::new(
+            AccountId::from("HYPERLIQUID-001"),
+            InstrumentId::from(TEST_INSTRUMENT_ID),
+            client_order_id.map(ClientOrderId::new),
+            VenueOrderId::new(venue_order_id),
+            OrderSide::Buy,
+            OrderType::Limit,
+            TimeInForce::Gtc,
+            status,
+            Quantity::from("0.0001"),
+            Quantity::from("0"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+            UnixNanos::default(),
+            Some(UUID4::new()),
+        )
+        .with_price(Price::from("56730.0"))
+    }
+
+    fn make_fill_report(
+        client_order_id: Option<&str>,
+        venue_order_id: &str,
+        trade_id: &str,
+    ) -> FillReport {
+        FillReport::new(
+            AccountId::from("HYPERLIQUID-001"),
+            InstrumentId::from(TEST_INSTRUMENT_ID),
+            VenueOrderId::new(venue_order_id),
+            TradeId::new(trade_id),
+            OrderSide::Buy,
+            Quantity::from("0.0001"),
+            Price::from("56730.0"),
+            Money::new(0.0, Currency::USD()),
+            LiquiditySide::Taker,
+            client_order_id.map(ClientOrderId::new),
+            None,
+            UnixNanos::default(),
+            UnixNanos::default(),
+            Some(UUID4::new()),
+        )
+    }
+
+    fn cloid_for(id: &str) -> Ustr {
+        let cloid = Cloid::from_client_order_id(ClientOrderId::from(id));
+        Ustr::from(&cloid.to_hex())
+    }
+
+    fn limit_order(
+        id: &str,
+        reduce_only: bool,
+        contingency: ContingencyType,
+        linked_ids: Option<Vec<&str>>,
+        parent_id: Option<&str>,
+    ) -> OrderAny {
+        OrderAny::Limit(LimitOrder::new(
+            TraderId::from("TESTER-001"),
+            StrategyId::from("S-001"),
+            InstrumentId::from("ETH-USD-PERP.HYPERLIQUID"),
+            ClientOrderId::from(id),
+            OrderSide::Buy,
+            Quantity::from(1),
+            Price::from("3000.00"),
+            TimeInForce::Gtc,
+            None,  // expire_time
+            false, // post_only
+            reduce_only,
+            false, // quote_quantity
+            None,  // display_qty
+            None,  // emulation_trigger
+            None,  // trigger_instrument_id
+            Some(contingency),
+            None, // order_list_id
+            linked_ids.map(|ids| ids.into_iter().map(ClientOrderId::from).collect()),
+            parent_id.map(ClientOrderId::from),
+            None, // exec_algorithm_id
+            None, // exec_algorithm_params
+            None, // exec_spawn_id
+            None, // tags
+            Default::default(),
+            Default::default(),
+        ))
+    }
+
+    fn stop_order(
+        id: &str,
+        reduce_only: bool,
+        contingency: ContingencyType,
+        linked_ids: Option<Vec<&str>>,
+        parent_id: Option<&str>,
+    ) -> OrderAny {
+        OrderAny::StopMarket(StopMarketOrder::new(
+            TraderId::from("TESTER-001"),
+            StrategyId::from("S-001"),
+            InstrumentId::from("ETH-USD-PERP.HYPERLIQUID"),
+            ClientOrderId::from(id),
+            OrderSide::Sell,
+            Quantity::from(1),
+            Price::from("2800.00"),
+            TriggerType::LastPrice,
+            TimeInForce::Gtc,
+            None, // expire_time
+            reduce_only,
+            false, // quote_quantity
+            None,  // display_qty
+            None,  // emulation_trigger
+            None,  // trigger_instrument_id
+            Some(contingency),
+            None, // order_list_id
+            linked_ids.map(|ids| ids.into_iter().map(ClientOrderId::from).collect()),
+            parent_id.map(ClientOrderId::from),
+            None, // exec_algorithm_id
+            None, // exec_algorithm_params
+            None, // exec_spawn_id
+            None, // tags
+            Default::default(),
+            Default::default(),
+        ))
+    }
+
+    #[rstest]
+    #[case::independent_orders(
+        vec![
+            limit_order("O-001", false, ContingencyType::NoContingency, None, None),
+            limit_order("O-002", false, ContingencyType::NoContingency, None, None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::bracket_oto(
+        vec![
+            limit_order("O-001", false, ContingencyType::Oto, Some(vec!["O-002", "O-003"]), None),
+            limit_order("O-002", true, ContingencyType::Oco, Some(vec!["O-003"]), Some("O-001")),
+            stop_order("O-003", true, ContingencyType::Oco, Some(vec!["O-002"]), Some("O-001")),
+        ],
+        HyperliquidExecGrouping::NormalTpsl,
+    )]
+    #[case::oto_not_bracket_shaped(
+        vec![
+            limit_order("O-001", false, ContingencyType::Oto, Some(vec!["O-002"]), None),
+            limit_order("O-002", false, ContingencyType::Oto, Some(vec!["O-001"]), None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::oco_all_reduce_only(
+        vec![
+            limit_order("O-001", true, ContingencyType::Oco, Some(vec!["O-002"]), None),
+            stop_order("O-002", true, ContingencyType::Oco, Some(vec!["O-001"]), None),
+        ],
+        HyperliquidExecGrouping::PositionTpsl,
+    )]
+    #[case::oco_not_all_reduce_only(
+        vec![
+            limit_order("O-001", false, ContingencyType::Oco, Some(vec!["O-002"]), None),
+            stop_order("O-002", true, ContingencyType::Oco, Some(vec!["O-001"]), None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::oto_with_non_oco_children(
+        vec![
+            limit_order("O-001", false, ContingencyType::Oto, Some(vec!["O-002", "O-003"]), None),
+            limit_order("O-002", true, ContingencyType::NoContingency, None, None),
+            stop_order("O-003", true, ContingencyType::NoContingency, None, None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::mixed_oco_and_plain_reduce_only(
+        vec![
+            limit_order("O-001", true, ContingencyType::Oco, Some(vec!["O-002"]), None),
+            stop_order("O-002", true, ContingencyType::NoContingency, None, None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::unlinked_oco_reduce_only(
+        vec![
+            limit_order("O-001", true, ContingencyType::Oco, Some(vec!["O-099"]), None),
+            stop_order("O-002", true, ContingencyType::Oco, Some(vec!["O-098"]), None),
+        ],
+        HyperliquidExecGrouping::Na,
+    )]
+    #[case::single_order(
+        vec![limit_order("O-001", false, ContingencyType::NoContingency, None, None)],
+        HyperliquidExecGrouping::Na,
+    )]
+    fn test_determine_order_list_grouping(
+        #[case] orders: Vec<OrderAny>,
+        #[case] expected: HyperliquidExecGrouping,
+    ) {
+        let result = determine_order_list_grouping(&orders);
+        assert_eq!(result, expected);
+    }
+
+    fn limit_order_with_quote_quantity(id: &str, quote_quantity: bool) -> OrderAny {
+        OrderAny::Limit(LimitOrder::new(
+            TraderId::from("TESTER-001"),
+            StrategyId::from("S-001"),
+            InstrumentId::from(TEST_INSTRUMENT_ID),
+            ClientOrderId::from(id),
+            OrderSide::Buy,
+            Quantity::from("0.0001"),
+            Price::from("56730.0"),
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            quote_quantity,
+            None,
+            None,
+            None,
+            Some(ContingencyType::NoContingency),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Default::default(),
+            Default::default(),
+        ))
+    }
+
+    #[rstest]
+    fn test_register_order_identity_registers_regular_order() {
+        let state = WsDispatchState::new();
+        let order = limit_order_with_quote_quantity("O-REG-001", false);
+
+        register_order_identity_into(&state, &order);
+
+        let found = state
+            .lookup_identity(&ClientOrderId::from("O-REG-001"))
+            .expect("identity should be registered");
+        assert_eq!(found.strategy_id, StrategyId::from("S-001"));
+        assert_eq!(found.instrument_id, InstrumentId::from(TEST_INSTRUMENT_ID));
+        assert_eq!(found.order_side, OrderSide::Buy);
+        assert_eq!(found.order_type, OrderType::Limit);
+        assert_eq!(found.quantity, Quantity::from("0.0001"));
+        assert_eq!(found.price, Some(Price::from("56730.0")));
+    }
+
+    #[rstest]
+    fn test_register_order_identity_skips_quote_quantity_order() {
+        let state = WsDispatchState::new();
+        let order = limit_order_with_quote_quantity("O-QQ-001", true);
+
+        register_order_identity_into(&state, &order);
+
+        // Quote-quantity orders flow through the untracked path so the engine
+        // reconciles them from status reports; registering would make the
+        // cumulative-fill comparison mismatch base-unit fills against the
+        // quote-unit tracked quantity and leave the order stuck "open".
+        assert!(
+            state
+                .lookup_identity(&ClientOrderId::from("O-QQ-001"))
+                .is_none()
+        );
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_skip_keeps_cloid_mapping() {
+        // Regression guard for GH-3827: when the dispatch returns Skip (e.g.
+        // the stale cancel leg of a cancel-replace), the cloid mapping must
+        // stay in place so the still-open replacement order can still be
+        // resolved by subsequent events.
+        let ws_client = make_ws_client();
+        let (emitter, mut rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-SKIP");
+        state.register_identity(cid, test_identity());
+        // Prime state so the later CANCELED(old_voi) is classified as stale.
+        state.insert_accepted(cid);
+        state.record_venue_order_id(cid, VenueOrderId::new("new-voi"));
+
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-SKIP"), cid);
+
+        let stale_cancel = make_status_report(Some("O-HER-SKIP"), "old-voi", OrderStatus::Canceled);
+        handle_execution_report(
+            ExecutionReport::Order(stale_cancel),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        assert!(drain_events(&mut rx).is_empty());
+        // Cloid mapping preserved; the replacement order still resolves.
+        assert_eq!(
+            ws_client.get_cloid_mapping(&cloid_for("O-HER-SKIP")),
+            Some(cid)
+        );
+        // Identity is still tracked (the skip path did not clean up).
+        assert!(state.lookup_identity(&cid).is_some());
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_tracked_terminal_evicts_cloid() {
+        // A tracked CANCELED that reaches a genuine terminal state should
+        // emit OrderCanceled and evict the cloid mapping so long-running
+        // sessions do not leak.
+        let ws_client = make_ws_client();
+        let (emitter, mut rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-CANCEL");
+        state.register_identity(cid, test_identity());
+        state.insert_accepted(cid);
+        state.record_venue_order_id(cid, VenueOrderId::new("v-cancel"));
+
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-CANCEL"), cid);
+
+        let report = make_status_report(Some("O-HER-CANCEL"), "v-cancel", OrderStatus::Canceled);
+        handle_execution_report(
+            ExecutionReport::Order(report),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            ExecutionEvent::Order(OrderEventAny::Canceled(_))
+        ));
+        assert_eq!(
+            ws_client.get_cloid_mapping(&cloid_for("O-HER-CANCEL")),
+            None
+        );
+        assert!(state.filled_orders.contains(&cid));
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_filled_marker_then_fill_evicts_on_fill() {
+        // The status-only FILLED marker defers the cloid eviction to the
+        // pending cache; the matching FillReport emits OrderFilled and then
+        // evicts the cloid mapping as part of the deferred-cleanup path.
+        let ws_client = make_ws_client();
+        let (emitter, mut rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-FILL");
+        state.register_identity(cid, test_identity());
+        state.insert_accepted(cid);
+        state.record_venue_order_id(cid, VenueOrderId::new("v-fill"));
+
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-FILL"), cid);
+
+        let status_marker = make_status_report(Some("O-HER-FILL"), "v-fill", OrderStatus::Filled);
+        handle_execution_report(
+            ExecutionReport::Order(status_marker),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        // Marker arrived: no event, cloid cleanup deferred, mapping retained.
+        assert!(drain_events(&mut rx).is_empty());
+        assert_eq!(
+            ws_client.get_cloid_mapping(&cloid_for("O-HER-FILL")),
+            Some(cid)
+        );
+
+        let fill = make_fill_report(Some("O-HER-FILL"), "v-fill", "trade-fill");
+        handle_execution_report(
+            ExecutionReport::Fill(fill),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            ExecutionEvent::Order(OrderEventAny::Filled(_))
+        ));
+        // Deferred cleanup fires once the fill lands.
+        assert_eq!(ws_client.get_cloid_mapping(&cloid_for("O-HER-FILL")), None);
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_external_terminal_evicts_cloid() {
+        // External (untracked) terminal reports forward to the engine via
+        // send_order_status_report and immediately evict the cloid mapping
+        // so the client does not leak mappings for orders it does not own.
+        let ws_client = make_ws_client();
+        let (emitter, mut rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-EXT");
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-EXT"), cid);
+
+        let report = make_status_report(Some("O-HER-EXT"), "v-ext", OrderStatus::Canceled);
+        handle_execution_report(
+            ExecutionReport::Order(report),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(events[0], ExecutionEvent::Report(_)),
+            "external terminal report should forward to the engine as a report",
+        );
+        assert_eq!(ws_client.get_cloid_mapping(&cloid_for("O-HER-EXT")), None);
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_open_status_preserves_cloid() {
+        // An open (non-terminal) status must never touch the cloid mapping.
+        let ws_client = make_ws_client();
+        let (emitter, _rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-OPEN");
+        state.register_identity(cid, test_identity());
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-OPEN"), cid);
+
+        let report = make_status_report(Some("O-HER-OPEN"), "v-open", OrderStatus::Accepted);
+        handle_execution_report(
+            ExecutionReport::Order(report),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        // Accepted is open → no cloid eviction regardless of outcome.
+        assert_eq!(
+            ws_client.get_cloid_mapping(&cloid_for("O-HER-OPEN")),
+            Some(cid)
+        );
+    }
+
+    #[rstest]
+    fn test_handle_execution_report_tracked_accepted_emits_typed_event() {
+        // A tracked open ACCEPTED must flow through the typed-event path,
+        // NOT the raw report fallback. Catches a mutation that swaps the
+        // branch polarity inside `handle_execution_report`.
+        let ws_client = make_ws_client();
+        let (emitter, mut rx) = test_emitter();
+        let state = WsDispatchState::new();
+        let mut pending_cloids: FifoCache<ClientOrderId, 10_000> = FifoCache::new();
+
+        let cid = ClientOrderId::from("O-HER-ACC");
+        state.register_identity(cid, test_identity());
+        ws_client.cache_cloid_mapping(cloid_for("O-HER-ACC"), cid);
+
+        let report = make_status_report(Some("O-HER-ACC"), "v-acc", OrderStatus::Accepted);
+        handle_execution_report(
+            ExecutionReport::Order(report),
+            &state,
+            &emitter,
+            &ws_client,
+            &mut pending_cloids,
+            UnixNanos::default(),
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(events[0], ExecutionEvent::Order(OrderEventAny::Accepted(_))),
+            "tracked accepted should route through the typed-event path",
+        );
+        // Mapping is unchanged because the status is still open.
+        assert_eq!(
+            ws_client.get_cloid_mapping(&cloid_for("O-HER-ACC")),
+            Some(cid)
+        );
     }
 }

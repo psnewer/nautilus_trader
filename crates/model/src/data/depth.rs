@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -39,7 +39,11 @@ pub const DEPTH10_LEN: usize = 10;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct OrderBookDepth10 {
     /// The instrument ID for the book.
@@ -64,7 +68,7 @@ pub struct OrderBookDepth10 {
 
 impl OrderBookDepth10 {
     /// Creates a new [`OrderBookDepth10`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         instrument_id: InstrumentId,
@@ -517,10 +521,11 @@ mod tests {
 
     #[rstest]
     fn test_order_book_depth10_serializable_trait() {
+        fn assert_serializable<T: Serializable>(_: &T) {}
+
         let depth = create_test_depth10();
 
         // Verify Serializable trait is implemented (compile-time check)
-        fn assert_serializable<T: Serializable>(_: &T) {}
         assert_serializable(&depth);
     }
 
@@ -730,7 +735,7 @@ mod tests {
             [5; DEPTH10_LEN], // Realistic order count
             [3; DEPTH10_LEN],
             16,                                         // Realistic flags
-            123456,                                     // Realistic sequence
+            123_456,                                    // Realistic sequence
             UnixNanos::from(1_672_531_200_000_000_000), // Jan 1, 2023 timestamp
             UnixNanos::from(1_672_531_200_000_100_000),
         );

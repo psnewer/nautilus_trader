@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,7 +23,7 @@ use std::{
 };
 
 use nautilus_core::UUID4;
-use nautilus_model::identifiers::TraderId;
+use nautilus_model::{identifiers::TraderId, stubs::TestDefault};
 
 use crate::logging::{
     init_logging,
@@ -35,10 +35,12 @@ use crate::logging::{
 ///
 /// Returns an error if initializing the logger fails.
 pub fn init_logger_for_testing(stdout_level: Option<log::LevelFilter>) -> anyhow::Result<LogGuard> {
-    let mut config = LoggerConfig::default();
-    config.stdout_level = stdout_level.unwrap_or(log::LevelFilter::Trace);
+    let config = LoggerConfig {
+        stdout_level: stdout_level.unwrap_or(log::LevelFilter::Trace),
+        ..Default::default()
+    };
     init_logging(
-        TraderId::default(),
+        TraderId::test_default(),
         UUID4::new(),
         config,
         FileWriterConfig::default(),
@@ -76,7 +78,7 @@ pub fn wait_until<F>(mut condition: F, timeout: Duration)
 where
     F: FnMut() -> bool,
 {
-    let start_time = Instant::now();
+    let start_time = Instant::now(); // dst-ok: test helper timer; uses real time by design
 
     loop {
         if condition() {
@@ -85,7 +87,9 @@ where
 
         assert!(
             start_time.elapsed() <= timeout,
-            "Timeout waiting for condition"
+            "Timeout waiting for condition after {:.1}s (limit {:.1}s)",
+            start_time.elapsed().as_secs_f64(),
+            timeout.as_secs_f64(),
         );
 
         thread::sleep(Duration::from_millis(100));
@@ -101,7 +105,7 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let start_time = Instant::now();
+    let start_time = Instant::now(); // dst-ok: test helper timer; uses real time by design
 
     loop {
         if condition().await {
@@ -110,7 +114,9 @@ where
 
         assert!(
             start_time.elapsed() <= timeout,
-            "Timeout waiting for condition"
+            "Timeout waiting for condition after {:.1}s (limit {:.1}s)",
+            start_time.elapsed().as_secs_f64(),
+            timeout.as_secs_f64(),
         );
 
         tokio::time::sleep(Duration::from_millis(100)).await;

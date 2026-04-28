@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,13 +19,14 @@ pub mod auth;
 pub mod client;
 pub mod config;
 pub mod consts;
+pub mod proxy;
 pub mod subscription;
 pub mod types;
 
 // Re-export main types for convenience
 pub use auth::AuthTracker;
 pub use client::{WebSocketClient, WebSocketClientInner};
-pub use config::WebSocketConfig;
+pub use config::{TransportBackend, WebSocketConfig};
 pub use consts::{AUTHENTICATION_TIMEOUT_SECS, TEXT_PING, TEXT_PONG};
 pub use subscription::{SubscriptionState, split_topic};
 pub use types::{MessageHandler, MessageReader, PingHandler, channel_message_handler};

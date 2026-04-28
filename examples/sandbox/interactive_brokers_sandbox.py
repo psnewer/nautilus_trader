@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,8 +19,12 @@ from decimal import Decimal
 from nautilus_trader.adapters.interactive_brokers.common import IB
 from nautilus_trader.adapters.interactive_brokers.config import DockerizedIBGatewayConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersDataClientConfig
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
-from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveDataClientFactory
+from nautilus_trader.adapters.interactive_brokers.config import (
+    InteractiveBrokersInstrumentProviderConfig,
+)
+from nautilus_trader.adapters.interactive_brokers.factories import (
+    InteractiveBrokersLiveDataClientFactory,
+)
 from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
 from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
 from nautilus_trader.config import LiveDataEngineConfig
@@ -80,7 +84,7 @@ config_node = TradingNodeConfig(
             dockerized_gateway=dockerized_gateway,
         ),
     },
-    exec_clients=exec_clients,  # type: ignore
+    exec_clients=exec_clients,
     data_engine=LiveDataEngineConfig(
         time_bars_timestamp_on_close=False,
         validate_data_sequence=True,
@@ -101,6 +105,7 @@ for instrument in SANDBOX_INSTRUMENTS:
 
 # Instantiate strategies
 strategies = {}
+
 for instrument in SANDBOX_INSTRUMENTS:
     # Configure your strategy
     strategy_config = EMACrossConfig(

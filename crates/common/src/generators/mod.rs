@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,19 +18,3 @@
 pub mod client_order_id;
 pub mod order_list_id;
 pub mod position_id;
-
-use chrono::{DateTime, Datelike, Timelike};
-
-fn get_datetime_tag(unix_ms: u64) -> String {
-    let now_utc = DateTime::from_timestamp_millis(unix_ms as i64)
-        .expect("Milliseconds timestamp should be within valid range");
-    format!(
-        "{}{:02}{:02}-{:02}{:02}{:02}",
-        now_utc.year(),
-        now_utc.month(),
-        now_utc.day(),
-        now_utc.hour(),
-        now_utc.minute(),
-        now_utc.second(),
-    )
-}

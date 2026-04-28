@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,8 +32,10 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl AccountState {
-    #[allow(clippy::too_many_arguments)]
+    /// Represents an event which includes information on the state of the account.
+    #[expect(clippy::too_many_arguments)]
     #[new]
     #[pyo3(signature = (account_id, account_type, balances, margins, is_reported, event_id, ts_event, ts_init, base_currency=None))]
     fn py_new(
@@ -108,9 +110,6 @@ impl AccountState {
     ///
     /// Returns a `PyErr` if any required field is missing or type conversion fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if any `unwrap` on parsed values fails (e.g., invalid formats or missing items).
     #[pyo3(name = "from_dict")]
     pub fn py_from_dict(values: &Bound<'_, PyDict>) -> PyResult<Self> {
         let account_id = get_required_string(values, "account_id")?;
@@ -177,6 +176,7 @@ impl AccountState {
         dict.set_item("info", PyDict::new(py))?;
         dict.set_item("ts_event", self.ts_event.as_u64())?;
         dict.set_item("ts_init", self.ts_init.as_u64())?;
+
         match self.base_currency {
             Some(base_currency) => {
                 dict.set_item("base_currency", base_currency.code.to_string())?;

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,14 +18,14 @@
 //! This module provides DeFi processing methods for the `DataEngine`.
 //! All code in this module requires the `defi` feature flag.
 
-use std::{any::Any, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 use nautilus_common::{
     defi,
     messages::defi::{
         DefiRequestCommand, DefiSubscribeCommand, DefiUnsubscribeCommand, RequestPoolSnapshot,
     },
-    msgbus::{self, handler::ShareableMessageHandler},
+    msgbus::{self, TypedHandler},
 };
 use nautilus_core::UUID4;
 use nautilus_model::{
@@ -36,7 +36,12 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId},
 };
 
-use crate::engine::{DataEngine, pool::PoolUpdater};
+use crate::engine::{
+    DataEngine,
+    pool::{
+        PoolCollectHandler, PoolFlashHandler, PoolLiquidityHandler, PoolSwapHandler, PoolUpdater,
+    },
+};
 
 /// Extracts the block position tuple from a DexPoolData event.
 fn get_event_block_position(event: &DexPoolData) -> (u64, u32, u32) {
@@ -113,7 +118,7 @@ impl DataEngine {
     ///
     /// Returns an error if the subscription is invalid (e.g., synthetic instrument for book data),
     /// or if the underlying client operation fails.
-    pub fn execute_defi_subscribe(&mut self, cmd: &DefiSubscribeCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_subscribe(&mut self, cmd: DefiSubscribeCommand) -> anyhow::Result<()> {
         if let Some(client_id) = cmd.client_id()
             && self.external_clients.contains(client_id)
         {
@@ -125,7 +130,7 @@ impl DataEngine {
 
         if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
             log::info!("Forwarding subscription to client {}", client.client_id);
-            client.execute_defi_subscribe(cmd);
+            client.execute_defi_subscribe(cmd.clone());
         } else {
             log::error!(
                 "Cannot handle command: no client found for client_id={:?}, venue={:?}",
@@ -190,7 +195,7 @@ impl DataEngine {
     ///
     /// Returns an error if no client is found for the given client ID or venue,
     /// or if the client fails to process the request.
-    pub fn execute_defi_request(&mut self, req: &DefiRequestCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_request(&mut self, req: DefiRequestCommand) -> anyhow::Result<()> {
         // Skip requests for external clients
         if let Some(cid) = req.client_id()
             && self.external_clients.contains(cid)
@@ -214,10 +219,12 @@ impl DataEngine {
 
     /// Processes DeFi-specific data events.
     pub fn process_defi_data(&mut self, data: DefiData) {
+        self.increment_data_count();
+
         match data {
             DefiData::Block(block) => {
                 let topic = defi::switchboard::get_defi_blocks_topic(block.chain());
-                msgbus::publish(topic, &block as &dyn Any);
+                msgbus::publish_defi_block(topic, &block);
             }
             DefiData::Pool(pool) => {
                 if let Err(e) = self.cache.borrow_mut().add_pool(pool.clone()) {
@@ -234,7 +241,7 @@ impl DataEngine {
                 }
 
                 let topic = defi::switchboard::get_defi_pool_topic(pool.instrument_id);
-                msgbus::publish(topic, &pool as &dyn Any);
+                msgbus::publish_defi_pool(topic, &pool);
             }
             DefiData::PoolSnapshot(snapshot) => {
                 let instrument_id = snapshot.instrument_id;
@@ -308,9 +315,8 @@ impl DataEngine {
                 // Create updater and subscribe to topics
                 self.pool_snapshot_pending.remove(&instrument_id);
                 let updater = Rc::new(PoolUpdater::new(&instrument_id, self.cache.clone()));
-                let handler = ShareableMessageHandler(updater.clone());
 
-                self.subscribe_pool_updater_topics(instrument_id, handler);
+                self.subscribe_pool_updater_topics(instrument_id, updater.clone());
                 self.pool_updaters.insert(instrument_id, updater);
 
                 log::info!(
@@ -328,7 +334,7 @@ impl DataEngine {
                         .push(DefiData::PoolSwap(swap));
                 } else {
                     let topic = defi::switchboard::get_defi_pool_swaps_topic(instrument_id);
-                    msgbus::publish(topic, &swap as &dyn Any);
+                    msgbus::publish_defi_swap(topic, &swap);
                 }
             }
             DefiData::PoolLiquidityUpdate(update) => {
@@ -344,7 +350,7 @@ impl DataEngine {
                         .push(DefiData::PoolLiquidityUpdate(update));
                 } else {
                     let topic = defi::switchboard::get_defi_liquidity_topic(instrument_id);
-                    msgbus::publish(topic, &update as &dyn Any);
+                    msgbus::publish_defi_liquidity(topic, &update);
                 }
             }
             DefiData::PoolFeeCollect(collect) => {
@@ -360,7 +366,7 @@ impl DataEngine {
                         .push(DefiData::PoolFeeCollect(collect));
                 } else {
                     let topic = defi::switchboard::get_defi_collect_topic(instrument_id);
-                    msgbus::publish(topic, &collect as &dyn Any);
+                    msgbus::publish_defi_collect(topic, &collect);
                 }
             }
             DefiData::PoolFlash(flash) => {
@@ -374,30 +380,35 @@ impl DataEngine {
                         .push(DefiData::PoolFlash(flash));
                 } else {
                     let topic = defi::switchboard::get_defi_flash_topic(instrument_id);
-                    msgbus::publish(topic, &flash as &dyn Any);
+                    msgbus::publish_defi_flash(topic, &flash);
                 }
             }
         }
     }
 
-    /// Subscribes a pool updater handler to all relevant pool data topics.
-    fn subscribe_pool_updater_topics(
-        &self,
-        instrument_id: InstrumentId,
-        handler: ShareableMessageHandler,
-    ) {
-        let topics = [
-            defi::switchboard::get_defi_pool_swaps_topic(instrument_id),
-            defi::switchboard::get_defi_liquidity_topic(instrument_id),
-            defi::switchboard::get_defi_collect_topic(instrument_id),
-            defi::switchboard::get_defi_flash_topic(instrument_id),
-        ];
+    /// Subscribes a pool updater to all relevant pool data topics using typed handlers.
+    fn subscribe_pool_updater_topics(&self, instrument_id: InstrumentId, updater: Rc<PoolUpdater>) {
+        let priority = Some(self.msgbus_priority);
 
-        for topic in topics {
-            if !msgbus::is_subscribed(topic.as_str(), handler.clone()) {
-                msgbus::subscribe(topic.into(), handler.clone(), Some(self.msgbus_priority));
-            }
-        }
+        // Subscribe swap handler
+        let swap_topic = defi::switchboard::get_defi_pool_swaps_topic(instrument_id);
+        let swap_handler = TypedHandler(Rc::new(PoolSwapHandler::new(updater.clone())));
+        msgbus::subscribe_defi_swaps(swap_topic.into(), swap_handler, priority);
+
+        // Subscribe liquidity handler
+        let liq_topic = defi::switchboard::get_defi_liquidity_topic(instrument_id);
+        let liq_handler = TypedHandler(Rc::new(PoolLiquidityHandler::new(updater.clone())));
+        msgbus::subscribe_defi_liquidity(liq_topic.into(), liq_handler, priority);
+
+        // Subscribe collect handler
+        let collect_topic = defi::switchboard::get_defi_collect_topic(instrument_id);
+        let collect_handler = TypedHandler(Rc::new(PoolCollectHandler::new(updater.clone())));
+        msgbus::subscribe_defi_collects(collect_topic.into(), collect_handler, priority);
+
+        // Subscribe flash handler
+        let flash_topic = defi::switchboard::get_defi_flash_topic(instrument_id);
+        let flash_handler = TypedHandler(Rc::new(PoolFlashHandler::new(updater)));
+        msgbus::subscribe_defi_flash(flash_topic.into(), flash_handler, priority);
     }
 
     /// Applies buffered events to a pool profiler, filtering to events after the snapshot.
@@ -488,8 +499,7 @@ impl DataEngine {
                     None,
                 );
 
-                if let Err(e) =
-                    self.execute_defi_request(&DefiRequestCommand::PoolSnapshot(request))
+                if let Err(e) = self.execute_defi_request(DefiRequestCommand::PoolSnapshot(request))
                 {
                     log::warn!("Failed to request pool snapshot for {instrument_id}: {e}");
                 } else {
@@ -504,9 +514,8 @@ impl DataEngine {
 
         // Profiler exists, create updater and subscribe to topics
         let updater = Rc::new(PoolUpdater::new(instrument_id, self.cache.clone()));
-        let handler = ShareableMessageHandler(updater.clone());
 
-        self.subscribe_pool_updater_topics(*instrument_id, handler);
+        self.subscribe_pool_updater_topics(*instrument_id, updater.clone());
         self.pool_updaters.insert(*instrument_id, updater);
 
         log::debug!("Created PoolUpdater for instrument ID {instrument_id}");
@@ -532,7 +541,6 @@ mod tests {
 
     use super::*;
 
-    // Test fixtures
     #[fixture]
     fn test_instrument_id() -> InstrumentId {
         InstrumentId::new(Symbol::from("ETH/USDC"), Venue::from("UNISWAPV3"))

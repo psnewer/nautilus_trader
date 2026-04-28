@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,7 +32,7 @@ use crate::opt::DatabaseConfig;
 /// # Errors
 ///
 /// Returns an error if the chain or DEX parameters are invalid.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn run_analyze_pool(
     chain: String,
     dex: String,
@@ -83,18 +83,14 @@ pub async fn run_analyze_pool(
             )
         });
 
-    let config = BlockchainDataClientConfig::new(
-        Arc::new(chain.to_owned()),
-        vec![dex_type],
-        rpc_http_url,
-        None,
-        multicall_calls_per_rpc_request,
-        None,
-        true,
-        None,
-        None,
-        Some(postgres_connect_options),
-    );
+    let config = BlockchainDataClientConfig::builder()
+        .chain(Arc::new(chain.to_owned()))
+        .dex_ids(vec![dex_type])
+        .http_rpc_url(rpc_http_url)
+        .maybe_multicall_calls_per_rpc_request(multicall_calls_per_rpc_request)
+        .use_hypersync_for_live_data(true)
+        .postgres_cache_database_config(postgres_connect_options)
+        .build();
     let cancellation_token = tokio_util::sync::CancellationToken::new();
     let mut data_client = BlockchainDataClientCore::new(config, None, None, cancellation_token);
     data_client.initialize_cache_database().await;

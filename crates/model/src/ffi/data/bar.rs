@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -126,12 +126,12 @@ pub extern "C" fn bar_type_new_composite(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bar_type_is_standard(bar_type: &BarType) -> u8 {
-    bar_type.is_standard() as u8
+    u8::from(bar_type.is_standard())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bar_type_is_composite(bar_type: &BarType) -> u8 {
-    bar_type.is_composite() as u8
+    u8::from(bar_type.is_composite())
 }
 
 #[unsafe(no_mangle)]

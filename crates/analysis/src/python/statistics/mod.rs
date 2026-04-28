@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 
 use nautilus_core::UnixNanos;
 
-fn transform_returns(raw_returns: BTreeMap<u64, f64>) -> BTreeMap<UnixNanos, f64> {
+fn transform_returns(raw_returns: &BTreeMap<u64, f64>) -> BTreeMap<UnixNanos, f64> {
     raw_returns
         .keys()
         .map(|&k| (UnixNanos::from(k), raw_returns[&k]))

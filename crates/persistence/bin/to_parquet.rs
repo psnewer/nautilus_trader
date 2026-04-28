@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -104,7 +104,7 @@ where
     {
         let writer_props = WriterProperties::builder()
             .set_compression(Compression::ZSTD(ZstdLevel::default()))
-            .set_max_row_group_size(rows_per_group)
+            .set_max_row_group_row_count(Some(rows_per_group))
             .build();
 
         let mut writer = ArrowWriter::try_new(&mut output_file, schema.into(), Some(writer_props))?;
@@ -118,8 +118,9 @@ where
     }
 
     println!(
-        "Successfully wrote {} records to {parquet_path:?}",
-        data.len()
+        "Successfully wrote {} records to {}",
+        data.len(),
+        parquet_path.display(),
     );
     Ok(())
 }

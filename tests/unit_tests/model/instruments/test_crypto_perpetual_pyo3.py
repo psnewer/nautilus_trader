@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -94,6 +94,44 @@ def test_to_dict():
         "ts_event": 0,
         "ts_init": 0,
     }
+
+
+def test_from_dict_non_ascii_base_currency():
+    # Regression for https://github.com/nautechsystems/nautilus_trader/issues/3893
+    # CJK characters in string fields must not break the PyO3 `from_dict` path.
+    raw_instrument = {
+        "type": "CryptoPerpetual",
+        "id": "\u9f99\u867eUSDT-PERP.BINANCE",
+        "raw_symbol": "\u9f99\u867eUSDT",
+        "base_currency": "\u9f99\u867e",
+        "quote_currency": "USDT",
+        "settlement_currency": "USDT",
+        "is_inverse": False,
+        "price_precision": 6,
+        "size_precision": 0,
+        "price_increment": "0.000001",
+        "size_increment": "1",
+        "multiplier": "1",
+        "lot_size": "1",
+        "max_quantity": None,
+        "min_quantity": "1",
+        "max_notional": None,
+        "min_notional": None,
+        "max_price": None,
+        "min_price": None,
+        "maker_fee": "0.0002",
+        "margin_init": "0",
+        "margin_maint": "0",
+        "taker_fee": "0.0004",
+        "info": {},
+        "ts_event": 1773187200000000000,
+        "ts_init": 1773187200000000000,
+    }
+
+    instrument = nautilus_pyo3.CryptoPerpetual.from_dict(raw_instrument)
+
+    assert str(instrument.id) == "\u9f99\u867eUSDT-PERP.BINANCE"
+    assert instrument.base_currency.code == "\u9f99\u867e"
 
 
 def test_pyo3_cython_conversion():

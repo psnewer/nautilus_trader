@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,8 +12,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
-import numpy as np
 
 from nautilus_trader.indicators import CommodityChannelIndex
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
@@ -47,7 +45,7 @@ class TestCommodityChannelIndex:
         assert self.cci.has_inputs
         assert self.cci.scalar == 0.015
         assert self.cci._mad == 0
-        assert np.isnan(self.cci.value)
+        assert self.cci.value == 0
 
     def test_value_with_one_input(self):
         self.cci.update_raw(0.18000, 0.01001, 0.13810)

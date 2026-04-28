@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,29 +20,30 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use nautilus_bitmex::{http::client::BitmexHttpClient, websocket::client::BitmexWebSocketClient};
-use tracing::level_filters::LevelFilter;
+use nautilus_bitmex::{
+    common::enums::BitmexEnvironment, http::client::BitmexHttpClient,
+    websocket::client::BitmexWebSocketClient,
+};
+use nautilus_network::websocket::TransportBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_max_level(LevelFilter::TRACE)
-        .init();
+    nautilus_common::logging::ensure_logging_initialized();
 
-    tracing::info!("Fetching instruments from HTTP API...");
+    log::info!("Fetching instruments from HTTP API...");
     let http_client = BitmexHttpClient::new(
-        None,     // base_url: defaults to production
-        None,     // api_key
-        None,     // api_secret
-        false,    // testnet
-        Some(60), // timeout_secs
-        None,     // max_retries
-        None,     // retry_delay_ms
-        None,     // retry_delay_max_ms
-        None,     // recv_window_ms
-        None,     // max_requests_per_second
-        None,     // max_requests_per_minute
-        None,     // proxy_url
+        None,                       // base_url: defaults to production
+        None,                       // api_key
+        None,                       // api_secret
+        BitmexEnvironment::Mainnet, // environment
+        60,                         // timeout_secs
+        3,                          // max_retries
+        1_000,                      // retry_delay_ms
+        10_000,                     // retry_delay_max_ms
+        10_000,                     // recv_window_ms
+        10,                         // max_requests_per_second
+        120,                        // max_requests_per_minute
+        None,                       // proxy_url
     )
     .expect("Failed to create HTTP client");
 
@@ -50,17 +51,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .request_instruments(true) // active_only
         .await?;
 
-    tracing::info!("Fetched {} instruments", instruments.len());
+    log::info!("Fetched {} instruments", instruments.len());
 
     let mut ws_client = BitmexWebSocketClient::new(
         None, // url: defaults to wss://ws.bitmex.com/realtime
         None,
         None,
         None,
-        Some(5), // 5 second heartbeat
+        5, // 5 second heartbeat
+        TransportBackend::default(),
+        None,
     )
     .unwrap();
-    ws_client.cache_instruments(instruments);
     ws_client.connect().await?;
 
     // Give the connection a moment to stabilize
@@ -87,10 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         tokio::select! {
             Some(event) = stream.next() => {
-                tracing::debug!("{event:?}");
+                log::debug!("{event:?}");
             }
             _ = &mut sigint => {
-                tracing::info!("Received SIGINT, closing connection...");
+                log::info!("Received SIGINT, closing connection...");
                 ws_client.close().await?;
                 break;
             }

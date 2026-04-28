@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -39,7 +39,7 @@ pub enum DeribitHttpError {
 }
 
 impl fmt::Display for DeribitHttpError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingCredentials => write!(f, "Missing API credentials"),
             Self::DeribitError {
@@ -86,7 +86,7 @@ impl DeribitHttpError {
     pub fn from_jsonrpc_error(
         error_code: i64,
         message: String,
-        data: Option<serde_json::Value>,
+        data: Option<&serde_json::Value>,
     ) -> Self {
         match error_code {
             // JSON-RPC 2.0 standard error codes
@@ -96,7 +96,6 @@ impl DeribitHttpError {
             -32602 => {
                 // Try to extract parameter details from data field
                 let detail = data
-                    .as_ref()
                     .and_then(|d| d.as_object())
                     .and_then(|obj| {
                         let param = obj.get("param")?.as_str()?;

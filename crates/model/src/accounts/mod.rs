@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,19 +17,22 @@
 
 pub mod any;
 pub mod base;
+pub mod betting;
 pub mod cash;
 pub mod margin;
+pub mod margin_model;
 
 #[cfg(any(test, feature = "stubs"))]
 pub mod stubs;
 
-use ahash::AHashMap;
 use enum_dispatch::enum_dispatch;
+use indexmap::IndexMap;
 use nautilus_core::UnixNanos;
 
 // Re-exports
 pub use crate::accounts::{
-    any::AccountAny, base::BaseAccount, cash::CashAccount, margin::MarginAccount,
+    any::AccountAny, base::BaseAccount, betting::BettingAccount, cash::CashAccount,
+    margin::MarginAccount,
 };
 use crate::{
     enums::{AccountType, LiquiditySide, OrderSide},
@@ -49,19 +52,25 @@ pub trait Account: 'static + Send {
     fn is_margin_account(&self) -> bool;
     fn calculated_account_state(&self) -> bool;
     fn balance_total(&self, currency: Option<Currency>) -> Option<Money>;
-    fn balances_total(&self) -> AHashMap<Currency, Money>;
+    fn balances_total(&self) -> IndexMap<Currency, Money>;
     fn balance_free(&self, currency: Option<Currency>) -> Option<Money>;
-    fn balances_free(&self) -> AHashMap<Currency, Money>;
+    fn balances_free(&self) -> IndexMap<Currency, Money>;
     fn balance_locked(&self, currency: Option<Currency>) -> Option<Money>;
-    fn balances_locked(&self) -> AHashMap<Currency, Money>;
+    fn balances_locked(&self) -> IndexMap<Currency, Money>;
     fn balance(&self, currency: Option<Currency>) -> Option<&AccountBalance>;
     fn last_event(&self) -> Option<AccountState>;
     fn events(&self) -> Vec<AccountState>;
     fn event_count(&self) -> usize;
     fn currencies(&self) -> Vec<Currency>;
-    fn starting_balances(&self) -> AHashMap<Currency, Money>;
-    fn balances(&self) -> AHashMap<Currency, AccountBalance>;
-    fn apply(&mut self, event: AccountState);
+    fn starting_balances(&self) -> IndexMap<Currency, Money>;
+    fn balances(&self) -> IndexMap<Currency, AccountBalance>;
+    /// Applies an account state event to update the account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account state cannot be applied (e.g., negative balance
+    /// when borrowing is not allowed for a cash account).
+    fn apply(&mut self, event: AccountState) -> anyhow::Result<()>;
     fn purge_account_events(&mut self, ts_now: UnixNanos, lookback_secs: u64);
 
     /// Calculates locked balance for the order parameters.
@@ -71,7 +80,7 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating locked balance fails.
     fn calculate_balance_locked(
         &mut self,
-        instrument: InstrumentAny,
+        instrument: &InstrumentAny,
         side: OrderSide,
         quantity: Quantity,
         price: Price,
@@ -85,8 +94,8 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating PnLs fails.
     fn calculate_pnls(
         &self,
-        instrument: InstrumentAny,
-        fill: OrderFilled,
+        instrument: &InstrumentAny,
+        fill: &OrderFilled,
         position: Option<Position>,
     ) -> anyhow::Result<Vec<Money>>;
 
@@ -97,7 +106,7 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating commission fails.
     fn calculate_commission(
         &self,
-        instrument: InstrumentAny,
+        instrument: &InstrumentAny,
         last_qty: Quantity,
         last_px: Price,
         liquidity_side: LiquiditySide,

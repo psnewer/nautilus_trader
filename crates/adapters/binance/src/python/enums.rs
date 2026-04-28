@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,23 +20,53 @@ use pyo3::prelude::*;
 use crate::common::enums::{BinanceEnvironment, BinanceProductType};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BinanceProductType {
     fn __repr__(&self) -> String {
-        format!("BinanceProductType.{self:?}")
+        format!(
+            "BinanceProductType.{}",
+            match self {
+                Self::Spot => "SPOT",
+                Self::Margin => "MARGIN",
+                Self::UsdM => "USD_M",
+                Self::CoinM => "COIN_M",
+                Self::Options => "OPTIONS",
+            }
+        )
     }
 
     fn __str__(&self) -> String {
-        format!("{self:?}")
+        match self {
+            Self::Spot => "SPOT",
+            Self::Margin => "MARGIN",
+            Self::UsdM => "USD_M",
+            Self::CoinM => "COIN_M",
+            Self::Options => "OPTIONS",
+        }
+        .to_string()
     }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BinanceEnvironment {
     fn __repr__(&self) -> String {
-        format!("BinanceEnvironment.{self:?}")
+        format!(
+            "BinanceEnvironment.{}",
+            match self {
+                Self::Mainnet => "MAINNET",
+                Self::Testnet => "TESTNET",
+                Self::Demo => "DEMO",
+            }
+        )
     }
 
     fn __str__(&self) -> String {
-        format!("{self:?}")
+        match self {
+            Self::Mainnet => "MAINNET",
+            Self::Testnet => "TESTNET",
+            Self::Demo => "DEMO",
+        }
+        .to_string()
     }
 }

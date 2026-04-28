@@ -30,6 +30,8 @@ logs/
 *.zip
 
 # Data
+*.dbn
+*.dbn.zst
 *.parquet
 
 # IntelliJ and VSCode project
@@ -44,6 +46,7 @@ htmlcov/
 
 # Rust related
 *target/
+*target-v2/
 **/*.rs.bk
 
 # Python related
@@ -70,8 +73,12 @@ _build/
 build/
 dist/
 env/
+.tmp-pre-commit/
 *.bak
 *.sh
+!scripts/ci/install-cargo-nextest.sh
+!scripts/ci/verify-ci-inputs.sh
+!.pre-commit-hooks/*.sh
 *tmp/
 *temp/
 
@@ -88,12 +95,20 @@ output.json
 mcp/*.json
 .claude/
 claude.config.json
+.codex/
 .cursor/
 .aider*
 .continue/
 
+AGENTS.md
+CLAUDE.md
+CODEX.md
+GEMINI.md
+
 # Nautilus specific
 .ipynb_checkpoints/
+/docs/getting_started/*.ipynb
+/docs/tutorials/*.ipynb
 bench_data/
 /api_reference/
 /catalog/
@@ -107,34 +122,14 @@ nautilus_trader/test_kit/mocks/.nautilus/
 nautilus_trader.egg-info
 tests/test_data/catalog/
 tests/test_data/large/*
+tests/test_data/local/
 tests/unit_tests/catalog/
 tests/unit_tests/persistence/catalog/
 tests/test_data/**/backtest/**
 
 # Exceptions
 !tests/test_data/large/checksums.json
+!tests/test_data/large/*.metadata.json
 !tests/test_data/nautilus/*/**.parquet
 !tests/integration_tests/adapters/betfair/responses/*.log
 !/nautilus_core/adapters/src/databento/test_data/*
-
-# Environment variables (sensitive)
-.env
-
-# Browser data (user sessions)
-browser_data/
-
-# Screenshots (debug)
-*.png
-test_screenshot.png
- 
-# Config System 
-config/config.yaml 
-output/ 
- 
-# Config System 
-config/config.yaml 
-output/
-
-# Log
-*.out
-*.log 

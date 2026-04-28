@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -47,13 +47,19 @@ pub struct TickMap {
 
 impl Default for TickMap {
     fn default() -> Self {
-        Self::new(0)
+        Self::new(1)
     }
 }
 
 impl TickMap {
     /// Creates a new [`TickMap`] with the specified tick spacing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tick_spacing` is zero.
+    #[must_use]
     pub fn new(tick_spacing: u32) -> Self {
+        assert!(tick_spacing > 0, "Tick spacing must be greater than zero");
         Self {
             ticks: AHashMap::new(),
             tick_bitmap: TickBitmap::new(tick_spacing),
@@ -63,6 +69,7 @@ impl TickMap {
     }
 
     /// Retrieves a reference to the tick data at the specified tick index.
+    #[must_use]
     pub fn get_tick(&self, tick: i32) -> Option<&PoolTick> {
         self.ticks.get(&tick)
     }
@@ -248,12 +255,14 @@ impl TickMap {
     }
 
     /// Finds the next initialized tick after the given tick.
+    #[must_use]
     pub fn next_initialized_tick(&self, tick: i32, lte: bool) -> (i32, bool) {
         self.tick_bitmap
             .next_initialized_tick_within_one_word(tick, lte)
     }
 
     /// Checks if a tick is initialized in the bitmap.
+    #[must_use]
     pub fn is_tick_initialized(&self, tick: i32) -> bool {
         self.tick_bitmap.is_initialized(tick)
     }

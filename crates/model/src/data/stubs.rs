@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,12 +15,16 @@
 
 //! Type stubs to facilitate testing.
 
-use nautilus_core::UnixNanos;
+use std::sync::Arc;
+
+use nautilus_core::{Params, UnixNanos};
 use rstest::fixture;
+use serde::{Deserialize, Serialize};
 
 use super::{
-    Bar, BarSpecification, BarType, DEPTH10_LEN, InstrumentStatus, OrderBookDelta, OrderBookDeltas,
-    OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
+    Bar, BarSpecification, BarType, CustomData, CustomDataTrait, DEPTH10_LEN, DataType, HasTsInit,
+    InstrumentStatus, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+    close::InstrumentClose, register_custom_data_json,
 };
 use crate::{
     data::order::BookOrder,
@@ -216,43 +220,33 @@ pub fn stub_depth10() -> OrderBookDepth10 {
     // Create bids
     let mut price = 99.00;
     let mut quantity = 100.0;
-    let mut order_id = 1;
 
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..DEPTH10_LEN {
-        let order = BookOrder::new(
+    for (i, bid) in bids.iter_mut().enumerate() {
+        *bid = BookOrder::new(
             OrderSide::Buy,
             Price::new(price, 2),
             Quantity::new(quantity, 0),
-            order_id,
+            (i + 1) as u64,
         );
-
-        bids[i] = order;
 
         price -= 1.0;
         quantity += 100.0;
-        order_id += 1;
     }
 
     // Create asks
     let mut price = 100.00;
     let mut quantity = 100.0;
-    let mut order_id = 11;
 
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..DEPTH10_LEN {
-        let order = BookOrder::new(
+    for (i, ask) in asks.iter_mut().enumerate() {
+        *ask = BookOrder::new(
             OrderSide::Sell,
             Price::new(price, 2),
             Quantity::new(quantity, 0),
-            order_id,
+            (i + 11) as u64,
         );
-
-        asks[i] = order;
 
         price += 1.0;
         quantity += 100.0;
-        order_id += 1;
     }
 
     let bid_counts: [u32; DEPTH10_LEN] = [1; DEPTH10_LEN];
@@ -379,9 +373,11 @@ pub struct OrderBookDeltaTestBuilder {
     book_order: Option<BookOrder>,
     flags: Option<u8>,
     sequence: Option<u64>,
+    ts_event: Option<UnixNanos>,
 }
 
 impl OrderBookDeltaTestBuilder {
+    #[must_use]
     pub fn new(instrument_id: InstrumentId) -> Self {
         Self {
             instrument_id,
@@ -389,6 +385,7 @@ impl OrderBookDeltaTestBuilder {
             book_order: None,
             flags: None,
             sequence: None,
+            ts_event: None,
         }
     }
 
@@ -433,6 +430,12 @@ impl OrderBookDeltaTestBuilder {
         self.sequence.unwrap_or(1)
     }
 
+    pub fn ts_event(&mut self, ts_event: UnixNanos) -> &mut Self {
+        self.ts_event = Some(ts_event);
+        self
+    }
+
+    #[must_use]
     pub fn build(&self) -> OrderBookDelta {
         OrderBookDelta::new(
             self.instrument_id,
@@ -440,8 +443,76 @@ impl OrderBookDeltaTestBuilder {
             self.get_book_order(),
             self.get_flags(),
             self.get_sequence(),
-            UnixNanos::from(1),
+            self.ts_event.unwrap_or(UnixNanos::from(1)),
             UnixNanos::from(2),
         )
     }
+}
+
+/// Stub custom data type for integration tests (e.g. Redis cache).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StubCustomData {
+    pub ts_init: UnixNanos,
+    pub value: i64,
+}
+
+impl HasTsInit for StubCustomData {
+    fn ts_init(&self) -> UnixNanos {
+        self.ts_init
+    }
+}
+
+impl CustomDataTrait for StubCustomData {
+    fn type_name(&self) -> &'static str {
+        "StubCustomData"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn ts_event(&self) -> UnixNanos {
+        self.ts_init
+    }
+    fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+    fn clone_arc(&self) -> Arc<dyn CustomDataTrait> {
+        Arc::new(self.clone())
+    }
+    fn eq_arc(&self, other: &dyn CustomDataTrait) -> bool {
+        if let Some(o) = other.as_any().downcast_ref::<Self>() {
+            self == o
+        } else {
+            false
+        }
+    }
+
+    fn type_name_static() -> &'static str {
+        "StubCustomData"
+    }
+    fn from_json(value: serde_json::Value) -> anyhow::Result<Arc<dyn CustomDataTrait>> {
+        let parsed: Self = serde_json::from_value(value)?;
+        Ok(Arc::new(parsed))
+    }
+}
+
+/// Registers `StubCustomData` for JSON roundtrip; call once before tests that persist custom data.
+pub fn ensure_stub_custom_data_registered() {
+    let _ = register_custom_data_json::<StubCustomData>();
+}
+
+/// Builds a `CustomData` stub for tests (e.g. Redis add/load).
+#[must_use]
+pub fn stub_custom_data(
+    ts_init: u64,
+    value: i64,
+    metadata: Option<Params>,
+    identifier: Option<String>,
+) -> CustomData {
+    ensure_stub_custom_data_registered();
+    let inner = StubCustomData {
+        ts_init: UnixNanos::from(ts_init),
+        value,
+    };
+    let data_type = DataType::new("StubCustomData", metadata, identifier);
+    CustomData::new(Arc::new(inner), data_type)
 }

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,14 +15,16 @@
 
 use chrono::{TimeZone, Utc};
 use nautilus_core::UnixNanos;
-use rstest::*;
+use rstest::fixture;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use ustr::Ustr;
 
 use super::{
-    CryptoOption, betting::BettingInstrument, binary_option::BinaryOption,
-    futures_spread::FuturesSpread, option_spread::OptionSpread, synthetic::SyntheticInstrument,
+    CryptoOption, betting::BettingInstrument, binary_option::BinaryOption, cfd::Cfd,
+    commodity::Commodity, futures_spread::FuturesSpread, index_instrument::IndexInstrument,
+    option_spread::OptionSpread, perpetual_contract::PerpetualContract,
+    synthetic::SyntheticInstrument, tokenized_asset::TokenizedAsset,
 };
 use crate::{
     enums::{AssetClass, OptionKind},
@@ -38,7 +40,7 @@ impl Default for SyntheticInstrument {
     fn default() -> Self {
         let btc_binance = InstrumentId::from("BTC.BINANCE");
         let ltc_binance = InstrumentId::from("LTC.BINANCE");
-        let formula = "(BTC.BINANCE + LTC.BINANCE) / 2.0".to_string();
+        let formula = "(BTC.BINANCE + LTC.BINANCE) / 2.0";
         Self::new(
             Symbol::new("BTC-LTC"),
             2,
@@ -88,6 +90,7 @@ pub fn crypto_future_btcusdt(
         None,
         None,
         None,
+        None, // info
         0.into(),
         0.into(),
     )
@@ -127,6 +130,7 @@ pub fn ethbtc_quanto(
         None,
         None,
         None,
+        None, // info
         0.into(),
         0.into(),
     )
@@ -168,6 +172,7 @@ pub fn xbtusd_inverse_perp(
         Some(dec!(0.0035)),                // margin_maint
         Some(dec!(-0.00025)),              // maker_fee (rebate)
         Some(dec!(0.00075)),               // taker_fee
+        None,                              // info
         UnixNanos::default(),              // ts_event
         UnixNanos::default(),              // ts_init
     )
@@ -213,6 +218,7 @@ pub fn crypto_option_btc_deribit(
         None,
         Some(dec!(0.0003)),
         Some(dec!(0.0003)),
+        None, // info
         0.into(),
         0.into(),
     )
@@ -247,6 +253,7 @@ pub fn crypto_perpetual_ethusdt() -> CryptoPerpetual {
         Some(dec!(0.35)),
         Some(dec!(0.0002)),
         Some(dec!(0.0004)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -277,6 +284,7 @@ pub fn xbtusd_bitmex() -> CryptoPerpetual {
         Some(dec!(0.0035)),
         Some(dec!(-0.00025)),
         Some(dec!(0.00075)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -307,6 +315,7 @@ pub fn ethusdt_bitmex() -> CryptoPerpetual {
         Some(dec!(0.0035)),
         Some(dec!(-0.00025)),
         Some(dec!(0.00075)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -339,6 +348,7 @@ pub fn currency_pair_btcusdt() -> CurrencyPair {
         Some(dec!(0.001)),
         Some(dec!(0.001)),
         Some(dec!(0.001)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -367,6 +377,7 @@ pub fn currency_pair_ethusdt() -> CurrencyPair {
         Some(dec!(0.0035)),
         Some(dec!(0.0001)),
         Some(dec!(0.0001)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -382,7 +393,10 @@ pub fn default_fx_ccy(symbol: Symbol, venue: Option<Venue>) -> CurrencyPair {
     let base_currency = symbol.as_str().split('/').next().unwrap();
     let quote_currency = symbol.as_str().split('/').next_back().unwrap();
     let price_precision = if quote_currency == "JPY" { 3 } else { 5 };
-    let price_increment = Price::new(1.0 / 10.0f64.powi(price_precision as i32), price_precision);
+    let price_increment = Price::new(
+        1.0 / 10.0f64.powi(i32::from(price_precision)),
+        price_precision,
+    );
     CurrencyPair::new(
         instrument_id,
         symbol,
@@ -404,6 +418,7 @@ pub fn default_fx_ccy(symbol: Symbol, venue: Option<Venue>) -> CurrencyPair {
         Some(dec!(0.03)),
         Some(dec!(0.00002)),
         Some(dec!(0.00002)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -446,6 +461,32 @@ pub fn equity_aapl() -> Equity {
         None,
         None,
         None,
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+}
+
+/// AAPL equity with ITCH-compatible precision (`price_precision=4`).
+#[must_use]
+pub fn equity_aapl_itch() -> Equity {
+    Equity::new(
+        InstrumentId::from("AAPL.XNAS"),
+        Symbol::from("AAPL"),
+        Some(Ustr::from("US0378331005")),
+        Currency::from("USD"),
+        4,
+        Price::from("0.0001"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -459,6 +500,7 @@ pub fn equity_aapl() -> Equity {
 ///
 /// Panics if constructing the activation or expiration timestamp fails,
 /// e.g., if the provided dates are invalid or timestamp conversion returns `None`.
+#[must_use]
 pub fn futures_contract_es(
     activation: Option<UnixNanos>,
     expiration: Option<UnixNanos>,
@@ -496,6 +538,7 @@ pub fn futures_contract_es(
         None,
         None,
         None,
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -531,6 +574,7 @@ pub fn futures_spread_es() -> FuturesSpread {
         None,
         None,
         None,
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -567,6 +611,7 @@ pub fn option_contract_appl() -> OptionContract {
         None,
         None,
         None,
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -602,6 +647,7 @@ pub fn option_spread() -> OptionSpread {
         None,
         None,
         None,
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -614,12 +660,12 @@ pub fn option_spread() -> OptionSpread {
 #[fixture]
 pub fn betting() -> BettingInstrument {
     let raw_symbol = Symbol::new("1-123456789");
-    let id = InstrumentId::from(format!("{raw_symbol}.BETFAIR").as_str());
+    let id = InstrumentId::from(format!("{raw_symbol}.BETFAIR"));
     let event_type_id = 6423;
     let event_type_name = Ustr::from("American Football");
-    let competition_id = 12282733;
+    let competition_id = 12_282_733;
     let competition_name = Ustr::from("NFL");
-    let event_id = 29678534;
+    let event_id = 29_678_534;
     let event_name = Ustr::from("NFL");
     let event_country_code = Ustr::from("GB");
     let event_open_date = UnixNanos::from(
@@ -691,8 +737,119 @@ pub fn betting() -> BettingInstrument {
         margin_maint,
         maker_fee,
         taker_fee,
+        None, // info
         ts_event,
         ts_init,
+    )
+}
+
+#[fixture]
+pub fn commodity_gold() -> Commodity {
+    Commodity::new(
+        InstrumentId::from("GOLD.COMEX"),
+        Symbol::from("GOLD"),
+        AssetClass::Commodity,
+        Currency::from("USD"),
+        2,
+        0,
+        Price::from("0.01"),
+        Quantity::from("1"),
+        Some(Quantity::from("1")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+}
+
+#[fixture]
+pub fn index_instrument_spx() -> IndexInstrument {
+    IndexInstrument::new(
+        InstrumentId::from("SPX.INDEX"),
+        Symbol::from("SPX"),
+        Currency::from("USD"),
+        2,
+        0,
+        Price::from("0.01"),
+        Quantity::from("1"),
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+}
+
+#[fixture]
+pub fn cfd_gold() -> Cfd {
+    Cfd::new(
+        InstrumentId::from("GOLD-CFD.SIM"),
+        Symbol::from("GOLD-CFD"),
+        AssetClass::Commodity,
+        None,
+        Currency::from("USD"),
+        2,
+        0,
+        Price::from("0.01"),
+        Quantity::from("1"),
+        Some(Quantity::from("1")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// PerpetualContract
+////////////////////////////////////////////////////////////////////////////////
+
+#[fixture]
+pub fn perpetual_contract_eurusd() -> PerpetualContract {
+    PerpetualContract::new(
+        InstrumentId::from("EURUSD-PERP.AX"),
+        Symbol::from("EURUSD-PERP"),
+        Ustr::from("EURUSD"),
+        AssetClass::FX,
+        Some(Currency::from("EUR")),
+        Currency::from("USD"),
+        Currency::from("USD"),
+        false,
+        5,
+        0,
+        Price::from("0.00001"),
+        Quantity::from("1"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(dec!(0.03)),
+        Some(dec!(0.03)),
+        Some(dec!(0.00002)),
+        Some(dec!(0.00002)),
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
     )
 }
 
@@ -732,6 +889,38 @@ pub fn binary_option() -> BinaryOption {
         None,
         None,
         None,
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+}
+
+#[fixture]
+pub fn tokenized_asset_aaplx() -> TokenizedAsset {
+    TokenizedAsset::new(
+        InstrumentId::from("AAPLx/USD.KRAKEN"),
+        Symbol::from("AAPLxUSD"),
+        AssetClass::Equity,
+        Currency::get_or_create_crypto("AAPLx"),
+        Currency::from("USD"),
+        None,
+        2,
+        4,
+        Price::from("0.01"),
+        Quantity::from("0.0001"),
+        None,
+        None,
+        None,
+        Some(Quantity::from("0.0001")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(dec!(-0.0002)),
+        Some(dec!(0.001)),
+        None, // info
         UnixNanos::default(),
         UnixNanos::default(),
     )

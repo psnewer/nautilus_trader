@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -34,6 +34,10 @@ const ROUND_DP: f64 = 1_000_000_000_000.0;
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.indicators")
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.indicators")
 )]
 pub struct AroonOscillator {
     pub period: usize,
@@ -269,6 +273,7 @@ mod tests {
             (110.04, 109.96),
             (110.02, 109.90),
         ];
+
         for &(h, l) in &inputs {
             aroon.update_raw(h, l);
         }
@@ -341,6 +346,7 @@ mod tests {
             (14.0, 9.3),
             (15.0, 9.4),
         ];
+
         for &(h, l) in &inputs {
             aroon.update_raw(h, l);
         }

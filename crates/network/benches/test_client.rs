@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,6 +23,7 @@ const TOTAL: usize = 1_000_000;
 async fn main() {
     let client = InnerHttpClient::default();
     let mut reqs = Vec::new();
+
     for _ in 0..(TOTAL / CONCURRENCY) {
         for _ in 0..CONCURRENCY {
             reqs.push(client.send_request(

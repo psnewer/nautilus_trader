@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -51,7 +51,6 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import OrderBookDelta
-from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
@@ -186,6 +185,7 @@ class TardisDataClient(LiveMarketDataClient):
             LogColor.BLUE,
         )
         await asyncio.sleep(delay_secs)
+
         if self._ws_pending_streams:
             future = asyncio.ensure_future(
                 self._ws_client.stream(
@@ -273,19 +273,6 @@ class TardisDataClient(LiveMarketDataClient):
         tardis_data_type = convert_nautilus_data_type_to_tardis_data_type(OrderBookDelta)
         self._subscribe_stream(command.instrument_id, tardis_data_type, "order book deltas")
 
-    async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
-        if command.book_type == BookType.L3_MBO:
-            self._log.error(
-                "Cannot subscribe to order book snapshots: "
-                "L3_MBO data is not published by Tardis. "
-                "Valid book types are L1_MBP, L2_MBP",
-            )
-            return
-
-        tardis_data_type = convert_nautilus_data_type_to_tardis_data_type(OrderBookDepth10)
-        tardis_data_type = f"{tardis_data_type}_{command.depth}_0ms"
-        self._subscribe_stream(command.instrument_id, tardis_data_type, "order book snapshots")
-
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         tardis_data_type = convert_nautilus_data_type_to_tardis_data_type(QuoteTick)
         self._subscribe_stream(command.instrument_id, tardis_data_type, "quotes")
@@ -306,12 +293,6 @@ class TardisDataClient(LiveMarketDataClient):
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         tardis_data_type = convert_nautilus_data_type_to_tardis_data_type(OrderBookDelta)
         ws_client_key = get_ws_client_key(command.instrument_id, tardis_data_type)
-        self._dispose_websocket_client_by_key(ws_client_key)
-
-    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
-        base_type = convert_nautilus_data_type_to_tardis_data_type(OrderBookDepth10)
-        augmented_type = f"{base_type}_{command.depth}_0ms"
-        ws_client_key = get_ws_client_key(command.instrument_id, augmented_type)
         self._dispose_websocket_client_by_key(ws_client_key)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
@@ -365,6 +346,7 @@ class TardisDataClient(LiveMarketDataClient):
 
         all_instruments = self._instrument_provider.get_all()
         target_instruments = []
+
         for instrument in all_instruments.values():
             if instrument.venue == request.venue:
                 target_instruments.append(instrument)

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,8 +17,8 @@
 
 use std::path::PathBuf;
 
-use nautilus_core::time::get_atomic_clock_realtime;
-use nautilus_data::client::DataClient;
+use nautilus_core::{python::to_pyruntime_err, time::get_atomic_clock_realtime};
+use nautilus_common::clients::DataClient;
 use nautilus_model::identifiers::ClientId;
 use pyo3::prelude::*;
 
@@ -26,12 +26,13 @@ use crate::data::{DatabentoDataClient, DatabentoDataClientConfig};
 
 #[cfg(feature = "python")]
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl DatabentoDataClient {
-    /// Creates a new [`DatabentoDataClient`] instance.
+    /// A Databento data client that combines live streaming and historical data functionality.
     ///
-    /// # Errors
-    ///
-    /// Returns a `PyErr` if client creation fails.
+    /// This client uses the existing `DatabentoFeedHandler` for live data subscriptions
+    /// and `DatabentoHistoricalClient` for historical data requests. It supports multiple
+    /// datasets simultaneously, with separate feed handlers per dataset.
     #[new]
     #[pyo3(signature = (client_id, api_key, publishers_filepath, use_exchange_as_venue = true, bars_timestamp_on_close = true))]
     pub fn py_new(
@@ -49,7 +50,7 @@ impl DatabentoDataClient {
         );
 
         Self::new(client_id, config, get_atomic_clock_realtime())
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{e}")))
+            .map_err(to_pyruntime_err)
     }
 
     /// Returns the client ID.

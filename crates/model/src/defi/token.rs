@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,10 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{
-    fmt::{Display, Formatter},
-    sync::Arc,
-};
+use std::{fmt::Display, sync::Arc};
 
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
@@ -26,7 +23,11 @@ use crate::defi::chain::SharedChain;
 /// Represents a cryptocurrency token on a blockchain network.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Token {
@@ -68,6 +69,7 @@ impl Token {
     ///
     /// Checks against common stablecoin symbols including USD-pegged tokens,
     /// Euro-pegged tokens, and other algorithmic/collateralized stablecoins.
+    #[must_use]
     pub fn is_stablecoin(&self) -> bool {
         matches!(
             self.symbol.as_str(),
@@ -99,6 +101,7 @@ impl Token {
     ///
     /// Identifies wrapped versions of native currencies like WETH (Wrapped ETH),
     /// WMATIC (Wrapped MATIC), WBNB (Wrapped BNB), etc.
+    #[must_use]
     pub fn is_native_currency(&self) -> bool {
         matches!(
             self.symbol.as_str(),
@@ -124,6 +127,7 @@ impl Token {
     /// - **1**: Stablecoins (USDC, USDT, DAI, etc.) - Highest priority to be quote
     /// - **2**: Native currencies (WETH, WMATIC, WBNB, etc.) - Medium priority
     /// - **3**: Other tokens - Lowest priority (typically become base tokens)
+    #[must_use]
     pub fn get_token_priority(&self) -> u8 {
         if self.is_stablecoin() {
             1
@@ -136,7 +140,7 @@ impl Token {
 }
 
 impl Display for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Token(symbol={}, name={})", self.symbol, self.name)
     }
 }

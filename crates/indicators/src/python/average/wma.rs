@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,12 +26,9 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl WeightedMovingAverage {
-    /// Creates a new [`WeightedMovingAverage`] instance.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `PyErr` if `period` does not equal the length of `weights`.
+    /// An indicator which calculates a weighted moving average across a rolling window.
     #[new]
     #[pyo3(signature = (period, weights, price_type=None))]
     pub fn py_new(

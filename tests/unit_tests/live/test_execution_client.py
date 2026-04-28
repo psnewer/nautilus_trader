@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -198,6 +198,7 @@ class TestLiveExecutionClient:
             return "done"
 
         tasks = []
+
         for i in range(5):
             task = self.client.create_task(short_task(), log_msg=f"short_{i}")
             tasks.append(task)

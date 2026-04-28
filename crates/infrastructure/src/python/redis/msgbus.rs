@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,7 +18,7 @@ use futures::{pin_mut, stream::StreamExt};
 use nautilus_common::msgbus::database::MessageBusDatabaseAdapter;
 use nautilus_core::{
     UUID4,
-    python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err},
+    python::{IntoPyObjectNautilusExt, call_python, to_pyruntime_err, to_pyvalue_err},
 };
 use nautilus_model::identifiers::TraderId;
 use pyo3::prelude::*;
@@ -29,8 +29,8 @@ use crate::redis::msgbus::RedisMessageBusDatabase;
 #[pymethods]
 impl RedisMessageBusDatabase {
     #[new]
-    fn py_new(trader_id: TraderId, instance_id: UUID4, config_json: Vec<u8>) -> PyResult<Self> {
-        let config = serde_json::from_slice(&config_json).map_err(to_pyvalue_err)?;
+    fn py_new(trader_id: TraderId, instance_id: UUID4, config_json: &[u8]) -> PyResult<Self> {
+        let config = serde_json::from_slice(config_json).map_err(to_pyvalue_err)?;
         Self::new(trader_id, instance_id, config).map_err(to_pyvalue_err)
     }
 
@@ -40,10 +40,11 @@ impl RedisMessageBusDatabase {
     }
 
     #[pyo3(name = "publish")]
-    fn py_publish(&self, topic: String, payload: Vec<u8>) {
-        self.publish(Ustr::from(&topic), Bytes::from(payload));
+    fn py_publish(&self, topic: &str, payload: Vec<u8>) {
+        self.publish(Ustr::from(topic), Bytes::from(payload));
     }
 
+    /// Streams messages arriving on the stream receiver channel.
     #[pyo3(name = "stream")]
     fn py_stream<'py>(
         &mut self,
@@ -64,11 +65,5 @@ impl RedisMessageBusDatabase {
     #[pyo3(name = "close")]
     fn py_close(&mut self) {
         self.close();
-    }
-}
-
-fn call_python(py: Python, callback: &Py<PyAny>, py_obj: Py<PyAny>) {
-    if let Err(e) = callback.call1(py, (py_obj,)) {
-        tracing::error!("Error calling Python: {e}");
     }
 }

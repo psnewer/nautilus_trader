@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,9 +15,12 @@
 
 //! Represents a valid strategy ID.
 
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display};
 
-use nautilus_core::correctness::{FAILED, check_string_contains, check_valid_string_ascii};
+use nautilus_core::correctness::{
+    CorrectnessResult, CorrectnessResultExt, FAILED, check_predicate_false, check_string_contains,
+    check_valid_string_ascii,
+};
 use ustr::Ustr;
 
 /// The identifier for all 'external' strategy IDs (not local to this system instance).
@@ -28,7 +31,11 @@ const EXTERNAL_STRATEGY_ID: &str = "EXTERNAL";
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct StrategyId(Ustr);
 
@@ -50,21 +57,21 @@ impl StrategyId {
     /// - `value` is not a valid ASCII string.
     /// - `value` is not "EXTERNAL" and does not contain a hyphen '-' separator.
     /// - Either the name or tag part (before/after the hyphen) is empty.
-    pub fn new_checked<T: AsRef<str>>(value: T) -> anyhow::Result<Self> {
+    pub fn new_checked<T: AsRef<str>>(value: T) -> CorrectnessResult<Self> {
         let value = value.as_ref();
         check_valid_string_ascii(value, stringify!(value))?;
         if value != EXTERNAL_STRATEGY_ID {
             check_string_contains(value, "-", stringify!(value))?;
 
             if let Some((name, tag)) = value.rsplit_once('-') {
-                anyhow::ensure!(
-                    !name.is_empty(),
-                    "`value` name part (before '-') cannot be empty"
-                );
-                anyhow::ensure!(
-                    !tag.is_empty(),
-                    "`value` tag part (after '-') cannot be empty"
-                );
+                check_predicate_false(
+                    name.is_empty(),
+                    "`value` name part (before '-') cannot be empty",
+                )?;
+                check_predicate_false(
+                    tag.is_empty(),
+                    "`value` tag part (after '-') cannot be empty",
+                )?;
             }
         }
         Ok(Self(Ustr::from(value)))
@@ -76,7 +83,7 @@ impl StrategyId {
     ///
     /// Panics if `value` is not a valid string.
     pub fn new<T: AsRef<str>>(value: T) -> Self {
-        Self::new_checked(value).expect(FAILED)
+        Self::new_checked(value).expect_display(FAILED)
     }
 
     /// Sets the inner identifier value.
@@ -99,7 +106,6 @@ impl StrategyId {
 
     #[must_use]
     pub fn external() -> Self {
-        // SAFETY:: Constant value is safe
         Self::new(EXTERNAL_STRATEGY_ID)
     }
 
@@ -120,19 +126,20 @@ impl StrategyId {
 }
 
 impl Debug for StrategyId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"{}\"", self.0)
     }
 }
 
 impl Display for StrategyId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nautilus_core::correctness::CorrectnessError;
     use rstest::rstest;
 
     use super::StrategyId;
@@ -184,5 +191,39 @@ mod tests {
     #[rstest]
     fn test_new_checked_with_empty_tag_returns_error() {
         assert!(StrategyId::new_checked("EMACross-").is_err());
+    }
+
+    #[rstest]
+    fn test_new_checked_with_empty_name_returns_typed_error_with_stable_display() {
+        let error = StrategyId::new_checked("-001").unwrap_err();
+
+        match error {
+            CorrectnessError::PredicateViolation { ref message } => {
+                assert_eq!(message, "`value` name part (before '-') cannot be empty");
+            }
+            other => panic!("Expected typed predicate violation, was: {other:?}"),
+        }
+
+        assert_eq!(
+            error.to_string(),
+            "`value` name part (before '-') cannot be empty"
+        );
+    }
+
+    #[rstest]
+    fn test_new_checked_with_empty_tag_returns_typed_error_with_stable_display() {
+        let error = StrategyId::new_checked("EMACross-").unwrap_err();
+
+        match error {
+            CorrectnessError::PredicateViolation { ref message } => {
+                assert_eq!(message, "`value` tag part (after '-') cannot be empty");
+            }
+            other => panic!("Expected typed predicate violation, was: {other:?}"),
+        }
+
+        assert_eq!(
+            error.to_string(),
+            "`value` tag part (after '-') cannot be empty"
+        );
     }
 }

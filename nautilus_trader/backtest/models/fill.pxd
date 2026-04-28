@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,6 +28,7 @@ cdef class FillModel:
     cdef readonly double prob_slippage
     """The probability of aggressive order execution slipping.\n\n:returns: `bool`"""
 
+    cpdef bint fill_limit_inside_spread(self)
     cpdef bint is_limit_filled(self)
     cpdef bint is_slipped(self)
     cpdef OrderBook get_orderbook_for_fill_simulation(
@@ -42,6 +43,7 @@ cdef class FillModel:
 
 
 cdef class BestPriceFillModel(FillModel):
+    cpdef bint fill_limit_inside_spread(self)
     cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
         Instrument instrument,

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::{
     common::enums::{HyperliquidBarInterval, HyperliquidInfoRequestType},
     http::models::{
-        HyperliquidExecCancelByCloidRequest, HyperliquidExecGrouping,
+        HyperliquidExecBuilderFee, HyperliquidExecCancelByCloidRequest, HyperliquidExecGrouping,
         HyperliquidExecModifyOrderRequest, HyperliquidExecPlaceOrderRequest,
     },
 };
@@ -59,6 +59,8 @@ impl AsRef<str> for ExchangeActionType {
 pub struct OrderParams {
     pub orders: Vec<HyperliquidExecPlaceOrderRequest>,
     pub grouping: HyperliquidExecGrouping,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builder: Option<HyperliquidExecBuilderFee>,
 }
 
 /// Parameters for canceling orders.
@@ -70,8 +72,8 @@ pub struct CancelParams {
 /// Parameters for modifying an order.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModifyParams {
-    pub oid: u64,
-    pub order: HyperliquidExecModifyOrderRequest,
+    #[serde(flatten)]
+    pub request: HyperliquidExecModifyOrderRequest,
 }
 
 /// Parameters for updating leverage.
@@ -123,6 +125,12 @@ pub struct ClearinghouseStateParams {
     pub user: String,
 }
 
+/// Parameters for spot clearinghouse state request.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpotClearinghouseStateParams {
+    pub user: String,
+}
+
 /// Parameters for candle snapshot request.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +147,16 @@ pub struct CandleSnapshotParams {
     pub req: CandleSnapshotReq,
 }
 
+/// Parameters for funding history request.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingHistoryParams {
+    pub coin: String,
+    pub start_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<u64>,
+}
+
 /// Info request parameters.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -148,7 +166,9 @@ pub enum InfoRequestParams {
     OrderStatus(OrderStatusParams),
     OpenOrders(OpenOrdersParams),
     ClearinghouseState(ClearinghouseStateParams),
+    SpotClearinghouseState(SpotClearinghouseStateParams),
     CandleSnapshot(CandleSnapshotParams),
+    FundingHistory(FundingHistoryParams),
     None,
 }
 
@@ -166,6 +186,14 @@ impl InfoRequest {
     pub fn meta() -> Self {
         Self {
             request_type: HyperliquidInfoRequestType::Meta,
+            params: InfoRequestParams::None,
+        }
+    }
+
+    /// Creates a request to get metadata for all perp dexes (standard + HIP-3).
+    pub fn all_perp_metas() -> Self {
+        Self {
+            request_type: HyperliquidInfoRequestType::AllPerpMetas,
             params: InfoRequestParams::None,
         }
     }
@@ -255,6 +283,26 @@ impl InfoRequest {
         }
     }
 
+    /// Creates a request to get spot clearinghouse state (per-token spot balances).
+    pub fn spot_clearinghouse_state(user: &str) -> Self {
+        Self {
+            request_type: HyperliquidInfoRequestType::SpotClearinghouseState,
+            params: InfoRequestParams::SpotClearinghouseState(SpotClearinghouseStateParams {
+                user: user.to_string(),
+            }),
+        }
+    }
+
+    /// Creates a request to get user fee schedule and effective rates.
+    pub fn user_fees(user: &str) -> Self {
+        Self {
+            request_type: HyperliquidInfoRequestType::UserFees,
+            params: InfoRequestParams::OpenOrders(OpenOrdersParams {
+                user: user.to_string(),
+            }),
+        }
+    }
+
     /// Creates a request to get candle/bar data.
     pub fn candle_snapshot(
         coin: &str,
@@ -271,6 +319,18 @@ impl InfoRequest {
                     start_time,
                     end_time,
                 },
+            }),
+        }
+    }
+
+    /// Creates a request to get funding rate history for a coin.
+    pub fn funding_history(coin: &str, start_time: u64, end_time: Option<u64>) -> Self {
+        Self {
+            request_type: HyperliquidInfoRequestType::FundingHistory,
+            params: InfoRequestParams::FundingHistory(FundingHistoryParams {
+                coin: coin.to_string(),
+                start_time,
+                end_time,
             }),
         }
     }
@@ -307,13 +367,17 @@ where
 }
 
 impl ExchangeAction {
-    /// Creates an action to place orders.
-    pub fn order(orders: Vec<HyperliquidExecPlaceOrderRequest>) -> Self {
+    /// Creates an action to place orders with builder attribution.
+    pub fn order(
+        orders: Vec<HyperliquidExecPlaceOrderRequest>,
+        builder: Option<HyperliquidExecBuilderFee>,
+    ) -> Self {
         Self {
             action_type: ExchangeActionType::Order,
             params: ExchangeActionParams::Order(OrderParams {
                 orders,
                 grouping: HyperliquidExecGrouping::Na,
+                builder,
             }),
         }
     }
@@ -335,10 +399,10 @@ impl ExchangeAction {
     }
 
     /// Creates an action to modify an order.
-    pub fn modify(oid: u64, order: HyperliquidExecModifyOrderRequest) -> Self {
+    pub fn modify(request: HyperliquidExecModifyOrderRequest) -> Self {
         Self {
             action_type: ExchangeActionType::Modify,
-            params: ExchangeActionParams::Modify(ModifyParams { oid, order }),
+            params: ExchangeActionParams::Modify(ModifyParams { request }),
         }
     }
 
@@ -370,8 +434,14 @@ impl ExchangeAction {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use super::*;
+    use crate::http::models::{
+        Cloid, HyperliquidExecCancelByCloidRequest, HyperliquidExecLimitParams,
+        HyperliquidExecModifyOrderRequest, HyperliquidExecOrderKind,
+        HyperliquidExecPlaceOrderRequest, HyperliquidExecTif,
+    };
 
     #[rstest]
     fn test_info_request_meta() {
@@ -379,6 +449,15 @@ mod tests {
 
         assert_eq!(req.request_type, HyperliquidInfoRequestType::Meta);
         assert!(matches!(req.params, InfoRequestParams::None));
+    }
+
+    #[rstest]
+    fn test_info_request_all_perp_metas() {
+        let req = InfoRequest::all_perp_metas();
+
+        assert_eq!(req.request_type, HyperliquidInfoRequestType::AllPerpMetas);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"allPerpMetas""#));
     }
 
     #[rstest]
@@ -391,14 +470,45 @@ mod tests {
     }
 
     #[rstest]
+    fn test_info_request_spot_clearinghouse_state() {
+        let req = InfoRequest::spot_clearinghouse_state("0xabc");
+
+        assert_eq!(
+            req.request_type,
+            HyperliquidInfoRequestType::SpotClearinghouseState
+        );
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"spotClearinghouseState""#));
+        assert!(json.contains(r#""user":"0xabc""#));
+    }
+
+    #[rstest]
+    fn test_info_request_funding_history_with_end_time() {
+        let req = InfoRequest::funding_history("BTC", 1_700_000_000_000, Some(1_700_003_600_000));
+
+        assert_eq!(req.request_type, HyperliquidInfoRequestType::FundingHistory);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"fundingHistory""#));
+        assert!(json.contains(r#""coin":"BTC""#));
+        assert!(json.contains(r#""startTime":1700000000000"#));
+        assert!(json.contains(r#""endTime":1700003600000"#));
+    }
+
+    #[rstest]
+    fn test_info_request_funding_history_omits_end_time_when_none() {
+        // Hyperliquid defaults `endTime` to current time when absent; the
+        // serializer must omit the field rather than emit `null`.
+        let req = InfoRequest::funding_history("BTC", 1_700_000_000_000, None);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""startTime":1700000000000"#));
+        assert!(
+            !json.contains("endTime"),
+            "endTime must be omitted when None; json={json}",
+        );
+    }
+
+    #[rstest]
     fn test_exchange_action_order() {
-        use rust_decimal::Decimal;
-
-        use crate::http::models::{
-            HyperliquidExecLimitParams, HyperliquidExecOrderKind, HyperliquidExecPlaceOrderRequest,
-            HyperliquidExecTif,
-        };
-
         let order = HyperliquidExecPlaceOrderRequest {
             asset: 0,
             is_buy: true,
@@ -413,7 +523,7 @@ mod tests {
             cloid: None,
         };
 
-        let action = ExchangeAction::order(vec![order]);
+        let action = ExchangeAction::order(vec![order], None);
 
         assert_eq!(action.action_type, ExchangeActionType::Order);
         let json = serde_json::to_string(&action).unwrap();
@@ -422,8 +532,6 @@ mod tests {
 
     #[rstest]
     fn test_exchange_action_cancel() {
-        use crate::http::models::{Cloid, HyperliquidExecCancelByCloidRequest};
-
         let cancel = HyperliquidExecCancelByCloidRequest {
             asset: 0,
             cloid: Cloid::from_hex("0x00000000000000000000000000000000").unwrap(),
@@ -436,13 +544,6 @@ mod tests {
 
     #[rstest]
     fn test_exchange_action_serialization() {
-        use rust_decimal::Decimal;
-
-        use crate::http::models::{
-            HyperliquidExecLimitParams, HyperliquidExecOrderKind, HyperliquidExecPlaceOrderRequest,
-            HyperliquidExecTif,
-        };
-
         let order = HyperliquidExecPlaceOrderRequest {
             asset: 0,
             is_buy: true,
@@ -457,7 +558,7 @@ mod tests {
             cloid: None,
         };
 
-        let action = ExchangeAction::order(vec![order]);
+        let action = ExchangeAction::order(vec![order], None);
 
         let json = serde_json::to_string(&action).unwrap();
         // Verify that action_type is serialized as "type" with the correct string value
@@ -506,8 +607,6 @@ mod tests {
 
     #[rstest]
     fn test_cancel_by_cloid_serialization() {
-        use crate::http::models::{Cloid, HyperliquidExecCancelByCloidRequest};
-
         let cancel_request = HyperliquidExecCancelByCloidRequest {
             asset: 0,
             cloid: Cloid::from_hex("0x00000000000000000000000000000000").unwrap(),
@@ -521,22 +620,27 @@ mod tests {
 
     #[rstest]
     fn test_modify_serialization() {
-        use rust_decimal::Decimal;
-
-        use crate::http::models::HyperliquidExecModifyOrderRequest;
-
         let modify_request = HyperliquidExecModifyOrderRequest {
-            asset: 0,
             oid: 12345,
-            price: Some(Decimal::new(51000, 0)),
-            size: Some(Decimal::new(2, 0)),
-            reduce_only: None,
-            kind: None,
+            order: HyperliquidExecPlaceOrderRequest {
+                asset: 0,
+                is_buy: true,
+                price: Decimal::new(51000, 0),
+                size: Decimal::new(2, 0),
+                reduce_only: false,
+                kind: HyperliquidExecOrderKind::Limit {
+                    limit: HyperliquidExecLimitParams {
+                        tif: HyperliquidExecTif::Gtc,
+                    },
+                },
+                cloid: None,
+            },
         };
-        let action = ExchangeAction::modify(12345, modify_request);
+        let action = ExchangeAction::modify(modify_request);
         let json = serde_json::to_string(&action).unwrap();
 
         assert!(json.contains(r#""type":"modify""#));
         assert!(json.contains(r#""oid":12345"#));
+        assert!(json.contains(r#""order""#));
     }
 }

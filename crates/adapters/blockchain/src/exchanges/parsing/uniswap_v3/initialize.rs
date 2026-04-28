@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -47,9 +47,9 @@ sol! {
 /// Panics if the contract address is not set in the log.
 pub fn parse_initialize_event_hypersync(
     dex: SharedDex,
-    log: HypersyncLog,
+    log: &HypersyncLog,
 ) -> anyhow::Result<InitializeEvent> {
-    validate_event_signature_hash("InitializeEvent", INITIALIZE_EVENT_SIGNATURE_HASH, &log)?;
+    validate_event_signature_hash("InitializeEvent", INITIALIZE_EVENT_SIGNATURE_HASH, log)?;
 
     if let Some(data) = &log.data {
         let data_bytes = data.as_ref();
@@ -171,7 +171,7 @@ mod tests {
     #[rstest]
     fn test_parse_initialize_event_hypersync(hypersync_log: HypersyncLog) {
         let dex = arbitrum::UNISWAP_V3.dex.clone();
-        let event = parse_initialize_event_hypersync(dex, hypersync_log).unwrap();
+        let event = parse_initialize_event_hypersync(dex, &hypersync_log).unwrap();
 
         assert_eq!(
             event.pool_identifier.to_string(),
@@ -199,7 +199,8 @@ mod tests {
     #[rstest]
     fn test_hypersync_rpc_match(hypersync_log: HypersyncLog, rpc_log: RpcLog) {
         let dex = arbitrum::UNISWAP_V3.dex.clone();
-        let event_hypersync = parse_initialize_event_hypersync(dex.clone(), hypersync_log).unwrap();
+        let event_hypersync =
+            parse_initialize_event_hypersync(dex.clone(), &hypersync_log).unwrap();
         let event_rpc = parse_initialize_event_rpc(dex, &rpc_log).unwrap();
 
         // Both parsers should produce identical results

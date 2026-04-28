@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,10 +17,13 @@ use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Instrument, betting::BettingInstrument, binary_option::BinaryOption,
-    crypto_future::CryptoFuture, crypto_option::CryptoOption, crypto_perpetual::CryptoPerpetual,
-    currency_pair::CurrencyPair, equity::Equity, futures_contract::FuturesContract,
-    futures_spread::FuturesSpread, option_contract::OptionContract, option_spread::OptionSpread,
+    Instrument, betting::BettingInstrument, binary_option::BinaryOption, cfd::Cfd,
+    commodity::Commodity, crypto_future::CryptoFuture, crypto_option::CryptoOption,
+    crypto_perpetual::CryptoPerpetual, currency_pair::CurrencyPair, equity::Equity,
+    futures_contract::FuturesContract, futures_spread::FuturesSpread,
+    index_instrument::IndexInstrument, option_contract::OptionContract,
+    option_spread::OptionSpread, perpetual_contract::PerpetualContract,
+    tokenized_asset::TokenizedAsset,
 };
 use crate::types::{Price, Quantity};
 
@@ -29,6 +32,8 @@ use crate::types::{Price, Quantity};
 pub enum InstrumentAny {
     Betting(BettingInstrument),
     BinaryOption(BinaryOption),
+    Cfd(Cfd),
+    Commodity(Commodity),
     CryptoFuture(CryptoFuture),
     CryptoOption(CryptoOption),
     CryptoPerpetual(CryptoPerpetual),
@@ -36,8 +41,11 @@ pub enum InstrumentAny {
     Equity(Equity),
     FuturesContract(FuturesContract),
     FuturesSpread(FuturesSpread),
+    IndexInstrument(IndexInstrument),
     OptionContract(OptionContract),
     OptionSpread(OptionSpread),
+    PerpetualContract(PerpetualContract),
+    TokenizedAsset(TokenizedAsset),
 }
 
 // TODO: Probably move this to the `Instrument` trait too
@@ -47,6 +55,8 @@ impl InstrumentAny {
         match self {
             Self::Betting(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::BinaryOption(inst) => inst.calculate_base_quantity(quantity, last_px),
+            Self::Cfd(inst) => inst.calculate_base_quantity(quantity, last_px),
+            Self::Commodity(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::CryptoFuture(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::CryptoOption(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::CryptoPerpetual(inst) => inst.calculate_base_quantity(quantity, last_px),
@@ -54,8 +64,11 @@ impl InstrumentAny {
             Self::Equity(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::FuturesContract(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::FuturesSpread(inst) => inst.calculate_base_quantity(quantity, last_px),
+            Self::IndexInstrument(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::OptionContract(inst) => inst.calculate_base_quantity(quantity, last_px),
             Self::OptionSpread(inst) => inst.calculate_base_quantity(quantity, last_px),
+            Self::PerpetualContract(inst) => inst.calculate_base_quantity(quantity, last_px),
+            Self::TokenizedAsset(inst) => inst.calculate_base_quantity(quantity, last_px),
         }
     }
 
@@ -69,5 +82,11 @@ impl InstrumentAny {
 impl PartialEq for InstrumentAny {
     fn eq(&self, other: &Self) -> bool {
         self.id() == other.id()
+    }
+}
+
+impl crate::data::HasTsInit for InstrumentAny {
+    fn ts_init(&self) -> nautilus_core::UnixNanos {
+        Instrument::ts_init(self)
     }
 }

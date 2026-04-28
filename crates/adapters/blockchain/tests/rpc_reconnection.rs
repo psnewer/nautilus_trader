@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -136,7 +136,8 @@ fn test_rpc_basic_subscription() {
 
     sim.client("client", async move {
         let chain = Chain::new(Blockchain::Ethereum, 1);
-        let mut rpc_client = CoreBlockchainRpcClient::new(chain, "ws://rpc-node:8545".to_string());
+        let mut rpc_client =
+            CoreBlockchainRpcClient::new(chain, "ws://rpc-node:8545".to_string(), None);
 
         // Connect to RPC node
         rpc_client.connect().await.expect("Should connect");
@@ -291,7 +292,8 @@ fn test_rpc_reconnection_resubscribes() {
 
     sim.client("client", async move {
         let chain = Chain::new(Blockchain::Ethereum, 1);
-        let mut rpc_client = CoreBlockchainRpcClient::new(chain, "ws://rpc-node:8545".to_string());
+        let mut rpc_client =
+            CoreBlockchainRpcClient::new(chain, "ws://rpc-node:8545".to_string(), None);
 
         // Connect and subscribe
         rpc_client.connect().await.expect("Should connect");

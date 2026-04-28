@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,11 +15,11 @@
 
 //! Parsers that convert BitMEX WebSocket payloads into Nautilus data structures.
 
-use std::num::NonZero;
+use std::{num::NonZero, str::FromStr};
 
 use ahash::AHashMap;
-use dashmap::DashMap;
-use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime, uuid::UUID4};
+use chrono::Timelike;
+use nautilus_core::{UnixNanos, uuid::UUID4};
 #[cfg(test)]
 use nautilus_model::types::Currency;
 use nautilus_model::{
@@ -30,9 +30,12 @@ use nautilus_model::{
     },
     enums::{
         AccountType, AggregationSource, BarAggregation, OrderSide, OrderStatus, OrderType,
-        PriceType, RecordFlag, TimeInForce, TriggerType,
+        PriceType, RecordFlag, TimeInForce, TrailingOffsetType,
     },
-    events::{OrderUpdated, account::state::AccountState},
+    events::{
+        OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderTriggered, OrderUpdated,
+        account::state::AccountState,
+    },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, OrderListId, StrategyId, Symbol, TradeId, TraderId,
         VenueOrderId,
@@ -41,9 +44,8 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance, Money, Price, Quantity},
 };
-use rust_decimal::{Decimal, prelude::FromPrimitive};
+use rust_decimal::Decimal;
 use ustr::Ustr;
-use uuid::Uuid;
 
 use super::{
     enums::{BitmexAction, BitmexWsTopic},
@@ -56,10 +58,14 @@ use super::{
 use crate::{
     common::{
         consts::BITMEX_VENUE,
-        enums::{BitmexExecInstruction, BitmexExecType, BitmexSide},
+        enums::{
+            BitmexExecInstruction, BitmexExecType, BitmexOrderStatus, BitmexOrderType,
+            BitmexPegPriceType, BitmexSide,
+        },
         parse::{
-            clean_reason, map_bitmex_currency, normalize_trade_bin_prices,
-            normalize_trade_bin_volume, parse_contracts_quantity, parse_fractional_quantity,
+            bitmex_currency_divisor, clean_reason, derive_trade_id, extract_trigger_type,
+            map_bitmex_currency, normalize_trade_bin_prices, normalize_trade_bin_volume,
+            parse_account_balance, parse_contracts_quantity, parse_fractional_quantity,
             parse_instrument_id, parse_liquidity_side, parse_optional_datetime_to_unix_nanos,
             parse_position_side, parse_signed_contracts_quantity,
         },
@@ -125,12 +131,26 @@ pub fn parse_book_msg_vec(
                 ts_init,
             )));
         } else {
-            tracing::error!(
+            log::error!(
                 "Instrument cache miss: book delta dropped for symbol={}",
                 msg.symbol
             );
         }
     }
+
+    // Set F_LAST on the last delta so data engine knows the batch is complete
+    if let Some(Data::Delta(last_delta)) = deltas.last_mut() {
+        *last_delta = OrderBookDelta::new(
+            last_delta.instrument_id,
+            last_delta.action,
+            last_delta.order,
+            last_delta.flags | RecordFlag::F_LAST as u8,
+            last_delta.sequence,
+            last_delta.ts_event,
+            last_delta.ts_init,
+        );
+    }
+
     deltas
 }
 
@@ -147,15 +167,14 @@ pub fn parse_book10_msg_vec(
         if let Some(instrument) = instruments.get(&msg.symbol) {
             let instrument_id = instrument.id();
             let price_precision = instrument.price_precision();
-            depths.push(Data::Depth10(Box::new(parse_book10_msg(
-                &msg,
-                instrument,
-                instrument_id,
-                price_precision,
-                ts_init,
-            ))));
+            match parse_book10_msg(&msg, instrument, instrument_id, price_precision, ts_init) {
+                Ok(depth) => depths.push(Data::Depth10(Box::new(depth))),
+                Err(e) => {
+                    log::error!("Failed to parse orderBook10 for symbol={}: {e}", msg.symbol);
+                }
+            }
         } else {
-            tracing::error!(
+            log::error!(
                 "Instrument cache miss: depth10 message dropped for symbol={}",
                 msg.symbol
             );
@@ -185,7 +204,7 @@ pub fn parse_trade_msg_vec(
                 ts_init,
             )));
         } else {
-            tracing::error!(
+            log::error!(
                 "Instrument cache miss: trade message dropped for symbol={}",
                 msg.symbol
             );
@@ -198,7 +217,7 @@ pub fn parse_trade_msg_vec(
 #[must_use]
 pub fn parse_trade_bin_msg_vec(
     data: Vec<BitmexTradeBinMsg>,
-    topic: BitmexWsTopic,
+    topic: &BitmexWsTopic,
     instruments: &AHashMap<Ustr, InstrumentAny>,
     ts_init: UnixNanos,
 ) -> Vec<Data> {
@@ -210,14 +229,14 @@ pub fn parse_trade_bin_msg_vec(
             let price_precision = instrument.price_precision();
             trades.push(Data::Bar(parse_trade_bin_msg(
                 &msg,
-                &topic,
+                topic,
                 instrument,
                 instrument_id,
                 price_precision,
                 ts_init,
             )));
         } else {
-            tracing::error!(
+            log::error!(
                 "Instrument cache miss: trade bin (bar) dropped for symbol={}",
                 msg.symbol
             );
@@ -227,7 +246,6 @@ pub fn parse_trade_bin_msg_vec(
 }
 
 /// Converts a BitMEX order book row into a Nautilus order-book delta.
-#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn parse_book_msg(
     msg: &BitmexOrderBookMsg,
@@ -237,7 +255,7 @@ pub fn parse_book_msg(
     price_precision: u8,
     ts_init: UnixNanos,
 ) -> OrderBookDelta {
-    let flags = if action == &BitmexAction::Insert {
+    let flags = if action == &BitmexAction::Partial {
         RecordFlag::F_SNAPSHOT as u8
     } else {
         0
@@ -265,18 +283,16 @@ pub fn parse_book_msg(
 
 /// Parses an `OrderBook10` message into an `OrderBookDepth10` object.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the bid or ask arrays cannot be converted to exactly 10 elements.
-#[allow(clippy::too_many_arguments)]
-#[must_use]
+/// Returns an error if the bid or ask arrays are not exactly 10 elements.
 pub fn parse_book10_msg(
     msg: &BitmexOrderBook10Msg,
     instrument: &InstrumentAny,
     instrument_id: InstrumentId,
     price_precision: u8,
     ts_init: UnixNanos,
-) -> OrderBookDepth10 {
+) -> anyhow::Result<OrderBookDepth10> {
     let mut bids = Vec::with_capacity(DEPTH10_LEN);
     let mut asks = Vec::with_capacity(DEPTH10_LEN);
 
@@ -308,22 +324,22 @@ pub fn parse_book10_msg(
         ask_counts[i] = 1;
     }
 
-    let bids: [BookOrder; DEPTH10_LEN] = bids
-        .try_into()
-        .inspect_err(|v: &Vec<BookOrder>| {
-            tracing::error!("Bids length mismatch: expected 10, was {}", v.len());
-        })
-        .expect("BitMEX orderBook10 should always have exactly 10 bid levels");
-    let asks: [BookOrder; DEPTH10_LEN] = asks
-        .try_into()
-        .inspect_err(|v: &Vec<BookOrder>| {
-            tracing::error!("Asks length mismatch: expected 10, was {}", v.len());
-        })
-        .expect("BitMEX orderBook10 should always have exactly 10 ask levels");
+    let bids: [BookOrder; DEPTH10_LEN] = bids.try_into().map_err(|v: Vec<BookOrder>| {
+        anyhow::anyhow!(
+            "Bids length mismatch: expected {DEPTH10_LEN}, was {}",
+            v.len()
+        )
+    })?;
+    let asks: [BookOrder; DEPTH10_LEN] = asks.try_into().map_err(|v: Vec<BookOrder>| {
+        anyhow::anyhow!(
+            "Asks length mismatch: expected {DEPTH10_LEN}, was {}",
+            v.len()
+        )
+    })?;
 
     let ts_event = UnixNanos::from(msg.timestamp);
 
-    OrderBookDepth10::new(
+    Ok(OrderBookDepth10::new(
         instrument_id,
         bids,
         asks,
@@ -333,7 +349,7 @@ pub fn parse_book10_msg(
         0, // Not applicable for BitMEX L2 books
         ts_event,
         ts_init,
-    )
+    ))
 }
 
 /// Converts a BitMEX quote message into a `QuoteTick`, filling missing data from cache.
@@ -391,11 +407,17 @@ pub fn parse_trade_msg(
     let price = Price::new(msg.price, price_precision);
     let size = parse_contracts_quantity(msg.size, instrument);
     let aggressor_side = msg.side.as_aggressor_side();
-    let trade_id = TradeId::new(
-        msg.trd_match_id
-            .map_or_else(|| Uuid::new_v4().to_string(), |uuid| uuid.to_string()),
-    );
     let ts_event = UnixNanos::from(msg.timestamp);
+    let trade_id = match msg.trd_match_id {
+        Some(uuid) => TradeId::new(uuid.to_string()),
+        None => derive_trade_id(
+            msg.symbol,
+            ts_event.as_u64(),
+            msg.price,
+            msg.size as i64,
+            Some(msg.side.into()),
+        ),
+    };
 
     TradeTick::new(
         instrument_id,
@@ -438,9 +460,7 @@ pub fn parse_trade_bin_msg(
 
 /// Converts a WebSocket topic to a bar specification.
 ///
-/// # Panics
-///
-/// Panics if the topic is not a valid bar topic (`TradeBin1m`, `TradeBin5m`, `TradeBin1h`, or `TradeBin1d`).
+/// Returns `BAR_SPEC_1_MINUTE` and logs an error for unsupported topics.
 #[must_use]
 pub fn bar_spec_from_topic(topic: &BitmexWsTopic) -> BarSpecification {
     match topic {
@@ -449,7 +469,7 @@ pub fn bar_spec_from_topic(topic: &BitmexWsTopic) -> BarSpecification {
         BitmexWsTopic::TradeBin1h => BAR_SPEC_1_HOUR,
         BitmexWsTopic::TradeBin1d => BAR_SPEC_1_DAY,
         _ => {
-            tracing::error!(topic = ?topic, "Bar specification not supported");
+            log::error!("Bar specification not supported: topic={topic:?}");
             BAR_SPEC_1_MINUTE
         }
     }
@@ -457,9 +477,7 @@ pub fn bar_spec_from_topic(topic: &BitmexWsTopic) -> BarSpecification {
 
 /// Converts a bar specification to a WebSocket topic.
 ///
-/// # Panics
-///
-/// Panics if the specification is not one of the supported values (1m, 5m, 1h, or 1d).
+/// Returns `TradeBin1m` and logs an error for unsupported specifications.
 #[must_use]
 pub fn topic_from_bar_spec(spec: BarSpecification) -> BitmexWsTopic {
     match spec {
@@ -468,31 +486,27 @@ pub fn topic_from_bar_spec(spec: BarSpecification) -> BitmexWsTopic {
         BAR_SPEC_1_HOUR => BitmexWsTopic::TradeBin1h,
         BAR_SPEC_1_DAY => BitmexWsTopic::TradeBin1d,
         _ => {
-            tracing::error!(spec = ?spec, "Bar specification not supported");
+            log::error!("Bar specification not supported: spec={spec:?}");
             BitmexWsTopic::TradeBin1m
         }
     }
 }
 
-fn infer_order_type_from_msg(msg: &BitmexOrderMsg) -> Option<OrderType> {
+fn infer_order_type_from_msg(msg: &BitmexOrderMsg) -> OrderType {
     if msg.stop_px.is_some() {
         if msg.price.is_some() {
-            Some(OrderType::StopLimit)
+            OrderType::StopLimit
         } else {
-            Some(OrderType::StopMarket)
+            OrderType::StopMarket
         }
     } else if msg.price.is_some() {
-        Some(OrderType::Limit)
+        OrderType::Limit
     } else {
-        Some(OrderType::Market)
+        OrderType::Market
     }
 }
 
 /// Parse a BitMEX WebSocket order message into a Nautilus `OrderStatusReport`.
-///
-/// # Panics
-///
-/// Panics if required fields are missing or invalid.
 ///
 /// # References
 ///
@@ -504,7 +518,8 @@ fn infer_order_type_from_msg(msg: &BitmexOrderMsg) -> Option<OrderType> {
 pub fn parse_order_msg(
     msg: &BitmexOrderMsg,
     instrument: &InstrumentAny,
-    order_type_cache: &DashMap<ClientOrderId, OrderType>,
+    order_type_cache: &mut AHashMap<ClientOrderId, OrderType>,
+    ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
     let account_id = AccountId::new(format!("BITMEX-{}", msg.account)); // TODO: Revisit
     let instrument_id = parse_instrument_id(msg.symbol);
@@ -513,23 +528,29 @@ pub fn parse_order_msg(
     let order_side: OrderSide = common_side.into();
 
     let order_type: OrderType = if let Some(ord_type) = msg.ord_type {
-        ord_type.into()
+        // Pegged orders with TrailingStopPeg are trailing stop orders
+        if ord_type == BitmexOrderType::Pegged
+            && msg.peg_price_type == Some(BitmexPegPriceType::TrailingStopPeg)
+        {
+            if msg.price.is_some() {
+                OrderType::TrailingStopLimit
+            } else {
+                OrderType::TrailingStopMarket
+            }
+        } else {
+            ord_type.into()
+        }
     } else if let Some(client_order_id) = msg.cl_ord_id {
         let client_order_id = ClientOrderId::new(client_order_id);
-        if let Some(entry) = order_type_cache.get(&client_order_id) {
-            *entry.value()
-        } else if let Some(inferred) = infer_order_type_from_msg(msg) {
+        if let Some(&cached) = order_type_cache.get(&client_order_id) {
+            cached
+        } else {
+            let inferred = infer_order_type_from_msg(msg);
             order_type_cache.insert(client_order_id, inferred);
             inferred
-        } else {
-            anyhow::bail!(
-                "Order type not found in cache for client_order_id: {client_order_id} (order missing ord_type field)"
-            );
         }
-    } else if let Some(inferred) = infer_order_type_from_msg(msg) {
-        inferred
     } else {
-        anyhow::bail!("Order missing both ord_type and cl_ord_id");
+        infer_order_type_from_msg(msg)
     };
 
     let time_in_force: TimeInForce = match msg.time_in_force {
@@ -543,7 +564,6 @@ pub fn parse_order_msg(
     let ts_accepted =
         parse_optional_datetime_to_unix_nanos(&Some(msg.transact_time), "transact_time");
     let ts_last = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "timestamp");
-    let ts_init = get_atomic_clock_realtime().get_time_ns();
 
     let mut report = OrderStatusReport::new(
         account_id,
@@ -579,24 +599,26 @@ pub fn parse_order_msg(
     }
 
     if let Some(trigger_price) = msg.stop_px {
-        let trigger_type = if let Some(exec_insts) = &msg.exec_inst {
-            // Check if any trigger type instruction is present
-            if exec_insts.contains(&BitmexExecInstruction::MarkPrice) {
-                TriggerType::MarkPrice
-            } else if exec_insts.contains(&BitmexExecInstruction::IndexPrice) {
-                TriggerType::IndexPrice
-            } else if exec_insts.contains(&BitmexExecInstruction::LastPrice) {
-                TriggerType::LastPrice
-            } else {
-                TriggerType::Default
-            }
-        } else {
-            TriggerType::Default // BitMEX defaults to LastPrice when not specified
-        };
-
         report = report
             .with_trigger_price(Price::new(trigger_price, instrument.price_precision()))
-            .with_trigger_type(trigger_type);
+            .with_trigger_type(extract_trigger_type(msg.exec_inst.as_ref()));
+    }
+
+    // Populate trailing offset for trailing stop orders
+    if matches!(
+        order_type,
+        OrderType::TrailingStopMarket | OrderType::TrailingStopLimit
+    ) && let Some(peg_offset) = msg.peg_offset_value
+    {
+        let trailing_offset = Decimal::try_from(peg_offset.abs())
+            .unwrap_or_else(|_| Decimal::new(peg_offset.abs() as i64, 0));
+        report = report
+            .with_trailing_offset(trailing_offset)
+            .with_trailing_offset_type(TrailingOffsetType::Price);
+
+        if msg.stop_px.is_none() {
+            report = report.with_trigger_type(extract_trigger_type(msg.exec_inst.as_ref()));
+        }
     }
 
     if let Some(exec_insts) = &msg.exec_inst {
@@ -616,21 +638,21 @@ pub fn parse_order_msg(
     // Extract rejection reason for rejected orders
     if order_status == OrderStatus::Rejected {
         if let Some(reason_str) = msg.ord_rej_reason.or(msg.text) {
-            tracing::debug!(
-                order_id = ?venue_order_id,
-                client_order_id = ?msg.cl_ord_id,
-                reason = ?reason_str,
-                "Order rejected with reason"
+            log::debug!(
+                "Order rejected with reason: order_id={:?}, client_order_id={:?}, reason={:?}",
+                venue_order_id,
+                msg.cl_ord_id,
+                reason_str,
             );
             report = report.with_cancel_reason(clean_reason(reason_str.as_ref()));
         } else {
-            tracing::debug!(
-                order_id = ?venue_order_id,
-                client_order_id = ?msg.cl_ord_id,
-                ord_status = ?msg.ord_status,
-                ord_rej_reason = ?msg.ord_rej_reason,
-                text = ?msg.text,
-                "Order rejected without reason from BitMEX"
+            log::debug!(
+                "Order rejected without reason from BitMEX: order_id={:?}, client_order_id={:?}, ord_status={:?}, ord_rej_reason={:?}, text={:?}",
+                venue_order_id,
+                msg.cl_ord_id,
+                msg.ord_status,
+                msg.ord_rej_reason,
+                msg.text,
             );
         }
     }
@@ -646,6 +668,118 @@ pub fn parse_order_msg(
     Ok(report)
 }
 
+/// Parsed order event variants produced by [`parse_order_event`] for tracked orders.
+#[derive(Debug, Clone)]
+pub enum ParsedOrderEvent {
+    Accepted(OrderAccepted),
+    Canceled(OrderCanceled),
+    Expired(OrderExpired),
+    Triggered(OrderTriggered),
+    Rejected(OrderRejected),
+}
+
+/// Converts a full BitMEX order message into a [`ParsedOrderEvent`] for tracked orders.
+///
+/// Returns `None` for transitional statuses (`PendingNew`, `PendingCancel`, `PendingReplace`)
+/// and for fill-related statuses (`PartiallyFilled`, `Filled`, `Rejected`) that are handled
+/// through other channels (Execution table for fills, HTTP response for rejections).
+pub fn parse_order_event(
+    msg: &BitmexOrderMsg,
+    client_order_id: ClientOrderId,
+    account_id: AccountId,
+    trader_id: TraderId,
+    strategy_id: StrategyId,
+    ts_init: UnixNanos,
+) -> Option<ParsedOrderEvent> {
+    let instrument_id = parse_instrument_id(msg.symbol);
+    let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
+    let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "timestamp");
+
+    match msg.ord_status {
+        BitmexOrderStatus::New => {
+            let accepted = OrderAccepted::new(
+                trader_id,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                venue_order_id,
+                account_id,
+                UUID4::new(),
+                ts_event,
+                ts_init,
+                false,
+            );
+            Some(ParsedOrderEvent::Accepted(accepted))
+        }
+        BitmexOrderStatus::Canceled => {
+            // BitMEX cancels post-only orders instead of rejecting them when they
+            // would cross the spread. Detect via "ParticipateDoNotInitiate" reason.
+            let cancel_reason = msg
+                .ord_rej_reason
+                .or(msg.text)
+                .map(|r| clean_reason(r.as_ref()));
+
+            let is_post_only_rejection = cancel_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("ParticipateDoNotInitiate"));
+
+            if is_post_only_rejection {
+                let rejected = OrderRejected::new(
+                    trader_id,
+                    strategy_id,
+                    instrument_id,
+                    client_order_id,
+                    account_id,
+                    Ustr::from(
+                        cancel_reason
+                            .as_deref()
+                            .unwrap_or("Post-only order rejected"),
+                    ),
+                    UUID4::new(),
+                    ts_event,
+                    ts_init,
+                    false,
+                    true, // due_post_only
+                );
+                Some(ParsedOrderEvent::Rejected(rejected))
+            } else {
+                let canceled = OrderCanceled::new(
+                    trader_id,
+                    strategy_id,
+                    instrument_id,
+                    client_order_id,
+                    UUID4::new(),
+                    ts_event,
+                    ts_init,
+                    false,
+                    Some(venue_order_id),
+                    Some(account_id),
+                );
+                Some(ParsedOrderEvent::Canceled(canceled))
+            }
+        }
+        BitmexOrderStatus::Expired => {
+            let expired = OrderExpired::new(
+                trader_id,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                UUID4::new(),
+                ts_event,
+                ts_init,
+                false,
+                Some(venue_order_id),
+                Some(account_id),
+            );
+            Some(ParsedOrderEvent::Expired(expired))
+        }
+        // Rejections: handled at submit time via HTTP response
+        // Fills: handled via the Execution table, not order status updates
+        // Transitional: PendingNew, PendingCancel, PendingReplace
+        _ => None,
+    }
+}
+
 /// Parse a BitMEX WebSocket order update message into a Nautilus `OrderUpdated` event.
 ///
 /// This handles partial updates where only changed fields are present.
@@ -653,15 +787,24 @@ pub fn parse_order_update_msg(
     msg: &BitmexOrderUpdateMsg,
     instrument: &InstrumentAny,
     account_id: AccountId,
+    ts_init: UnixNanos,
 ) -> Option<OrderUpdated> {
-    // For BitMEX updates, we don't have trader_id or strategy_id from the exchange
-    // These will be populated by the execution engine when it matches the venue_order_id
-    let trader_id = TraderId::default();
-    let strategy_id = StrategyId::default();
+    // Uses external IDs; callers enrich with tracked identity when available
+    let trader_id = TraderId::external();
+    let strategy_id = StrategyId::external();
     let instrument_id = parse_instrument_id(msg.symbol);
     let venue_order_id = Some(VenueOrderId::new(msg.order_id.to_string()));
-    let client_order_id = msg.cl_ord_id.map(ClientOrderId::new).unwrap_or_default();
-    let quantity = Quantity::zero(instrument.size_precision());
+    let client_order_id = msg
+        .cl_ord_id
+        .as_ref()
+        .map_or_else(ClientOrderId::external, ClientOrderId::new);
+
+    // BitMEX partial updates may omit leaves_qty/cum_qty. When missing, we fall back
+    // to zero which signals the execution engine to use the cached order quantity.
+    let quantity = match (msg.leaves_qty, msg.cum_qty) {
+        (Some(leaves), Some(cum)) => parse_contracts_quantity((leaves + cum) as u64, instrument),
+        _ => Quantity::zero(instrument.size_precision()),
+    };
     let price = msg
         .price
         .map(|p| Price::new(p, instrument.price_precision()));
@@ -673,7 +816,6 @@ pub fn parse_order_update_msg(
 
     let event_id = UUID4::new();
     let ts_event = parse_optional_datetime_to_unix_nanos(&msg.timestamp, "timestamp");
-    let ts_init = get_atomic_clock_realtime().get_time_ns();
 
     Some(OrderUpdated::new(
         trader_id,
@@ -690,6 +832,7 @@ pub fn parse_order_update_msg(
         price,
         trigger_price,
         protection_price,
+        false, // is_quote_quantity
     ))
 }
 
@@ -703,17 +846,13 @@ pub fn parse_order_update_msg(
 /// - `Funding`, `Insurance`, `Rebalance`: Expected non-fills → None (debug log)
 /// - Order state changes (`New`, `Canceled`, etc.): → None (debug log)
 ///
-/// # Panics
-///
-/// Panics if required fields are missing or invalid.
-///
 /// # References
 ///
 /// <https://www.bitmex.com/app/wsAPI#Execution>
-///
 pub fn parse_execution_msg(
     msg: BitmexExecutionMsg,
     instrument: &InstrumentAny,
+    ts_init: UnixNanos,
 ) -> Option<FillReport> {
     let exec_type = msg.exec_type?;
 
@@ -721,59 +860,53 @@ pub fn parse_execution_msg(
         // Position-affecting executions that generate fills
         BitmexExecType::Trade | BitmexExecType::Liquidation => {}
         BitmexExecType::Bankruptcy => {
-            tracing::warn!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Processing bankruptcy execution as fill"
+            log::warn!(
+                "Processing bankruptcy execution as fill: exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
         }
 
         // Settlement executions are mark-to-market events, not fills
         BitmexExecType::Settlement => {
-            tracing::debug!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Settlement execution skipped (not a fill): applies quanto conversion/PnL transfer on contract settlement"
+            log::debug!(
+                "Settlement execution skipped (not a fill): applies quanto conversion/PnL transfer on contract settlement: exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
         BitmexExecType::TrialFill => {
-            tracing::warn!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Trial fill execution received (testnet only), not processed as fill"
+            log::warn!(
+                "Trial fill execution received (testnet only), not processed as fill: exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
 
         // Expected non-fill executions
         BitmexExecType::Funding => {
-            tracing::debug!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Funding execution skipped (not a fill)"
+            log::debug!(
+                "Funding execution skipped (not a fill): exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
         BitmexExecType::Insurance => {
-            tracing::debug!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Insurance execution skipped (not a fill)"
+            log::debug!(
+                "Insurance execution skipped (not a fill): exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
         BitmexExecType::Rebalance => {
-            tracing::debug!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                symbol = ?msg.symbol,
-                "Rebalance execution skipped (not a fill)"
+            log::debug!(
+                "Rebalance execution skipped (not a fill): exec_type={exec_type:?}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
@@ -788,10 +921,18 @@ pub fn parse_execution_msg(
         | BitmexExecType::Suspended
         | BitmexExecType::Released
         | BitmexExecType::TriggeredOrActivatedBySystem => {
-            tracing::debug!(
-                exec_type = ?exec_type,
-                order_id = ?msg.order_id,
-                "Execution message skipped (order state change, not a fill)"
+            log::debug!(
+                "Execution message skipped (order state change, not a fill): exec_type={exec_type:?}, order_id={:?}",
+                msg.order_id,
+            );
+            return None;
+        }
+
+        BitmexExecType::Unknown(ref type_str) => {
+            log::warn!(
+                "Unknown execution type received, skipping: exec_type={type_str}, order_id={:?}, symbol={:?}",
+                msg.order_id,
+                msg.symbol,
             );
             return None;
         }
@@ -815,7 +956,6 @@ pub fn parse_execution_msg(
     let client_order_id = msg.cl_ord_id.map(ClientOrderId::new);
     let venue_position_id = None; // Not applicable on BitMEX
     let ts_event = parse_optional_datetime_to_unix_nanos(&msg.transact_time, "transact_time");
-    let ts_init = get_atomic_clock_realtime().get_time_ns();
 
     Some(FillReport::new(
         account_id,
@@ -842,17 +982,19 @@ pub fn parse_execution_msg(
 /// <https://www.bitmex.com/app/wsAPI#Position>
 #[must_use]
 pub fn parse_position_msg(
-    msg: BitmexPositionMsg,
+    msg: &BitmexPositionMsg,
     instrument: &InstrumentAny,
+    ts_init: UnixNanos,
 ) -> PositionStatusReport {
     let account_id = AccountId::new(format!("BITMEX-{}", msg.account));
     let instrument_id = parse_instrument_id(msg.symbol);
     let position_side = parse_position_side(msg.current_qty).as_specified();
     let quantity = parse_signed_contracts_quantity(msg.current_qty.unwrap_or(0), instrument);
     let venue_position_id = None; // Not applicable on BitMEX
-    let avg_px_open = msg.avg_entry_price.and_then(Decimal::from_f64);
+    let avg_px_open = msg
+        .avg_entry_price
+        .and_then(|p| Decimal::from_str(&p.to_string()).ok());
     let ts_last = parse_optional_datetime_to_unix_nanos(&msg.timestamp, "timestamp");
-    let ts_init = get_atomic_clock_realtime().get_time_ns();
 
     PositionStatusReport::new(
         account_id,
@@ -881,7 +1023,7 @@ pub fn parse_position_msg(
 /// or an empty Vec if no relevant price is present.
 #[must_use]
 pub fn parse_instrument_msg(
-    msg: BitmexInstrumentMsg,
+    msg: &BitmexInstrumentMsg,
     instruments_cache: &AHashMap<Ustr, InstrumentAny>,
     ts_init: UnixNanos,
 ) -> Vec<Data> {
@@ -914,12 +1056,12 @@ pub fn parse_instrument_msg(
             // but we only cache instruments that are explicitly requested.
             // Index instruments (starting with '.') are not loaded via regular API endpoints.
             if is_index {
-                tracing::trace!(
+                log::trace!(
                     "Index instrument {} not in cache, skipping update",
                     msg.symbol
                 );
             } else {
-                tracing::debug!("Instrument {} not in cache, skipping update", msg.symbol);
+                log::debug!("Instrument {} not in cache, skipping update", msg.symbol);
             }
             return updates;
         }
@@ -953,29 +1095,25 @@ pub fn parse_instrument_msg(
 
 /// Parse a BitMEX WebSocket funding message.
 ///
-/// Returns `Some(FundingRateUpdate)` containing funding rate information.
+/// Returns `FundingRateUpdate` containing funding rate information.
 /// Note: This returns `FundingRateUpdate` directly, not wrapped in Data enum,
 /// to keep it separate from the FFI layer.
-pub fn parse_funding_msg(msg: BitmexFundingMsg, ts_init: UnixNanos) -> Option<FundingRateUpdate> {
-    let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol).as_str());
+#[must_use]
+pub fn parse_funding_msg(msg: &BitmexFundingMsg, ts_init: UnixNanos) -> FundingRateUpdate {
+    let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol));
+    let interval_hours = msg.funding_interval.hour();
+    let interval_minutes = msg.funding_interval.minute();
+    let interval = Some((interval_hours * 60 + interval_minutes) as u16);
     let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "");
 
-    // Convert funding rate to Decimal
-    let rate = match Decimal::try_from(msg.funding_rate) {
-        Ok(rate) => rate,
-        Err(e) => {
-            tracing::error!("Failed to parse funding rate: {e}");
-            return None;
-        }
-    };
-
-    Some(FundingRateUpdate::new(
+    FundingRateUpdate::new(
         instrument_id,
-        rate,
+        msg.funding_rate,
+        interval,
         None, // Next funding time not provided in this message
         ts_event,
         ts_init,
-    ))
+    )
 }
 
 /// Parse a BitMEX wallet message into an AccountState.
@@ -987,28 +1125,19 @@ pub fn parse_funding_msg(msg: BitmexFundingMsg, ts_init: UnixNanos) -> Option<Fu
 ///
 /// Panics if the balance calculation is invalid (total != locked + free).
 #[must_use]
-pub fn parse_wallet_msg(msg: BitmexWalletMsg, ts_init: UnixNanos) -> AccountState {
+pub fn parse_wallet_msg(msg: &BitmexWalletMsg, ts_init: UnixNanos) -> AccountState {
     let account_id = AccountId::new(format!("BITMEX-{}", msg.account));
 
     // Map BitMEX currency to standard currency code
     let currency_str = map_bitmex_currency(msg.currency.as_str());
     let currency = get_currency(&currency_str);
 
-    // BitMEX returns values in satoshis for BTC (XBt) or microunits for USDT/LAMp
-    let divisor = if msg.currency == "XBt" {
-        100_000_000.0 // Satoshis to BTC
-    } else if msg.currency == "USDt" || msg.currency == "LAMp" {
-        1_000_000.0 // Microunits to units
-    } else {
-        1.0
-    };
-    let amount = msg.amount.unwrap_or(0) as f64 / divisor;
+    // Wallet messages do not expose locked margin; treat the full balance as free
+    // and let the centralized helper enforce `total == locked + free` at currency precision.
+    let divisor = bitmex_currency_divisor(msg.currency.as_str());
+    let amount_dec = Decimal::from(msg.amount.unwrap_or(0)) / divisor;
 
-    let total = Money::new(amount, currency);
-    let locked = Money::new(0.0, currency); // No locked amount info available
-    let free = total - locked;
-
-    let balance = AccountBalance::new_checked(total, locked, free)
+    let balance = AccountBalance::from_total_and_locked(amount_dec, Decimal::ZERO, currency)
         .expect("Balance calculation should be valid");
 
     AccountState::new(
@@ -1024,32 +1153,49 @@ pub fn parse_wallet_msg(msg: BitmexWalletMsg, ts_init: UnixNanos) -> AccountStat
     )
 }
 
-/// Parse a BitMEX margin message into margin balance information.
-///
-/// This creates a MarginBalance that can be added to an AccountState.
+/// Parse a BitMEX margin message into an account-wide [`MarginBalance`].
 #[must_use]
-pub fn parse_margin_msg(msg: BitmexMarginMsg, instrument_id: InstrumentId) -> MarginBalance {
-    // Map BitMEX currency to standard currency code
+pub fn parse_margin_msg(msg: &BitmexMarginMsg) -> MarginBalance {
     let currency_str = map_bitmex_currency(msg.currency.as_str());
     let currency = get_currency(&currency_str);
 
-    // BitMEX returns values in satoshis for BTC (XBt) or microunits for USDT/LAMp
-    let divisor = if msg.currency == "XBt" {
-        100_000_000.0 // Satoshis to BTC
-    } else if msg.currency == "USDt" || msg.currency == "LAMp" {
-        1_000_000.0 // Microunits to units
-    } else {
-        1.0
-    };
-
-    let initial = (msg.init_margin.unwrap_or(0) as f64 / divisor).max(0.0);
-    let maintenance = (msg.maint_margin.unwrap_or(0) as f64 / divisor).max(0.0);
-    let _unrealized = msg.unrealised_pnl.unwrap_or(0) as f64 / divisor;
+    let divisor = bitmex_currency_divisor(msg.currency.as_str());
+    let initial_dec = Decimal::from(msg.init_margin.unwrap_or(0).max(0)) / divisor;
+    let maintenance_dec = Decimal::from(msg.maint_margin.unwrap_or(0).max(0)) / divisor;
 
     MarginBalance::new(
-        Money::new(initial, currency),
-        Money::new(maintenance, currency),
-        instrument_id,
+        Money::from_decimal(initial_dec, currency).unwrap_or_else(|_| Money::zero(currency)),
+        Money::from_decimal(maintenance_dec, currency).unwrap_or_else(|_| Money::zero(currency)),
+        None,
+    )
+}
+
+/// Parses a BitMEX margin message into an [`AccountState`] with balances and margins.
+#[must_use]
+pub fn parse_margin_account_state(msg: &BitmexMarginMsg, ts_init: UnixNanos) -> AccountState {
+    let account_id = AccountId::new(format!("BITMEX-{}", msg.account));
+    let balance = parse_account_balance(msg);
+
+    let margin = parse_margin_msg(msg);
+
+    let margins = if !margin.initial.is_zero() || !margin.maintenance.is_zero() {
+        vec![margin]
+    } else {
+        vec![]
+    };
+
+    let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "margin.timestamp");
+
+    AccountState::new(
+        account_id,
+        AccountType::Margin,
+        vec![balance],
+        margins,
+        true,
+        UUID4::new(),
+        ts_event,
+        ts_init,
+        None,
     )
 }
 
@@ -1098,6 +1244,7 @@ mod tests {
             None, // margin_maint
             None, // maker_fee
             None, // taker_fee
+            None, // info
             UnixNanos::default(),
             UnixNanos::default(),
         ))
@@ -1116,6 +1263,8 @@ mod tests {
 
         // Test Insert action
         let instrument = create_test_perpetual_instrument();
+
+        // Test Insert action (no snapshot flag)
         let delta = parse_book_msg(
             &msg,
             &BitmexAction::Insert,
@@ -1130,12 +1279,24 @@ mod tests {
         assert_eq!(delta.order.side, OrderSide::Sell);
         assert_eq!(delta.order.order_id, 62400580205);
         assert_eq!(delta.action, BookAction::Add);
-        assert_eq!(delta.flags, RecordFlag::F_SNAPSHOT as u8);
+        assert_eq!(delta.flags, 0);
         assert_eq!(delta.sequence, 0);
         assert_eq!(delta.ts_event, 1732436782356000000); // 2024-11-24T08:26:22.356Z in nanos
         assert_eq!(delta.ts_init, 3);
 
-        // Test Update action (should have different flags)
+        // Test Partial action (should have F_SNAPSHOT flag)
+        let delta = parse_book_msg(
+            &msg,
+            &BitmexAction::Partial,
+            &instrument,
+            instrument.id(),
+            instrument.price_precision(),
+            UnixNanos::from(3),
+        );
+        assert_eq!(delta.flags, RecordFlag::F_SNAPSHOT as u8);
+        assert_eq!(delta.action, BookAction::Add);
+
+        // Test Update action (no flags)
         let delta = parse_book_msg(
             &msg,
             &BitmexAction::Update,
@@ -1160,7 +1321,8 @@ mod tests {
             instrument.id(),
             instrument.price_precision(),
             UnixNanos::from(3),
-        );
+        )
+        .unwrap();
 
         assert_eq!(depth10.instrument_id, instrument_id);
 
@@ -1247,6 +1409,47 @@ mod tests {
     }
 
     #[rstest]
+    fn test_trade_message_derives_trade_id_when_trd_match_id_missing() {
+        let json_data = load_test_json("ws_trade.json");
+        let mut msg: BitmexTradeMsg = serde_json::from_str(&json_data).unwrap();
+        msg.trd_match_id = None;
+        let instrument = create_test_perpetual_instrument();
+
+        let trade = parse_trade_msg(
+            &msg,
+            &instrument,
+            instrument.id(),
+            instrument.price_precision(),
+            UnixNanos::from(3),
+        );
+
+        let mut again_msg: BitmexTradeMsg = serde_json::from_str(&json_data).unwrap();
+        again_msg.trd_match_id = None;
+        let again = parse_trade_msg(
+            &again_msg,
+            &instrument,
+            instrument.id(),
+            instrument.price_precision(),
+            UnixNanos::from(3),
+        );
+
+        assert_eq!(trade.trade_id, again.trade_id, "derivation must be stable");
+        assert_eq!(trade.trade_id.as_str().len(), 16);
+
+        let mut altered: BitmexTradeMsg = serde_json::from_str(&json_data).unwrap();
+        altered.trd_match_id = None;
+        altered.price += 1.0;
+        let altered_trade = parse_trade_msg(
+            &altered,
+            &instrument,
+            instrument.id(),
+            instrument.price_precision(),
+            UnixNanos::from(3),
+        );
+        assert_ne!(trade.trade_id, altered_trade.trade_id);
+    }
+
+    #[rstest]
     fn test_trade_bin_message() {
         let json_data = load_test_json("ws_trade_bin_1m.json");
 
@@ -1294,11 +1497,12 @@ mod tests {
             close: 50_005.0,
             trades: 10,
             volume: 1_000,
-            vwap: 0.0,
-            last_size: 0,
+            vwap: Some(0.0),
+            last_size: Some(0),
             turnover: 0,
             home_notional: 0.0,
             foreign_notional: 0.0,
+            pool: None,
         };
 
         let bar = parse_trade_bin_msg(
@@ -1321,9 +1525,9 @@ mod tests {
     fn test_parse_order_msg() {
         let json_data = load_test_json("ws_order.json");
         let msg: BitmexOrderMsg = serde_json::from_str(&json_data).unwrap();
-        let cache = DashMap::new();
+        let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
-        let report = parse_order_msg(&msg, &instrument, &cache).unwrap();
+        let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
 
         assert_eq!(report.account_id.to_string(), "BITMEX-1234567");
         assert_eq!(report.instrument_id, InstrumentId::from("XBTUSD.BITMEX"));
@@ -1354,10 +1558,10 @@ mod tests {
         msg.price = Some(98_000.0);
         msg.stop_px = None;
 
-        let cache = DashMap::new();
+        let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
 
-        let report = parse_order_msg(&msg, &instrument, &cache).unwrap();
+        let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
 
         assert_eq!(report.order_type, OrderType::Limit);
     }
@@ -1371,9 +1575,9 @@ mod tests {
         msg.text = None;
         msg.cum_qty = 0;
 
-        let cache = DashMap::new();
+        let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
-        let report = parse_order_msg(&msg, &instrument, &cache).unwrap();
+        let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
 
         assert_eq!(report.order_status, OrderStatus::Rejected);
         assert_eq!(
@@ -1391,9 +1595,9 @@ mod tests {
         msg.text = Some(Ustr::from("Order would execute immediately"));
         msg.cum_qty = 0;
 
-        let cache = DashMap::new();
+        let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
-        let report = parse_order_msg(&msg, &instrument, &cache).unwrap();
+        let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
 
         assert_eq!(report.order_status, OrderStatus::Rejected);
         assert_eq!(
@@ -1411,9 +1615,9 @@ mod tests {
         msg.text = None;
         msg.cum_qty = 0;
 
-        let cache = DashMap::new();
+        let mut cache = AHashMap::new();
         let instrument = create_test_perpetual_instrument();
-        let report = parse_order_msg(&msg, &instrument, &cache).unwrap();
+        let report = parse_order_msg(&msg, &instrument, &mut cache, UnixNanos::default()).unwrap();
 
         assert_eq!(report.order_status, OrderStatus::Rejected);
         assert_eq!(report.cancel_reason, None);
@@ -1424,7 +1628,7 @@ mod tests {
         let json_data = load_test_json("ws_execution.json");
         let msg: BitmexExecutionMsg = serde_json::from_str(&json_data).unwrap();
         let instrument = create_test_perpetual_instrument();
-        let fill = parse_execution_msg(msg, &instrument).unwrap();
+        let fill = parse_execution_msg(msg, &instrument, UnixNanos::default()).unwrap();
 
         assert_eq!(fill.account_id.to_string(), "BITMEX-1234567");
         assert_eq!(fill.instrument_id, InstrumentId::from("XBTUSD.BITMEX"));
@@ -1457,7 +1661,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Settlement);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1473,7 +1677,7 @@ mod tests {
 
         // Should return None since it's not a Trade
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1485,7 +1689,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Liquidation);
 
         let instrument = create_test_perpetual_instrument();
-        let fill = parse_execution_msg(msg, &instrument).unwrap();
+        let fill = parse_execution_msg(msg, &instrument, UnixNanos::default()).unwrap();
 
         assert_eq!(fill.account_id.to_string(), "BITMEX-1234567");
         assert_eq!(fill.instrument_id, InstrumentId::from("XBTUSD.BITMEX"));
@@ -1501,7 +1705,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Bankruptcy);
 
         let instrument = create_test_perpetual_instrument();
-        let fill = parse_execution_msg(msg, &instrument).unwrap();
+        let fill = parse_execution_msg(msg, &instrument, UnixNanos::default()).unwrap();
 
         assert_eq!(fill.account_id.to_string(), "BITMEX-1234567");
         assert_eq!(fill.instrument_id, InstrumentId::from("XBTUSD.BITMEX"));
@@ -1516,7 +1720,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Settlement);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1527,7 +1731,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::TrialFill);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1538,7 +1742,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Funding);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1549,7 +1753,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Insurance);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1560,7 +1764,7 @@ mod tests {
         msg.exec_type = Some(BitmexExecType::Rebalance);
 
         let instrument = create_test_perpetual_instrument();
-        let result = parse_execution_msg(msg, &instrument);
+        let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
         assert!(result.is_none());
     }
 
@@ -1583,9 +1787,9 @@ mod tests {
         for exec_type in order_state_types {
             let mut msg: BitmexExecutionMsg =
                 serde_json::from_str(&load_test_json("ws_execution.json")).unwrap();
-            msg.exec_type = Some(exec_type);
+            msg.exec_type = Some(exec_type.clone());
 
-            let result = parse_execution_msg(msg, &instrument);
+            let result = parse_execution_msg(msg, &instrument, UnixNanos::default());
             assert!(
                 result.is_none(),
                 "Expected None for exec_type {exec_type:?}"
@@ -1598,7 +1802,7 @@ mod tests {
         let json_data = load_test_json("ws_position.json");
         let msg: BitmexPositionMsg = serde_json::from_str(&json_data).unwrap();
         let instrument = create_test_perpetual_instrument();
-        let report = parse_position_msg(msg, &instrument);
+        let report = parse_position_msg(&msg, &instrument, UnixNanos::default());
 
         assert_eq!(report.account_id.to_string(), "BITMEX-1234567");
         assert_eq!(report.instrument_id, InstrumentId::from("XBTUSD.BITMEX"));
@@ -1615,7 +1819,7 @@ mod tests {
         msg.current_qty = Some(-500);
 
         let instrument = create_test_perpetual_instrument();
-        let report = parse_position_msg(msg, &instrument);
+        let report = parse_position_msg(&msg, &instrument, UnixNanos::default());
         assert_eq!(report.position_side.as_position_side(), PositionSide::Short);
         assert_eq!(report.quantity, Quantity::from(500));
     }
@@ -1627,7 +1831,7 @@ mod tests {
         msg.current_qty = Some(0);
 
         let instrument = create_test_perpetual_instrument();
-        let report = parse_position_msg(msg, &instrument);
+        let report = parse_position_msg(&msg, &instrument, UnixNanos::default());
         assert_eq!(report.position_side.as_position_side(), PositionSide::Flat);
         assert_eq!(report.quantity, Quantity::from(0));
     }
@@ -1637,7 +1841,7 @@ mod tests {
         let json_data = load_test_json("ws_wallet.json");
         let msg: BitmexWalletMsg = serde_json::from_str(&json_data).unwrap();
         let ts_init = UnixNanos::from(1);
-        let account_state = parse_wallet_msg(msg, ts_init);
+        let account_state = parse_wallet_msg(&msg, ts_init);
 
         assert_eq!(account_state.account_id.to_string(), "BITMEX-1234567");
         assert!(!account_state.balances.is_empty());
@@ -1645,6 +1849,9 @@ mod tests {
         assert_eq!(balance.currency.code.to_string(), "XBT");
         // Amount should be converted from satoshis (100005180 / 100_000_000.0 = 1.0000518)
         assert!((balance.total.as_f64() - 1.0000518).abs() < 1e-7);
+        // Wallet messages do not carry locked margin; full amount is free.
+        assert_eq!(balance.locked.as_f64(), 0.0);
+        assert_eq!(balance.free.as_decimal(), balance.total.as_decimal());
     }
 
     #[rstest]
@@ -1654,7 +1861,7 @@ mod tests {
         msg.amount = None;
 
         let ts_init = UnixNanos::from(1);
-        let account_state = parse_wallet_msg(msg, ts_init);
+        let account_state = parse_wallet_msg(&msg, ts_init);
         let balance = &account_state.balances[0];
         assert_eq!(balance.total.as_f64(), 0.0);
     }
@@ -1663,11 +1870,10 @@ mod tests {
     fn test_parse_margin_msg() {
         let json_data = load_test_json("ws_margin.json");
         let msg: BitmexMarginMsg = serde_json::from_str(&json_data).unwrap();
-        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
-        let margin_balance = parse_margin_msg(msg, instrument_id);
+        let margin_balance = parse_margin_msg(&msg);
 
         assert_eq!(margin_balance.currency.code.to_string(), "XBT");
-        assert_eq!(margin_balance.instrument_id, instrument_id);
+        assert!(margin_balance.instrument_id.is_none());
         // Values should be converted from satoshis to BTC
         // initMargin is 0 in test data, so should be 0.0
         assert_eq!(margin_balance.initial.as_f64(), 0.0);
@@ -1681,11 +1887,100 @@ mod tests {
             serde_json::from_str(&load_test_json("ws_margin.json")).unwrap();
         msg.available_margin = None;
 
-        let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
-        let margin_balance = parse_margin_msg(msg, instrument_id);
+        let margin_balance = parse_margin_msg(&msg);
         // Should still have valid margin values even if available_margin is None
         assert!(margin_balance.initial.as_f64() >= 0.0);
         assert!(margin_balance.maintenance.as_f64() >= 0.0);
+    }
+
+    #[rstest]
+    fn test_parse_margin_account_state_includes_margins() {
+        let msg = BitmexMarginMsg {
+            account: 123456,
+            currency: Ustr::from("USDt"),
+            risk_limit: None,
+            amount: Some(5_000_000_000),
+            prev_realised_pnl: None,
+            gross_comm: None,
+            gross_open_cost: None,
+            gross_open_premium: None,
+            gross_exec_cost: None,
+            gross_mark_value: None,
+            risk_value: None,
+            init_margin: Some(200_000_000),  // 200 USDT
+            maint_margin: Some(100_000_000), // 100 USDT
+            target_excess_margin: None,
+            realised_pnl: None,
+            unrealised_pnl: None,
+            wallet_balance: Some(5_000_000_000), // 5000 USDT
+            margin_balance: None,
+            margin_leverage: None,
+            margin_used_pcnt: None,
+            excess_margin: None,
+            available_margin: Some(4_800_000_000), // 4800 USDT
+            withdrawable_margin: None,
+            maker_fee_discount: None,
+            taker_fee_discount: None,
+            timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+            foreign_margin_balance: None,
+            foreign_requirement: None,
+        };
+
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+        let state = parse_margin_account_state(&msg, ts_init);
+
+        assert_eq!(state.account_id.to_string(), "BITMEX-123456");
+        assert_eq!(state.account_type, AccountType::Margin);
+        assert_eq!(state.balances.len(), 1);
+        assert_eq!(state.margins.len(), 1);
+
+        let balance = &state.balances[0];
+        assert_eq!(balance.total.as_f64(), 5000.0);
+
+        let margin = &state.margins[0];
+        assert!(margin.instrument_id.is_none());
+        assert_eq!(margin.currency.code.as_str(), "USDT");
+        assert_eq!(margin.initial.as_f64(), 200.0);
+        assert_eq!(margin.maintenance.as_f64(), 100.0);
+    }
+
+    #[rstest]
+    fn test_parse_margin_account_state_zero_margins_excluded() {
+        let msg = BitmexMarginMsg {
+            account: 123456,
+            currency: Ustr::from("XBt"),
+            risk_limit: None,
+            amount: Some(100_000_000),
+            prev_realised_pnl: None,
+            gross_comm: None,
+            gross_open_cost: None,
+            gross_open_premium: None,
+            gross_exec_cost: None,
+            gross_mark_value: None,
+            risk_value: None,
+            init_margin: Some(0),
+            maint_margin: Some(0),
+            target_excess_margin: None,
+            realised_pnl: None,
+            unrealised_pnl: None,
+            wallet_balance: Some(100_000_000),
+            margin_balance: None,
+            margin_leverage: None,
+            margin_used_pcnt: None,
+            excess_margin: None,
+            available_margin: Some(100_000_000),
+            withdrawable_margin: None,
+            maker_fee_discount: None,
+            taker_fee_discount: None,
+            timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+            foreign_margin_balance: None,
+            foreign_requirement: None,
+        };
+
+        let state = parse_margin_account_state(&msg, UnixNanos::from(1_000_000_000u64));
+
+        assert_eq!(state.balances.len(), 1);
+        assert_eq!(state.margins.len(), 0);
     }
 
     #[rstest]
@@ -1698,7 +1993,7 @@ mod tests {
         let test_instrument = create_test_perpetual_instrument();
         instruments_cache.insert(Ustr::from("XBTUSD"), test_instrument);
 
-        let updates = parse_instrument_msg(msg, &instruments_cache, UnixNanos::from(1));
+        let updates = parse_instrument_msg(&msg, &instruments_cache, UnixNanos::from(1));
 
         // XBTUSD is not an index symbol, so it should have both mark and index prices
         assert_eq!(updates.len(), 2);
@@ -1733,7 +2028,7 @@ mod tests {
         let test_instrument = create_test_perpetual_instrument();
         instruments_cache.insert(Ustr::from("XBTUSD"), test_instrument);
 
-        let updates = parse_instrument_msg(msg, &instruments_cache, UnixNanos::from(1));
+        let updates = parse_instrument_msg(&msg, &instruments_cache, UnixNanos::from(1));
 
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -1756,7 +2051,7 @@ mod tests {
         let test_instrument = create_test_perpetual_instrument();
         instruments_cache.insert(Ustr::from("XBTUSD"), test_instrument);
 
-        let updates = parse_instrument_msg(msg, &instruments_cache, UnixNanos::from(1));
+        let updates = parse_instrument_msg(&msg, &instruments_cache, UnixNanos::from(1));
 
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -1781,7 +2076,7 @@ mod tests {
         let test_instrument = create_test_perpetual_instrument();
         instruments_cache.insert(Ustr::from("XBTUSD"), test_instrument);
 
-        let updates = parse_instrument_msg(msg, &instruments_cache, UnixNanos::from(1));
+        let updates = parse_instrument_msg(&msg, &instruments_cache, UnixNanos::from(1));
         assert_eq!(updates.len(), 0);
     }
 
@@ -1821,6 +2116,7 @@ mod tests {
             None,                 // margin_maint
             None,                 // maker_fee
             None,                 // taker_fee
+            None,                 // info
             UnixNanos::default(), // ts_event
             UnixNanos::default(), // ts_init
         );
@@ -1830,7 +2126,7 @@ mod tests {
             InstrumentAny::CryptoPerpetual(instrument),
         );
 
-        let updates = parse_instrument_msg(msg, &instruments_cache, UnixNanos::from(1));
+        let updates = parse_instrument_msg(&msg, &instruments_cache, UnixNanos::from(1));
 
         assert_eq!(updates.len(), 2);
 
@@ -1858,13 +2154,11 @@ mod tests {
     fn test_parse_funding_msg() {
         let json_data = load_test_json("ws_funding_rate.json");
         let msg: BitmexFundingMsg = serde_json::from_str(&json_data).unwrap();
-        let update = parse_funding_msg(msg, UnixNanos::from(1));
-
-        assert!(update.is_some());
-        let update = update.unwrap();
+        let update = parse_funding_msg(&msg, UnixNanos::from(1));
 
         assert_eq!(update.instrument_id.to_string(), "XBTUSD.BITMEX");
         assert_eq!(update.rate.to_string(), "0.0001");
+        assert_eq!(update.interval, Some(60 * 8));
         assert!(update.next_funding_ns.is_none());
         assert_eq!(update.ts_event, UnixNanos::from(1732507200000000000));
         assert_eq!(update.ts_init, UnixNanos::from(1));

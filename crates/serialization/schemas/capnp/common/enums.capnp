@@ -1,5 +1,8 @@
 @0xb2c3d4e5f6071829;
 # Cap'n Proto schema for Nautilus enum types
+#
+# WARNING: This schema is not yet stable and may change without notice
+# between releases. Do not depend on wire compatibility across versions.
 
 enum AccountType {
     cash @0;
@@ -210,6 +213,12 @@ enum InstrumentCloseType {
     contractExpired @1;
 }
 
+enum OptionalBool {
+    unknown @0;
+    true @1;
+    false @2;
+}
+
 enum MarketStatusAction {
     none @0;
     preOpen @1;
@@ -232,4 +241,27 @@ enum MarketStatusAction {
 enum PositionAdjustmentType {
     commission @0;
     funding @1;
+}
+
+enum ComponentState {
+    preInitialized @0;
+    ready @1;
+    starting @2;
+    running @3;
+    stopping @4;
+    stopped @5;
+    resuming @6;
+    resetting @7;
+    disposing @8;
+    disposed @9;
+    degrading @10;
+    degraded @11;
+    faulting @12;
+    faulted @13;
+}
+
+enum TradingState {
+    active @0;
+    halted @1;
+    reducing @2;
 }

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,21 +18,23 @@
 //! This module provides DeFi subscription and request helper methods
 //! for the `DataClientAdapter`. All code in this module requires the `defi` feature flag.
 
-use std::fmt::{Debug, Display};
-
-use nautilus_common::messages::defi::{
-    DefiRequestCommand, DefiSubscribeCommand, DefiUnsubscribeCommand, RequestPoolSnapshot,
-    SubscribeBlocks, SubscribePool, SubscribePoolFeeCollects, SubscribePoolFlashEvents,
-    SubscribePoolLiquidityUpdates, SubscribePoolSwaps, UnsubscribeBlocks, UnsubscribePool,
-    UnsubscribePoolFeeCollects, UnsubscribePoolFlashEvents, UnsubscribePoolLiquidityUpdates,
-    UnsubscribePoolSwaps,
+use nautilus_common::{
+    clients::log_command_error,
+    messages::defi::{
+        DefiRequestCommand, DefiSubscribeCommand, DefiUnsubscribeCommand, RequestPoolSnapshot,
+        SubscribeBlocks, SubscribePool, SubscribePoolFeeCollects, SubscribePoolFlashEvents,
+        SubscribePoolLiquidityUpdates, SubscribePoolSwaps, UnsubscribeBlocks, UnsubscribePool,
+        UnsubscribePoolFeeCollects, UnsubscribePoolFlashEvents, UnsubscribePoolLiquidityUpdates,
+        UnsubscribePoolSwaps,
+    },
 };
 
 use crate::client::DataClientAdapter;
 
 impl DataClientAdapter {
     #[inline]
-    pub fn execute_defi_subscribe(&mut self, cmd: &DefiSubscribeCommand) {
+    pub fn execute_defi_subscribe(&mut self, cmd: DefiSubscribeCommand) {
+        let cmd_debug = format!("{cmd:?}");
         if let Err(e) = match cmd {
             DefiSubscribeCommand::Blocks(cmd) => self.subscribe_blocks(cmd),
             DefiSubscribeCommand::Pool(cmd) => self.subscribe_pool(cmd),
@@ -43,7 +45,7 @@ impl DataClientAdapter {
             DefiSubscribeCommand::PoolFeeCollects(cmd) => self.subscribe_pool_fee_collects(cmd),
             DefiSubscribeCommand::PoolFlashEvents(cmd) => self.subscribe_pool_flash_events(cmd),
         } {
-            log_command_error(&cmd, &e);
+            log_command_error(&cmd_debug, &e);
         }
     }
 
@@ -69,7 +71,7 @@ impl DataClientAdapter {
     ///
     /// Returns an error if the underlying client request fails.
     #[inline]
-    pub fn execute_defi_request(&self, cmd: &DefiRequestCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_request(&self, cmd: DefiRequestCommand) -> anyhow::Result<()> {
         match cmd {
             DefiRequestCommand::PoolSnapshot(cmd) => self.request_pool_snapshot(cmd),
         }
@@ -80,7 +82,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the underlying client subscribe operation fails.
-    fn subscribe_blocks(&mut self, cmd: &SubscribeBlocks) -> anyhow::Result<()> {
+    fn subscribe_blocks(&mut self, cmd: SubscribeBlocks) -> anyhow::Result<()> {
         if !self.subscriptions_blocks.contains(&cmd.chain) {
             self.subscriptions_blocks.insert(cmd.chain);
             self.client.subscribe_blocks(cmd)?;
@@ -106,7 +108,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the underlying client subscribe operation fails.
-    fn subscribe_pool(&mut self, cmd: &SubscribePool) -> anyhow::Result<()> {
+    fn subscribe_pool(&mut self, cmd: SubscribePool) -> anyhow::Result<()> {
         if !self.subscriptions_pools.contains(&cmd.instrument_id) {
             self.subscriptions_pools.insert(cmd.instrument_id);
             self.client.subscribe_pool(cmd)?;
@@ -119,7 +121,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the underlying client subscribe operation fails.
-    fn subscribe_pool_swaps(&mut self, cmd: &SubscribePoolSwaps) -> anyhow::Result<()> {
+    fn subscribe_pool_swaps(&mut self, cmd: SubscribePoolSwaps) -> anyhow::Result<()> {
         if !self.subscriptions_pool_swaps.contains(&cmd.instrument_id) {
             self.subscriptions_pool_swaps.insert(cmd.instrument_id);
             self.client.subscribe_pool_swaps(cmd)?;
@@ -134,7 +136,7 @@ impl DataClientAdapter {
     /// Returns an error if the underlying client subscribe operation fails.
     fn subscribe_pool_liquidity_updates(
         &mut self,
-        cmd: &SubscribePoolLiquidityUpdates,
+        cmd: SubscribePoolLiquidityUpdates,
     ) -> anyhow::Result<()> {
         if !self
             .subscriptions_pool_liquidity_updates
@@ -152,10 +154,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the underlying client subscribe operation fails.
-    fn subscribe_pool_fee_collects(
-        &mut self,
-        cmd: &SubscribePoolFeeCollects,
-    ) -> anyhow::Result<()> {
+    fn subscribe_pool_fee_collects(&mut self, cmd: SubscribePoolFeeCollects) -> anyhow::Result<()> {
         if !self
             .subscriptions_pool_fee_collects
             .contains(&cmd.instrument_id)
@@ -172,10 +171,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the underlying client subscribe operation fails.
-    fn subscribe_pool_flash_events(
-        &mut self,
-        cmd: &SubscribePoolFlashEvents,
-    ) -> anyhow::Result<()> {
+    fn subscribe_pool_flash_events(&mut self, cmd: SubscribePoolFlashEvents) -> anyhow::Result<()> {
         if !self.subscriptions_pool_flash.contains(&cmd.instrument_id) {
             self.subscriptions_pool_flash.insert(cmd.instrument_id);
             self.client.subscribe_pool_flash_events(cmd)?;
@@ -270,12 +266,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the pool snapshot request.
-    pub fn request_pool_snapshot(&self, req: &RequestPoolSnapshot) -> anyhow::Result<()> {
+    pub fn request_pool_snapshot(&self, req: RequestPoolSnapshot) -> anyhow::Result<()> {
         self.client.request_pool_snapshot(req)
     }
-}
-
-#[inline(always)]
-fn log_command_error<C: Debug, E: Display>(cmd: &C, e: &E) {
-    log::error!("Error on {cmd:?}: {e}");
 }

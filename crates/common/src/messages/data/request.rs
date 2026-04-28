@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,12 +16,12 @@
 use std::num::NonZeroUsize;
 
 use chrono::{DateTime, Utc};
-use indexmap::IndexMap;
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{Params, UUID4, UnixNanos};
 use nautilus_model::{
     data::{BarType, DataType},
     identifiers::{ClientId, InstrumentId, Venue},
 };
+use ustr::Ustr;
 
 use super::check_client_id_or_venue;
 
@@ -34,12 +34,12 @@ pub struct RequestCustomData {
     pub limit: Option<NonZeroUsize>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestCustomData {
     /// Creates a new [`RequestCustomData`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         client_id: ClientId,
         data_type: DataType,
@@ -48,7 +48,7 @@ impl RequestCustomData {
         limit: Option<NonZeroUsize>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             client_id,
@@ -71,12 +71,11 @@ pub struct RequestInstrument {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestInstrument {
     /// Creates a new [`RequestInstrument`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -84,7 +83,7 @@ impl RequestInstrument {
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,
@@ -106,12 +105,11 @@ pub struct RequestInstruments {
     pub venue: Option<Venue>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestInstruments {
     /// Creates a new [`RequestInstruments`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         start: Option<DateTime<Utc>>,
         end: Option<DateTime<Utc>>,
@@ -119,7 +117,7 @@ impl RequestInstruments {
         venue: Option<Venue>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         check_client_id_or_venue(&client_id, &venue);
         Self {
@@ -141,19 +139,18 @@ pub struct RequestBookSnapshot {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestBookSnapshot {
     /// Creates a new [`RequestBookSnapshot`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         depth: Option<NonZeroUsize>,
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,
@@ -175,12 +172,12 @@ pub struct RequestQuotes {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestQuotes {
     /// Creates a new [`RequestQuotes`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -189,7 +186,7 @@ impl RequestQuotes {
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,
@@ -213,12 +210,12 @@ pub struct RequestTrades {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestTrades {
     /// Creates a new [`RequestTrades`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -227,13 +224,85 @@ impl RequestTrades {
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,
             start,
             end,
             limit,
+            client_id,
+            request_id,
+            ts_init,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RequestFundingRates {
+    pub instrument_id: InstrumentId,
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+    pub limit: Option<NonZeroUsize>,
+    pub client_id: Option<ClientId>,
+    pub request_id: UUID4,
+    pub ts_init: UnixNanos,
+    pub params: Option<Params>,
+}
+
+impl RequestFundingRates {
+    /// Creates a new [`RequestFundingRates`] instance.
+    #[expect(clippy::too_many_arguments)]
+    pub fn new(
+        instrument_id: InstrumentId,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
+        limit: Option<NonZeroUsize>,
+        client_id: Option<ClientId>,
+        request_id: UUID4,
+        ts_init: UnixNanos,
+        params: Option<Params>,
+    ) -> Self {
+        Self {
+            instrument_id,
+            start,
+            end,
+            limit,
+            client_id,
+            request_id,
+            ts_init,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RequestForwardPrices {
+    pub venue: Venue,
+    pub underlying: Ustr,
+    pub instrument_id: Option<InstrumentId>,
+    pub client_id: Option<ClientId>,
+    pub request_id: UUID4,
+    pub ts_init: UnixNanos,
+    pub params: Option<Params>,
+}
+
+impl RequestForwardPrices {
+    /// Creates a new [`RequestForwardPrices`] instance.
+    pub fn new(
+        venue: Venue,
+        underlying: Ustr,
+        instrument_id: Option<InstrumentId>,
+        client_id: Option<ClientId>,
+        request_id: UUID4,
+        ts_init: UnixNanos,
+        params: Option<Params>,
+    ) -> Self {
+        Self {
+            venue,
+            underlying,
+            instrument_id,
             client_id,
             request_id,
             ts_init,
@@ -252,12 +321,12 @@ pub struct RequestBookDepth {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestBookDepth {
     /// Creates a new [`RequestBookDepth`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -267,7 +336,7 @@ impl RequestBookDepth {
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,
@@ -292,12 +361,12 @@ pub struct RequestBars {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestBars {
     /// Creates a new [`RequestBars`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         bar_type: BarType,
         start: Option<DateTime<Utc>>,
@@ -306,7 +375,7 @@ impl RequestBars {
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             bar_type,

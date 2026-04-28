@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,7 +19,7 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use crate::common::enums::{KrakenOrderSide, KrakenOrderType};
+use crate::common::enums::{KrakenAssetClass, KrakenOrderSide, KrakenOrderType};
 
 /// Parameters for adding an order via `POST /0/private/AddOrder`.
 ///
@@ -72,10 +72,25 @@ pub struct KrakenSpotAddOrderParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiretm: Option<String>,
 
+    /// Trigger reference for conditional orders: "last" or "index".
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+
+    /// Display volume for iceberg orders.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub displayvol: Option<String>,
+
     /// Partner/broker attribution ID.
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broker: Option<Ustr>,
+
+    /// Asset class override for tokenized assets (xStocks).
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<KrakenAssetClass>,
 }
 
 impl KrakenSpotAddOrderParamsBuilder {
@@ -90,8 +105,104 @@ impl KrakenSpotAddOrderParamsBuilder {
         {
             return Err("price is required for limit orders".to_string());
         }
+
+        // Validate price2 (limit price) is present for stop-loss-limit and take-profit-limit
+        if let Some(KrakenOrderType::StopLossLimit | KrakenOrderType::TakeProfitLimit) =
+            self.order_type
+            && (self.price2.is_none() || self.price2.as_ref().unwrap().is_none())
+        {
+            return Err(
+                "price2 (limit price) is required for stop-loss-limit and take-profit-limit orders"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
+}
+
+/// A single order payload for `POST /0/private/AddOrderBatch`.
+///
+/// This mirrors `KrakenSpotAddOrderParams` without the shared top-level `pair`
+/// and broker fields.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenSpotBatchOrderParams {
+    /// Order side: "buy" or "sell".
+    #[serde(rename = "type")]
+    pub side: KrakenOrderSide,
+
+    /// Order type: market, limit, stop-loss, etc.
+    #[serde(rename = "ordertype")]
+    pub order_type: KrakenOrderType,
+
+    /// Order quantity in base currency.
+    pub volume: String,
+
+    /// Limit price or trigger price, depending on order type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+
+    /// Secondary limit price for supported conditional orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price2: Option<String>,
+
+    /// Client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cl_ord_id: Option<String>,
+
+    /// Order flags (comma-separated: post, fcib, fciq, nompp, viqc).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oflags: Option<String>,
+
+    /// Time in force: GTC, IOC, GTD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeinforce: Option<String>,
+
+    /// Expiration time for GTD orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiretm: Option<String>,
+
+    /// Trigger reference for conditional orders: "last" or "index".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+
+    /// Display volume for iceberg orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub displayvol: Option<String>,
+}
+
+impl From<KrakenSpotAddOrderParams> for KrakenSpotBatchOrderParams {
+    fn from(params: KrakenSpotAddOrderParams) -> Self {
+        Self {
+            side: params.side,
+            order_type: params.order_type,
+            volume: params.volume,
+            price: params.price,
+            price2: params.price2,
+            cl_ord_id: params.cl_ord_id,
+            oflags: params.oflags,
+            timeinforce: params.timeinforce,
+            expiretm: params.expiretm,
+            trigger: params.trigger,
+            displayvol: params.displayvol,
+        }
+    }
+}
+
+/// Parameters for batch adding orders via `POST /0/private/AddOrderBatch`.
+///
+/// # References
+/// - <https://docs.kraken.com/api/docs/rest-api/add-order-batch>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenSpotAddOrderBatchParams {
+    /// Asset pair shared across all orders in the batch.
+    pub pair: Ustr,
+
+    /// List of orders to submit for that pair.
+    pub orders: Vec<KrakenSpotBatchOrderParams>,
+
+    /// Asset class override for tokenized assets (xStocks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<KrakenAssetClass>,
 }
 
 /// Parameters for cancelling an order via `POST /0/private/CancelOrder`.
@@ -288,5 +399,91 @@ mod tests {
 
         assert!(encoded.contains("cl_ord_id=my-order"));
         assert!(!encoded.contains("txid="));
+    }
+
+    #[rstest]
+    fn test_add_order_params_trailing_stop() {
+        let params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::TrailingStop)
+            .volume("0.01")
+            .price("500")
+            .build()
+            .unwrap();
+
+        let encoded = serde_urlencoded::to_string(&params).unwrap();
+
+        assert!(encoded.contains("ordertype=trailing-stop"));
+        assert!(encoded.contains("price=500"));
+    }
+
+    #[rstest]
+    fn test_add_order_params_trailing_stop_limit() {
+        let params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::TrailingStopLimit)
+            .volume("0.01")
+            .price("500")
+            .price2("100")
+            .build()
+            .unwrap();
+
+        let encoded = serde_urlencoded::to_string(&params).unwrap();
+
+        assert!(encoded.contains("ordertype=trailing-stop-limit"));
+        assert!(encoded.contains("price=500"));
+        assert!(encoded.contains("price2=100"));
+    }
+
+    #[rstest]
+    fn test_add_order_params_with_trigger() {
+        let params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::StopLoss)
+            .volume("0.01")
+            .price("50000")
+            .trigger("index")
+            .build()
+            .unwrap();
+
+        let encoded = serde_urlencoded::to_string(&params).unwrap();
+
+        assert!(encoded.contains("trigger=index"));
+    }
+
+    #[rstest]
+    fn test_add_order_params_with_displayvol() {
+        let params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::Limit)
+            .volume("1.0")
+            .price("50000")
+            .displayvol("0.1")
+            .build()
+            .unwrap();
+
+        let encoded = serde_urlencoded::to_string(&params).unwrap();
+
+        assert!(encoded.contains("displayvol=0.1"));
+    }
+
+    #[rstest]
+    fn test_add_order_params_with_viqc_flag() {
+        let params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::Market)
+            .volume("100")
+            .oflags("viqc")
+            .build()
+            .unwrap();
+
+        let encoded = serde_urlencoded::to_string(&params).unwrap();
+
+        assert!(encoded.contains("oflags=viqc"));
     }
 }

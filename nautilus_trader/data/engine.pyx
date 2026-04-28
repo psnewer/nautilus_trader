@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,19 +29,24 @@ Alternative implementations can be written on top of the generic engine - which
 just need to override the `execute`, `process`, `send` and `receive` methods.
 """
 
+from dataclasses import dataclass
 from typing import Any
 from typing import Callable
 from typing import Generator
 
 from nautilus_trader.common.enums import LogColor
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import min_date
 from nautilus_trader.core.datetime import time_object_to_dt
 from nautilus_trader.data.config import DataEngineConfig
 from nautilus_trader.model.enums import RecordFlag
-from nautilus_trader.persistence.catalog import ParquetDataCatalog
+from nautilus_trader.persistence.catalog import BaseDataCatalog
 from nautilus_trader.persistence.funcs import parse_filters_expr
 
 from cpython.datetime cimport datetime
+
+from datetime import timedelta
+
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.cache.cache cimport Cache
@@ -61,8 +66,13 @@ from nautilus_trader.core.datetime cimport unix_nanos_to_dt
 from nautilus_trader.core.rust.core cimport NANOSECONDS_IN_MILLISECOND
 from nautilus_trader.core.rust.core cimport NANOSECONDS_IN_SECOND
 from nautilus_trader.core.rust.core cimport millis_to_nanos
+from nautilus_trader.core.rust.model cimport BookAction
 from nautilus_trader.core.rust.model cimport BookType
+from nautilus_trader.core.rust.model cimport MarketStatusAction
+from nautilus_trader.core.rust.model cimport OptionKind
+from nautilus_trader.core.rust.model cimport OrderBookDeltas_API
 from nautilus_trader.core.rust.model cimport PriceType
+from nautilus_trader.core.rust.model cimport orderbook_to_snapshot_deltas
 from nautilus_trader.core.uuid cimport UUID4
 from nautilus_trader.data.aggregation cimport BarAggregator
 from nautilus_trader.data.aggregation cimport RenkoBarAggregator
@@ -84,9 +94,12 @@ from nautilus_trader.data.messages cimport DataCommand
 from nautilus_trader.data.messages cimport DataResponse
 from nautilus_trader.data.messages cimport RequestBars
 from nautilus_trader.data.messages cimport RequestData
+from nautilus_trader.data.messages cimport RequestForwardPrices
+from nautilus_trader.data.messages cimport RequestFundingRates
 from nautilus_trader.data.messages cimport RequestInstrument
 from nautilus_trader.data.messages cimport RequestInstruments
 from nautilus_trader.data.messages cimport RequestJoin
+from nautilus_trader.data.messages cimport RequestOrderBookDeltas
 from nautilus_trader.data.messages cimport RequestOrderBookDepth
 from nautilus_trader.data.messages cimport RequestOrderBookSnapshot
 from nautilus_trader.data.messages cimport RequestQuoteTicks
@@ -100,6 +113,8 @@ from nautilus_trader.data.messages cimport SubscribeInstrumentClose
 from nautilus_trader.data.messages cimport SubscribeInstruments
 from nautilus_trader.data.messages cimport SubscribeInstrumentStatus
 from nautilus_trader.data.messages cimport SubscribeMarkPrices
+from nautilus_trader.data.messages cimport SubscribeOptionChain
+from nautilus_trader.data.messages cimport SubscribeOptionGreeks
 from nautilus_trader.data.messages cimport SubscribeOrderBook
 from nautilus_trader.data.messages cimport SubscribeQuoteTicks
 from nautilus_trader.data.messages cimport SubscribeTradeTicks
@@ -112,6 +127,8 @@ from nautilus_trader.data.messages cimport UnsubscribeInstrumentClose
 from nautilus_trader.data.messages cimport UnsubscribeInstruments
 from nautilus_trader.data.messages cimport UnsubscribeInstrumentStatus
 from nautilus_trader.data.messages cimport UnsubscribeMarkPrices
+from nautilus_trader.data.messages cimport UnsubscribeOptionChain
+from nautilus_trader.data.messages cimport UnsubscribeOptionGreeks
 from nautilus_trader.data.messages cimport UnsubscribeOrderBook
 from nautilus_trader.data.messages cimport UnsubscribeQuoteTicks
 from nautilus_trader.data.messages cimport UnsubscribeTradeTicks
@@ -126,6 +143,7 @@ from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
 from nautilus_trader.model.data cimport MarkPriceUpdate
+from nautilus_trader.model.data cimport OptionGreeks
 from nautilus_trader.model.data cimport OrderBookDelta
 from nautilus_trader.model.data cimport OrderBookDeltas
 from nautilus_trader.model.data cimport OrderBookDepth10
@@ -137,8 +155,6 @@ from nautilus_trader.model.identifiers cimport ClientId
 from nautilus_trader.model.identifiers cimport ComponentId
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport Venue
-from nautilus_trader.model.identifiers cimport generic_spread_id_to_list
-from nautilus_trader.model.identifiers cimport is_generic_spread_id
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.instruments.synthetic cimport SyntheticInstrument
 from nautilus_trader.model.objects cimport Price
@@ -186,7 +202,7 @@ cdef class DataEngine(Component):
         self._routing_map: dict[Venue, DataClient] = {}
         self._default_client: DataClient | None = None
         self._external_clients: set[ClientId] = set()
-        self._catalogs: dict[str, ParquetDataCatalog] = {}
+        self._catalogs: dict[str, BaseDataCatalog] = {}
         self._order_book_intervals: dict[tuple[InstrumentId, int], list[Callable[[OrderBook], None]]] = {}
         self._bar_aggregators: dict[tuple[BarType, UUID4], BarAggregator] = {}
         self._spread_quote_aggregators: dict[tuple[InstrumentId, UUID4], SpreadQuoteAggregator] = {}
@@ -197,16 +213,24 @@ cdef class DataEngine(Component):
         self._buffered_deltas_map: dict[InstrumentId, list[OrderBookDelta]] = {}
         self._snapshot_info: dict[str, SnapshotInfo] = {}
 
+        # Option chain managers (keyed by series_id string)
+        self._option_chain_managers: dict[str, object] = {}
+        self._option_chain_instrument_index: dict[InstrumentId, str] = {}
+        self._option_chain_timer_names: dict[str, str] = {}
+        self._pending_option_chain_requests: dict[object, object] = {}  # correlation_id -> command
+
         self._request_group_parent_request: dict[UUID4, RequestData] = {}
         self._request_group_n_components: dict[UUID4, int] = {}
         self._request_group_parent_request_id: dict[UUID4, UUID4] = {}
         self._request_group_responses: dict[UUID4, list] = {}
         self._long_request_generator: dict[UUID4, object] = {}
         self._requests: dict[UUID4, RequestData] = {}
+        self._request_workflows: dict[UUID4, object] = {}
         self._parent_long_request_id: dict[UUID4, UUID4] = {}
         self._parent_join_request_id: dict[UUID4, UUID4] = {}
         self._parent_request_id: dict[UUID4, UUID4] = {}
         self._disable_historical_cache: bool = False
+        self._bar_types_params: dict[UUID4, dict[str, Any]] = {}
 
         self._topic_cache = TopicCache()
 
@@ -353,13 +377,13 @@ cdef class DataEngine(Component):
 
 # --REGISTRATION ----------------------------------------------------------------------------------
 
-    def register_catalog(self, catalog: ParquetDataCatalog, name: str = "catalog_0") -> None:
+    def register_catalog(self, catalog: BaseDataCatalog, name: str = "catalog_0") -> None:
         """
         Register the given data catalog with the engine.
 
         Parameters
         ----------
-        catalog : ParquetDataCatalog
+        catalog : BaseDataCatalog
             The data catalog to register.
         name : str, default 'catalog_0'
             The name of the catalog to register.
@@ -510,9 +534,9 @@ cdef class DataEngine(Component):
 
         return subscriptions
 
-    cpdef list subscribed_order_book_snapshots(self):
+    cpdef list subscribed_order_book_depth(self):
         """
-        Return the order book snapshot instruments subscribed to.
+        Return the order book depth instruments subscribed to.
 
         Returns
         -------
@@ -523,7 +547,7 @@ cdef class DataEngine(Component):
             list subscriptions = []
             MarketDataClient client
         for client in [c for c in self._clients.values() if isinstance(c, MarketDataClient)]:
-            subscriptions += client.subscribed_order_book_snapshots()
+            subscriptions += client.subscribed_order_book_depth()
 
         return subscriptions
 
@@ -676,6 +700,23 @@ cdef class DataEngine(Component):
 
         return subscriptions
 
+    cpdef list subscribed_option_greeks(self):
+        """
+        Return the option greeks instruments subscribed to.
+
+        Returns
+        -------
+        list[InstrumentId]
+
+        """
+        cdef:
+            list subscriptions = []
+            MarketDataClient client
+        for client in [c for c in self._clients.values() if isinstance(c, MarketDataClient)]:
+            subscriptions += client.subscribed_option_greeks()
+
+        return subscriptions
+
     cpdef list subscribed_synthetic_quotes(self):
         """
         Return the synthetic instrument quotes subscribed to.
@@ -749,10 +790,11 @@ cdef class DataEngine(Component):
         self._request_group_responses.clear()
         self._long_request_generator.clear()
         self._requests.clear()
+        self._request_workflows.clear()
         self._parent_long_request_id.clear()
         self._parent_join_request_id.clear()
         self._parent_request_id.clear()
-
+        self._bar_types_params.clear()
 
         self._topic_cache.clear_cache()
 
@@ -915,6 +957,10 @@ cdef class DataEngine(Component):
             self._handle_subscribe_instrument_status(client, command)
         elif isinstance(command, SubscribeInstrumentClose):
             self._handle_subscribe_instrument_close(client, command)
+        elif isinstance(command, SubscribeOptionGreeks):
+            self._handle_subscribe_option_greeks(client, command)
+        elif isinstance(command, SubscribeOptionChain):
+            self._handle_subscribe_option_chain(client, command)
         else:
             self._handle_subscribe_data(client, command)
 
@@ -940,7 +986,11 @@ cdef class DataEngine(Component):
         elif isinstance(command, UnsubscribeInstrumentStatus):
             self._handle_unsubscribe_instrument_status(client, command)
         elif isinstance(command, UnsubscribeInstrumentClose):
-            self._handle_unsubscribe_instrument_status(client, command)
+            self._handle_unsubscribe_instrument_close(client, command)
+        elif isinstance(command, UnsubscribeOptionGreeks):
+            self._handle_unsubscribe_option_greeks(client, command)
+        elif isinstance(command, UnsubscribeOptionChain):
+            self._handle_unsubscribe_option_chain(client, command)
         else:
             self._handle_unsubscribe_data(client, command)
 
@@ -970,7 +1020,7 @@ cdef class DataEngine(Component):
             if command.instrument_id not in client.subscribed_order_book_deltas():
                 client.subscribe_order_book_deltas(command)
         elif command.data_type.type == OrderBookDepth10:
-            if command.instrument_id not in client.subscribed_order_book_snapshots():
+            if command.instrument_id not in client.subscribed_order_book_depth():
                 client.subscribe_order_book_depth(command)
         else:  # pragma: no cover (design-time error)
             raise TypeError(f"Invalid book data type, was {command.data_type}")
@@ -984,7 +1034,6 @@ cdef class DataEngine(Component):
 
         if command.interval_ms > 0:
             key = (command.instrument_id, command.interval_ms)
-
             if key not in self._order_book_intervals:
                 self._order_book_intervals[key] = []
 
@@ -1022,12 +1071,6 @@ cdef class DataEngine(Component):
             self._setup_order_book(client, command)
 
     cpdef void _setup_order_book(self, MarketDataClient client, SubscribeOrderBook command):
-        cdef Instrument instrument = self._cache.instrument(command.instrument_id)
-        if instrument is None:
-            self._log.warning(
-                f"No instrument found for {command.instrument_id} on order book data subscription"
-            )
-
         cdef:
             list[Instrument] instruments
             str root
@@ -1070,9 +1113,9 @@ cdef class DataEngine(Component):
 
         Condition.not_none(client, "client")
 
-        if self._is_backtest_client(client) and not command.params.get("force_aggregated_quotes", False):
+        if command.params.get("aggregate_spread_quotes", False):
             instrument = self._cache.instrument(command.instrument_id)
-            if instrument and instrument.is_spread() and len(instrument.legs()) > 1:
+            if instrument and instrument.is_spread():
                 self._start_spread_quote_aggregator(client, command)
                 return
 
@@ -1233,6 +1276,405 @@ cdef class DataEngine(Component):
         if command.instrument_id not in client.subscribed_instrument_close():
             client.subscribe_instrument_close(command)
 
+    cpdef void _handle_subscribe_option_greeks(self, MarketDataClient client, SubscribeOptionGreeks command):
+        Condition.not_none(client, "client")
+
+        if command.instrument_id.is_synthetic():
+            self._log.error("Cannot subscribe for synthetic instrument `OptionGreeks` data")
+            return
+
+        if command.instrument_id not in client.subscribed_option_greeks():
+            client.subscribe_option_greeks(command)
+
+    cpdef void _handle_subscribe_option_chain(self, MarketDataClient client, SubscribeOptionChain command):
+        Condition.not_none(client, "client")
+
+        cdef str series_key = str(command.series_id)
+
+        # Tear down existing manager for same series if re-subscribing
+        if series_key in self._option_chain_managers:
+            self._teardown_option_chain(series_key, client)
+
+        # Drain stale pending requests for this series
+        stale = [rid for rid, cmd in self._pending_option_chain_requests.items()
+                 if str(cmd.series_id) == series_key]
+        for rid in stale:
+            del self._pending_option_chain_requests[rid]
+
+        # For non-Fixed strike ranges, request forward prices for instant bootstrap
+        if command.strike_range is None or command.strike_range.kind != "Fixed":
+            # Pick a sample instrument for single-instrument fast path
+            sample_id = self._find_sample_instrument(command.series_id)
+
+            request = RequestForwardPrices(
+                underlying=str(command.series_id.underlying),
+                sample_instrument_id=sample_id,
+                client_id=command.client_id,
+                venue=command.venue,
+                callback=None,
+                request_id=UUID4(),
+                ts_init=self._clock.timestamp_ns(),
+            )
+
+            self._pending_option_chain_requests[request.id] = command
+            client.request_forward_prices(request)
+            return
+
+        # Fixed range: create manager immediately (no ATM bootstrap needed)
+        self._create_option_chain_manager(command, None)
+
+    cdef void _subscribe_option_chain_instruments(
+        self,
+        MarketDataClient client,
+        list active_ids,
+        SubscribeOptionChain command,
+    ):
+        """Subscribe quotes and greeks for option chain instruments."""
+        for pyo3_id in active_ids:
+            cython_id = InstrumentId.from_str(str(pyo3_id))
+            # Subscribe quotes
+            if cython_id not in client.subscribed_quote_ticks():
+                client.subscribe_quote_ticks(
+                    SubscribeQuoteTicks(
+                        client_id=command.client_id,
+                        venue=command.venue,
+                        instrument_id=cython_id,
+                        command_id=UUID4(),
+                        ts_init=self._clock.timestamp_ns(),
+                    ),
+                )
+            # Subscribe greeks
+            if cython_id not in client.subscribed_option_greeks():
+                client.subscribe_option_greeks(
+                    SubscribeOptionGreeks(
+                        client_id=command.client_id,
+                        venue=command.venue,
+                        instrument_id=cython_id,
+                        command_id=UUID4(),
+                        ts_init=self._clock.timestamp_ns(),
+                    ),
+                )
+            # Subscribe instrument status
+            if cython_id not in client.subscribed_instrument_status():
+                client.subscribe_instrument_status(
+                    SubscribeInstrumentStatus(
+                        client_id=command.client_id,
+                        venue=command.venue,
+                        instrument_id=cython_id,
+                        command_id=UUID4(),
+                        ts_init=self._clock.timestamp_ns(),
+                    ),
+                )
+
+    cdef void _unsubscribe_option_chain_instruments(
+        self,
+        MarketDataClient client,
+        list instrument_ids,
+    ):
+        """Unsubscribe quotes and greeks for option chain instruments."""
+        cdef uint64_t ts = self._clock.timestamp_ns()
+        for pyo3_id in instrument_ids:
+            cython_id = InstrumentId.from_str(str(pyo3_id))
+            if cython_id in client.subscribed_quote_ticks():
+                client.unsubscribe_quote_ticks(
+                    UnsubscribeQuoteTicks(
+                        instrument_id=cython_id,
+                        client_id=client.id,
+                        venue=client.venue,
+                        command_id=UUID4(),
+                        ts_init=ts,
+                    ),
+                )
+            if cython_id in client.subscribed_option_greeks():
+                client.unsubscribe_option_greeks(
+                    UnsubscribeOptionGreeks(
+                        instrument_id=cython_id,
+                        client_id=client.id,
+                        venue=client.venue,
+                        command_id=UUID4(),
+                        ts_init=ts,
+                    ),
+                )
+            if cython_id in client.subscribed_instrument_status():
+                client.unsubscribe_instrument_status(
+                    UnsubscribeInstrumentStatus(
+                        instrument_id=cython_id,
+                        client_id=client.id,
+                        venue=client.venue,
+                        command_id=UUID4(),
+                        ts_init=ts,
+                    ),
+                )
+
+    cdef void _create_option_chain_manager(self, SubscribeOptionChain command, object initial_atm_price):
+        """Create option chain manager, resolve instruments, subscribe, and set timer."""
+        cdef str series_key = str(command.series_id)
+
+        # Resolve instruments from cache
+        cdef list instruments = self._cache.instruments()
+        cdef dict resolved = {}  # InstrumentId -> (Price, kind_u8)
+
+        cdef str series_venue = str(command.series_id.venue)
+        cdef str series_underlying = command.series_id.underlying
+        cdef str series_settlement = command.series_id.settlement_currency
+        cdef uint64_t series_expiry = command.series_id.expiration_ns
+
+        for inst in instruments:
+            # Match by venue
+            if str(inst.id.venue) != series_venue:
+                continue
+
+            # Check if this is an option
+            if not hasattr(inst, "option_kind"):
+                continue
+
+            # Match expiry
+            if not hasattr(inst, "expiration_ns") or inst.expiration_ns != series_expiry:
+                continue
+
+            # Match settlement currency
+            if str(inst.get_settlement_currency()) != series_settlement:
+                continue
+
+            # Match underlying
+            if str(inst.underlying) != series_underlying:
+                continue
+
+            # Build instrument entry: strike as Price, kind as u8 (0=Call, 1=Put)
+            try:
+                strike = inst.strike_price
+                kind_u8 = 0 if inst.option_kind == OptionKind.CALL else 1
+                resolved[nautilus_pyo3.InstrumentId.from_str(str(inst.id))] = (
+                    nautilus_pyo3.Price.from_str(str(strike)),
+                    kind_u8,
+                )
+            except (AttributeError, ValueError):
+                continue
+
+        if not resolved:
+            self._log.warning(f"No option instruments found for series {series_key}")
+            return
+
+        # Default strike_range to all available strikes when None
+        strike_range = command.strike_range
+        if strike_range is None:
+            strikes = [strike for strike, _ in resolved.values()]
+            strike_range = nautilus_pyo3.StrikeRange.fixed(strikes)
+
+        # Create OptionChainManager via PyO3
+        manager = nautilus_pyo3.OptionChainManager(
+            series_id=command.series_id,
+            strike_range=strike_range,
+            instruments=resolved,
+            snapshot_interval_ms=command.snapshot_interval_ms,
+            initial_atm_price=initial_atm_price,
+        )
+
+        # Store manager and build instrument index
+        self._option_chain_managers[series_key] = manager
+        for pyo3_id in resolved:
+            cython_id = InstrumentId.from_str(str(pyo3_id))
+            self._option_chain_instrument_index[cython_id] = series_key
+
+        # Subscribe quotes + greeks for active instruments
+        active_ids = manager.active_instrument_ids()
+
+        # Resolve client from venue
+        cdef Venue venue = Venue(str(command.series_id.venue))
+        cdef MarketDataClient client = self._routing_map.get(venue)
+        if client is not None:
+            self._subscribe_option_chain_instruments(client, active_ids, command)
+
+        # Set up snapshot timer if interval specified
+        if command.snapshot_interval_ms is not None:
+            timer_name = f"OptionChainSnapshot-{series_key}"
+            self._option_chain_timer_names[series_key] = timer_name
+            self._clock.set_timer(
+                name=timer_name,
+                interval=timedelta(milliseconds=command.snapshot_interval_ms),
+                start_time=None,
+                stop_time=None,
+                callback=self._option_chain_snapshot,
+            )
+
+        mode_str = f"interval={command.snapshot_interval_ms}ms" if command.snapshot_interval_ms else "raw"
+        bootstrap_str = f", initial_atm={initial_atm_price}" if initial_atm_price is not None else ""
+        self._log.info(
+            f"Subscribed option chain for {series_key} "
+            f"({len(active_ids)} active/{len(resolved)} total instruments, {mode_str}{bootstrap_str})",
+        )
+
+    cdef void _handle_forward_prices_response(self, object correlation_id, list forward_prices):
+        """Handle forward prices response for option chain instant bootstrap."""
+        command = self._pending_option_chain_requests.pop(correlation_id, None)
+        if command is None:
+            return
+
+        series_id = command.series_id
+
+        # Find matching forward price by checking expiry + settlement in cache
+        initial_atm_price = None
+        for fp in forward_prices:
+            inst = self._cache.instrument(InstrumentId.from_str(str(fp.instrument_id)))
+            if inst is not None:
+                if (hasattr(inst, 'expiration_ns') and inst.expiration_ns == series_id.expiration_ns
+                        and str(inst.get_settlement_currency()) == str(series_id.settlement_currency)
+                        and getattr(inst, 'underlying', None) is not None
+                        and str(inst.underlying) == str(series_id.underlying)):
+                    initial_atm_price = nautilus_pyo3.Price.from_str(str(fp.forward_price))
+                    break
+
+        if initial_atm_price is not None:
+            self._log.info(f"Forward price for {series_id}: {initial_atm_price} (instant bootstrap)")
+        else:
+            self._log.info(f"No matching forward price for {series_id}, will bootstrap from live data")
+
+        self._create_option_chain_manager(command, initial_atm_price)
+
+    cdef object _find_sample_instrument(self, object series_id):
+        """Find a single option instrument matching the series for the fast path."""
+        cdef list instruments = self._cache.instruments()
+        for inst in instruments:
+            if str(inst.id.venue) != str(series_id.venue):
+                continue
+            if not hasattr(inst, 'option_kind'):
+                continue
+            if (inst.expiration_ns == series_id.expiration_ns
+                    and str(inst.get_settlement_currency()) == str(series_id.settlement_currency)
+                    and str(inst.underlying) == str(series_id.underlying)):
+                return InstrumentId.from_str(str(inst.id))
+        return None
+
+    cdef void _complete_option_chain_bootstrap(self, str series_key, object manager):
+        """Subscribe the real active instruments after ATM bootstrap from live data."""
+        active_ids = manager.active_instrument_ids()
+        self._log.info(
+            f"Option chain {series_key} bootstrapped "
+            f"(ATM={manager.atm_price}, {len(active_ids)} active instruments)",
+        )
+
+        # Resolve client from venue
+        cdef Venue venue = Venue(str(manager.series_id.venue))
+        cdef MarketDataClient client = self._routing_map.get(venue)
+        if client is None:
+            self._log.error(f"No data client for venue {venue}")
+            return
+
+        # Build a minimal command for subscribing
+        cdef SubscribeOptionChain sub_cmd = SubscribeOptionChain(
+            series_id=manager.series_id,
+            strike_range=None,
+            snapshot_interval_ms=None,
+            client_id=client.id,
+            venue=venue,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+
+        # Subscribe the real active instruments
+        self._subscribe_option_chain_instruments(client, active_ids, sub_cmd)
+
+    cdef void _teardown_option_chain(self, str series_key, MarketDataClient client):
+        """Tear down an existing option chain manager."""
+        manager = self._option_chain_managers.get(series_key)
+
+        # Forward wire-level unsubscribes before dropping the manager
+        if manager is not None and client is not None:
+            all_ids = manager.all_instrument_ids()
+            self._unsubscribe_option_chain_instruments(client, all_ids)
+
+        # Cancel timer
+        timer_name = self._option_chain_timer_names.pop(series_key, None)
+        if timer_name is not None:
+            self._clock.cancel_timer(timer_name)
+
+        # Remove instrument index entries
+        to_remove = [
+            iid for iid, sk in self._option_chain_instrument_index.items()
+            if sk == series_key
+        ]
+        for iid in to_remove:
+            del self._option_chain_instrument_index[iid]
+
+        # Remove manager
+        self._option_chain_managers.pop(series_key, None)
+
+    def _option_chain_snapshot(self, event):
+        """Timer callback to publish option chain snapshots."""
+        cdef str timer_name = event.name
+        cdef str series_key = None
+        cdef uint64_t ts_ns
+        cdef uint64_t expiration_ns
+        cdef Venue venue
+        cdef MarketDataClient client
+
+        # Find series key from timer name
+        for sk, tn in self._option_chain_timer_names.items():
+            if tn == timer_name:
+                series_key = sk
+                break
+
+        if series_key is None:
+            return
+
+        manager = self._option_chain_managers.get(series_key)
+        if manager is None:
+            return
+
+        ts_ns = self._clock.timestamp_ns()
+
+        # Safeguard: proactively teardown expired series
+        expiration_ns = manager.series_id.expiration_ns
+        if ts_ns >= expiration_ns:
+            self._log.warning(
+                f"Option chain {series_key} expired at {expiration_ns}, tearing down",
+            )
+            venue = Venue(str(manager.series_id.venue))
+            client = self._routing_map.get(venue)
+            self._teardown_option_chain(series_key, client)
+            return
+
+        # Check rebalance and forward subscribe/unsubscribe for changed instruments
+        rebalance = manager.check_rebalance(ts_ns)
+        if rebalance is not None:
+            added, removed = rebalance
+            if added or removed:
+                self._log.debug(
+                    f"Option chain {series_key} rebalanced: +{len(added)} -{len(removed)} instruments",
+                )
+
+                # Resolve client from venue
+                venue = Venue(str(manager.series_id.venue))
+                client = self._routing_map.get(venue)
+                if client is not None:
+                    if added:
+                        sub_cmd = SubscribeOptionChain(
+                            series_id=manager.series_id,
+                            strike_range=None,
+                            snapshot_interval_ms=None,
+                            client_id=client.id,
+                            venue=venue,
+                            command_id=UUID4(),
+                            ts_init=ts_ns,
+                        )
+                        self._subscribe_option_chain_instruments(client, added, sub_cmd)
+                    if removed:
+                        self._unsubscribe_option_chain_instruments(client, removed)
+
+                    # Update instrument index
+                    for pyo3_id in added:
+                        cython_id = InstrumentId.from_str(str(pyo3_id))
+                        self._option_chain_instrument_index[cython_id] = series_key
+                    for pyo3_id in removed:
+                        cython_id = InstrumentId.from_str(str(pyo3_id))
+                        self._option_chain_instrument_index.pop(cython_id, None)
+
+        # Publish snapshot
+        chain_slice = manager.snapshot(ts_ns)
+        if chain_slice is not None:
+            topic = self._topic_cache.get_option_chain_topic(series_key)
+            self._msgbus.publish_c(topic=topic, msg=chain_slice)
+
     cpdef void _handle_unsubscribe_instruments(self, MarketDataClient client, UnsubscribeInstruments command):
         Condition.not_none(client, "client")
 
@@ -1282,11 +1724,8 @@ cdef class DataEngine(Component):
                 if command.instrument_id in client.subscribed_order_book_deltas():
                     client.unsubscribe_order_book_deltas(command)
             elif command.data_type.type == OrderBookDepth10:
-                if command.instrument_id in client.subscribed_order_book_snapshots():
+                if command.instrument_id in client.subscribed_order_book_depth():
                     client.unsubscribe_order_book_depth(command)
-            else:
-                if command.instrument_id in client.subscribed_order_book_snapshots():
-                    client.unsubscribe_order_book_snapshots(command)
 
         # Cancel any snapshot timers for this instrument that no longer have subscribers
         cdef:
@@ -1314,9 +1753,9 @@ cdef class DataEngine(Component):
     cpdef void _handle_unsubscribe_quote_ticks(self, MarketDataClient client, UnsubscribeQuoteTicks command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
-        if self._is_backtest_client(client) and not command.params.get("force_aggregated_quotes", False):
+        if command.params.get("aggregate_spread_quotes", False):
             instrument = self._cache.instrument(command.instrument_id)
-            if instrument and instrument.is_spread() and len(instrument.legs()) > 1:
+            if instrument and instrument.is_spread():
                 self._stop_spread_quote_aggregator(client, command)
                 return
 
@@ -1417,6 +1856,41 @@ cdef class DataEngine(Component):
         if command.instrument_id in client.subscribed_instrument_close():
             client.unsubscribe_instrument_close(command)
 
+    cpdef void _handle_unsubscribe_option_greeks(self, MarketDataClient client, UnsubscribeOptionGreeks command):
+        Condition.not_none(client, "client")
+
+        if command.instrument_id.is_synthetic():
+            self._log.error("Cannot unsubscribe for synthetic instrument `OptionGreeks` data")
+            return
+
+        if not self._msgbus.has_subscribers(
+            self._topic_cache.get_option_greeks_topic(command.instrument_id),
+        ):
+            if command.instrument_id in client.subscribed_option_greeks():
+                client.unsubscribe_option_greeks(command)
+
+    cpdef void _handle_unsubscribe_option_chain(self, MarketDataClient client, UnsubscribeOptionChain command):
+        Condition.not_none(client, "client")
+
+        cdef str series_key = str(command.series_id)
+
+        # Only tear down if no other subscribers remain on this topic
+        cdef str topic = self._topic_cache.get_option_chain_topic(series_key)
+        if self._msgbus.has_subscribers(topic):
+            return
+
+        # Clear any pending bootstrap request for this series
+        stale = [rid for rid, cmd in self._pending_option_chain_requests.items()
+                 if str(cmd.series_id) == series_key]
+        for rid in stale:
+            del self._pending_option_chain_requests[rid]
+
+        if series_key not in self._option_chain_managers:
+            return
+
+        self._teardown_option_chain(series_key, client)
+        self._log.info(f"Unsubscribed option chain for {series_key}")
+
 # -- REQUEST HANDLERS -----------------------------------------------------------------------------
 
     cpdef void _handle_request(self, RequestData request):
@@ -1424,8 +1898,9 @@ cdef class DataEngine(Component):
             self._log.debug(f"{RECV}{REQ} {request}", LogColor.MAGENTA)
 
         self.request_count += 1
+        state = self._ensure_request_workflows(request)
 
-        if request.params.get("join_request", False):
+        if state.join_request:
             self._requests[request.id] = request
             return
 
@@ -1440,17 +1915,25 @@ cdef class DataEngine(Component):
         if client is not None:
             Condition.is_true(isinstance(client, DataClient), "client was not a DataClient")
 
+        if request.params.get("bar_types") and not state.has_aggregated_bars:
+            if self._should_request_aggregated_bars(request):
+                self._init_historical_aggregators(request)
+                self._bar_types_params[request.id] = request.params.copy()
+                state.has_aggregated_bars = True
+            else:
+                self._log.error(f"One of the aggregators in {request.params.get('bar_types')} is already running. "
+                                f"Either wait for a request to complete or unsubscribe from a live subscription. "
+                                f"Aborting request {request.id}.")
+                self._request_workflows.pop(request.id, None)
+                return
+
         self._requests[request.id] = request
 
-        request.start = time_object_to_dt(request.start)
-        request.end = time_object_to_dt(request.end)
-
         # A request involving a spread aggregator will be converted to a request join first
-        # "force_aggregated_quotes" allows to request actual quotes instead of aggregated ones,
-        # this can be useful if quotes have been saved before or an exchange provides actual quotes
-        if isinstance(request, RequestQuoteTicks) and not request.params.get("force_aggregated_quotes", False):
+        # "aggregate_spread_quotes" allows to aggregate spread quotes from component quotes
+        if isinstance(request, RequestQuoteTicks) and request.params.get("aggregate_spread_quotes", False):
             instrument = self._cache.instrument(request.instrument_id)
-            if instrument and instrument.is_spread() and len(instrument.legs()) > 1:
+            if instrument and instrument.is_spread():
                 if self._should_request_spread_quote_ticks(request):
                     self._handle_spread_quote_tick_request(request)
                     return
@@ -1459,21 +1942,11 @@ cdef class DataEngine(Component):
                                     f"Either wait for a request to complete or unsubscribe from a live subscription. "
                                     f"Aborting request {request.id}.")
                     self._requests.pop(request.id, None)
+                    self._request_workflows.pop(request.id, None)
                     return
 
-        if request.params.get("bar_types"):
-            if self._should_request_aggregated_bars(request):
-                self._init_historical_aggregators(request)
-            else:
-                self._log.error(f"One of the aggregators in {request.params.get('bar_types')} is already running. "
-                                f"Either wait for a request to complete or unsubscribe from a live subscription. "
-                                f"Aborting request {request.id}.")
-                self._requests.pop(request.id, None)
-                return
-
         # Long join requests need to be processed as join requests first before the long request starts
-        if ("time_range_generator" in request.params
-                and not (isinstance(request, RequestJoin) and not request.params.get("is_started",False))):
+        if state.time_range_generator_enabled and not (isinstance(request, RequestJoin) and not state.join_started):
             self._handle_long_request(client, request)
             return
 
@@ -1481,14 +1954,18 @@ cdef class DataEngine(Component):
             self._handle_request_instruments(client, request)
         elif isinstance(request, RequestInstrument):
             self._handle_request_instrument(client, request)
-        elif isinstance(request, RequestOrderBookSnapshot):
-            self._handle_request_order_book_snapshot(client, request)
+        elif isinstance(request, RequestOrderBookDeltas):
+            self._handle_request_order_book_deltas(client, request)
         elif isinstance(request, RequestOrderBookDepth):
             self._handle_request_order_book_depth(client, request)
+        elif isinstance(request, RequestOrderBookSnapshot):
+            self._handle_request_order_book_snapshot(client, request)
         elif isinstance(request, RequestQuoteTicks):
             self._handle_request_quote_ticks(client, request)
         elif isinstance(request, RequestTradeTicks):
             self._handle_request_trade_ticks(client, request)
+        elif isinstance(request, RequestFundingRates):
+            self._handle_request_funding_rates(client, request)
         elif isinstance(request, RequestBars):
             self._handle_request_bars(client, request)
         elif isinstance(request, RequestJoin):
@@ -1524,6 +2001,22 @@ cdef class DataEngine(Component):
 
         client.request_instrument(request)
 
+    cpdef void _handle_request_order_book_deltas(self, DataClient client, RequestOrderBookDeltas request):
+        state = self._ensure_request_workflows(request)
+
+        # Store original start_date only if not already present (for long requests)
+        if state.start is not None:
+            state.original_start_date = state.start
+
+            # Floor to start of UTC day (optional, default True)
+            if request.params.get("from_day_start", True):
+                state.start = state.start.floor(freq="d")
+
+        self._handle_date_range_request(client, request)
+
+    cpdef void _handle_request_order_book_depth(self, DataClient client, RequestOrderBookDepth request):
+        self._handle_date_range_request(client, request)
+
     cpdef void _handle_request_order_book_snapshot(self, DataClient client, RequestOrderBookSnapshot request):
         if client is None:
             self._log_request_warning(request)
@@ -1531,13 +2024,13 @@ cdef class DataEngine(Component):
 
         client.request_order_book_snapshot(request)
 
-    cpdef void _handle_request_order_book_depth(self, DataClient client, RequestOrderBookDepth request):
-        self._handle_date_range_request(client, request)
-
     cpdef void _handle_request_quote_ticks(self, DataClient client, RequestQuoteTicks request):
         self._handle_date_range_request(client, request)
 
     cpdef void _handle_request_trade_ticks(self, DataClient client, RequestTradeTicks request):
+        self._handle_date_range_request(client, request)
+
+    cpdef void _handle_request_funding_rates(self, DataClient client, RequestFundingRates request):
         self._handle_date_range_request(client, request)
 
     cpdef void _handle_request_bars(self, DataClient client, RequestBars request):
@@ -1548,6 +2041,7 @@ cdef class DataEngine(Component):
 
     cpdef void _handle_date_range_request(self, DataClient client, RequestData request):
         cdef DataClient used_client = client
+        state = self._ensure_request_workflows(request)
         if self._is_backtest_client(used_client):
             used_client = None
 
@@ -1583,7 +2077,7 @@ cdef class DataEngine(Component):
 
         skip_catalog_data = request.params.get("skip_catalog_data", False)
         n_requests = (len(missing_intervals) if used_client else 0) + (1 if has_catalog_data and not skip_catalog_data else 0)
-        request.params["identifier"] = identifier # Allows to update catalog file names when no data is returned
+        state.identifier = identifier
 
         # From here the parent request is split into subrequests
         if n_requests == 0:
@@ -1594,10 +2088,10 @@ cdef class DataEngine(Component):
                 data=[],
                 correlation_id=request.id,
                 response_id=UUID4(),
-                start=request.start,
-                end=request.end,
+                start=state.start,
+                end=state.end,
                 ts_init=self._clock.timestamp_ns(),
-                params=request.params,
+                params=self._request_response_params(request.id),
             )
             self._handle_response(response)
             return
@@ -1607,6 +2101,7 @@ cdef class DataEngine(Component):
         # Catalog query
         if has_catalog_data and not skip_catalog_data:
             new_request = request.with_dates(start, end, now.value)
+            self._inherit_request_workflows(new_request, request)
             self._request_group_parent_request_id[new_request.id] = new_request.correlation_id
             self._query_catalog(new_request)
 
@@ -1614,6 +2109,7 @@ cdef class DataEngine(Component):
         if len(missing_intervals) > 0 and used_client:
             for request_start, request_end in missing_intervals:
                 new_request = request.with_dates(time_object_to_dt(request_start), time_object_to_dt(request_end), now.value)
+                self._inherit_request_workflows(new_request, request)
                 self._request_group_parent_request_id[new_request.id] = new_request.correlation_id
                 self._date_range_client_request(used_client, new_request)
 
@@ -1624,8 +2120,12 @@ cdef class DataEngine(Component):
             client.request_quote_ticks(request)
         elif isinstance(request, RequestTradeTicks):
             client.request_trade_ticks(request)
+        elif isinstance(request, RequestFundingRates):
+            client.request_funding_rates(request)
         elif isinstance(request, RequestOrderBookDepth):
             client.request_order_book_depth(request)
+        elif isinstance(request, RequestOrderBookDeltas):
+            client.request_order_book_deltas(request)
         else:
             try:
                 client.request(request)
@@ -1636,8 +2136,9 @@ cdef class DataEngine(Component):
         self._log.warning(f"Cannot handle request: no client registered for '{request.client_id}', {request}")
 
     cpdef void _query_catalog(self, RequestData request):
-        cdef datetime start = request.start
-        cdef datetime end = request.end
+        state = self._ensure_request_workflows(request)
+        cdef datetime start = state.start
+        cdef datetime end = state.end
         cdef bint query_past_data = request.params.get("subscription_name") is None
 
         cdef uint64_t ts_now = self._clock.timestamp_ns()
@@ -1688,6 +2189,12 @@ cdef class DataEngine(Component):
                     start=ts_start,
                     end=ts_end,
                 )
+            elif isinstance(request, RequestFundingRates):
+                data = catalog.funding_rates(
+                    instrument_ids=[str(request.instrument_id)],
+                    start=ts_start,
+                    end=ts_end,
+                )
             elif isinstance(request, RequestBars):
                 bar_type = request.bar_type
                 if bar_type is None:
@@ -1705,6 +2212,14 @@ cdef class DataEngine(Component):
                     instrument_ids=[str(request.instrument_id)],
                     start=ts_start,
                     end=ts_end,
+                )
+            elif isinstance(request, RequestOrderBookDeltas):
+                batched = request.params.get("batched", True)
+                data = catalog.order_book_deltas(
+                    instrument_ids=[str(request.instrument_id)],
+                    start=ts_start,
+                    end=ts_end,
+                    batched=batched,
                 )
             elif type(request) is RequestData:
                 filter_expr = request.params.get("filter_expr")
@@ -1737,11 +2252,9 @@ cdef class DataEngine(Component):
 
         if isinstance(request, RequestInstruments) or isinstance(request, RequestInstrument):
             only_last = request.params.get("only_last", True)
-
             if only_last:
                 # Retains only the latest instrument record per instrument_id, based on the most recent ts_init
                 last_instrument = {}
-
                 for instrument in data:
                     if instrument.id not in last_instrument:
                         last_instrument[instrument.id] = instrument
@@ -1750,7 +2263,7 @@ cdef class DataEngine(Component):
 
                 data = list(last_instrument.values())
 
-        params = request.params.copy()
+        params = self._request_response_params(request.id)
         params["update_catalog"] = False
 
         response = DataResponse(
@@ -1760,20 +2273,24 @@ cdef class DataEngine(Component):
             data=data,
             correlation_id=request.id,
             response_id=UUID4(),
-            start=request.start,
-            end=request.end,
+            start=state.start,
+            end=state.end,
             ts_init=self._clock.timestamp_ns(),
             params=params,
         )
         self._handle_response(response)
 
     cpdef void _handle_long_request(self, DataClient client, RequestData request):
+        state = self._ensure_request_workflows(request)
         start, end = self._bound_dates(request)
-        request.start, request.end = start, end
+        state.start = start
+        state.end = end
+
+        bounded_request = request.with_dates(start, end, self._clock.timestamp_ns())
 
         time_range_generator = get_time_range_generator(
             request.params.get("time_range_generator", "")
-        )(request)
+        )(bounded_request)
         self._long_request_generator[request.id] = time_range_generator
 
         self._update_long_request_data(request.id, is_first_call=True)
@@ -1793,6 +2310,7 @@ cdef class DataEngine(Component):
         if parent_request is None:
             self._log.error(f"No parent request found for {parent_request_id}")
             return
+        parent_state = self._ensure_request_workflows(parent_request)
 
         # Get next time range from generator
         cdef:
@@ -1808,11 +2326,11 @@ cdef class DataEngine(Component):
             self._finalize_long_request(parent_request_id)
             return
 
-        if parent_request.end is not None and request_start_ns > parent_request.end.value:
+        if parent_state.end is not None and request_start_ns > parent_state.end.value:
             self._finalize_long_request(parent_request_id)
             return
 
-        request_end_ns = min(request_end_ns, parent_request.end.value)
+        request_end_ns = min(request_end_ns, parent_state.end.value)
 
         # Create a sub-request for this interval
         cdef datetime now = self._clock.utc_now()
@@ -1822,12 +2340,8 @@ cdef class DataEngine(Component):
             now.value,
             self._handle_long_request_response
         )
-
-        # We remove time_range_generator from params to avoid an infinite recursion
-        new_request.params.pop("time_range_generator", None)
-
-        # We don't want to create aggregators for sub requests
-        new_request.params.pop("bar_types", None)
+        new_state = self._inherit_request_workflows(new_request, parent_request)
+        new_state.time_range_generator_enabled = False
 
         # Send the sub-request through the message bus to properly register the callback
         self._parent_long_request_id[new_request.id] = parent_request_id
@@ -1844,7 +2358,12 @@ cdef class DataEngine(Component):
         # Storing information about the data count received in the parent request's params
         cdef int data_count = response.params.get("data_count", 0)
         cdef RequestData parent_request = self._requests.get(parent_request_id)
-        parent_request.params["data_count"] = parent_request.params.get("data_count", 0) + data_count
+        if parent_request is None:
+            self._log.error(f"No parent request found for {parent_request_id}")
+            return
+
+        parent_state = self._ensure_request_workflows(parent_request)
+        parent_state.data_count += data_count
 
         # Process the next interval with feedback on if data was received
         cdef bint data_received = data_count > 0
@@ -1855,6 +2374,7 @@ cdef class DataEngine(Component):
         if parent_request is None:
             self._log.error(f"Cannot finalize long request: no parent request found for {parent_request_id}")
             return
+        parent_state = self._ensure_request_workflows(parent_request)
 
         # Close the generator
         time_range_generator = self._long_request_generator.pop(parent_request_id, None)
@@ -1872,22 +2392,20 @@ cdef class DataEngine(Component):
             data=[],
             correlation_id=parent_request_id,
             response_id=UUID4(),
-            start=parent_request.start,
-            end=parent_request.end,
+            start=parent_state.start,
+            end=parent_state.end,
             ts_init=self._clock.timestamp_ns(),
-            params=parent_request.params,
+            params=self._request_response_params(parent_request_id),
         )
         self._handle_response(response)
 
     cpdef void _handle_request_join(self, RequestJoin request):
-        if not request.correlation_id:
+        state = self._ensure_request_workflows(request)
+        if not state.join_started:
             start, end = self._bound_dates(request)
             new_request = request.with_dates(start, end, self._clock.timestamp_ns(), self._finalize_request_join)
-            new_request.params["is_started"] = True
-
-            # We don't want to create aggregators for sub requests
-            new_request.params.pop("bar_types", None)
-
+            new_state = self._inherit_request_workflows(new_request, request)
+            new_state.join_started = True
             self._parent_join_request_id[new_request.id] = request.id
             self._msgbus.request(endpoint="DataEngine.request", request=new_request)
             return
@@ -1896,8 +2414,9 @@ cdef class DataEngine(Component):
 
         for request_id in request.request_ids:
             joined_request = self._requests.get(request_id)
-            new_request = joined_request.with_dates(request.start, request.end, self._clock.timestamp_ns())
-            new_request.params["join_request"] = False
+            new_request = joined_request.with_dates(state.start, state.end, self._clock.timestamp_ns())
+            new_state = self._inherit_request_workflows(new_request, joined_request)
+            new_state.join_request = False
             self._request_group_parent_request_id[new_request.id] = request.id
             self._msgbus.request(endpoint="DataEngine.request", request=new_request)
 
@@ -1911,6 +2430,7 @@ cdef class DataEngine(Component):
         if not parent_request:
             self._log.error(f"parent_request for {parent_request_id=} not found.")
             return
+        parent_state = self._ensure_request_workflows(parent_request)
 
         # We send responses for the joined requests and the joining request to trigger callbacks
         for request_id in parent_request.request_ids:
@@ -1919,7 +2439,7 @@ cdef class DataEngine(Component):
                 self._log.error(f"joined_request for {request_id=} not found.")
                 continue
 
-            response = DataResponse(
+            leg_response = DataResponse(
                 client_id=joined_request.client_id,
                 venue=joined_request.venue,
                 data_type=joined_request.data_type,
@@ -1929,31 +2449,32 @@ cdef class DataEngine(Component):
                 start=None,
                 end=None,
                 ts_init=self._clock.timestamp_ns(),
-                params=joined_request.params,
+                params=self._request_response_params(joined_request.id),
             )
-            self._handle_response(response)
+            self._handle_response(leg_response)
 
-        response = DataResponse(
+        join_response = DataResponse(
             client_id=parent_request.client_id,
             venue=parent_request.venue,
             data_type=parent_request.data_type,
             data=[],
             correlation_id=parent_request.id,
             response_id=UUID4(),
-            start=parent_request.start,
-            end=parent_request.end,
+            start=parent_state.start,
+            end=parent_state.end,
             ts_init=self._clock.timestamp_ns(),
-            params=parent_request.params,
+            params=self._request_response_params(parent_request.id, response.params),
         )
-        self._handle_response(response)
+        self._handle_response(join_response)
 
     cpdef tuple _bound_dates(self, RequestData request):
         # Capping dates to the now datetime
+        state = self._ensure_request_workflows(request)
         cdef bint query_past_data = request.params.get("subscription_name") is None
         cdef datetime now = self._clock.utc_now()
 
-        cdef datetime start = request.start if request.start is not None else time_object_to_dt(0)
-        cdef datetime end = request.end if request.end is not None else now
+        cdef datetime start = state.start if state.start is not None else time_object_to_dt(0)
+        cdef datetime end = state.end if state.end is not None else now
 
         if query_past_data:
             start = min_date(start, now)
@@ -1990,6 +2511,8 @@ cdef class DataEngine(Component):
             self._handle_instrument_status(data, historical)
         elif isinstance(data, InstrumentClose):
             self._handle_close_price(data, historical)
+        elif isinstance(data, OptionGreeks):
+            self._handle_option_greeks(data)
         elif isinstance(data, CustomData):
             self._handle_custom_data(data, historical)
         else:
@@ -2001,9 +2524,6 @@ cdef class DataEngine(Component):
         bint historical = False,
         dict params = None,
     ):
-        if not (historical and self._disable_historical_cache):
-            self._cache.add_instrument(instrument)
-
         if params is None:
             params = {}
 
@@ -2011,6 +2531,9 @@ cdef class DataEngine(Component):
         update_catalog = params.get("update_catalog", False)
         force_update_catalog = params.get("force_update_catalog", False)
         modified_instrument = self._modify_instrument_properties(instrument, instrument_properties)
+
+        if not (historical and self._disable_historical_cache):
+            self._cache.add_instrument(modified_instrument)
 
         if update_catalog:
             self._update_catalog(
@@ -2025,6 +2548,10 @@ cdef class DataEngine(Component):
             topic=self._topic_cache.get_instrument_topic(modified_instrument.id, historical),
             msg=modified_instrument,
         )
+
+        # Check if this instrument belongs to an active option chain
+        if not historical:
+            self._update_option_chains(modified_instrument)
 
     cpdef Instrument _modify_instrument_properties(self, Instrument instrument, dict instrument_properties):
         if instrument_properties is None:
@@ -2045,6 +2572,7 @@ cdef class DataEngine(Component):
             list[OrderBookDelta] buffer_deltas = None
             bint is_last_delta = False
             InstrumentId instrument_id = delta.instrument_id
+            OrderBookDelta last_delta = None
         if self._buffer_deltas:
             buffer_deltas = self._buffered_deltas_map.get(instrument_id)
             if buffer_deltas is None:
@@ -2053,11 +2581,11 @@ cdef class DataEngine(Component):
 
             buffer_deltas.append(delta)
 
-            is_last_delta = delta.flags == RecordFlag.F_LAST
+            is_last_delta = delta.flags & RecordFlag.F_LAST
             if is_last_delta:
                 deltas = OrderBookDeltas(
                     instrument_id=instrument_id,
-                    deltas=buffer_deltas
+                    deltas=buffer_deltas,
                 )
                 self._msgbus.publish_c(
                     topic=self._topic_cache.get_deltas_topic(instrument_id, historical),
@@ -2067,7 +2595,7 @@ cdef class DataEngine(Component):
         else:
             deltas = OrderBookDeltas(
                 instrument_id=instrument_id,
-                deltas=[delta]
+                deltas=[delta],
             )
             self._msgbus.publish_c(
                 topic=self._topic_cache.get_deltas_topic(instrument_id, historical),
@@ -2089,7 +2617,7 @@ cdef class DataEngine(Component):
             for delta in deltas.deltas:
                 buffer_deltas.append(delta)
 
-                is_last_delta = delta.flags == RecordFlag.F_LAST
+                is_last_delta = delta.flags & RecordFlag.F_LAST
                 if is_last_delta:
                     deltas_to_publish = OrderBookDeltas(
                         instrument_id=instrument_id,
@@ -2147,6 +2675,10 @@ cdef class DataEngine(Component):
             topic=topic,
             msg=tick,
         )
+
+        # Feed to option chain manager (if applicable)
+        if not historical:
+            self._feed_quote_to_option_chain(tick)
 
     cpdef void _handle_trade_tick(self, TradeTick tick, bint historical = False):
         if not (historical and self._disable_historical_cache):
@@ -2232,15 +2764,199 @@ cdef class DataEngine(Component):
         self._msgbus.publish_c(topic=self._topic_cache.get_bars_topic(bar_type, historical), msg=bar)
 
     cpdef void _handle_instrument_status(self, InstrumentStatus data, bint historical = False):
+        if not (historical and self._disable_historical_cache):
+            self._cache.add_instrument_status(data)
+
         self._msgbus.publish_c(topic=self._topic_cache.get_status_topic(data.instrument_id, historical), msg=data)
+
+        # Check for option chain instrument expiry
+        if (data.action == MarketStatusAction.CLOSE
+                or data.action == MarketStatusAction.NOT_AVAILABLE_FOR_TRADING):
+            series_key = self._option_chain_instrument_index.get(data.instrument_id)
+            if series_key is not None:
+                self._expire_option_chain_instrument(data.instrument_id, series_key)
 
     cpdef void _handle_close_price(self, InstrumentClose data, bint historical = False):
         self._msgbus.publish_c(topic=self._topic_cache.get_close_prices_topic(data.instrument_id, historical), msg=data)
+
+    cpdef void _handle_option_greeks(self, OptionGreeks option_greeks):
+        self._msgbus.publish_c(
+            topic=self._topic_cache.get_option_greeks_topic(option_greeks.instrument_id),
+            msg=option_greeks,
+        )
+
+        # Feed to option chain manager (if applicable)
+        self._feed_greeks_to_option_chain(option_greeks)
 
     cpdef void _handle_custom_data(self, CustomData data, bint historical = False):
         cdef InstrumentId instrument_id = getattr(data.data, "instrument_id", None)
         cdef str topic = self._topic_cache.get_custom_data_topic(data.data_type, instrument_id, historical)
         self._msgbus.publish_c(topic=topic, msg=data.data)
+
+# -- OPTION CHAIN FEED METHODS -------------------------------------------------------------------
+
+    cdef void _feed_quote_to_option_chain(self, QuoteTick tick):
+        cdef str series_key = self._option_chain_instrument_index.get(tick.instrument_id)
+        if series_key is None:
+            return
+        manager = self._option_chain_managers.get(series_key)
+        if manager is None:
+            return
+
+        # Safeguard: reject data past expiry
+        if tick.ts_event >= manager.series_id.expiration_ns:
+            self._log.warning(
+                f"Dropping quote for {tick.instrument_id}, series {series_key} expired",
+            )
+            self._expire_option_chain_instrument(tick.instrument_id, series_key)
+            return
+
+        try:
+            pyo3_tick = tick.to_pyo3()
+            bootstrapped = manager.handle_quote(pyo3_tick)
+            if bootstrapped:
+                self._complete_option_chain_bootstrap(series_key, manager)
+            # Raw mode: publish snapshot on every update
+            if manager.raw_mode and manager.bootstrapped:
+                chain_slice = manager.snapshot(self._clock.timestamp_ns())
+                if chain_slice is not None:
+                    topic = self._topic_cache.get_option_chain_topic(series_key)
+                    self._msgbus.publish_c(topic=topic, msg=chain_slice)
+        except Exception as e:
+            self._log.error(f"Error feeding quote to option chain {series_key}: {e}")
+
+    cdef void _feed_greeks_to_option_chain(self, OptionGreeks option_greeks):
+        cdef str series_key = self._option_chain_instrument_index.get(option_greeks.instrument_id)
+        if series_key is None:
+            return
+        manager = self._option_chain_managers.get(series_key)
+        if manager is None:
+            return
+
+        # Safeguard: reject data past expiry
+        if option_greeks.ts_event >= manager.series_id.expiration_ns:
+            self._log.warning(
+                f"Dropping greeks for {option_greeks.instrument_id}, series {series_key} expired",
+            )
+            self._expire_option_chain_instrument(option_greeks.instrument_id, series_key)
+            return
+
+        try:
+            pyo3_greeks = option_greeks.to_pyo3()
+            bootstrapped = manager.handle_greeks(pyo3_greeks)
+            if bootstrapped:
+                self._complete_option_chain_bootstrap(series_key, manager)
+            # Raw mode: publish snapshot on every update
+            if manager.raw_mode and manager.bootstrapped:
+                chain_slice = manager.snapshot(self._clock.timestamp_ns())
+                if chain_slice is not None:
+                    topic = self._topic_cache.get_option_chain_topic(series_key)
+                    self._msgbus.publish_c(topic=topic, msg=chain_slice)
+        except Exception as e:
+            self._log.error(f"Error feeding greeks to option chain {series_key}: {e}")
+
+    cdef void _expire_option_chain_instrument(self, InstrumentId instrument_id, str series_key):
+        """Remove an expired instrument from the option chain and unsubscribe."""
+        cdef Venue venue
+        cdef MarketDataClient client
+
+        # Remove from instrument index
+        self._option_chain_instrument_index.pop(instrument_id, None)
+
+        manager = self._option_chain_managers.get(series_key)
+        if manager is None:
+            return
+
+        # Remove from manager
+        pyo3_id = nautilus_pyo3.InstrumentId.from_str(str(instrument_id))
+        series_empty = manager.remove_instrument(pyo3_id)
+
+        # Unsubscribe quotes + greeks for this single instrument
+        venue = Venue(str(manager.series_id.venue))
+        client = self._routing_map.get(venue)
+        if client is not None:
+            self._unsubscribe_option_chain_instruments(client, [pyo3_id])
+
+        self._log.info(f"Expired instrument {instrument_id} from option chain {series_key}")
+
+        # If all instruments expired, tear down the chain
+        if series_empty:
+            self._teardown_option_chain(series_key, client)
+            self._log.info(f"Option chain {series_key} is empty after expiry, torn down")
+
+    cdef void _update_option_chains(self, Instrument instrument):
+        """Check if a newly discovered instrument belongs to an active option chain."""
+        cdef str venue_str
+        cdef str underlying_str
+        cdef str settlement_str
+        cdef uint64_t expiration_ns
+        cdef str series_key
+        cdef Venue venue
+        cdef MarketDataClient client
+
+        if not hasattr(instrument, 'option_kind'):
+            return
+
+        # Extract option attributes
+        if not hasattr(instrument, 'expiration_ns') or not hasattr(instrument, 'strike_price'):
+            return
+
+        venue_str = str(instrument.id.venue)
+        underlying_str = ''
+        if hasattr(instrument, 'underlying'):
+            underlying_str = str(instrument.underlying)
+        if not underlying_str:
+            return
+
+        settlement_str = str(instrument.get_settlement_currency())
+        expiration_ns = instrument.expiration_ns
+
+        # Build series key and look up manager
+        try:
+            pyo3_series_id = nautilus_pyo3.OptionSeriesId(
+                venue_str,
+                underlying_str,
+                settlement_str,
+                expiration_ns,
+            )
+            series_key = str(pyo3_series_id)
+        except Exception:
+            return
+
+        manager = self._option_chain_managers.get(series_key)
+        if manager is None:
+            return
+
+        # Build pyo3 args and add instrument
+        pyo3_id = nautilus_pyo3.InstrumentId.from_str(str(instrument.id))
+        pyo3_strike = nautilus_pyo3.Price.from_str(str(instrument.strike_price))
+        kind_u8 = 0 if instrument.option_kind == OptionKind.CALL else 1
+        newly_inserted = manager.add_instrument(pyo3_id, pyo3_strike, kind_u8)
+
+        if newly_inserted:
+            self._option_chain_instrument_index[instrument.id] = series_key
+
+            # Check if instrument is in the active set and subscribe if so
+            active_ids = manager.active_instrument_ids()
+            pyo3_id_str = str(pyo3_id)
+            for aid in active_ids:
+                if str(aid) == pyo3_id_str:
+                    venue = Venue(venue_str)
+                    client = self._routing_map.get(venue)
+                    if client is not None:
+                        sub_cmd = SubscribeOptionChain(
+                            series_id=manager.series_id,
+                            strike_range=None,
+                            snapshot_interval_ms=None,
+                            client_id=client.id,
+                            venue=venue,
+                            command_id=UUID4(),
+                            ts_init=self._clock.timestamp_ns(),
+                        )
+                        self._subscribe_option_chain_instruments(client, [pyo3_id], sub_cmd)
+                    break
+
+            self._log.debug(f"Discovered instrument {instrument.id} added to option chain {series_key}")
 
 # -- RESPONSE HANDLERS ----------------------------------------------------------------------------
 
@@ -2249,6 +2965,11 @@ cdef class DataEngine(Component):
             self._log.debug(f"{RECV}{RES} {response}", LogColor.MAGENTA)
 
         self.response_count += 1
+
+        # Check if this is a forward prices response for an option chain request
+        if response.correlation_id in self._pending_option_chain_requests:
+            self._handle_forward_prices_response(response.correlation_id, response.data)
+            return
 
         # We may need to join responses from a catalog and a client
         grouped_response = None
@@ -2268,30 +2989,60 @@ cdef class DataEngine(Component):
         if grouped_response.params.get("disable_historical_cache", False):
             self._disable_historical_cache = True
 
+        # Handle snapshot forward replay for order book deltas
+        cdef list response_data = grouped_response.data
+        if grouped_response.data_type.type == OrderBookDeltas:
+            response_data = self._handle_order_book_deltas_snapshot_replay(
+                grouped_response.correlation_id,
+                response_data,
+                grouped_response.params,
+            )
+
         cdef:
-            bint query_past_data = response.params.get("subscription_name") is None
+            bint query_past_data = grouped_response.params.get("subscription_name") is None
             Data data
+            list final_data = response_data
         if query_past_data or grouped_response.data_type.type == Instrument:
             if grouped_response.data_type.type == Instrument:
-                for data in grouped_response.data:
+                for data in response_data:
                     self._handle_instrument(data, params=grouped_response.params)
 
-                grouped_response.data = []
+                final_data = []
             else:
-                for data in grouped_response.data:
+                for data in response_data:
                     self.process_historical(data)
 
-                if grouped_response.params.get("bar_types"):
+                if grouped_response.correlation_id in self._bar_types_params:
                     self._finalize_aggregated_bars_request(grouped_response)
 
-                # We store the amount of data received to be used for long requests
-                grouped_response.params["data_count"] = len(grouped_response.data)
-                grouped_response.data = []
+                # We store the amount of data received to be used for long requests or a join request
+                state = self._request_workflows.get(grouped_response.correlation_id)
+                if state is not None and state.data_count == 0:
+                    state.data_count = len(response_data)
 
+                final_data = []
+
+        cdef dict final_params = self._request_response_params(
+            grouped_response.correlation_id,
+            grouped_response.params,
+        )
         self._disable_historical_cache = False
         self._requests.pop(grouped_response.correlation_id, None)
+        self._request_workflows.pop(grouped_response.correlation_id, None)
 
-        self._msgbus.response(grouped_response)
+        cdef DataResponse final_response = DataResponse(
+            client_id=grouped_response.client_id,
+            venue=grouped_response.venue,
+            data_type=grouped_response.data_type,
+            data=final_data,
+            correlation_id=grouped_response.correlation_id,
+            response_id=UUID4(),
+            start=grouped_response.start,
+            end=grouped_response.end,
+            ts_init=self._clock.timestamp_ns(),
+            params=final_params,
+        )
+        self._msgbus.response(final_response)
 
     cpdef void _new_request_group(self, RequestData request, int n_components):
         # The parent request is stored so the grouped response can use its information
@@ -2324,7 +3075,8 @@ cdef class DataEngine(Component):
             if update_catalog:
                 start = response.start.value if response.start is not None else None
                 end = response.end.value if response.end is not None else None
-                identifier = response.params.get("identifier")
+                response_state = self._request_workflows.get(response.correlation_id)
+                identifier = response_state.identifier if response_state is not None else response.params.get("identifier")
                 self._update_catalog(
                     response.data,
                     response.data_type.type,
@@ -2334,23 +3086,32 @@ cdef class DataEngine(Component):
                 )
 
             data_result += response.data
+            self._request_workflows.pop(response.correlation_id, None)
 
         data_result.sort(key=lambda x: x.ts_init)
 
         # Use the parent request to ensure the correct response parameters are returned to the caller.
         parent_request = self._request_group_parent_request[parent_request_id]
-        response.data = data_result
-        response.start = parent_request.start
-        response.end = parent_request.end
-        response.correlation_id = parent_request_id
-        response.id = UUID4()
-        response.params = parent_request.params
+        parent_state = self._ensure_request_workflows(parent_request)
+
+        grouped_response = DataResponse(
+            client_id=response.client_id,
+            venue=response.venue,
+            data_type=response.data_type,
+            data=data_result,
+            correlation_id=parent_request_id,
+            response_id=UUID4(),
+            start=parent_state.start,
+            end=parent_state.end,
+            ts_init=self._clock.timestamp_ns(),
+            params=self._request_response_params(parent_request_id),
+        )
 
         del self._request_group_n_components[parent_request_id]
         del self._request_group_parent_request[parent_request_id]
         del self._request_group_responses[parent_request_id]
 
-        return response
+        return grouped_response
 
     cpdef void _check_bounds(self, DataResponse response):
         cdef int data_len = len(response.data)
@@ -2359,7 +3120,7 @@ cdef class DataEngine(Component):
 
         cdef:
             uint64_t start = response.start.value if response.start is not None else 0
-            cdef int first_index = 0
+            int first_index = 0
         if start:
             for i in range(data_len):
                 if response.data[i].ts_init >= start:
@@ -2403,12 +3164,13 @@ cdef class DataEngine(Component):
             self._log.warning("No catalog available for appending data.")
             return
 
-        if len(data) == 0 and data_cls and start and end:
-            # identifier can be None for custom data
-            used_catalog.extend_file_name(data_cls, identifier, start, end)
-            return
-
-        used_catalog.write_data(data, start, end)
+        used_catalog.write_data(
+            data,
+            start,
+            end,
+            data_cls=data_cls,
+            identifier=str(identifier) if identifier is not None else None,
+        )
 
     cpdef tuple[datetime, object] _catalog_last_timestamp(
         self,
@@ -2431,6 +3193,118 @@ cdef class DataEngine(Component):
         cdef Instrument instrument
         for instrument in instruments:
             self._handle_instrument(instrument)
+
+    cpdef list _handle_order_book_deltas_snapshot_replay(
+        self,
+        UUID4 correlation_id,
+        list data,
+        dict params,
+    ):
+        """
+        Handle snapshot forward replay for order book deltas.
+
+        If the data at the start of a UTC day is a snapshot, move the snapshot forward
+        by playing order book deltas until the first delta with ts_init >= "original_start_date".
+
+        Returns the filtered data list (or the original if no replay is needed).
+        """
+        cdef:
+            OrderBookDelta delta = None
+            OrderBookDelta last_applied = None
+            OrderBookDeltas deltas_obj
+            OrderBookDeltas snapshot_deltas = None
+            OrderBookDeltas_API snapshot_deltas_api
+            OrderBook order_book
+            Instrument instrument
+            InstrumentId instrument_id
+            uint64_t original_start_ns
+            uint64_t snapshot_ts
+            bint stop = False
+            list[OrderBookDeltas] filtered_data = []
+            list[OrderBookDelta] before_deltas
+            list[OrderBookDelta] after_deltas
+
+        state = self._request_workflows.get(correlation_id)
+        original_start_date = state.original_start_date if state is not None else params.get("original_start_date")
+        if original_start_date is None or not data:
+            return data
+
+        # Check if first deltas at start of UTC day is a snapshot
+        deltas_obj = data[0]
+        if not deltas_obj.deltas:
+            return data
+
+        delta = deltas_obj.deltas[0]
+        if not (delta.flags & RecordFlag.F_SNAPSHOT):
+            return data
+
+        # Check if first delta is at start of UTC day
+        first_delta_dt = unix_nanos_to_dt(delta.ts_init)
+        start_of_utc_day = first_delta_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        if first_delta_dt != start_of_utc_day:
+            return data
+
+        # Apply the initial snapshot and deltas up to original_start_date, similar to _update_order_book
+        instrument_id = delta.instrument_id
+        instrument = self._cache.instrument(instrument_id)
+        if instrument is None:
+            self._log.warning(f"Instrument {instrument_id} not found in cache, skipping snapshot replay")
+            return data
+
+        book_type = params.get("book_type", BookType.L2_MBP)
+        order_book = OrderBook(instrument_id, book_type)
+        original_start_ns = dt_to_unix_nanos(original_start_date)
+
+        if original_start_ns <= delta.ts_init:
+            return data
+
+        # Apply snapshot and deltas until first delta >= original_start_ns
+        for deltas_obj in data:
+            if stop:
+                filtered_data.append(deltas_obj)
+                continue
+
+            before_deltas = []
+            after_deltas = []
+            for delta in deltas_obj.deltas:
+                if not stop:
+                    before_deltas.append(delta)
+                    if delta.ts_init >= original_start_ns:
+                        stop = True
+                        last_applied = delta
+                else:
+                    after_deltas.append(delta)
+
+            if before_deltas:
+                order_book.apply(OrderBookDeltas(
+                    instrument_id=instrument_id,
+                    deltas=before_deltas,
+                ))
+                if last_applied is None:
+                    last_applied = before_deltas[-1]
+
+            if stop:
+                # Create the evolved snapshot
+                snapshot_ts = last_applied.ts_init
+                if snapshot_ts < original_start_ns:
+                    snapshot_ts = original_start_ns
+
+                snapshot_deltas = order_book.to_deltas_c(snapshot_ts, snapshot_ts)
+                filtered_data.append(snapshot_deltas)
+
+                if after_deltas:
+                    filtered_data.append(OrderBookDeltas(
+                        instrument_id=instrument_id,
+                        deltas=after_deltas,
+                    ))
+
+        # If we exhausted all data without reaching original_start_ns, create snapshot from end state
+        if not stop and last_applied is not None:
+            snapshot_ts = max(last_applied.ts_init, original_start_ns)
+            snapshot_deltas = order_book.to_deltas_c(snapshot_ts, snapshot_ts)
+            filtered_data.append(snapshot_deltas)
+
+        return filtered_data
 
     cpdef void _update_order_book(self, Data data):
         cdef OrderBook order_book = self._cache.order_book(data.instrument_id)
@@ -2619,10 +3493,15 @@ cdef class DataEngine(Component):
             self._setup_bar_aggregator(bar_type, historical=True, request_id=used_request_id)
 
     cpdef void _finalize_aggregated_bars_request(self, DataResponse response):
-        update_subscriptions = response.params.get("update_subscriptions", False)
+        used_params = self._bar_types_params.pop(response.correlation_id, None)
+        if not used_params:
+            self._log.error(f"No stored params to finalize aggregated bars for request id {response.correlation_id}.")
+            return
+
+        update_subscriptions = used_params.get("update_subscriptions", False)
         used_request_id = response.correlation_id if not update_subscriptions else None
 
-        bar_types = response.params.get("bar_types", ())
+        bar_types = used_params.get("bar_types", ())
         for bar_type in bar_types:
             key = self._get_bar_aggregator_key(bar_type, used_request_id)
             aggregator = self._bar_aggregators.get(key)
@@ -2637,6 +3516,7 @@ cdef class DataEngine(Component):
             if not update_subscriptions:
                 self._dispose_bar_aggregator(bar_type, historical=True, request_id=used_request_id)
                 self._bar_aggregators.pop(key, None)
+                self._log.debug(f"Removed aggregator for {key=}")
 
     cpdef void _start_bar_aggregator(self, MarketDataClient client, SubscribeBars command):
         key = self._get_bar_aggregator_key(command.bar_type)
@@ -2670,6 +3550,7 @@ cdef class DataEngine(Component):
         self._unsubscribe_bar_aggregator(client, command)
 
         self._bar_aggregators.pop(key, None)
+        self._log.debug(f"Removed aggregator for {key=}")
 
     cpdef void _create_bar_aggregator(self, BarType bar_type, dict params, UUID4 request_id = None):
         key = self._get_bar_aggregator_key(bar_type, request_id)
@@ -2689,6 +3570,8 @@ cdef class DataEngine(Component):
 
         if bar_type.spec.is_time_aggregated():
             time_bars_origin_offset = self._time_bars_origin_offset.get(bar_type.spec.aggregation) or params.get("time_bars_origin_offset")
+            time_bars_skip_first_non_full_bar = params.get("skip_first_non_full_bar", self._time_bars_skip_first_non_full_bar)
+
             aggregator = TimeBarAggregator(
                 instrument=instrument,
                 bar_type=aggregated_bar_type,
@@ -2696,7 +3579,7 @@ cdef class DataEngine(Component):
                 clock=self._clock,
                 interval_type=self._time_bars_interval_type,
                 timestamp_on_close=self._time_bars_timestamp_on_close,
-                skip_first_non_full_bar=self._time_bars_skip_first_non_full_bar,
+                skip_first_non_full_bar=time_bars_skip_first_non_full_bar,
                 build_with_no_updates=self._time_bars_build_with_no_updates,
                 time_bars_origin_offset=time_bars_origin_offset,
                 bar_build_delay=self._time_bars_build_delay,
@@ -2969,6 +3852,7 @@ cdef class DataEngine(Component):
 
     cpdef void _handle_spread_quote_tick_request(self, RequestQuoteTicks request):
         spread_instrument_id = request.instrument_id
+        state = self._ensure_request_workflows(request)
 
         cdef Instrument instrument = self._cache.instrument(spread_instrument_id)
         if instrument is None:
@@ -2995,15 +3879,13 @@ cdef class DataEngine(Component):
         # Create join_request using leg_request_ids and send it
         cdef uint64_t ts_init = self._clock.timestamp_ns()
         cdef list leg_request_ids = []
-        leg_params = (request.params or {}).copy()
-        leg_params["join_request"] = True
-        leg_params.pop("bar_types", None)
+        leg_params = request.params.copy()
 
         for leg_id, _ in spread_legs:
             leg_request = RequestQuoteTicks(
                 instrument_id=leg_id,
-                start=request.start,
-                end=request.end,
+                start=state.start,
+                end=state.end,
                 limit=request.limit,
                 client_id=request.client_id,
                 venue=request.venue,
@@ -3012,21 +3894,24 @@ cdef class DataEngine(Component):
                 ts_init=ts_init,
                 params=leg_params,
             )
+            leg_state = self._inherit_request_workflows(leg_request, request)
+            leg_state.join_request = True
             leg_request_ids.append(leg_request.id)
             self._msgbus.request(endpoint="DataEngine.request", request=leg_request)
 
-        join_params = (request.params or {}).copy()
+        join_params = request.params.copy()
 
         cdef RequestJoin join_request = RequestJoin(
             request_ids=tuple(leg_request_ids),
-            start=request.start,
-            end=request.end,
+            start=state.start,
+            end=state.end,
             callback=self._finalize_spread_quote_request,
             request_id=UUID4(),
             correlation_id=request.id,
             ts_init=ts_init,
             params=join_params,
         )
+        self._inherit_request_workflows(join_request, request)
         self._parent_request_id[join_request.id] = request.id
 
         self._msgbus.request(endpoint="DataEngine.request", request=join_request)
@@ -3042,6 +3927,7 @@ cdef class DataEngine(Component):
             self._log.error(f"Cannot finalize spread quote request: join request {request} not found")
             return
 
+        state = self._ensure_request_workflows(request)
         spread_instrument_id = request.instrument_id
         update_subscriptions = response.params.get("update_subscriptions", False)
         used_request_id = request.id if not update_subscriptions else None
@@ -3049,6 +3935,8 @@ cdef class DataEngine(Component):
         key = self._get_spread_quote_aggregator_key(spread_instrument_id, used_request_id)
         aggregator = self._spread_quote_aggregators.get(key)
         if aggregator:
+            aggregator.flush_pending_historical_quotes()
+
             # After a request we set is_running to False so a request using the same aggregator
             # or a subscription can use the aggregator
             aggregator.set_running(False)
@@ -3056,6 +3944,7 @@ cdef class DataEngine(Component):
             if not update_subscriptions:
                 self._dispose_spread_quote_aggregator(spread_instrument_id, historical=True, request_id=used_request_id)
                 self._spread_quote_aggregators.pop(key, None)
+                self._log.debug(f"Removed aggregator for {key=}")
 
         # Send response for the original request to trigger its callback
         final_response = DataResponse(
@@ -3065,10 +3954,10 @@ cdef class DataEngine(Component):
             data=[],
             correlation_id=request.id,
             response_id=UUID4(),
-            start=request.start,
-            end=request.end,
+            start=state.start,
+            end=state.end,
             ts_init=self._clock.timestamp_ns(),
-            params=response.params,
+            params=self._request_response_params(request.id, response.params),
         )
         self._handle_response(final_response)
 
@@ -3104,6 +3993,7 @@ cdef class DataEngine(Component):
         self._unsubscribe_spread_quote_aggregator(client, command)
 
         self._spread_quote_aggregators.pop(key, None)
+        self._log.debug(f"Removed aggregator for {key=}")
 
     cpdef void _create_spread_quote_aggregator(
         self,
@@ -3134,8 +4024,9 @@ cdef class DataEngine(Component):
             )
             return
 
-        update_interval_seconds = (params or {}).get("update_interval_seconds", 1)
-        greeks_calculator = GreeksCalculator(self._msgbus, self._cache, self._clock)
+        update_interval_seconds = params.get("update_interval_seconds", 1)
+        quote_build_delay = params.get("quote_build_delay", 0)
+        greeks_calculator = GreeksCalculator(self._cache, self._clock)
         self._spread_quote_aggregators[key] = SpreadQuoteAggregator(
             spread_instrument=instrument,
             handler=self._handle_spread_quote,
@@ -3143,6 +4034,7 @@ cdef class DataEngine(Component):
             clock=self._clock,
             historical=False,
             update_interval_seconds=update_interval_seconds,
+            quote_build_delay=quote_build_delay,
         )
         self._log.debug(f"Created aggregator for {key=}")
 
@@ -3174,7 +4066,7 @@ cdef class DataEngine(Component):
             # independently from the system clock (which may be ahead)
             test_clock = TestClock()
             aggregator.set_clock(test_clock)
-            greeks_calculator = GreeksCalculator(self._msgbus, self._cache, test_clock)
+            greeks_calculator = GreeksCalculator(self._cache, test_clock)
             aggregator.set_historical_mode(historical, self.process_historical, greeks_calculator)
         else:
             if aggregator.historical_mode:
@@ -3183,7 +4075,7 @@ cdef class DataEngine(Component):
 
             aggregator.stop_timer()
             aggregator.set_clock(self._clock)
-            greeks_calculator = GreeksCalculator(self._msgbus, self._cache, self._clock)
+            greeks_calculator = GreeksCalculator(self._cache, self._clock)
             aggregator.set_historical_mode(historical, self._handle_spread_quote, greeks_calculator)
 
         # Subscribe aggregator to message bus to receive underlying data
@@ -3204,7 +4096,7 @@ cdef class DataEngine(Component):
     cpdef void _handle_spread_quote(self, Data quote):
         # We send the quote to a simulated exchanged so it can be processed for execution first
         # before being processed by the data engine, similarly to the logic in the backtest engine
-        self._msgbus.send(endpoint=f"SimulatedExchange.spread_quote.{quote.instrument_id.venue}", msg=quote)
+        self._msgbus.send(endpoint=f"SimulatedExchange.process_new_quote.{quote.instrument_id.venue}", msg=quote)
         self.process(quote)
 
     cpdef void _dispose_spread_quote_aggregator(self, InstrumentId spread_instrument_id, bint historical = False, UUID4 request_id = None):
@@ -3267,6 +4159,70 @@ cdef class DataEngine(Component):
 
     cdef tuple _get_spread_quote_aggregator_key(self, InstrumentId spread_instrument_id, UUID4 request_id = None):
         return (spread_instrument_id, request_id)
+
+    cdef object _ensure_request_workflows(self, RequestData request):
+        state = self._request_workflows.get(request.id)
+        if state is not None:
+            return state
+
+        state = RequestWorkflowState(
+            start=time_object_to_dt(request.start) if request.start is not None else None,
+            end=time_object_to_dt(request.end) if request.end is not None else None,
+            join_request=request.params.get("join_request", False),
+            time_range_generator_enabled="time_range_generator" in request.params,
+        )
+        self._request_workflows[request.id] = state
+
+        return state
+
+    cdef object _inherit_request_workflows(self, RequestData target, RequestData source):
+        source_state = self._ensure_request_workflows(source)
+
+        state = RequestWorkflowState(
+            start=time_object_to_dt(target.start) if target.start is not None else source_state.start,
+            end=time_object_to_dt(target.end) if target.end is not None else source_state.end,
+            original_start_date=source_state.original_start_date,
+            identifier=source_state.identifier,
+            has_aggregated_bars=source_state.has_aggregated_bars,
+            join_request=source_state.join_request,
+            join_started=source_state.join_started,
+            time_range_generator_enabled=source_state.time_range_generator_enabled,
+        )
+        self._request_workflows[target.id] = state
+        return state
+
+    cdef dict _request_response_params(self, UUID4 request_id, dict[str, object] fallback_params = None):
+        request = self._requests.get(request_id)
+        if request is not None:
+            params = request.params.copy()
+            if fallback_params is not None:
+                for key, value in fallback_params.items():
+                    if key not in params:
+                        params[key] = value
+        elif fallback_params is not None:
+            params = fallback_params.copy()
+        else:
+            params = {}
+
+        state = self._request_workflows.get(request_id)
+        if state is not None and state.data_count != 0:
+            params["data_count"] = state.data_count
+
+        return params
+
+
+@dataclass(slots=True)
+class RequestWorkflowState:
+    start: datetime | None
+    end: datetime | None
+    original_start_date: datetime | None = None
+    identifier: str | None = None
+    data_count: int = 0
+    has_aggregated_bars: bool = False
+    join_request: bool = False
+    join_started: bool = False
+    time_range_generator_enabled: bool = False
+
 
 TimeRangeGenerator = Callable[[int, dict[str, Any]], Generator[int, bool, None]]
 

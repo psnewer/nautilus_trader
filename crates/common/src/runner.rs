@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,12 +19,12 @@
 //! message queues, and time event channels. It manages thread-local storage for
 //! system-wide components that need to be accessible across threads.
 
-use std::{cell::OnceCell, fmt::Debug, sync::Arc};
+use std::{cell::RefCell, fmt::Debug, sync::Arc};
 
 use crate::{
     messages::{data::DataCommand, execution::TradingCommand},
-    msgbus::{self, switchboard::MessagingSwitchboard},
-    timer::TimeEventHandlerV2,
+    msgbus::{self, MessagingSwitchboard},
+    timer::TimeEventHandler,
 };
 
 /// Trait for data command sending that can be implemented for both sync and async runners.
@@ -36,16 +36,33 @@ pub trait DataCommandSender {
     fn execute(&self, command: DataCommand);
 }
 
-/// Synchronous implementation of DataCommandSender for backtest environments.
+/// Synchronous [`DataCommandSender`] for backtest environments.
+///
+/// Buffers commands in a thread-local queue for deferred execution,
+/// avoiding `RefCell` re-entrancy when sent from event handler callbacks.
 #[derive(Debug)]
 pub struct SyncDataCommandSender;
 
 impl DataCommandSender for SyncDataCommandSender {
     fn execute(&self, command: DataCommand) {
-        // TODO: Placeholder, we still need to queue and drain even for sync
-        let endpoint = MessagingSwitchboard::data_engine_execute();
-        msgbus::send_any(endpoint, &command);
+        DATA_CMD_QUEUE.with(|q| q.borrow_mut().push(command));
     }
+}
+
+/// Drain all buffered data commands, dispatching each to the data engine.
+pub fn drain_data_cmd_queue() {
+    DATA_CMD_QUEUE.with(|q| {
+        let commands: Vec<DataCommand> = q.borrow_mut().drain(..).collect();
+        let endpoint = MessagingSwitchboard::data_engine_execute();
+        for cmd in commands {
+            msgbus::send_data_command(endpoint, cmd);
+        }
+    });
+}
+
+/// Returns `true` if the data command queue is empty.
+pub fn data_cmd_queue_is_empty() -> bool {
+    DATA_CMD_QUEUE.with(|q| q.borrow().is_empty())
 }
 
 /// Gets the global data command sender.
@@ -57,7 +74,8 @@ impl DataCommandSender for SyncDataCommandSender {
 pub fn get_data_cmd_sender() -> Arc<dyn DataCommandSender> {
     DATA_CMD_SENDER.with(|sender| {
         sender
-            .get()
+            .borrow()
+            .as_ref()
             .expect("Data command sender should be initialized by runner")
             .clone()
     })
@@ -73,16 +91,23 @@ pub fn get_data_cmd_sender() -> Arc<dyn DataCommandSender> {
 /// Panics if a sender has already been set.
 pub fn set_data_cmd_sender(sender: Arc<dyn DataCommandSender>) {
     DATA_CMD_SENDER.with(|s| {
-        if s.set(sender).is_err() {
-            panic!("Data command sender can only be set once");
-        }
+        let mut slot = s.borrow_mut();
+        assert!(slot.is_none(), "Data command sender can only be set once");
+        *slot = Some(sender);
+    });
+}
+
+/// Replaces the global data command sender for the current thread.
+pub fn replace_data_cmd_sender(sender: Arc<dyn DataCommandSender>) {
+    DATA_CMD_SENDER.with(|s| {
+        *s.borrow_mut() = Some(sender);
     });
 }
 
 /// Trait for time event sending that can be implemented for both sync and async runners.
 pub trait TimeEventSender: Debug + Send + Sync {
     /// Sends a time event handler.
-    fn send(&self, handler: TimeEventHandlerV2);
+    fn send(&self, handler: TimeEventHandler);
 }
 
 /// Gets the global time event sender.
@@ -94,7 +119,8 @@ pub trait TimeEventSender: Debug + Send + Sync {
 pub fn get_time_event_sender() -> Arc<dyn TimeEventSender> {
     TIME_EVENT_SENDER.with(|sender| {
         sender
-            .get()
+            .borrow()
+            .as_ref()
             .expect("Time event sender should be initialized by runner")
             .clone()
     })
@@ -105,7 +131,7 @@ pub fn get_time_event_sender() -> Arc<dyn TimeEventSender> {
 /// Returns `None` if the sender is not initialized (e.g., in test environments).
 #[must_use]
 pub fn try_get_time_event_sender() -> Option<Arc<dyn TimeEventSender>> {
-    TIME_EVENT_SENDER.with(|sender| sender.get().cloned())
+    TIME_EVENT_SENDER.with(|sender| sender.borrow().as_ref().cloned())
 }
 
 /// Sets the global time event sender.
@@ -117,9 +143,16 @@ pub fn try_get_time_event_sender() -> Option<Arc<dyn TimeEventSender>> {
 /// Panics if a sender has already been set.
 pub fn set_time_event_sender(sender: Arc<dyn TimeEventSender>) {
     TIME_EVENT_SENDER.with(|s| {
-        if s.set(sender).is_err() {
-            panic!("Time event sender can only be set once");
-        }
+        let mut slot = s.borrow_mut();
+        assert!(slot.is_none(), "Time event sender can only be set once");
+        *slot = Some(sender);
+    });
+}
+
+/// Replaces the global time event sender for the current thread.
+pub fn replace_time_event_sender(sender: Arc<dyn TimeEventSender>) {
+    TIME_EVENT_SENDER.with(|s| {
+        *s.borrow_mut() = Some(sender);
     });
 }
 
@@ -132,6 +165,35 @@ pub trait TradingCommandSender {
     fn execute(&self, command: TradingCommand);
 }
 
+/// Synchronous [`TradingCommandSender`] for backtest environments.
+///
+/// Buffers commands in a thread-local queue for deferred execution,
+/// avoiding `RefCell` re-entrancy when sent from event handler callbacks.
+#[derive(Debug)]
+pub struct SyncTradingCommandSender;
+
+impl TradingCommandSender for SyncTradingCommandSender {
+    fn execute(&self, command: TradingCommand) {
+        TRADING_CMD_QUEUE.with(|q| q.borrow_mut().push(command));
+    }
+}
+
+/// Drain all buffered trading commands, dispatching each to the exec engine.
+pub fn drain_trading_cmd_queue() {
+    TRADING_CMD_QUEUE.with(|q| {
+        let commands: Vec<TradingCommand> = q.borrow_mut().drain(..).collect();
+        let endpoint = MessagingSwitchboard::exec_engine_execute();
+        for cmd in commands {
+            msgbus::send_trading_command(endpoint, cmd);
+        }
+    });
+}
+
+/// Returns `true` if the trading command queue is empty.
+pub fn trading_cmd_queue_is_empty() -> bool {
+    TRADING_CMD_QUEUE.with(|q| q.borrow().is_empty())
+}
+
 /// Gets the global trading command sender.
 ///
 /// # Panics
@@ -141,10 +203,19 @@ pub trait TradingCommandSender {
 pub fn get_trading_cmd_sender() -> Arc<dyn TradingCommandSender> {
     EXEC_CMD_SENDER.with(|sender| {
         sender
-            .get()
+            .borrow()
+            .as_ref()
             .expect("Trading command sender should be initialized by runner")
             .clone()
     })
+}
+
+/// Attempts to get the global trading command sender without panicking.
+///
+/// Returns `None` if the sender is not initialized (e.g., in test environments).
+#[must_use]
+pub fn try_get_trading_cmd_sender() -> Option<Arc<dyn TradingCommandSender>> {
+    EXEC_CMD_SENDER.with(|sender| sender.borrow().as_ref().cloned())
 }
 
 /// Sets the global trading command sender.
@@ -157,14 +228,121 @@ pub fn get_trading_cmd_sender() -> Arc<dyn TradingCommandSender> {
 /// Panics if a sender has already been set.
 pub fn set_exec_cmd_sender(sender: Arc<dyn TradingCommandSender>) {
     EXEC_CMD_SENDER.with(|s| {
-        if s.set(sender).is_err() {
-            panic!("Trading command sender can only be set once");
-        }
+        let mut slot = s.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "Trading command sender can only be set once"
+        );
+        *slot = Some(sender);
+    });
+}
+
+/// Replaces the global trading command sender for the current thread.
+pub fn replace_exec_cmd_sender(sender: Arc<dyn TradingCommandSender>) {
+    EXEC_CMD_SENDER.with(|s| {
+        *s.borrow_mut() = Some(sender);
     });
 }
 
 thread_local! {
-    static TIME_EVENT_SENDER: OnceCell<Arc<dyn TimeEventSender>> = const { OnceCell::new() };
-    static DATA_CMD_SENDER: OnceCell<Arc<dyn DataCommandSender>> = const { OnceCell::new() };
-    static EXEC_CMD_SENDER: OnceCell<Arc<dyn TradingCommandSender>> = const { OnceCell::new() };
+    static TIME_EVENT_SENDER: RefCell<Option<Arc<dyn TimeEventSender>>> = const { RefCell::new(None) };
+    static DATA_CMD_SENDER: RefCell<Option<Arc<dyn DataCommandSender>>> = const { RefCell::new(None) };
+    static EXEC_CMD_SENDER: RefCell<Option<Arc<dyn TradingCommandSender>>> = const { RefCell::new(None) };
+    static DATA_CMD_QUEUE: RefCell<Vec<DataCommand>> = const { RefCell::new(Vec::new()) };
+    static TRADING_CMD_QUEUE: RefCell<Vec<TradingCommand>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rstest::rstest;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoopTimeEventSender;
+
+    impl TimeEventSender for NoopTimeEventSender {
+        fn send(&self, _handler: TimeEventHandler) {}
+    }
+
+    #[rstest]
+    fn test_replace_data_cmd_sender_overwrites_previous() {
+        std::thread::spawn(|| {
+            replace_data_cmd_sender(Arc::new(SyncDataCommandSender));
+            replace_data_cmd_sender(Arc::new(SyncDataCommandSender));
+            let _sender = get_data_cmd_sender();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[rstest]
+    fn test_replace_exec_cmd_sender_overwrites_previous() {
+        std::thread::spawn(|| {
+            replace_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+            replace_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+            let _sender = get_trading_cmd_sender();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[rstest]
+    fn test_replace_time_event_sender_overwrites_previous() {
+        std::thread::spawn(|| {
+            replace_time_event_sender(Arc::new(NoopTimeEventSender));
+            replace_time_event_sender(Arc::new(NoopTimeEventSender));
+            let _sender = get_time_event_sender();
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[rstest]
+    fn test_set_data_cmd_sender_panics_on_double_set() {
+        let result = std::thread::spawn(|| {
+            set_data_cmd_sender(Arc::new(SyncDataCommandSender));
+            set_data_cmd_sender(Arc::new(SyncDataCommandSender));
+        })
+        .join();
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_set_exec_cmd_sender_panics_on_double_set() {
+        let result = std::thread::spawn(|| {
+            set_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+            set_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+        })
+        .join();
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_set_time_event_sender_panics_on_double_set() {
+        let result = std::thread::spawn(|| {
+            set_time_event_sender(Arc::new(NoopTimeEventSender));
+            set_time_event_sender(Arc::new(NoopTimeEventSender));
+        })
+        .join();
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_try_get_time_event_sender_returns_none_when_unset() {
+        let result = std::thread::spawn(try_get_time_event_sender)
+            .join()
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_try_get_trading_cmd_sender_returns_none_when_unset() {
+        let is_none = std::thread::spawn(|| try_get_trading_cmd_sender().is_none())
+            .join()
+            .unwrap();
+        assert!(is_none);
+    }
 }

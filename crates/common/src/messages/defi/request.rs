@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,8 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use indexmap::IndexMap;
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{Params, UUID4, UnixNanos};
 use nautilus_model::identifiers::{ClientId, InstrumentId};
 
 /// Represents a request for a pool snapshot from a specific AMM pool.
@@ -24,18 +23,18 @@ pub struct RequestPoolSnapshot {
     pub client_id: Option<ClientId>,
     pub request_id: UUID4,
     pub ts_init: UnixNanos,
-    pub params: Option<IndexMap<String, String>>,
+    pub params: Option<Params>,
 }
 
 impl RequestPoolSnapshot {
     /// Creates a new [`RequestPoolSnapshot`] instance.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
         request_id: UUID4,
         ts_init: UnixNanos,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Params>,
     ) -> Self {
         Self {
             instrument_id,

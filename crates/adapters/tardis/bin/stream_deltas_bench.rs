@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,12 +23,12 @@ fn main() {
     );
 
     if !test_data_path.exists() {
-        eprintln!("Test data file not found: {test_data_path:?}");
+        eprintln!("Test data file not found: {}", test_data_path.display());
         return;
     }
 
     println!("Running stream_deltas benchmarks...");
-    println!("Test data: {test_data_path:?}");
+    println!("Test data: {}", test_data_path.display());
     println!();
 
     // Benchmark 1: Small chunks

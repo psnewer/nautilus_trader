@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -317,6 +317,8 @@ cdef class OrderUpdated(OrderEvent):
     """The orders current price.\n\n:returns: `Price`"""
     cdef readonly Price trigger_price
     """The orders current trigger price.\n\n:returns: `Price` or ``None``"""
+    cdef readonly bint is_quote_quantity
+    """If the order quantity is denominated in the quote currency.\n\n:returns: `bool`"""
 
     @staticmethod
     cdef OrderUpdated from_dict_c(dict values)

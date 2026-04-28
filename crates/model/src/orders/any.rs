@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,7 +24,7 @@ use super::{
     stop_limit::StopLimitOrder, stop_market::StopMarketOrder,
     trailing_stop_limit::TrailingStopLimitOrder, trailing_stop_market::TrailingStopMarketOrder,
 };
-use crate::{events::OrderEventAny, types::Price};
+use crate::{events::OrderEventAny, identifiers::OrderListId, types::Price};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[enum_dispatch(Order)]
@@ -50,9 +50,7 @@ impl OrderAny {
     /// - The first event is not `OrderInitialized`.
     /// - Any event has an invalid state transition when applied to the order.
     ///
-    /// # Panics
-    ///
-    /// Panics if `events` is empty (after the check, but before .unwrap()).
+    #[expect(clippy::missing_panics_doc)] // Guarded by empty check above
     pub fn from_events(events: Vec<OrderEventAny>) -> anyhow::Result<Self> {
         if events.is_empty() {
             anyhow::bail!("No order events provided to create OrderAny");
@@ -85,7 +83,6 @@ impl OrderAny {
     /// Panics if the first event is not `OrderInitialized` (violates invariant).
     #[must_use]
     pub fn init_event(&self) -> &crate::events::OrderInitialized {
-        // SAFETY: Order specification guarantees at least one event (OrderInitialized)
         match self
             .events()
             .first()
@@ -93,6 +90,23 @@ impl OrderAny {
         {
             OrderEventAny::Initialized(init) => init,
             _ => panic!("Order invariant violated: first event must be OrderInitialized"),
+        }
+    }
+
+    // TODO: Does not update the OrderInitialized event in the order's
+    // event history. The init event will still carry the original
+    // order_list_id (typically None). Address with fluent builder API.
+    pub fn set_order_list_id(&mut self, id: OrderListId) {
+        match self {
+            Self::Limit(o) => o.order_list_id = Some(id),
+            Self::LimitIfTouched(o) => o.order_list_id = Some(id),
+            Self::Market(o) => o.order_list_id = Some(id),
+            Self::MarketIfTouched(o) => o.order_list_id = Some(id),
+            Self::MarketToLimit(o) => o.order_list_id = Some(id),
+            Self::StopLimit(o) => o.order_list_id = Some(id),
+            Self::StopMarket(o) => o.order_list_id = Some(id),
+            Self::TrailingStopLimit(o) => o.order_list_id = Some(id),
+            Self::TrailingStopMarket(o) => o.order_list_id = Some(id),
         }
     }
 }
@@ -257,7 +271,7 @@ impl LimitOrderAny {
     ///
     /// # Panics
     ///
-    /// Panics if the MarketToLimit order price is not set.
+    /// Panics if the `MarketToLimit` order price is not set.
     #[must_use]
     pub fn limit_px(&self) -> Price {
         match self {
@@ -334,7 +348,7 @@ mod tests {
     use super::*;
     use crate::{
         enums::{OrderType, TrailingOffsetType},
-        events::{OrderEventAny, OrderUpdated, order::initialized::OrderInitializedBuilder},
+        events::{OrderEventAny, OrderUpdated, order::spec::OrderInitializedSpec},
         identifiers::{ClientOrderId, InstrumentId, StrategyId},
         orders::builder::OrderTestBuilder,
         types::{Price, Quantity},
@@ -365,12 +379,11 @@ mod tests {
     #[rstest]
     fn test_order_any_conversion_from_events() {
         // Create an OrderInitialized event
-        let init_event = OrderInitializedBuilder::default()
+        let init_event = OrderInitializedSpec::builder()
             .order_type(OrderType::Market)
             .instrument_id(InstrumentId::from("BTC-USDT.BINANCE"))
             .quantity(Quantity::from(10))
-            .build()
-            .unwrap();
+            .build();
 
         // Create a vector of events
         let events = vec![OrderEventAny::Initialized(init_event.clone())];

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! [NautilusTrader](http://nautilustrader.io) adapter for the [dYdX](https://dydx.trade/) decentralized derivatives exchange.
+//! [NautilusTrader](https://nautilustrader.io) adapter for the [dYdX](https://dydx.trade/) decentralized derivatives exchange.
 //!
 //! The `nautilus-dydx` crate provides client bindings (HTTP, WebSocket & gRPC), data
 //! models, and helper utilities that wrap the official **dYdX v4 API**.
@@ -23,24 +23,21 @@
 //! | Resource                             | Reference                                              |
 //! |--------------------------------------|--------------------------------------------------------|
 //! | Main documentation                   | <https://docs.dydx.xyz>                                |
-//! | Indexer HTTP API                     | <https://docs.dydx.exchange/api_integration-indexer/indexer_api> |
-//! | Indexer WebSocket API                | <https://docs.dydx.trade/developers/indexer/websockets> |
+//! | Indexer HTTP API                     | <https://docs.dydx.xyz/api_integration-indexer/indexer_api> |
+//! | Indexer WebSocket API                | <https://docs.dydx.xyz/api_integration-indexer/indexer_websocket> |
 //! | Order types                          | <https://docs.dydx.xyz/concepts/trading/orders>        |
 //! | Permissioned keys                    | <https://docs.dydx.xyz/concepts/trading/authenticators> |
-//! | Validator client (gRPC)              | <https://docs.dydx.exchange/api_integration-clients/validator_client> |
+//! | Validator client (gRPC)              | <https://docs.dydx.xyz/api_integration-clients/validator_client> |
 //!
-//! # Platform
+//! # NautilusTrader
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
-//! algorithmic trading platform, providing quantitative traders with the ability to backtest
-//! portfolios of automated trading strategies on historical data with an event-driven engine,
-//! and also deploy those same strategies live, with no code changes.
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, production-grade, Rust-native
+//! engine for multi-asset, multi-venue trading systems.
 //!
-//! NautilusTrader's design, architecture, and implementation philosophy prioritizes software
-//! correctness and safety at the highest level, with the aim of supporting mission-critical trading
-//! system backtesting and live deployment workloads.
+//! The system spans research, deterministic simulation, and live execution within a single
+//! event-driven architecture, providing research-to-live semantic parity.
 //!
-//! # Feature flags
+//! # Feature Flags
 //!
 //! This crate provides feature flags to control source code inclusion during compilation,
 //! depending on the intended use case, i.e. whether to provide Python bindings
@@ -48,7 +45,9 @@
 //! or as part of a Rust only build.
 //!
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
-//! - `extension-module`: Builds as a Python extension module (used with `python`).
+//! - `extension-module`: Builds as a Python extension module.
+//!
+//! [High-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation#precision-mode) (128-bit value types) is enabled by default.
 
 #![warn(rustc::all)]
 #![deny(unsafe_code)]
@@ -63,6 +62,7 @@ pub mod config;
 pub mod data;
 pub mod error;
 pub mod execution;
+pub mod factories;
 pub mod grpc;
 pub mod http;
 pub mod proto;
@@ -82,6 +82,7 @@ pub use crate::{
     },
     data::DydxDataClient,
     error::DydxError,
+    factories::{DydxDataClientFactory, DydxExecutionClientFactory},
     http::{
         client::DydxHttpClient,
         error::DydxHttpError,

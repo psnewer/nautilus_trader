@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -50,6 +50,7 @@ def what_to_show(bar_type: BarType) -> str:
         PriceType.LAST: "TRADES",
         PriceType.MID: "MIDPOINT",
     }
+
     if str(bar_type.instrument_id.venue) == "PAXOS" and bar_type.spec.price_type == PriceType.LAST:
         return "AGGTRADES"
     else:

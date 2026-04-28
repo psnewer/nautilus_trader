@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -36,9 +36,12 @@ pub struct CacheIndex {
     pub(crate) instrument_positions: AHashMap<InstrumentId, AHashSet<PositionId>>,
     pub(crate) strategy_orders: AHashMap<StrategyId, AHashSet<ClientOrderId>>,
     pub(crate) strategy_positions: AHashMap<StrategyId, AHashSet<PositionId>>,
+    pub(crate) account_orders: AHashMap<AccountId, AHashSet<ClientOrderId>>,
+    pub(crate) account_positions: AHashMap<AccountId, AHashSet<PositionId>>,
     pub(crate) exec_algorithm_orders: AHashMap<ExecAlgorithmId, AHashSet<ClientOrderId>>,
     pub(crate) exec_spawn_orders: AHashMap<ClientOrderId, AHashSet<ClientOrderId>>,
     pub(crate) orders: AHashSet<ClientOrderId>,
+    pub(crate) orders_active_local: AHashSet<ClientOrderId>,
     pub(crate) orders_open: AHashSet<ClientOrderId>,
     pub(crate) orders_closed: AHashSet<ClientOrderId>,
     pub(crate) orders_emulated: AHashSet<ClientOrderId>,
@@ -70,9 +73,12 @@ impl Default for CacheIndex {
             instrument_positions: AHashMap::new(),
             strategy_orders: AHashMap::new(),
             strategy_positions: AHashMap::new(),
+            account_orders: AHashMap::new(),
+            account_positions: AHashMap::new(),
             exec_algorithm_orders: AHashMap::new(),
             exec_spawn_orders: AHashMap::new(),
             orders: AHashSet::new(),
+            orders_active_local: AHashSet::new(),
             orders_open: AHashSet::new(),
             orders_closed: AHashSet::new(),
             orders_emulated: AHashSet::new(),
@@ -105,9 +111,12 @@ impl CacheIndex {
         self.instrument_positions.clear();
         self.strategy_orders.clear();
         self.strategy_positions.clear();
+        self.account_orders.clear();
+        self.account_positions.clear();
         self.exec_algorithm_orders.clear();
         self.exec_spawn_orders.clear();
         self.orders.clear();
+        self.orders_active_local.clear();
         self.orders_open.clear();
         self.orders_closed.clear();
         self.orders_emulated.clear();

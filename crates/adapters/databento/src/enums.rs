@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,7 +42,17 @@ use strum::{AsRefStr, Display, EnumIter, EnumString, FromRepr};
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(eq, eq_int, module = "nautilus_trader.core.nautilus_pyo3.databento")
+    pyo3::pyclass(
+        eq,
+        eq_int,
+        rename_all = "SCREAMING_SNAKE_CASE",
+        module = "nautilus_trader.core.nautilus_pyo3.databento",
+        from_py_object
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.databento")
 )]
 pub enum DatabentoStatisticType {
     OpeningPrice = 1,
@@ -102,7 +112,17 @@ impl FromU8 for DatabentoStatisticType {
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(eq, eq_int, module = "nautilus_trader.core.nautilus_pyo3.databento")
+    pyo3::pyclass(
+        eq,
+        eq_int,
+        rename_all = "SCREAMING_SNAKE_CASE",
+        module = "nautilus_trader.core.nautilus_pyo3.databento",
+        from_py_object
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.databento")
 )]
 pub enum DatabentoStatisticUpdateAction {
     Added = 1,

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,8 +16,8 @@
 use std::hash::{Hash, Hasher};
 
 use nautilus_core::{
-    UnixNanos,
-    correctness::{FAILED, check_equal_u8},
+    Params, UnixNanos,
+    correctness::{CorrectnessResult, CorrectnessResultExt, FAILED, check_equal_u8},
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -38,10 +38,14 @@ use crate::{
 
 /// Represents a crypto perpetual futures contract instrument (a.k.a. perpetual swap).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct CryptoPerpetual {
     /// The instrument ID for the instrument.
@@ -88,6 +92,8 @@ pub struct CryptoPerpetual {
     pub max_price: Option<Price>,
     /// The minimum allowable quoted price.
     pub min_price: Option<Price>,
+    /// Additional instrument metadata as a JSON-serializable dictionary.
+    pub info: Option<Params>,
     /// UNIX timestamp (nanoseconds) when the data event occurred.
     pub ts_event: UnixNanos,
     /// UNIX timestamp (nanoseconds) when the data object was initialized.
@@ -103,7 +109,7 @@ impl CryptoPerpetual {
     /// # Errors
     ///
     /// Returns an error if any input validation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new_checked(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -127,9 +133,10 @@ impl CryptoPerpetual {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
-    ) -> anyhow::Result<Self> {
+    ) -> CorrectnessResult<Self> {
         check_equal_u8(
             price_precision,
             price_increment.precision,
@@ -168,6 +175,7 @@ impl CryptoPerpetual {
             min_notional,
             max_price,
             min_price,
+            info,
             ts_event,
             ts_init,
         })
@@ -178,7 +186,8 @@ impl CryptoPerpetual {
     /// # Panics
     ///
     /// Panics if any input parameter is invalid (see `new_checked`).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         instrument_id: InstrumentId,
         raw_symbol: Symbol,
@@ -202,6 +211,7 @@ impl CryptoPerpetual {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
     ) -> Self {
@@ -228,10 +238,11 @@ impl CryptoPerpetual {
             margin_maint,
             maker_fee,
             taker_fee,
+            info,
             ts_event,
             ts_init,
         )
-        .expect(FAILED)
+        .expect_display(FAILED)
     }
 }
 
@@ -387,11 +398,148 @@ impl Instrument for CryptoPerpetual {
 mod tests {
     use rstest::rstest;
 
-    use crate::instruments::{CryptoPerpetual, stubs::*};
+    use crate::{
+        enums::{AssetClass, InstrumentClass},
+        identifiers::{InstrumentId, Symbol},
+        instruments::{CryptoPerpetual, Instrument, stubs::*},
+        types::{Currency, Money, Price, Quantity},
+    };
 
     #[rstest]
-    fn test_equality(crypto_perpetual_ethusdt: CryptoPerpetual) {
-        let cloned = crypto_perpetual_ethusdt;
-        assert_eq!(crypto_perpetual_ethusdt, cloned);
+    fn test_trait_accessors(crypto_perpetual_ethusdt: CryptoPerpetual) {
+        assert_eq!(
+            crypto_perpetual_ethusdt.id(),
+            InstrumentId::from("ETHUSDT-PERP.BINANCE"),
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.asset_class(),
+            AssetClass::Cryptocurrency
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.instrument_class(),
+            InstrumentClass::Swap
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.base_currency(),
+            Some(Currency::ETH())
+        );
+        assert_eq!(crypto_perpetual_ethusdt.quote_currency(), Currency::USDT());
+        assert_eq!(
+            crypto_perpetual_ethusdt.settlement_currency(),
+            Currency::USDT()
+        );
+        assert!(!crypto_perpetual_ethusdt.is_inverse());
+        assert_eq!(crypto_perpetual_ethusdt.price_precision(), 2);
+        assert_eq!(crypto_perpetual_ethusdt.size_precision(), 3);
+        assert_eq!(
+            crypto_perpetual_ethusdt.price_increment(),
+            Price::from("0.01")
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.size_increment(),
+            Quantity::from("0.001")
+        );
+        assert_eq!(crypto_perpetual_ethusdt.multiplier(), Quantity::from("1"));
+        assert_eq!(
+            crypto_perpetual_ethusdt.lot_size(),
+            Some(Quantity::from("1"))
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.max_quantity(),
+            Some(Quantity::from("10000.0")),
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.min_quantity(),
+            Some(Quantity::from("0.001")),
+        );
+        assert_eq!(
+            crypto_perpetual_ethusdt.min_notional(),
+            Some(Money::new(10.00, Currency::USDT())),
+        );
+        assert_eq!(crypto_perpetual_ethusdt.underlying(), None);
+        assert_eq!(crypto_perpetual_ethusdt.option_kind(), None);
+        assert_eq!(crypto_perpetual_ethusdt.strike_price(), None);
+        assert_eq!(crypto_perpetual_ethusdt.activation_ns(), None);
+        assert_eq!(crypto_perpetual_ethusdt.expiration_ns(), None);
+    }
+
+    #[rstest]
+    fn test_inverse_perp_accessors(xbtusd_bitmex: CryptoPerpetual) {
+        assert!(xbtusd_bitmex.is_inverse());
+        assert_eq!(xbtusd_bitmex.base_currency(), Some(Currency::BTC()));
+        assert_eq!(xbtusd_bitmex.quote_currency(), Currency::USD());
+        assert_eq!(xbtusd_bitmex.settlement_currency(), Currency::BTC());
+        assert_eq!(xbtusd_bitmex.cost_currency(), Currency::BTC());
+    }
+
+    #[rstest]
+    fn test_new_checked_price_precision_mismatch() {
+        let result = CryptoPerpetual::new_checked(
+            InstrumentId::from("TEST.EXCHANGE"),
+            Symbol::from("TEST"),
+            Currency::BTC(),
+            Currency::USDT(),
+            Currency::USDT(),
+            false,
+            3, // mismatch
+            0,
+            Price::from("0.01"),
+            Quantity::from("1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.into(),
+            0.into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_new_checked_size_precision_mismatch() {
+        let result = CryptoPerpetual::new_checked(
+            InstrumentId::from("TEST.EXCHANGE"),
+            Symbol::from("TEST"),
+            Currency::BTC(),
+            Currency::USDT(),
+            Currency::USDT(),
+            false,
+            2,
+            5, // mismatch
+            Price::from("0.01"),
+            Quantity::from("1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.into(),
+            0.into(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_serialization_roundtrip(crypto_perpetual_ethusdt: CryptoPerpetual) {
+        let json = serde_json::to_string(&crypto_perpetual_ethusdt).unwrap();
+        let deserialized: CryptoPerpetual = serde_json::from_str(&json).unwrap();
+        assert_eq!(crypto_perpetual_ethusdt, deserialized);
     }
 }

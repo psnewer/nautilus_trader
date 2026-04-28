@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -379,7 +379,7 @@ cdef class Account:
         Condition.equal(event.account_id, self.id, "self.id", "event.account_id")
         Condition.equal(event.base_currency, self.base_currency, "self.base_currency", "event.base_currency")
 
-        if self.base_currency:
+        if self.base_currency and len(event.balances) > 0:
             # Single-currency account
             Condition.is_true(len(event.balances) == 1, "single-currency account has multiple currency update")
             Condition.equal(event.balances[0].currency, self.base_currency, "event.balances[0].currency", "self.base_currency")
@@ -397,17 +397,16 @@ cdef class Account:
         Parameters
         ----------
         balances : list[AccountBalance]
-            The balances for the update.
+            The balances for the update. An empty list is treated as a no-op.
 
         Raises
         ------
-        ValueError
-            If `balances` is empty.
         AccountBalanceNegative
             If account type is ``CASH``, and balance is negative.
 
         """
-        Condition.not_empty(balances, "balances")
+        if len(balances) == 0:
+            return
 
         cdef AccountBalance balance
         for balance in balances:

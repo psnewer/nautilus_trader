@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -51,6 +51,11 @@ impl InstrumentStatus {
     ///
     /// Panics if converting `action_u16` to `MarketStatusAction` fails.
     pub fn from_pyobject(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // Fast path: avoid property getters that trigger enum type deadlocks
+        if let Ok(status) = obj.cast::<Self>() {
+            return Ok(*status.borrow());
+        }
+
         let instrument_id_obj: Bound<'_, PyAny> = obj.getattr("instrument_id")?.extract()?;
         let instrument_id_str: String = instrument_id_obj.getattr("value")?.extract()?;
         let instrument_id =
@@ -90,9 +95,11 @@ impl InstrumentStatus {
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl InstrumentStatus {
+    /// Represents an event that indicates a change in an instrument market status.
     #[new]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[pyo3(signature = (instrument_id, action, ts_event, ts_init, reason=None, trading_event=None, is_trading=None, is_quoting=None, is_short_sell_restricted=None))]
     fn py_new(
         instrument_id: InstrumentId,
@@ -207,22 +214,11 @@ impl InstrumentStatus {
         from_dict_pyo3(py, values)
     }
 
+    /// Returns the metadata for the type, for use with serialization formats.
     #[staticmethod]
     #[pyo3(name = "get_metadata")]
-    fn py_get_metadata(instrument_id: &InstrumentId) -> PyResult<HashMap<String, String>> {
-        Ok(Self::get_metadata(instrument_id))
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "from_json")]
-    fn py_from_json(data: Vec<u8>) -> PyResult<Self> {
-        Self::from_json_bytes(&data).map_err(to_pyvalue_err)
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "from_msgpack")]
-    fn py_from_msgpack(data: Vec<u8>) -> PyResult<Self> {
-        Self::from_msgpack_bytes(&data).map_err(to_pyvalue_err)
+    fn py_get_metadata(instrument_id: &InstrumentId) -> HashMap<String, String> {
+        Self::get_metadata(instrument_id)
     }
 
     /// Return a dictionary representation of the object.
@@ -234,15 +230,28 @@ impl InstrumentStatus {
     /// Return JSON encoded bytes representation of the object.
     #[pyo3(name = "to_json_bytes")]
     fn py_to_json_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_json_bytes().unwrap().into_py_any_unwrap(py)
     }
 
-    /// Return MsgPack encoded bytes representation of the object.
+    /// Return `MsgPack` encoded bytes representation of the object.
     #[pyo3(name = "to_msgpack_bytes")]
     fn py_to_msgpack_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_msgpack_bytes().unwrap().into_py_any_unwrap(py)
+    }
+}
+
+#[pymethods]
+impl InstrumentStatus {
+    #[staticmethod]
+    #[pyo3(name = "from_json")]
+    fn py_from_json(data: &[u8]) -> PyResult<Self> {
+        Self::from_json_bytes(data).map_err(to_pyvalue_err)
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "from_msgpack")]
+    fn py_from_msgpack(data: &[u8]) -> PyResult<Self> {
+        Self::from_msgpack_bytes(data).map_err(to_pyvalue_err)
     }
 }
 
@@ -259,7 +268,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let dict_string = stub_instrument_status.py_to_dict(py).unwrap().to_string();
-            let expected_string = r"{'type': 'InstrumentStatus', 'instrument_id': 'MSFT.XNAS', 'action': 'TRADING', 'ts_event': 1, 'ts_init': 2, 'reason': None, 'trading_event': None, 'is_trading': None, 'is_quoting': None, 'is_short_sell_restricted': None}";
+            let expected_string = "{'type': 'InstrumentStatus', 'instrument_id': 'MSFT.XNAS', 'action': 'TRADING', 'ts_event': 1, 'ts_init': 2, 'reason': None, 'trading_event': None, 'is_trading': None, 'is_quoting': None, 'is_short_sell_restricted': None}";
             assert_eq!(dict_string, expected_string);
         });
     }

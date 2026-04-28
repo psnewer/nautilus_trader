@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,6 +22,7 @@ from nautilus_trader.adapters.binance import BinanceDataClientConfig
 from nautilus_trader.adapters.binance import BinanceExecClientConfig
 from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -78,27 +79,15 @@ config_node = TradingNodeConfig(
     # streaming=StreamingConfig(catalog_path="catalog"),
     data_clients={
         BINANCE: BinanceDataClientConfig(
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
-            # key_type=BinanceKeyType.ED25519,
+            environment=BinanceEnvironment.LIVE,
             account_type=BinanceAccountType.SPOT,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=False,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
         ),
     },
     exec_clients={
         BINANCE: BinanceExecClientConfig(
-            api_key=None,  # 'BINANCE_API_KEY' env var
-            api_secret=None,  # 'BINANCE_API_SECRET' env var
-            # key_type=BinanceKeyType.ED25519,
+            environment=BinanceEnvironment.LIVE,
             account_type=BinanceAccountType.SPOT,
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            us=False,  # If client is for Binance US
-            testnet=False,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
             max_retries=3,
         ),
@@ -118,11 +107,15 @@ config_strat = ExecTesterConfig(
     instrument_id=instrument_id,
     external_order_claims=[instrument_id],
     order_qty=order_qty,
+    # open_position_on_start_qty=order_qty,
+    enable_limit_buys=True,
+    enable_limit_sells=False,
+    use_post_only=True,
     # enable_stop_buys=True,
     # enable_stop_sells=True,
-    # open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
-    # log_data=False,
+    # test_reject_post_only=True,
+    log_data=False,
 )
 
 # Instantiate your strategy

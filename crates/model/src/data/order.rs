@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -50,7 +50,11 @@ pub const NULL_ORDER: BookOrder = BookOrder {
 #[derive(Clone, Copy, Eq, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct BookOrder {
     /// The order side.
@@ -97,7 +101,7 @@ impl BookOrder {
         match self.side {
             OrderSide::Buy => self.size.as_f64(),
             OrderSide::Sell => -(self.size.as_f64()),
-            _ => panic!("{}", BookIntegrityError::NoOrderSide),
+            OrderSide::NoOrderSide => panic!("{}", BookIntegrityError::NoOrderSide),
         }
     }
 }

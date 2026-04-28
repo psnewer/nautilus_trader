@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,6 +17,7 @@
 import pytest
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.common.urls import get_http_base_url
 from nautilus_trader.adapters.binance.common.urls import get_ws_base_url
 from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
@@ -58,193 +59,227 @@ class TestBinanceFactories:
         return
 
     @pytest.mark.parametrize(
-        ("account_type", "is_testnet", "is_us", "expected"),
+        ("account_type", "environment", "is_us", "expected"),
         [
-            [
-                BinanceAccountType.SPOT,
-                False,
-                False,
-                "https://api.binance.com",
-            ],
-            [
-                BinanceAccountType.MARGIN,
-                False,
-                False,
-                "https://sapi.binance.com",
-            ],
-            [
+            # Live
+            (BinanceAccountType.SPOT, BinanceEnvironment.LIVE, False, "https://api.binance.com"),
+            (BinanceAccountType.MARGIN, BinanceEnvironment.LIVE, False, "https://sapi.binance.com"),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "https://sapi.binance.com",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "https://fapi.binance.com",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.COIN_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "https://dapi.binance.com",
-            ],
-            [
-                BinanceAccountType.SPOT,
-                False,
-                True,
-                "https://api.binance.us",
-            ],
-            [
-                BinanceAccountType.MARGIN,
-                False,
-                True,
-                "https://sapi.binance.us",
-            ],
-            [
+            ),
+            (BinanceAccountType.SPOT, BinanceEnvironment.LIVE, True, "https://api.binance.us"),
+            (BinanceAccountType.MARGIN, BinanceEnvironment.LIVE, True, "https://sapi.binance.us"),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "https://sapi.binance.us",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "https://fapi.binance.us",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.COIN_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "https://dapi.binance.us",
-            ],
-            [
+            ),
+            # Testnet
+            (
                 BinanceAccountType.SPOT,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "https://testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.MARGIN,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "https://testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "https://testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "https://testnet.binancefuture.com",
-            ],
+            ),
+            # Demo
+            (
+                BinanceAccountType.SPOT,
+                BinanceEnvironment.DEMO,
+                False,
+                "https://demo-api.binance.com",
+            ),
+            (
+                BinanceAccountType.MARGIN,
+                BinanceEnvironment.DEMO,
+                False,
+                "https://demo-api.binance.com",
+            ),
+            (
+                BinanceAccountType.ISOLATED_MARGIN,
+                BinanceEnvironment.DEMO,
+                False,
+                "https://demo-api.binance.com",
+            ),
+            (
+                BinanceAccountType.USDT_FUTURES,
+                BinanceEnvironment.DEMO,
+                False,
+                "https://demo-fapi.binance.com",
+            ),
         ],
     )
-    def test_get_http_base_url(self, account_type, is_testnet, is_us, expected):
+    def test_get_http_base_url(self, account_type, environment, is_us, expected):
         # Arrange, Act
-        base_url = get_http_base_url(account_type, is_testnet, is_us)
+        base_url = get_http_base_url(account_type, environment, is_us)
 
         # Assert
         assert base_url == expected
 
     @pytest.mark.parametrize(
-        ("account_type", "is_testnet", "is_us", "expected"),
+        ("account_type", "environment", "is_us", "expected"),
         [
-            [
+            # Live
+            (
                 BinanceAccountType.SPOT,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "wss://stream.binance.com:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "wss://stream.binance.com:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "wss://stream.binance.com:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
+                BinanceEnvironment.LIVE,
                 False,
-                False,
-                "wss://fstream.binance.com",
-            ],
-            [
+                "wss://fstream.binance.com/market",
+            ),
+            (
                 BinanceAccountType.COIN_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 False,
                 "wss://dstream.binance.com",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.SPOT,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "wss://stream.binance.us:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "wss://stream.binance.us:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "wss://stream.binance.us:9443",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
-                "wss://fstream.binance.us",
-            ],
-            [
+                "wss://fstream.binance.us/market",
+            ),
+            (
                 BinanceAccountType.COIN_FUTURES,
-                False,
+                BinanceEnvironment.LIVE,
                 True,
                 "wss://dstream.binance.us",
-            ],
-            [
+            ),
+            # Testnet
+            (
                 BinanceAccountType.SPOT,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "wss://stream.testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.MARGIN,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "wss://stream.testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.ISOLATED_MARGIN,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "wss://stream.testnet.binance.vision",
-            ],
-            [
+            ),
+            (
                 BinanceAccountType.USDT_FUTURES,
-                True,
+                BinanceEnvironment.TESTNET,
                 False,
                 "wss://stream.binancefuture.com",
-            ],
+            ),
+            # Demo
+            (
+                BinanceAccountType.SPOT,
+                BinanceEnvironment.DEMO,
+                False,
+                "wss://demo-stream.binance.com",
+            ),
+            (
+                BinanceAccountType.MARGIN,
+                BinanceEnvironment.DEMO,
+                False,
+                "wss://demo-stream.binance.com",
+            ),
+            (
+                BinanceAccountType.ISOLATED_MARGIN,
+                BinanceEnvironment.DEMO,
+                False,
+                "wss://demo-stream.binance.com",
+            ),
+            (
+                BinanceAccountType.USDT_FUTURES,
+                BinanceEnvironment.DEMO,
+                False,
+                "wss://stream.binancefuture.com",
+            ),
         ],
     )
-    def test_get_ws_base_url(self, account_type, is_testnet, is_us, expected):
+    def test_get_ws_base_url(self, account_type, environment, is_us, expected):
         # Arrange, Act
-        base_url = get_ws_base_url(account_type, is_testnet, is_us)
+        base_url = get_ws_base_url(account_type, environment, is_us)
 
         # Assert
         assert base_url == expected
@@ -282,6 +317,29 @@ class TestBinanceFactories:
         )
 
         assert isinstance(data_client, BinanceFuturesDataClient)
+        assert data_client._ws_client.url == "wss://fstream.binance.com/market"
+        assert data_client._ws_public_client.url == "wss://fstream.binance.com/public"
+
+    def test_create_binance_live_futures_data_client_normalizes_legacy_ws_override(
+        self,
+        binance_http_client,
+    ):
+        data_client = BinanceLiveDataClientFactory.create(
+            loop=self.loop,
+            name="BINANCE",
+            config=BinanceDataClientConfig(  # (S106 Possible hardcoded password)
+                api_key="SOME_BINANCE_API_KEY",
+                api_secret="SOME_BINANCE_API_SECRET",
+                account_type=BinanceAccountType.USDT_FUTURES,
+                base_url_ws="wss://fstream.binance.com/ws",
+            ),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        assert data_client._ws_client.url == "wss://fstream.binance.com/market"
+        assert data_client._ws_public_client.url == "wss://fstream.binance.com/public"
 
     def test_create_binance_spot_exec_client(self, binance_http_client):
         # Arrange, Act
@@ -316,3 +374,24 @@ class TestBinanceFactories:
         )
 
         assert isinstance(exec_client, BinanceFuturesExecutionClient)
+        assert exec_client._ws_client._stream_base_url == "wss://fstream.binance.com/private"
+
+    def test_create_binance_futures_exec_client_normalizes_legacy_stream_override(
+        self,
+        binance_http_client,
+    ):
+        exec_client = BinanceLiveExecClientFactory.create(
+            loop=self.loop,
+            name="BINANCE",
+            config=BinanceExecClientConfig(  # (S106 Possible hardcoded password)
+                api_key="SOME_BINANCE_API_KEY",
+                api_secret="SOME_BINANCE_API_SECRET",
+                account_type=BinanceAccountType.USDT_FUTURES,
+                base_url_ws_stream="wss://fstream.binance.com/ws",
+            ),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        assert exec_client._ws_client._stream_base_url == "wss://fstream.binance.com/private"

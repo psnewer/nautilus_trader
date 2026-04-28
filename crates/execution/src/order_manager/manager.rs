@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,10 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-// Under development
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 use ahash::AHashMap;
@@ -26,6 +22,7 @@ use nautilus_common::{
     logging::{CMD, EVT, SEND},
     messages::execution::{SubmitOrder, TradingCommand},
     msgbus,
+    msgbus::MessagingSwitchboard,
 };
 use nautilus_core::UUID4;
 use nautilus_model::{
@@ -38,6 +35,11 @@ use nautilus_model::{
     types::Quantity,
 };
 
+use super::handlers::{
+    CancelOrderHandler, CancelOrderHandlerAny, ModifyOrderHandler, ModifyOrderHandlerAny,
+    SubmitOrderHandler, SubmitOrderHandlerAny,
+};
+
 /// Manages the lifecycle and state of orders with contingency handling.
 ///
 /// The order manager is responsible for managing local order state, handling
@@ -48,9 +50,9 @@ pub struct OrderManager {
     clock: Rc<RefCell<dyn Clock>>,
     cache: Rc<RefCell<Cache>>,
     active_local: bool,
-    // submit_order_handler: Option<SubmitOrderHandlerAny>,
-    // cancel_order_handler: Option<CancelOrderHandlerAny>,
-    // modify_order_handler: Option<ModifyOrderHandlerAny>,
+    submit_order_handler: Option<SubmitOrderHandlerAny>,
+    cancel_order_handler: Option<CancelOrderHandlerAny>,
+    modify_order_handler: Option<ModifyOrderHandlerAny>,
     submit_order_commands: AHashMap<ClientOrderId, SubmitOrder>,
 }
 
@@ -68,32 +70,35 @@ impl OrderManager {
         clock: Rc<RefCell<dyn Clock>>,
         cache: Rc<RefCell<Cache>>,
         active_local: bool,
-        // submit_order_handler: Option<SubmitOrderHandlerAny>,
-        // cancel_order_handler: Option<CancelOrderHandlerAny>,
-        // modify_order_handler: Option<ModifyOrderHandlerAny>,
+        submit_order_handler: Option<SubmitOrderHandlerAny>,
+        cancel_order_handler: Option<CancelOrderHandlerAny>,
+        modify_order_handler: Option<ModifyOrderHandlerAny>,
     ) -> Self {
         Self {
             clock,
             cache,
             active_local,
-            // submit_order_handler,
-            // cancel_order_handler,
-            // modify_order_handler,
+            submit_order_handler,
+            cancel_order_handler,
+            modify_order_handler,
             submit_order_commands: AHashMap::new(),
         }
     }
 
-    // pub fn set_submit_order_handler(&mut self, handler: SubmitOrderHandlerAny) {
-    //     self.submit_order_handler = Some(handler);
-    // }
-    //
-    // pub fn set_cancel_order_handler(&mut self, handler: CancelOrderHandlerAny) {
-    //     self.cancel_order_handler = Some(handler);
-    // }
-    //
-    // pub fn set_modify_order_handler(&mut self, handler: ModifyOrderHandlerAny) {
-    //     self.modify_order_handler = Some(handler);
-    // }
+    /// Sets the handler for submit order commands to the emulator.
+    pub fn set_submit_order_handler(&mut self, handler: SubmitOrderHandlerAny) {
+        self.submit_order_handler = Some(handler);
+    }
+
+    /// Sets the handler for cancel order commands to the emulator.
+    pub fn set_cancel_order_handler(&mut self, handler: CancelOrderHandlerAny) {
+        self.cancel_order_handler = Some(handler);
+    }
+
+    /// Sets the handler for modify order commands to the emulator.
+    pub fn set_modify_order_handler(&mut self, handler: ModifyOrderHandlerAny) {
+        self.modify_order_handler = Some(handler);
+    }
 
     #[must_use]
     /// Returns a copy of all cached submit order commands.
@@ -104,7 +109,7 @@ impl OrderManager {
     /// Caches a submit order command for later processing.
     pub fn cache_submit_order_command(&mut self, command: SubmitOrder) {
         self.submit_order_commands
-            .insert(command.order.client_order_id(), command);
+            .insert(command.client_order_id, command);
     }
 
     /// Removes and returns a cached submit order command.
@@ -122,31 +127,31 @@ impl OrderManager {
 
     /// Cancels an order if it's not already pending cancellation or closed.
     pub fn cancel_order(&mut self, order: &OrderAny) {
-        if self
-            .cache
-            .borrow()
-            .is_order_pending_cancel_local(&order.client_order_id())
-        {
+        let client_order_id = order.client_order_id();
+        let cache = self.cache.borrow();
+
+        if cache.is_order_pending_cancel_local(&client_order_id) {
             return;
         }
 
-        if order.is_closed() {
+        if order.is_closed() || cache.is_order_closed(&client_order_id) {
             log::warn!("Cannot cancel order: already closed");
             return;
         }
 
-        self.submit_order_commands.remove(&order.client_order_id());
+        drop(cache);
+        self.submit_order_commands.remove(&client_order_id);
 
-        // if let Some(handler) = &self.cancel_order_handler {
-        //     handler.handle_cancel_order(order);
-        // }
+        if let Some(handler) = &self.cancel_order_handler {
+            handler.handle_cancel_order(order);
+        }
     }
 
     /// Modifies the quantity of an existing order.
-    pub const fn modify_order_quantity(&mut self, order: &mut OrderAny, new_quantity: Quantity) {
-        // if let Some(handler) = &self.modify_order_handler {
-        //     handler.handle_modify_order(order, new_quantity);
-        // }
+    pub fn modify_order_quantity(&mut self, order: &OrderAny, new_quantity: Quantity) {
+        if let Some(handler) = &self.modify_order_handler {
+            handler.handle_modify_order(order, new_quantity);
+        }
     }
 
     /// # Errors
@@ -158,10 +163,9 @@ impl OrderManager {
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
     ) -> anyhow::Result<()> {
-        let client_id = client_id.ok_or_else(|| anyhow::anyhow!("Client ID is required"))?;
-        let venue_order_id = order
-            .venue_order_id()
-            .ok_or_else(|| anyhow::anyhow!("Venue order ID is required"))?;
+        self.cache
+            .borrow_mut()
+            .add_order(order.clone(), position_id, client_id, true)?;
 
         let submit = SubmitOrder::new(
             order.trader_id(),
@@ -169,14 +173,13 @@ impl OrderManager {
             order.strategy_id(),
             order.instrument_id(),
             order.client_order_id(),
-            venue_order_id,
-            order.clone(),
+            order.init_event().clone(),
             order.exec_algorithm_id(),
             position_id,
             None, // params
             UUID4::new(),
             self.clock.borrow().timestamp_ns(),
-        )?;
+        );
 
         if order.emulation_trigger() == Some(TriggerType::NoTrigger) {
             self.cache_submit_order_command(submit.clone());
@@ -187,9 +190,10 @@ impl OrderManager {
                 }
                 None => self.send_risk_command(TradingCommand::SubmitOrder(submit)),
             }
-        } // else if let Some(handler) = &self.submit_order_handler {
-        //     handler.handle_submit_order(submit);
-        // }
+        } else if let Some(handler) = self.submit_order_handler.clone() {
+            self.cache_submit_order_command(submit.clone());
+            handler.handle_submit_order(submit);
+        }
 
         Ok(())
     }
@@ -205,13 +209,13 @@ impl OrderManager {
     ///
     /// Note: Only handles specific terminal/actionable events. Other events
     /// like `OrderSubmitted`, `OrderAccepted`, etc. are no-ops for the order manager.
-    pub fn handle_event(&mut self, event: OrderEventAny) {
+    pub fn handle_event(&mut self, event: &OrderEventAny) {
         match event {
-            OrderEventAny::Rejected(event) => self.handle_order_rejected(event),
-            OrderEventAny::Canceled(event) => self.handle_order_canceled(event),
-            OrderEventAny::Expired(event) => self.handle_order_expired(event),
-            OrderEventAny::Updated(event) => self.handle_order_updated(event),
-            OrderEventAny::Filled(event) => self.handle_order_filled(event),
+            OrderEventAny::Rejected(event) => self.handle_order_rejected(*event),
+            OrderEventAny::Canceled(event) => self.handle_order_canceled(*event),
+            OrderEventAny::Expired(event) => self.handle_order_expired(*event),
+            OrderEventAny::Updated(event) => self.handle_order_updated(*event),
+            OrderEventAny::Filled(event) => self.handle_order_filled(*event),
             _ => {}
         }
     }
@@ -223,9 +227,10 @@ impl OrderManager {
             .borrow()
             .order(&rejected.client_order_id)
             .cloned();
+
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
-                self.handle_contingencies(order);
+                self.handle_contingencies(&order);
             }
         } else {
             log::error!(
@@ -242,9 +247,10 @@ impl OrderManager {
             .borrow()
             .order(&canceled.client_order_id)
             .cloned();
+
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
-                self.handle_contingencies(order);
+                self.handle_contingencies(&order);
             }
         } else {
             log::error!(
@@ -259,7 +265,7 @@ impl OrderManager {
         let cloned_order = self.cache.borrow().order(&expired.client_order_id).cloned();
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
-                self.handle_contingencies(order);
+                self.handle_contingencies(&order);
             }
         } else {
             log::error!(
@@ -274,7 +280,7 @@ impl OrderManager {
         let cloned_order = self.cache.borrow().order(&updated.client_order_id).cloned();
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
-                self.handle_contingencies_update(order);
+                self.handle_contingencies_update(&order);
             }
         } else {
             log::error!(
@@ -356,7 +362,7 @@ impl OrderManager {
                     }
 
                     if parent_filled_qty != child_order.leaves_qty() {
-                        self.modify_order_quantity(&mut child_order, parent_filled_qty);
+                        self.modify_order_quantity(&child_order, parent_filled_qty);
                     }
 
                     // if self.submit_order_handler.is_none() {
@@ -397,12 +403,13 @@ impl OrderManager {
                     {
                         continue;
                     }
+
                     if contingent_order.client_order_id() != order.client_order_id() {
                         self.cancel_order(&contingent_order);
                     }
                 }
             }
-            Some(ContingencyType::Ouo) => self.handle_contingencies(order),
+            Some(ContingencyType::Ouo) => self.handle_contingencies(&order),
             _ => {}
         }
     }
@@ -410,7 +417,7 @@ impl OrderManager {
     /// # Panics
     ///
     /// Panics if a contingent order cannot be found for the given client order ID.
-    pub fn handle_contingencies(&mut self, order: OrderAny) {
+    pub fn handle_contingencies(&mut self, order: &OrderAny) {
         let (filled_qty, leaves_qty, is_spawn_active) =
             if let Some(exec_spawn_id) = order.exec_spawn_id() {
                 if let (Some(filled), Some(leaves)) = (
@@ -438,7 +445,7 @@ impl OrderManager {
         };
 
         for client_order_id in linked_orders {
-            let mut contingent_order =
+            let contingent_order =
                 if let Some(order) = self.cache.borrow().order(client_order_id).cloned() {
                     order
                 } else {
@@ -464,13 +471,14 @@ impl OrderManager {
                     {
                         self.cancel_order(&contingent_order);
                     } else if filled_qty.raw > 0 && filled_qty != contingent_order.quantity() {
-                        self.modify_order_quantity(&mut contingent_order, filled_qty);
+                        self.modify_order_quantity(&contingent_order, filled_qty);
                     }
                 }
-                Some(ContingencyType::Oco) => {
-                    if order.is_closed() && (order.exec_spawn_id().is_none() || !is_spawn_active) {
-                        self.cancel_order(&contingent_order);
-                    }
+                Some(ContingencyType::Oco)
+                    if order.is_closed()
+                        && (order.exec_spawn_id().is_none() || !is_spawn_active) =>
+                {
+                    self.cancel_order(&contingent_order);
                 }
                 Some(ContingencyType::Ouo) => {
                     if (leaves_qty.raw == 0 && order.exec_spawn_id().is_some())
@@ -479,7 +487,7 @@ impl OrderManager {
                     {
                         self.cancel_order(&contingent_order);
                     } else if leaves_qty != contingent_order.leaves_qty() {
-                        self.modify_order_quantity(&mut contingent_order, leaves_qty);
+                        self.modify_order_quantity(&contingent_order, leaves_qty);
                     }
                 }
                 _ => {}
@@ -490,7 +498,7 @@ impl OrderManager {
     /// # Panics
     ///
     /// Panics if an OCO contingent order cannot be found for the given client order ID.
-    pub fn handle_contingencies_update(&mut self, order: OrderAny) {
+    pub fn handle_contingencies_update(&mut self, order: &OrderAny) {
         let quantity = match order.exec_spawn_id() {
             Some(exec_spawn_id) => {
                 if let Some(qty) = self
@@ -519,7 +527,7 @@ impl OrderManager {
         };
 
         for client_order_id in linked_orders {
-            let mut contingent_order = match self.cache.borrow().order(client_order_id).cloned() {
+            let contingent_order = match self.cache.borrow().order(client_order_id).cloned() {
                 Some(contingent_order) => contingent_order,
                 None => panic!(
                     "Cannot find OCO contingent order for client_order_id: {client_order_id}"
@@ -540,7 +548,7 @@ impl OrderManager {
                 )
                 && quantity != contingent_order.quantity()
             {
-                self.modify_order_quantity(&mut contingent_order, quantity);
+                self.modify_order_quantity(&contingent_order, quantity);
             }
         }
     }
@@ -548,35 +556,48 @@ impl OrderManager {
     // Message sending methods
     pub fn send_emulator_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("OrderEmulator.execute".into(), &command);
+        let endpoint = MessagingSwitchboard::order_emulator_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_algo_command(&self, command: SubmitOrder, exec_algorithm_id: ExecAlgorithmId) {
         let id = command.strategy_id;
         log::info!("{id} {CMD}{SEND} {command}");
 
+        // Dynamic algorithm endpoint - uses Any-based dispatch
         let endpoint = format!("{exec_algorithm_id}.execute");
         msgbus::send_any(endpoint.into(), &TradingCommand::SubmitOrder(command));
     }
 
     pub fn send_risk_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("RiskEngine.execute".into(), &command);
+
+        // Use queued endpoint for re-entrancy safety, commands may be sent from
+        // within event handlers which hold a mutable borrow on the strategy.
+        // This mirrors the pattern used by `send_exec_command()`.
+        let endpoint = MessagingSwitchboard::risk_engine_queue_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_exec_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("ExecEngine.execute".into(), &command);
+
+        // Use queued endpoint for re-entrancy safety, commands may be sent from
+        // within event handlers which hold a mutable borrow on ExecutionEngine.
+        let endpoint = MessagingSwitchboard::exec_engine_queue_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_risk_event(&self, event: OrderEventAny) {
         log_evt_send(&event);
-        msgbus::send_any("RiskEngine.process".into(), &event);
+        let endpoint = MessagingSwitchboard::risk_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     pub fn send_exec_event(&self, event: OrderEventAny) {
         log_evt_send(&event);
-        msgbus::send_any("ExecEngine.process".into(), &event);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 }
 
@@ -597,14 +618,27 @@ fn log_evt_send(event: &OrderEventAny) {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_core::UUID4;
+    use std::{cell::RefCell, rc::Rc};
+
+    use nautilus_common::{cache::Cache, clock::TestClock};
+    use nautilus_core::{UUID4, UnixNanos, WeakCell};
     use nautilus_model::{
+        enums::{OrderSide, OrderType, TriggerType},
         events::{OrderAccepted, OrderSubmitted},
         identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
+        instruments::{Instrument, stubs::audusd_sim},
+        orders::{Order, OrderTestBuilder, stubs::TestOrderEventStubs},
+        types::{Price, Quantity},
     };
     use rstest::rstest;
 
     use super::*;
+    use crate::{
+        order_emulator::emulator::OrderEmulator,
+        order_manager::handlers::{
+            CancelOrderHandlerAny, ModifyOrderHandlerAny, SubmitOrderHandlerAny,
+        },
+    };
 
     /// Verifies unhandled order events are no-ops and don't panic.
     /// Previously, unhandled events would hit a todo!() panic.
@@ -617,8 +651,8 @@ mod tests {
             client_order_id: ClientOrderId::from("O-001"),
             account_id: AccountId::from("ACCOUNT-001"),
             event_id: UUID4::new(),
-            ts_event: Default::default(),
-            ts_init: Default::default(),
+            ts_event: UnixNanos::default(),
+            ts_init: UnixNanos::default(),
         });
         let accepted = OrderEventAny::Accepted(OrderAccepted {
             trader_id: TraderId::from("TRADER-001"),
@@ -628,8 +662,8 @@ mod tests {
             venue_order_id: VenueOrderId::from("V-001"),
             account_id: AccountId::from("ACCOUNT-001"),
             event_id: UUID4::new(),
-            ts_event: Default::default(),
-            ts_init: Default::default(),
+            ts_event: UnixNanos::default(),
+            ts_init: UnixNanos::default(),
             reconciliation: 0,
         });
 
@@ -641,6 +675,7 @@ mod tests {
             OrderEventAny::Filled(_) => panic!("Should not match"),
             _ => {}
         }
+
         match accepted {
             OrderEventAny::Rejected(_) => panic!("Should not match"),
             OrderEventAny::Canceled(_) => panic!("Should not match"),
@@ -649,5 +684,248 @@ mod tests {
             OrderEventAny::Filled(_) => panic!("Should not match"),
             _ => {}
         }
+    }
+
+    #[expect(clippy::type_complexity)]
+    fn create_test_components() -> (
+        Rc<RefCell<dyn Clock>>,
+        Rc<RefCell<Cache>>,
+        Rc<RefCell<OrderEmulator>>,
+    ) {
+        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+        let cache = Rc::new(RefCell::new(Cache::new(None, None)));
+        let emulator = Rc::new(RefCell::new(OrderEmulator::new(
+            clock.clone(),
+            cache.clone(),
+        )));
+        (clock, cache, emulator)
+    }
+
+    fn create_test_stop_order() -> OrderAny {
+        let instrument = audusd_sim();
+        OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("1.00050"))
+            .quantity(Quantity::from(100_000))
+            .emulation_trigger(TriggerType::BidAsk)
+            .build()
+    }
+
+    // Creates a `SubmitOrder` command suitable for seeding `submit_order_commands`
+    // so that whether `cancel_order` removed the entry can be observed.
+    fn make_submit_command(order: &OrderAny) -> SubmitOrder {
+        SubmitOrder::new(
+            order.trader_id(),
+            None,
+            order.strategy_id(),
+            order.instrument_id(),
+            order.client_order_id(),
+            order.init_event().clone(),
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+        )
+    }
+
+    #[rstest]
+    fn test_order_manager_with_handlers() {
+        let (clock, cache, emulator) = create_test_components();
+        let submit_handler =
+            SubmitOrderHandlerAny::OrderEmulator(WeakCell::from(Rc::downgrade(&emulator)));
+        let cancel_handler =
+            CancelOrderHandlerAny::OrderEmulator(WeakCell::from(Rc::downgrade(&emulator)));
+        let modify_handler =
+            ModifyOrderHandlerAny::OrderEmulator(WeakCell::from(Rc::downgrade(&emulator)));
+
+        let manager = OrderManager::new(
+            clock,
+            cache,
+            true,
+            Some(submit_handler),
+            Some(cancel_handler),
+            Some(modify_handler),
+        );
+
+        assert!(manager.submit_order_handler.is_some());
+        assert!(manager.cancel_order_handler.is_some());
+        assert!(manager.modify_order_handler.is_some());
+    }
+
+    #[rstest]
+    fn test_order_manager_cancel_order_dispatches_to_handler() {
+        let (clock, cache, emulator) = create_test_components();
+        let cancel_handler =
+            CancelOrderHandlerAny::OrderEmulator(WeakCell::from(Rc::downgrade(&emulator)));
+        let mut manager =
+            OrderManager::new(clock, cache.clone(), true, None, Some(cancel_handler), None);
+        let order = create_test_stop_order();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+
+        assert!(
+            !manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "expected dispatch path to remove the submit command",
+        );
+    }
+
+    #[rstest]
+    fn test_order_manager_modify_order_dispatches_to_handler() {
+        let (clock, cache, emulator) = create_test_components();
+        let modify_handler =
+            ModifyOrderHandlerAny::OrderEmulator(WeakCell::from(Rc::downgrade(&emulator)));
+        let mut manager = OrderManager::new(clock, cache, true, None, None, Some(modify_handler));
+        let order = create_test_stop_order();
+        let new_quantity = Quantity::from(50_000);
+
+        manager.modify_order_quantity(&order, new_quantity);
+    }
+
+    #[rstest]
+    fn test_order_manager_without_handlers() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+        let order = create_test_stop_order();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+        manager.modify_order_quantity(&order, Quantity::from(50_000));
+
+        assert!(
+            !manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "no-handler dispatch path should still remove the submit command",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_pending_cancel_local() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+        let order = create_test_stop_order();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        cache.borrow_mut().update_order_pending_cancel_local(&order);
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "pending-cancel-local gate should short-circuit before removing the submit command",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_passed_order_is_closed() {
+        // The caller has applied a closing event to its local clone but has
+        // not yet called `cache.update_order`, so the cache index still
+        // reports open. The gate must short-circuit on the local state.
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+
+        let mut order = OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(audusd_sim().id())
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("1.00050"))
+            .quantity(Quantity::from(100_000))
+            .emulation_trigger(TriggerType::BidAsk)
+            .submit(true)
+            .build();
+
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+
+        let canceled_event =
+            TestOrderEventStubs::canceled(&order, AccountId::from("ACCOUNT-001"), None);
+        order.apply(canceled_event).unwrap();
+
+        assert!(order.is_closed());
+        assert!(!cache.borrow().is_order_closed(&order.client_order_id()));
+
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "closed-order gate should short-circuit on the local state when the cache index is stale",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_cache_index_marks_closed() {
+        // The passed `OrderAny` is intentionally a stale (Submitted) clone so
+        // this test would fail if `cancel_order` checked `order.is_closed()`
+        // on the argument instead of `cache.is_order_closed(&id)`.
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+
+        let mut order = OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(audusd_sim().id())
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("1.00050"))
+            .quantity(Quantity::from(100_000))
+            .emulation_trigger(TriggerType::BidAsk)
+            .submit(true)
+            .build();
+
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+
+        let stale_order = order.clone();
+
+        let canceled_event =
+            TestOrderEventStubs::canceled(&order, AccountId::from("ACCOUNT-001"), None);
+        order.apply(canceled_event).unwrap();
+        cache.borrow_mut().update_order(&order).unwrap();
+
+        assert!(cache.borrow().is_order_closed(&order.client_order_id()));
+
+        manager.submit_order_commands.insert(
+            stale_order.client_order_id(),
+            make_submit_command(&stale_order),
+        );
+
+        manager.cancel_order(&stale_order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&stale_order.client_order_id()),
+            "closed-order gate should short-circuit even when the passed reference is stale",
+        );
     }
 }

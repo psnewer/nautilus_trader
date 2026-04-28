@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,8 +28,13 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl OrderDenied {
-    #[allow(clippy::too_many_arguments)]
+    /// Represents an event where an order has been denied by the Nautilus system.
+    ///
+    /// This could be due an unsupported feature, a risk limit exceedance, or for
+    /// any other reason that an otherwise valid order is not able to be submitted.
+    #[expect(clippy::too_many_arguments)]
     #[new]
     fn py_new(
         trader_id: TraderId,

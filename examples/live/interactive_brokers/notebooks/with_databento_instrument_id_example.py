@@ -21,16 +21,23 @@ import os
 import threading
 import time
 
+import pandas as pd
 from ibapi.common import MarketDataTypeEnum as IBMarketDataTypeEnum
 
 from nautilus_trader.adapters.interactive_brokers.common import IB
 from nautilus_trader.adapters.interactive_brokers.common import IB_VENUE
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersDataClientConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersExecClientConfig
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
+from nautilus_trader.adapters.interactive_brokers.config import (
+    InteractiveBrokersInstrumentProviderConfig,
+)
 from nautilus_trader.adapters.interactive_brokers.config import SymbologyMethod
-from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveDataClientFactory
-from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveExecClientFactory
+from nautilus_trader.adapters.interactive_brokers.factories import (
+    InteractiveBrokersLiveDataClientFactory,
+)
+from nautilus_trader.adapters.interactive_brokers.factories import (
+    InteractiveBrokersLiveExecClientFactory,
+)
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import CacheConfig
 from nautilus_trader.config import DatabaseConfig
@@ -38,6 +45,7 @@ from nautilus_trader.config import LiveDataEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import RoutingConfig
 from nautilus_trader.config import TradingNodeConfig
+from nautilus_trader.examples.interactive_brokers import resolve_ib_endpoint
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
@@ -50,9 +58,14 @@ from nautilus_trader.trading.strategy import Strategy
 
 
 # %%
+IB_HOST, IB_PORT = resolve_ib_endpoint("IB_EXAMPLE_HOST", "IB_EXAMPLE_PORT")
+
+
+# %%
 class DemoStrategyConfig(StrategyConfig, frozen=True):
     bar_type: BarType
     instrument_id: InstrumentId
+    enable_order_submission: bool = True
 
 
 class DemoStrategy(Strategy):
@@ -71,40 +84,71 @@ class DemoStrategy(Strategy):
         Handle strategy start event.
         """
         self.request_instrument(self.config.instrument_id)
-
-        # self.request_instruments(
-        #     venue=IB_VENUE,
-        #     params={
-        #         "ib_contracts": (
-        #             {
-        #                 "secType": "CONTFUT",
-        #                 "exchange": "CME",
-        #                 "symbol": "ES",
-        #                 "build_futures_chain": True,
-        #                 "build_options_chain": True,
-        #                 "min_expiry_days": 10,
-        #                 "max_expiry_days": 11,
-        #             },
-        #         ),
-        #     },
-        # )
+        # self.request_instrument(InstrumentId.from_str("SPXW  260319C06750000.XCBO"))
+        self.request_instruments(
+            venue=IB_VENUE,
+            params={
+                "ib_contracts": [
+                    {
+                        "secType": "STK",
+                        "symbol": "SPY",
+                        "exchange": "SMART",
+                        "primaryExchange": "CBOE",
+                        "build_options_chain": True,
+                        "min_expiry_days": 0,
+                        "max_expiry_days": 3,
+                    },
+                    # {
+                    #     "secType": "IND",
+                    #     "symbol": "SPX",
+                    #     "exchange": "CBOE",
+                    #     "build_options_chain": True,
+                    #     "min_expiry_days": 0,
+                    #     "max_expiry_days": 5,
+                    # },
+                    # {
+                    #     "secType": "CONTFUT",
+                    #     "exchange": "CME",
+                    #     "symbol": "ES",
+                    #     "build_futures_chain": True,
+                    #     "build_options_chain": True,
+                    #     "min_expiry_days": 0,
+                    #     "max_expiry_days": 2,
+                    # },
+                    # {
+                    #     "secType": "IND",
+                    #     "exchange": "EUREX",
+                    #     "symbol": "ESTX50",
+                    #     "build_options_chain": True,
+                    #     "min_expiry_days": 0,
+                    #     "max_expiry_days": 2,
+                    # },
+                ],
+            },
+        )
 
     def on_instrument(self, instrument):
         self.log.info(f"Instrument ID: {instrument.id}")
 
         self.instrument = self.cache.instrument(self.config.instrument_id)
 
-        # utc_now = self._clock.utc_now()
-        # start = utc_now - pd.Timedelta(
-        #     minutes=30,
-        # )
-        # self.request_bars(
-        #     BarType.from_str(f"{self.config.instrument_id}-1-MINUTE-LAST-EXTERNAL"),
-        #     start,
-        # )
+        utc_now = self._clock.utc_now()
+        start = utc_now - pd.Timedelta(
+            minutes=30,
+        )
+        self.request_bars(
+            BarType.from_str(f"{self.config.instrument_id}-1-MINUTE-LAST-EXTERNAL"),
+            start,
+        )
 
-        # utc_now = self.clock.utc_now()
-        # self.subscribe_bars(self.config.bar_type, params={"start_ns":(utc_now - pd.Timedelta(minutes=2)).value})
+        utc_now = self.clock.utc_now()
+        self.subscribe_bars(
+            self.config.bar_type,
+            params={"start_ns": (utc_now - pd.Timedelta(minutes=2)).value},
+        )
+
+        if not self.config.enable_order_submission:
+            return
 
         # Prepare values for order
         last_price = self.instrument.make_price(46745)
@@ -141,7 +185,7 @@ class DemoStrategy(Strategy):
             self.show_portfolio_info("Portfolio state (2 minutes after position opened)")
 
         # Only place one order for demonstration
-        if not self.order_placed:
+        if not self.order_placed and self.config.enable_order_submission:
             # Prepare values for order
             last_price = bar.close
             tick_size = self.instrument.price_increment
@@ -217,19 +261,33 @@ class DemoStrategy(Strategy):
         # -----------------------------------------------------
 
         self.log.info("Portfolio -> Account information:", color=LogColor.CYAN)
-        margins_init = self.portfolio.margins_init(IB_VENUE)
-        self.log.info(f"Initial margin: {margins_init}", color=LogColor.CYAN)
 
-        margins_maint = self.portfolio.margins_maint(IB_VENUE)
-        self.log.info(f"Maintenance margin: {margins_maint}", color=LogColor.CYAN)
+        # Get account_id from orders or positions (IB is multi-venue, so we use account_id instead of venue)
+        account_id = None
+        orders_open = self.cache.orders_open(instrument_id=self.config.instrument_id)
+        if orders_open:
+            account_id = orders_open[0].account_id
+        else:
+            positions_open = self.cache.positions_open(instrument_id=self.config.instrument_id)
+            if positions_open:
+                account_id = positions_open[0].account_id
 
-        balances_locked = self.portfolio.balances_locked(IB_VENUE)
-        self.log.info(f"Locked balance: {balances_locked}", color=LogColor.CYAN)
+        if account_id:
+            margins_init = self.portfolio.margins_init(account_id=account_id)
+            self.log.info(f"Initial margin: {margins_init}", color=LogColor.CYAN)
+
+            margins_maint = self.portfolio.margins_maint(account_id=account_id)
+            self.log.info(f"Maintenance margin: {margins_maint}", color=LogColor.CYAN)
+
+            balances_locked = self.portfolio.balances_locked(account_id=account_id)
+            self.log.info(f"Locked balance: {balances_locked}", color=LogColor.CYAN)
+        else:
+            self.log.warning("No account_id found from orders or positions", color=LogColor.YELLOW)
 
 
 # %%
 # Tested instrument id
-instrument_id = "YMZ5.XCBT"  # "^SPX.XCBO", "ES.XCME", "AAPL.XNAS", "YMU5.XCBT"
+instrument_id = "YMM6.XCBT"  # "^SPX.XCBO", "ES.XCME", "AAPL.XNAS", "YMM6.XCBT"
 
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
     symbology_method=SymbologyMethod.IB_SIMPLIFIED,
@@ -246,18 +304,22 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
 )
 
 ib_data_client_config = InteractiveBrokersDataClientConfig(
-    ibg_port=7497,
+    ibg_host=IB_HOST,
+    ibg_port=IB_PORT,
     handle_revised_bars=False,
     use_regular_trading_hours=False,
     instrument_provider=instrument_provider_config,
     market_data_type=IBMarketDataTypeEnum.DELAYED_FROZEN,
+    ibg_client_id=2,
 )
 
 ib_exec_client_config = InteractiveBrokersExecClientConfig(
-    ibg_port=7497,
+    ibg_host=IB_HOST,
+    ibg_port=IB_PORT,
     instrument_provider=instrument_provider_config,
     routing=RoutingConfig(default=True),
     account_id=os.environ.get("TWS_ACCOUNT"),
+    ibg_client_id=2,
 )
 
 database_config = DatabaseConfig(
@@ -278,11 +340,10 @@ data_engine_config = LiveDataEngineConfig(
 logging_config = LoggingConfig(log_level="INFO")
 
 # Configure the trading node
-# IMPORTANT: you must use the imported IB variable so this client works properly
 config_node = TradingNodeConfig(
     trader_id="TESTER-001",
     logging=logging_config,
-    cache=cache_config,
+    # cache=cache_config,
     data_clients={IB: ib_data_client_config},
     exec_clients={IB: ib_exec_client_config},
     data_engine=data_engine_config,
@@ -300,6 +361,10 @@ node = TradingNode(config=config_node)
 strategy_config = DemoStrategyConfig(
     bar_type=BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL"),
     instrument_id=InstrumentId.from_str(instrument_id),
+    enable_order_submission=os.getenv("IB_EXAMPLE_ENABLE_ORDERS", "1") == "1",
+    manage_stop=True,
+    market_exit_time_in_force=TimeInForce.DAY,
+    market_exit_reduce_only=False,
 )
 strategy = DemoStrategy(config=strategy_config)
 
@@ -327,24 +392,12 @@ def auto_stop_node(node, delay_seconds=15):
     thread.start()
 
 
-# %%
-node.run()
+if __name__ == "__main__":
+    auto_stop_seconds = int(os.getenv("IB_EXAMPLE_AUTO_STOP_SECONDS", "30"))
+    if auto_stop_seconds > 0:
+        auto_stop_node(node, delay_seconds=auto_stop_seconds)
 
-# %%
-# # Start auto-stop timer
-# # auto_stop_node(node, delay_seconds=60)
-
-# try:
-#     node.run()
-# except KeyboardInterrupt:
-#     node.stop()
-# finally:
-#     node.dispose()
-
-# %%
-# node.trader.strategies()[0].on_bar(2)
-
-# %%
-# # ?node.*
-
-# %%
+    try:
+        node.run()
+    finally:
+        node.dispose()

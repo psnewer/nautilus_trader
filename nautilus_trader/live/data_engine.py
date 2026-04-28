@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -349,6 +349,7 @@ class LiveDataEngine(DataEngine):
             f"Unexpected exception in {queue_name} queue processing: {e!r}",
             e,
         )
+
         if self.graceful_shutdown_on_exception:
             if not self._shutdown_initiated:
                 self._log.warning(
@@ -376,8 +377,8 @@ class LiveDataEngine(DataEngine):
             self._log.warning("Started when loop is not running")
 
         self._cmd_queue_task = self._loop.create_task(self._run_cmd_queue(), name="cmd_queue")
-        self._req_queue_task = self._loop.create_task(self._run_res_queue(), name="res_queue")
-        self._res_queue_task = self._loop.create_task(self._run_req_queue(), name="req_queue")
+        self._req_queue_task = self._loop.create_task(self._run_req_queue(), name="req_queue")
+        self._res_queue_task = self._loop.create_task(self._run_res_queue(), name="res_queue")
         self._data_queue_task = self._loop.create_task(self._run_data_queue(), name="data_queue")
 
         self._log.debug(f"Scheduled task '{self._cmd_queue_task.get_name()}'")
@@ -417,6 +418,7 @@ class LiveDataEngine(DataEngine):
                     self._handle_queue_exception(e, "DataCommand")
         finally:
             stopped_msg = "DataCommand message queue stopped"
+
             if not self._cmd_queue.empty():
                 self._log.warning(f"{stopped_msg} with {self.cmd_qsize()} message(s) on queue")
             else:
@@ -441,6 +443,7 @@ class LiveDataEngine(DataEngine):
                     self._handle_queue_exception(e, "RequestData")
         finally:
             stopped_msg = "RequestData message queue stopped"
+
             if not self._req_queue.empty():
                 self._log.warning(f"{stopped_msg} with {self.req_qsize()} message(s) on queue")
             else:
@@ -465,6 +468,7 @@ class LiveDataEngine(DataEngine):
                     self._handle_queue_exception(e, "DataResponse")
         finally:
             stopped_msg = "DataResponse message queue stopped"
+
             if not self._res_queue.empty():
                 self._log.warning(f"{stopped_msg} with {self.res_qsize()} message(s) on queue")
             else:
@@ -487,6 +491,7 @@ class LiveDataEngine(DataEngine):
                     self._handle_queue_exception(e, "Data")
         finally:
             stopped_msg = "Data message queue stopped"
+
             if not self._data_queue.empty():
                 self._log.warning(f"{stopped_msg} with {self.data_qsize()} message(s) on queue")
             else:

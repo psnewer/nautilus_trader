@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,12 +25,16 @@ from __future__ import annotations
 import numbers
 from collections.abc import Callable
 from difflib import get_close_matches
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
 import pandas as pd
 
+from nautilus_trader.analysis import TearsheetChart
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.datetime import format_optional_iso8601
+from nautilus_trader.core.nautilus_pyo3 import NAUTILUS_VERSION
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 
@@ -46,6 +50,7 @@ try:
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
+
     if not TYPE_CHECKING:
         # Define dummy types for when plotly is not installed
         go = None  # type: ignore
@@ -54,8 +59,19 @@ except ImportError:
 # Constants
 TRADING_DAYS_PER_YEAR = 252  # Standard number of trading days for annualization
 
+_STATIC_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".svg", ".pdf"})
+
 # Chart registry for custom visualizations
 _CHART_REGISTRY: dict[str, Callable] = {}
+
+
+def _write_figure(fig: go.Figure, output_path: str) -> None:
+    # Static image export uses Kaleido (install via `nautilus_trader[visualization]`).
+    suffix = Path(output_path).suffix.lower()
+    if suffix in _STATIC_IMAGE_SUFFIXES:
+        fig.write_image(output_path)
+    else:
+        fig.write_html(output_path)
 
 
 def _hex_to_rgba(hex_color: str, alpha: float = 1.0) -> str:
@@ -281,7 +297,9 @@ def create_tearsheet(  # noqa: C901
     engine : BacktestEngine
         The backtest engine with completed run.
     output_path : str, optional
-        Path to save HTML tearsheet. If None, returns HTML string.
+        Path to save the tearsheet. File extension selects the format:
+        ``.html`` (interactive), or ``.png``, ``.jpg``, ``.webp``, ``.svg``, ``.pdf``
+        (static, via Kaleido). If None, returns HTML string.
     title : str, default "NautilusTrader Backtest Results"
         Title for the tearsheet.
     currency : Currency, optional
@@ -316,61 +334,56 @@ def create_tearsheet(  # noqa: C901
     analyzer = engine.portfolio.analyzer
     stats_returns = analyzer.get_performance_stats_returns()
     stats_general = analyzer.get_performance_stats_general()
-    returns = analyzer.returns()
+    returns = _resolve_tearsheet_returns(
+        analyzer=analyzer,
+        engine=engine,
+        currency=currency,
+    )
 
     # Build title with strategy name(s) and run time
     if title == "NautilusTrader Backtest Results":
-        # Extract strategy names
-        strategy_names = []
-        if hasattr(engine, "trader") and hasattr(engine.trader, "strategies"):
-            strategies = engine.trader.strategies()
-            strategy_names = [str(s.id) for s in strategies]
+        strategies = engine.trader.strategy_ids()
+        strategy_names = ", ".join(str(s) for s in strategies) if strategies else "None"
+        run_started = format_optional_iso8601(engine.run_started)
 
-        # Format run time
-        run_time = "N/A"
-        if hasattr(engine, "run_started") and engine.run_started:
-            run_time = str(engine.run_started)
-
-        # Build title: "NautilusTrader - Backtest Results<br>Strategy | Run Time"
-        subtitle_parts = []
-        if strategy_names:
-            subtitle_parts.append(", ".join(strategy_names))
-        if run_time != "N/A":
-            subtitle_parts.append(run_time)
-
-        if subtitle_parts:
-            title = f"<b>NautilusTrader</b> v1.222.0 - Backtest Results<br><sub>{' | '.join(subtitle_parts)}</sub>"
-        else:
-            title = "<b>NautilusTrader</b> v1.222.0 - Backtest Results"
+        title = f"<b>NautilusTrader</b> v{NAUTILUS_VERSION} - Backtest Results"
+        title += f"<br><sub>Strategies: {strategy_names} | Run started: {run_started}</sub>"
 
     # Extract run information
-    total_positions = 0
-    if hasattr(engine, "kernel"):
-        positions = list(engine.kernel.cache.positions()) + list(
-            engine.kernel.cache.position_snapshots(),
-        )
-        total_positions = len(positions)
+    total_events = f"{engine.kernel.exec_engine.event_count:_}"
+    total_orders = f"{engine.kernel.cache.orders_total_count():_}"
+    positions = list(engine.kernel.cache.positions()) + list(
+        engine.kernel.cache.position_snapshots(),
+    )
+    total_positions = f"{len(positions):_}"
+
+    elapsed_time = "N/A"
+
+    if engine.run_finished and engine.run_started:
+        elapsed_time = str(engine.run_finished - engine.run_started)
+
+    backtest_range = "N/A"
+
+    if engine.backtest_start and engine.backtest_end:
+        backtest_range = str(engine.backtest_end - engine.backtest_start)
 
     run_info = {
-        "Run ID": str(engine.run_id) if hasattr(engine, "run_id") else "N/A",
-        "Run Started": str(engine.run_started) if hasattr(engine, "run_started") else "N/A",
-        "Run Finished": str(engine.run_finished) if hasattr(engine, "run_finished") else "N/A",
-        "Backtest Start": str(engine.backtest_start)
-        if hasattr(engine, "backtest_start")
-        else "N/A",
-        "Backtest End": str(engine.backtest_end) if hasattr(engine, "backtest_end") else "N/A",
-        "Iterations": f"{engine.iteration:,}" if hasattr(engine, "iteration") else "N/A",
-        "Total Events": f"{engine.kernel.exec_engine.event_count:,}"
-        if hasattr(engine, "kernel")
-        else "N/A",
-        "Total Orders": f"{engine.kernel.cache.orders_total_count():,}"
-        if hasattr(engine, "kernel")
-        else "N/A",
-        "Total Positions": f"{total_positions:,}",
+        "Run ID": str(engine.run_id),
+        "Run started": str(engine.run_started) if engine.run_started else "N/A",
+        "Run finished": str(engine.run_finished) if engine.run_finished else "N/A",
+        "Elapsed time": elapsed_time,
+        "Backtest start": str(engine.backtest_start) if engine.backtest_start else "N/A",
+        "Backtest end": str(engine.backtest_end) if engine.backtest_end else "N/A",
+        "Backtest range": backtest_range,
+        "Iterations": f"{engine.iteration:_}",
+        "Total events": total_events,
+        "Total orders": total_orders,
+        "Total positions": total_positions,
     }
 
     # Determine which currencies to display
     all_currencies = analyzer.currencies
+
     if currency is not None:
         # User specified a currency, only show that one
         currencies = [currency] if currency in all_currencies else []
@@ -380,16 +393,18 @@ def create_tearsheet(  # noqa: C901
 
     # Extract account information per currency
     account_info = {}
+
     if currencies:
         for curr in currencies:
             starting = analyzer._account_balances_starting.get(curr)
             ending = analyzer._account_balances.get(curr)
             if starting and ending:
-                account_info[f"Starting Balance ({curr})"] = f"{starting.as_double():.8f} {curr}"
-                account_info[f"Ending Balance ({curr})"] = f"{ending.as_double():.8f} {curr}"
+                account_info[f"Starting balance ({curr})"] = starting.to_formatted_str()
+                account_info[f"Ending balance ({curr})"] = ending.to_formatted_str()
 
     # Get PnL stats for selected currencies
     all_stats_pnls = {}
+
     if currencies:
         for curr in currencies:
             curr_stats = analyzer.get_performance_stats_pnls(currency=curr)
@@ -411,6 +426,145 @@ def create_tearsheet(  # noqa: C901
         benchmark_name=benchmark_name,
         engine=engine,
     )
+
+
+def _resolve_tearsheet_returns(
+    analyzer,
+    engine: BacktestEngine,
+    currency=None,
+) -> pd.Series:
+    """
+    Pick the best available returns series for the tearsheet.
+
+    Preference order:
+    1. ``analyzer.portfolio_returns()`` -- daily returns the analyzer already
+       computed from a single-venue account.
+    2. ``_calculate_account_returns()`` -- aggregates across *all* cached
+       accounts (covers multi-venue backtests where the analyzer is
+       recalculated per venue in ``engine.pyx``).
+    3. ``analyzer.returns()`` -- per-position returns as a last resort.
+
+    """
+    portfolio_returns = getattr(analyzer, "portfolio_returns", None)
+    if callable(portfolio_returns):
+        resolved_returns = portfolio_returns()
+        if resolved_returns is not None and not resolved_returns.empty:
+            return resolved_returns
+
+    account_returns = _calculate_account_returns(engine=engine, currency=currency)
+
+    if account_returns is not None and not account_returns.empty:
+        return account_returns
+
+    return analyzer.returns()
+
+
+def _calculate_account_returns(
+    engine: BacktestEngine,
+    currency=None,
+) -> pd.Series | None:
+    """
+    Compute daily portfolio returns by aggregating all cached accounts.
+
+    This is separate from ``PortfolioAnalyzer._calculate_portfolio_returns``
+    because the backtest engine recalculates the analyzer per venue
+    (``engine.pyx:2140``). This function walks *every* cached account so it
+    can produce a single combined return series for multi-venue backtests.
+
+    Returns ``None`` when accounts use mixed currencies without an explicit
+    ``currency`` filter, falling back to per-position returns in the
+    tearsheet.
+
+    """
+    if engine is None:
+        return None
+
+    accounts = engine.kernel.cache.accounts()
+    if not accounts:
+        return None
+
+    from nautilus_trader.analysis.reporter import ReportProvider
+
+    target_currency = getattr(currency, "code", str(currency)) if currency is not None else None
+    observed_currencies = set()
+    balance_series: list[pd.Series] = []
+
+    for account in accounts:
+        report = ReportProvider.generate_account_report(account)
+        try:
+            totals, observed_currency = _extract_account_balance_series(
+                report=report,
+                target_currency=target_currency,
+            )
+        except ValueError:
+            return None
+
+        if observed_currency is not None:
+            observed_currencies.add(observed_currency)
+
+        if totals is None:
+            continue
+
+        balance_series.append(totals.rename(f"account_{len(balance_series)}"))
+
+    if not balance_series:
+        return None
+
+    if target_currency is None and len(observed_currencies) != 1:
+        return None
+
+    combined = pd.concat(balance_series, axis=1).sort_index().ffill().dropna()
+    if combined.empty:
+        return None
+
+    return _calculate_daily_balance_returns(combined.sum(axis=1))
+
+
+def _extract_account_balance_series(
+    report: pd.DataFrame,
+    target_currency: str | None,
+) -> tuple[pd.Series | None, str | None]:
+    if report.empty or "currency" not in report or "total" not in report:
+        return None, None
+
+    observed_currency: str | None = None
+
+    if target_currency is None:
+        account_currencies = set(report["currency"].dropna())
+        if len(account_currencies) != 1:
+            raise ValueError("account report contains multiple currencies")
+        observed_currency = next(iter(account_currencies))
+    else:
+        report = report[report["currency"] == target_currency]
+
+    if report.empty:
+        return None, observed_currency
+
+    totals = pd.to_numeric(report["total"], errors="coerce")
+    totals.index = report.index
+    totals = totals.dropna().sort_index()
+    if totals.empty:
+        return None, observed_currency
+
+    return totals.groupby(level=0).last(), observed_currency
+
+
+def _calculate_daily_balance_returns(total_balance: pd.Series) -> pd.Series | None:
+    account_returns = (
+        total_balance.resample("D")
+        .last()
+        .ffill()
+        .pct_change()
+        .replace(
+            [float("inf"), float("-inf")],
+            float("nan"),
+        )
+    ).dropna()
+
+    if account_returns.empty:
+        return None
+
+    return account_returns
 
 
 def create_tearsheet_from_stats(
@@ -444,7 +598,9 @@ def create_tearsheet_from_stats(
     returns : pd.Series
         Returns series from analyzer.
     output_path : str, optional
-        Path to save HTML tearsheet. If None, returns HTML string.
+        Path to save the tearsheet. File extension selects the format:
+        ``.html`` (interactive), or ``.png``, ``.jpg``, ``.webp``, ``.svg``, ``.pdf``
+        (static, via Kaleido). If None, returns HTML string.
     title : str, default "NautilusTrader Backtest Results"
         Title for the tearsheet.
     config : TearsheetConfig, optional
@@ -479,8 +635,11 @@ def create_tearsheet_from_stats(
     >>> stats_pnls = {"PnL (total)": 10000.0, ...}
     >>> returns = pd.Series([0.01, -0.02, ...])
     >>> html = create_tearsheet_from_stats(
-    ...     stats_pnls, stats_returns, stats_general, returns,
-    ...     output_path=None  # Return HTML instead of saving
+    ...     stats_pnls,
+    ...     stats_returns,
+    ...     stats_general,
+    ...     returns,
+    ...     output_path=None,  # Return HTML instead of saving
     ... )
 
     """
@@ -497,14 +656,14 @@ def create_tearsheet_from_stats(
 
         config = TearsheetConfig()
 
-    # Filter out run_info chart if no metadata is available
-    # This prevents an empty subplot from wasting grid space
-    if not run_info and not account_info and "run_info" in config.charts:
+    # Filter out run_info chart if no metadata is available.
+    # This prevents an empty subplot from wasting grid space.
+    if not run_info and not account_info and "run_info" in config.chart_names:
         from nautilus_trader.analysis import TearsheetConfig
 
         # Create new config without run_info chart
         config = TearsheetConfig(
-            charts=[c for c in config.charts if c != "run_info"],
+            charts=[c for c in config.charts if c.name != "run_info"],
             theme=config.theme,
             layout=config.layout,
             title=config.title,
@@ -531,7 +690,7 @@ def create_tearsheet_from_stats(
 
     # Save to HTML or return as string
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
         return None
     else:
         return fig.to_html()
@@ -619,7 +778,7 @@ def create_equity_curve(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -691,7 +850,7 @@ def create_drawdown_chart(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -789,7 +948,7 @@ def create_monthly_returns_heatmap(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -850,7 +1009,7 @@ def create_returns_distribution(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -934,7 +1093,7 @@ def create_rolling_sharpe(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -1009,7 +1168,7 @@ def create_yearly_returns(
     )
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -1106,8 +1265,10 @@ def _create_tearsheet_figure(
             if chart_idx >= len(config.charts):
                 break
 
-            chart_name = config.charts[chart_idx]
+            chart = config.charts[chart_idx]
             chart_idx += 1
+
+            chart_name = chart.name
 
             # Get chart spec
             if chart_name not in _TEARSHEET_CHART_SPECS:
@@ -1117,10 +1278,8 @@ def _create_tearsheet_figure(
             # Get renderer function
             renderer = _TEARSHEET_CHART_SPECS[chart_name]["renderer"]
 
-            # Get chart-specific arguments if provided
-            chart_kwargs = {}
-            if config.chart_args and chart_name in config.chart_args:
-                chart_kwargs = config.chart_args[chart_name]
+            # Get chart-specific arguments
+            chart_kwargs = chart.kwargs()
 
             # Call renderer with all available data
             renderer(
@@ -1298,6 +1457,7 @@ def _render_run_info(
         for key, value in section_data.items():
             metrics.append(key)
             values.append(str(value))
+
             if len(fill_colors) % 2 == 0:
                 fill_colors.append(theme_config["colors"]["table_row_odd"])
             else:
@@ -1698,7 +1858,7 @@ def create_bars_with_fills(
     fig.update_yaxes(fixedrange=False, row=1, col=1)
 
     if output_path:
-        fig.write_html(output_path)
+        _write_figure(fig, output_path)
 
     return fig
 
@@ -1774,7 +1934,7 @@ def _render_bars_with_fills(  # noqa: C901
         bars_df[column] = bars_df[column].astype(float)
 
     # Get order fills and filter by instrument_id
-    fills_df = engine.trader.generate_order_fills_report()
+    fills_df = engine.trader.generate_fills_report()
 
     if not fills_df.empty:
         # Filter fills by instrument_id from bar_type
@@ -1783,8 +1943,8 @@ def _render_bars_with_fills(  # noqa: C901
 
         if not fills_df.empty:
             fills_df["ts_init"] = pd.to_datetime(fills_df["ts_init"])
-            fills_df["filled_qty"] = pd.to_numeric(fills_df["filled_qty"], errors="coerce")
-            fills_df["avg_px"] = pd.to_numeric(fills_df["avg_px"], errors="coerce")
+            fills_df["last_qty"] = pd.to_numeric(fills_df["last_qty"], errors="coerce")
+            fills_df["last_px"] = pd.to_numeric(fills_df["last_px"], errors="coerce")
 
     # Add candlestick chart
     fig.add_trace(
@@ -1804,8 +1964,16 @@ def _render_bars_with_fills(  # noqa: C901
     # Add order fills as scatter markers if available
     if not fills_df.empty and "ts_init" in fills_df.columns:
         # Separate buy and sell fills
-        buy_fills = fills_df[fills_df["side"] == "BUY"] if "side" in fills_df.columns else pd.DataFrame()
-        sell_fills = fills_df[fills_df["side"] == "SELL"] if "side" in fills_df.columns else pd.DataFrame()
+        buy_fills = (
+            fills_df[fills_df["order_side"] == "BUY"]
+            if "order_side" in fills_df.columns
+            else pd.DataFrame()
+        )
+        sell_fills = (
+            fills_df[fills_df["order_side"] == "SELL"]
+            if "order_side" in fills_df.columns
+            else pd.DataFrame()
+        )
 
         # Get theme colors for fills
         positive_color = theme_config["colors"]["positive"]
@@ -1853,16 +2021,21 @@ def _add_fill_scatter_trace(
     marker_color: str,
     name: str,
 ) -> None:
-    if fills_df.empty or "avg_px" not in fills_df.columns or "filled_qty" not in fills_df.columns:
+    if fills_df.empty or "last_px" not in fills_df.columns or "last_qty" not in fills_df.columns:
         return
 
-    required_cols = ["strategy_id", "instrument_id", "type", "side", "filled_qty", "avg_px", "ts_init"]
+    required_cols = [
+        "strategy_id",
+        "instrument_id",
+        "order_side",
+        "last_qty",
+    ]
     has_all_cols = all(col in fills_df.columns for col in required_cols)
 
     fig.add_trace(
         go.Scatter(
             x=fills_df["ts_init"],
-            y=fills_df["avg_px"],
+            y=fills_df["last_px"],
             mode="markers",
             customdata=fills_df[required_cols].to_numpy() if has_all_cols else fills_df.to_numpy(),
             marker_symbol=marker_symbol,
@@ -1876,19 +2049,12 @@ def _add_fill_scatter_trace(
                 "Price: %{y:.2f}<br>"
                 "Strategy: %{customdata[0]}<br>"
                 "Instrument: %{customdata[1]}<br>"
-                "Type: %{customdata[2]}<br>"
-                "Side: %{customdata[3]}<br>"
-                "Quantity: %{customdata[4]:.2f}<br>"
-                "Avg Price: %{customdata[5]:.2f}<br>"
+                "Side: %{customdata[2]}<br>"
+                "Quantity: %{customdata[3]:.2f}<br>"
                 "<extra></extra>"
             )
             if has_all_cols
-            else (
-                "<b>%{x}</b><br>"
-                "Price: %{y:.2f}<br>"
-                "Quantity: %{customdata}<br>"
-                "<extra></extra>"
-            ),
+            else ("<b>%{x}</b><br>Price: %{y:.2f}<br>Quantity: %{customdata}<br><extra></extra>"),
             showlegend=True,
         ),
         row=row,
@@ -1930,7 +2096,7 @@ def _register_tearsheet_chart(
 
 
 def _calculate_grid_layout(
-    charts: list[str],
+    charts: list[TearsheetChart],
     custom_layout: Any = None,
 ) -> tuple[int, int, list, list[str], list[float], float, float]:
     """
@@ -1938,8 +2104,8 @@ def _calculate_grid_layout(
 
     Parameters
     ----------
-    charts : list[str]
-        List of chart names to include.
+    charts : list[TearsheetChart]
+        List of chart objects to include (in order).
     custom_layout : GridLayout, optional
         Custom layout specification.
 
@@ -1987,10 +2153,12 @@ def _calculate_grid_layout(
 
         for _ in range(cols):
             if chart_idx < len(charts):
-                chart_name = charts[chart_idx]
+                chart = charts[chart_idx]
+                chart_name = chart.name
                 spec = _TEARSHEET_CHART_SPECS.get(chart_name, {})
                 subplot_type = spec.get("type", "scatter")
-                title = spec.get("title", chart_name.replace("_", " ").title())
+                default_title = spec.get("title", chart_name.replace("_", " ").title())
+                title = chart.title or default_title
 
                 row_specs.append({"type": subplot_type})
                 titles.append(title)
@@ -2026,4 +2194,9 @@ _register_tearsheet_chart(
     _render_rolling_sharpe,
 )
 _register_tearsheet_chart("yearly_returns", "bar", "Yearly Returns", _render_yearly_returns)
-_register_tearsheet_chart("bars_with_fills", "scatter", "Bars with Order Fills", _render_bars_with_fills)
+_register_tearsheet_chart(
+    "bars_with_fills",
+    "scatter",
+    "Bars with Order Fills",
+    _render_bars_with_fills,
+)

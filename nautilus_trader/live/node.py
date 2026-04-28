@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -375,8 +375,8 @@ class TradingNode:
                 self._task_streaming.add_done_callback(self._handle_streaming_exception)
 
             await asyncio.gather(*tasks)
-        except asyncio.CancelledError as e:
-            self.kernel.logger.error(str(e))
+        except asyncio.CancelledError:
+            self.kernel.logger.debug("Engine queue tasks cancelled during shutdown")
 
     def stop(self) -> None:
         """

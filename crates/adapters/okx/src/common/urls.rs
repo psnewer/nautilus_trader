@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,11 +15,23 @@
 
 //! URL helpers and endpoint metadata for OKX services.
 
-use nautilus_core::env::get_env_var;
+use crate::common::enums::OKXEnvironment;
+
+const OKX_HTTP_URL: &str = "https://www.okx.com";
+const OKX_WS_PUBLIC_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
+const OKX_WS_PRIVATE_URL: &str = "wss://ws.okx.com:8443/ws/v5/private";
+const OKX_WS_BUSINESS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
+const OKX_DEMO_WS_PUBLIC_URL: &str = "wss://wspap.okx.com:8443/ws/v5/public";
+const OKX_DEMO_WS_PRIVATE_URL: &str = "wss://wspap.okx.com:8443/ws/v5/private";
+const OKX_DEMO_WS_BUSINESS_URL: &str = "wss://wspap.okx.com:8443/ws/v5/business";
 
 /// OKX endpoint types for determining URL and authentication requirements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "python", pyo3::pyclass)]
+#[cfg_attr(feature = "python", pyo3::pyclass(from_py_object))]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.okx")
+)]
 pub enum OKXEndpointType {
     Public,
     Private,
@@ -34,59 +46,63 @@ pub fn requires_authentication(endpoint_type: OKXEndpointType) -> bool {
     )
 }
 
-/// Gets the HTTP base URL.
-pub fn get_http_base_url() -> String {
-    get_env_var("OKX_BASE_URL_HTTP").unwrap_or_else(|_| "https://www.okx.com".to_string())
+/// Returns the HTTP base URL.
+#[must_use]
+pub const fn get_http_base_url() -> &'static str {
+    OKX_HTTP_URL
 }
 
-/// Gets the WebSocket base URL for public data (market data).
-pub fn get_ws_base_url_public(is_demo: bool) -> String {
-    if is_demo {
-        get_env_var("OKX_DEMO_BASE_URL_WS_PUBLIC")
-            .unwrap_or_else(|_| "wss://wspap.okx.com:8443/ws/v5/public".to_string())
-    } else {
-        get_env_var("OKX_BASE_URL_WS_PUBLIC")
-            .unwrap_or_else(|_| "wss://ws.okx.com:8443/ws/v5/public".to_string())
+/// Returns the WebSocket base URL for public data (market data).
+#[must_use]
+pub fn get_ws_base_url_public(environment: OKXEnvironment) -> &'static str {
+    match environment {
+        OKXEnvironment::Demo => OKX_DEMO_WS_PUBLIC_URL,
+        OKXEnvironment::Live => OKX_WS_PUBLIC_URL,
     }
 }
 
-/// Gets the WebSocket base URL for private data (account/order management).
-pub fn get_ws_base_url_private(is_demo: bool) -> String {
-    if is_demo {
-        get_env_var("OKX_DEMO_BASE_URL_WS_PRIVATE")
-            .unwrap_or_else(|_| "wss://wspap.okx.com:8443/ws/v5/private".to_string())
-    } else {
-        get_env_var("OKX_BASE_URL_WS_PRIVATE")
-            .unwrap_or_else(|_| "wss://ws.okx.com:8443/ws/v5/private".to_string())
+/// Returns the WebSocket base URL for private data (account/order management).
+#[must_use]
+pub fn get_ws_base_url_private(environment: OKXEnvironment) -> &'static str {
+    match environment {
+        OKXEnvironment::Demo => OKX_DEMO_WS_PRIVATE_URL,
+        OKXEnvironment::Live => OKX_WS_PRIVATE_URL,
     }
 }
 
-/// Gets the WebSocket base URL for business data (bars/candlesticks).
-pub fn get_ws_base_url_business(is_demo: bool) -> String {
-    if is_demo {
-        get_env_var("OKX_DEMO_BASE_URL_WS_BUSINESS")
-            .unwrap_or_else(|_| "wss://wspap.okx.com:8443/ws/v5/business".to_string())
-    } else {
-        get_env_var("OKX_BASE_URL_WS_BUSINESS")
-            .unwrap_or_else(|_| "wss://ws.okx.com:8443/ws/v5/business".to_string())
+/// Returns the WebSocket base URL for business data (bars/candlesticks).
+#[must_use]
+pub fn get_ws_base_url_business(environment: OKXEnvironment) -> &'static str {
+    match environment {
+        OKXEnvironment::Demo => OKX_DEMO_WS_BUSINESS_URL,
+        OKXEnvironment::Live => OKX_WS_BUSINESS_URL,
     }
 }
 
-/// Gets WebSocket URL by endpoint type.
-pub fn get_ws_url(endpoint_type: OKXEndpointType, is_demo: bool) -> String {
-    match endpoint_type {
-        OKXEndpointType::Public => get_ws_base_url_public(is_demo),
-        OKXEndpointType::Private => get_ws_base_url_private(is_demo),
-        OKXEndpointType::Business => get_ws_base_url_business(is_demo),
-    }
-}
-
-/// Gets the WebSocket base URL (backward compatibility - defaults to private).
+/// Derives a WebSocket URL for a given channel from a base URL.
 ///
-/// .. deprecated::
-///     Use get_ws_base_url_public() or get_ws_base_url_private() instead.
-pub fn get_ws_base_url(is_demo: bool) -> String {
-    get_ws_base_url_private(is_demo)
+/// Replaces the last path segment (`/public`, `/private`, or `/business`)
+/// with the target channel. If no recognized segment is found, appends
+/// `/{channel}` to the path.
+#[must_use]
+pub fn derive_ws_url(base_url: &str, channel: &str) -> String {
+    let url = base_url.trim_end_matches('/');
+    for suffix in ["/public", "/private", "/business"] {
+        if let Some(base) = url.strip_suffix(suffix) {
+            return format!("{base}/{channel}");
+        }
+    }
+    format!("{url}/{channel}")
+}
+
+/// Returns WebSocket URL by endpoint type.
+#[must_use]
+pub fn get_ws_url(endpoint_type: OKXEndpointType, environment: OKXEnvironment) -> &'static str {
+    match endpoint_type {
+        OKXEndpointType::Public => get_ws_base_url_public(environment),
+        OKXEndpointType::Private => get_ws_base_url_private(environment),
+        OKXEndpointType::Business => get_ws_base_url_business(environment),
+    }
 }
 
 #[cfg(test)]
@@ -104,54 +120,84 @@ mod tests {
 
     #[rstest]
     fn test_http_base_url() {
-        assert_eq!(get_http_base_url(), "https://www.okx.com");
+        assert_eq!(get_http_base_url(), OKX_HTTP_URL);
     }
 
     #[rstest]
-    fn test_ws_urls_production() {
+    fn test_ws_urls_live() {
         assert_eq!(
-            get_ws_base_url_public(false),
-            "wss://ws.okx.com:8443/ws/v5/public"
+            get_ws_base_url_public(OKXEnvironment::Live),
+            OKX_WS_PUBLIC_URL
         );
         assert_eq!(
-            get_ws_base_url_private(false),
-            "wss://ws.okx.com:8443/ws/v5/private"
+            get_ws_base_url_private(OKXEnvironment::Live),
+            OKX_WS_PRIVATE_URL
         );
         assert_eq!(
-            get_ws_base_url_business(false),
-            "wss://ws.okx.com:8443/ws/v5/business"
+            get_ws_base_url_business(OKXEnvironment::Live),
+            OKX_WS_BUSINESS_URL
         );
     }
 
     #[rstest]
     fn test_ws_urls_demo() {
         assert_eq!(
-            get_ws_base_url_public(true),
-            "wss://wspap.okx.com:8443/ws/v5/public"
+            get_ws_base_url_public(OKXEnvironment::Demo),
+            OKX_DEMO_WS_PUBLIC_URL
         );
         assert_eq!(
-            get_ws_base_url_private(true),
-            "wss://wspap.okx.com:8443/ws/v5/private"
+            get_ws_base_url_private(OKXEnvironment::Demo),
+            OKX_DEMO_WS_PRIVATE_URL
         );
         assert_eq!(
-            get_ws_base_url_business(true),
-            "wss://wspap.okx.com:8443/ws/v5/business"
+            get_ws_base_url_business(OKXEnvironment::Demo),
+            OKX_DEMO_WS_BUSINESS_URL
         );
+    }
+
+    #[rstest]
+    #[case(
+        "wss://ws.okx.com:8443/ws/v5/public",
+        "business",
+        "wss://ws.okx.com:8443/ws/v5/business"
+    )]
+    #[case(
+        "wss://wseea.okx.com:8443/ws/v5/public",
+        "private",
+        "wss://wseea.okx.com:8443/ws/v5/private"
+    )]
+    #[case(
+        "wss://wseea.okx.com:8443/ws/v5/private",
+        "business",
+        "wss://wseea.okx.com:8443/ws/v5/business"
+    )]
+    #[case(
+        "wss://wseea.okx.com:8443/ws/v5/private/",
+        "business",
+        "wss://wseea.okx.com:8443/ws/v5/business"
+    )]
+    #[case(
+        "wss://custom.proxy:8443/ws/v5",
+        "business",
+        "wss://custom.proxy:8443/ws/v5/business"
+    )]
+    fn test_derive_ws_url(#[case] base_url: &str, #[case] channel: &str, #[case] expected: &str) {
+        assert_eq!(derive_ws_url(base_url, channel), expected);
     }
 
     #[rstest]
     fn test_get_ws_url_by_type() {
         assert_eq!(
-            get_ws_url(OKXEndpointType::Public, false),
-            get_ws_base_url_public(false)
+            get_ws_url(OKXEndpointType::Public, OKXEnvironment::Live),
+            get_ws_base_url_public(OKXEnvironment::Live)
         );
         assert_eq!(
-            get_ws_url(OKXEndpointType::Private, false),
-            get_ws_base_url_private(false)
+            get_ws_url(OKXEndpointType::Private, OKXEnvironment::Live),
+            get_ws_base_url_private(OKXEnvironment::Live)
         );
         assert_eq!(
-            get_ws_url(OKXEndpointType::Business, false),
-            get_ws_base_url_business(false)
+            get_ws_url(OKXEndpointType::Business, OKXEnvironment::Live),
+            get_ws_base_url_business(OKXEnvironment::Live)
         );
     }
 }

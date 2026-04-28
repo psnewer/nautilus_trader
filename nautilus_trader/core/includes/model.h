@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <Python.h>
 
+#define HIGH_PRECISION
+
 #ifdef __SIZEOF_INT128__
     typedef __uint128_t uint128_t;
     typedef __int128_t int128_t;
@@ -600,6 +602,20 @@ typedef enum OptionKind {
      */
     PUT = 2,
 } OptionKind;
+
+/**
+ * Defines when OTO (One-Triggers-Other) child orders are released.
+ */
+typedef enum OtoTriggerMode {
+    /**
+     * Release child order(s) pro-rata to each partial fill (default).
+     */
+    PARTIAL = 0,
+    /**
+     * Release child order(s) only once the parent is fully filled.
+     */
+    FULL = 1,
+} OtoTriggerMode;
 
 /**
  * The status for a specific order.
@@ -1433,10 +1449,10 @@ typedef struct InstrumentClose_t {
 } InstrumentClose_t;
 
 /**
- * A built-in Nautilus data type.
+ * A C-compatible representation of [`Data`] for FFI.
  *
- * Not recommended for storing large amounts of data, as the largest variant is significantly
- * larger (10x) than the smallest.
+ * This enum matches the standard variants of [`Data`] but excludes the `Custom`
+ * variant which is not FFI-safe.
  */
 typedef enum Data_t_Tag {
     DELTA,
@@ -1670,7 +1686,7 @@ typedef struct VenueOrderId_t {
 /**
  * Represents an event where an order has been accepted by the trading venue.
  *
- * This event often corresponds to a `NEW` OrdStatus <39> field in FIX execution reports.
+ * This event often corresponds to a `NEW` `OrdStatus` <39> field in FIX execution reports.
  */
 typedef struct OrderAccepted_t {
     /**
@@ -1928,9 +1944,9 @@ extern const uint8_t HIGH_PRECISION_MODE;
  *
  * # Safety
  *
- * This value is computed at compile time from MONEY_MAX * FIXED_SCALAR.
- * The multiplication is guaranteed not to overflow because MONEY_MAX and FIXED_SCALAR
- * are chosen such that their product fits within MoneyRaw's range in both
+ * This value is computed at compile time from `MONEY_MAX` * `FIXED_SCALAR`.
+ * The multiplication is guaranteed not to overflow because `MONEY_MAX` and `FIXED_SCALAR`
+ * are chosen such that their product fits within `MoneyRaw`'s range in both
  * high-precision (i128) and standard-precision (i64) modes.
  */
 extern const MoneyRaw MONEY_RAW_MAX;
@@ -1940,9 +1956,9 @@ extern const MoneyRaw MONEY_RAW_MAX;
  *
  * # Safety
  *
- * This value is computed at compile time from MONEY_MIN * FIXED_SCALAR.
- * The multiplication is guaranteed not to overflow because MONEY_MIN and FIXED_SCALAR
- * are chosen such that their product fits within MoneyRaw's range in both
+ * This value is computed at compile time from `MONEY_MIN` * `FIXED_SCALAR`.
+ * The multiplication is guaranteed not to overflow because `MONEY_MIN` and `FIXED_SCALAR`
+ * are chosen such that their product fits within `MoneyRaw`'s range in both
  * high-precision (i128) and standard-precision (i64) modes.
  */
 extern const MoneyRaw MONEY_RAW_MIN;
@@ -1952,9 +1968,9 @@ extern const MoneyRaw MONEY_RAW_MIN;
  *
  * # Safety
  *
- * This value is computed at compile time from PRICE_MAX * FIXED_SCALAR.
- * The multiplication is guaranteed not to overflow because PRICE_MAX and FIXED_SCALAR
- * are chosen such that their product fits within PriceRaw's range in both
+ * This value is computed at compile time from `PRICE_MAX` * `FIXED_SCALAR`.
+ * The multiplication is guaranteed not to overflow because `PRICE_MAX` and `FIXED_SCALAR`
+ * are chosen such that their product fits within `PriceRaw`'s range in both
  * high-precision (i128) and standard-precision (i64) modes.
  */
 extern const PriceRaw PRICE_RAW_MAX;
@@ -1964,9 +1980,9 @@ extern const PriceRaw PRICE_RAW_MAX;
  *
  * # Safety
  *
- * This value is computed at compile time from PRICE_MIN * FIXED_SCALAR.
- * The multiplication is guaranteed not to overflow because PRICE_MIN and FIXED_SCALAR
- * are chosen such that their product fits within PriceRaw's range in both
+ * This value is computed at compile time from `PRICE_MIN` * `FIXED_SCALAR`.
+ * The multiplication is guaranteed not to overflow because `PRICE_MIN` and `FIXED_SCALAR`
+ * are chosen such that their product fits within `PriceRaw`'s range in both
  * high-precision (i128) and standard-precision (i64) modes.
  */
 extern const PriceRaw PRICE_RAW_MIN;
@@ -2109,8 +2125,6 @@ uint64_t orderbook_delta_hash(const struct OrderBookDelta_t *delta);
 
 /**
  * Creates a new [`OrderBookDeltas_API`] instance from a `CVec` of `OrderBookDelta`.
- *
- * # Safety
  *
  * - The `deltas` must be a valid pointer to a `CVec` containing `OrderBookDelta` objects.
  * - This function clones the data pointed to by `deltas` into Rust-managed memory, then forgets the original `Vec` to prevent Rust from auto-deallocating it.
@@ -2512,6 +2526,21 @@ const char *option_kind_to_cstr(enum OptionKind value);
  * Panics if the C string does not correspond to a valid `OptionKind` variant.
  */
 enum OptionKind option_kind_from_cstr(const char *ptr);
+
+const char *oto_trigger_mode_to_cstr(enum OtoTriggerMode value);
+
+/**
+ * Returns an enum from a Python string.
+ *
+ * # Safety
+ *
+ * Assumes `ptr` is a valid C string pointer.
+ *
+ * # Panics
+ *
+ * Panics if the C string does not correspond to a valid `OtoTriggerMode` variant.
+ */
+enum OtoTriggerMode oto_trigger_mode_from_cstr(const char *ptr);
 
 const char *order_side_to_cstr(enum OrderSide value);
 
@@ -3063,11 +3092,36 @@ void orderbook_apply_delta(struct OrderBook_API *book, const struct OrderBookDel
 
 void orderbook_apply_deltas(struct OrderBook_API *book, const struct OrderBookDeltas_API *deltas);
 
+/**
+ * Creates an `OrderBookDeltas` snapshot from the current order book state.
+ *
+ * This is the reverse operation of `orderbook_apply_deltas`: it converts the current book state
+ * back into a snapshot format with a `Clear` delta followed by `Add` deltas for all orders.
+ *
+ * # Parameters
+ *
+ * * `book` - The order book to convert.
+ * * `sequence` - The message sequence number for the snapshot.
+ * * `ts_event` - UNIX timestamp (nanoseconds) when the book event occurred.
+ * * `ts_init` - UNIX timestamp (nanoseconds) when the instance was created.
+ *
+ * # Returns
+ *
+ * An `OrderBookDeltas_API` containing a snapshot of the current order book state.
+ */
+struct OrderBookDeltas_API orderbook_to_snapshot_deltas(const struct OrderBook_API *book,
+                                                        uint64_t ts_event,
+                                                        uint64_t ts_init);
+
 void orderbook_apply_depth(struct OrderBook_API *book, const struct OrderBookDepth10_t *depth);
 
 CVec orderbook_bids(struct OrderBook_API *book);
 
 CVec orderbook_asks(struct OrderBook_API *book);
+
+CVec orderbook_bids_down_to(struct OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
+
+CVec orderbook_asks_up_to(struct OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
 
 uint8_t orderbook_has_bid(struct OrderBook_API *book);
 
@@ -3119,9 +3173,18 @@ double orderbook_get_avg_px_for_quantity(struct OrderBook_API *book,
                                          struct Quantity_t qty,
                                          enum OrderSide order_side);
 
+struct Price_t orderbook_get_worst_px_for_quantity(struct OrderBook_API *book,
+                                                   struct Quantity_t qty,
+                                                   enum OrderSide order_side);
+
 double orderbook_get_quantity_for_price(struct OrderBook_API *book,
                                         struct Price_t price,
                                         enum OrderSide order_side);
+
+struct Quantity_t orderbook_get_quantity_at_level(const struct OrderBook_API *book,
+                                                  struct Price_t price,
+                                                  enum OrderSide order_side,
+                                                  uint8_t size_precision);
 
 /**
  * Updates the order book with a quote tick.
@@ -3170,6 +3233,8 @@ struct Price_t level_price(const struct BookLevel_API *level);
 CVec level_orders(const struct BookLevel_API *level);
 
 double level_size(const struct BookLevel_API *level);
+
+QuantityRaw level_size_raw(const struct BookLevel_API *level);
 
 double level_exposure(const struct BookLevel_API *level);
 
@@ -3255,32 +3320,16 @@ struct Money_t money_from_raw(MoneyRaw raw, struct Currency_t currency);
 
 double money_as_f64(const struct Money_t *money);
 
-void money_add_assign(struct Money_t a, struct Money_t b);
-
-void money_sub_assign(struct Money_t a, struct Money_t b);
-
 struct Price_t price_new(double value, uint8_t precision);
 
 struct Price_t price_from_raw(PriceRaw raw, uint8_t precision);
 
 double price_as_f64(const struct Price_t *price);
 
-void price_add_assign(struct Price_t a, struct Price_t b);
-
-void price_sub_assign(struct Price_t a, struct Price_t b);
-
 struct Quantity_t quantity_new(double value, uint8_t precision);
 
 struct Quantity_t quantity_from_raw(QuantityRaw raw, uint8_t precision);
 
 double quantity_as_f64(const struct Quantity_t *qty);
-
-void quantity_add_assign(struct Quantity_t a, struct Quantity_t b);
-
-void quantity_add_assign_u64(struct Quantity_t a, uint64_t b);
-
-void quantity_sub_assign(struct Quantity_t a, struct Quantity_t b);
-
-void quantity_sub_assign_u64(struct Quantity_t a, uint64_t b);
 
 struct Quantity_t quantity_saturating_sub(struct Quantity_t a, struct Quantity_t b);

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,6 +12,11 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
+
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "test arithmetic with known-safe values"
+)]
 
 //! Property-based tests for rate limiting components.
 //!
@@ -36,7 +41,7 @@ proptest! {
         request_count in 1usize..=200
     ) {
         let rate_nonzero = NonZeroU32::new(rate).unwrap();
-        let quota = Quota::per_second(rate_nonzero);
+        let quota = Quota::per_second(rate_nonzero).unwrap();
         let rate_limiter = RateLimiter::new_with_quota(
             None,
             vec![(key.clone(), quota)]
@@ -90,7 +95,7 @@ proptest! {
         rate in 1u32..=20u32
     ) {
         let rate_nonzero = NonZeroU32::new(rate).unwrap();
-        let quota = Quota::per_second(rate_nonzero);
+        let quota = Quota::per_second(rate_nonzero).unwrap();
 
         let keyed_quotas: Vec<(String, Quota)> = keys.iter()
             .map(|k| (k.clone(), quota))
@@ -139,7 +144,7 @@ proptest! {
         let rate_nonzero = NonZeroU32::new(rate).unwrap();
 
         // Should not panic on quota creation for different periods
-        let quota_second = Quota::per_second(rate_nonzero);
+        let quota_second = Quota::per_second(rate_nonzero).unwrap();
         let quota_minute = Quota::per_minute(rate_nonzero);
         let quota_hour = Quota::per_hour(rate_nonzero);
 
@@ -208,7 +213,7 @@ proptest! {
         request_count in 1usize..=150
     ) {
         let rate_nonzero = NonZeroU32::new(rate).unwrap();
-        let quota = Quota::per_second(rate_nonzero);
+        let quota = Quota::per_second(rate_nonzero).unwrap();
         let rate_limiter = RateLimiter::<String, _>::new_with_quota(
             Some(quota),
             vec![]
@@ -220,6 +225,7 @@ proptest! {
 
         // Make rapid sequential requests
         let start = std::time::Instant::now();
+
         for _ in 0..request_count {
             if rate_limiter.check_key(&key).is_ok() {
                 allowed_count += 1;
@@ -256,8 +262,8 @@ proptest! {
         key_rate in 1u32..=20u32,
         key in "[a-z]{1,8}"
     ) {
-        let default_quota = Quota::per_second(NonZeroU32::new(default_rate).unwrap());
-        let key_quota = Quota::per_second(NonZeroU32::new(key_rate).unwrap());
+        let default_quota = Quota::per_second(NonZeroU32::new(default_rate).unwrap()).unwrap();
+        let key_quota = Quota::per_second(NonZeroU32::new(key_rate).unwrap()).unwrap();
 
         let rate_limiter = RateLimiter::new_with_quota(
             Some(default_quota),
@@ -268,6 +274,7 @@ proptest! {
         let mut specific_allowed = 0usize;
         let specific_attempts = key_rate as usize + 1; // inclusive in original test
         let start_specific = std::time::Instant::now();
+
         for _ in 0..specific_attempts {
             if rate_limiter.check_key(&key).is_ok() {
                 specific_allowed += 1;
@@ -289,6 +296,7 @@ proptest! {
         let mut default_allowed = 0usize;
         let default_attempts = default_rate as usize + 1; // inclusive in original test
         let start_default = std::time::Instant::now();
+
         for _ in 0..default_attempts {
             if rate_limiter.check_key(&unknown_key).is_ok() {
                 default_allowed += 1;
@@ -330,6 +338,7 @@ proptest! {
             let mut allowed = 0usize;
             let attempts = (burst_size * 2) as usize;
             let start = std::time::Instant::now();
+
             for _ in 0..attempts {
                 if rate_limiter.check_key(&key).is_ok() {
                     allowed += 1;
@@ -362,13 +371,54 @@ proptest! {
         }
     }
 
+    /// Property: per_second succeeds for all max_burst <= 1_000_000_000
+    /// and always produces a positive replenish interval.
+    #[rstest]
+    fn per_second_valid_range_invariants(
+        max_burst in 1u32..=1_000_000_000u32,
+    ) {
+        let quota = Quota::per_second(NonZeroU32::new(max_burst).unwrap())
+            .expect("max_burst <= 1_000_000_000 should always succeed");
+        prop_assert!(
+            quota.replenish_interval().as_nanos() > 0,
+            "replenish_interval must be positive for max_burst={}",
+            max_burst
+        );
+    }
+
+    /// Property: per_minute never panics for any NonZeroU32 value.
+    #[rstest]
+    fn per_minute_full_range_never_panics(
+        max_burst in 1u32..=u32::MAX,
+    ) {
+        let quota = Quota::per_minute(NonZeroU32::new(max_burst).unwrap());
+        prop_assert!(
+            quota.replenish_interval().as_nanos() > 0,
+            "per_minute replenish_interval must be positive for max_burst={}",
+            max_burst
+        );
+    }
+
+    /// Property: per_hour never panics for any NonZeroU32 value.
+    #[rstest]
+    fn per_hour_full_range_never_panics(
+        max_burst in 1u32..=u32::MAX,
+    ) {
+        let quota = Quota::per_hour(NonZeroU32::new(max_burst).unwrap());
+        prop_assert!(
+            quota.replenish_interval().as_nanos() > 0,
+            "per_hour replenish_interval must be positive for max_burst={}",
+            max_burst
+        );
+    }
+
     /// Property: GCRA boundary edge case where t0 equals earliest_time exactly.
     #[rstest]
     fn gcra_boundary_exact_replenishment(
         rate in 1u32..=20u32
     ) {
         let rate_nonzero = NonZeroU32::new(rate).unwrap();
-        let quota = Quota::per_second(rate_nonzero);
+        let quota = Quota::per_second(rate_nonzero).unwrap();
         let rate_limiter = RateLimiter::<String, _>::new_with_quota(Some(quota), vec![]);
 
         let key = "boundary_test".to_string();

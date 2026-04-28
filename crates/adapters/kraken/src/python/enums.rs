@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,37 +14,3 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Python-idiomatic enum aliases (SCREAMING_SNAKE_CASE).
-
-use pyo3::prelude::*;
-
-use crate::common::enums::{KrakenEnvironment, KrakenProductType};
-
-#[pymethods]
-impl KrakenEnvironment {
-    #[classattr]
-    #[pyo3(name = "MAINNET")]
-    fn py_mainnet() -> Self {
-        Self::Mainnet
-    }
-
-    #[classattr]
-    #[pyo3(name = "DEMO")]
-    fn py_demo() -> Self {
-        Self::Demo
-    }
-}
-
-#[pymethods]
-impl KrakenProductType {
-    #[classattr]
-    #[pyo3(name = "SPOT")]
-    fn py_spot() -> Self {
-        Self::Spot
-    }
-
-    #[classattr]
-    #[pyo3(name = "FUTURES")]
-    fn py_futures() -> Self {
-        Self::Futures
-    }
-}

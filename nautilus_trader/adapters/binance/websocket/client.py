@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -50,6 +50,8 @@ class BinanceWebSocketClient:
         The callback handler to be called on reconnect.
     loop : asyncio.AbstractEventLoop
         The event loop for the client.
+    proxy_url : str, optional
+        The proxy URL for the WebSocket connection.
 
     References
     ----------
@@ -67,6 +69,7 @@ class BinanceWebSocketClient:
         handler: Callable[[bytes], None],
         handler_reconnect: Callable[..., Awaitable[None]] | None,
         loop: asyncio.AbstractEventLoop,
+        proxy_url: str | None = None,
     ) -> None:
         self._clock = clock
         self._log: Logger = Logger(type(self).__name__)
@@ -75,6 +78,7 @@ class BinanceWebSocketClient:
         self._handler: Callable[[bytes], None] = handler
         self._handler_reconnect: Callable[..., Awaitable[None]] | None = handler_reconnect
         self._loop = loop
+        self._proxy_url: str | None = proxy_url
         self._tasks: WeakSet[asyncio.Task] = WeakSet()
 
         self._streams: list[str] = []
@@ -183,6 +187,7 @@ class BinanceWebSocketClient:
 
         # Group streams by client (using existing assignments or creating new ones)
         client_streams: dict[int, list[str]] = {}
+
         for stream in self._streams:
             client_id = self._get_client_for_stream(stream)
             if client_id == -1:
@@ -226,6 +231,7 @@ class BinanceWebSocketClient:
             url=ws_url,
             headers=[],
             heartbeat=60,
+            proxy_url=self._proxy_url,
         )
 
         self._clients[client_id] = await WebSocketClient.connect(
@@ -329,18 +335,6 @@ class BinanceWebSocketClient:
 
         self._clients[client_id] = None  # Dispose (will go out of scope)
         self._log.debug(f"ws-client {client_id}: Disconnected from {self._base_url}")
-
-    async def subscribe_listen_key(self, listen_key: str) -> None:
-        """
-        Subscribe to user data stream.
-        """
-        await self._subscribe(listen_key)
-
-    async def unsubscribe_listen_key(self, listen_key: str) -> None:
-        """
-        Unsubscribe from user data stream.
-        """
-        await self._unsubscribe(listen_key)
 
     async def subscribe_agg_trades(self, symbol: str) -> None:
         """

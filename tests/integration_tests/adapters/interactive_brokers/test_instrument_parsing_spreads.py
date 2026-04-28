@@ -18,15 +18,18 @@ Comprehensive tests for Interactive Brokers instrument parsing, especially sprea
 instruments.
 """
 
-
 import pytest
 
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
 from nautilus_trader.adapters.interactive_brokers.common import IBContractDetails
 from nautilus_trader.adapters.interactive_brokers.parsing.instruments import parse_futures_spread
-from nautilus_trader.adapters.interactive_brokers.parsing.instruments import parse_futures_spread_instrument_id
+from nautilus_trader.adapters.interactive_brokers.parsing.instruments import (
+    parse_futures_spread_instrument_id,
+)
 from nautilus_trader.adapters.interactive_brokers.parsing.instruments import parse_option_spread
-from nautilus_trader.adapters.interactive_brokers.parsing.instruments import parse_option_spread_instrument_id
+from nautilus_trader.adapters.interactive_brokers.parsing.instruments import (
+    parse_option_spread_instrument_id,
+)
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import new_generic_spread_id
 from nautilus_trader.model.instruments import FuturesSpread
@@ -127,6 +130,7 @@ class TestSpreadInstrumentParsing:
 
         # Create mock contract details for legs
         leg_contract_details = []
+
         for _leg_id, ratio in [(leg1_id, 1), (leg2_id, -2), (leg3_id, 1)]:
             contract = IBContract(secType="OPT", symbol="SPY", currency="USD", multiplier="100")
             details = IBContractDetails(contract=contract, minTick=0.01, underSymbol="SPY")
@@ -156,6 +160,7 @@ class TestSpreadInstrumentParsing:
 
         # Create mock contract details for legs
         leg_contract_details = []
+
         for _leg_id, ratio in [(leg1_id, 1), (leg2_id, -1), (leg3_id, 1), (leg4_id, -1)]:
             contract = IBContract(secType="OPT", symbol="SPY", currency="USD", multiplier="100")
             details = IBContractDetails(contract=contract, minTick=0.01, underSymbol="SPY")
@@ -194,9 +199,12 @@ class TestOptionSpreadParsing:
             min_tick=0.01,
             combo_legs_descrip="SPY C400/C410 SPREAD",
         )
-
-        instrument_id = InstrumentId.from_str("(1)SPY C400_((1))SPY C410.SMART")
-
+        instrument_id = new_generic_spread_id(
+            [
+                (InstrumentId.from_str("SPY C400.SMART"), 1),
+                (InstrumentId.from_str("SPY C410.SMART"), -1),
+            ],
+        )
         instrument = parse_option_spread(contract_details, instrument_id)
 
         assert isinstance(instrument, OptionSpread)
@@ -390,6 +398,7 @@ class TestFuturesSpreadInstrumentParsing:
 
         # Create mock contract details for legs
         leg_contract_details = []
+
         for _leg_id, ratio, symbol in [
             (leg1_id, 1, "CL"),
             (leg2_id, -1, "RB"),
@@ -436,9 +445,12 @@ class TestFuturesSpreadParsing:
             combo_legs_descrip="ES DEC24/MAR25 SPREAD",
             under_symbol="ES",
         )
-
-        instrument_id = InstrumentId.from_str("(1)ESZ4_((1))ESH5.XCME")
-
+        instrument_id = new_generic_spread_id(
+            [
+                (InstrumentId.from_str("ESZ4.XCME"), 1),
+                (InstrumentId.from_str("ESH5.XCME"), -1),
+            ],
+        )
         instrument = parse_futures_spread(contract_details, instrument_id)
 
         assert isinstance(instrument, FuturesSpread)
@@ -485,9 +497,12 @@ class TestFuturesSpreadParsing:
             combo_legs_descrip="NQ DEC24/MAR25 SPREAD",
             under_symbol="NQ",
         )
-
-        instrument_id = InstrumentId.from_str("(1)NQZ4_((1))NQH5.XCME")
-
+        instrument_id = new_generic_spread_id(
+            [
+                (InstrumentId.from_str("NQZ4.XCME"), 1),
+                (InstrumentId.from_str("NQH5.XCME"), -1),
+            ],
+        )
         instrument = parse_futures_spread(contract_details, instrument_id)
 
         assert isinstance(instrument, FuturesSpread)

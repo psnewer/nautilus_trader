@@ -16,6 +16,21 @@ cdef extern from "../includes/core.h":
     # Number of nanoseconds in one microsecond.
     const uint64_t NANOSECONDS_IN_MICROSECOND # = 1000
 
+    # Number of nanoseconds in one minute.
+    const uint64_t NANOSECONDS_IN_MINUTE # = (60 * NANOSECONDS_IN_SECOND)
+
+    # Number of nanoseconds in one day.
+    const uint64_t NANOSECONDS_IN_DAY # = ((24 * 60) * NANOSECONDS_IN_MINUTE)
+
+    # Number of seconds in one minute.
+    const uint64_t SECONDS_IN_MINUTE # = 60
+
+    # Number of seconds in one hour.
+    const uint64_t SECONDS_IN_HOUR # = (60 * SECONDS_IN_MINUTE)
+
+    # Number of seconds in one day.
+    const uint64_t SECONDS_IN_DAY # = (24 * SECONDS_IN_HOUR)
+
     # Maximum capacity in characters for a [`StackStr`].
     const uintptr_t STACKSTR_CAPACITY # = 36
 
@@ -53,7 +68,7 @@ cdef extern from "../includes/core.h":
     # always holds exactly the capacity in characters. This aligns with identifier
     # conventions which are inherently ASCII.
     #
-    # # Memory layout
+    # # Memory Layout
     #
     # The `value` field is placed first so the struct pointer equals the string
     # pointer, making C FFI more natural: `(char*)&stack_str` works directly.
@@ -79,6 +94,12 @@ cdef extern from "../includes/core.h":
     uint64_t secs_to_nanos(double secs);
 
     # Converts seconds to milliseconds (ms).
+    #
+    # # Panics
+    #
+    # Panics if [`crate::datetime::secs_to_millis`] returns an error for `secs`.
+    # The panic is caught by [`abort_on_panic`] and converted into a process abort
+    # across the FFI boundary.
     uint64_t secs_to_millis(double secs);
 
     # Converts milliseconds (ms) to nanoseconds (ns).

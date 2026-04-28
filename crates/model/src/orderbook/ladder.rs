@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,7 +18,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    fmt::{Debug, Display, Formatter},
+    fmt::{Debug, Display},
 };
 
 use nautilus_core::UnixNanos;
@@ -44,7 +44,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct BookPrice {
     pub value: Price,
@@ -90,7 +90,7 @@ impl Ord for BookPrice {
 }
 
 impl Display for BookPrice {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.value)
     }
 }
@@ -99,16 +99,16 @@ impl Display for BookPrice {
 ///
 /// Separating MBP and snapshot batches prevents cross-contamination where
 /// stale MBP data could pollute a new snapshot. Without this distinction,
-/// an incomplete MBP stream (missing F_LAST) would leave batch state that
+/// an incomplete MBP stream (missing `F_LAST`) would leave batch state that
 /// incorrectly affects subsequent snapshot processing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum L1BatchState {
     /// Not in any batch.
     #[default]
     None,
-    /// Accumulating an F_MBP batch (final two deltas accumulate).
+    /// Accumulating an `F_MBP` batch (final two deltas accumulate).
     MbpBatch,
-    /// Accumulating an F_SNAPSHOT batch (all deltas accumulate).
+    /// Accumulating an `F_SNAPSHOT` batch (all deltas accumulate).
     SnapshotBatch,
 }
 
@@ -159,10 +159,10 @@ impl BookLadder {
 
     /// Adds an order to the ladder at its price level.
     ///
-    /// For L1_MBP books, behavior depends on flags:
-    /// - F_MBP or F_SNAPSHOT (multi-level batch): Retains best after each add to prevent
-    ///   accumulation even if F_LAST is never sent.
-    /// - F_TOB or no batch flags (single replacement): Clears existing levels first,
+    /// For `L1_MBP` books, behavior depends on flags:
+    /// - `F_MBP` or `F_SNAPSHOT` (multi-level batch): Retains best after each add to prevent
+    ///   accumulation even if `F_LAST` is never sent.
+    /// - `F_TOB` or no batch flags (single replacement): Clears existing levels first,
     ///   allowing price to degrade.
     pub fn add(&mut self, order: BookOrder, flags: u8) {
         if self.book_type == BookType::L1_MBP && !self.handle_l1_add(&order, flags) {
@@ -181,14 +181,11 @@ impl BookLadder {
         let book_price = order.to_book_price();
         self.cache.insert(order.order_id, book_price);
 
-        match self.levels.get_mut(&book_price) {
-            Some(level) => {
-                level.add(order);
-            }
-            None => {
-                let level = BookLevel::from_order(order);
-                self.levels.insert(book_price, level);
-            }
+        if let Some(level) = self.levels.get_mut(&book_price) {
+            level.add(order);
+        } else {
+            let level = BookLevel::from_order(order);
+            self.levels.insert(book_price, level);
         }
 
         // For L1_MBP with F_MBP or F_SNAPSHOT, always retain best to prevent unbounded
@@ -196,6 +193,7 @@ impl BookLadder {
         let is_batch = RecordFlag::F_MBP.matches(flags) || RecordFlag::F_SNAPSHOT.matches(flags);
         if self.book_type == BookType::L1_MBP && is_batch {
             self.retain_best_only();
+
             if RecordFlag::F_LAST.matches(flags) {
                 self.batch_state = L1BatchState::None;
             }
@@ -207,14 +205,14 @@ impl BookLadder {
     /// Returns `true` to continue with normal add flow, `false` to abort.
     ///
     /// Behavior depends on flags:
-    /// - F_SNAPSHOT with F_LAST: End of snapshot batch. If in snapshot batch, accumulate;
+    /// - `F_SNAPSHOT` with `F_LAST`: End of snapshot batch. If in snapshot batch, accumulate;
     ///   otherwise clear (single-delta snapshot or cross-contamination from MBP).
-    /// - F_SNAPSHOT without F_LAST: Start/continue snapshot batch. Clears if not already
+    /// - `F_SNAPSHOT` without `F_LAST`: Start/continue snapshot batch. Clears if not already
     ///   in a snapshot batch (handles stale MBP data).
-    /// - F_MBP with F_LAST: End of MBP batch. If in MBP batch, accumulate final two;
+    /// - `F_MBP` with `F_LAST`: End of MBP batch. If in MBP batch, accumulate final two;
     ///   otherwise clear.
-    /// - F_MBP without F_LAST: Always clear (streaming mode, prevents stale prices).
-    /// - F_TOB or no batch flags: Single replacement (clears first).
+    /// - `F_MBP` without `F_LAST`: Always clear (streaming mode, prevents stale prices).
+    /// - `F_TOB` or no batch flags: Single replacement (clears first).
     ///
     /// Zero-size orders clear the entire L1 ladder.
     fn handle_l1_add(&mut self, order: &BookOrder, flags: u8) -> bool {
@@ -391,8 +389,8 @@ impl BookLadder {
 
     /// Retains only the best price level, removing all others.
     ///
-    /// For L1_MBP books, this ensures only the top-of-book level is kept after
-    /// processing multi-level data. The BTreeMap ordering ensures the first
+    /// For `L1_MBP` books, this ensures only the top-of-book level is kept after
+    /// processing multi-level data. The `BTreeMap` ordering ensures the first
     /// entry is always the best price (highest for bids, lowest for asks).
     fn retain_best_only(&mut self) {
         if self.levels.len() <= 1 {
@@ -411,6 +409,7 @@ impl BookLadder {
         // Rebuild cache from remaining level (necessary for L1 where
         // all orders use the same order_id and remove_level would corrupt cache)
         self.cache.clear();
+
         for (book_price, level) in &self.levels {
             for order_id in level.orders.keys() {
                 self.cache.insert(*order_id, *book_price);
@@ -480,7 +479,7 @@ impl BookLadder {
 
                 // Add this fill and continue
                 fills.push((book_order.price, current));
-                cumulative_denominator += current;
+                cumulative_denominator = cumulative_denominator + current;
             }
         }
 
@@ -501,9 +500,9 @@ impl Display for BookLadder {
 #[cfg(test)]
 impl BookLadder {
     /// Adds multiple orders to the ladder.
-    pub fn add_bulk(&mut self, orders: Vec<BookOrder>) {
+    pub fn add_bulk(&mut self, orders: &[BookOrder]) {
         for order in orders {
-            self.add(order, 0);
+            self.add(*order, 0);
         }
     }
 }
@@ -540,7 +539,7 @@ mod tests {
     #[rstest]
     fn test_add_bulk_empty() {
         let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L3_MBO);
-        ladder.add_bulk(vec![]);
+        ladder.add_bulk(&[]);
         assert!(
             ladder.is_empty(),
             "Adding an empty vector should leave the ladder empty"
@@ -550,12 +549,12 @@ mod tests {
     #[rstest]
     fn test_add_bulk_orders() {
         let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L3_MBO);
-        let orders = vec![
+        let orders = [
             BookOrder::new(OrderSide::Buy, Price::from("10.00"), Quantity::from(20), 1),
             BookOrder::new(OrderSide::Buy, Price::from("10.00"), Quantity::from(30), 2),
             BookOrder::new(OrderSide::Buy, Price::from("10.00"), Quantity::from(50), 3),
         ];
-        ladder.add_bulk(orders);
+        ladder.add_bulk(&orders);
         // All orders share the same price, so there should be one price level.
         assert_eq!(ladder.len(), 1, "Ladder should have one price level");
         let orders_in_level = ladder.top().unwrap().get_orders();
@@ -611,7 +610,7 @@ mod tests {
         let order3 = BookOrder::new(OrderSide::Buy, Price::from("9.00"), Quantity::from(50), 2);
         let order4 = BookOrder::new(OrderSide::Buy, Price::from("8.00"), Quantity::from(200), 3);
 
-        ladder.add_bulk(vec![order1, order2, order3, order4]);
+        ladder.add_bulk(&[order1, order2, order3, order4]);
         assert_eq!(ladder.len(), 3);
         assert_eq!(ladder.sizes(), 300.0);
         assert_eq!(ladder.exposures(), 2520.0);
@@ -631,7 +630,7 @@ mod tests {
             0,
         );
 
-        ladder.add_bulk(vec![order1, order2, order3, order4]);
+        ladder.add_bulk(&[order1, order2, order3, order4]);
         assert_eq!(ladder.len(), 3);
         assert_eq!(ladder.sizes(), 300.0);
         assert_eq!(ladder.exposures(), 3780.0);
@@ -982,7 +981,7 @@ mod tests {
     fn test_simulate_order_fills_buy() {
         let mut ladder = BookLadder::new(OrderSideSpecified::Sell, BookType::L3_MBO);
 
-        ladder.add_bulk(vec![
+        ladder.add_bulk(&[
             BookOrder {
                 price: Price::from("100.00"),
                 size: Quantity::from(100),
@@ -1031,7 +1030,7 @@ mod tests {
     fn test_simulate_order_fills_sell() {
         let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L3_MBO);
 
-        ladder.add_bulk(vec![
+        ladder.add_bulk(&[
             BookOrder {
                 price: Price::from("102.00"),
                 size: Quantity::from(100),
@@ -1080,7 +1079,7 @@ mod tests {
     fn test_simulate_order_fills_sell_with_size_at_limit_of_precision() {
         let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L3_MBO);
 
-        ladder.add_bulk(vec![
+        ladder.add_bulk(&[
             BookOrder {
                 price: Price::from("102.00"),
                 size: Quantity::from("100.000000000"),
@@ -1765,6 +1764,7 @@ mod tests {
         );
 
         let mut snapshot_ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+
         for (i, price_str) in prices.iter().enumerate() {
             let order = BookOrder {
                 side: OrderSide::Buy,

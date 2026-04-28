@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -89,6 +89,7 @@ def msgbus(trader_id, clock):
 @pytest.fixture
 def cache(instrument):
     cache = TestComponentStubs.cache()
+
     if instrument is not None:
         cache.add_instrument(instrument)
     return cache
@@ -101,6 +102,7 @@ def portfolio(clock, cache, msgbus, account_state):
         cache,
         clock,
     )
+
     if account_state is not None:
         portfolio.update_account(account_state)
     return portfolio
@@ -113,6 +115,7 @@ def data_engine(msgbus, cache, clock, data_client):
         cache,
         clock,
     )
+
     if data_client is not None:
         engine.register_client(data_client)
     return engine

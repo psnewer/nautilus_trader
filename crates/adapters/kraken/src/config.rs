@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,44 +15,48 @@
 
 //! Configuration types for Kraken data and execution clients.
 
+use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_network::websocket::TransportBackend;
+
 use crate::common::{
     enums::{KrakenEnvironment, KrakenProductType},
     urls::{get_kraken_http_base_url, get_kraken_ws_private_url, get_kraken_ws_public_url},
 };
 
 /// Configuration for the Kraken data client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bon::Builder)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.kraken")
+)]
 pub struct KrakenDataClientConfig {
     pub api_key: Option<String>,
     pub api_secret: Option<String>,
+    #[builder(default = KrakenProductType::Spot)]
     pub product_type: KrakenProductType,
+    #[builder(default = KrakenEnvironment::Mainnet)]
     pub environment: KrakenEnvironment,
     pub base_url: Option<String>,
     pub ws_public_url: Option<String>,
     pub ws_private_url: Option<String>,
-    pub http_proxy: Option<String>,
-    pub ws_proxy: Option<String>,
-    pub timeout_secs: Option<u64>,
-    pub heartbeat_interval_secs: Option<u64>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
+    #[builder(default = 30)]
+    pub timeout_secs: u64,
+    #[builder(default = 30)]
+    pub heartbeat_interval_secs: u64,
     pub max_requests_per_second: Option<u32>,
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for KrakenDataClientConfig {
     fn default() -> Self {
-        Self {
-            api_key: None,
-            api_secret: None,
-            product_type: KrakenProductType::Spot,
-            environment: KrakenEnvironment::Mainnet,
-            base_url: None,
-            ws_public_url: None,
-            ws_private_url: None,
-            http_proxy: None,
-            ws_proxy: None,
-            timeout_secs: Some(30),
-            heartbeat_interval_secs: Some(30),
-            max_requests_per_second: None,
-        }
+        Self::builder().build()
     }
 }
 
@@ -85,19 +89,45 @@ impl KrakenDataClientConfig {
 }
 
 /// Configuration for the Kraken execution client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bon::Builder)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.kraken")
+)]
 pub struct KrakenExecClientConfig {
+    #[builder(default)]
+    pub trader_id: TraderId,
+    #[builder(default = AccountId::from("KRAKEN-001"))]
+    pub account_id: AccountId,
+    #[builder(default)]
     pub api_key: String,
+    #[builder(default)]
     pub api_secret: String,
+    #[builder(default = KrakenProductType::Spot)]
     pub product_type: KrakenProductType,
+    #[builder(default = KrakenEnvironment::Mainnet)]
     pub environment: KrakenEnvironment,
     pub base_url: Option<String>,
     pub ws_url: Option<String>,
-    pub http_proxy: Option<String>,
-    pub ws_proxy: Option<String>,
-    pub timeout_secs: Option<u64>,
-    pub heartbeat_interval_secs: Option<u64>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
+    #[builder(default = 30)]
+    pub timeout_secs: u64,
+    #[builder(default = 30)]
+    pub heartbeat_interval_secs: u64,
     pub max_requests_per_second: Option<u32>,
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
+}
+
+impl Default for KrakenExecClientConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
 }
 
 impl KrakenExecClientConfig {

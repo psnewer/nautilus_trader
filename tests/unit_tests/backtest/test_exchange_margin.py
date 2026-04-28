@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -65,6 +65,7 @@ from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.objects import MarginBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -140,6 +141,7 @@ class TestSimulatedExchangeMarginAccount:
             clock=self.clock,
             latency_model=LatencyModel(0),
             bar_adaptive_high_low_ordering=bar_adaptive_high_low_ordering,
+            trade_execution=True,
         )
         self.exchange.add_instrument(_USDJPY_SIM)
 
@@ -1382,10 +1384,11 @@ class TestSimulatedExchangeMarginAccount:
         self.strategy.submit_order(order)
         self.exchange.process(0)
 
-        # Act
+        # Act: Seller aggressor pushes ask down to fill passive BUY
         trade2 = TestDataStubs.trade_tick(
             instrument=_USDJPY_SIM,
             price=_USDJPY_SIM.make_price(trade_price),
+            aggressor_side=AggressorSide.SELLER,
         )
         self.data_engine.process(trade2)
         self.exchange.process_trade_tick(trade2)
@@ -2951,8 +2954,8 @@ class TestSimulatedExchangeMarginAccount:
             instrument=_USDJPY_SIM,
             bid_price=90.000,
             ask_price=90.001,
-            ts_event=100_000,
-            ts_init=100_000,
+            ts_event=2_000_000_000,
+            ts_init=2_000_000_000,
         )
 
         self.exchange.process_quote_tick(tick2)
@@ -3192,6 +3195,43 @@ class TestSimulatedExchangeMarginAccount:
 
         # Assert
         assert result == Money(1001000.00, USD)
+
+    def test_adjust_account_does_not_mutate_prior_account_state_balances(self) -> None:
+        # Arrange
+        account = self.exchange.exec_client.get_account()
+        events_before = len(account.events)
+        initial_balance = account.balance_total(USD)
+
+        # Act
+        self.exchange.adjust_account(Money(1000, USD))
+
+        # Assert: the new balance reflects the adjustment
+        assert account.balance_total(USD) == Money(1001000.00, USD)
+
+        # Assert: the prior AccountState event retains its original balance
+        prior_event = account.events[events_before - 1]
+        prior_balance = prior_event.balances[0]
+        assert prior_balance.total == initial_balance
+
+    def test_adjust_account_preserves_account_wide_margins(self) -> None:
+        # Arrange: stage an account-wide (cross margin) entry for the collateral currency.
+        account = self.exchange.exec_client.get_account()
+        account.update_margin(MarginBalance(Money(500, USD), Money(250, USD), None))
+        events_before = len(account.events)
+
+        # Act
+        self.exchange.adjust_account(Money(1000, USD))
+
+        # Assert: the generated AccountState carries the account-wide margin through.
+        emitted_event = account.events[events_before]
+        account_wide = [m for m in emitted_event.margins if m.instrument_id is None]
+        assert len(account_wide) == 1
+        assert account_wide[0].currency == USD
+        assert account_wide[0].initial == Money(500, USD)
+        assert account_wide[0].maintenance == Money(250, USD)
+        # And the account's live view still exposes it for strategies.
+        assert account.margin_init_for_currency(USD) == Money(500, USD)
+        assert account.margin_maint_for_currency(USD) == Money(250, USD)
 
     def test_adjust_account_when_account_frozen_does_not_change_balance(self) -> None:
         # Arrange
@@ -3821,3 +3861,55 @@ class TestSimulatedExchangeL1:
         assert len(self.exchange.get_open_orders()) == 0
         assert order.avg_px == 91.000
         assert self.exchange.get_account().balance_total(USD) == Money(999997.98, USD)
+
+    def test_process_iterates_matching_engines_after_commands(self) -> None:
+        # Arrange: Prepare market
+        quote = TestDataStubs.quote_tick(
+            instrument=_USDJPY_SIM,
+            bid_price=90.002,
+            ask_price=90.005,
+        )
+        self.data_engine.process(quote)
+        self.exchange.process_quote_tick(quote)
+
+        # Submit a passive buy limit below the ask (should NOT fill)
+        order = self.strategy.order_factory.limit(
+            _USDJPY_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+            _USDJPY_SIM.make_price(89.990),
+            post_only=False,
+        )
+        self.strategy.submit_order(order)
+        self.exchange.process(0)
+
+        # Assert: Order accepted and sitting on the book
+        assert order.status == OrderStatus.ACCEPTED
+        assert len(self.exchange.get_open_orders()) == 1
+
+    def test_process_re_iterate_does_not_fill_passive_limit_order(self) -> None:
+        # Arrange: Prepare market
+        quote = TestDataStubs.quote_tick(
+            instrument=_USDJPY_SIM,
+            bid_price=90.002,
+            ask_price=90.005,
+        )
+        self.data_engine.process(quote)
+        self.exchange.process_quote_tick(quote)
+
+        order = self.strategy.order_factory.limit(
+            _USDJPY_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+            _USDJPY_SIM.make_price(89.990),
+            post_only=False,
+        )
+        self.strategy.submit_order(order)
+        self.exchange.process(0)
+
+        # Act: Process again (simulates next time step with no new data)
+        self.exchange.process(0)
+
+        # Assert: Passive order still on book, not incorrectly filled
+        assert order.status == OrderStatus.ACCEPTED
+        assert len(self.exchange.get_open_orders()) == 1

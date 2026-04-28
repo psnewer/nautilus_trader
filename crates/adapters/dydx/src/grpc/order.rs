@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,10 +18,10 @@
 //! This module provides order construction utilities for placing orders on dYdX v4.
 //! dYdX supports two order lifetime types:
 //!
-//! - **Short-term orders**: Expire by block height (max 20 blocks).
+//! - **Short-term orders**: Expire by block height (max 40 blocks).
 //! - **Long-term orders**: Expire by timestamp.
 //!
-//! See [dYdX order types](https://help.dydx.trade/en/articles/166985-short-term-vs-long-term-order-types).
+//! See [dYdX order types](https://docs.dydx.xyz/concepts/trading/orders).
 
 #[cfg(test)]
 use chrono::Duration;
@@ -39,8 +39,15 @@ use crate::proto::dydxprotocol::{
 
 /// Maximum short-term order lifetime in blocks.
 ///
-/// See also [short-term vs long-term orders](https://help.dydx.trade/en/articles/166985-short-term-vs-long-term-order-types).
-pub const SHORT_TERM_ORDER_MAXIMUM_LIFETIME: u32 = 20;
+/// See also [short-term vs long-term orders](https://docs.dydx.xyz/concepts/trading/orders).
+pub const SHORT_TERM_ORDER_MAXIMUM_LIFETIME: u32 = 40;
+
+/// Default slippage (5%) applied to oracle price for market order pay-through price.
+///
+/// Market orders are submitted as IOC limits, so unfilled slippage is not consumed.
+/// The buffer sets the worst-case bound to guarantee fills in volatile conditions.
+// Decimal::new(5, 2) = 0.05
+pub const DEFAULT_MARKET_ORDER_SLIPPAGE: Decimal = Decimal::from_parts(5, 0, 0, false, 2);
 
 /// Value used to identify the Rust client in order metadata.
 pub const DEFAULT_RUST_CLIENT_METADATA: u32 = 4;
@@ -76,7 +83,7 @@ pub enum OrderFlags {
 /// Market parameters required for price and size quantizations.
 ///
 /// These quantizations are required for `Order` placement.
-/// See also [how to interpret block data for trades](https://docs.dydx.exchange/api_integration-guides/how_to_interpret_block_data_for_trades).
+/// See also [dYdX trading concepts](https://docs.dydx.xyz/concepts/trading/orders).
 #[derive(Clone, Debug)]
 pub struct OrderMarketParams {
     /// Atomic resolution.
@@ -152,6 +159,23 @@ impl OrderMarketParams {
         (value / fraction).round() * fraction
     }
 
+    /// Compute worst-case subticks for a market order using oracle price + slippage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if oracle price is not available or conversion fails.
+    pub fn market_order_subticks(&self, side: OrderSide) -> Result<u64, anyhow::Error> {
+        let oracle = self
+            .oracle_price
+            .ok_or_else(|| anyhow::anyhow!("Oracle price required for market orders"))?;
+        let worst_price = match side {
+            OrderSide::Buy => oracle * (Decimal::ONE + DEFAULT_MARKET_ORDER_SLIPPAGE),
+            OrderSide::Sell => oracle * (Decimal::ONE - DEFAULT_MARKET_ORDER_SLIPPAGE),
+            _ => oracle,
+        };
+        self.quantize_price(worst_price)
+    }
+
     /// Get orderbook pair id.
     #[must_use]
     pub fn clob_pair_id(&self) -> u32 {
@@ -168,13 +192,16 @@ impl OrderMarketParams {
 /// [short-term and long-term (stateful) orders](https://docs.dydx.xyz/concepts/trading/orders#short-term-vs-long-term).
 ///
 /// For different types of orders see also [Stop-Limit Versus Stop-Loss](https://dydx.exchange/crypto-learning/stop-limit-versus-stop-loss)
-/// and [Perpetual order types on dYdX Chain](https://help.dydx.trade/en/articles/166981-perpetual-order-types-on-dydx-chain).
+/// and [dYdX order types](https://docs.dydx.xyz/concepts/trading/orders).
 #[derive(Clone, Debug)]
 pub struct OrderBuilder {
     market_params: OrderMarketParams,
     subaccount_owner: String,
     subaccount_number: u32,
     client_id: u32,
+    /// Client metadata for bidirectional ClientOrderId encoding.
+    /// Used to store identity bits (trader/strategy/count) for deterministic decoding.
+    client_metadata: u32,
     flags: OrderFlags,
     side: Option<OrderSide>,
     order_type: Option<OrderType>,
@@ -189,18 +216,28 @@ pub struct OrderBuilder {
 
 impl OrderBuilder {
     /// Create a new [`Order`] builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `market_params` - Market parameters for price/quantity quantization
+    /// * `subaccount_owner` - The wallet address that owns the subaccount
+    /// * `subaccount_number` - The subaccount number (usually 0)
+    /// * `client_id` - The primary client order ID (u32)
+    /// * `client_metadata` - Metadata for bidirectional ClientOrderId encoding
     #[must_use]
     pub fn new(
         market_params: OrderMarketParams,
         subaccount_owner: String,
         subaccount_number: u32,
         client_id: u32,
+        client_metadata: u32,
     ) -> Self {
         Self {
             market_params,
             subaccount_owner,
             subaccount_number,
             client_id,
+            client_metadata,
             flags: OrderFlags::ShortTerm,
             side: Some(OrderSide::Buy),
             order_type: Some(OrderType::Market),
@@ -217,11 +254,13 @@ impl OrderBuilder {
     /// Set as Market order.
     ///
     /// An instruction to immediately buy or sell an asset at the best available price when the order is placed.
+    /// dYdX implements market orders as IOC limit orders with a slippage-adjusted worst-case price.
     #[must_use]
     pub fn market(mut self, side: OrderSide, size: Decimal) -> Self {
         self.order_type = Some(OrderType::Market);
         self.side = Some(side);
         self.size = Some(size);
+        self.time_in_force = Some(OrderTimeInForce::Ioc);
         self
     }
 
@@ -254,6 +293,7 @@ impl OrderBuilder {
         self.trigger_price = Some(trigger_price);
         self.side = Some(side);
         self.size = Some(size);
+        self.condition_type = Some(ConditionType::StopLoss);
         self.conditional()
     }
 
@@ -266,6 +306,7 @@ impl OrderBuilder {
         self.trigger_price = Some(trigger_price);
         self.side = Some(side);
         self.size = Some(size);
+        self.condition_type = Some(ConditionType::StopLoss);
         self.conditional()
     }
 
@@ -285,6 +326,7 @@ impl OrderBuilder {
         self.trigger_price = Some(trigger_price);
         self.side = Some(side);
         self.size = Some(size);
+        self.condition_type = Some(ConditionType::TakeProfit);
         self.conditional()
     }
 
@@ -302,6 +344,7 @@ impl OrderBuilder {
         self.trigger_price = Some(trigger_price);
         self.side = Some(side);
         self.size = Some(size);
+        self.condition_type = Some(ConditionType::TakeProfit);
         self.conditional()
     }
 
@@ -404,9 +447,17 @@ impl OrderBuilder {
             }
         };
 
-        // Quantize price if provided
+        // Quantize price: use explicit price if set, otherwise compute worst-case for market orders
         let subticks = if let Some(price) = self.price {
             self.market_params.quantize_price(price)?
+        } else if matches!(
+            self.order_type,
+            Some(OrderType::Market | OrderType::StopMarket | OrderType::MarketIfTouched)
+        ) {
+            let side = self
+                .side
+                .ok_or_else(|| anyhow::anyhow!("Order side not set"))?;
+            self.market_params.market_order_subticks(side)?
         } else {
             0
         };
@@ -419,7 +470,7 @@ impl OrderBuilder {
             good_til_oneof,
             time_in_force: self.time_in_force.map_or(0, |tif| tif as i32),
             reduce_only: self.reduce_only.unwrap_or(false),
-            client_metadata: DEFAULT_RUST_CLIENT_METADATA,
+            client_metadata: self.client_metadata,
             condition_type: self.condition_type.map_or(0, |ct| ct as i32),
             conditional_order_trigger_subticks: self
                 .trigger_price
@@ -439,7 +490,7 @@ impl Default for OrderBuilder {
             market_params: OrderMarketParams {
                 atomic_resolution: -10,
                 clob_pair_id: 0,
-                oracle_price: None,
+                oracle_price: Some(Decimal::from(50_000)),
                 quantum_conversion_exponent: -9,
                 step_base_quantums: 1_000_000,
                 subticks_per_tick: 100_000,
@@ -447,6 +498,7 @@ impl Default for OrderBuilder {
             subaccount_owner: String::new(),
             subaccount_number: 0,
             client_id: 0,
+            client_metadata: DEFAULT_RUST_CLIENT_METADATA,
             flags: OrderFlags::ShortTerm,
             side: Some(OrderSide::Buy),
             order_type: Some(OrderType::Market),
@@ -574,7 +626,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_market_buy() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 1);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            1,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .market(OrderSide::Buy, dec!(0.01))
@@ -584,7 +642,8 @@ mod tests {
 
         assert_eq!(order.side, OrderSide::Buy as i32);
         assert_eq!(order.quantums, 100_000_000); // 0.01 BTC quantized
-        assert_eq!(order.subticks, 0); // Market orders use 0 subticks initially
+        assert_eq!(order.subticks, 5_250_000_000); // 50000 * 1.05 = 52500 worst-case buy price
+        assert_eq!(order.time_in_force, OrderTimeInForce::Ioc as i32);
         assert!(!order.reduce_only);
         assert_eq!(order.client_metadata, DEFAULT_RUST_CLIENT_METADATA);
     }
@@ -592,7 +651,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_market_sell() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 2);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            2,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .market(OrderSide::Sell, dec!(0.02))
@@ -602,12 +667,47 @@ mod tests {
 
         assert_eq!(order.side, OrderSide::Sell as i32);
         assert_eq!(order.quantums, 200_000_000); // 0.02 BTC quantized
+        assert_eq!(order.subticks, 4_750_000_000); // 50000 * 0.95 = 47500 worst-case sell price
+        assert_eq!(order.time_in_force, OrderTimeInForce::Ioc as i32);
+    }
+
+    #[rstest]
+    fn test_order_builder_market_no_oracle_price_error() {
+        let mut market = sample_market_params();
+        market.oracle_price = None;
+
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            13,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
+
+        let result = builder
+            .market(OrderSide::Buy, dec!(0.01))
+            .until(OrderGoodUntil::Block(100))
+            .build();
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Oracle price required")
+        );
     }
 
     #[rstest]
     fn test_order_builder_limit_buy() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 3);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            3,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .limit(OrderSide::Buy, dec!(49000), dec!(0.01))
@@ -624,7 +724,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_limit_sell() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 4);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            4,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .limit(OrderSide::Sell, dec!(51000), dec!(0.015))
@@ -640,7 +746,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_limit_with_reduce_only() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 5);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            5,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .limit(OrderSide::Sell, dec!(50000), dec!(0.01))
@@ -655,7 +767,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_short_term_flag() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 6);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            6,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .short_term()
@@ -671,7 +789,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_long_term_flag() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 7);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            7,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let now = Utc::now();
         let until = now + Duration::hours(1);
@@ -690,7 +814,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_conditional_flag() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 8);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            8,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .stop_limit(OrderSide::Sell, dec!(48000), dec!(49000), dec!(0.01))
@@ -704,9 +834,95 @@ mod tests {
     }
 
     #[rstest]
+    fn test_stop_limit_sets_condition_type() {
+        let market = sample_market_params();
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            100,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
+
+        let order = builder
+            .stop_limit(OrderSide::Sell, dec!(48000), dec!(49000), dec!(0.01))
+            .until(OrderGoodUntil::Block(100))
+            .build()
+            .unwrap();
+
+        assert_eq!(order.condition_type, ConditionType::StopLoss as i32);
+    }
+
+    #[rstest]
+    fn test_stop_market_sets_condition_type() {
+        let market = sample_market_params();
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            101,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
+
+        let order = builder
+            .stop_market(OrderSide::Sell, dec!(49000), dec!(0.01))
+            .until(OrderGoodUntil::Block(100))
+            .build()
+            .unwrap();
+
+        assert_eq!(order.condition_type, ConditionType::StopLoss as i32);
+    }
+
+    #[rstest]
+    fn test_take_profit_limit_sets_condition_type() {
+        let market = sample_market_params();
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            102,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
+
+        let order = builder
+            .take_profit_limit(OrderSide::Sell, dec!(52000), dec!(51000), dec!(0.01))
+            .until(OrderGoodUntil::Block(100))
+            .build()
+            .unwrap();
+
+        assert_eq!(order.condition_type, ConditionType::TakeProfit as i32);
+    }
+
+    #[rstest]
+    fn test_take_profit_market_sets_condition_type() {
+        let market = sample_market_params();
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            103,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
+
+        let order = builder
+            .take_profit_market(OrderSide::Sell, dec!(51000), dec!(0.01))
+            .until(OrderGoodUntil::Block(100))
+            .build()
+            .unwrap();
+
+        assert_eq!(order.condition_type, ConditionType::TakeProfit as i32);
+    }
+
+    #[rstest]
     fn test_order_builder_missing_size_error() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 9);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            9,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let result = builder.until(OrderGoodUntil::Block(100)).build();
 
@@ -717,7 +933,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_missing_until_error() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 10);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            10,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let result = builder.market(OrderSide::Buy, dec!(0.01)).build();
 
@@ -727,7 +949,13 @@ mod tests {
     #[rstest]
     fn test_order_builder_time_in_force() {
         let market = sample_market_params();
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 11);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            11,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .limit(OrderSide::Buy, dec!(50000), dec!(0.01))
@@ -744,7 +972,13 @@ mod tests {
         let mut market = sample_market_params();
         market.clob_pair_id = 5;
 
-        let builder = OrderBuilder::new(market, "dydx1test".to_string(), 0, 12);
+        let builder = OrderBuilder::new(
+            market,
+            "dydx1test".to_string(),
+            0,
+            12,
+            DEFAULT_RUST_CLIENT_METADATA,
+        );
 
         let order = builder
             .market(OrderSide::Buy, dec!(0.01))

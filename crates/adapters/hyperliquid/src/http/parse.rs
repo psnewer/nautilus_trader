@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,30 +14,30 @@
 // -------------------------------------------------------------------------------------------------
 
 use anyhow::Context;
-use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{
         CurrencyType, LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSideSpecified,
         TimeInForce, TriggerType,
     },
-    identifiers::{
-        AccountId, ClientOrderId, InstrumentId, PositionId, Symbol, TradeId, VenueOrderId,
-    },
+    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, VenueOrderId},
     instruments::{CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{Currency, Price, Quantity},
+    types::{Currency, Money, Price, Quantity},
 };
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use super::models::{HyperliquidFill, PerpMeta, SpotMeta};
+use super::models::{AssetPosition, HyperliquidFill, PerpMeta, SpotBalance, SpotMeta};
 use crate::{
     common::{
         consts::HYPERLIQUID_VENUE,
         enums::{
-            HyperliquidOrderStatus as HyperliquidOrderStatusEnum, HyperliquidSide, HyperliquidTpSl,
+            HyperliquidFillDirection, HyperliquidOrderStatus as HyperliquidOrderStatusEnum,
+            HyperliquidSide, HyperliquidTpSl,
         },
+        parse::make_fill_trade_id,
     },
     websocket::messages::{WsBasicOrderData, WsOrderData},
 };
@@ -59,12 +59,20 @@ pub enum HyperliquidMarketType {
 pub struct HyperliquidInstrumentDef {
     /// Human-readable symbol (e.g., "BTC-USD-PERP", "PURR-USDC-SPOT").
     pub symbol: Ustr,
+    /// Raw symbol used in Hyperliquid WebSocket subscriptions/messages.
+    /// For perps: base currency (e.g., "BTC").
+    /// For spot: `@{pair_index}` format (e.g., "@107" for HYPE-USDC).
+    pub raw_symbol: Ustr,
     /// Base currency/asset (e.g., "BTC", "PURR").
     pub base: Ustr,
     /// Quote currency (e.g., "USD" for perps, "USDC" for spot).
     pub quote: Ustr,
     /// Market type (perpetual or spot).
     pub market_type: HyperliquidMarketType,
+    /// Asset index used for order submission.
+    /// For perps: index in meta.universe (0, 1, 2, ...).
+    /// For spot: 10000 + index in spotMeta.universe.
+    pub asset_index: u32,
     /// Number of decimal places for price precision.
     pub price_decimals: u32,
     /// Number of decimal places for size precision.
@@ -77,10 +85,31 @@ pub struct HyperliquidInstrumentDef {
     pub max_leverage: Option<u32>,
     /// Whether requires isolated margin only.
     pub only_isolated: bool,
+    /// Whether this is a HIP-3 builder-deployed perpetual.
+    pub is_hip3: bool,
     /// Whether the instrument is active/tradeable.
     pub active: bool,
     /// Raw upstream data for debugging.
     pub raw_data: String,
+}
+
+// Replace wildcard bytes (`*`, `?`) in a venue-supplied symbol component with
+// `x` so the value is safe to embed in a Nautilus `InstrumentId`. HIP-3
+// perpetual names from Hyperliquid (e.g. `dex:STREAMABCD****-USD-PERP`)
+// collide with msgbus pattern syntax; the venue-official name is preserved on
+// `raw_symbol` for HTTP/WS wire calls, and orders use the numeric
+// `asset_index` so they do not see the substitution.
+#[must_use]
+fn sanitize_symbol(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.bytes().any(|b| b == b'*' || b == b'?') {
+        let mut out = String::with_capacity(value.len());
+        for ch in value.chars() {
+            out.push(if ch == '*' || ch == '?' { 'x' } else { ch });
+        }
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
 }
 
 /// Parse perpetual instrument definitions from Hyperliquid `meta` response.
@@ -90,37 +119,46 @@ pub struct HyperliquidInstrumentDef {
 /// - Price decimals = max(0, 6 - sz_decimals) per venue docs
 /// - Active = !is_delisted
 ///
-/// **Important:** Delisted instruments are included in the returned list but marked as inactive.
-/// This is necessary to support parsing historical data (orders, fills, positions) for instruments
-/// that have been delisted but may still have associated trading history.
-pub fn parse_perp_instruments(meta: &PerpMeta) -> Result<Vec<HyperliquidInstrumentDef>, String> {
-    const PERP_MAX_DECIMALS: i32 = 6; // Hyperliquid perps price decimal limit
+/// `asset_index_base` controls the starting offset for asset IDs:
+/// - Standard perps (dex 0): base = 0
+/// - HIP-3 dexes: base = 100_000 + dex_index * 10_000
+///
+/// Delisted instruments are included but marked as inactive to support
+/// parsing historical data for instruments that may still have trading history.
+pub fn parse_perp_instruments(
+    meta: &PerpMeta,
+    asset_index_base: u32,
+) -> Result<Vec<HyperliquidInstrumentDef>, String> {
+    const PERP_MAX_DECIMALS: i32 = 6;
 
     let mut defs = Vec::new();
 
-    for asset in &meta.universe {
-        // Include delisted assets but mark them as inactive
-        // This allows parsing of historical data for delisted instruments
+    for (index, asset) in meta.universe.iter().enumerate() {
         let is_delisted = asset.is_delisted.unwrap_or(false);
 
         let price_decimals = (PERP_MAX_DECIMALS - asset.sz_decimals as i32).max(0) as u32;
-        let tick_size = pow10_neg(price_decimals)?;
-        let lot_size = pow10_neg(asset.sz_decimals)?;
+        let tick_size = pow10_neg(price_decimals);
+        let lot_size = pow10_neg(asset.sz_decimals);
 
-        let symbol = format!("{}-USD-PERP", asset.name);
+        let symbol = format!("{}-USD-PERP", sanitize_symbol(&asset.name));
+
+        let raw_symbol: Ustr = asset.name.as_str().into();
 
         let def = HyperliquidInstrumentDef {
             symbol: symbol.into(),
+            raw_symbol,
             base: asset.name.clone().into(),
-            quote: "USD".into(), // Hyperliquid perps are USD-quoted (USDC settled)
+            quote: "USD".into(),
             market_type: HyperliquidMarketType::Perp,
+            asset_index: asset_index_base + index as u32,
             price_decimals,
             size_decimals: asset.sz_decimals,
             tick_size,
             lot_size,
             max_leverage: asset.max_leverage,
             only_isolated: asset.only_isolated.unwrap_or(false),
-            active: !is_delisted, // Mark delisted instruments as inactive
+            is_hip3: asset_index_base > 0,
+            active: !is_delisted,
             raw_data: serde_json::to_string(asset).unwrap_or_default(),
         };
 
@@ -139,11 +177,12 @@ pub fn parse_perp_instruments(meta: &PerpMeta) -> Result<Vec<HyperliquidInstrume
 ///   for instruments that may have been traded
 pub fn parse_spot_instruments(meta: &SpotMeta) -> Result<Vec<HyperliquidInstrumentDef>, String> {
     const SPOT_MAX_DECIMALS: i32 = 8; // Hyperliquid spot price decimal limit
+    const SPOT_INDEX_OFFSET: u32 = 10000; // Spot assets use 10000 + index
 
     let mut defs = Vec::new();
 
     // Build index -> token lookup
-    let mut tokens_by_index = std::collections::HashMap::new();
+    let mut tokens_by_index = ahash::AHashMap::new();
     for token in &meta.tokens {
         tokens_by_index.insert(token.index, token);
     }
@@ -152,7 +191,6 @@ pub fn parse_spot_instruments(meta: &SpotMeta) -> Result<Vec<HyperliquidInstrume
         // Load all pairs (including non-canonical) to support parsing fills/positions
         // for instruments that may have been traded but are not currently canonical
 
-        // Resolve base and quote tokens
         let base_token = tokens_by_index
             .get(&pair.tokens[0])
             .ok_or_else(|| format!("Base token index {} not found", pair.tokens[0]))?;
@@ -161,22 +199,38 @@ pub fn parse_spot_instruments(meta: &SpotMeta) -> Result<Vec<HyperliquidInstrume
             .ok_or_else(|| format!("Quote token index {} not found", pair.tokens[1]))?;
 
         let price_decimals = (SPOT_MAX_DECIMALS - base_token.sz_decimals as i32).max(0) as u32;
-        let tick_size = pow10_neg(price_decimals)?;
-        let lot_size = pow10_neg(base_token.sz_decimals)?;
+        let tick_size = pow10_neg(price_decimals);
+        let lot_size = pow10_neg(base_token.sz_decimals);
 
-        let symbol = format!("{}-{}-SPOT", base_token.name, quote_token.name);
+        let symbol = format!(
+            "{}-{}-SPOT",
+            sanitize_symbol(&base_token.name),
+            sanitize_symbol(&quote_token.name),
+        );
+
+        // Hyperliquid spot raw_symbol formats (per API docs):
+        // - PURR uses slash format from pair.name (e.g., "PURR/USDC")
+        // - All others use "@{pair_index}" format (e.g., "@107" for HYPE)
+        let raw_symbol: Ustr = if base_token.name == "PURR" {
+            pair.name.as_str().into()
+        } else {
+            format!("@{}", pair.index).into()
+        };
 
         let def = HyperliquidInstrumentDef {
             symbol: symbol.into(),
+            raw_symbol,
             base: base_token.name.clone().into(),
             quote: quote_token.name.clone().into(),
             market_type: HyperliquidMarketType::Spot,
+            asset_index: SPOT_INDEX_OFFSET + pair.index,
             price_decimals,
             size_decimals: base_token.sz_decimals,
             tick_size,
             lot_size,
             max_leverage: None,
             only_isolated: false,
+            is_hip3: false,
             active: pair.is_canonical, // Use canonical status to indicate if pair is actively tradeable
             raw_data: serde_json::to_string(pair).unwrap_or_default(),
         };
@@ -184,26 +238,33 @@ pub fn parse_spot_instruments(meta: &SpotMeta) -> Result<Vec<HyperliquidInstrume
         defs.push(def);
     }
 
+    // Canonical pairs must be cached first so the base-token alias (e.g.
+    // "PURR" -> PURR-USDC-SPOT) resolves to the canonical instrument when
+    // non-canonical pairs share the same base. Secondary key keeps the
+    // order stable within each bucket.
+    defs.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then(a.asset_index.cmp(&b.asset_index))
+    });
+
     Ok(defs)
 }
 
-/// Compute 10^(-decimals) as a Decimal.
-///
-/// This uses integer arithmetic to avoid floating-point precision issues.
-fn pow10_neg(decimals: u32) -> Result<Decimal, String> {
+fn pow10_neg(decimals: u32) -> Decimal {
     if decimals == 0 {
-        return Ok(Decimal::ONE);
+        return Decimal::ONE;
     }
 
     // Build 1 / 10^decimals using integer arithmetic
-    Ok(Decimal::from_i128_with_scale(1, decimals))
+    Decimal::from_i128_with_scale(1, decimals)
 }
 
 pub fn get_currency(code: &str) -> Currency {
     Currency::try_from_str(code).unwrap_or_else(|| {
         let currency = Currency::new(code, 8, 0, code, CurrencyType::Crypto);
         if let Err(e) = Currency::register(currency, false) {
-            tracing::error!("Failed to register currency '{code}': {e}");
+            log::error!("Failed to register currency '{code}': {e}");
         }
         currency
     })
@@ -221,9 +282,11 @@ pub fn create_instrument_from_def(
     let venue = *HYPERLIQUID_VENUE;
     let instrument_id = InstrumentId::new(symbol, venue);
 
-    // Use base currency as raw_symbol (e.g., "BTC" not "BTC-USD-PERP")
-    // This is what Hyperliquid expects in WebSocket subscriptions
-    let raw_symbol = Symbol::new(def.base);
+    // Use the raw_symbol from the definition which is format-specific:
+    // - Perps: base currency (e.g., "BTC")
+    // - Spot PURR: slash format (e.g., "PURR/USDC")
+    // - Spot others: @{index} format (e.g., "@107")
+    let raw_symbol = Symbol::new(def.raw_symbol);
     let base_currency = get_currency(&def.base);
     let quote_currency = get_currency(&def.quote);
     let price_increment = Price::from(def.tick_size.to_string());
@@ -239,6 +302,7 @@ pub fn create_instrument_from_def(
             def.size_decimals as u8,
             price_increment,
             size_increment,
+            None,
             None,
             None,
             None,
@@ -268,6 +332,7 @@ pub fn create_instrument_from_def(
                 def.size_decimals as u8,
                 price_increment,
                 size_increment,
+                None, // multiplier
                 None,
                 None,
                 None,
@@ -301,16 +366,15 @@ pub fn instruments_from_defs(
 
 /// Convert owned definitions into Nautilus instruments, consuming the input vector.
 #[must_use]
-pub fn instruments_from_defs_owned(defs: Vec<HyperliquidInstrumentDef>) -> Vec<InstrumentAny> {
-    let clock = get_atomic_clock_realtime();
-    let ts_init = clock.get_time_ns();
-
+pub fn instruments_from_defs_owned(
+    defs: Vec<HyperliquidInstrumentDef>,
+    ts_init: UnixNanos,
+) -> Vec<InstrumentAny> {
     defs.into_iter()
         .filter_map(|def| create_instrument_from_def(&def, ts_init))
         .collect()
 }
 
-/// Map Hyperliquid fill side to Nautilus OrderSide.
 fn parse_fill_side(side: &HyperliquidSide) -> OrderSide {
     match side {
         HyperliquidSide::Buy => OrderSide::Buy,
@@ -350,9 +414,6 @@ pub fn parse_order_status_report_from_basic(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
-    use nautilus_model::types::{Price, Quantity};
-    use rust_decimal::Decimal;
-
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(order.oid.to_string());
     let order_side = OrderSide::from(order.side);
@@ -377,10 +438,9 @@ pub fn parse_order_status_report_from_basic(
         OrderType::Limit
     };
 
-    let time_in_force = TimeInForce::Gtc; // Hyperliquid uses GTC by default
+    let time_in_force = TimeInForce::Gtc;
     let order_status = OrderStatus::from(*status);
 
-    // Parse quantities
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
@@ -393,14 +453,14 @@ pub fn parse_order_status_report_from_basic(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse sz: {e}"))?;
 
-    let quantity = Quantity::new(orig_sz.abs().to_f64().unwrap_or(0.0), size_precision);
+    let quantity = Quantity::from_decimal_dp(orig_sz.abs(), size_precision)
+        .map_err(|e| anyhow::anyhow!("Failed to create quantity from orig_sz: {e}"))?;
     let filled_sz = orig_sz.abs() - current_sz.abs();
-    let filled_qty = Quantity::new(filled_sz.to_f64().unwrap_or(0.0), size_precision);
+    let filled_qty = Quantity::from_decimal_dp(filled_sz, size_precision)
+        .map_err(|e| anyhow::anyhow!("Failed to create quantity from filled_sz: {e}"))?;
 
-    // Timestamps
-    let ts_accepted = UnixNanos::from(order.timestamp * 1_000_000); // Convert ms to ns
+    let ts_accepted = UnixNanos::from(order.timestamp * 1_000_000);
     let ts_last = ts_accepted;
-
     let report_id = UUID4::new();
 
     let mut report = OrderStatusReport::new(
@@ -425,23 +485,31 @@ pub fn parse_order_status_report_from_basic(
         report = report.with_client_order_id(ClientOrderId::new(cloid.as_str()));
     }
 
-    // Add price
-    let limit_px: Decimal = order
-        .limit_px
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse limit_px: {e}"))?;
-    report = report.with_price(Price::new(
-        limit_px.to_f64().unwrap_or(0.0),
-        price_precision,
-    ));
+    // Only set price for non-filled orders. For filled orders, the limit price is not
+    // the execution price, and setting it would cause bogus inferred fills to be created
+    // during reconciliation. Real fills arrive via the userEvents WebSocket channel.
+    if !matches!(
+        order_status,
+        OrderStatus::Filled | OrderStatus::PartiallyFilled
+    ) {
+        let limit_px: Decimal = order
+            .limit_px
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse limit_px: {e}"))?;
+        let price = Price::from_decimal_dp(limit_px, price_precision)
+            .map_err(|e| anyhow::anyhow!("Failed to create price from limit_px: {e}"))?;
+        report = report.with_price(price);
+    }
 
     // Add trigger price if present
     if let Some(trigger_px) = &order.trigger_px {
         let trig_px: Decimal = trigger_px
             .parse()
             .map_err(|e| anyhow::anyhow!("Failed to parse trigger_px: {e}"))?;
+        let trigger_price = Price::from_decimal_dp(trig_px, price_precision)
+            .map_err(|e| anyhow::anyhow!("Failed to create trigger price: {e}"))?;
         report = report
-            .with_trigger_price(Price::new(trig_px.to_f64().unwrap_or(0.0), price_precision))
+            .with_trigger_price(trigger_price)
             .with_trigger_type(TriggerType::Default);
     }
 
@@ -459,26 +527,28 @@ pub fn parse_fill_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<FillReport> {
-    use nautilus_model::types::{Money, Price, Quantity};
-    use rust_decimal::Decimal;
-
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(fill.oid.to_string());
 
-    // Construct trade_id from hash and time
-    let trade_id_str = format!("{}-{}", fill.hash, fill.time);
-    tracing::debug!(
-        "Parsing fill: hash={}, time={}, trade_id_str='{}', len={}",
-        fill.hash,
-        fill.time,
-        trade_id_str,
-        trade_id_str.len()
-    );
+    if matches!(fill.dir, HyperliquidFillDirection::AutoDeleveraging) {
+        log::warn!(
+            "Auto-deleveraging fill: {instrument_id} oid={} px={} sz={}",
+            fill.oid,
+            fill.px,
+            fill.sz,
+        );
+    }
 
-    let trade_id = TradeId::new(trade_id_str);
+    let trade_id = make_fill_trade_id(
+        &fill.hash,
+        fill.oid,
+        &fill.px,
+        &fill.sz,
+        fill.time,
+        &fill.start_position,
+    );
     let order_side = parse_fill_side(&fill.side);
 
-    // Parse price and quantity
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
@@ -491,18 +561,22 @@ pub fn parse_fill_report(
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse fill size: {e}"))?;
 
-    let last_px = Price::new(px.to_f64().unwrap_or(0.0), price_precision);
-    let last_qty = Quantity::new(sz.abs().to_f64().unwrap_or(0.0), size_precision);
+    let last_px = Price::from_decimal_dp(px, price_precision)
+        .map_err(|e| anyhow::anyhow!("Failed to create price from fill px: {e}"))?;
+    let last_qty = Quantity::from_decimal_dp(sz.abs(), size_precision)
+        .map_err(|e| anyhow::anyhow!("Failed to create quantity from fill sz: {e}"))?;
 
-    // Parse fee - Hyperliquid fees are typically in USDC for perps
     let fee_amount: Decimal = fill
         .fee
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse fee: {e}"))?;
 
-    // Determine fee currency - Hyperliquid perp fees are in USDC
-    let fee_currency = Currency::from("USDC");
-    let commission = Money::new(fee_amount.abs().to_f64().unwrap_or(0.0), fee_currency);
+    let fee_currency: Currency = fill
+        .fee_token
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Unknown fee token '{}': {e}", fill.fee_token))?;
+    let commission = Money::from_decimal(fee_amount, fee_currency)
+        .map_err(|e| anyhow::anyhow!("Failed to create commission from fee: {e}"))?;
 
     // Determine liquidity side based on 'crossed' flag
     let liquidity_side = if fill.crossed {
@@ -511,9 +585,7 @@ pub fn parse_fill_report(
         LiquiditySide::Maker
     };
 
-    // Timestamp
-    let ts_event = UnixNanos::from(fill.time * 1_000_000); // Convert ms to ns
-
+    let ts_event = UnixNanos::from(fill.time * 1_000_000);
     let report_id = UUID4::new();
 
     let report = FillReport::new(
@@ -547,10 +619,6 @@ pub fn parse_position_status_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<PositionStatusReport> {
-    use nautilus_model::types::Quantity;
-
-    use super::models::AssetPosition;
-
     // Deserialize the position data
     let asset_position: AssetPosition = serde_json::from_value(position_data.clone())
         .context("failed to deserialize AssetPosition")?;
@@ -567,26 +635,13 @@ pub fn parse_position_status_report(
         (PositionSideSpecified::Short, position.szi.abs())
     };
 
-    // Create quantity
-    let quantity = Quantity::new(
-        quantity_value
-            .to_f64()
-            .context("failed to convert quantity to f64")?,
-        instrument.size_precision(),
-    );
-
-    // Generate report ID
+    let quantity = Quantity::from_decimal_dp(quantity_value, instrument.size_precision())
+        .context("failed to create quantity from decimal")?;
     let report_id = UUID4::new();
-
-    // Use current time as ts_last (could be enhanced with actual last update time if available)
     let ts_last = ts_init;
-
-    // Create position ID from coin symbol
-    let venue_position_id = Some(PositionId::new(format!("{}_{}", account_id, position.coin)));
-
-    // Entry price (if available)
     let avg_px_open = position.entry_px;
 
+    // Hyperliquid uses netting (one position per instrument), not hedging
     Ok(PositionStatusReport::new(
         account_id,
         instrument_id,
@@ -595,8 +650,45 @@ pub fn parse_position_status_report(
         ts_last,
         ts_init,
         Some(report_id),
-        venue_position_id,
+        None, // No venue_position_id for netting positions
         avg_px_open,
+    ))
+}
+
+/// Parse a spot token balance into a [`PositionStatusReport`] against the spot instrument.
+///
+/// Spot holdings are always Long (Hyperliquid spot has no short exposure). The average
+/// entry price is derived from `entry_ntl / total` when both are non-zero; otherwise it
+/// is omitted.
+///
+/// # Errors
+///
+/// Returns an error if the quantity cannot be constructed at the instrument's precision.
+pub fn parse_spot_position_status_report(
+    balance: &SpotBalance,
+    instrument: &dyn Instrument,
+    account_id: AccountId,
+    ts_init: UnixNanos,
+) -> anyhow::Result<PositionStatusReport> {
+    let (position_side, quantity_value) = if balance.total.is_zero() {
+        (PositionSideSpecified::Flat, Decimal::ZERO)
+    } else {
+        (PositionSideSpecified::Long, balance.total)
+    };
+
+    let quantity = Quantity::from_decimal_dp(quantity_value, instrument.size_precision())
+        .context("failed to create spot quantity from decimal")?;
+
+    Ok(PositionStatusReport::new(
+        account_id,
+        instrument.id(),
+        position_side,
+        quantity,
+        ts_init,
+        ts_init,
+        Some(UUID4::new()),
+        None,
+        balance.avg_entry_px(),
     ))
 }
 
@@ -618,9 +710,9 @@ mod tests {
 
     #[rstest]
     fn test_pow10_neg() {
-        assert_eq!(pow10_neg(0).unwrap(), dec!(1));
-        assert_eq!(pow10_neg(1).unwrap(), dec!(0.1));
-        assert_eq!(pow10_neg(5).unwrap(), dec!(0.00001));
+        assert_eq!(pow10_neg(0), dec!(1));
+        assert_eq!(pow10_neg(1), dec!(0.1));
+        assert_eq!(pow10_neg(5), dec!(0.00001));
     }
 
     #[rstest]
@@ -631,21 +723,21 @@ mod tests {
                     name: "BTC".to_string(),
                     sz_decimals: 5,
                     max_leverage: Some(50),
-                    only_isolated: None,
-                    is_delisted: None,
+                    ..Default::default()
                 },
                 PerpAsset {
                     name: "DELIST".to_string(),
                     sz_decimals: 3,
                     max_leverage: Some(10),
                     only_isolated: Some(true),
-                    is_delisted: Some(true), // Should be included but marked as inactive
+                    is_delisted: Some(true),
+                    ..Default::default()
                 },
             ],
             margin_tables: vec![],
         };
 
-        let defs = parse_perp_instruments(&meta).unwrap();
+        let defs = parse_perp_instruments(&meta, 0).unwrap();
 
         // Should have both BTC and DELIST (delisted instruments are included for historical data)
         assert_eq!(defs.len(), 2);
@@ -669,20 +761,13 @@ mod tests {
         assert!(!delist.active); // Delisted instruments are marked as inactive
     }
 
-    fn load_test_data<T>(filename: &str) -> T
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        let path = format!("test_data/{filename}");
-        let content = std::fs::read_to_string(path).expect("Failed to read test data");
-        serde_json::from_str(&content).expect("Failed to parse test data")
-    }
+    use crate::common::testing::load_test_data;
 
     #[rstest]
     fn test_parse_perp_instruments_from_real_data() {
         let meta: PerpMeta = load_test_data("http_meta_perp_sample.json");
 
-        let defs = parse_perp_instruments(&meta).unwrap();
+        let defs = parse_perp_instruments(&meta, 0).unwrap();
 
         // Should have 3 instruments (BTC, ETH, ATOM)
         assert_eq!(defs.len(), 3);
@@ -813,21 +898,200 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_spot_instruments_sorts_canonical_before_non_canonical() {
+        // Non-canonical pair uses a lower pair index than the canonical one;
+        // the sort must still put canonical first so the base-token alias in
+        // cache_instrument resolves to the canonical instrument.
+        let tokens = vec![
+            SpotToken {
+                name: "USDC".to_string(),
+                sz_decimals: 6,
+                wei_decimals: 6,
+                index: 0,
+                token_id: "0x1".to_string(),
+                is_canonical: true,
+                evm_contract: None,
+                full_name: None,
+                deployer_trading_fee_share: None,
+            },
+            SpotToken {
+                name: "HYPE".to_string(),
+                sz_decimals: 2,
+                wei_decimals: 8,
+                index: 150,
+                token_id: "0x2".to_string(),
+                is_canonical: true,
+                evm_contract: None,
+                full_name: None,
+                deployer_trading_fee_share: None,
+            },
+        ];
+
+        let pairs = vec![
+            SpotPair {
+                name: "HYPE_OLD".to_string(),
+                tokens: [150, 0],
+                index: 3,
+                is_canonical: false,
+            },
+            SpotPair {
+                name: "HYPE".to_string(),
+                tokens: [150, 0],
+                index: 107,
+                is_canonical: true,
+            },
+        ];
+
+        let defs = parse_spot_instruments(&SpotMeta {
+            tokens,
+            universe: pairs,
+        })
+        .unwrap();
+
+        assert_eq!(defs.len(), 2);
+        assert!(defs[0].active, "canonical must sort first");
+        assert_eq!(defs[0].asset_index, 10000 + 107);
+        assert!(!defs[1].active);
+        assert_eq!(defs[1].asset_index, 10000 + 3);
+    }
+
+    #[rstest]
     fn test_price_decimals_clamping() {
-        // Test that price decimals are clamped to >= 0
         let meta = PerpMeta {
             universe: vec![PerpAsset {
                 name: "HIGHPREC".to_string(),
                 sz_decimals: 10, // 6 - 10 = -4, should clamp to 0
                 max_leverage: Some(1),
-                only_isolated: None,
-                is_delisted: None,
+                ..Default::default()
             }],
             margin_tables: vec![],
         };
 
-        let defs = parse_perp_instruments(&meta).unwrap();
+        let defs = parse_perp_instruments(&meta, 0).unwrap();
         assert_eq!(defs[0].price_decimals, 0);
         assert_eq!(defs[0].tick_size, dec!(1));
+    }
+
+    #[rstest]
+    fn test_parse_perp_instruments_hip3_dex() {
+        // HIP-3 dex at index 1: asset_index_base = 100_000 + 1 * 10_000 = 110_000
+        let meta = PerpMeta {
+            universe: vec![
+                PerpAsset {
+                    name: "xyz:TSLA".to_string(),
+                    sz_decimals: 3,
+                    max_leverage: Some(10),
+                    only_isolated: None,
+                    is_delisted: None,
+                    growth_mode: Some("enabled".to_string()),
+                    margin_mode: Some("strictIsolated".to_string()),
+                },
+                PerpAsset {
+                    name: "xyz:NVDA".to_string(),
+                    sz_decimals: 3,
+                    max_leverage: Some(20),
+                    only_isolated: None,
+                    is_delisted: None,
+                    growth_mode: None,
+                    margin_mode: None,
+                },
+            ],
+            margin_tables: vec![],
+        };
+
+        let defs = parse_perp_instruments(&meta, 110_000).unwrap();
+        assert_eq!(defs.len(), 2);
+
+        // HIP-3 asset: colon in symbol, offset asset index
+        assert_eq!(defs[0].symbol, "xyz:TSLA-USD-PERP");
+        assert!(defs[0].symbol.contains(':'));
+        assert_eq!(defs[0].base, "xyz:TSLA");
+        assert_eq!(defs[0].asset_index, 110_000);
+        assert!(defs[0].active);
+
+        assert_eq!(defs[1].symbol, "xyz:NVDA-USD-PERP");
+        assert_eq!(defs[1].asset_index, 110_001);
+    }
+
+    #[rstest]
+    #[case("BTC", "BTC")]
+    #[case("kPEPE", "kPEPE")]
+    #[case("xyz:TSLA", "xyz:TSLA")]
+    #[case("dex:STREAMABCD****", "dex:STREAMABCDxxxx")]
+    #[case("ABC?", "ABCx")]
+    #[case("a*b?c", "axbxc")]
+    fn test_sanitize_symbol(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(sanitize_symbol(input), expected);
+    }
+
+    #[rstest]
+    fn test_parse_spot_instruments_sanitizes_wildcard_token_names() {
+        // Hypothetical spot token whose venue name contains `?`. Sanitization
+        // must apply to the constructed `symbol` while leaving `raw_symbol`
+        // and `base` carrying the venue-official name for wire I/O.
+        let tokens = vec![
+            SpotToken {
+                name: "USDC".to_string(),
+                sz_decimals: 6,
+                wei_decimals: 6,
+                index: 0,
+                token_id: "0x1".to_string(),
+                is_canonical: true,
+                evm_contract: None,
+                full_name: None,
+                deployer_trading_fee_share: None,
+            },
+            SpotToken {
+                name: "ABC?".to_string(),
+                sz_decimals: 4,
+                wei_decimals: 4,
+                index: 1,
+                token_id: "0x2".to_string(),
+                is_canonical: true,
+                evm_contract: None,
+                full_name: None,
+                deployer_trading_fee_share: None,
+            },
+        ];
+
+        let pairs = vec![SpotPair {
+            name: "ABC?/USDC".to_string(),
+            tokens: [1, 0],
+            index: 50,
+            is_canonical: true,
+        }];
+
+        let meta = SpotMeta {
+            tokens,
+            universe: pairs,
+        };
+
+        let defs = parse_spot_instruments(&meta).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].symbol, "ABCx-USDC-SPOT");
+        assert_eq!(defs[0].base, "ABC?");
+        assert_eq!(defs[0].quote, "USDC");
+    }
+
+    #[rstest]
+    fn test_parse_perp_instruments_sanitizes_hip3_wildcards() {
+        let meta = PerpMeta {
+            universe: vec![PerpAsset {
+                name: "dex:STREAMABCD****".to_string(),
+                sz_decimals: 3,
+                max_leverage: Some(10),
+                only_isolated: None,
+                is_delisted: None,
+                growth_mode: None,
+                margin_mode: None,
+            }],
+            margin_tables: vec![],
+        };
+
+        let defs = parse_perp_instruments(&meta, 110_000).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].symbol, "dex:STREAMABCDxxxx-USD-PERP");
+        assert_eq!(defs[0].raw_symbol.as_str(), "dex:STREAMABCD****");
+        assert_eq!(defs[0].base.as_str(), "dex:STREAMABCD****");
     }
 }

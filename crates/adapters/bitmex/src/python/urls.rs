@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,16 +17,18 @@
 
 use pyo3::prelude::*;
 
-use crate::common::urls;
+use crate::common::{enums::BitmexEnvironment, urls};
 
 /// Gets the BitMEX HTTP base URL.
 #[pyfunction]
-pub fn get_bitmex_http_base_url(testnet: bool) -> String {
-    urls::get_http_base_url(testnet)
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.bitmex")]
+pub fn get_bitmex_http_base_url(environment: BitmexEnvironment) -> String {
+    urls::get_http_base_url(environment)
 }
 
 /// Gets the BitMEX WebSocket URL.
 #[pyfunction]
-pub fn get_bitmex_ws_url(testnet: bool) -> String {
-    urls::get_ws_url(testnet)
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.bitmex")]
+pub fn get_bitmex_ws_url(environment: BitmexEnvironment) -> String {
+    urls::get_ws_url(environment)
 }

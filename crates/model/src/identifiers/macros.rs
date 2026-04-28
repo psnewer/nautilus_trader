@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -33,6 +33,33 @@ macro_rules! impl_serialization_for_identifier {
             {
                 let value_str: &str = Deserialize::deserialize(deserializer)?;
                 Self::new_checked(value_str).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+// Accepts both borrowed and owned strings via `Cow<'de, str>`,
+// so deserializers that must allocate (e.g. `serde_json` decoding
+// `\uXXXX` escapes) do not fail with "expected a borrowed string"
+// before identifier validation runs.
+macro_rules! impl_serialization_for_identifier_utf8 {
+    ($ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                self.inner().serialize(serializer)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value_str: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+                Self::new_checked(value_str.as_ref()).map_err(serde::de::Error::custom)
             }
         }
     };

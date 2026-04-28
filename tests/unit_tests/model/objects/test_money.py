@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -497,6 +497,224 @@ class TestMoney:
         with pytest.raises(TypeError):
             _ = money >= None
 
+    @pytest.mark.parametrize(
+        ("value1", "value2", "expected_type", "expected_value"),
+        [
+            # Money + Money -> Money
+            [Money(0, USD), Money(0, USD), Money, Money(0, USD)],
+            [Money(100, USD), Money(50, USD), Money, Money(150, USD)],
+            [Money(1.5, USD), Money(2.5, USD), Money, Money(4.0, USD)],
+            # Money + int -> Decimal
+            [Money(100, USD), 50, Decimal, Decimal(150)],
+            [Money(0, USD), 1, Decimal, Decimal(1)],
+            # int + Money -> Decimal
+            [50, Money(100, USD), Decimal, Decimal(150)],
+            [0, Money(1, USD), Decimal, Decimal(1)],
+            # Money + float -> float
+            [Money(100, USD), 50.5, float, 150.5],
+            [Money(0, USD), 1.1, float, 1.1],
+            # float + Money -> float
+            [50.5, Money(100, USD), float, 150.5],
+            [1.1, Money(0, USD), float, 1.1],
+            # Money + Decimal -> Decimal
+            [Money(100, USD), Decimal("50.5"), Decimal, Decimal("150.5")],
+            # Decimal + Money -> Decimal
+            [Decimal("50.5"), Money(100, USD), Decimal, Decimal("150.5")],
+        ],
+    )
+    def test_addition_with_various_types_returns_expected_result(
+        self,
+        value1,
+        value2,
+        expected_type,
+        expected_value,
+    ):
+        # Arrange, Act
+        result = value1 + value2
+
+        # Assert
+        assert isinstance(result, expected_type)
+        assert result == expected_value
+
+    @pytest.mark.parametrize(
+        ("value1", "value2", "expected_type", "expected_value"),
+        [
+            # Money - Money -> Money
+            [Money(0, USD), Money(0, USD), Money, Money(0, USD)],
+            [Money(150, USD), Money(50, USD), Money, Money(100, USD)],
+            [Money(4.0, USD), Money(1.5, USD), Money, Money(2.5, USD)],
+            [
+                Money(50, USD),
+                Money(100, USD),
+                Money,
+                Money(-50, USD),
+            ],  # Negative result OK for Money
+            # Money - int -> Decimal
+            [Money(100, USD), 50, Decimal, Decimal(50)],
+            [Money(0, USD), 1, Decimal, Decimal(-1)],
+            # int - Money -> Decimal
+            [150, Money(100, USD), Decimal, Decimal(50)],
+            [0, Money(1, USD), Decimal, Decimal(-1)],
+            # Money - float -> float
+            [Money(100, USD), 50.5, float, 49.5],
+            [Money(0, USD), 1.1, float, -1.1],
+            # float - Money -> float
+            [150.5, Money(100, USD), float, 50.5],
+            [0.0, Money(1, USD), float, -1.0],
+            # Money - Decimal -> Decimal
+            [Money(100, USD), Decimal("50.5"), Decimal, Decimal("49.5")],
+            # Decimal - Money -> Decimal
+            [Decimal("150.5"), Money(100, USD), Decimal, Decimal("50.5")],
+        ],
+    )
+    def test_subtraction_with_various_types_returns_expected_result(
+        self,
+        value1,
+        value2,
+        expected_type,
+        expected_value,
+    ):
+        # Arrange, Act
+        result = value1 - value2
+
+        # Assert
+        assert isinstance(result, expected_type)
+        assert result == expected_value
+
+    @pytest.mark.parametrize(
+        ("value1", "value2", "expected_type", "expected_value"),
+        [
+            # Money * int -> Decimal
+            [Money(100, USD), 2, Decimal, Decimal(200)],
+            [Money(0, USD), 5, Decimal, Decimal(0)],
+            # int * Money -> Decimal
+            [2, Money(100, USD), Decimal, Decimal(200)],
+            [0, Money(100, USD), Decimal, Decimal(0)],
+            # Money * float -> float
+            [Money(100, USD), 2.5, float, 250.0],
+            [Money(0, USD), 1.1, float, 0.0],
+            # float * Money -> float
+            [2.5, Money(100, USD), float, 250.0],
+            [0.0, Money(100, USD), float, 0.0],
+            # Money * Decimal -> Decimal
+            [Money(100, USD), Decimal("2.5"), Decimal, Decimal("250.0")],
+            # Decimal * Money -> Decimal
+            [Decimal("2.5"), Money(100, USD), Decimal, Decimal("250.0")],
+        ],
+    )
+    def test_multiplication_with_various_types_returns_expected_result(
+        self,
+        value1,
+        value2,
+        expected_type,
+        expected_value,
+    ):
+        # Arrange, Act
+        result = value1 * value2
+
+        # Assert
+        assert isinstance(result, expected_type)
+        assert result == expected_value
+
+    @pytest.mark.parametrize(
+        ("value1", "value2", "expected_type", "expected_value"),
+        [
+            # Money / int -> Decimal
+            [Money(100, USD), 2, Decimal, Decimal(50)],
+            [Money(0, USD), 5, Decimal, Decimal(0)],
+            # int / Money -> Decimal
+            [200, Money(100, USD), Decimal, Decimal(2)],
+            # Money / float -> float
+            [Money(100, USD), 2.0, float, 50.0],
+            [Money(0, USD), 1.0, float, 0.0],
+            # float / Money -> float
+            [200.0, Money(100, USD), float, 2.0],
+            # Money / Decimal -> Decimal
+            [Money(100, USD), Decimal(2), Decimal, Decimal(50)],
+            # Decimal / Money -> Decimal
+            [Decimal(200), Money(100, USD), Decimal, Decimal(2)],
+        ],
+    )
+    def test_division_with_various_types_returns_expected_result(
+        self,
+        value1,
+        value2,
+        expected_type,
+        expected_value,
+    ):
+        # Arrange, Act
+        result = value1 / value2
+
+        # Assert
+        assert isinstance(result, expected_type)
+        assert result == expected_value
+
+    def test_addition_with_different_currencies_raises_value_error(self):
+        # Arrange
+        money_usd = Money(100, USD)
+        money_aud = Money(50, AUD)
+
+        # Act, Assert
+        with pytest.raises(ValueError, match="currency"):
+            _ = money_usd + money_aud
+
+    def test_subtraction_with_different_currencies_raises_value_error(self):
+        # Arrange
+        money_usd = Money(100, USD)
+        money_aud = Money(50, AUD)
+
+        # Act, Assert
+        with pytest.raises(ValueError, match="currency"):
+            _ = money_usd - money_aud
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            [Money(1.00, USD), Money(-1.00, USD)],
+            [Money(-1.00, USD), Money(1.00, USD)],
+            [Money(0.00, USD), Money(0.00, USD)],
+        ],
+    )
+    def test_neg_returns_expected_money(self, value, expected):
+        # Arrange, Act
+        result = -value
+
+        # Assert
+        assert isinstance(result, Money)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            [Money(1.00, USD), Money(1.00, USD)],
+            [Money(-1.00, USD), Money(-1.00, USD)],
+            [Money(0.00, USD), Money(0.00, USD)],
+        ],
+    )
+    def test_pos_returns_expected_money(self, value, expected):
+        # Arrange, Act
+        result = +value
+
+        # Assert
+        assert isinstance(result, Money)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            [Money(1.00, USD), Money(1.00, USD)],
+            [Money(-1.00, USD), Money(1.00, USD)],
+            [Money(0.00, USD), Money(0.00, USD)],
+        ],
+    )
+    def test_abs_returns_expected_money(self, value, expected):
+        # Arrange, Act
+        result = abs(value)
+
+        # Assert
+        assert isinstance(result, Money)
+        assert result == expected
+
 
 class TestAccountBalance:
     def test_equality(self):
@@ -598,3 +816,45 @@ class TestMarginBalance:
             repr(margin)
             == "MarginBalance(initial=5_000.00 USD, maintenance=25_000.00 USD, instrument_id=None)"
         )
+
+    def test_to_dict_and_from_dict_with_instrument_id(self):
+        # Arrange
+        margin = MarginBalance(
+            initial=Money(5_000, USD),
+            maintenance=Money(25_000, USD),
+            instrument_id=InstrumentId(Symbol("AUD/USD"), Venue("IDEALPRO")),
+        )
+
+        # Act
+        result = margin.to_dict()
+        roundtrip = MarginBalance.from_dict(result)
+
+        # Assert
+        assert result["type"] == "MarginBalance"
+        assert result["initial"] == "5000.00"
+        assert result["maintenance"] == "25000.00"
+        assert result["currency"] == "USD"
+        assert result["instrument_id"] == "AUD/USD.IDEALPRO"
+        assert roundtrip == margin
+        assert roundtrip.instrument_id == InstrumentId(Symbol("AUD/USD"), Venue("IDEALPRO"))
+
+    def test_to_dict_and_from_dict_without_instrument_id(self):
+        # Arrange: account-wide (cross-margin) entry, keyed by currency only.
+        margin = MarginBalance(
+            initial=Money(1_500, USD),
+            maintenance=Money(750, USD),
+        )
+
+        # Act
+        result = margin.to_dict()
+        roundtrip = MarginBalance.from_dict(result)
+
+        # Assert
+        assert result["type"] == "MarginBalance"
+        assert result["initial"] == "1500.00"
+        assert result["maintenance"] == "750.00"
+        assert result["currency"] == "USD"
+        assert result["instrument_id"] is None
+        assert roundtrip == margin
+        assert roundtrip.instrument_id is None
+        assert roundtrip.currency == USD

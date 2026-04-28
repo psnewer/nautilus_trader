@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,29 +13,30 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Trading strategy machinery and orchestration [NautilusTrader](http://nautilustrader.io).
+//! Trading strategy machinery and orchestration [NautilusTrader](https://nautilustrader.io).
 //!
 //! The `nautilus-trading` crate provides core trading capabilities including:
 //!
 //! - **Forex sessions**: Market session time calculations and timezone handling.
 //!
-//! # Platform
+//! # NautilusTrader
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
-//! algorithmic trading platform, providing quantitative traders with the ability to backtest
-//! portfolios of automated trading strategies on historical data with an event-driven engine,
-//! and also deploy those same strategies live, with no code changes.
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, production-grade, Rust-native
+//! engine for multi-asset, multi-venue trading systems.
 //!
-//! NautilusTrader's design, architecture, and implementation philosophy prioritizes software correctness and safety at the
-//! highest level, with the aim of supporting mission-critical, trading system backtesting and live deployment workloads.
+//! The system spans research, deterministic simulation, and live execution within a single
+//! event-driven architecture, providing research-to-live semantic parity.
 //!
-//! # Feature flags
+//! # Feature Flags
 //!
 //! This crate provides feature flags to control source code inclusion during compilation,
 //! depending on the intended use case, i.e. whether to provide Python bindings
 //! for the [nautilus_trader](https://pypi.org/project/nautilus_trader) Python package,
 //! or as part of a Rust only build.
 //!
+//! - `examples`: Enables example strategies (e.g. `EmaCross`) for backtesting and demos.
+//! - `defi`: Enables DeFi (Decentralized Finance) support.
+//! - `high-precision`: Enables [high-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation#precision-mode) to use 128-bit value types.
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 //! - `extension-module`: Builds the crate as a Python extension module.
 
@@ -48,10 +49,25 @@
 #![deny(clippy::missing_panics_doc)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod macros;
+
+#[doc(hidden)]
+pub mod _macro_reexports {
+    pub use nautilus_common::actor::DataActorCore;
+}
+
+pub mod algorithm;
 pub mod sessions;
 pub mod strategy;
 
-pub use strategy::{Strategy, StrategyConfig, StrategyCore};
+#[cfg(feature = "examples")]
+pub mod examples;
+
+pub use algorithm::{
+    ExecutionAlgorithm, ExecutionAlgorithmConfig, ExecutionAlgorithmCore,
+    ImportableExecAlgorithmConfig, TwapAlgorithm, TwapAlgorithmConfig,
+};
+pub use strategy::{ImportableStrategyConfig, Strategy, StrategyConfig, StrategyCore};
 
 #[cfg(feature = "python")]
 pub mod python;

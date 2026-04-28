@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -55,6 +55,22 @@ pub fn get_or_env_var(value: Option<String>, key: &str) -> anyhow::Result<String
 #[must_use]
 pub fn get_or_env_var_opt(value: Option<String>, key: &str) -> Option<String> {
     value.or_else(|| std::env::var(key).ok())
+}
+
+/// Resolves a key/secret pair from provided values or environment variables.
+///
+/// Returns `Some((key, secret))` when both are available,
+/// `None` otherwise.
+#[must_use]
+pub fn resolve_env_var_pair(
+    key: Option<String>,
+    secret: Option<String>,
+    key_var: &str,
+    secret_var: &str,
+) -> Option<(String, String)> {
+    let key = get_or_env_var_opt(key, key_var)?;
+    let secret = get_or_env_var_opt(secret, secret_var)?;
+    Some((key, secret))
 }
 
 #[cfg(test)]
@@ -170,5 +186,52 @@ mod tests {
             let result = get_or_env_var_opt(provided, "PATH");
             assert_eq!(result, Some("custom_value".to_string()));
         }
+    }
+
+    #[rstest]
+    fn test_resolve_env_var_pair_both_provided() {
+        let result = resolve_env_var_pair(
+            Some("my_key".to_string()),
+            Some("my_secret".to_string()),
+            "NONEXISTENT_KEY_VAR",
+            "NONEXISTENT_SECRET_VAR",
+        );
+        assert_eq!(
+            result,
+            Some(("my_key".to_string(), "my_secret".to_string()))
+        );
+    }
+
+    #[rstest]
+    fn test_resolve_env_var_pair_key_missing_returns_none() {
+        let result = resolve_env_var_pair(
+            None,
+            Some("my_secret".to_string()),
+            "NONEXISTENT_PAIR_KEY_12345",
+            "NONEXISTENT_PAIR_SECRET_12345",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[rstest]
+    fn test_resolve_env_var_pair_secret_missing_returns_none() {
+        let result = resolve_env_var_pair(
+            Some("my_key".to_string()),
+            None,
+            "NONEXISTENT_PAIR_KEY_12345",
+            "NONEXISTENT_PAIR_SECRET_12345",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[rstest]
+    fn test_resolve_env_var_pair_both_missing_returns_none() {
+        let result = resolve_env_var_pair(
+            None,
+            None,
+            "NONEXISTENT_PAIR_KEY_12345",
+            "NONEXISTENT_PAIR_SECRET_12345",
+        );
+        assert_eq!(result, None);
     }
 }

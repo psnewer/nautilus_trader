@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,6 +32,7 @@ from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport FundingRateUpdate
 from nautilus_trader.model.data cimport IndexPriceUpdate
+from nautilus_trader.model.data cimport InstrumentStatus
 from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
@@ -70,6 +71,7 @@ cdef class Cache(CacheFacade):
     cdef dict _mark_prices
     cdef dict _index_prices
     cdef dict _funding_rates
+    cdef dict _instrument_statuses
     cdef dict _bars
     cdef dict _bars_bid
     cdef dict _bars_ask
@@ -97,6 +99,8 @@ cdef class Cache(CacheFacade):
     cdef dict _index_instrument_position_snapshots
     cdef dict _index_strategy_orders
     cdef dict _index_strategy_positions
+    cdef dict _index_account_orders
+    cdef dict _index_account_positions
     cdef dict _index_exec_algorithm_orders
     cdef dict _index_exec_spawn_orders
     cdef set _index_orders
@@ -152,12 +156,16 @@ cdef class Cache(CacheFacade):
     cdef void _cache_venue_account_id(self, AccountId account_id)
     cdef void _build_indexes_from_orders(self)
     cdef void _build_indexes_from_positions(self)
-    cdef set _build_order_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id)
-    cdef set _build_position_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id)
+    cdef set _build_order_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
+    cdef set _build_position_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
     cdef list _get_orders_for_ids(self, set client_order_ids, OrderSide side)
     cdef list _get_positions_for_ids(self, set position_ids, PositionSide side)
     cdef void _assign_position_id_to_contingencies(self, Order order)
     cpdef Money calculate_unrealized_pnl(self, Position position)
+    cpdef object get_mark_xrate(self, Currency from_currency, Currency to_currency)
+    cpdef void set_mark_xrate(self, Currency from_currency, Currency to_currency, double xrate)
+    cpdef void clear_mark_xrate(self, Currency from_currency, Currency to_currency)
+    cpdef void clear_mark_xrates(self)
 
     cpdef Instrument load_instrument(self, InstrumentId instrument_id)
     cpdef SyntheticInstrument load_synthetic(self, InstrumentId instrument_id)
@@ -174,6 +182,7 @@ cdef class Cache(CacheFacade):
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price)
     cpdef void add_index_price(self, IndexPriceUpdate index_price)
     cpdef void add_funding_rate(self, FundingRateUpdate funding_rate)
+    cpdef void add_instrument_status(self, InstrumentStatus status)
     cpdef void add_bar(self, Bar bar)
     cpdef void add_quote_ticks(self, list ticks)
     cpdef void add_trade_ticks(self, list ticks)

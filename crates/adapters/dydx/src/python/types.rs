@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,6 +27,7 @@ use pyo3::{prelude::*, types::PyDict};
 use crate::types::DydxOraclePrice;
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl DydxOraclePrice {
     fn __richcmp__(&self, other: &Self, op: pyo3::pyclass::CompareOp, py: Python<'_>) -> Py<PyAny> {
         match op {
@@ -81,9 +82,6 @@ impl DydxOraclePrice {
         self.ts_init.as_u64()
     }
 
-    /// # Errors
-    ///
-    /// Returns a `PyErr` if generating the Python dictionary fails.
     #[pyo3(name = "to_dict")]
     pub fn py_to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);

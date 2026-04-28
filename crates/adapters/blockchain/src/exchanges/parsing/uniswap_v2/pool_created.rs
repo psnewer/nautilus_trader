@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,10 +42,6 @@ const PAIR_CREATED_EVENT_SIGNATURE_HASH: &str =
 /// # Errors
 ///
 /// Returns an error if the log parsing fails or if the event data is invalid.
-///
-/// # Panics
-///
-/// Panics if the block number is not set in the log.
 pub fn parse_pool_created_event_hypersync(log: HypersyncLog) -> anyhow::Result<PoolCreatedEvent> {
     validate_event_signature_hash("PairCreatedEvent", PAIR_CREATED_EVENT_SIGNATURE_HASH, &log)?;
 
@@ -59,7 +55,7 @@ pub fn parse_pool_created_event_hypersync(log: HypersyncLog) -> anyhow::Result<P
 
         anyhow::ensure!(
             data_bytes.len() >= 32,
-            "PairCreated event data too short: expected at least 32 bytes, got {}",
+            "PairCreated event data too short: expected at least 32 bytes, was {}",
             data_bytes.len()
         );
 
@@ -102,7 +98,7 @@ pub fn parse_pool_created_event_rpc(log: &RpcLog) -> anyhow::Result<PoolCreatedE
 
     anyhow::ensure!(
         data_bytes.len() >= 32,
-        "PairCreated event data too short: expected at least 32 bytes, got {}",
+        "PairCreated event data too short: expected at least 32 bytes, was {}",
         data_bytes.len()
     );
 
@@ -173,8 +169,6 @@ mod tests {
         serde_json::from_value(log_json).expect("Failed to deserialize RPC log")
     }
 
-    // ========== HyperSync parser tests ==========
-
     #[rstest]
     fn test_parse_pair_created_hypersync(hypersync_log_weth_usdt: HypersyncLog) {
         let event =
@@ -196,8 +190,6 @@ mod tests {
         assert_eq!(event.fee, None);
         assert_eq!(event.tick_spacing, None);
     }
-
-    // ========== RPC parser tests ==========
 
     #[rstest]
     fn test_parse_pair_created_rpc(rpc_log_weth_usdt: RpcLog) {

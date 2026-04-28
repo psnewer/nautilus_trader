@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,7 +16,7 @@
 use aws_lc_rs::{hmac, rand as lc_rand, rsa::KeyPair, signature as lc_signature};
 use base64::prelude::*;
 use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey};
-use hex;
+use nautilus_core::hex;
 
 /// Generates an HMAC-SHA256 signature for the given data using the provided secret.
 ///
@@ -136,7 +136,7 @@ mod tests {
 
     #[rstest]
     #[case(
-        r"-----BEGIN TEST KEY-----
+        "-----BEGIN TEST KEY-----
 MIIBVwIBADANBgkqhkiG9w0BAQEFAASCATswggE3AgEAAkEAu/...
 -----END PRIVATE KEY-----",
         ""
@@ -151,7 +151,7 @@ MIIBVwIBADANBgkqhkiG9w0BAQEFAASCATswggE3AgEAAkEAu/...
 
     #[rstest]
     #[case(
-        r"-----BEGIN INVALID KEY-----
+        "-----BEGIN INVALID KEY-----
 INVALID_KEY_DATA
 -----END INVALID KEY-----",
         "This is a test query"

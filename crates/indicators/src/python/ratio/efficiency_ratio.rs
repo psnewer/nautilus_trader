@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,7 +19,12 @@ use pyo3::prelude::*;
 use crate::{indicator::Indicator, ratio::efficiency_ratio::EfficiencyRatio};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl EfficiencyRatio {
+    /// An indicator which calculates the efficiency ratio across a rolling window.
+    ///
+    /// The Kaufman Efficiency measures the ratio of the relative market speed in
+    /// relation to the volatility, this could be thought of as a proxy for noise.
     #[new]
     #[pyo3(signature = (period, price_type=None))]
     fn py_new(period: usize, price_type: Option<PriceType>) -> Self {
@@ -54,6 +59,7 @@ impl EfficiencyRatio {
         self.initialized
     }
 
+    #[getter]
     #[pyo3(name = "has_inputs")]
     fn py_has_inputs(&self) -> bool {
         self.has_inputs()

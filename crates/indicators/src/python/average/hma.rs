@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,7 +25,11 @@ use crate::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl HullMovingAverage {
+    /// An indicator which calculates a Hull Moving Average (HMA) across a rolling
+    /// window. The HMA, developed by Alan Hull, is an extremely fast and smooth
+    /// moving average.
     #[new]
     #[pyo3(signature = (period, price_type=None))]
     fn py_new(period: usize, price_type: Option<PriceType>) -> Self {

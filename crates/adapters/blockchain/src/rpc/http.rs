@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,6 +17,7 @@ use std::{collections::HashMap, num::NonZeroU32, str::FromStr};
 
 use alloy::primitives::{Address, U256};
 use bytes::Bytes;
+use nautilus_core::hex;
 use nautilus_model::defi::rpc::{RpcLog, RpcNodeHttpResponse};
 use nautilus_network::{
     http::{HttpClient, Method},
@@ -41,21 +42,26 @@ pub struct BlockchainHttpRpcClient {
 impl BlockchainHttpRpcClient {
     /// Creates a new HTTP RPC client with the given endpoint URL and optional rate limit.
     ///
+    /// If `rpc_request_per_second` is `Some(0)` or an invalid value, rate limiting is disabled.
+    ///
     /// # Panics
     ///
-    /// Panics if `rpc_request_per_second` is `Some(0)`, since a zero rate limit is invalid.
+    /// Panics if the internal HTTP client cannot be created.
     #[must_use]
-    pub fn new(http_rpc_url: String, rpc_request_per_second: Option<u32>) -> Self {
-        let default_quota = rpc_request_per_second.map(|rpc_request_per_second| {
-            Quota::per_second(NonZeroU32::new(rpc_request_per_second).unwrap())
-        });
+    pub fn new(
+        http_rpc_url: String,
+        rpc_request_per_second: Option<u32>,
+        proxy_url: Option<String>,
+    ) -> Self {
+        let default_quota =
+            rpc_request_per_second.and_then(|rps| Quota::per_second(NonZeroU32::new(rps)?));
         let http_client = HttpClient::new(
             HashMap::new(),
             vec![],
             Vec::new(),
             default_quota,
             None, // timeout_secs
-            None, // proxy_url
+            proxy_url,
         )
         .expect("Failed to create HTTP client");
         Self {
@@ -160,7 +166,7 @@ impl BlockchainHttpRpcClient {
         call_data: &[u8],
         block: Option<u64>,
     ) -> serde_json::Value {
-        let encoded_data = format!("0x{}", hex::encode(call_data));
+        let encoded_data = hex::encode_prefixed(call_data);
         let call = serde_json::json!({
             "to": to,
             "data": encoded_data

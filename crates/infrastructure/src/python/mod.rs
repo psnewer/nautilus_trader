@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,6 +29,7 @@ use pyo3::{prelude::*, pymodule};
 ///
 /// Returns a `PyErr` if the module initialization fails, e.g., when adding classes to the module.
 #[pymodule]
+#[allow(unused_variables)]
 pub fn infrastructure(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "redis")]
     m.add_class::<crate::redis::cache::RedisCacheDatabase>()?;

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -78,13 +78,13 @@ class BinanceFuturesBalanceInfo(msgspec.Struct, frozen=True):
         # considering margin collateral. As a temporary measure we're taking the `min` to
         # disregard free amounts above the cash balance, but still considering where not all
         # balance is available (so locked in some way, i.e. allocated as collateral).
-        total = Decimal(self.walletBalance)
-        free = min(Decimal(self.availableBalance), total)
+        total = Money(Decimal(self.walletBalance), currency)
+        free = Money(min(Decimal(self.availableBalance), Decimal(self.walletBalance)), currency)
         locked = total - free
         return AccountBalance(
-            total=Money(total, currency),
-            locked=Money(locked, currency),
-            free=Money(free, currency),
+            total=total,
+            locked=locked,
+            free=free,
         )
 
     def parse_to_margin_balance(self) -> MarginBalance:
@@ -362,10 +362,11 @@ class BinanceFuturesAlgoOrder(msgspec.Struct, frozen=True):
             )
 
         client_order_id = ClientOrderId(self.clientAlgoId) if self.clientAlgoId else None
-        venue_order_id_str = self.actualOrderId if self.actualOrderId else str(self.algoId)
+        venue_order_id_str = self.actualOrderId or str(self.algoId)
         venue_order_id = VenueOrderId(venue_order_id_str)
 
         trigger_type = TriggerType.NO_TRIGGER
+
         if self.workingType is not None:
             trigger_type = enum_parser.parse_binance_trigger_type(self.workingType)
         elif self.triggerPrice and Decimal(self.triggerPrice) > 0:
@@ -374,11 +375,13 @@ class BinanceFuturesAlgoOrder(msgspec.Struct, frozen=True):
         # Binance sends callbackRate in percent (e.g., 1.0 = 1%), convert to basis points
         trailing_offset = None
         trailing_offset_type = TrailingOffsetType.NO_TRAILING_OFFSET
+
         if self.callbackRate is not None:
             trailing_offset = Decimal(self.callbackRate) * 100
             trailing_offset_type = TrailingOffsetType.BASIS_POINTS
 
         order_status = OrderStatus.ACCEPTED
+
         if self.algoStatus:
             order_status = _ALGO_STATUS_MAP.get(self.algoStatus.upper(), OrderStatus.ACCEPTED)
 
@@ -388,11 +391,12 @@ class BinanceFuturesAlgoOrder(msgspec.Struct, frozen=True):
         binance_order_side = BinanceOrderSide(self.side)
         order_side = enum_parser.parse_binance_order_side(binance_order_side)
 
-        price_str = self.price if self.price else "0"
+        price_str = self.price or "0"
         trigger_price_str = self.triggerPrice or self.activatePrice or "0"
         reduce_only = self.reduceOnly if self.reduceOnly is not None else False
 
         time_in_force = TimeInForce.GTC
+
         if self.timeInForce:
             binance_tif = BinanceTimeInForce(self.timeInForce)
             time_in_force = enum_parser.parse_binance_time_in_force(binance_tif)

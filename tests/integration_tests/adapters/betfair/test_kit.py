@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -128,10 +128,11 @@ class BetfairTestStubs:
                 "SportsAPING/v1.0/listClearedOrders": BetfairResponses.list_cleared_orders,
             }
             kw = {}
+
             if rpc_method == "SportsAPING/v1.0/listMarketCatalogue":
                 kw = {"filter_": request.params.filter}
             if rpc_method in responses:
-                response = responses[rpc_method](**kw)  # type: ignore
+                response = responses[rpc_method](**kw)
                 if "id" in response:
                     response["id"] = request.id
                 resp = MagicMock(spec=ClientResponse)
@@ -366,6 +367,22 @@ class BetfairResponses:
         return BetfairResponses.load("betting_place_order_success.json")
 
     @staticmethod
+    def betting_place_order_batch_success():
+        return BetfairResponses.load("betting_place_order_batch_success.json")
+
+    @staticmethod
+    def betting_place_order_batch_partial_failure():
+        return BetfairResponses.load("betting_place_order_batch_partial_failure.json")
+
+    @staticmethod
+    def betting_cancel_orders_batch_success():
+        return BetfairResponses.load("betting_cancel_orders_batch_success.json")
+
+    @staticmethod
+    def betting_cancel_orders_batch_partial_failure():
+        return BetfairResponses.load("betting_cancel_orders_batch_partial_failure.json")
+
+    @staticmethod
     def betting_place_orders_old():
         return BetfairResponses.load("betting_place_orders_old.json")
 
@@ -434,6 +451,7 @@ class BetfairResponses:
     @staticmethod
     def betting_list_market_catalogue(filter_: MarketFilter | None = None) -> dict:
         result = BetfairResponses.load("betting_list_market_catalogue.json")
+
         if filter_:
             result = [r for r in result if r["marketId"] in filter_.market_ids]  # type: ignore
         return {"jsonrpc": "2.0", "result": result, "id": 1}
@@ -600,11 +618,15 @@ class BetfairStreaming:
         sm=0,
         sr=0,
         sc=0,
+        sl=0,
+        sv=0,
         avp=0,
         order_id: int = 248485109136,
         client_order_id: str = "",
         mb: list[MatchedOrder] | None = None,
         ml: list[MatchedOrder] | None = None,
+        market_id: str = "1",
+        selection_id: int = 1,
     ) -> OCM:
         assert side in ("B", "L"), "`side` should be 'B' or 'L'"
         assert isinstance(order_id, int)
@@ -614,10 +636,10 @@ class BetfairStreaming:
             pt=0,
             oc=[
                 OrderMarketChange(
-                    id="1",
+                    id=market_id,
                     orc=[
                         OrderRunnerChange(
-                            id=1,
+                            id=selection_id,
                             uo=[
                                 Order(
                                     id=order_id,
@@ -631,9 +653,9 @@ class BetfairStreaming:
                                     md=int(pd.Timestamp.utcnow().timestamp()),
                                     sm=sm,
                                     sr=sr,
-                                    sl=0,
+                                    sl=sl,
                                     sc=sc,
-                                    sv=0,
+                                    sv=sv,
                                     rac="",
                                     rc="REG_LGA",
                                     rfo=client_order_id,
@@ -789,6 +811,7 @@ class BetfairDataProvider:
     @staticmethod
     def mcm_to_instruments(mcm: MCM, currency="GBP") -> list[BettingInstrument]:
         instruments: list[BettingInstrument] = []
+
         for mc in mcm.mc:
             if mc.market_definition:
                 market_def = msgspec.structs.replace(mc.market_definition, market_id=mc.id)
@@ -809,6 +832,7 @@ class BetfairDataProvider:
 
         instruments: list[BettingInstrument] = []
         data = []
+
         for mcm in BetfairDataProvider.read_mcm(f"{market_id}.bz2"):
             if not instruments:
                 instruments = BetfairDataProvider.mcm_to_instruments(mcm)

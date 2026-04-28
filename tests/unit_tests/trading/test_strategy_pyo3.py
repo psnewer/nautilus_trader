@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -217,7 +217,7 @@ def test_unregistered_strategy_properties():
     strategy = Strategy()
     assert strategy.trader_id is None
     assert strategy.strategy_id is not None
-    assert strategy.state() == ComponentState.PreInitialized
+    assert strategy.state() == ComponentState.PRE_INITIALIZED
     assert not strategy.is_ready()
     assert not strategy.is_running()
     assert not strategy.is_stopped()

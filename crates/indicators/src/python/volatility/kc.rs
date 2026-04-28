@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,7 +19,9 @@ use pyo3::prelude::*;
 use crate::{average::MovingAverageType, indicator::Indicator, volatility::kc::KeltnerChannel};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl KeltnerChannel {
+    /// Creates a new `KeltnerChannel` instance.
     #[new]
     #[pyo3(signature = (period, k_multiplier, ma_type=None, ma_type_atr=None, use_previous=None, atr_floor=None))]
     #[must_use]

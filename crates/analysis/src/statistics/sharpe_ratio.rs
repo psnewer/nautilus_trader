@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -36,7 +36,11 @@ use crate::{Returns, statistic::PortfolioStatistic};
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.analysis")
 )]
 pub struct SharpeRatio {
     /// The annualization period (default: 252 for daily data).
@@ -101,7 +105,7 @@ mod tests {
 
     use super::*;
 
-    fn create_returns(values: Vec<f64>) -> BTreeMap<UnixNanos, f64> {
+    fn create_returns(values: &[f64]) -> BTreeMap<UnixNanos, f64> {
         let mut new_return = BTreeMap::new();
         let one_day_in_nanos = 86_400_000_000_000;
         let start_time = 1_600_000_000_000_000_000;
@@ -117,7 +121,7 @@ mod tests {
     #[rstest]
     fn test_empty_returns() {
         let ratio = SharpeRatio::new(None);
-        let returns = create_returns(vec![]);
+        let returns = create_returns(&[]);
         let result = ratio.calculate_from_returns(&returns);
         assert!(result.is_some());
         assert!(result.unwrap().is_nan());
@@ -126,7 +130,7 @@ mod tests {
     #[rstest]
     fn test_zero_std_dev() {
         let ratio = SharpeRatio::new(None);
-        let returns = create_returns(vec![0.01; 10]);
+        let returns = create_returns(&[0.01; 10]);
         let result = ratio.calculate_from_returns(&returns);
         assert!(result.is_some());
         assert!(result.unwrap().is_nan());
@@ -135,7 +139,7 @@ mod tests {
     #[rstest]
     fn test_valid_sharpe_ratio() {
         let ratio = SharpeRatio::new(Some(252));
-        let returns = create_returns(vec![0.01, -0.02, 0.015, -0.005, 0.025]);
+        let returns = create_returns(&[0.01, -0.02, 0.015, -0.005, 0.025]);
         let result = ratio.calculate_from_returns(&returns);
         assert!(result.is_some());
         assert!(approx_eq!(

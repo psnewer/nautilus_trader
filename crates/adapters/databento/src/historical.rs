@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,23 +15,16 @@
 
 //! Core Databento historical client for both Rust and Python usage.
 
-use std::{
-    fs,
-    num::NonZeroU64,
-    path::PathBuf,
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
+use std::{fmt::Debug, fs, num::NonZeroU64, path::PathBuf, str::FromStr, sync::Arc};
 
-use ahash::AHashMap;
 use databento::{
     dbn::{self, decode::DbnMetadata},
     historical::timeseries::GetRangeParams,
 };
 use indexmap::IndexMap;
-use nautilus_core::{UnixNanos, consts::NAUTILUS_USER_AGENT, time::AtomicTime};
+use nautilus_core::{AtomicMap, UnixNanos, consts::NAUTILUS_USER_AGENT, time::AtomicTime};
 use nautilus_model::{
-    data::{Bar, Data, InstrumentStatus, OrderBookDepth10, QuoteTick, TradeTick},
+    data::{Bar, Data, InstrumentStatus, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick},
     enums::BarAggregation,
     identifiers::{InstrumentId, Symbol, Venue},
     instruments::InstrumentAny,
@@ -39,14 +32,14 @@ use nautilus_model::{
 };
 
 use crate::{
-    common::get_date_time_range,
+    common::{Credential, get_date_time_range},
     decode::{
-        decode_imbalance_msg, decode_instrument_def_msg, decode_mbp10_msg, decode_record,
-        decode_statistics_msg, decode_status_msg,
+        decode_imbalance_msg, decode_instrument_def_msg, decode_mbo_msg, decode_mbp10_msg,
+        decode_record, decode_statistics_msg, decode_status_msg,
     },
     symbology::{
         MetadataCache, check_consistent_symbology, decode_nautilus_instrument_id,
-        infer_symbology_type, instrument_id_to_symbol_string,
+        infer_symbology_type,
     },
     types::{DatabentoImbalance, DatabentoPublisher, DatabentoStatistics, PublisherId},
 };
@@ -55,13 +48,13 @@ use crate::{
 ///
 /// This client provides both synchronous and asynchronous interfaces for fetching
 /// various types of historical market data from Databento.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DatabentoHistoricalClient {
-    pub key: String,
+    credential: Credential,
     clock: &'static AtomicTime,
     inner: Arc<tokio::sync::Mutex<databento::HistoricalClient>>,
     publisher_venue_map: Arc<IndexMap<PublisherId, Venue>>,
-    symbol_venue_map: Arc<RwLock<AHashMap<Symbol, Venue>>>,
+    symbol_venue_map: Arc<AtomicMap<Symbol, Venue>>,
     use_exchange_as_venue: bool,
 }
 
@@ -83,21 +76,35 @@ pub struct DatasetRange {
     pub end: String,
 }
 
+impl Debug for DatabentoHistoricalClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(DatabentoHistoricalClient))
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
 impl DatabentoHistoricalClient {
+    /// Returns the API key from the stored credential.
+    #[must_use]
+    pub fn api_key(&self) -> &str {
+        self.credential.api_key()
+    }
+
     /// Creates a new [`DatabentoHistoricalClient`] instance.
     ///
     /// # Errors
     ///
     /// Returns an error if client creation or publisher loading fails.
     pub fn new(
-        key: String,
+        credential: Credential,
         publishers_filepath: PathBuf,
         clock: &'static AtomicTime,
         use_exchange_as_venue: bool,
     ) -> anyhow::Result<Self> {
         let client = databento::HistoricalClient::builder()
             .user_agent_extension(NAUTILUS_USER_AGENT.into())
-            .key(key.clone())
+            .key(credential.api_key())
             .map_err(|e| anyhow::anyhow!("Failed to create client builder: {e}"))?
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build client: {e}"))?;
@@ -114,8 +121,8 @@ impl DatabentoHistoricalClient {
             clock,
             inner: Arc::new(tokio::sync::Mutex::new(client)),
             publisher_venue_map: Arc::new(publisher_venue_map),
-            symbol_venue_map: Arc::new(RwLock::new(AHashMap::new())),
-            key,
+            symbol_venue_map: Arc::new(AtomicMap::new()),
+            credential,
             use_exchange_as_venue,
         })
     }
@@ -165,7 +172,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Definition)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let mut client = self.inner.lock().await;
@@ -181,10 +188,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::InstrumentDefMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let mut instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -203,7 +207,7 @@ impl DatabentoHistoricalClient {
 
             match decode_instrument_def_msg(msg, instrument_id, None) {
                 Ok(instrument) => instruments.push(instrument),
-                Err(e) => tracing::error!("Failed to decode instrument: {e:?}"),
+                Err(e) => log::error!("Failed to decode instrument: {e:?}"),
             }
         }
 
@@ -251,7 +255,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn_schema)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -268,10 +272,7 @@ impl DatabentoHistoricalClient {
         let mut result: Vec<QuoteTick> = Vec::new();
 
         let mut process_record = |record: dbn::RecordRef| -> anyhow::Result<()> {
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -361,7 +362,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Mbp10)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -378,10 +379,7 @@ impl DatabentoHistoricalClient {
         let mut result: Vec<OrderBookDepth10> = Vec::new();
 
         let mut process_record = |record: dbn::RecordRef| -> anyhow::Result<()> {
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -398,6 +396,76 @@ impl DatabentoHistoricalClient {
         };
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::Mbp10Msg>().await {
+            process_record(dbn::RecordRef::from(msg))?;
+        }
+
+        Ok(result)
+    }
+
+    /// Fetches order book deltas for the given parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request or data processing fails.
+    pub async fn get_range_order_book_deltas(
+        &self,
+        params: RangeQueryParams,
+    ) -> anyhow::Result<Vec<OrderBookDelta>> {
+        let symbols: Vec<&str> = params.symbols.iter().map(String::as_str).collect();
+        check_consistent_symbology(&symbols)?;
+
+        let first_symbol = params
+            .symbols
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No symbols provided"))?;
+        let stype_in = infer_symbology_type(first_symbol);
+        let end = params.end.unwrap_or_else(|| self.clock.get_time_ns());
+        let time_range = get_date_time_range(params.start, end)?;
+
+        let range_params = GetRangeParams::builder()
+            .dataset(params.dataset)
+            .date_time_range(time_range)
+            .symbols(symbols)
+            .stype_in(stype_in)
+            .schema(dbn::Schema::Mbo)
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
+            .build();
+
+        let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
+
+        let mut client = self.inner.lock().await;
+        let mut decoder = client
+            .timeseries()
+            .get_range(&range_params)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get range: {e}"))?;
+
+        let metadata = decoder.metadata().clone();
+        let mut metadata_cache = MetadataCache::new(metadata);
+        let mut result: Vec<OrderBookDelta> = Vec::new();
+
+        let mut process_record = |record: dbn::RecordRef| -> anyhow::Result<()> {
+            let sym_map = self.symbol_venue_map.load();
+            let instrument_id = decode_nautilus_instrument_id(
+                &record,
+                &mut metadata_cache,
+                &self.publisher_venue_map,
+                &sym_map,
+            )?;
+
+            if let Some(msg) = record.get::<dbn::MboMsg>() {
+                let (delta, _trade) =
+                    decode_mbo_msg(msg, instrument_id, price_precision, None, false)?;
+
+                if let Some(delta) = delta {
+                    result.push(delta);
+                }
+            }
+
+            Ok(())
+        };
+
+        while let Ok(Some(msg)) = decoder.decode_record::<dbn::MboMsg>().await {
             process_record(dbn::RecordRef::from(msg))?;
         }
 
@@ -430,7 +498,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Trades)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -448,10 +516,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::TradeMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -515,7 +580,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(schema)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -533,10 +598,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::OhlcvMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -590,7 +652,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Imbalance)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -608,10 +670,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::ImbalanceMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -652,7 +711,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Statistics)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let price_precision = params.price_precision.unwrap_or(Currency::USD().precision);
@@ -670,10 +729,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::StatMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -714,7 +770,7 @@ impl DatabentoHistoricalClient {
             .symbols(symbols)
             .stype_in(stype_in)
             .schema(dbn::Schema::Status)
-            .limit(params.limit.and_then(NonZeroU64::new))
+            .maybe_limit(params.limit.and_then(NonZeroU64::new))
             .build();
 
         let mut client = self.inner.lock().await;
@@ -730,10 +786,7 @@ impl DatabentoHistoricalClient {
 
         while let Ok(Some(msg)) = decoder.decode_record::<dbn::StatusMsg>().await {
             let record = dbn::RecordRef::from(msg);
-            let sym_map = self
-                .symbol_venue_map
-                .read()
-                .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+            let sym_map = self.symbol_venue_map.load();
             let instrument_id = decode_nautilus_instrument_id(
                 &record,
                 &mut metadata_cache,
@@ -749,26 +802,19 @@ impl DatabentoHistoricalClient {
     }
 
     /// Helper method to prepare symbols from instrument IDs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the symbol venue map lock is poisoned.
     pub fn prepare_symbols_from_instrument_ids(
         &self,
         instrument_ids: &[InstrumentId],
-    ) -> anyhow::Result<Vec<String>> {
-        let mut symbol_venue_map = self
-            .symbol_venue_map
-            .write()
-            .map_err(|e| anyhow::anyhow!("symbol_venue_map lock poisoned: {e}"))?;
+    ) -> Vec<String> {
+        self.symbol_venue_map.rcu(|m| {
+            for id in instrument_ids {
+                m.entry(id.symbol).or_insert(id.venue);
+            }
+        });
 
-        let symbols: Vec<String> = instrument_ids
+        instrument_ids
             .iter()
-            .map(|instrument_id| {
-                instrument_id_to_symbol_string(*instrument_id, &mut symbol_venue_map)
-            })
-            .collect();
-
-        Ok(symbols)
+            .map(|id| id.symbol.to_string())
+            .collect()
     }
 }

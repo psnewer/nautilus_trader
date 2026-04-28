@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -30,7 +30,11 @@ use crate::{
 #[serde(tag = "type")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct PositionStatusReport {
     /// The account ID associated with the position.
@@ -57,7 +61,7 @@ pub struct PositionStatusReport {
 
 impl PositionStatusReport {
     /// Creates a new [`PositionStatusReport`] instance with required fields.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         account_id: AccountId,
@@ -358,14 +362,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            long_100.signed_decimal_qty,
-            Decimal::from_f64_retain(100.5).unwrap()
-        );
-        assert_eq!(
-            short_200.signed_decimal_qty,
-            Decimal::from_f64_retain(-200.75).unwrap()
-        );
+        assert_eq!(long_100.signed_decimal_qty, dec!(100.5));
+        assert_eq!(short_200.signed_decimal_qty, dec!(-200.75));
     }
 
     #[rstest]

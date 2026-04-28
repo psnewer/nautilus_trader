@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,5 +21,3 @@ pub mod parse;
 pub mod query;
 
 pub use crate::http::client::TardisHttpClient;
-
-pub const TARDIS_BASE_URL: &str = "https://api.tardis.dev/v1";

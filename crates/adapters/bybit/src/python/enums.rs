@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,7 +27,9 @@ use crate::common::enums::{
 };
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitProductType {
+    /// Product categories supported by the v5 API.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -75,34 +77,12 @@ impl BybitProductType {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "SPOT")]
-    fn py_spot() -> Self {
-        Self::Spot
-    }
-
-    #[classattr]
-    #[pyo3(name = "LINEAR")]
-    fn py_linear() -> Self {
-        Self::Linear
-    }
-
-    #[classattr]
-    #[pyo3(name = "INVERSE")]
-    fn py_inverse() -> Self {
-        Self::Inverse
-    }
-
-    #[classattr]
-    #[pyo3(name = "OPTION")]
-    fn py_option() -> Self {
-        Self::Option
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitEnvironment {
+    /// Environments supported by the Bybit API stack.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -150,28 +130,12 @@ impl BybitEnvironment {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "MAINNET")]
-    fn py_mainnet() -> Self {
-        Self::Mainnet
-    }
-
-    #[classattr]
-    #[pyo3(name = "DEMO")]
-    fn py_demo() -> Self {
-        Self::Demo
-    }
-
-    #[classattr]
-    #[pyo3(name = "TESTNET")]
-    fn py_testnet() -> Self {
-        Self::Testnet
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitAccountType {
+    /// Account type enumeration.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -219,16 +183,12 @@ impl BybitAccountType {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "UNIFIED")]
-    fn py_unified() -> Self {
-        Self::Unified
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitMarginMode {
+    /// Margin mode used by Bybit when switching risk profiles.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -280,28 +240,12 @@ impl BybitMarginMode {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "ISOLATED_MARGIN")]
-    fn py_isolated_margin() -> Self {
-        Self::IsolatedMargin
-    }
-
-    #[classattr]
-    #[pyo3(name = "REGULAR_MARGIN")]
-    fn py_regular_margin() -> Self {
-        Self::RegularMargin
-    }
-
-    #[classattr]
-    #[pyo3(name = "PORTFOLIO_MARGIN")]
-    fn py_portfolio_margin() -> Self {
-        Self::PortfolioMargin
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitPositionMode {
+    /// Position mode as returned by the v5 API.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -361,22 +305,12 @@ impl BybitPositionMode {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "MERGED_SINGLE")]
-    fn py_merged_single() -> Self {
-        Self::MergedSingle
-    }
-
-    #[classattr]
-    #[pyo3(name = "BOTH_SIDES")]
-    fn py_both_sides() -> Self {
-        Self::BothSides
-    }
 }
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl BybitMarginAction {
+    /// Margin actions for spot margin trading operations.
     #[new]
     fn py_new(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let t = Self::type_object(py);
@@ -419,23 +353,5 @@ impl BybitMarginAction {
     fn py_from_str(_cls: &Bound<'_, PyType>, data: &Bound<'_, PyAny>) -> PyResult<Self> {
         let data_str: String = data.str()?.extract()?;
         Self::from_str(&data_str).map_err(to_pyvalue_err)
-    }
-
-    #[classattr]
-    #[pyo3(name = "BORROW")]
-    fn py_borrow() -> Self {
-        Self::Borrow
-    }
-
-    #[classattr]
-    #[pyo3(name = "REPAY")]
-    fn py_repay() -> Self {
-        Self::Repay
-    }
-
-    #[classattr]
-    #[pyo3(name = "GET_BORROW_AMOUNT")]
-    fn py_get_borrow_amount() -> Self {
-        Self::GetBorrowAmount
     }
 }

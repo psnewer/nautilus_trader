@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -79,6 +79,7 @@ async def cancel_tasks_with_timeout(
             asyncio.gather(*pending_tasks, return_exceptions=True),
             timeout=timeout_secs,
         )
+
         if logger:
             logger.debug(f"Successfully canceled {len(pending_tasks)} tasks")
     except TimeoutError:

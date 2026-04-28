@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -141,6 +141,30 @@ class TestModelEvents:
         assert (
             repr(event)
             == f"AccountState(account_id=SIM-000, account_type=MARGIN, base_currency=USD, is_reported=True, balances=[AccountBalance(total=1_525_000.00 USD, locked=25_000.00 USD, free=1_500_000.00 USD)], margins=[MarginBalance(initial=5_000.00 USD, maintenance=20_000.00 USD, instrument_id=AUD/USD.SIM)], event_id={uuid})"
+        )
+
+    def test_account_state_allows_empty_balances(self):
+        # Arrange
+        uuid = UUID4()
+        event = AccountState(
+            account_id=TestIdStubs.account_id(),
+            account_type=AccountType.MARGIN,
+            base_currency=USDT,
+            reported=True,
+            balances=[],
+            margins=[],
+            info={},
+            event_id=uuid,
+            ts_event=0,
+            ts_init=0,
+        )
+
+        # Act, Assert
+        assert event.balances == []
+        assert AccountState.from_dict(AccountState.to_dict(event)) == event
+        assert (
+            str(event)
+            == f"AccountState(account_id=SIM-000, account_type=MARGIN, base_currency=USDT, is_reported=True, balances=[], margins=[], event_id={uuid})"
         )
 
     def test_order_initialized_event_to_from_dict_and_str_repr(self):

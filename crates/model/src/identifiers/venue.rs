@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,11 +16,15 @@
 //! Represents a valid trading venue ID.
 
 use std::{
-    fmt::{Debug, Display, Formatter},
+    fmt::{Debug, Display},
     hash::Hash,
 };
 
-use nautilus_core::correctness::{FAILED, check_valid_string_ascii};
+#[cfg(feature = "defi")]
+use nautilus_core::correctness::CorrectnessError;
+use nautilus_core::correctness::{
+    CorrectnessResult, CorrectnessResultExt, FAILED, check_valid_string_ascii,
+};
 use ustr::Ustr;
 
 #[cfg(feature = "defi")]
@@ -34,7 +38,11 @@ pub const SYNTHETIC_VENUE: &str = "SYNTH";
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.model")
 )]
 pub struct Venue(Ustr);
 
@@ -48,7 +56,7 @@ impl Venue {
     /// # Notes
     ///
     /// PyO3 requires a `Result` type for proper error handling and stacktrace printing in Python.
-    pub fn new_checked<T: AsRef<str>>(value: T) -> anyhow::Result<Self> {
+    pub fn new_checked<T: AsRef<str>>(value: T) -> CorrectnessResult<Self> {
         let value = value.as_ref();
         check_valid_string_ascii(value, stringify!(value))?;
 
@@ -56,7 +64,9 @@ impl Venue {
         if value.contains(':')
             && let Err(e) = validate_blockchain_venue(value)
         {
-            anyhow::bail!("Error creating `Venue` from '{value}': {e}");
+            return Err(CorrectnessError::PredicateViolation {
+                message: format!("Error creating `Venue` from '{value}': {e}"),
+            });
         }
 
         Ok(Self(Ustr::from(value)))
@@ -68,7 +78,7 @@ impl Venue {
     ///
     /// Panics if `value` is not a valid string.
     pub fn new<T: AsRef<str>>(value: T) -> Self {
-        Self::new_checked(value).expect(FAILED)
+        Self::new_checked(value).expect_display(FAILED)
     }
 
     /// Sets the inner identifier value.
@@ -114,7 +124,6 @@ impl Venue {
 
     #[must_use]
     pub fn synthetic() -> Self {
-        // SAFETY: Unwrap safe as using known synthetic venue constant
         Self::new(SYNTHETIC_VENUE)
     }
 
@@ -160,13 +169,13 @@ impl Venue {
 }
 
 impl Debug for Venue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"{}\"", self.0)
     }
 }
 
 impl Display for Venue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -179,27 +188,44 @@ impl Display for Venue {
 /// - Format is not "Chain:DexId" (missing colon or empty parts)
 /// - Chain or Dex is not recognized
 #[cfg(feature = "defi")]
-pub fn validate_blockchain_venue(venue_part: &str) -> anyhow::Result<()> {
+pub fn validate_blockchain_venue(venue_part: &str) -> CorrectnessResult<()> {
     if let Some((chain_name, dex_id)) = venue_part.split_once(':') {
         if chain_name.is_empty() || dex_id.is_empty() {
-            anyhow::bail!("invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'");
+            return Err(CorrectnessError::PredicateViolation {
+                message: format!(
+                    "invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'"
+                ),
+            });
         }
+
         if Chain::from_chain_name(chain_name).is_none() {
-            anyhow::bail!(
-                "invalid blockchain venue '{venue_part}': chain '{chain_name}' not recognized"
-            );
+            return Err(CorrectnessError::PredicateViolation {
+                message: format!(
+                    "invalid blockchain venue '{venue_part}': chain '{chain_name}' not recognized"
+                ),
+            });
         }
+
         if DexType::from_dex_name(dex_id).is_none() {
-            anyhow::bail!("invalid blockchain venue '{venue_part}': dex '{dex_id}' not recognized");
+            return Err(CorrectnessError::PredicateViolation {
+                message: format!(
+                    "invalid blockchain venue '{venue_part}': dex '{dex_id}' not recognized"
+                ),
+            });
         }
         Ok(())
     } else {
-        anyhow::bail!("invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'");
+        Err(CorrectnessError::PredicateViolation {
+            message: format!(
+                "invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'"
+            ),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nautilus_core::correctness::CorrectnessError;
     use rstest::rstest;
 
     #[cfg(feature = "defi")]
@@ -210,6 +236,51 @@ mod tests {
     fn test_string_reprs(venue_binance: Venue) {
         assert_eq!(venue_binance.as_str(), "BINANCE");
         assert_eq!(format!("{venue_binance}"), "BINANCE");
+    }
+
+    #[rstest]
+    fn test_new_checked_returns_typed_error_with_stable_display() {
+        let error = Venue::new_checked("").unwrap_err();
+
+        assert_eq!(
+            error,
+            CorrectnessError::EmptyString {
+                param: "value".to_string(),
+            }
+        );
+        assert_eq!(error.to_string(), "invalid string for 'value', was empty");
+    }
+
+    #[cfg(feature = "defi")]
+    #[rstest]
+    #[case(
+        "Arbitrum:",
+        "invalid blockchain venue 'Arbitrum:': expected format 'Chain:DexId'"
+    )]
+    #[case(
+        "InvalidChain:UniswapV3",
+        "invalid blockchain venue 'InvalidChain:UniswapV3': chain 'InvalidChain' not recognized"
+    )]
+    #[case(
+        "Arbitrum:InvalidDex",
+        "invalid blockchain venue 'Arbitrum:InvalidDex': dex 'InvalidDex' not recognized"
+    )]
+    #[case(
+        "no-colon",
+        "invalid blockchain venue 'no-colon': expected format 'Chain:DexId'"
+    )]
+    fn test_validate_blockchain_venue_returns_typed_error_with_stable_display(
+        #[case] input: &str,
+        #[case] expected_message: &str,
+    ) {
+        let error = super::validate_blockchain_venue(input).unwrap_err();
+        assert_eq!(
+            error,
+            CorrectnessError::PredicateViolation {
+                message: expected_message.to_string(),
+            }
+        );
+        assert_eq!(error.to_string(), expected_message);
     }
 
     #[cfg(feature = "defi")]

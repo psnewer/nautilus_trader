@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -129,12 +129,14 @@ def _print_no_updown_found(markets: list[dict]) -> None:
     print("\nRelated crypto price prediction markets found:")
 
     crypto_markets = []
+
     for market in markets:
         slug = market.get("slug", "").lower()
         question = market.get("question", "").lower()
-        if any(term in slug or term in question for term in ["bitcoin", "btc", "ethereum", "eth"]) and any(
-            price_term in question for price_term in ["reach", "hit", "dip", "$"]
-        ):
+
+        if any(
+            term in slug or term in question for term in ["bitcoin", "btc", "ethereum", "eth"]
+        ) and any(price_term in question for price_term in ["reach", "hit", "dip", "$"]):
             crypto_markets.append(market)
 
     for market in crypto_markets[:10]:
@@ -147,13 +149,18 @@ def _print_no_updown_found(markets: list[dict]) -> None:
         print(f"\n  ... and {len(crypto_markets) - 10} more crypto price markets")
 
 
-def _print_updown_results(btc_markets: list[dict], eth_markets: list[dict], other_updown: list[dict]) -> None:
+def _print_updown_results(
+    btc_markets: list[dict],
+    eth_markets: list[dict],
+    other_updown: list[dict],
+) -> None:
     """
     Print UpDown market results.
     """
     print(f"{'=' * 80}")
     print(f"BTC UPDOWN MARKETS ({len(btc_markets)} found)")
     print(f"{'=' * 80}")
+
     for market in btc_markets:
         print_market_info(market)
     print()
@@ -161,6 +168,7 @@ def _print_updown_results(btc_markets: list[dict], eth_markets: list[dict], othe
     print(f"{'=' * 80}")
     print(f"ETH UPDOWN MARKETS ({len(eth_markets)} found)")
     print(f"{'=' * 80}")
+
     for market in eth_markets:
         print_market_info(market)
     print()
@@ -169,6 +177,7 @@ def _print_updown_results(btc_markets: list[dict], eth_markets: list[dict], othe
         print(f"{'=' * 80}")
         print(f"OTHER UPDOWN MARKETS ({len(other_updown)} found)")
         print(f"{'=' * 80}")
+
         for market in other_updown:
             print_market_info(market)
 

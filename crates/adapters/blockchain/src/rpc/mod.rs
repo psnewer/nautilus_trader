@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,6 +21,7 @@
 //! utilities for handling RPC requests and responses.
 
 use enum_dispatch::enum_dispatch;
+use nautilus_network::websocket::TransportBackend;
 
 use crate::rpc::{
     chains::{
@@ -62,4 +63,5 @@ pub trait BlockchainRpcClient {
         todo!("Not implemented")
     }
     async fn next_rpc_message(&mut self) -> Result<BlockchainMessage, BlockchainRpcClientError>;
+    fn set_transport_backend(&mut self, backend: TransportBackend);
 }

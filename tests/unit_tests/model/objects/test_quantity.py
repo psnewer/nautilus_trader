@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -104,16 +104,33 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            [Quantity(-0, precision=0), Decimal(0)],
-            [Quantity(0, precision=0), Decimal(0)],
-            [Quantity(1, precision=0), Decimal(1)],
+            [Quantity(-0, precision=0), Quantity(0, precision=0)],
+            [Quantity(0, precision=0), Quantity(0, precision=0)],
+            [Quantity(1, precision=0), Quantity(1, precision=0)],
         ],
     )
-    def test_abs_with_various_values_returns_expected_decimal(self, value, expected):
+    def test_abs_with_various_values_returns_expected_quantity(self, value, expected):
         # Arrange, Act
         result = abs(value)
 
         # Assert
+        assert isinstance(result, Quantity)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            [Quantity(0, precision=0), Quantity(0, precision=0)],
+            [Quantity(1, precision=0), Quantity(1, precision=0)],
+            [Quantity(1.5, precision=1), Quantity(1.5, precision=1)],
+        ],
+    )
+    def test_pos_with_various_values_returns_expected_quantity(self, value, expected):
+        # Arrange, Act
+        result = +value
+
+        # Assert
+        assert isinstance(result, Quantity)
         assert result == expected
 
     @pytest.mark.parametrize(
@@ -248,12 +265,17 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value1", "value2", "expected_type", "expected_value"),
         [
-            [Quantity(0, precision=0), Quantity(0, precision=0), Decimal, 0],
+            [
+                Quantity(0, precision=0),
+                Quantity(0, precision=0),
+                Quantity,
+                Quantity(0, precision=0),
+            ],
             [
                 Quantity(0, precision=0),
                 Quantity(1.1, precision=1),
-                Decimal,
-                Decimal("1.1"),
+                Quantity,
+                Quantity(1.1, precision=1),
             ],
             [Quantity(0, precision=0), 0, Decimal, 0],
             [Quantity(0, precision=0), 1, Decimal, 1],
@@ -266,8 +288,8 @@ class TestQuantity:
             [
                 Quantity(1, precision=0),
                 Quantity(1.1, precision=1),
-                Decimal,
-                Decimal("2.1"),
+                Quantity,
+                Quantity(2.1, precision=1),
             ],
             [Quantity(1, precision=0), Decimal("1.1"), Decimal, Decimal("2.1")],
         ],
@@ -289,13 +311,8 @@ class TestQuantity:
     @pytest.mark.parametrize(
         ("value1", "value2", "expected_type", "expected_value"),
         [
-            [Quantity(0, precision=0), Quantity(0, precision=0), Decimal, 0],
-            [
-                Quantity(0, precision=0),
-                Quantity(1.1, precision=1),
-                Decimal,
-                Decimal("-1.1"),
-            ],
+            [Quantity(0, precision=0), Quantity(0, precision=0), Quantity, Quantity(0, 0)],
+            [Quantity(1.1, precision=1), Quantity(0, precision=0), Quantity, Quantity(1.1, 1)],
             [Quantity(0, precision=0), 0, Decimal, 0],
             [Quantity(0, precision=0), 1, Decimal, -1],
             [0, Quantity(0, precision=0), Decimal, 0],
@@ -304,12 +321,7 @@ class TestQuantity:
             [Quantity(0, precision=0), 1.1, float, -1.1],
             [0.1, Quantity(1, precision=0), float, -0.9],
             [1.1, Quantity(1, precision=0), float, 0.10000000000000009],
-            [
-                Quantity(1, precision=0),
-                Quantity(1.1, precision=1),
-                Decimal,
-                Decimal("-0.1"),
-            ],
+            [Quantity(2.1, precision=1), Quantity(1.1, precision=1), Quantity, Quantity(1.0, 1)],
             [Quantity(1, precision=0), Decimal("1.1"), Decimal, Decimal("-0.1")],
         ],
     )
@@ -326,6 +338,15 @@ class TestQuantity:
         # Assert
         assert isinstance(result, expected_type)
         assert result == expected_value
+
+    def test_subtraction_negative_result_raises_value_error(self):
+        # Arrange
+        qty1 = Quantity(100, 0)
+        qty2 = Quantity(150, 0)
+
+        # Act, Assert
+        with pytest.raises(ValueError, match="negative value"):
+            _ = qty1 - qty2
 
     @pytest.mark.parametrize(
         ("value1", "value2", "expected_type", "expected_value"),
@@ -709,7 +730,6 @@ class TestQuantity:
                 Quantity.from_str("1." + "0" * 17)  # 17 decimals > 16
 
     def test_from_str_precision_preservation(self):
-
         # Whole numbers should have precision 0
         assert Quantity.from_str("100").precision == 0
         assert Quantity.from_str("1000000").precision == 0

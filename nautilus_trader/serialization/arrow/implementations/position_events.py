@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -40,7 +40,7 @@ def serialize(event: PositionEvent):
         "avg_px_close": try_float,
         "realized_return": try_float,
     }
-    values = {k: caster[k](v) if k in caster else v for k, v in data.items()}  # type: ignore
+    values = {k: caster[k](v) if k in caster else v for k, v in data.items()}
     if "realized_pnl" in values:
         realized = Money.from_str(values["realized_pnl"])
         values["realized_pnl"] = realized.as_double()

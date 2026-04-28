@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,7 +16,6 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    ops::Neg,
     str::FromStr,
 };
 
@@ -27,7 +26,12 @@ use rust_decimal::{Decimal, RoundingStrategy};
 use crate::types::{Currency, Money, money::MoneyRaw};
 
 #[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl Money {
+    /// Represents an amount of money in a specified currency denomination.
+    ///
+    /// - `MONEY_MAX` - Maximum representable money amount
+    /// - `MONEY_MIN` - Minimum representable money amount
     #[new]
     fn py_new(amount: f64, currency: Currency) -> PyResult<Self> {
         Self::new_checked(amount, currency).map_err(to_pyvalue_err)
@@ -76,8 +80,14 @@ impl Money {
         if other.is_instance_of::<PyFloat>() {
             let other_float: f64 = other.extract::<f64>()?;
             (self.as_f64() + other_float).into_py_any(py)
-        } else if let Ok(other_qty) = other.extract::<Self>() {
-            (self.as_decimal() + other_qty.as_decimal()).into_py_any(py)
+        } else if let Ok(other_money) = other.extract::<Self>() {
+            if self.currency != other_money.currency {
+                return Err(to_pyvalue_err(format!(
+                    "Currency mismatch: cannot add {} to {}",
+                    other_money.currency.code, self.currency.code
+                )));
+            }
+            (*self + other_money).into_py_any(py)
         } else if let Ok(other_dec) = other.extract::<Decimal>() {
             (self.as_decimal() + other_dec).into_py_any(py)
         } else {
@@ -92,8 +102,14 @@ impl Money {
         if other.is_instance_of::<PyFloat>() {
             let other_float: f64 = other.extract()?;
             (other_float + self.as_f64()).into_py_any(py)
-        } else if let Ok(other_qty) = other.extract::<Self>() {
-            (other_qty.as_decimal() + self.as_decimal()).into_py_any(py)
+        } else if let Ok(other_money) = other.extract::<Self>() {
+            if self.currency != other_money.currency {
+                return Err(to_pyvalue_err(format!(
+                    "Currency mismatch: cannot add {} to {}",
+                    self.currency.code, other_money.currency.code
+                )));
+            }
+            (other_money + *self).into_py_any(py)
         } else if let Ok(other_dec) = other.extract::<Decimal>() {
             (other_dec + self.as_decimal()).into_py_any(py)
         } else {
@@ -108,8 +124,14 @@ impl Money {
         if other.is_instance_of::<PyFloat>() {
             let other_float: f64 = other.extract()?;
             (self.as_f64() - other_float).into_py_any(py)
-        } else if let Ok(other_qty) = other.extract::<Self>() {
-            (self.as_decimal() - other_qty.as_decimal()).into_py_any(py)
+        } else if let Ok(other_money) = other.extract::<Self>() {
+            if self.currency != other_money.currency {
+                return Err(to_pyvalue_err(format!(
+                    "Currency mismatch: cannot subtract {} from {}",
+                    other_money.currency.code, self.currency.code
+                )));
+            }
+            (*self - other_money).into_py_any(py)
         } else if let Ok(other_dec) = other.extract::<Decimal>() {
             (self.as_decimal() - other_dec).into_py_any(py)
         } else {
@@ -124,8 +146,14 @@ impl Money {
         if other.is_instance_of::<PyFloat>() {
             let other_float: f64 = other.extract()?;
             (other_float - self.as_f64()).into_py_any(py)
-        } else if let Ok(other_qty) = other.extract::<Self>() {
-            (other_qty.as_decimal() - self.as_decimal()).into_py_any(py)
+        } else if let Ok(other_money) = other.extract::<Self>() {
+            if self.currency != other_money.currency {
+                return Err(to_pyvalue_err(format!(
+                    "Currency mismatch: cannot subtract {} from {}",
+                    self.currency.code, other_money.currency.code
+                )));
+            }
+            (other_money - *self).into_py_any(py)
         } else if let Ok(other_dec) = other.extract::<Decimal>() {
             (other_dec - self.as_decimal()).into_py_any(py)
         } else {
@@ -268,22 +296,20 @@ impl Money {
         }
     }
 
-    fn __neg__(&self) -> Decimal {
-        self.as_decimal().neg()
+    fn __neg__(&self) -> Self {
+        -*self
     }
 
-    fn __pos__(&self) -> Decimal {
-        let mut value = self.as_decimal();
-        value.set_sign_positive(true);
-        value
+    fn __pos__(&self) -> Self {
+        *self
     }
 
-    fn __abs__(&self) -> Decimal {
-        self.as_decimal().abs()
+    fn __abs__(&self) -> Self {
+        if self.raw < 0 { -*self } else { *self }
     }
 
-    fn __int__(&self) -> u64 {
-        self.as_f64() as u64
+    fn __int__(&self) -> i64 {
+        self.as_f64() as i64
     }
 
     fn __float__(&self) -> f64 {
@@ -314,16 +340,34 @@ impl Money {
         self.currency
     }
 
+    /// Creates a new `Money` instance with a value of zero with the given `Currency`.
     #[staticmethod]
     #[pyo3(name = "zero")]
     fn py_zero(currency: Currency) -> Self {
         Self::new(0.0, currency)
     }
 
+    /// Creates a new `Money` instance from the given `raw` fixed-point value and the specified `currency`.
     #[staticmethod]
     #[pyo3(name = "from_raw")]
-    fn py_from_raw(raw: MoneyRaw, currency: Currency) -> PyResult<Self> {
-        Ok(Self::from_raw(raw, currency))
+    fn py_from_raw(raw: MoneyRaw, currency: Currency) -> Self {
+        Self::from_raw(raw, currency)
+    }
+
+    /// Creates a new `Money` from a `Decimal` value with specified currency.
+    ///
+    /// This method provides more reliable parsing by using Decimal arithmetic
+    /// to avoid floating-point precision issues during conversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The decimal value cannot be converted to the raw representation.
+    /// - Overflow occurs during scaling.
+    #[staticmethod]
+    #[pyo3(name = "from_decimal")]
+    fn py_from_decimal(value: Decimal, currency: Currency) -> PyResult<Self> {
+        Self::from_decimal(value, currency).map_err(to_pyvalue_err)
     }
 
     #[staticmethod]
@@ -332,11 +376,19 @@ impl Money {
         Self::from_str(value).map_err(to_pyvalue_err)
     }
 
+    /// Returns `true` if the value of this instance is zero.
     #[pyo3(name = "is_zero")]
     fn py_is_zero(&self) -> bool {
         self.is_zero()
     }
 
+    /// Returns `true` if the value of this instance is positive (> 0).
+    #[pyo3(name = "is_positive")]
+    fn py_is_positive(&self) -> bool {
+        self.is_positive()
+    }
+
+    /// Returns the value of this instance as a `Decimal`.
     #[pyo3(name = "as_decimal")]
     fn py_as_decimal(&self) -> Decimal {
         self.as_decimal()
@@ -350,5 +402,35 @@ impl Money {
     #[pyo3(name = "to_formatted_str")]
     fn py_to_formatted_str(&self) -> String {
         self.to_formatted_string()
+    }
+
+    /// Performs a checked addition, returning `None` on raw integer overflow, when
+    /// the result falls outside `[MONEY_RAW_MIN, MONEY_RAW_MAX]`, or when the operands
+    /// have mixed raw scales (e.g. a wei-scaled `Money` and a `FIXED_SCALAR`-scaled
+    /// `Money`, even if their currency codes match).
+    #[pyo3(name = "checked_add")]
+    fn py_checked_add(&self, other: Self) -> PyResult<Option<Self>> {
+        if self.currency != other.currency {
+            return Err(to_pyvalue_err(format!(
+                "Currency mismatch: cannot add {} to {}",
+                other.currency.code, self.currency.code
+            )));
+        }
+        Ok(self.checked_add(other))
+    }
+
+    /// Performs a checked subtraction, returning `None` on raw integer underflow, when
+    /// the result falls outside `[MONEY_RAW_MIN, MONEY_RAW_MAX]`, or when the operands
+    /// have mixed raw scales (e.g. a wei-scaled `Money` and a `FIXED_SCALAR`-scaled
+    /// `Money`, even if their currency codes match).
+    #[pyo3(name = "checked_sub")]
+    fn py_checked_sub(&self, other: Self) -> PyResult<Option<Self>> {
+        if self.currency != other.currency {
+            return Err(to_pyvalue_err(format!(
+                "Currency mismatch: cannot subtract {} from {}",
+                other.currency.code, self.currency.code
+            )));
+        }
+        Ok(self.checked_sub(other))
     }
 }

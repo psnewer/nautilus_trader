@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,17 +16,15 @@
 use nautilus_core::UnixNanos;
 use nautilus_model::instruments::Instrument;
 use nautilus_tardis::{
-    enums::TardisExchange,
+    common::enums::TardisExchange,
     http::{client::TardisHttpClient, query::InstrumentFilterBuilder},
 };
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    nautilus_common::logging::ensure_logging_initialized();
 
-    let client = TardisHttpClient::new(None, None, None, true).unwrap();
+    let client = TardisHttpClient::new(None, None, None, true, None).unwrap();
 
     // Tardis instrument definitions
     let resp = client
