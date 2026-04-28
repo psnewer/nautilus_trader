@@ -6,8 +6,12 @@
 
 from .config import OddsSubscriptionConfig
 from .service import OddsSubscriptionService
-from .polymarket_client import PolymarketOddsClient, PolymarketPosition, PolymarketOrder
-from .orbitexch_client import OrbitExchOddsClient
+from nautilus_trader.adapters.polymarket.odds_client import (
+    PolymarketOddsClient,
+    PolymarketPosition,
+    PolymarketOrder,
+)
+from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
 
 __all__ = [
     "OddsSubscriptionConfig",

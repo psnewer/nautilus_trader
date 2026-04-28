@@ -14,8 +14,8 @@ from datetime import datetime
 from typing import Any, Callable
 
 from .config import MarketDiscoveryConfig, SportConfig
-from .polymarket_scraper import PolymarketScraper, MatchEvent as PolymarketMatch
-from .orbitexch_scraper import OrbitExchScraper, MatchEvent as OrbitExchMatch
+from nautilus_trader.adapters.polymarket.scraper import PolymarketScraper, MatchEvent as PolymarketMatch
+from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper, MatchEvent as OrbitExchMatch
 
 
 @dataclass
@@ -134,7 +134,6 @@ class DiscoveryService:
                 config=self.config.venues.polymarket,
                 logger=self._log,
             )
-            await self._polymarket_scraper.start_browser()
 
         if self.config.venues.orbitexch.enabled:
             self._orbitexch_scraper = OrbitExchScraper(
@@ -145,9 +144,8 @@ class DiscoveryService:
 
     async def _close_scrapers(self) -> None:
         """关闭抓取器"""
-        if self._polymarket_scraper:
-            await self._polymarket_scraper.close_browser()
-            self._polymarket_scraper = None
+        # Polymarket scraper 仅使用 HTTP API，无浏览器需关闭
+        self._polymarket_scraper = None
 
         if self._orbitexch_scraper:
             await self._orbitexch_scraper.close_browser()

@@ -14,7 +14,7 @@ from .position import PositionManager, MatchPosition
 from src.arbitrage.services.execution.messages import SessionCompleteMessage
 from src.arbitrage.services.execution.topics import SESSION_COMPLETE_TOPIC_PATTERN
 from src.arbitrage.services.execution.cleanup import PostSessionCleanup
-from src.arbitrage.services.execution.polymarket_contract import PolymarketContractService
+from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
 from src.arbitrage.services.execution.config import ExecutionConfig
 from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.odds_subscription.messages import PairActivityMessage

@@ -34,8 +34,8 @@ from .models import (
     CancelResult,
     Venue,
 )
-from .polymarket_executor import PolymarketExecutor
-from .orbitexch_executor import OrbitExchExecutor
+from nautilus_trader.adapters.polymarket.executor import PolymarketExecutor
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
 from .orchestrator import ExecutionOrchestrator
 from .session import ExecutionSession
 from .mock_exchange import MockExchange

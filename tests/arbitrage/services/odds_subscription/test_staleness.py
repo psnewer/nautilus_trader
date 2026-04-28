@@ -16,7 +16,7 @@ import pytest
 from src.arbitrage.services.market_matching.service import MatchedPair
 from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
 from src.arbitrage.services.odds_subscription.service import OddsSubscriptionService
-from src.arbitrage.services.odds_subscription.orbitexch_client import OrbitExchOddsClient
+from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
 
 
 # =========================================================================

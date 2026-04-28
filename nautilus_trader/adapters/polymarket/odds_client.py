@@ -38,7 +38,7 @@ except ImportError:
     HAS_CLOB_CLIENT = False
     ClobClient = None
 
-from .config import OddsSubscriptionConfig
+from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 
 
 @dataclass

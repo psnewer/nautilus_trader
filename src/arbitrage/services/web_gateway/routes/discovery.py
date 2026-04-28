@@ -159,7 +159,7 @@ async def _run_discovery(venue: str | None = None):
 
 async def _discover_polymarket(config):
     """执行 Polymarket 发现"""
-    from src.arbitrage.services.market_discovery.polymarket_scraper import (
+    from nautilus_trader.adapters.polymarket.scraper import (
         PolymarketScraper,
     )
 
@@ -167,41 +167,37 @@ async def _discover_polymarket(config):
 
     scraper = PolymarketScraper(config.venues.polymarket)
 
-    try:
-        # 获取目标 sports 和 competitions
-        target_sports = [s.sport for s in config.venues.polymarket.sports]
-        target_competitions = []
-        for s in config.venues.polymarket.sports:
-            target_competitions.extend(s.competitions)
+    # 获取目标 sports 和 competitions
+    target_sports = [s.sport for s in config.venues.polymarket.sports]
+    target_competitions = []
+    for s in config.venues.polymarket.sports:
+        target_competitions.extend(s.competitions)
 
-        events = await scraper.discover_events(
-            target_sports=target_sports if target_sports else None,
-            target_competitions=target_competitions if target_competitions else None,
+    events = await scraper.discover_events(
+        target_sports=target_sports if target_sports else None,
+        target_competitions=target_competitions if target_competitions else None,
+    )
+
+    # 转换为 DiscoveryResult
+    results = [
+        DiscoveryResult(
+            venue="polymarket",
+            sport=e.sport,
+            competition=e.competition,
+            home_team=e.home_team,
+            away_team=e.away_team,
+            event_id=e.event_id,
         )
+        for e in events
+    ]
 
-        # 转换为 DiscoveryResult
-        results = [
-            DiscoveryResult(
-                venue="polymarket",
-                sport=e.sport,
-                competition=e.competition,
-                home_team=e.home_team,
-                away_team=e.away_team,
-                event_id=e.event_id,
-            )
-            for e in events
-        ]
-
-        app_state.set_polymarket_events(results)
-        _log.info(f"Discovered {len(results)} Polymarket events")
-
-    finally:
-        await scraper.close_browser()
+    app_state.set_polymarket_events(results)
+    _log.info(f"Discovered {len(results)} Polymarket events")
 
 
 async def _discover_orbitexch(config):
     """执行 OrbitExch 发现"""
-    from src.arbitrage.services.market_discovery.orbitexch_scraper import (
+    from nautilus_trader.adapters.orbitexch.discovery_scraper import (
         OrbitExchScraper,
     )
 

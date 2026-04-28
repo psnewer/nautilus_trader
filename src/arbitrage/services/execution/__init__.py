@@ -31,8 +31,8 @@ from .models import (
     CancelResult,
 )
 from .service import ExecutionService
-from .polymarket_executor import PolymarketExecutor
-from .orbitexch_executor import OrbitExchExecutor
+from nautilus_trader.adapters.polymarket.executor import PolymarketExecutor
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
 from .session import (
     ExecutionSession,
     SessionPhase,

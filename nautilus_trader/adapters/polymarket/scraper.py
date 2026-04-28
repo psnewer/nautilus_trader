@@ -1,12 +1,9 @@
 """
 Polymarket 市场发现抓取器
 
-功能：
-1. 从 polymarket.com/sports 抓取 sport-competition 映射
-2. 从 Gamma API 获取 events 并解析队名
+从 Gamma API 获取 events 并解析队名。
 """
 
-import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -14,21 +11,7 @@ from typing import Any
 
 import httpx
 
-try:
-    from playwright.async_api import Browser, BrowserContext, Page, async_playwright
-except ImportError:
-    raise ImportError(
-        "Playwright is required. Install with: pip install playwright && playwright install chromium"
-    )
-
-from .config import PolymarketVenueConfig
-
-
-@dataclass
-class SportCompetitionMapping:
-    """Sport-Competition 映射"""
-    sport: str
-    competition: str
+from src.arbitrage.common.venue_configs import PolymarketVenueConfig
 
 
 @dataclass
@@ -47,11 +30,8 @@ class PolymarketScraper:
     """
     Polymarket 抓取器
 
-    使用 Playwright 获取 sport-competition 映射，
     使用 Gamma API 获取事件数据。
     """
-
-    SPORTS_PAGE_URL = "https://polymarket.com/sports"
 
     def __init__(
         self,
@@ -60,144 +40,6 @@ class PolymarketScraper:
     ):
         self.config = config
         self._log = logger or logging.getLogger(self.__class__.__name__)
-
-        self._playwright = None
-        self._browser: Browser | None = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
-
-        # sport-competition 映射缓存
-        self._mapping_cache: list[SportCompetitionMapping] = []
-
-    # =========================================================================
-    # Playwright 生命周期
-    # =========================================================================
-
-    async def start_browser(self) -> None:
-        """启动浏览器"""
-        self._log.info("Starting Playwright browser for Polymarket...")
-
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.config.browser.headless,
-            channel="chrome",  # 使用系统 Chrome，避免 bundled Chromium 崩溃
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-        )
-        self._context = await self._browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        )
-        self._page = await self._context.new_page()
-        self._page.set_default_timeout(self.config.browser.timeout_ms)
-
-        self._log.info("Browser started successfully")
-
-    async def close_browser(self) -> None:
-        """关闭浏览器"""
-        self._log.info("Closing Playwright browser...")
-
-        if self._page:
-            await self._page.close()
-        if self._context:
-            await self._context.close()
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
-
-        self._log.info("Browser closed")
-
-    # =========================================================================
-    # Sport-Competition 映射抓取
-    # =========================================================================
-
-    async def scrape_sport_competition_mapping(self) -> list[SportCompetitionMapping]:
-        """
-        从 polymarket.com/sports 抓取 sport-competition 映射
-
-        规则（来自 requirements.md）：
-        - group/sports-item 的 div 下有两个 div
-        - 第一个 div 的属性值为 sport
-        - 第二个 div 的属性值为 competition
-
-        Returns:
-            sport-competition 映射列表
-        """
-        if not self._page:
-            await self.start_browser()
-
-        self._log.info(f"Navigating to {self.SPORTS_PAGE_URL}...")
-
-        try:
-            await self._page.goto(self.SPORTS_PAGE_URL, wait_until="networkidle")
-            await asyncio.sleep(2)  # 等待动态内容加载
-
-            # 使用 JavaScript 提取映射
-            mappings = await self._page.evaluate("""() => {
-                const results = [];
-
-                // 查找 sports-item 容器
-                const sportsItems = document.querySelectorAll('[class*="sports-item"], [class*="group"]');
-
-                sportsItems.forEach(item => {
-                    const divs = item.querySelectorAll(':scope > div');
-
-                    if (divs.length >= 2) {
-                        const sport = divs[0].textContent?.trim() || '';
-                        const competition = divs[1].textContent?.trim() || '';
-
-                        if (sport && competition) {
-                            results.push({ sport, competition });
-                        }
-                    }
-                });
-
-                // 备用方案：查找具有特定结构的元素
-                if (results.length === 0) {
-                    document.querySelectorAll('a[href*="/sports/"]').forEach(link => {
-                        const href = link.getAttribute('href') || '';
-                        const match = href.match(/\\/sports\\/([^/]+)\\/([^/]+)/);
-                        if (match) {
-                            results.push({
-                                sport: match[1].replace(/-/g, ' '),
-                                competition: match[2].replace(/-/g, ' ')
-                            });
-                        }
-                    });
-                }
-
-                return results;
-            }""")
-
-            self._mapping_cache = [
-                SportCompetitionMapping(sport=m["sport"], competition=m["competition"])
-                for m in mappings
-            ]
-
-            self._log.info(f"Found {len(self._mapping_cache)} sport-competition mappings")
-            return self._mapping_cache
-
-        except Exception as e:
-            self._log.error(f"Failed to scrape sport-competition mapping: {e}")
-            return []
-
-    def get_sport_for_competition(self, competition: str) -> str | None:
-        """根据 competition 查找对应的 sport"""
-        from src.arbitrage.common.utils import select_best_match
-
-        competition_list = [m.competition for m in self._mapping_cache]
-        matched = select_best_match(competition_list, competition)
-
-        if matched:
-            for m in self._mapping_cache:
-                if m.competition == matched:
-                    return m.sport
-
-        return None
 
     # =========================================================================
     # Gamma API 事件抓取
@@ -505,43 +347,3 @@ class PolymarketScraper:
 
         self._log.info(f"Discovered {len(events)} match events from Polymarket")
         return events
-
-    def _find_competition(
-        self,
-        tags: list,
-        series: dict | None,
-    ) -> str | None:
-        """
-        查找 competition
-
-        规则：
-        1. 先从 tags 中找在 mapping 缓存中出现的
-        2. 如果没找到，从 series.title 获取
-        3. 如果没有 series，返回 None
-
-        Args:
-            tags: event 的 tags
-            series: event 的 series 信息
-
-        Returns:
-            competition 名称或 None
-        """
-        from src.arbitrage.common.utils import select_best_match
-
-        # 从 tags 查找
-        known_competitions = [m.competition for m in self._mapping_cache]
-        for tag in tags:
-            # tag 可能是 dict 或 str
-            if isinstance(tag, dict):
-                tag_name = tag.get("name") or tag.get("label") or str(tag)
-            else:
-                tag_name = str(tag)
-            matched = select_best_match(known_competitions, tag_name)
-            if matched:
-                return matched
-
-        # 从 series 获取
-        if series:
-            return series.get("title")
-
-        return None

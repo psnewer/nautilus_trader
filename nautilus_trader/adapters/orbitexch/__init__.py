@@ -24,11 +24,21 @@ from nautilus_trader.adapters.orbitexch.config_loader import (
     create_exec_client_config,
     load_config,
 )
+from nautilus_trader.adapters.orbitexch.discovery_scraper import (
+    MatchEvent as OrbitExchMatchEvent,
+)
+from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
+from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
 
 
 __all__ = [
     "OrbitExchDataClientConfig",
     "OrbitExchExecClientConfig",
+    "OrbitExchExecutor",
+    "OrbitExchMatchEvent",
+    "OrbitExchOddsClient",
+    "OrbitExchScraper",
     "create_data_client_config",
     "create_exec_client_config",
     "load_config",

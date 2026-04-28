@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from src.arbitrage.services.odds_subscription.config import OddsSubscriptionConfig
+from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 
 # 尝试导入 relayer 客户端
 try:

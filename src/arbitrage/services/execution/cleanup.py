@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .config import ExecutionConfig
-from .polymarket_contract import PolymarketContractService, TxResult
+from nautilus_trader.adapters.polymarket.contract import PolymarketContractService, TxResult
 
 
 @dataclass

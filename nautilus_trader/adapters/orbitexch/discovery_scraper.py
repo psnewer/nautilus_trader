@@ -7,7 +7,7 @@ OrbitExch 市场发现抓取器
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 try:
     from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -17,7 +17,7 @@ except ImportError:
         "Playwright is required. Install with: pip install playwright && playwright install chromium"
     )
 
-from .config import OrbitExchVenueConfig, SportConfig
+from src.arbitrage.common.venue_configs import OrbitExchVenueConfig, SportConfig
 
 
 @dataclass

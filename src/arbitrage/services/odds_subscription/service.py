@@ -13,8 +13,8 @@ from src.arbitrage.services.market_matching.service import MatchedPair
 
 from .config import OddsSubscriptionConfig
 from .messages import OddsUpdateMessage, MatchStatusMessage, PairActivityMessage
-from .orbitexch_client import OrbitExchOddsClient
-from .polymarket_client import PolymarketOddsClient
+from nautilus_trader.adapters.orbitexch.odds_client import OrbitExchOddsClient
+from nautilus_trader.adapters.polymarket.odds_client import PolymarketOddsClient
 from .topics import (
     odds_topic,
     match_status_topic,

@@ -19,7 +19,7 @@ from typing import Callable
 from playwright.async_api import async_playwright, Page, Browser, CDPSession
 
 
-from .config import OddsSubscriptionConfig
+from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 
 
 class OrbitExchOddsClient:

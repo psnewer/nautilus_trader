@@ -17,7 +17,7 @@ from src.arbitrage.services.market_discovery.config import (
     PolymarketVenueConfig,
     SportConfig,
 )
-from src.arbitrage.services.market_discovery.polymarket_scraper import (
+from nautilus_trader.adapters.polymarket.scraper import (
     PolymarketScraper,
 )
 
