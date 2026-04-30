@@ -6,11 +6,11 @@
       "value": -10
     },
     "polymarket_price": {
-      "enabled": false,
+      "enabled": true,
       "value": 0.01
     },
     "orbitexch_price": {
-      "enabled": false,
+      "enabled": true,
       "value": 100
     },
     "polymarket_size": {
@@ -27,6 +27,10 @@
     },
     "skip_execution": {
       "enabled": false,
+      "value": true
+    },
+    "skip_check_size": {
+      "enabled": true,
       "value": true
     },
     "use_mock_exchange": {

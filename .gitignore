@@ -82,6 +82,9 @@ env/
 *tmp/
 *temp/
 
+# Arbitrage testing
+test_runs/
+
 # System and editor specific
 .DS_Store
 .null-ls*

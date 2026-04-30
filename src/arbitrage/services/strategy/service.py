@@ -287,6 +287,19 @@ class StrategyService:
             context.away_team,
         )
 
+        # Debug 覆盖：strategy_name 激活时强制使用单一策略（用于测试切换策略）
+        try:
+            from src.arbitrage.services.debug import debug_manager
+            if debug_manager.is_override_active("strategy_name"):
+                forced = debug_manager.get_override("strategy_name")
+                if forced and self._config.get_strategy(forced):
+                    strategies = [forced]
+                    self._log.debug(f"Strategy override: forced={forced}")
+                elif forced:
+                    self._log.warning(f"Strategy override {forced} not in config, ignoring")
+        except ImportError:
+            pass
+
         # 初始化结果缓存
         if pair_id not in self._signal_results:
             self._signal_results[pair_id] = {}
@@ -521,7 +534,10 @@ class StrategyService:
         adjusted_share = adjust_share_by_liquidity(share, legs_info, fx=self._fx)
 
         if adjusted_share is None:
-            self._log.info(f"Size check failed for {pair_id}: below minimum after adjustment")
+            self._log.info(
+                f"Size check failed for {pair_id}: below minimum after adjustment, "
+                f"share={share}, fx={self._fx}, legs={legs_info}"
+            )
         elif adjusted_share < share:
             self._log.info(
                 f"Size scaled for {pair_id}: share {share} → {adjusted_share:.2f} "
@@ -591,13 +607,24 @@ class StrategyService:
             return False
 
         # ---- Size 可用性检查 ----
-        adjusted_share = self._check_and_adjust_size(pair_id, best_direction)
-        if adjusted_share is None:
-            self._log.warning(
-                f"Opportunity rejected: insufficient market size for {pair_id} "
-                f"(skipped)"
-            )
-            return False
+        # debug 覆盖 skip_check_size 激活时绕过（用于测试下单链路）
+        try:
+            from src.arbitrage.services.debug import debug_manager
+            skip_size = debug_manager.is_override_active("skip_check_size")
+        except ImportError:
+            skip_size = False
+
+        if skip_size:
+            adjusted_share = self._share
+            self._log.debug(f"skip_check_size active, using share={self._share} for {pair_id}")
+        else:
+            adjusted_share = self._check_and_adjust_size(pair_id, best_direction)
+            if adjusted_share is None:
+                self._log.warning(
+                    f"Opportunity rejected: insufficient market size for {pair_id} "
+                    f"(skipped)"
+                )
+                return False
 
         # ---- 余额门控检查 ----
         if self._risk_service:

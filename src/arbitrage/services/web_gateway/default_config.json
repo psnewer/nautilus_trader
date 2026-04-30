@@ -7,12 +7,6 @@
         "enabled": true,
         "sports": [
           {
-            "sport": "Soccer",
-            "competitions": [
-              "epl"
-            ]
-          },
-          {
             "sport": "Tennis",
             "competitions": [
               "atp"
@@ -24,15 +18,9 @@
         "enabled": true,
         "sports": [
           {
-            "sport": "Soccer",
-            "competitions": [
-              "English Premier League"
-            ]
-          },
-          {
             "sport": "Tennis",
             "competitions": [
-              "ATP Monte Carlo 2026"
+              "ATP Madrid 2026"
             ]
           }
         ]
@@ -46,7 +34,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "atp": "ATP",
-      "ATP Monte Carlo 2026": "ATP"
+      "ATP Madrid 2026": "ATP"
     },
     "competition_max_matches": {
       "English Premier League": 0,
@@ -97,7 +85,7 @@
     "default_order_type": "GTC",
     "discount": 1.0,
     "take_off": 0.0,
-    "market_order_enabled": true,
+    "market_order_enabled": false,
     "tracking_timeout_sec": 30.0,
     "tracking_check_interval_sec": 5.0,
     "max_failure_retries": 5,

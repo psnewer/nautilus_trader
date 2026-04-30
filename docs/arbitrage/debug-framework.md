@@ -112,6 +112,7 @@ debug_manager.set_override("polymarket_price", enabled=True, value=0.01)
 
 | 名称 | 描述 | 默认值 | 用途 |
 |------|------|--------|------|
+| `strategy_name` | 覆盖默认策略名 | "default" | 测试时切换策略 (如 max-rebate) |
 | `min_rebate_rate` | 最小返水率 | -10.0 | 设为负数强制触发套利 |
 | `force_opportunity` | 强制生成机会 | true | 忽略赔率计算 |
 
@@ -284,5 +285,104 @@ orders = debug_manager.get_or_default(
     "conditions": {"venue": "polymarket"}
   }
 }
-``` 
+```
+
+---
+
+# 场景测试框架 (TestScenario)
+
+## 概述
+
+`src/arbitrage/testing/` 是一套声明式的场景化实盘/模拟盘测试框架。一个测试场景包含：
+- 部分覆盖 `debug_config.json` 默认值
+- 切换策略（也作为参数）
+- 通过日志驱动的退出条件（成功 / 失败 / 超时）
+- 自动监控运行时日志，结果落 `test_runs/<timestamp>_<name>.json`
+
+## 核心组件
+
+| 组件 | 路径 | 作用 |
+|------|------|------|
+| `TestScenario` | `testing/scenario.py` | 声明式描述一次测试 |
+| `LogMonitor` | `testing/monitor.py` | 注册 logging.Handler，捕获所有日志 |
+| 退出条件原语 | `testing/conditions.py` | `LogMatch` / `AllOf` / `AnyOf` / `Sequence` / `Negate` |
+| `ScenarioRunner` | `testing/runner.py` | 启动 web_gateway, 评估退出, 出报告 |
+
+## 退出条件原语
+
+| 原语 | 说明 |
+|------|------|
+| `LogMatch(logger=None, level=None, contains=None, pattern=None)` | 匹配单行日志 |
+| `AllOf(*conds)` | 所有子条件都满足（顺序无关） |
+| `AnyOf(*conds)` | 任一子条件满足 |
+| `Sequence(*conds)` | 顺序匹配（A 满足后才考虑 B） |
+| `Negate(cond)` | 反向（用于"不应出现"，配合超时使用） |
+
+## 场景定义
+
+```python
+from src.arbitrage.testing.conditions import AllOf, AnyOf, LogMatch, Sequence
+from src.arbitrage.testing.scenario import TestScenario
+
+
+class PlaceAndCancelScenario(TestScenario):
+    name = "place_and_cancel"
+    description = "下单 -> 撤单 -> 退出"
+
+    # 部分覆盖 debug_config（缺省字段保持默认）
+    debug_overrides = {
+        "polymarket_price": (True, 0.01),
+        "orbitexch_price":  (True, 100.0),
+        "polymarket_size":  (True, 5),
+        "orbitexch_size":   (True, 7),
+        "min_rebate_rate":  (True, -10.0),
+    }
+
+    # 切策略 == debug_overrides["strategy_name"]
+    strategy = "max-rebate"
+
+    # 成功：两边下单 -> 两边撤单
+    success = Sequence(
+        AllOf(
+            LogMatch(logger="PolymarketExecutor", level="INFO", contains="Order placed"),
+            LogMatch(logger="OrbitExchExecutor",  level="INFO", contains="Order placed"),
+        ),
+        AllOf(
+            LogMatch(logger="PolymarketExecutor", level="INFO", contains="Order cancelled"),
+            LogMatch(logger="OrbitExchExecutor",  level="INFO", contains="Order cancelled"),
+        ),
+    )
+
+    # 失败：任一 executor ERROR
+    failure = AnyOf(
+        LogMatch(logger="PolymarketExecutor", level="ERROR", contains="Failed to place order"),
+        LogMatch(logger="OrbitExchExecutor",  level="ERROR", contains="Failed to place order"),
+    )
+
+    timeout_sec = 300.0
+```
+
+## 运行
+
+```bash
+python -m src.arbitrage.testing --scenario place_and_cancel
+# 可选: --debug-config / --host / --port / --report-dir
+```
+
+退出码:
+| 码 | 含义 |
+|----|------|
+| 0 | PASS |
+| 1 | FAIL |
+| 2 | TIMEOUT |
+
+## 报告
+
+每次运行落到 `test_runs/<timestamp>_<name>.json`，包含:
+- 场景元信息、outcome、耗时
+- 应用了哪些 debug 覆盖
+- 成功 / 失败条件树（命中事件）
+- 关键事件（命中事件 + 所有 WARNING/ERROR 日志）
+
+终端会同时打印一份精简版供肉眼查看。
 

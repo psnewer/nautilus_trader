@@ -154,6 +154,12 @@ class DebugConfig:
         """默认覆盖配置"""
         return {
             # 策略相关
+            "strategy_name": DebugOverride(
+                name="strategy_name",
+                description="覆盖默认策略名 (如 default / max-rebate)",
+                target=OverrideTarget.STRATEGY,
+                value="default",
+            ),
             "min_rebate_rate": DebugOverride(
                 name="min_rebate_rate",
                 description="最小返水率 (设为负数强制触发)",
@@ -201,6 +207,12 @@ class DebugConfig:
                 name="skip_execution",
                 description="跳过实际执行 (仅记录)",
                 target=OverrideTarget.EXECUTION,
+                value=True,
+            ),
+            "skip_check_size": DebugOverride(
+                name="skip_check_size",
+                description="跳过策略层市场流动性 / 最小 size 检查",
+                target=OverrideTarget.STRATEGY,
                 value=True,
             ),
             "use_mock_exchange": DebugOverride(

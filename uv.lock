@@ -1606,6 +1606,7 @@ ib = [
     { name = "protobuf", marker = "python_full_version < '3.14'" },
 ]
 polymarket = [
+    { name = "py-builder-relayer-client" },
     { name = "py-clob-client" },
 ]
 visualization = [
@@ -1661,6 +1662,7 @@ requires-dist = [
     { name = "plotly", marker = "extra == 'visualization'", specifier = ">=6.7.0,<7.0.0" },
     { name = "portion", specifier = ">=2.6.1" },
     { name = "protobuf", marker = "python_full_version < '3.14' and extra == 'ib'", specifier = "==5.29.5" },
+    { name = "py-builder-relayer-client", marker = "extra == 'polymarket'", specifier = ">=0.0.1,<1.0.0" },
     { name = "py-clob-client", marker = "extra == 'polymarket'", specifier = ">=0.34.6,<1.0.0" },
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pytz", specifier = ">=2026.1.0" },
@@ -2114,6 +2116,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc", size = 148266, upload-time = "2026-01-28T18:15:31.597Z" },
     { url = "https://files.pythonhosted.org/packages/b4/90/e2159492b5426be0c1fef7acba807a03511f97c5f86b3caeda6ad92351a7/psutil-7.2.2-cp37-abi3-win_amd64.whl", hash = "sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988", size = 137737, upload-time = "2026-01-28T18:15:33.849Z" },
     { url = "https://files.pythonhosted.org/packages/8c/c7/7bb2e321574b10df20cbde462a94e2b71d05f9bbda251ef27d104668306a/psutil-7.2.2-cp37-abi3-win_arm64.whl", hash = "sha256:8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee", size = 134617, upload-time = "2026-01-28T18:15:36.514Z" },
+]
+
+[[package]]
+name = "py-builder-relayer-client"
+version = "0.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "py-builder-signing-sdk" },
+    { name = "python-dotenv" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/f1/25a5bb3a4ccf1084430986871aaff71f1e1455cd10b529a1d2498b7ec9f1/py_builder_relayer_client-0.0.1.tar.gz", hash = "sha256:4cbf7bf070912b34c8b80aaf50a35a88300a44fe6416d2a5d6a7b107a140262c", size = 12835, upload-time = "2025-10-30T12:30:38.343Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/3d/afceb6ccab7514a9806eff4c396a13d231b2bee87098e1ece26792f26689/py_builder_relayer_client-0.0.1-py3-none-any.whl", hash = "sha256:3e69a8aacceca86edd6d16389b3bf436adbc0f56fd0d585e4083e133731f7e3b", size = 19725, upload-time = "2025-10-30T12:30:36.922Z" },
 ]
 
 [[package]]
