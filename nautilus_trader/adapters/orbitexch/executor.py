@@ -322,6 +322,7 @@ class OrbitExchExecutor:
             撤单结果
         """
         if not page and not self._pages:
+            self._log.error(f"Cancel failed: no page available (order={order.order_id})")
             return CancelResult(
                 success=False,
                 order_id=order.order_id,
@@ -332,6 +333,7 @@ class OrbitExchExecutor:
             page = next(iter(self._pages.values()))
 
         if not order.venue_order_id:
+            self._log.error(f"Cancel failed: no venue_order_id (order={order.order_id})")
             return CancelResult(
                 success=False,
                 order_id=order.order_id,
@@ -342,6 +344,10 @@ class OrbitExchExecutor:
             self._log.info(f"Cancelling order: {order.venue_order_id}")
 
             if not order.market_id:
+                self._log.error(
+                    f"Cancel failed: missing market_id "
+                    f"(order={order.order_id}, venue_order_id={order.venue_order_id})"
+                )
                 return CancelResult(
                     success=False,
                     order_id=order.order_id,
@@ -349,7 +355,22 @@ class OrbitExchExecutor:
                     message="Missing market_id for cancel",
                 )
 
-            cookies = await page.context.cookies()
+            self._log.info(f"[cancel-stage] 1/4 fetching cookies (order={order.venue_order_id})")
+            try:
+                cookies = await asyncio.wait_for(page.context.cookies(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self._log.error(
+                    f"[cancel-stage] 1/4 page.context.cookies() timed out after 5s "
+                    f"(order={order.venue_order_id}, market={order.market_id}). "
+                    f"Likely cause: browser CDP unresponsive after page refresh."
+                )
+                return CancelResult(
+                    success=False,
+                    order_id=order.order_id,
+                    venue_order_id=order.venue_order_id,
+                    message="page.context.cookies() timeout (5s)",
+                )
+            self._log.info(f"[cancel-stage] 2/4 cookies fetched, count={len(cookies)}")
             cookie_names = {
                 "BIAB_AN",
                 "BIAB_LANGUAGE",
@@ -379,48 +400,96 @@ class OrbitExchExecutor:
                     break
 
             if not csrf_token:
+                self._log.error(f"[cancel-stage] 3/4 CSRF token not found in cookies")
                 return CancelResult(
                     success=False,
                     order_id=order.order_id,
                     venue_order_id=order.venue_order_id,
                     message="CSRF token not found",
                 )
+            self._log.info(f"[cancel-stage] 3/4 CSRF token OK (len={len(csrf_token)})")
 
-            response = await page.evaluate(
-                """async (payload) => {
-                    try {
-                        const response = await fetch('/customer/api/cancelBets', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json, text/plain, */*',
-                                'x-csrf-token': payload.csrfToken,
-                                'x-device': 'DESKTOP',
-                                'Origin': window.location.origin,
-                                'Referer': window.location.href,
-                                'Cookie': payload.cookieHeader,
-                            },
-                            body: JSON.stringify(payload.body),
-                            credentials: 'include',
-                        });
-                        return await response.json();
-                    } catch (error) {
-                        return { error: error.message };
-                    }
-                }""",
-                {
-                    "csrfToken": csrf_token,
-                    "cookieHeader": cookie_header,
-                    "body": {
-                        order.market_id: [
-                            {
-                                "offerId": order.venue_order_id,
-                                "betType": "EXCHANGE",
+            self._log.info(f"[cancel-stage] 4/4 entering page.evaluate")
+            try:
+                response = await asyncio.wait_for(
+                    page.evaluate(
+                        """async (payload) => {
+                            const trace = [];
+                            trace.push({s: 'start', t: Date.now()});
+                            try {
+                                trace.push({s: 'before-fetch', t: Date.now()});
+                                const response = await fetch('/customer/api/cancelBets', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Accept': 'application/json, text/plain, */*',
+                                        'x-csrf-token': payload.csrfToken,
+                                        'x-device': 'DESKTOP',
+                                        'Origin': window.location.origin,
+                                        'Referer': window.location.href,
+                                        'Cookie': payload.cookieHeader,
+                                    },
+                                    body: JSON.stringify(payload.body),
+                                    credentials: 'include',
+                                });
+                                trace.push({
+                                    s: 'after-fetch',
+                                    status: response.status,
+                                    ct: response.headers.get('content-type'),
+                                    t: Date.now(),
+                                });
+                                const text = await response.text();
+                                trace.push({s: 'after-text', len: text.length, t: Date.now()});
+                                try {
+                                    const json = JSON.parse(text);
+                                    trace.push({s: 'json-ok', t: Date.now()});
+                                    return Object.assign({}, json, {_trace: trace});
+                                } catch (e) {
+                                    trace.push({s: 'json-fail', err: e.message, t: Date.now()});
+                                    return {
+                                        error: 'json_parse_failed: ' + e.message,
+                                        _trace: trace,
+                                        _raw_sample: text.slice(0, 500),
+                                    };
+                                }
+                            } catch (error) {
+                                trace.push({s: 'fetch-error', err: error.message, t: Date.now()});
+                                return {error: error.message, _trace: trace};
                             }
-                        ]
-                    },
-                },
-            )
+                        }""",
+                        {
+                            "csrfToken": csrf_token,
+                            "cookieHeader": cookie_header,
+                            "body": {
+                                order.market_id: [
+                                    {
+                                        "offerId": order.venue_order_id,
+                                        "betType": "EXCHANGE",
+                                    }
+                                ]
+                            },
+                        },
+                    ),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                self._log.error(
+                    f"Cancel page.evaluate timed out after 10s: "
+                    f"order={order.venue_order_id}, market={order.market_id}"
+                )
+                return CancelResult(
+                    success=False,
+                    order_id=order.order_id,
+                    venue_order_id=order.venue_order_id,
+                    message="page.evaluate timeout (10s)",
+                )
+
+            if response and isinstance(response, dict) and "_trace" in response:
+                self._log.info(f"Cancel trace: {response.get('_trace')}")
+                if response.get("_raw_sample"):
+                    self._log.warning(
+                        f"Cancel response not JSON, raw sample: {response.get('_raw_sample')!r}"
+                    )
 
             if response and not response.get("error"):
                 order.status = OrderStatus.CANCELLED

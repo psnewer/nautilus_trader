@@ -897,12 +897,6 @@ class OddsSubscriptionService:
             return []
         return self._polymarket_client.get_current_orders()
 
-    async def wait_for_polymarket_positions(self, timeout: float) -> bool:
-        """等待 Polymarket 首次 positions 到达"""
-        if not self._polymarket_client:
-            return False
-        return await self._polymarket_client.wait_for_positions(timeout)
-
     def get_orbitexch_bets(self, pair_id: str | None = None) -> list:
         """
         获取 OrbitExch 当前订单
@@ -941,12 +935,6 @@ class OddsSubscriptionService:
         if not self._orbitexch_client:
             return []
         return self._orbitexch_client.get_active_orders()
-
-    async def wait_for_orbitexch_current_bets(self, timeout: float) -> bool:
-        """等待 OrbitExch 首次 CURRENT_BETS 到达"""
-        if not self._orbitexch_client:
-            return False
-        return await self._orbitexch_client.wait_for_current_bets(timeout)
 
     @staticmethod
     def _use_mock_exchange() -> bool:

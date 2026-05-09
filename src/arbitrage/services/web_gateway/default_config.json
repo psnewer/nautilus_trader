@@ -20,7 +20,7 @@
           {
             "sport": "Tennis",
             "competitions": [
-              "ATP Madrid 2026"
+              "ATP Rome 2026"
             ]
           }
         ]
@@ -34,7 +34,7 @@
     "competition_aliases": {
       "epl": "English Premier League",
       "atp": "ATP",
-      "ATP Madrid 2026": "ATP"
+      "ATP Rome 2026": "ATP"
     },
     "competition_max_matches": {
       "English Premier League": 0,

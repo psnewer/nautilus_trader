@@ -1118,24 +1118,15 @@ class AppState:
         """
         加载历史持仓到风控服务
 
-        在赔率订阅完成后调用，从 API 获取历史持仓数据。
+        必须在 ``run_initial_health_check`` 之后调用：那一步同时完成了 OE 首次开页
+        （CURRENT_BETS 推送已到达）和 PM 主动 fetch（positions + open orders 已填入缓存），
+        本方法只读取已就绪的缓存并构建 risk position manager。
 
         Returns:
             {"polymarket": count, "orbitexch": count}
         """
         odds_service = self.get_odds_service()
         risk_service = self.get_risk_service()
-
-        # 等待 Polymarket positions 到达
-        if not await odds_service.wait_for_polymarket_positions(timeout=30.0):
-            self._log.warning("Polymarket positions not received within timeout")
-
-        # 等待 OrbitExch CURRENT_BETS 到达
-        if not await odds_service.wait_for_orbitexch_current_bets(timeout=30.0):
-            self._log.warning("OrbitExch CURRENT_BETS not received within timeout")
-
-        # 重新 fetch positions（此时 tokens 已订阅，event_id/market_type 可正确填充）
-        await odds_service.refresh_all_positions_and_orders()
 
         # 获取映射数据
         mappings = odds_service.get_position_mappings()
@@ -1144,21 +1135,14 @@ class AppState:
         polymarket_positions = odds_service.get_polymarket_positions()
         orbitexch_bets = odds_service.get_orbitexch_bets()
 
-        # 加载历史持仓
-        result = risk_service.load_historical_positions(
+        # 加载历史持仓（RiskService 内部已记录权威日志）
+        return risk_service.load_historical_positions(
             polymarket_positions=polymarket_positions,
             orbitexch_bets=orbitexch_bets,
             polymarket_pair_mapping=mappings["polymarket_pair_mapping"],
             orbitexch_pair_mapping=mappings["orbitexch_pair_mapping"],
             selection_mappings=mappings["selection_mappings"],
         )
-
-        self._log.info(
-            f"Loaded historical positions: Polymarket={result['polymarket']}, "
-            f"OrbitExch={result['orbitexch']}"
-        )
-
-        return result
 
 
 # 全局状态实例

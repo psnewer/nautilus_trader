@@ -49,7 +49,10 @@ class OrbitExchOddsClient:
 
         # 订阅管理
         self._subscribed_events: dict[str, dict] = {}  # event_id -> event_info
-        self._subscribed_competitions: set[str] = set()  # 已订阅的 competition_ids
+        # page_key -> {"sport_id": str, "competition_id": str, "event_ids": list[str]}
+        # 注意：subscribe_competition 只做记账，不打开标签页；
+        # 标签页由 refresh_page 按需创建（首次开页）或刷新（已存在）。
+        self._subscribed_competitions: dict[str, dict] = {}
 
         # Selection ID 映射（从市场发现获取）
         # 使用 "market_id:selection_id" 作为键，因为 selection_id 可能在多场比赛中复用
@@ -584,86 +587,46 @@ class OrbitExchOddsClient:
         sport_id: str,
         competition_id: str,
         event_ids: list[str],
-    ) -> None:
+    ) -> bool:
         """
-        订阅 competition 的赔率
+        登记一个 competition 订阅（只做记账，不打开标签页）。
 
-        使用 CDP WebSocket 拦截获取实时赔率数据。
-        关键：必须在登录后（共享会话）才能接收到 WebSocket 数据。
+        实际的标签页打开 / 刷新 / 等待 CURRENT_BETS 由 :meth:`refresh_page` 完成
+        （通常由 Risk 服务的健康检查在 ``oe_healthy=False`` 时驱动）。
 
         Args:
             sport_id: sport ID
             competition_id: competition ID
             event_ids: 要监听的 event IDs
+
+        Returns:
+            True 表示登记成功（或已登记过）。本方法不进行 IO，不会失败。
         """
         page_key = f"{sport_id}_{competition_id}"
 
-        # 使用锁防止并行创建重复标签页
         async with self._subscribe_lock:
-            # 检查是否已订阅该 competition
             if page_key in self._subscribed_competitions:
-                self._log.info(f"Competition {competition_id} already subscribed, skipping")
-                return
+                self._log.info(f"Competition {competition_id} already registered, skipping")
+                return True
 
-            # 立即标记为已订阅，防止其他任务重复创建
-            self._subscribed_competitions.add(page_key)
+            self._subscribed_competitions[page_key] = {
+                "sport_id": sport_id,
+                "competition_id": competition_id,
+                "event_ids": list(event_ids),
+            }
+
+        for event_id in event_ids:
+            self._subscribed_events[event_id] = {
+                "sport_id": sport_id,
+                "competition_id": competition_id,
+            }
 
         self._log.info(
-            f"Subscribing to competition: sport_id={sport_id}, "
-            f"competition_id={competition_id}, events={len(event_ids)}"
+            f"Registered competition: sport_id={sport_id}, "
+            f"competition_id={competition_id}, events={len(event_ids)} "
+            f"(page open deferred to refresh_page)"
         )
-
-        url = f"{self.config.orbitexch_base_url}/customer/sport/{sport_id}/competition/{competition_id}"
-
-        try:
-            # 1. 创建新标签页
-            page = await self._context.new_page()
-            self._pages[page_key] = page
-            self._log.info(f"Created new tab for competition {competition_id}")
-
-            # 2. 【关键】在导航之前设置 CDP WebSocket 拦截
-            await self._setup_websocket_interception(page, page_key)
-
-            # 3. 导航到 competition 页面
-            self._log.info(f"Navigating to: {url}")
-            await page.goto(
-                url,
-                wait_until="networkidle",
-                timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
-            )
-
-            # 5. 注入可见性欺骗脚本（让所有比赛都接收 WebSocket 数据）
-            await self._setup_visibility_spoof(page)
-
-            # 6. 抓取页面上的比赛信息并更新 selection 映射
-            await self._refresh_selection_mapping_from_page(page)
-
-            # 7. 启动超时监控任务
-            if self._staleness_monitor_task is None or self._staleness_monitor_task.done():
-                self._staleness_monitor_task = asyncio.create_task(self._staleness_monitor_loop())
-                self._log.info("Started staleness monitor task")
-
-            # 8. 记录订阅的 events
-            for event_id in event_ids:
-                self._subscribed_events[event_id] = {
-                    "sport_id": sport_id,
-                    "competition_id": competition_id,
-                }
-
-            self._log.info(f"Subscribed to {len(event_ids)} events in competition {competition_id}")
-            self._log.info(f"Total open tabs: {len(self._pages)}")
-
-        except Exception as e:
-            # 订阅失败，清理状态以允许重试
-            self._log.error(f"Failed to subscribe competition {competition_id}: {e}")
-            self._subscribed_competitions.discard(page_key)
-            if page_key in self._pages:
-                try:
-                    await self._pages[page_key].close()
-                except Exception:
-                    pass
-                del self._pages[page_key]
-            raise
+        return True
 
     # =========================================================================
     # CDP WebSocket 拦截
@@ -1594,7 +1557,7 @@ class OrbitExchOddsClient:
             )
 
             try:
-                await self._refresh_single_page(page_key, page)
+                await self._open_or_reload_page(page_key)
             except Exception as e:
                 self._log.error(f"Error refreshing page {page_key}: {e}")
 
@@ -1916,79 +1879,152 @@ class OrbitExchOddsClient:
     # 页面刷新
     # =========================================================================
 
-    async def _refresh_single_page(self, page_key: str, page) -> None:
+    async def _open_or_reload_page(self, page_key: str) -> None:
         """
-        刷新单个页面：断开 CDP、reload、重建拦截
+        统一首次打开和刷新：
+
+        - 如果 ``_pages[page_key]`` 不存在 → ``new_page`` + ``goto`` （首次打开）
+        - 如果已存在                       → ``detach`` 旧 CDP + ``reload``  （刷新）
+
+        除 goto/reload 外，其余步骤（CDP 拦截、visibility spoof、selection 映射、
+        staleness 监控）两条路径完全一致。
 
         Args:
-            page_key: 页面标识
-            page: Playwright Page 对象
+            page_key: 页面标识，必须已在 ``_subscribed_competitions`` 中登记。
+
+        Raises:
+            Exception: 任一步骤失败抛出；``_pages`` 中残留的部分状态会被清理，
+                       订阅记录保留以便下次 :meth:`refresh_page` 重试。
         """
-        self._log.info(f"Refreshing page {page_key}...")
+        sub = self._subscribed_competitions.get(page_key)
+        if sub is None:
+            raise RuntimeError(
+                f"Cannot open/reload page {page_key}: not in _subscribed_competitions"
+            )
 
-        # 清除 OrbitExch 赔率缓存
-        self._latest_odds.clear()
-        if self._page_refresh_callback:
-            try:
-                self._page_refresh_callback()
-            except Exception as e:
-                self._log.warning(f"Page refresh callback error: {e}")
-
-        # 断开旧的 CDP 会话
-        old_cdp = self._cdp_sessions.pop(page_key, None)
-        if old_cdp:
-            try:
-                await old_cdp.detach()
-            except Exception:
-                pass
-
-        # 先设置 CDP 拦截（必须在 reload 之前，否则会错过 WebSocket 创建事件）
-        await self._setup_websocket_interception(page, page_key)
-
-        # 再刷新页面（reload 时创建的 WebSocket 会被 CDP 捕获）
-        await page.reload(
-            wait_until="networkidle",
-            timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
+        sport_id = sub["sport_id"]
+        competition_id = sub["competition_id"]
+        url = (
+            f"{self.config.orbitexch_base_url}/customer/sport/{sport_id}/competition/{competition_id}"
         )
+        timeout_ms = int(self.config.orbitexch_page_load_timeout_sec * 1000)
 
-        # reload 后再次确保 Network.enable 生效（防止 reload 重置 CDP 状态）
-        cdp = self._cdp_sessions.get(page_key)
-        if cdp:
-            try:
-                await cdp.send("Network.enable")
-                self._log.info(f"Re-enabled Network.enable after reload for {page_key}")
-            except Exception as e:
-                self._log.warning(f"Failed to re-enable Network after reload for {page_key}: {e}")
-                # CDP 会话可能已失效，重新创建
+        page = self._pages.get(page_key)
+        is_first_open = page is None
+
+        if not is_first_open:
+            # 刷新场景：先清空赔率缓存，通知上层（让 odds 立即从 UI 上消失）
+            self._latest_odds.clear()
+            if self._page_refresh_callback:
+                try:
+                    self._page_refresh_callback()
+                except Exception as e:
+                    self._log.warning(f"Page refresh callback error: {e}")
+
+            # 断开旧 CDP 会话
+            old_cdp = self._cdp_sessions.pop(page_key, None)
+            if old_cdp:
+                try:
+                    await old_cdp.detach()
+                except Exception:
+                    pass
+
+        try:
+            if is_first_open:
+                page = await self._context.new_page()
+                self._pages[page_key] = page
+                self._log.info(f"Created new tab for competition {competition_id}")
+
+            # 必须在 goto/reload 之前设置 CDP 拦截，否则会错过 WebSocket 创建事件
+            await self._setup_websocket_interception(page, page_key)
+
+            if is_first_open:
+                self._log.info(f"Navigating to: {url}")
+                await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            else:
+                self._log.info(f"Reloading page {page_key} ({url})")
+                await page.reload(wait_until="networkidle", timeout=timeout_ms)
+                # reload 可能重置 CDP 状态，重新 enable Network
+                cdp = self._cdp_sessions.get(page_key)
+                if cdp:
+                    try:
+                        await cdp.send("Network.enable")
+                    except Exception as e:
+                        self._log.warning(
+                            f"Failed to re-enable Network after reload for {page_key}: {e}"
+                        )
+                        # CDP 会话可能已失效，重新创建
+                        self._cdp_sessions.pop(page_key, None)
+                        await self._setup_websocket_interception(page, page_key)
+
+            await self._setup_visibility_spoof(page)
+            await self._refresh_selection_mapping_from_page(page)
+
+            # 启动 staleness 监控（幂等）
+            if self._staleness_monitor_task is None or self._staleness_monitor_task.done():
+                self._staleness_monitor_task = asyncio.create_task(self._staleness_monitor_loop())
+                self._log.info("Started staleness monitor task")
+
+            if is_first_open:
+                self._log.info(
+                    f"Opened competition {competition_id} (total open tabs: {len(self._pages)})"
+                )
+            else:
+                self._log.info(f"Page {page_key} refreshed")
+
+        except Exception:
+            # 首次打开失败：清理半成品 page，保留订阅记录以便下次 refresh_page 重试
+            if is_first_open and page_key in self._pages:
+                try:
+                    await self._pages[page_key].close()
+                except Exception:
+                    pass
+                self._pages.pop(page_key, None)
                 self._cdp_sessions.pop(page_key, None)
-                await self._setup_websocket_interception(page, page_key)
-                self._log.info(f"Recreated CDP session after reload for {page_key}")
+            raise
 
-        # 重新设置可见性欺骗
-        await self._setup_visibility_spoof(page)
-
-        # 重新抓取 selection 映射
-        await self._refresh_selection_mapping_from_page(page)
-
-        self._log.info(f"Page {page_key} refreshed")
-
-    async def refresh_page(self, target_page_key: str | None = None) -> None:
+    async def refresh_page(
+        self,
+        target_page_key: str | None = None,
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
         """
-        刷新订阅页面
+        打开（或刷新）已登记的 competition 页面，并等待 CURRENT_BETS 推送到达。
+
+        遍历 ``_subscribed_competitions``：每条记录如果对应 page 尚未创建则首次
+        打开（goto），已存在则刷新（reload）。两条路径合并在 :meth:`_open_or_reload_page`
+        中实现，所以"首次加载"和"页面刷新"等价。
 
         Args:
-            target_page_key: 指定刷新的页面，None 则刷新所有页面
+            target_page_key: 指定操作的 page_key（``f"{sport_id}_{competition_id}"`` ）；
+                             ``None`` 表示对所有已登记的 competition 操作。
+            timeout: 等待 CURRENT_BETS 的最长秒数。
+
+        Returns:
+            True 表示所有目标页面打开/刷新成功 **且** CURRENT_BETS 在 ``timeout`` 内到达；
+            False 表示有任一页面失败，或 CURRENT_BETS 超时未到达
+            （此时订单/仓位状态不可信，调用方应自行决定降级策略）。
         """
-        for page_key, page in list(self._pages.items()):
-            if page_key == "main":
-                continue
+        self.prepare_current_bets_refresh()
+
+        refresh_ok = True
+        for page_key in list(self._subscribed_competitions.keys()):
             if target_page_key and page_key != target_page_key:
                 continue
-
             try:
-                await self._refresh_single_page(page_key, page)
+                await self._open_or_reload_page(page_key)
             except Exception as e:
-                self._log.error(f"Failed to refresh page {page_key}: {e}")
+                self._log.error(f"Failed to open/refresh page {page_key}: {e}")
+                refresh_ok = False
+
+        received = await self.wait_for_current_bets(timeout=timeout)
+        if not received:
+            self._log.warning(
+                f"refresh_page: CURRENT_BETS not received within {timeout}s; "
+                f"order state may be stale"
+            )
+        return refresh_ok and received
 
     async def close_main_page(self) -> None:
         """

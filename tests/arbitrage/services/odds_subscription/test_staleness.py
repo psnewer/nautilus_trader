@@ -333,11 +333,11 @@ class TestOrbitExchStaleness:
         client._last_data_updates["page-1"] = now_ms - 10_000  # 10 秒前
         client._last_data_updates["page-2"] = now_ms  # 刚更新
 
-        client._refresh_single_page = AsyncMock()
+        client._open_or_reload_page = AsyncMock()
 
         _run(client._check_and_refresh_if_stale())
 
-        client._refresh_single_page.assert_called_once_with("page-1", mock_page_1)
+        client._open_or_reload_page.assert_called_once_with("page-1")
 
     def test_no_refresh_when_all_fresh(self):
         """所有页面都新鲜时不刷新"""
@@ -348,11 +348,11 @@ class TestOrbitExchStaleness:
         client._running = True
         client._last_data_updates["page-1"] = time.time() * 1000
 
-        client._refresh_single_page = AsyncMock()
+        client._open_or_reload_page = AsyncMock()
 
         _run(client._check_and_refresh_if_stale())
 
-        client._refresh_single_page.assert_not_called()
+        client._open_or_reload_page.assert_not_called()
 
     def test_skip_pages_with_no_data_yet(self):
         """从未收到数据的页面不触发刷新（初始化阶段）"""
@@ -362,11 +362,11 @@ class TestOrbitExchStaleness:
         client._pages = {"page-1": mock_page}
         client._running = True
 
-        client._refresh_single_page = AsyncMock()
+        client._open_or_reload_page = AsyncMock()
 
         _run(client._check_and_refresh_if_stale())
 
-        client._refresh_single_page.assert_not_called()
+        client._open_or_reload_page.assert_not_called()
 
     def test_main_page_skipped(self):
         """main 页面始终跳过"""
@@ -377,39 +377,42 @@ class TestOrbitExchStaleness:
         client._running = True
         client._last_data_updates["main"] = 1000.0
 
-        client._refresh_single_page = AsyncMock()
+        client._open_or_reload_page = AsyncMock()
 
         _run(client._check_and_refresh_if_stale())
 
-        client._refresh_single_page.assert_not_called()
+        client._open_or_reload_page.assert_not_called()
 
     def test_refresh_page_specific(self):
-        """refresh_page 可以只刷新指定页面"""
+        """refresh_page 可以只刷新指定页面（基于 _subscribed_competitions 登记表）"""
         client = self._make_client()
 
-        mock_page_1 = AsyncMock()
-        mock_page_2 = AsyncMock()
-        client._pages = {"page-1": mock_page_1, "page-2": mock_page_2}
-        client._refresh_single_page = AsyncMock()
+        client._subscribed_competitions = {
+            "page-1": {"sport_id": "1", "competition_id": "c1", "event_ids": []},
+            "page-2": {"sport_id": "1", "competition_id": "c2", "event_ids": []},
+        }
+        client._open_or_reload_page = AsyncMock()
+        client.wait_for_current_bets = AsyncMock(return_value=True)
 
         _run(client.refresh_page(target_page_key="page-1"))
 
-        client._refresh_single_page.assert_called_once_with("page-1", mock_page_1)
+        client._open_or_reload_page.assert_called_once_with("page-1")
 
     def test_refresh_page_all(self):
-        """refresh_page 不指定 page_key 时刷新所有非 main 页面"""
+        """refresh_page 不指定 page_key 时刷新所有已登记的 competition（main 不在登记表中）"""
         client = self._make_client()
 
-        mock_main = AsyncMock()
-        mock_page_1 = AsyncMock()
-        mock_page_2 = AsyncMock()
-        client._pages = {"main": mock_main, "page-1": mock_page_1, "page-2": mock_page_2}
-        client._refresh_single_page = AsyncMock()
+        client._subscribed_competitions = {
+            "page-1": {"sport_id": "1", "competition_id": "c1", "event_ids": []},
+            "page-2": {"sport_id": "1", "competition_id": "c2", "event_ids": []},
+        }
+        client._open_or_reload_page = AsyncMock()
+        client.wait_for_current_bets = AsyncMock(return_value=True)
 
         _run(client.refresh_page())
 
-        assert client._refresh_single_page.call_count == 2
-        call_keys = [call.args[0] for call in client._refresh_single_page.call_args_list]
+        assert client._open_or_reload_page.call_count == 2
+        call_keys = [call.args[0] for call in client._open_or_reload_page.call_args_list]
         assert "page-1" in call_keys
         assert "page-2" in call_keys
         assert "main" not in call_keys

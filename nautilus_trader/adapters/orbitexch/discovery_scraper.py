@@ -7,6 +7,7 @@ OrbitExch 市场发现抓取器
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 try:
@@ -62,6 +63,88 @@ class OrbitExchScraper:
     def _page_load_timeout_ms(self) -> int:
         """OrbitExch 页面加载超时（毫秒）。"""
         return self.config.browser.timeout_ms
+
+    async def _wait_for_sport_menu_ready(self, sport_name: str) -> bool:
+        """等待左侧 sport 菜单渲染完成。"""
+        try:
+            await self._page.wait_for_function(
+                """sportName => {
+                    const bodyText = document.body?.innerText?.toLowerCase() || '';
+                    if (bodyText.includes(sportName.toLowerCase())) {
+                        return true;
+                    }
+                    return document.querySelectorAll('[data-sport-id]').length > 0;
+                }""",
+                arg=sport_name,
+                timeout=self._page_load_timeout_ms(),
+            )
+            return True
+        except PlaywrightTimeout:
+            self._log.warning(f"Timed out waiting for sport menu: {sport_name}")
+            return False
+
+    async def _wait_for_competition_visible(self, competition_name: str) -> bool:
+        """等待目标 competition 出现在页面文本或菜单节点中。"""
+        try:
+            await self._page.wait_for_function(
+                """competitionName => {
+                    const target = competitionName.toLowerCase();
+                    const bodyText = document.body?.innerText?.toLowerCase() || '';
+                    if (bodyText.includes(target)) {
+                        return true;
+                    }
+
+                    const items = document.querySelectorAll(
+                        '[datatype="competition"], [datatype="competiton"], [data-type="competition"]'
+                    );
+                    return Array.from(items).some(item =>
+                        (item.textContent || '').toLowerCase().includes(target)
+                    );
+                }""",
+                arg=competition_name,
+                timeout=self._page_load_timeout_ms(),
+            )
+            return True
+        except PlaywrightTimeout:
+            self._log.warning(f"Timed out waiting for competition: {competition_name}")
+            return False
+
+    async def _wait_for_quiet_network(self, timeout_ms: int = 5000) -> None:
+        """等待短暂网络空闲；OrbitExch 长连接可能存在，超时不视为失败。"""
+        try:
+            await self._page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except PlaywrightTimeout:
+            self._log.debug("Network idle wait timed out, continuing with DOM readiness checks")
+
+    async def _wait_for_match_rows_stable(self) -> bool:
+        """等待比赛行和 selection id 渲染到稳定状态。"""
+        timeout_sec = self._page_load_timeout_ms() / 1000
+        deadline = time.monotonic() + timeout_sec
+        last_count: int | None = None
+        stable_count = 0
+
+        while time.monotonic() < deadline:
+            count = await self._page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('[role="row"]')).filter(row => {
+                    const pElements = row.querySelectorAll('p');
+                    const selectionElements = row.querySelectorAll('[data-selection-id]');
+                    return pElements.length >= 2 && selectionElements.length >= 2;
+                }).length;
+            }""")
+
+            if count > 0 and count == last_count:
+                stable_count += 1
+                if stable_count >= 2:
+                    self._log.debug(f"Match rows stabilized: {count}")
+                    return True
+            else:
+                stable_count = 0
+
+            last_count = count
+            await asyncio.sleep(0.5)
+
+        self._log.warning("Timed out waiting for match rows and selection IDs to stabilize")
+        return False
 
     # =========================================================================
     # Playwright 生命周期
@@ -163,11 +246,13 @@ class OrbitExchScraper:
         self._log.info(f"Looking for sport: {sport_name}")
 
         try:
+            await self._wait_for_sport_menu_ready(sport_name)
+
             # 使用文本定位器查找 sport
             sport_locator = self._page.locator(f'text="{sport_name.title()}"').first
             if await sport_locator.count() > 0:
                 await sport_locator.click()
-                await asyncio.sleep(2)
+                await self._wait_for_quiet_network()
                 self._log.info(f"Clicked sport: {sport_name}")
 
                 # 查找并点击 "All {Sport}" 以展开所有 competitions
@@ -180,7 +265,7 @@ class OrbitExchScraper:
                 text = await item.text_content()
                 if text and sport_name.lower() in text.lower():
                     await item.click()
-                    await asyncio.sleep(2)
+                    await self._wait_for_quiet_network()
                     self._log.info(f"Clicked sport: {sport_name}")
 
                     # 查找并点击 "All {Sport}"
@@ -216,7 +301,7 @@ class OrbitExchScraper:
                 all_sport_locator = self._page.locator(f'text="{variant}"').first
                 if await all_sport_locator.count() > 0:
                     await all_sport_locator.click()
-                    await asyncio.sleep(2)
+                    await self._wait_for_quiet_network()
                     self._log.info(f"Clicked '{variant}' to expand all competitions")
                     return True
 
@@ -240,11 +325,13 @@ class OrbitExchScraper:
         self._log.info(f"Looking for competition: {competition_name}")
 
         try:
+            await self._wait_for_competition_visible(competition_name)
+
             # 使用文本定位器查找 competition
             comp_locator = self._page.locator(f'text="{competition_name}"').first
             if await comp_locator.count() > 0:
                 await comp_locator.click()
-                await asyncio.sleep(3)
+                await self._wait_for_competition_page_ready()
                 self._log.info(f"Clicked competition: {competition_name}")
                 return True
 
@@ -257,7 +344,7 @@ class OrbitExchScraper:
                 text = await item.text_content()
                 if text and competition_name.lower() in text.lower():
                     await item.click()
-                    await asyncio.sleep(3)
+                    await self._wait_for_competition_page_ready()
                     self._log.info(f"Clicked competition: {competition_name}")
                     return True
 
@@ -267,6 +354,24 @@ class OrbitExchScraper:
         except Exception as e:
             self._log.error(f"Error finding competition {competition_name}: {e}")
             return False
+
+    async def _wait_for_competition_page_ready(self) -> bool:
+        """等待 competition 页面完成 SPA 跳转并渲染可抓取比赛行。"""
+        url_ready = True
+        try:
+            await self._page.wait_for_url(
+                "**/customer/sport/**/competition/**",
+                timeout=self._page_load_timeout_ms(),
+            )
+        except PlaywrightTimeout:
+            url_ready = False
+            self._log.warning(
+                f"Timed out waiting for competition URL after click: {self._page.url}"
+            )
+
+        await self._wait_for_quiet_network()
+        rows_ready = await self._wait_for_match_rows_stable()
+        return url_ready and rows_ready
 
     def _extract_ids_from_url(self, url: str) -> tuple[str, str]:
         """

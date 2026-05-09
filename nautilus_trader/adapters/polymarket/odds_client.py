@@ -29,14 +29,14 @@ try:
 except ImportError:
     websockets = None
 
-# 尝试导入 py-clob-client
+# 尝试导入 py-clob-client-v2 (Polymarket CLOB v2 cutover 2026-04-28)
 try:
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import ApiCreds
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderPayload
     HAS_CLOB_CLIENT = True
 except ImportError:
     HAS_CLOB_CLIENT = False
     ClobClient = None
+    OrderPayload = None
 
 from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 
@@ -245,7 +245,9 @@ class PolymarketOddsClient:
 
     async def cancel_clob_order(self, venue_order_id: str) -> dict:
         """撤销订单"""
-        return await self._call_api(self._clob_client.cancel, venue_order_id)
+        return await self._call_api(
+            self._clob_client.cancel_order, OrderPayload(orderID=venue_order_id)
+        )
 
     # =========================================================================
     # API 查询
@@ -1533,12 +1535,18 @@ class PolymarketOddsClient:
     # 订阅管理
     # =========================================================================
 
-    async def subscribe_event(self, event_id: str) -> None:
+    async def subscribe_event(self, event_id: str) -> bool:
         """
-        订阅 event 的所有 tokens
+        订阅 event 的所有 tokens（只 wire WebSocket，不拉取仓位/挂单）。
+
+        实际的 positions 和 open orders 由 Risk 服务的健康检查每轮主动 fetch
+        （Polymarket Data API 偶发不可用，每次健康检查都重拉以及时反映 venue 状态）。
 
         Args:
             event_id: Polymarket event ID
+
+        Returns:
+            True 表示 token 订阅完成；False 表示该 event 无可订阅 token。
         """
         self._log.info(f"Starting subscription for event {event_id}")
 
@@ -1547,7 +1555,7 @@ class PolymarketOddsClient:
 
         if not tokens:
             self._log.warning(f"No tokens to subscribe for event {event_id}")
-            return
+            return False
 
         self._log.info(f"Got {len(tokens)} tokens for event {event_id}")
         for t in tokens:
@@ -1584,21 +1592,21 @@ class PolymarketOddsClient:
                 # 重连会在 _run_websocket 循环中自动完成
                 # 新订阅会在连接成功后发送
                 self._pending_subscribe.extend(token_ids)
-                return
+            else:
+                # 首次订阅：直接发送
+                await self._send_subscribe(token_ids)
 
-            # 首次订阅：直接发送
-            await self._send_subscribe(token_ids)
+                # 启动 WebSocket（如果还未启动）
+                if not self._ws_task or self._ws_task.done():
+                    self._log.info("Starting WebSocket task")
+                    self._ws_task = asyncio.create_task(self._run_websocket())
 
-            # 启动 WebSocket（如果还未启动）
-            if not self._ws_task or self._ws_task.done():
-                self._log.info("Starting WebSocket task")
-                self._ws_task = asyncio.create_task(self._run_websocket())
-
-            # User Channel 已连接时，重新发送订阅消息以包含新增的 condition_id
-            if self._user_ws:
-                await self._subscribe_user_channel()
+                # User Channel 已连接时，重新发送订阅消息以包含新增的 condition_id
+                if self._user_ws:
+                    await self._subscribe_user_channel()
 
         self._log.info(f"Subscribed to {len(tokens)} tokens for event {event_id}")
+        return True
 
     # =========================================================================
     # 回调管理

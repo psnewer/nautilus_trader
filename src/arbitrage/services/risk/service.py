@@ -6,6 +6,7 @@
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -94,6 +95,10 @@ class RiskService:
         self._rebate_healthy: bool = False
         self._health_ok: bool = False
         self._health_check_task: asyncio.Task | None = None
+        # 触发逻辑：阻塞标志 + 下次执行时间 + 主动触发事件
+        self._health_check_blocked: bool = False
+        self._next_health_check_at: float | None = None
+        self._health_check_event: asyncio.Event | None = None
         self._execution_service = None  # 用于访问 PM client 和 OE pages
 
         # Cleanup 组件
@@ -179,25 +184,110 @@ class RiskService:
         except RuntimeError:
             self._log.warning("No running event loop, health check loop not started")
 
+    async def run_initial_health_check(self) -> None:
+        """
+        立即同步跑一次健康检查（启动时使用）。
+
+        新设计中 ``subscribe_event`` / ``subscribe_competition`` 只 wire WS / 记账，
+        不再触发任何 IO；首次开页（OE）和首次 fetch（PM）由健康检查驱动。
+        系统在"准备就绪"后应该调用本方法等第一轮数据就位，再启动 ``start_health_check_loop``
+        进入 120s 一次的常规节奏。
+        """
+        self._log.info("Running initial health check")
+        await self._run_health_check()
+        self._log.info(
+            f"Initial health check complete: pm={'OK' if self._pm_healthy else 'FAIL'}, "
+            f"oe={'OK' if self._oe_healthy else 'FAIL'}, "
+            f"rebate={'OK' if self._rebate_healthy else 'FAIL'}"
+        )
+
+    def block_health_check(self) -> None:
+        """阻塞健康检查：下一次循环唤醒时检测到 blocked 则跳过执行体（不改变检查结果）。"""
+        if not self._health_check_blocked:
+            self._health_check_blocked = True
+            self._log.info("Health check blocked")
+
+    def unblock_health_check(self) -> None:
+        """放通健康检查（标志位翻转，循环节奏不变）。"""
+        if self._health_check_blocked:
+            self._health_check_blocked = False
+            self._log.info("Health check unblocked")
+
+    def is_health_check_blocked(self) -> bool:
+        return self._health_check_blocked
+
+    def trigger_health_check(self) -> None:
+        """主动触发一次健康检查：立即唤醒循环（仍受 block 标志拦截）。"""
+        if self._health_check_event is not None:
+            self._health_check_event.set()
+
+    def get_next_health_check_at(self) -> float | None:
+        """下次健康检查的预定 monotonic 时间（None = 正在执行 / 未规划）。"""
+        return self._next_health_check_at
+
     async def _health_check_loop(self, interval: float) -> None:
-        """后台健康检查循环"""
+        """
+        后台健康检查循环（schedule + event-driven）。
+
+        - 每轮等到 ``_next_health_check_at`` 或被 ``trigger_health_check`` 唤醒
+        - 唤醒后先把 ``_next_health_check_at`` 置空，再判 ``_health_check_blocked``：
+          被阻塞 → 跳过执行体不改变结果；放通 → 跑 ``_run_health_check``
+        - 不论 blocked / 异常，每轮结束前用当前 ``health_check_interval_sec`` 规划下次时间
+        """
+        if self._health_check_event is None:
+            self._health_check_event = asyncio.Event()
+
+        # 初次进入循环：先按 interval 规划首次唤醒（initial check 已在 run_initial_health_check 跑过）
+        self._next_health_check_at = time.monotonic() + self._config.health_check_interval_sec
+
         while True:
+            # --- 等到下次时间或被主动触发 ---
             try:
-                await self._run_health_check()
+                target = self._next_health_check_at
+                wait_for = max(0.0, target - time.monotonic()) if target is not None else 0.0
+                if wait_for > 0:
+                    try:
+                        await asyncio.wait_for(
+                            self._health_check_event.wait(), timeout=wait_for
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                self._health_check_event.clear()
+            except asyncio.CancelledError:
+                self._log.info("Health check loop cancelled")
+                break
+
+            # --- 执行前：置空下次时间 + 检查 block 标志 ---
+            self._next_health_check_at = None
+            try:
+                if self._health_check_blocked:
+                    self._log.debug(
+                        "Health check blocked, skipping body (results unchanged)"
+                    )
+                else:
+                    await self._run_health_check()
             except asyncio.CancelledError:
                 self._log.info("Health check loop cancelled")
                 break
             except Exception as e:
                 self._log.error(f"Health check loop error: {e}")
 
-            try:
-                # 每次循环从配置读取间隔，支持动态更新
-                await asyncio.sleep(self._config.health_check_interval_sec)
-            except asyncio.CancelledError:
-                break
+            # --- 每轮结束前：按当前配置规划下次时间（支持配置动态更新） ---
+            self._next_health_check_at = (
+                time.monotonic() + self._config.health_check_interval_sec
+            )
 
     async def _run_health_check(self) -> None:
-        """执行一次健康检查"""
+        """
+        执行一次健康检查。
+
+        - **Polymarket**：每轮无条件主动 fetch（PM Data API 偶发宕机，必须每次重拉）。
+          ``get_ok`` + balance + ``fetch_positions`` + ``fetch_open_orders`` 全部成功才算 OK。
+        - **OrbitExch**：当前不健康 → ``refresh_page`` 走 adapter 内部的"首次打开 / 刷新"统一路径；
+          当前健康 → 轻量探测（``/customer/api/currentBets``）确认 session 仍有效。
+          失败时尝试一次"重新登录 + refresh"作为兜底。
+        - **Rebate**：从已 fetch 的数据计算 way_rebate（不再触发 IO）。
+        """
         # 有活跃 pair 时跳过（execution 或 risk 正在操作）
         if self._odds_service and self._odds_service._pair_activity:
             active_pairs = [
@@ -209,107 +299,10 @@ class RiskService:
                 return
 
         old_ok = self._health_ok
-        exec_svc = self._execution_service
 
-        # --- Polymarket: 调用 get_ok() 和查询余额 ---
-        pm_ok = False
-        pm_client = None
-        if self._odds_service:
-            pm_client = self._odds_service.get_polymarket_client()
-        if pm_client and pm_client._clob_client:
-            try:
-                clob_client = pm_client._clob_client
-
-                # 健康检查（通过 PolymarketClient 的统一锁序列化）
-                await pm_client._call_api(clob_client.get_ok)
-
-                # 查询余额
-                from py_clob_client.client import BalanceAllowanceParams
-                from py_clob_client.clob_types import AssetType
-                from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
-
-                params = BalanceAllowanceParams(
-                    asset_type=AssetType.COLLATERAL,
-                    signature_type=2,
-                )
-                response = await pm_client._call_api(
-                    clob_client.get_balance_allowance, params
-                )
-                balance_raw = int(response.get("balance", 0))
-                balance_usdc = usdce_from_units(balance_raw).as_double()
-
-                old_balance = self._pm_balance
-                self._pm_balance = balance_usdc
-                if abs(balance_usdc - old_balance) > 0.01:
-                    self._log.info(
-                        f"Polymarket balance updated: {old_balance:.2f} -> {balance_usdc:.2f}"
-                    )
-
-                pm_ok = True
-            except Exception as e:
-                self._log.warning(f"Polymarket health check failed: {e}")
-        else:
-            self._log.debug("Polymarket client not available, skipping health check")
-
-        # --- OrbitExch: 通过 fetch API 验证网络连通性和会话有效性 ---
-        oe_ok = False
-        if exec_svc:
-            pages = exec_svc._orbitexch_executor._pages
-            if pages:
-                for page_key, page in list(pages.items()):
-                    try:
-                        result = await page.evaluate(
-                            """async () => {
-                                try {
-                                    const cookies = document.cookie.split(';');
-                                    let csrfToken = '';
-                                    for (const cookie of cookies) {
-                                        const [name, value] = cookie.trim().split('=');
-                                        if (name === 'CSRF-TOKEN') {
-                                            csrfToken = decodeURIComponent(value);
-                                            break;
-                                        }
-                                    }
-                                    if (!csrfToken) return { ok: false, reason: 'no_csrf' };
-                                    const response = await fetch('/customer/api/currentBets', {
-                                        method: 'GET',
-                                        headers: {
-                                            'Accept': 'application/json',
-                                            'x-csrf-token': csrfToken,
-                                        },
-                                        credentials: 'include',
-                                    });
-                                    return { ok: response.ok, status: response.status };
-                                } catch (error) {
-                                    return { ok: false, reason: error.message };
-                                }
-                            }"""
-                        )
-                        if result and result.get("ok"):
-                            oe_ok = True
-                            break
-                        else:
-                            self._log.warning(
-                                f"OrbitExch health check failed (page={page_key}): {result}"
-                            )
-                    except Exception as e:
-                        self._log.warning(
-                            f"OrbitExch health check failed (page={page_key}): {e}"
-                        )
-            else:
-                self._log.debug("No OrbitExch pages, skipping health check")
-
-        # --- Way Rebate 刷新验证 ---
-        rebate_ok = False
-        if self._odds_service:
-            try:
-                await self._odds_service.refresh_all_positions_and_orders()
-                self._refresh_all_way_rebates()
-                rebate_ok = True
-            except Exception as e:
-                self._log.warning(f"Way rebate refresh failed: {e}")
-        else:
-            self._log.debug("Odds service not available, skipping rebate check")
+        pm_ok = await self._check_polymarket_health()
+        oe_ok = await self._check_orbitexch_health()
+        rebate_ok = self._compute_rebates_safe()
 
         # --- 更新状态 ---
         self._pm_healthy = pm_ok
@@ -332,48 +325,193 @@ class RiskService:
                     f"pm_balance={self._pm_balance:.2f}, oe_balance={self._oe_balance:.2f}"
                 )
 
-        # --- 失败时尝试恢复认证（不重试、不置位） ---
-        if not oe_ok:
-            await self._recover_orbitexch()
+    async def _check_polymarket_health(self) -> bool:
+        """PM 每轮主动拉一次：get_ok + balance + fetch_positions + fetch_open_orders。"""
+        pm_client = None
+        if self._odds_service:
+            pm_client = self._odds_service.get_polymarket_client()
+        if not pm_client or not pm_client._clob_client:
+            self._log.debug("Polymarket client not available, skipping health check")
+            return False
 
-    async def _recover_orbitexch(self) -> None:
-        """尝试通过临时页面重新登录 OrbitExch，然后 reload 所有已有页面"""
-        if not self._odds_service:
-            return
-        oe_client = getattr(self._odds_service, "_orbitexch_client", None)
+        try:
+            clob_client = pm_client._clob_client
+
+            # 通过 PolymarketClient 的统一锁序列化
+            await pm_client._call_api(clob_client.get_ok)
+
+            # 余额
+            from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+            from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=2,
+            )
+            response = await pm_client._call_api(
+                clob_client.get_balance_allowance, params
+            )
+            balance_raw = int(response.get("balance", 0))
+            balance_usdc = usdce_from_units(balance_raw).as_double()
+            old_balance = self._pm_balance
+            self._pm_balance = balance_usdc
+            if abs(balance_usdc - old_balance) > 0.01:
+                self._log.info(
+                    f"Polymarket balance updated: {old_balance:.2f} -> {balance_usdc:.2f}"
+                )
+
+            # 主动拉仓位 + 挂单（不论当前 health 状态都做）
+            positions = await pm_client.fetch_positions()
+            if positions is None:
+                self._log.warning("Polymarket fetch_positions returned None")
+                return False
+            await pm_client.fetch_open_orders()
+
+            return True
+        except Exception as e:
+            self._log.warning(f"Polymarket health check failed: {e}")
+            return False
+
+    async def _check_orbitexch_health(self) -> bool:
+        """
+        OE 健康检查驱动 adapter 的"首次打开 / 刷新"统一路径。
+
+        - 不健康 → ``refresh_page``（adapter 内部按需 goto / reload）
+        - 健康   → 轻量探测 ``/customer/api/currentBets``
+        - 任一失败 → 尝试 re-login + refresh 一次兜底
+        """
+        oe_client = None
+        if self._odds_service:
+            oe_client = self._odds_service.get_orbitexch_client()
         if not oe_client or not oe_client._context:
-            return
+            self._log.debug("OrbitExch client not available, skipping health check")
+            return False
+
+        if not oe_client._subscribed_competitions:
+            self._log.debug("No OrbitExch subscribed competitions, marking unhealthy")
+            return False
+
+        if self._oe_healthy:
+            oe_ok = await self._oe_lightweight_probe(oe_client)
+        else:
+            oe_ok = await self._oe_drive_refresh(oe_client)
+
+        if not oe_ok:
+            if await self._oe_relogin(oe_client):
+                oe_ok = await self._oe_drive_refresh(oe_client)
+
+        return oe_ok
+
+    async def _oe_lightweight_probe(self, oe_client) -> bool:
+        """从任一 competition page 用 page.evaluate 探测 ``/currentBets``，确认 session 有效。"""
+        for page_key, page in list(oe_client._pages.items()):
+            if page_key == "main":
+                continue
+            try:
+                result = await page.evaluate(
+                    """async () => {
+                        try {
+                            const cookies = document.cookie.split(';');
+                            let csrfToken = '';
+                            for (const cookie of cookies) {
+                                const [name, value] = cookie.trim().split('=');
+                                if (name === 'CSRF-TOKEN') {
+                                    csrfToken = decodeURIComponent(value);
+                                    break;
+                                }
+                            }
+                            if (!csrfToken) return { ok: false, reason: 'no_csrf' };
+                            const response = await fetch('/customer/api/currentBets', {
+                                method: 'GET',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'x-csrf-token': csrfToken,
+                                },
+                                credentials: 'include',
+                            });
+                            return { ok: response.ok, status: response.status };
+                        } catch (error) {
+                            return { ok: false, reason: error.message };
+                        }
+                    }"""
+                )
+                if result and result.get("ok"):
+                    return True
+                self._log.warning(
+                    f"OrbitExch probe failed (page={page_key}): {result}"
+                )
+            except Exception as e:
+                self._log.warning(
+                    f"OrbitExch probe failed (page={page_key}): {e}"
+                )
+        return False
+
+    async def _oe_drive_refresh(self, oe_client) -> bool:
+        """触发 ``oe_client.refresh_page`` 并把新创建的 competition page 同步给 executor。"""
+        try:
+            ok = await oe_client.refresh_page(
+                timeout=self._config.tracking_timeout_sec
+                if hasattr(self._config, "tracking_timeout_sec")
+                else 30.0,
+            )
+        except Exception as e:
+            self._log.warning(f"OrbitExch refresh_page failed: {e}")
+            return False
+        if ok:
+            self._sync_oe_executor_pages(oe_client)
+        return ok
+
+    async def _oe_relogin(self, oe_client) -> bool:
+        """临时页面重新登录，刷新 context 中的 session cookie。"""
         if not oe_client.config.orbitexch_username or not oe_client.config.orbitexch_password:
             self._log.debug("No OrbitExch credentials, skipping re-login")
-            return
-
-        # 1. 临时页面重新登录（刷新 context 中的 session cookie）
+            return False
         try:
             temp_page = await oe_client._context.new_page()
             try:
                 await oe_client._login(temp_page)
                 self._log.info("OrbitExch re-login succeeded")
+                return True
             finally:
                 await temp_page.close()
         except Exception as e:
             self._log.warning(f"OrbitExch re-login failed: {e}")
-            return
+            return False
 
-        # 2. Reload 所有已有页面（重建 CDP 拦截和 WebSocket 连接）
+    def _sync_oe_executor_pages(self, oe_client) -> None:
+        """把 odds_client 新创建的 competition page 同步给 executor（首次打开后必需）。"""
+        if not self._execution_service:
+            return
         for page_key, page in list(oe_client._pages.items()):
-            try:
-                await oe_client._refresh_single_page(page_key, page)
-                self._log.info(f"OrbitExch page {page_key} reloaded after re-login")
-            except Exception as e:
-                self._log.warning(f"OrbitExch page {page_key} reload failed: {e}")
+            if page_key == "main":
+                continue
+            self._execution_service.set_orbitexch_page(page_key, page)
+
+    def _compute_rebates_safe(self) -> bool:
+        """从已 fetch 的数据计算 way_rebate（不触发 IO）。"""
+        if not self._odds_service:
+            self._log.debug("Odds service not available, skipping rebate")
+            return False
+        try:
+            self._refresh_all_way_rebates()
+            return True
+        except Exception as e:
+            self._log.warning(f"Way rebate refresh failed: {e}")
+            return False
 
     def get_health_status(self) -> dict:
         """获取健康检查状态"""
+        next_at = self._next_health_check_at
+        seconds_until_next = (
+            max(0.0, next_at - time.monotonic()) if next_at is not None else None
+        )
         return {
             "health_ok": self._health_ok,
             "polymarket": self._pm_healthy,
             "orbitexch": self._oe_healthy,
             "way_rebate": self._rebate_healthy,
+            "blocked": self._health_check_blocked,
+            "seconds_until_next_check": seconds_until_next,
         }
 
     async def initialize_cleanup(
@@ -733,13 +871,6 @@ class RiskService:
         # 风控未启用
         if not self._config.enabled:
             return RiskCheckResult(allowed=True, reason="Risk disabled")
-
-        # 全局挂单检查：存在未完全成交订单时禁止下单
-        if self._has_open_orders():
-            return RiskCheckResult(
-                allowed=False,
-                reason="Open orders detected",
-            )
 
         # 赔率缺失或异常检查
         odds_check = self._check_odds_valid(pair_id)

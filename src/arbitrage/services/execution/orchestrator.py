@@ -1024,16 +1024,14 @@ class ExecutionOrchestrator:
             except Exception as e:
                 self._log.warning(f"Failed to fetch open orders: {e}")
 
-        # 仅在 OrbitExch 仍有未完全成交时刷新页面，并等待下一次 CURRENT_BETS
+        # 仅在 OrbitExch 仍有未完全成交时刷新页面（adapter 内部等待环境就绪）
         if pending_orbitexch and self._tracker._orbitexch_client:
             try:
-                self._tracker._orbitexch_client.prepare_current_bets_refresh()
-                await self._tracker._orbitexch_client.refresh_page()
-                received = await self._tracker._orbitexch_client.wait_for_current_bets(
+                ok = await self._tracker._orbitexch_client.refresh_page(
                     timeout=min(self._config.tracking_timeout_sec, 10.0)
                 )
-                if not received:
-                    self._log.warning("OrbitExch refresh_page completed but CURRENT_BETS not received")
+                if not ok:
+                    self._log.warning("OrbitExch page refresh did not reach a ready state; order view may be stale")
             except Exception as e:
                 self._log.warning(f"Failed to refresh OrbitExch page: {e}")
 

@@ -25,9 +25,9 @@ from src.arbitrage.common.order_models import (
     Venue,
 )
 
-# 尝试导入 py-clob-client
+# 尝试导入 py-clob-client-v2 (Polymarket CLOB v2 cutover 2026-04-28)
 try:
-    from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType as ClobOrderType
+    from py_clob_client_v2 import OrderArgs, MarketOrderArgs, OrderType as ClobOrderType
     HAS_CLOB_CLIENT = True
 except ImportError:
     HAS_CLOB_CLIENT = False

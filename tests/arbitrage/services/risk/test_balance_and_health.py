@@ -194,7 +194,11 @@ class TestBalanceGating:
         # 模拟 OddsService 和 clients
         mock_odds_service = Mock()
         mock_pm_client = Mock()
-        mock_pm_client.get_active_orders = Mock(return_value=[{"size": 60.0}])
+        mock_order = Mock()
+        mock_order.original_size = 60.0
+        mock_order.size_matched = 0.0
+        mock_order.status = "LIVE"
+        mock_pm_client.get_current_orders = Mock(return_value=[mock_order])
         mock_odds_service._polymarket_client = mock_pm_client
         mock_oe_client = Mock()
         mock_oe_client.get_active_orders = Mock(return_value=[])
@@ -350,6 +354,41 @@ class TestCheckRiskHealthGate:
         # 应该因为 execution_disabled 被阻止，而不是健康检查
         assert result.allowed is False
         assert result.reason == "Execution disabled"
+
+    def test_open_orders_do_not_block_opportunity(self):
+        """活跃订单不作为 check_risk 的直接阻断条件"""
+        config = RiskConfig(execution_enabled=True, enabled=True)
+        service = RiskService(config=config)
+
+        service._pm_healthy = True
+        service._oe_healthy = True
+        service._rebate_healthy = True
+        service._health_ok = True
+
+        mock_order = Mock()
+        mock_order.original_size = 100.0
+        mock_order.size_matched = 20.0
+
+        service._odds_service = Mock()
+        service._odds_service.get_polymarket_open_orders = Mock(return_value=[mock_order])
+        service._odds_service.get_orbitexch_bets = Mock(
+            return_value=[{"sizeRemaining": 10.0}]
+        )
+        service._odds_service.get_latest_odds = Mock(return_value={
+            "polymarket": {
+                "home": {"bid": 0.50, "ask": 0.52},
+                "away": {"bid": 0.48, "ask": 0.50},
+            },
+            "orbitexch": {
+                "home": {"back": 1.90, "lay": 2.00},
+                "away": {"back": 1.90, "lay": 2.00},
+            },
+        })
+
+        result = service.check_risk("test-pair")
+
+        assert result.allowed is True
+        assert result.reason != "Open orders detected"
 
 
 # =========================================================================

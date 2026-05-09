@@ -500,12 +500,14 @@ class ExecutionService:
         Returns:
             撤单结果
         """
-        # 如果未指定 venue，从活跃订单中查找
-        if venue is None:
-            for o in self.get_active_orders():
-                if o["order_id"] == order_id:
+        # 从活跃订单中同时取 venue（如未指定）和 market_id（OrbitExch 撤单必需）
+        market_id = ""
+        for o in self.get_active_orders():
+            if o["order_id"] == order_id:
+                if venue is None:
                     venue = Venue(o["venue"])
-                    break
+                market_id = o.get("market_id", "")
+                break
 
         if venue is None:
             return CancelResult(
@@ -523,6 +525,7 @@ class ExecutionService:
             order_id=order_id,
             venue=venue,
             venue_order_id=order_id,
+            market_id=market_id,
         )
 
         # 分发到对应执行器

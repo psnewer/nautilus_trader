@@ -143,16 +143,15 @@ async def _run_subscription():
         app_state.register_matches_to_strategy()
         _log.info("Registered matches to strategy service with status")
 
-        # 加载历史持仓到风控服务
-        position_counts = await app_state.load_risk_historical_positions()
-        _log.info(f"Loaded historical positions: {position_counts}")
-
-        # 更新执行服务的 OrbitExch 页面引用（订阅后页面才可用）
-        app_state.update_execution_pages()
-        _log.info("Updated execution service with OrbitExch pages")
-
-        # 启动健康检查循环（确保 OrbitExch pages 已设置）
+        # 立即跑一次健康检查：触发 OE 首次开页 + PM 主动拉仓位/挂单
+        # （subscribe_* 只 wire WS / 记账，所有 IO 都由健康检查驱动）
         risk_service = app_state.get_risk_service()
+        await risk_service.run_initial_health_check()
+
+        # 加载历史持仓到风控服务（此时 PM 仓位 + OE bets 已就绪；RiskService 内部已记录日志）
+        await app_state.load_risk_historical_positions()
+
+        # 启动持续的健康检查循环（120s 一次，可在 web 面板调整）
         risk_service.start_health_check_loop()
         _log.info("Health check loop started")
 
