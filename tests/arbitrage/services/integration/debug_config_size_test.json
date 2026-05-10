@@ -1,8 +1,0 @@
-{
-  "enabled": true,
-  "overrides": {
-    "min_rebate_rate": {"enabled": true, "value": -10.0},
-    "polymarket_price": {"enabled": true, "value": 0.01},
-    "orbitexch_price": {"enabled": true, "value": 1000.0}
-  }
-}

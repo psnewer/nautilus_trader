@@ -33,6 +33,7 @@
 | **P7** | **一次设计一个组件** | **不超前设计**。轮到 Step N 时才展开 Step N 的细节,避免在没充分讨论时锁死决定 |
 | **P8** | **按功能模块组织代码,不按 NT 原语类型分组** | 应用代码放 `src/arbitrage/<capability>/`,内部既有 Actor 也有领域算法,不要 `actors/` `strategies/` `scheduling/` 这种把单个 Actor 单独成目录的横切组织。NT 自己的 `Controller`(`trading/`)、`OrderEmulator`(`execution/`)就是这个原则 |
 | **P9** | **`src/` 与 `nautilus_trader/` 的边界** | `nautilus_trader/` 是 NT 上游 fork,会定期 merge upstream;`src/arbitrage/` 是你的应用,upstream 永远不动。**唯一例外**: venue 适配器(`adapters/polymarket/`、`adapters/orbitexch/`)放在 NT 树里,因为 NT 对 adapter 路径有约定,且它们是独立子树不会冲突 |
+| **P10** | **Debug 注入通过子类化,生产代码零 `if self._debug`** | 所有可被 debug 改写的行为(数据流 / 客户端选择 / Strategy 决策参数 / Risk 校验)统一用"生产类干净 + Debug 子类覆盖 hook + 工厂层选择"。架构对称,关注点分离,测试隔离。详见 §6.6 |
 
 ---
 
@@ -60,8 +61,7 @@
 │   │  Actors                              Strategies                 │   │
 │   │  • InstrumentRefresher (×venue)      • ArbitrageStrategy        │   │
 │   │  • MarketMatchingActor                                          │   │
-│   │  • BalanceMonitorActor                                          │   │
-│   │  • WebGatewayActor                                              │   │
+│   │  • WebGatewayActor (订阅 AccountState 推前端)                    │   │
 │   └────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -92,7 +92,9 @@
 | `services/market_matching/` | `src/arbitrage/matching/`(`engine.py`+`normalizer.py`+`actor.py`+`data_types.py`) | 算法保留,外壳替换为 NT `Actor`;不依赖 instrument 具体类型(§6.4) | §5.3(待 Step 3) |
 | `services/execution/`(套利决策算法) | `src/arbitrage/strategy/`(`ArbitrageStrategy(Strategy)`) | 仅保留套利决策逻辑(planner 类) | §5.4(待 Step 4) |
 | `services/execution/`(其余: tracker / orchestrator / service / session 等) | (无对应物) | **整体删除**;NT `Strategy` + `ExecutionEngine` + `MessageBus` 替代订单追踪、事件分发、生命周期 | §5.4(待 Step 4) |
-| `services/risk/` | `src/arbitrage/risk/actor.py` + NT `RiskEngine` | 拆分:下单前检查归 RiskEngine,余额轮询归 Actor | §5.6(待 Step 6) |
+| `services/risk/` | `src/arbitrage/risk/engine.py`(`ArbitrageRiskEngine` NT 子类) | NT `RiskEngine` 标准管道透明拦截做余额检查;**账户状态维护归 ExecutionClient**(PM 主动 / OE 被动 WS,写 NT Cache);**告警让前端自己看**(WebGatewayActor 订阅 AccountState 事件转 JSON 推浏览器,无独立告警 Actor);Strategy 不引用 Risk | §5.6(待 Step 6) |
+| `services/strategy/service.py` 中的 `_check_and_adjust_size` Step 1(深度缩放) | `ArbitrageStrategy._adjust_share_by_liquidity` hook | Strategy 内部职责;读 NT `cache.order_book(...)` | §5.4(Step 4) |
+| `services/strategy/service.py` 中 `_check_and_adjust_size` Step 2(最小限额门控)+ `MIN_SIZE_POLYMARKET/_ORBITEXCH` 常量 + `check_min_size` 函数 | (无对应物) | **整体删除**,完全用 NT 自动检查 `instrument.min_quantity`(应用层不更严) | §5.6 |
 | `services/web_gateway/` | `src/arbitrage/web/`(`actor.py`+ FastAPI 路由) | 外壳替换为 Actor + FastAPI 协程同 loop;同时承担"行情格式适配"(订阅 NT `OrderBookDelta` 转 JSON 推前端) | §5.7(待 Step 7) |
 
 > **目录组织原则(P8)**: 应用代码按**功能模块(capability)**组织(`discovery/`、`matching/`、`strategy/`、`risk/`、`web/`),内部既有 NT Actor/Strategy 接线代码,也有领域算法和 Data 类型。不使用 `actors/` `strategies/` `scheduling/` 这种按 NT 原语类型横切的目录,也不为单个 Actor 单独建目录。NT 自己也是这样组织的: `Controller(Actor)` 在 `trading/`,`OrderEmulator(Actor)` 在 `execution/`。
@@ -103,8 +105,8 @@
 > ├── discovery/        # InstrumentRefresher Actor + 配套
 > ├── matching/         # MatchEngine + EventNormalizer + Actor + Data 类型
 > ├── strategy/         # ArbitrageStrategy
-> ├── risk/             # BalanceMonitorActor + 风控逻辑
-> ├── web/              # WebGatewayActor + FastAPI 路由
+> ├── risk/             # ArbitrageRiskEngine (NT RiskEngine 子类) — 余额检查归这里;无 BalanceMonitorActor
+> ├── web/              # WebGatewayActor + FastAPI 路由(订阅 AccountState 推前端)
 > ├── common/           # 共享 utils / 配置 / 类型
 > ├── testing/          # 已存在
 > └── debug/            # 已存在
@@ -334,7 +336,66 @@ PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。Matchin
 
 `ArbitrageStrategy(Strategy)` 订阅 `MatchedPair`,对每个匹配对调 `subscribe_order_book_deltas(instrument_id)` 两次,在 `on_order_book_delta` 中跑套利决策,通过 `self.submit_order(...)` 下单(由 NT `ExecutionEngine` 路由到对应 venue 的 ExecutionClient)。订单追踪走 NT `Strategy` 内置回调(`on_order_submitted` / `on_order_filled` / `on_order_rejected` 等),**不再自研 tracker / orchestrator / service**。
 
+**关键边界(SoC,2026-05-09 修正锁定)**:
+
+| 行为 | 归属 | 触发 |
+|---|---|---|
+| **深度缩放**(根据流动性算应该下多少 share) | **Strategy 内部职责** | `_adjust_share_by_liquidity` hook,Strategy 算订单参数时自己处理 |
+| **最小限额检查**(`size ≥ instrument.min_quantity`) | **NT RiskEngine 自动** | NT 自带,无需扩展(应用层不更严,删除 `MIN_SIZE_*` 常量) |
+| **余额检查**(够不够下单) | **`ArbitrageRiskEngine`(NT RiskEngine 子类)** | NT 自动拦截 `submit_order` 管道 |
+
+**Strategy 不引用 Risk**。直接 `submit_order()` → NT `ExecutionEngine` 自动经过 `RiskEngine` 拦截 → 通过则路由到 `ExecutionClient`,被拒发 `OrderDenied` 事件。
+
+```python
+class ArbitrageStrategy(Strategy):
+    def _evaluate_and_submit(self, ctx):
+        best = self._evaluate(ctx)
+        if not best: return
+
+        # 深度缩放(Strategy 自己做,不是风控)
+        adjusted = self._adjust_share_by_liquidity(ctx, best)
+        if adjusted is None: return  # 流动性太差,不值得套利(非风控拒)
+
+        pm_order = self._planner.build_pm_order(adjusted, best, ...)
+        oe_order = self._planner.build_oe_order(adjusted, best, ...)
+
+        # 直接 submit。NT RiskEngine 透明拦截,做最小限额 + 余额检查。
+        self.submit_order(pm_order)
+        self.submit_order(oe_order)
+
+    def on_order_denied(self, event):
+        """RiskEngine 拒绝(典型: 余额不够、最小限额不满足)。可能要补偿撤另一腿。"""
+        ...
+
+    def on_order_rejected(self, event):
+        """venue 拒绝(典型: cache stale 时 venue 真实余额不够)。NT 标准异常路径。"""
+        ...
+
+    # ─── Hook 点(Debug 子类可覆盖)───
+    def _adjust_share_by_liquidity(self, ctx, best) -> Decimal | None: ...
+```
+
 **关键性: 这一步是接入上游 PM ExecutionClient(Step 5)的前提** —— 上游 ExecutionClient 只接受 NT `ExecutionEngine` 投递的 `SubmitOrder` 命令,只有继承 NT `Strategy` 的 `ArbitrageStrategy.submit_order(...)` 能触发。所以即使 Step 5 PM 部分零代码,**Step 4 不做的话 Step 5 上游 ExecutionClient 没人调用**。
+
+**Hook 点设计(P10 关键约束)**: 生产 Strategy 必须把可变行为拆成命名清晰的 **protected hook 方法**,以支持 §6.6 Debug 注入框架的子类化覆盖:
+
+```python
+def _get_min_rebate_rate(self) -> Decimal: ...           # config 默认值,Debug 覆盖
+def _get_pm_price(self, ctx, direction) -> Price: ...    # 真实最优价,Debug 覆盖
+def _get_oe_price(self, ctx, direction) -> Price: ...
+def _get_pm_size(self, share, direction) -> Quantity: ...
+def _get_oe_size(self, share, direction) -> Quantity: ...
+def _adjust_share_by_liquidity(self, ctx, best) -> Decimal | None: ...  # 深度缩放,Debug 不覆盖
+```
+
+**生产 Strategy 不导入也不感知 `DebugConfig`**。
+
+**当前 `services/strategy/service.py` 中的 `_check_and_adjust_size` 拆解**:
+| 原来做的事 | 拆到哪 |
+|---|---|
+| 深度缩放(Step 1: 按可交易量等比例 scale) | Strategy 内部 hook `_adjust_share_by_liquidity` |
+| 最小限额门控(Step 2: `check_min_size`) | **删除应用层**,完全用 NT `instrument.min_quantity`(NT RiskEngine 自动检查) |
+| `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量 + `check_min_size` 函数 | **删除**(应用层不更严,完全用 NT instrument 元数据) |
 
 **当前 `services/execution/` 拆解**:
 | 子模块 | 处理方式 |
@@ -344,13 +405,14 @@ PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。Matchin
 | `tracker.py` 订单追踪 | **删除**,NT `Strategy` 自带回调 |
 | `service.py` 下单调度 + 事件分发 | **删除**,NT ExecutionEngine + MessageBus 替代 |
 | `session.py` / `cleanup.py` / `recovery.py` | **待审计**,可能部分保留作为补偿撤单逻辑 |
-| `mock_exchange.py` 测试用 | **保留**(测试基础设施) |
+| `mock_exchange.py` 测试用 | **保留**(改造为 NT `LiveExecutionClient` 子类,见 §6.6) |
 
 **Step 4 启动时还需展开**:
 - 补偿撤单方案(单腿成交另一腿失败时 —— 见 memory 中 `bug_compensating_cancel_missing`)
-- `ArbitrageStrategy` 状态机设计(双腿事务)
+- `ArbitrageStrategy` 状态机设计(双腿事务,处理 `on_order_denied` / `on_order_rejected`)
 - StrategyId 命名规则
 - 多 MatchedPair 并发的资源/限额处理
+- `_adjust_share_by_liquidity` 内部数据源(从 NT `cache.order_book(instrument_id)` 读)
 
 ---
 
@@ -369,20 +431,110 @@ PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。Matchin
 - 内部 IO(Playwright 提交订单)从用户 `executor.py` 平移
 - 必须实现 NT 契约: `_submit_order` / `_cancel_order` / `_modify_order`
 - 必须事件回写: 订单状态变化时调 `generate_order_*` 推 NT MessageBus
-- 余额轮询另作 Actor(Step 6 BalanceMonitorActor)
+- **账户状态维护(被动)**: 订阅 WS 帧,余额变化消息 → 调 `self.generate_account_state(...)` 写 Cache(OE 没有 REST 不能主动拉,只能 WS push)
+
+**账户状态维护(2026-05-09 显式列出)**: 两家 venue 都在 ExecutionClient 内维护 NT `AccountState`,写 Cache。下游(`ArbitrageRiskEngine` 余额检查 / `WebGatewayActor` 转 JSON 推前端)从 Cache 读,对来源透明。
+
+| Venue | 维护方式 |
+|---|---|
+| PM | **主动** —— 周期 timer 调 `client.get_balance_allowance`(上游 `execution.py:287 _update_account_state` 已实现) |
+| OE | **被动** —— WS 帧解析(自写) |
 
 **Step 5 启动时还需展开**:
 - OE WS 订单事件订阅(用户当前是否已实现"订单成交回调"? 待审计)
+- OE WS 余额消息的解析路径(审计现有 `odds_client.py` 是否抓余额帧)
 - PM `bug_polymarket_order_version_mismatch` 用上游版本验证是否消失
+- PM `_update_account_state` 触发频率(timer 周期 / 每次下单/撤单后 / 两者)
 - StrategyId / OrderId / 命名一致性
 
 ---
 
-### 5.6 Step 6: BalanceMonitorActor + RiskEngine 配置(替代 risk)
+### 5.6 Step 6: Risk 层重构(替代 risk) **【概要,待 Step 6 启动时展开】**
 
-**占位** —— 等 Step 5 完成后讨论。
+**关键边界(2026-05-09 三次修正后锁定)**: Risk 在 NT `submit_order` 管道上**透明拦截**,Strategy **不引用** Risk。**没有独立的 BalanceMonitorActor**(告警让前端自己看)。
 
-预期方向: 拆分当前 risk service 的职责到 NT `RiskEngine`(下单前检查)和 `BalanceMonitorActor`(余额轮询)。需要先**审计现有 risk service 的全部职责**(Q4)。
+```
+Strategy.submit_order(order)
+    ↓ NT ExecutionEngine 自动路由
+ArbitrageRiskEngine._check_order(order)         ← 透明拦截
+    ├── 通过: 路由到 ExecutionClient
+    └── 拒绝: generate_order_denied → Strategy.on_order_denied
+```
+
+#### 组件协作(账户状态由 ExecutionClient 维护)
+
+```
+ExecutionClient (per venue,数据维护)
+├── PM: 主动 — clock.set_timer 周期调 client.get_balance_allowance
+│         (上游 execution.py:287 已有 _update_account_state,可直接用)
+└── OE: 被动 — 订阅 WS 帧,余额变化消息 → 解析后调 generate_account_state
+                              ↓
+            两条路径都把 AccountState 写入 NT Cache.account_state
+                              ↓ 共享 Cache(NT 自带)
+                              ├──→ ArbitrageRiskEngine._check_balance(order)  ← 下单前同步读 Cache
+                              └──→ WebGatewayActor 订阅 AccountState 事件 → 推前端 JSON
+                                                                              (用户在前端看告警,
+                                                                               无独立告警 Actor)
+```
+
+**关键决定(2026-05-09 三次修正)**:
+- **数据获取归 ExecutionClient**(PM 主动 / OE 被动,因 OE 没 REST 不能主动拉)
+- **没有 `BalanceMonitorActor`**: NT 不自带这种告警 Actor,我们也不写;告警职责让前端自己看(WebGateway 订阅 AccountState 推 JSON 即可)
+- 余额低于业务阈值的实时告警:**仅在前端层做**(浏览器看到余额数字判断),系统层不做主动 publish 告警
+
+#### `ArbitrageRiskEngine`(NT `RiskEngine` 子类)
+
+```python
+# src/arbitrage/risk/engine.py
+class ArbitrageRiskEngine(RiskEngine):
+    """扩展 NT RiskEngine,加应用层余额检查。最小限额检查由 NT 父类自动处理。"""
+
+    def _check_order(self, order: Order) -> bool:
+        # NT 父类自动检查:
+        #   - order.quantity >= instrument.min_quantity (最小限额)
+        #   - order.quantity <= instrument.max_quantity
+        #   - max_order_submit_rate / kill switch 等
+        if not super()._check_order(order):
+            return False
+        # 应用层补充: 余额检查
+        if not self._check_balance(order):
+            return False
+        return True
+
+    # ─── Hook 点(Debug 子类可覆盖)───
+    def _check_balance(self, order: Order) -> bool:
+        """从 cache.account_state(...) 读余额,判断够不够下单。"""
+        ...
+```
+
+**关键决定(2026-05-09 修正)**:
+- 应用层 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量 + `check_min_size` 函数 + `adjust_share_by_liquidity` 中的 Step 2 **全部删除**(应用层不比 NT instrument.min_quantity 更严,直接用 NT 自带)
+- venue 偶发拒绝(cache stale 时余额预检查通过但 venue 真实余额不足)由 NT 标准 `on_order_rejected` 处理,**不是设计层的"双兜底"**(RiskEngine 是唯一真理源,venue 拒绝是 cache 同步异常)
+
+#### ExecutionClient 的"账户状态维护"职责(本来就该有,这里显式列出)
+
+| Venue | 维护方式 | 实现来源 |
+|---|---|---|
+| **PM** | **主动** —— 周期 HTTP 拉取 `client.get_balance_allowance` | 上游 `nautilus_trader/adapters/polymarket/execution.py:287 _update_account_state` 已实现,直接用 |
+| **OE** | **被动** —— 订阅 WS 帧,余额变化消息 → 解析 → 调 `self.generate_account_state(...)` | 自写,Step 5 实施 |
+
+两条路径都通过 `generate_account_state` 标准 NT 接口写入 Cache,下游(`ArbitrageRiskEngine` 同步读做检查 / `WebGatewayActor` 订阅事件推前端)对来源透明。
+
+#### 拆解当前 `services/risk/service.py`
+
+| 当前职责 | 目标位置 |
+|---|---|
+| 余额查询 / 维护 | **ExecutionClient 内部**(PM 主动 / OE 被动)+ 写 NT Cache |
+| 余额阈值告警 | **删除** —— 让前端订阅 AccountState 自己看 |
+| 余额门控(`check_balance`) | `ArbitrageRiskEngine._check_balance`(NT 标准管道拦截) |
+| 循环熔断 | 待审计,可能 NT `RiskEngine` 配置 / 独立机制 |
+| 持仓限额 | NT `RiskEngine` 自带或扩展 |
+
+**Step 6 启动时还需展开**:
+- NT `RiskEngine` 的具体可扩展性(子类化是否完整支持 / `_check_order` 是否是合适的 hook 点)
+- 上游 PM `_update_account_state` 触发频率(timer 周期 / 下单后顺便触发 / 两者结合)
+- OE WS 帧中余额信息的解析路径(Step 5 启动时审计 OE WS 协议)
+- 循环熔断的归属(审计现有 `services/risk/service.py` 中相关逻辑)
 
 ---
 
@@ -393,7 +545,8 @@ PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。Matchin
 预期方向:
 - FastAPI 与 TradingNode 同进程同 loop
 - HTTP 路由桥接 MessageBus
-- **同时承担"行情格式适配"**: 订阅 NT `OrderBookDelta` / `MatchedPair` / `BalanceAlert` 等 NT 标准类型,转 JSON 推前端
+- **同时承担"行情格式适配"**: 订阅 NT `OrderBookDelta` / `MatchedPair` / **`AccountState`** 等 NT 标准类型,转 JSON 推前端
+- 包括 **`AccountState` 推送**(替代独立的 BalanceMonitorActor)—— 浏览器拿到余额数字自己显示,余额低/熔断由用户看着判断
 - 配置类 HTTP POST(如修改 `refresh_interval`)→ publish 到 MessageBus → `InstrumentRefresher` 等 Actor 收到更新
 
 ---
@@ -553,7 +706,175 @@ PM 用 NT 现成的 `BinaryOption`(二元期权),OE 用 NT 现成的 `BettingIns
 
 **没有保留用户自研版本的合理理由**: 上游版本在所有维度上都覆盖 + 更完整。**Reconciliation** 是迁移最大的隐性红利之一 —— 重启后挂单/仓位与 venue 自动对账。
 
-### 6.6 上游 ClobClient 调用是否需要外层加锁(Q10)
+### 6.6 Debug 注入框架(Q11)
+
+#### 总览
+
+`debug_config.json` 是**全栈行为注入框架**,远不止 mock_exchange。两层结构:
+
+| 层 | 字段类别 | 当前位置 | 迁移后注入位置 |
+|---|---|---|---|
+| **A. 数据流替换** | `mock_data: {category: "odds"}` | odds_subscription 内 | DataClient Debug 子类(出口前替换) |
+| | `mock_data: {category: "positions"}` | fetch_positions 内 | ExecutionClient Debug 子类(`generate_position_status_reports` 前替换) |
+| **B. 客户端选择** | `overrides.use_mock_exchange` | service.py 分支 | 启动 factory 选 `Mock*ExecutionClient` |
+| | `overrides.skip_execution` | service.py 分支 | 启动 factory 选 `SkipExecutionClient` 子类(`_submit_order` 直接 generate_order_filled mock 成交) |
+| **C. Strategy 内部参数覆盖** | `min_rebate_rate` | strategy/service.py | `DebugArbitrageStrategy._get_min_rebate_rate` 子类覆盖 |
+| | `polymarket_price` / `orbitexch_price` | 同上 | `_get_pm_price` / `_get_oe_price` 子类覆盖 |
+| | `polymarket_size` / `orbitexch_size` / `order_size` | 同上 | `_get_pm_size` / `_get_oe_size` 子类覆盖 |
+| **D. Risk 层覆盖** | `skip_check_size` | strategy/service.py(语义错位,见 §5.4 修正) | `DebugArbitrageRiskEngine` 子类覆盖,跳过 NT 父类的最小限额检查(让小单通过用于测试) |
+
+#### 设计原则(P10,新增)
+
+**所有 debug 行为变化必须通过子类化 + 工厂层选择实现,生产代码零 `if self._debug` 分支**。
+
+理由:
+1. **关注点分离**: 生产路径完全干净,无 debug 渗透
+2. **架构对称**: DataClient / ExecutionClient / Strategy / Risk Actor 全部走子类化,统一机制
+3. **测试隔离**: 测试生产类不需要 mock 掉 debug
+4. **NT-pure**: 子类化 + 工厂选择是 NT 的原生扩展机制(参考 §5.5 PM 上游对应路径)
+
+#### 配置加载: `DebugConfig` 单例
+
+```python
+# src/arbitrage/debug/config.py
+class DebugConfig:
+    """普通 Python 对象,启动时加载,通过 NT 工厂层 DI 分发。不进 NT Cache(Q11.5)。"""
+
+    @classmethod
+    def load(cls, path: str = "debug_config.json") -> "DebugConfig | None":
+        if not os.path.exists(path): return None
+        with open(path) as f: return cls(json.load(f))
+
+    @property
+    def enabled(self) -> bool: ...
+    def get_override(self, name: str) -> Any | None: ...        # overrides 取值
+    def get_mock(self, category: str, conditions: dict) -> dict | None:  # mock_data 按 conditions 匹配
+        ...
+```
+
+#### 子类化模板
+
+**DataClient**:
+```python
+# src/arbitrage/debug/data_clients.py
+class DebugPolymarketDataClient(PolymarketDataClient):
+    def __init__(self, *args, debug: DebugConfig, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._debug = debug
+    def _handle_data(self, data):
+        if isinstance(data, OrderBookDelta):
+            mock = self._debug.get_mock("odds", conditions={...})
+            if mock: data = self._apply_mock_to_delta(data, mock)
+        super()._handle_data(data)
+```
+
+**ExecutionClient**:
+```python
+class SkipExecutionPolymarketClient(PolymarketExecutionClient):
+    """skip_execution = true 时使用,不发真单,直接 mock 成交事件。"""
+    async def _submit_order(self, command):
+        self.generate_order_submitted(...)
+        self.generate_order_filled(...)
+```
+
+**Strategy**:
+```python
+# src/arbitrage/debug/strategy.py
+class DebugArbitrageStrategy(ArbitrageStrategy):
+    def __init__(self, *args, debug: DebugConfig, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._debug = debug
+
+    def _get_min_rebate_rate(self):
+        ovr = self._debug.get_override("min_rebate_rate")
+        return Decimal(str(ovr)) if ovr is not None else super()._get_min_rebate_rate()
+
+    def _get_pm_price(self, ctx, direction):
+        ovr = self._debug.get_override("polymarket_price")
+        return Price(ovr, ...) if ovr is not None else super()._get_pm_price(ctx, direction)
+
+    # ... 其它 hook 同理
+```
+
+**RiskEngine**:
+```python
+# src/arbitrage/debug/risk.py
+class DebugArbitrageRiskEngine(ArbitrageRiskEngine):
+    """skip_check_size 启用时跳过 NT 自带的最小限额检查(让小单通过用于测试链路)。"""
+
+    def __init__(self, *args, debug: DebugConfig, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._debug = debug
+
+    def _check_order(self, order):
+        if self._debug.get_override("skip_check_size"):
+            # 跳过 NT 父类的 min/max quantity 检查,只跑应用层余额检查
+            return self._check_balance(order)
+        return super()._check_order(order)
+```
+
+注: NT `RiskEngine` 的细粒度 hook(只跳 min_quantity 不跳 max_quantity 等)需 Step 6 启动时根据 NT API 确认。当前设计假定可整体 bypass 父类检查,如不行则需更细粒度 hook 覆盖。
+
+#### 工厂选择
+
+```python
+# src/arbitrage/debug/factories.py
+def make_pm_data_client(debug: DebugConfig | None, **kwargs):
+    if debug and debug.enabled:
+        return DebugPolymarketDataClient(debug=debug, **kwargs)
+    return PolymarketDataClient(**kwargs)
+
+def make_pm_exec_client(debug, **kwargs):
+    if debug and debug.get_override("use_mock_exchange"):
+        return MockPolymarketExecutionClient(debug=debug, **kwargs)
+    if debug and debug.get_override("skip_execution"):
+        return SkipExecutionPolymarketClient(debug=debug, **kwargs)
+    return PolymarketExecutionClient(**kwargs)
+
+def make_arbitrage_strategy(debug, **kwargs):
+    if debug and debug.enabled:
+        return DebugArbitrageStrategy(debug=debug, **kwargs)
+    return ArbitrageStrategy(**kwargs)
+
+# Risk / OE 同构
+```
+
+#### 目录结构
+
+```
+src/arbitrage/debug/                     # 新建,集中所有 debug 注入代码
+├── __init__.py
+├── config.py               # DebugConfig 单例
+├── data_clients.py         # DebugPolymarketDataClient / DebugOrbitExchDataClient
+├── exec_clients.py         # MockPolymarketExecutionClient / SkipExecution* 等
+├── strategy.py             # DebugArbitrageStrategy
+├── risk.py                 # DebugArbitrageRiskEngine
+├── timeline.py             # 订单状态流转(NT Clock.set_timer 重写,Q11.4 = b)
+└── factories.py            # make_*_client / make_arbitrage_strategy / ...
+```
+
+#### 文件迁移
+
+| 当前 | 新位置 |
+|---|---|
+| `src/arbitrage/services/debug/` 整目录 | `src/arbitrage/debug/`(`config.py` / `manager.py` 重组) |
+| `src/arbitrage/services/execution/mock_exchange.py` | `src/arbitrage/debug/exec_clients.py` + `timeline.py`(拆分 + NT-pure 重写) |
+| `debug_config.json`(项目根) | 保持原位 |
+| `debug_config.example.json` | `src/arbitrage/debug/debug_config.example.json` |
+| `tests/arbitrage/services/integration/debug_config_size_test.json` | `tests/arbitrage/_helpers/debug_configs/` |
+
+#### Q11 子问题锁定
+
+| # | 问题 | 锁定 |
+|---|---|---|
+| Q11.1 | 是否实现热重载 | ✅ 不实现,改完重启进程 |
+| Q11.2 | `skip_check_size` 落点 | ✅ `DebugArbitrageRiskEngine._check_order` 子类覆盖,跳过 NT 自带的最小限额检查(让小单通过用于测试链路)。**修正**: 应用层 `MIN_SIZE_*` 常量与 `check_min_size` 函数全部删除(应用层不比 NT instrument.min_quantity 更严);深度缩放归 Strategy 内部,不归 Risk |
+| Q11.3 | `skip_execution` 实现 | ✅ `SkipExecutionPolymarketClient(PolymarketExecutionClient)` 子类,`_submit_order` 直接 generate_order_filled mock |
+| Q11.4 | timeline 引擎(订单状态流转)平移还是重写 | ✅ 重写为 NT-pure 风格,用 `Clock.set_timer` 触发状态变化 |
+| Q11.5 | DebugConfig 是否进 NT Cache | ✅ 不进 Cache,只通过 NT 工厂层 DI 传递(YAGNI) |
+| **全局** | **架构对称** | ✅ **所有 debug 行为变化通过子类化 + 工厂层选择(P10),生产代码零 `if self._debug` 分支** |
+
+### 6.7 上游 ClobClient 调用是否需要外层加锁(Q10)
 
 **已锁定方案**: **不加锁,直接用上游裸版**(`async with self._api_lock` 不再保留)。
 
@@ -599,6 +920,8 @@ WS 订阅锁(用户原 `_ws_lock`)直接删除 —— 上游用引用计数处�
 | Q8 | 调度逻辑放 DataClient 还是单独 Actor | 单独 `InstrumentRefresher` Actor | Step 2 |
 | **Q9** | **PM/OE 异构 instrument 类型如何在 MatchingActor 中归一** | ✅ **已锁定**: 方案 A,Actor 内通过 `instrument.info` dict 中的统一 key(sport / competition / home_team / away_team / start_ts / selection_role)做匹配,不依赖具体类型 | Step 1 (OE Provider 字段映射) + Step 3 |
 | **Q10** | **上游 PM ExecutionClient 是否需要外层 lock 包装(用户原 `_api_lock` 是否保留)** | ✅ **已锁定**: 不加锁,直接用上游裸版;遇到问题再子类化只对写操作加锁。WS `_ws_lock` 直接删除(上游用引用计数) | Step 5 (后备方案) |
+| **Q11** | **Debug 注入框架的迁移设计** | ✅ **已锁定(P10 / §6.6)**: 所有 debug 行为变化通过子类化 + 工厂层选择;生产代码零 `if self._debug` 分支。子问题 Q11.1-Q11.5 已逐项锁定。**关联边界修正(Q12)**: `_check_and_adjust_size` 拆解 —— Step 1 深度缩放归 Strategy 内部 hook,Step 2 最小限额由 NT `instrument.min_quantity` 自动处理(应用层删除);Strategy 不引用 Risk;skip_check_size 落点是 `DebugArbitrageRiskEngine` | Step 4-7 |
+| **Q12** | **Risk 层架构: LiquidityRiskActor 是否需要** | ✅ **已锁定: 不需要**。深度缩放归 Strategy 内部职责(算应该下多少 share);最小限额检查由 NT RiskEngine 自动处理(`instrument.min_quantity`);余额检查由 `ArbitrageRiskEngine`(NT RiskEngine 子类)在 `submit_order` 管道上透明拦截。Strategy 不引用 Risk。venue 偶发拒绝(cache stale)由 NT 标准 `on_order_rejected` 处理,不是设计层"双兜底" | Step 4-6 |
 
 ---
 
@@ -614,7 +937,7 @@ WS 订阅锁(用户原 `_ws_lock`)直接删除 —— 上游用引用计数处�
 | Step 3 | MarketMatchingActor | 待 |
 | Step 4 | ArbitrageStrategy | 待 |
 | Step 5 | ExecutionClient × 2 | 待 |
-| Step 6 | BalanceMonitorActor + RiskEngine 配置 | 待 |
+| Step 6 | ArbitrageRiskEngine(NT RiskEngine 子类)+ ExecutionClient 账户状态维护 | 待 |
 | Step 7 | WebGatewayActor | 待 |
 | Step 8 | 清理 + 文档更新 | 待 |
 
@@ -647,3 +970,8 @@ WS 订阅锁(用户原 `_ws_lock`)直接删除 —— 上游用引用计数处�
 | 2026-05-09 | **重大发现**: 上游 NT 已有完整 PM 适配器(子代理详细 diff 验证)。Q1 锁定: PM 用上游 `{condition_id}-{token_id}.POLYMARKET`,OE 仿 PM 风格 `{market_id}-{selection_id}.ORBITEXCH`。Q9 新增 + 锁定: PM `BinaryOption` + OE `BettingInstrument` 异构,MatchingActor 通过 `instrument.info` 统一 key 做归一(方案 A)。§5.1 / §5.2 / §5.5 PM 部分改为零代码(直接用上游),用户 `odds_client.py` / `executor.py` 整体删除,顺带规避 `order_version_mismatch` bug。§5.4 ArbitrageStrategy 重要性升级(没它 Step 5 上游 ExecutionClient 没人调用)。新增 §6.4 异构 instrument 归一,§6.5 上游 PM 适配器影响。映射表 §4 大幅扩展。 |
 | 2026-05-09 | Q10 新增 + 锁定: 不加锁直接用上游裸 ExecutionClient,遇到问题再子类化包写锁(后备方案模板已留 §6.6)。WS 订阅锁直接删除(上游用引用计数更优)。§6.5 表格补 5 行(查挂单 / 单订单 / 成交历史 / 撤单粒度 / Reconciliation 红利 / 同步机制对比),澄清用户其实有 `fetch_open_orders` 接口但属上游标准化报告体系外。 |
 | 2026-05-09 | Q2 锁定: 沿用现有 `nautilus_trader/adapters/orbitexch/browser_manager.py:PlaywrightBrowserManager`(代码质量良好);所有权从 DataClient 抽到 NT factory 层(`get_orbitexch_browser_manager` 共享单例),三方共享 BrowserContext(共享登录态),按 page name `"discovery"`/`"data"`/`"execution"` 拿专属 page。当前半成品 `nautilus_trader/adapters/orbitexch/data.py` 标记为"Step 2 整体重写"(基类错: 用 `LiveDataClient` 应为 `LiveMarketDataClient`;数据类型错: `QuoteTick` 应为 `OrderBookDelta`;所有权错: 启动/关闭 manager 应改为只消费)。§6.2 重写为完整方案。 |
+| 2026-05-09 | Q11 锁定: Debug 注入框架完整设计写入新增 §6.6。新增 P10 设计原则: 所有 debug 行为通过子类化 + 工厂层选择,生产代码零 `if self._debug`。子问题 Q11.1-Q11.5 全部锁定。**关联边界修正**: `_check_and_adjust_size` 整段从 `services/strategy/service.py` 抽到 Risk 层(§5.4 / §5.6 边界改写),Strategy 只管决策不做物理校验,`skip_check_size` 落点是 Risk 层 Debug 子类。校准 NT RiskEngine 真实角色: 只负责框架层订单合法性(min/max quantity 等),应用层尺寸/余额校验归自写 `LiquidityRiskActor` / `BalanceMonitorActor`(之前 §5.6 表述为"下单前检查归 RiskEngine"是误解)。§5.4 Strategy 设计加 hook 点契约(`_get_min_rebate_rate` / `_get_pm_price` 等),为 Debug 子类预留覆盖位。 |
+| 2026-05-09 | 测试结构落地: 新建 `tests/arbitrage/<capability>/` 按 P8 capability 组织(discovery / matching / adapters/{polymarket,orbitexch} / strategy / risk / web / debug / e2e / _helpers)。形态混合: 每个 capability 一个 README.md(用例编号 / 前置 / 输入 / 步骤 / 期望 / 验收)+ skeleton `.py`(pytest 函数体目前 `pytest.skip` + docstring 引用 README 用例)。Step 1-2 详细写,Step 3 摘要,Step 4-7 占位。删除旧 `tests/arbitrage/services/`(1.0M)/ `tests/mock_exchange/`(32K,框架本体在 src 保留)/ 空的 `tests/odds_signal_trigger/` / 错位的 `tests/unit_tests/web_panel/`(132K)。`debug_config_size_test.json` 移到 `tests/arbitrage/_helpers/debug_configs/`。NT 框架测试(`unit_tests/{accounting,cache,...}` 等)未动。`tests/arbitrage/conftest.py`(NT 兼容 fixture)保留。 |
+| 2026-05-09 | Q12 锁定 + 边界二次修正(基于用户反馈): **重新拆分 risk vs strategy 的职责**。深度缩放(`_check_and_adjust_size` Step 1)**归 Strategy 内部 hook**(算下多少 share,是策略性决定不是风控);最小限额检查(Step 2 + `MIN_SIZE_POLYMARKET/_ORBITEXCH` 常量)**整体删除**,完全用 NT `instrument.min_quantity` 自动检查(应用层不更严);余额检查归 `ArbitrageRiskEngine`(NT `RiskEngine` 子类),在 `submit_order` 管道上透明拦截。**Strategy 不引用 Risk** —— `LiquidityRiskActor` / `LiquidityRiskService` 这层删除(Q12 close)。skip_check_size 落点修正: `DebugArbitrageRiskEngine._check_order` 跳过 NT 父类的最小限额检查。venue 偶发拒绝由 NT 标准 `on_order_rejected` 处理,不算设计层"双兜底"。映射表 §4 / §5.4 / §5.6 / §6.6 全部更新。 |
+| 2026-05-09 | BalanceMonitorActor 三次修正(用户指出 OE 没法主动拉余额): **账户状态维护归 ExecutionClient**(PM 主动 timer / OE 被动 WS push),不归 BalanceMonitorActor。BalanceMonitorActor 重定义为**反应型 Actor**: 只订阅 `cache.account_state` 变更做阈值告警,不主动拉数据(避免通用 Actor 含 venue 特异性)。§5.5 ExecutionClient 显式列出"账户状态维护"职责;§5.6 重写组件协作图;§4 映射表更新。`tests/arbitrage/risk/README.md` 加 risk-6.5 / 6.6(PM 主动 / OE 被动)与 risk-6.7(反应型告警)用例,删除"周期轮询"用例。澄清 Q1: NT 不自带"业务级余额够不够"检查,只自带框架层订单合法性 + Margin 账户的 margin 计算。 |
+| 2026-05-09 | BalanceMonitorActor 四次修正(用户选 D: 不做告警让前端自己看): **彻底删除 BalanceMonitorActor**。NT 没自带这种 Actor,我们也不写。`AccountState` 由 WebGatewayActor 订阅 + 转 JSON 推前端,浏览器看着判断。无系统层主动告警 / publish BalanceAlert。如未来需要熔断 / Slack 推送等,按时再加(P7 不超前实现)。Step 6 名称从 "BalanceMonitorActor + RiskEngine 配置" 改为 "ArbitrageRiskEngine + ExecutionClient 账户状态维护"。§3 架构图 / §4 映射表 / §5.6 / §5.7 / §6.6 Debug 表 / Step 8 全部更新。`tests/arbitrage/risk/README.md` 删 risk-6.7;`tests/arbitrage/web/README.md` 加 web-7.3(AccountState 推送替代 BalanceAlert)。 |
