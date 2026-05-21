@@ -1,0 +1,267 @@
+# risk 测试(占位)
+
+待 Step 6 启动时展开。
+
+对应章节: `refactor.md §5.6, §6.9`
+
+## 锁定的关键性约束(2026-05-09 三次修正后)
+
+Risk 层在 NT `submit_order` 管道上**透明拦截**,Strategy **不引用** Risk。账户状态由 ExecutionClient 维护(PM 主动 / OE 被动 WS),Risk 层只读 Cache。**没有独立的 BalanceMonitorActor**(告警让前端自己看,见 §5.7)。
+
+```
+ExecutionClient (维护账户)
+├── PM: 主动 timer 拉 → generate_account_state → Cache
+└── OE: 被动 WS 帧 → generate_account_state → Cache
+                ↓
+        ArbitrageRiskEngine._check_order  ← 同步读 Cache 做余额检查
+                ↓
+        WebGatewayActor (§5.7) 订阅 AccountState → 推前端 JSON
+                                                    (用户看着判断,无系统层告警 Actor)
+```
+
+**唯一组件**: **`ArbitrageRiskEngine`**(NT `RiskEngine` 子类)
+- NT 父类自动处理最小限额(`instrument.min_quantity`)
+- 子类加 `_check_balance` hook 做余额检查
+
+**删除**:
+- `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量 + `check_min_size` 函数 + `adjust_share_by_liquidity` Step 2
+- `LiquidityRiskActor` / `LiquidityRiskService` 整层
+- `BalanceMonitorActor`(告警让前端做,Step 6 不引入此 Actor)
+
+## 预期用例(摘要)
+
+### risk-6.1: ArbitrageRiskEngine 透明拦截 submit_order
+- 前置: NT TradingNode 启动,Strategy 准备 submit
+- 输入: `Strategy.submit_order(...)` 一笔订单
+- 期望: `ArbitrageRiskEngine._check_order` 被调用 → 通过则路由到 ExecutionClient,被拒发 `OrderDenied`
+- 验收: Strategy 不需要主动调任何 risk API,完全透明
+
+### risk-6.2: NT 自动处理 instrument.min_quantity
+- 输入: 提交一个 `quantity < instrument.min_quantity` 的订单
+- 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
+- 验收: 应用层无需任何"最小限额"代码
+
+### risk-6.3: 应用层余额检查(自算可用余额,扣在途挂单)
+- 前置: ExecutionClient 已写入 cache.account_state
+- 输入: 提交一个超出**可用余额**的订单
+- 期望: `ArbitrageRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
+- 验收: 检查依据 = `balance_total − Σ(cache.orders_open 在途名义额)`,**不直接信 `account.balance_free()`**(Q17,2026-05-19)
+
+### risk-6.3b: 可用余额按 venue 非对称(Q17,2026-05-19)
+- **PM —— 自扣在途挂单(free=total 陷阱)**
+  - 前置: PM `total=100`,一笔未成交挂单占用 `60`;cache 上报 `reported=True/locked=0/free=100`(`CashAccount.apply` 已清空 NT 自算 locked)
+  - 输入: 再提交名义额 `50` 的开仓单
+  - 期望: `_check_balance` 算可用 = `100 − 60 = 40 < 50` → **拒绝**(误读 `free=100` 则误放行)
+  - 验收: PM 可用 = `total − Σ(PM cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
+- **OE —— 直接信 WS 余额(已含占用,不再减)**
+  - 前置: OE WS 上报余额 `40`(**已扣**挂单占用);该值即可用
+  - 输入: 提交名义额 `50` 的单
+  - 期望: `_check_balance` 用 `40 < 50` → 拒绝;**不再额外扣挂单**(否则双重扣减低估)
+  - 验收: OE 可用 = cache 余额直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM/OE 不同处理
+
+### risk-6.4: cache stale 时由 venue 拒绝兜底
+- 前置: cache 余额过期,venue 真实余额已不够
+- 输入: 提交订单(过 RiskEngine 检查 → 路由到 venue)
+- 期望: venue 返回 INSUFFICIENT_BALANCE → `generate_order_rejected` → `Strategy.on_order_rejected`
+- 验收: 这是**异常路径**,不是设计层"双兜底",Strategy 应能处理
+
+### risk-6.5: PM ExecutionClient 事件驱动维护账户状态
+- 前置: PolymarketExecutionClient 启动
+- 输入: 触发任一上游事件(连接时 / 链上成交确认 `POLYMARKET_FINALIZED_TRADE_STATUSES`)
+- 期望: cache.account_state(POLYMARKET) 自动更新
+- 验收: 路径完全在 ExecutionClient 内,无独立监控 Actor;**上游无周期 timer、NT 无默认 QueryAccount 轮询、健康检查也不拉余额**(Q17,完全靠事件)
+
+### risk-6.6: OE ExecutionClient 被动维护账户状态(WS)
+- 前置: OrbitExchExecutionClient 启动,WS 已连接
+- 输入: 模拟 OE WS 推送一条余额变化帧
+- 期望: ExecutionClient 解析后调 `generate_account_state` 写 Cache
+- 验收: 被动路径,无 timer,完全反应式
+
+---
+
+## 组合级硬停门限: tp / sl / global_sl(Q16,§5.6 `_check_rebate_gates`)
+
+三门限平移自旧 `services/risk/service.py:check_risk`,全在 `ArbitrageRiskEngine._check_rebate_gates` 内,逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。
+
+### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行
+- 前置: `ArbitrageRiskEngine` 已装入管道
+- 输入: 提交一笔正常订单
+- 期望: `_check_order(self, instrument, order)` 两参签名;先调 `super()._check_order(instrument, order)`(NT min/max_quantity / notional / rate),再 `_check_balance`,再 `_check_rebate_gates`
+- 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,override 被 Cython 内部调用派发到
+
+### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
+- 前置: pair_id="match_X" 持仓,所有方向 `way_rebate ≥ config.match_tp`;`leg_settled` 全 true
+- 输入: strategy 对该 pair 再 `submit_order`
+- 期望: `_check_rebate_gates` 判 match_tp → `_check_order` 返 False → `Strategy.on_order_denied`
+- 验收: 触线一律 deny;不平仓、不撤单、无其它动作
+
+### risk-6.7.3: match_sl 触发 deny(止损,该场恶化别加仓)
+- 前置: `min_way_rebate("match_X") < config.get_match_sl("match_X")`
+- 输入: 对该 pair 再 submit
+- 期望: deny → `on_order_denied`
+- 验收: 与旧 `match_blocked` 行为等价
+
+### risk-6.7.4: global_sl 触发 deny(全局累计止损 / 循环熔断)
+- 前置: `portfolio.global_min_rebate_sum() < config.global_sl`
+- 输入: 对**任意** pair submit
+- 期望: deny → `on_order_denied`
+- 验收: 全局熔断 = 逐 submit deny;**断言无 `set_trading_state` 调用、无独立熔断 Actor**(静态搜索 + 运行时 TradingState 始终 ACTIVE)
+
+### risk-6.7.5: 撤单不受三门限影响(只挡开仓)
+- 前置: 任一门限已触发(如 global_sl 跌破)
+- 输入: 提交一笔 `CancelOrder`(如补偿撤单)
+- 期望: 撤单正常路由到 ExecutionClient,**不被 `_check_rebate_gates` 拦**
+- 验收: deny 只作用于 `SubmitOrder` 通路;`bug_compensating_cancel_missing` 的补偿撤单照常发出
+
+### risk-6.7.6: 机会评估与硬停正交(strategy 通过但 risk 仍拦)
+- 前置: 某机会 `min_way_rebate ≥ strategy.min_rebate_rate`(strategy 认为值得做)但同时所有方向 `≥ match_tp`
+- 输入: strategy 评估通过 → submit
+- 期望: strategy 不自拦(机会评估正向门槛过),`ArbitrageRiskEngine` 在管道上 deny(tp 硬停)
+- 验收: 两层正交;strategy 不引用 risk,deny 经 `on_order_denied` 回传
+
+### risk-6.7.7: settled entry 不存在 → 放行(Q-G1,2026-05-19)
+- 前置: pair_id="match_X" 从没下过单 → `leg_settled` 无此 entry
+- 输入: 对 match_X submit,`_check_rebate_gates` 检查 settled
+- 期望: entry 不存在 = 无结算风险 → **本 pair 的 tp/sl 门限放行**(way_rebate 本就 `{}`,tp/sl 无从触发)
+- 验收: absent ≠ false;absent 一律放行,不与 fail-closed 混淆
+
+### risk-6.7.8: global_min_rebate_sum 返回 None → fail-closed deny(2026-05-19)
+- 前置: **别的某个 pair** 有腿 `leg_settled=false` → `portfolio.global_min_rebate_sum()` 返回 `None`
+- 输入: 对**任意** pair(含 settled 干净的 pair)submit
+- 期望: `_check_rebate_gates` 读到 global `None` → **deny(拦截新开仓)**;全局图景不全时一律挡
+- 验收:
+  - 与 fail-open 相反:数据不全时挡而非放
+  - 不死锁:撤单走另一通路照常(risk-6.7.5),健康检查 reconcile 结算后 global 恢复实数 → 后续 submit 自动放开
+  - 实现不得 NoneType 崩:None 必须显式判定为 deny,不进入数值比较
+
+### risk-6.7.9: rebate 数据源 = ArbitragePortfolio 引用(非 cache 缓存)
+- 前置: cache 持仓刚因 fill 更新
+- 输入: `_check_rebate_gates` 取 rebate
+- 期望: 持 `ArbitragePortfolio` 引用调 `way_rebate / min_way_rebate / global_min_rebate_sum`,即时现算反映最新持仓
+- 验收: **cache 不存 rebate**;`_check_rebate_gates` 不读任何"已存 rebate"字段,不重复算法(算法只在 ArbitragePortfolio 一份)
+
+---
+
+## ArbitragePortfolio: way_rebate 等领域指标(Q14,§6.9)
+
+子类化 `Portfolio` 加 4 个 Python 方法,与 NT `unrealized_pnl` 并列扩展。算法平移自 `services/risk/position.py`。
+
+### risk-6.9.1: ArbitragePortfolio 替换 kernel.\_portfolio
+
+- 前置: `launcher.py` 启动 TradingNode 后调用 `_swap_portfolio(node)`
+- 期望:
+  - `node.kernel._portfolio` 实例类型 = `ArbitragePortfolio`
+  - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)注册的 handler 指向新实例
+  - 旧 Portfolio 实例的 endpoint 已 deregister
+- 验收: 替换无副作用;以原 Portfolio API 调用(`unrealized_pnl` 等)行为不变
+
+### risk-6.9.2: way_rebate 算法等价于 services/risk/position.py
+
+- 前置: cache 中 PM token A `BUY 100 @ 0.4`,OE selection X `BACK 50 @ 2.5`;两者 `instrument.info["competition"] == pair_id="match_1"`;share = 100
+- 输入: `portfolio.way_rebate("match_1")`
+- 期望: `{"home": 0.10, "away": 0.35}`(对照 §6.9.2 公式)
+- 验收: 与现 `MatchPosition.calculate_way_rebate()` 输出一致
+
+### risk-6.9.3: way_rebates_by_venue 按 venue 拆分
+
+- 前置: 同 6.9.2
+- 输入: `portfolio.way_rebates_by_venue("match_1")`
+- 期望: `{POLYMARKET: {...}, ORBITEXCH: {...}}`,每个 venue 单独算
+- 验收: 与 `MatchPosition.calculate_way_rebate_by_venue()` 输出一致
+
+### risk-6.9.4: min_way_rebate
+
+- 前置: 同 6.9.2
+- 输入: `portfolio.min_way_rebate("match_1")`
+- 期望: `0.10`(home/away 中较小者)
+- 验收: 等价于 `min(way_rebate.values())`
+
+### risk-6.9.5: global_min_rebate_sum
+
+- 前置: cache 中两场比赛都有持仓,min_way_rebate 分别 0.10 / 0.05
+- 输入: `portfolio.global_min_rebate_sum()`
+- 期望: `0.15`
+- 验收: 等价于现 `PositionManager.get_global_min_rebate_sum()`;**只遍历有 open position 的 pair**(对应旧 `position.py:382` 遍历 `self._positions.values()`)
+
+### risk-6.9.5b: 未交易比赛不进遍历,不触发 None
+
+- 前置: cache 中 match_X 有持仓且 settled 全 true(min_rebate=0.10);同时存在一场 match_Z **从没下过单 / 无持仓**(仅日程表/instrument 存在)
+- 输入: `portfolio.global_min_rebate_sum()`
+- 期望: 返回 `0.10`(只计 match_X);**match_Z 不进遍历、不致 None**
+- 验收: 扫描范围 = active pair(有持仓);"无持仓比赛 → None" 是**错误**实现(否则日程表有未交易比赛就恒 None,系统焊死)。None 仅来自"有持仓 pair 的腿 false"(见 risk-6.9.12)
+
+### risk-6.9.6: pair_id 解析(instrument.info["competition"])
+
+- 前置: 一笔持仓的 instrument 缺 `info["competition"]` 字段
+- 输入: `portfolio.way_rebate(pair_id)` 内部解析时遇到该 instrument
+- 期望: 该 leg 被跳过,不进入聚合;不抛异常
+- 验收: 防御性,缺字段 instrument 不污染聚合结果
+
+### risk-6.9.7: 空 pair / 无持仓
+
+- 前置: 一个未持仓的 `pair_id`
+- 输入: `portfolio.way_rebate("unknown_pair")`
+- 期望: 返回 `{}`(不返回 None / 不抛异常)
+- 验收: 与 NT `unrealized_pnls(...)` 空账户时返回 `{}` 一致
+
+### risk-6.9.8: 不订阅事件,纯 pull(无独立触发器)
+
+- 前置: cache 中持仓刚因 fill 更新过
+- 输入: 立即调 `portfolio.way_rebate(pair_id)`
+- 期望: 算出的结果反映最新 fill;无中间缓存层延迟
+- 验收: 静态搜索 ArbitragePortfolio 代码无 `msgbus.subscribe` 调用;纯函数式
+
+---
+
+### risk-6.9.9: settled gate — entry 不存在通过(Q-G1)
+
+- 前置: pair_id="match_X" 从未发起过 execution → `leg_settled` entry 不存在;但 cache 中有该 pair 的非 execution 触发持仓(如历史导入)
+- 输入: `portfolio.way_rebate("match_X")`
+- 期望: 正常计算返回 dict(无 execution-staleness 风险时不阻塞)
+- 验收: gate 失败时 entry 必须存在;不存在 entry 不触发 gate
+
+### risk-6.9.10: settled gate — entry 全 true 通过
+
+- 前置: `leg_settled["match_X"] = [true, true]`
+- 输入: `portfolio.way_rebate("match_X")` / `min_way_rebate("match_X")` / `way_rebates_by_venue("match_X")`
+- 期望: 三个方法都正常返回结果
+- 验收: 与现有 risk-6.9.{2,3,4} 行为一致
+
+### risk-6.9.11: settled gate — entry 任一 false 阻塞(Q-G2)
+
+- 前置: `leg_settled["match_X"] = [true, false]`(away 方向 settled=false)
+- 输入:
+  - `portfolio.way_rebate("match_X")`
+  - `portfolio.min_way_rebate("match_X")`
+  - `portfolio.way_rebates_by_venue("match_X")`
+- 期望:
+  - `way_rebate` 返回 `{}`
+  - `min_way_rebate` 返回 `None`
+  - `way_rebates_by_venue` 返回 `{}`
+- 验收:
+  - 即使 cache 中有持仓数据,只要 gate 失败就阻塞计算
+  - 不抛异常,不返回 sentinel,只返回空值让调用方自然处理
+
+### risk-6.9.12: global_min_rebate_sum fail-closed(Q-G3)
+
+- 前置: 多场比赛,X / Y 都有持仓;`leg_settled["match_X"] = [true, true]`,`leg_settled["match_Y"] = [false, true]`
+- 输入: `portfolio.global_min_rebate_sum()`
+- 期望: 返回 `None`(整个全局判断作废,**不返回 X 的部分和**)
+- 验收: fail-closed —— 任何 pair 任何方向 false 就让全局判断作废返回 `None`;**消费方 `_check_rebate_gates` 读到 `None` → deny(拦截新开仓)**(2026-05-19 锁定,见 risk-6.7.8)。区分两层:`global_min_rebate_sum` 方法返回 `None`(数据语义),熔断门限把 `None` 解释为"挡新单"(消费语义)
+
+---
+
+## 没有的用例
+
+- ~~周期轮询余额~~ —— 删除(归 ExecutionClient PM 主动)
+- ~~阈值告警 → publish BalanceAlert~~ —— 删除(用户看前端自己判断)
+- ~~BalanceMonitorActor~~ —— 不引入此 Actor
+
+如未来需要系统层告警(熔断 / Slack 推送等),按时再加,不超前实现(P7)。
+
+## Debug 相关
+
+`DebugArbitrageRiskEngine` 子类的测试归于 `tests/arbitrage/debug/`(§6.6),特别是:
+- `skip_check_size` 跳过 NT 父类的最小限额检查(测试小单可下)
+
+不在本目录。
