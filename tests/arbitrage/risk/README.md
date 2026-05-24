@@ -1,8 +1,12 @@
-# risk 测试(占位)
+# risk 测试
 
-待 Step 6 启动时展开。
+对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-对应章节: `refactor.md §5.6, §6.9`
+**Step 6 落地状态(2026-05-22)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `common/leg_settled.py` + `bootstrap.py` 已实现,**pytest 全绿(29 passed)**:`test_{leg_settled,portfolio,engine,bootstrap}.py`(构造器在 `_factories.py`)。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、三门限 + settled fail-closed(6.7.2/3/4/8)、余额 venue 非对称(6.3b)、way_rebate 公式与 settled gate(6.9.x)、导入名替换 + wire(6.9.1)、LegSettledRegistry 语义(6.9.13)。
+
+**写测试时抓出两个 production bug(已修)**:① `ArbitragePortfolio` 读不到基类私有 cdef `self._cache`(`Portfolio._cache` 非 readonly)→ 覆盖 `__init__` 自存 `_arb_cache`;② `order.has_price_c()` 是 cdef 不可从 Python 调 → 改 `order.has_price`(property)。两者运行期才暴露,纸面 review 抓不到——印证落地测试价值。
+
+**仍待落 .py / 延后**(需全节点 / discovery / execution 接线):risk-6.1/6.2(全管道透明拦截 + NT min_quantity 自动拒,需起节点)、risk-6.3/6.4(cache 真实持仓 + venue stale 兜底)、risk-6.5/6.6(账户状态维护,属 execution)、risk-6.7.5/6/9 与 6.9.{2全路径,3,5,7,8,10,11}(需 cache 真实 Position 而非 duck/stub)。
 
 ## 锁定的关键性约束(2026-05-09 三次修正后)
 
@@ -13,13 +17,13 @@ ExecutionClient (维护账户)
 ├── PM: 主动 timer 拉 → generate_account_state → Cache
 └── OE: 被动 WS 帧 → generate_account_state → Cache
                 ↓
-        ArbitrageRiskEngine._check_order  ← 同步读 Cache 做余额检查
+        ArbitrageLiveRiskEngine._check_order  ← 同步读 Cache 做余额检查
                 ↓
         WebGatewayActor (§5.7) 订阅 AccountState → 推前端 JSON
                                                     (用户看着判断,无系统层告警 Actor)
 ```
 
-**唯一组件**: **`ArbitrageRiskEngine`**(NT `RiskEngine` 子类)
+**唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
 - NT 父类自动处理最小限额(`instrument.min_quantity`)
 - 子类加 `_check_balance` hook 做余额检查
 
@@ -30,10 +34,10 @@ ExecutionClient (维护账户)
 
 ## 预期用例(摘要)
 
-### risk-6.1: ArbitrageRiskEngine 透明拦截 submit_order
+### risk-6.1: ArbitrageLiveRiskEngine 透明拦截 submit_order
 - 前置: NT TradingNode 启动,Strategy 准备 submit
 - 输入: `Strategy.submit_order(...)` 一笔订单
-- 期望: `ArbitrageRiskEngine._check_order` 被调用 → 通过则路由到 ExecutionClient,被拒发 `OrderDenied`
+- 期望: `ArbitrageLiveRiskEngine._check_order` 被调用 → 通过则路由到 ExecutionClient,被拒发 `OrderDenied`
 - 验收: Strategy 不需要主动调任何 risk API,完全透明
 
 ### risk-6.2: NT 自动处理 instrument.min_quantity
@@ -44,7 +48,7 @@ ExecutionClient (维护账户)
 ### risk-6.3: 应用层余额检查(自算可用余额,扣在途挂单)
 - 前置: ExecutionClient 已写入 cache.account_state
 - 输入: 提交一个超出**可用余额**的订单
-- 期望: `ArbitrageRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
+- 期望: `ArbitrageLiveRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
 - 验收: 检查依据 = `balance_total − Σ(cache.orders_open 在途名义额)`,**不直接信 `account.balance_free()`**(Q17,2026-05-19)
 
 ### risk-6.3b: 可用余额按 venue 非对称(Q17,2026-05-19)
@@ -81,13 +85,13 @@ ExecutionClient (维护账户)
 
 ## 组合级硬停门限: tp / sl / global_sl(Q16,§5.6 `_check_rebate_gates`)
 
-三门限平移自旧 `services/risk/service.py:check_risk`,全在 `ArbitrageRiskEngine._check_rebate_gates` 内,逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。
+三门限平移自旧 `services/risk/service.py:check_risk`,全在 `ArbitrageLiveRiskEngine._check_rebate_gates` 内,逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。
 
-### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行
-- 前置: `ArbitrageRiskEngine` 已装入管道
+### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行(✅ 已 e2e 验证)
+- 前置: `ArbitrageLiveRiskEngine` 已装入管道
 - 输入: 提交一笔正常订单
-- 期望: `_check_order(self, instrument, order)` 两参签名;先调 `super()._check_order(instrument, order)`(NT min/max_quantity / notional / rate),再 `_check_balance`,再 `_check_rebate_gates`
-- 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,override 被 Cython 内部调用派发到
+- 期望: `_check_order(self, instrument, order)` 两参签名;先调 `super()._check_order(instrument, order)`(NT 仅 price/quantity/GTD),再 `_check_balance`,再 `_check_rebate_gates`。**notional/submit_rate/native 余额不在 `_check_order`,在父类 `_check_orders_risk_for_account`(本类不覆盖,管道上随后原样跑)**
+- 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,**override 被 Cython `_handle_submit_order` 派发到(已用真实 SubmitOrder 跑通:覆盖触发 1 次 + deny 事件发出 + 订单不泄漏到 exec)**。⚠️ 自定义 deny 必须自调 `self._deny_order(order, reason)`,否则订单静默丢弃、`on_order_denied` 不触发
 
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,所有方向 `way_rebate ≥ config.match_tp`;`leg_settled` 全 true
@@ -116,7 +120,7 @@ ExecutionClient (维护账户)
 ### risk-6.7.6: 机会评估与硬停正交(strategy 通过但 risk 仍拦)
 - 前置: 某机会 `min_way_rebate ≥ strategy.min_rebate_rate`(strategy 认为值得做)但同时所有方向 `≥ match_tp`
 - 输入: strategy 评估通过 → submit
-- 期望: strategy 不自拦(机会评估正向门槛过),`ArbitrageRiskEngine` 在管道上 deny(tp 硬停)
+- 期望: strategy 不自拦(机会评估正向门槛过),`ArbitrageLiveRiskEngine` 在管道上 deny(tp 硬停)
 - 验收: 两层正交;strategy 不引用 risk,deny 经 `on_order_denied` 回传
 
 ### risk-6.7.7: settled entry 不存在 → 放行(Q-G1,2026-05-19)
@@ -146,14 +150,16 @@ ExecutionClient (维护账户)
 
 子类化 `Portfolio` 加 4 个 Python 方法,与 NT `unrealized_pnl` 并列扩展。算法平移自 `services/risk/position.py`。
 
-### risk-6.9.1: ArbitragePortfolio 替换 kernel.\_portfolio
+### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
-- 前置: `launcher.py` 启动 TradingNode 后调用 `_swap_portfolio(node)`
+- 前置: 构造 `TradingNode` **之前**调 `bootstrap.install_arbitrage_engines()`(替换 `nautilus_trader.system.kernel.Portfolio` / `.LiveRiskEngine`);构造后调 `wire_arbitrage_runtime(node, params=, leg_settled=)`
 - 期望:
-  - `node.kernel._portfolio` 实例类型 = `ArbitragePortfolio`
-  - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)注册的 handler 指向新实例
-  - 旧 Portfolio 实例的 endpoint 已 deregister
-- 验收: 替换无副作用;以原 Portfolio API 调用(`unrealized_pnl` 等)行为不变
+  - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
+  - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
+  - `configure_arb` 注入 share/fx/leg_settled(portfolio)与三门限 params(engine)
+- 验收:
+  - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
+  - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)
 
 ### risk-6.9.2: way_rebate 算法等价于 services/risk/position.py
 
@@ -249,6 +255,16 @@ ExecutionClient (维护账户)
 - 期望: 返回 `None`(整个全局判断作废,**不返回 X 的部分和**)
 - 验收: fail-closed —— 任何 pair 任何方向 false 就让全局判断作废返回 `None`;**消费方 `_check_rebate_gates` 读到 `None` → deny(拦截新开仓)**(2026-05-19 锁定,见 risk-6.7.8)。区分两层:`global_min_rebate_sum` 方法返回 `None`(数据语义),熔断门限把 `None` 解释为"挡新单"(消费语义)
 
+### risk-6.9.13: LegSettledRegistry 共享对象语义(✅ 已验证;横切契约,见 execution §4.4)
+
+- 前置: `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`),execution 写、portfolio/risk/strategy 读。**腿键 = instrument_id**(一个 instrument = 一条腿,不需 方向→下标 映射)
+- 输入/期望:
+  - 新建 → `has_entry(p)` False、`any_unsettled(p)` False(entry 不存在不触发 gate)
+  - `reset(p, ["A.PM","B.OE"])` → `any_unsettled(p)` True(全 false)
+  - `mark(p,"A.PM")` + `mark(p,"B.OE")` → `any_unsettled(p)` False 且 `all_settled(p)` True
+  - `mark` 命中不存在的 entry / 不在本轮腿集合的 instrument → 忽略(非 execution 触发不创建,未知腿不崩)
+- 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
+
 ---
 
 ## 没有的用例
@@ -261,7 +277,7 @@ ExecutionClient (维护账户)
 
 ## Debug 相关
 
-`DebugArbitrageRiskEngine` 子类的测试归于 `tests/arbitrage/debug/`(§6.6),特别是:
+`DebugArbitrageLiveRiskEngine` 子类的测试归于 `tests/arbitrage/debug/`(§6.6),特别是:
 - `skip_check_size` 跳过 NT 父类的最小限额检查(测试小单可下)
 
 不在本目录。

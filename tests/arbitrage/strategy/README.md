@@ -123,6 +123,39 @@
 **期望**: 健康检查 tick 看到 `_execution_active` 跳过(见 pm-adapter-5.health.5 / oe-adapter 对应用例);执行不被打断,track 到 terminal/timeout
 **验收**: 执行全程不被健康检查干扰;`execution.finished` 后健康检查恢复
 
+### strategy-4.17: 机会快照隔离 —— 开跑时冻数据,全程用拷贝(Q20,2026-05-21)
+
+**前置**: MatchedPair 事件到达,strategy 准备评估某 pair 的机会
+**输入**: strategy 在评估开跑时取快照,随后规划 + submit + tracking
+**期望**:
+- 取 per-pair 快照(该 competition 所有腿):冻 **订单簿所需值 + 持仓 + way_rebate(取快照那刻调一次 `portfolio.way_rebate(pair)` 冻结果)**
+- 规划 / `_adjust_share_by_liquidity` / 后续(含 deferred 的补偿逻辑)**全读快照**,不读 live cache
+- 期间 live cache 被新成交/新 tick 更新(包括本次执行自己的腿成交),**机会计算/执行不受影响**
+- 该次套利结束(双腿 terminal/timeout/放弃)→ 丢弃快照;下一轮重新取**新鲜**快照
+**验收**:
+- way_rebate **不从 cache 读**(cache 没有),是快照里冻结的预算结果
+- **安全闸走 live 不走快照**:settled pre-check(4.14)/ Q19 健康检查互斥(4.15)/ RiskEngine 余额检查 都读最新 live 状态
+- 快照不跨轮持久(与 4.9 每轮重算一致);strategy 不持有跨轮快照字段
+- 实现自建(NT 无原生读隔离快照):持仓 `pickle` 深拷贝,订单簿冻取所需值;不依赖 `Cache.snapshot_position`(那是 netting 归档,非读隔离)
+
+### strategy-4.18: 快照期间本腿成交不扰动机会计算(Q20 关键场景)
+
+**前置**: strategy 已取快照、submit 双腿;PM 腿先成交 → live cache 持仓变化 → live way_rebate 会变
+**输入**: 在该次套利仍进行中,strategy 若有 deferred 的补偿/再评估逻辑触发
+**期望**: 补偿/再评估读**快照**的持仓 + way_rebate(开跑那刻的值),**不**因本腿刚成交而用变化后的 live 值
+**验收**: 验证快照"全程一致"语义;live 持仓的变化由下一轮新快照才纳入
+
+### strategy-4.19: 快照回收 —— 所有出口确定性释放,无泄漏(Q20)
+
+**前置**: strategy 取快照机制已实现
+**输入**: 分别走四条出口 —— (a) 正常双腿 terminal;(b) §6.8.5 tracking timeout;(c) 规划阶段放弃(rebate 不够/流动性差);(d) 执行中抛异常
+**期望**: 四条出口**都**在 `finally` 释放快照;`pre-check 放弃`(settled/健康检查不过)路径**根本没取过快照**(取快照在 cheap live pre-check 之后)
+**验收**:
+- 跑 N 轮(含大量 pre-check 放弃 + 规划放弃 + 正常完成混合)后,strategy 持有的快照数**回落到 ≤1**(Q19 全局互斥 → 同时最多 1 次执行在飞 → 最多 1 份长命快照)
+- 快照绑 per-opportunity 上下文,**不**进长存 `self._snapshots` 字典(静态检查无此累积字典,或有则每出口 `del`)
+- 异常路径不漏快照(`finally` 覆盖)
+- 内存监测:长时间运行快照占用不单调增长
+
 ## Debug 相关
 
 `DebugArbitrageStrategy` 子类的测试归于 `tests/arbitrage/debug/`(§6.6),覆盖:

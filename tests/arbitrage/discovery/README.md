@@ -5,6 +5,15 @@
 - Step 2 InstrumentRefresher Actor(调度 + 持久化)—— `refactor.md §5.2.2`
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
+**落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
+- ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)
+- ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
+- ✅ `test_instrument_refresher.py`(2.1-2.11:on_start 调度、on_stop 取消、on_save/on_load 持久化 + 损坏值/<min 夹下界、msgbus 命令运行时改值、tick 成功 publish / 0 不 publish / 异常静默不卡死)
+- ⬜ `test_polymarket_provider.py`(1.1/1.2/1.3 上游构造需链上 creds,/live-test 验)
+- ⬜ 浏览器抓取失败处理(1.7)、双 venue Refresher 隔离(2.7 整端到端,要起 node)、`InstrumentsRefreshed` msgbus 全链路(3.2)—— 经 /live-test 或上层 e2e 验
+
+**仍待 Step 1**:scraper DOM 抽 `start_ts`(现 Provider 暂置 0);PM info 6-key post-processor 接线(launcher 层)。
+
 ## 文件分布
 
 | 文件 | 范围 |

@@ -132,24 +132,58 @@ class OrbitExchMessageParser:
             self._log.error(f'解析赔率消息失败: {e}')
             return None
     
-    def parse_order_message(self, message: Dict) -> Optional[Dict[str, Any]]:
+    def parse_general_frame(self, message: Dict) -> Optional[Dict[str, Any]]:
         """
-        解析订单消息
-        
-        Parameters
-        ----------
-        message : dict
-            原始消息
-            
+        解析 `general` 频道下行帧(SockJS `a[...]` 已由 websocket_handler 解包)。
+
+        实测帧(2026-05-22 用户登录刷新页面抓取)按**顶层 key** 分型:
+        - `{"BALANCE": {"balance": "37.49", "avBalance": null}}` → 账户余额
+          (`balance` 是**字符串**;该值 WS 侧已含挂单占用,RiskEngine 不再减,Q17)
+        - `{"CURRENT_BETS": [<bet>, ...]}` → 当前注单(空时 `[]`)
+        `general` 频道**时不时还有其它类型**的帧 → 未知 key 一律返回 None 忽略。
+
+        bet item 字段(**工作假设,待 populated 抓帧确认**):与 REST `/customer/api/currentBets`
+        的 `bets[]` 同源(见 executor.get_current_bets),即 `marketId`/`selectionId`/
+        `sizeMatched`/`averagePrice`/`side`/`profitNet`/`liability`(参旧 load_orbitexch_bets)。
+
         Returns
         -------
         Dict or None
-            解析后的订单数据
+            `{"type": "balance", "balance": float|None, "av_balance": ...}` 或
+            `{"type": "current_bets", "bets": list}`;未知帧 → None。
         """
-        # TODO: 根据实际订单消息格式实现
-        # 订单消息格式待确认
-        self._log.debug(f'订单消息: {message}')
+        if not isinstance(message, dict):
+            return None
+
+        if 'BALANCE' in message:
+            payload = message.get('BALANCE') or {}
+            return {
+                'type': 'balance',
+                'balance': self._to_float(payload.get('balance')),
+                'av_balance': self._to_float(payload.get('avBalance')),
+            }
+
+        if 'CURRENT_BETS' in message:
+            return {
+                'type': 'current_bets',
+                'bets': message.get('CURRENT_BETS') or [],
+            }
+
+        self._log.debug(f'未知 general 帧,忽略: {str(message)[:120]}')
         return None
+
+    # 兼容旧名(原 TODO stub);新代码用 parse_general_frame
+    def parse_order_message(self, message: Dict) -> Optional[Dict[str, Any]]:
+        return self.parse_general_frame(message)
+
+    @staticmethod
+    def _to_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
     
     def get_best_back_price(self, runner: Dict) -> Optional[float]:
         """获取最佳 back 价格 (index=0)"""

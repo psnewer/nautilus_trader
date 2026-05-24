@@ -209,22 +209,32 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - WS USER channel 订阅订单状态(如 OE 提供;否则轮询)
 - Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
 
-**现状审计(2026-05-21)—— 现自写代码两处是 stub / 缺失,Step 5 必须实写**:
+**`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` **8 passed**):
+- `{"BALANCE":{"balance":"37.49","avBalance":null}}` —— `balance` 是**字符串**,WS 已含挂单占用。
+- `{"CURRENT_BETS":[<bet>,...]}` —— 当前注单(抓到样本为空 `[]`)。
+- 上行订阅请求 `["{...subscribe:true...}"]`(无 `a`/无数据);**未知 key 帧时不时收到 → 忽略**。
 
-### oe-adapter-5.ws.1: 订单帧解析 → generate_order_*(现为 stub)
-**前置**: 现 `websocket_handler` 有 'orders' 帧分发 + callback 管道,但 `message_parser.parse_order_message` = `# TODO return None`、`_on_order_update` 只 `log.debug`
-**输入**: 模拟一条 OE 'orders' WS 帧(成交/状态变化)
-**期望**: 实写 `parse_order_message` 解析 → ExecutionClient 调 `generate_order_*` 回写 NT 标准管道
-**验收**: 不再是 stub;订单状态变化能进 cache + 发 `events.order.*`;`leg_settled` 按 §6.8.2 置 true
-
-### oe-adapter-5.ws.2: WS 余额帧捕获 → generate_account_state(现缺失)
-**前置**: 现代码 WS 只订 `prices`/`orders` 两类,**没订余额帧**;余额靠 `scraper.get_balance()` 页面抓取
-**输入**: 模拟 OE 站点 WS 的 account/balance 帧(用户确认存在,**已含挂单占用**)
-**期望**: 加第三类 WS 帧捕获 → 解析 → `generate_account_state(...)` 写 Cache
+### oe-adapter-5.ws.1: 订单帧解析 → generate_order_*(envelope 已解,**item schema 待 populated 抓帧**)
+**前置**: `parse_general_frame` 已能分型 + 透传 `CURRENT_BETS` 列表(envelope 已确认、已测)
+**输入**: 一条非空 `CURRENT_BETS` 帧
+**期望**: OE ExecClient `_on_current_bets_frame` 把每个 bet → `generate_order_*` / position report 回写 NT 标准管道;`leg_settled` 按 §6.8.2 置 true(经 `generate_order_*` 覆盖,腿键=instrument_id)
 **验收**:
-- OE 余额经 WS 被动维护(对齐 §5.5/§5.6 "被动 WS" + Q17)
-- cache 中 OE 余额 = WS 上报值,`_check_balance` 直接信不再减(Q17 OE 分支)
-- 页面抓取 `get_balance()` 作为过渡/兜底可保留,但权威源是 WS 帧
+- **已**(✅):envelope 分型 + 列表透传(ws.1 解析层)
+- **待**:单 bet item 字段映射 —— 工作假设与 REST `/customer/api/currentBets` `bets[]` 同源(`marketId`/`selectionId`/`sizeMatched`/`averagePrice`/`side`/...),**需 populated 抓帧确认**后实写 bet→OrderStatusReport 映射
+
+### oe-adapter-5.client: OrbitExchExecutionClient 骨架(✅ 离线核心已测,集成 /live-test)
+**落地**: `src/arbitrage/execution/orbitexch.py`(`tests/arbitrage/execution/test_orbitexch_client.py`,全 arb 套件 76 passed)
+- **已测(离线)**: 离线可构造(super 只需 instrument_provider + 标准 NT 依赖);`_on_general_frame` BALANCE→`generate_account_state`(`oe_balance_to_account_balances`:WS 已净挂单→total=free GBP)、未知/null 忽略;`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单);`_submit_order` session 门控(cancel-only 丢弃 / executor 失败→reject)
+- **live seam(/live-test 验)**: `_connect`(browser/executor/general WS)、`_place_via_executor`(NT Order→executor 旧 Order,market_id/selection_id 取自 instrument.info)、`_cancel_*`(executor);`CURRENT_BETS` item→事件 + reports 待 populated 抓帧
+
+### oe-adapter-5.ws.2: WS 余额帧 → generate_account_state(✅ 解析层+客户端路由已实现+测)
+**前置**: `parse_general_frame` 识别 `BALANCE` 帧 → `{"type":"balance","balance":float,"av_balance":...}`(已测,含 null/字符串/非法值健壮)
+**输入**: 一条 `BALANCE` 帧
+**期望**: OE ExecClient `_on_balance_frame` → `generate_account_state(...)` 写 Cache(待 OE ExecClient 落地接线)
+**验收**:
+- **已**(✅):`general` 帧捕获 + BALANCE 解析(`balance` 字符串→float)
+- **待**:OE ExecClient 把 parsed balance → `generate_account_state`(随 OE 客户端落地)
+- OE 余额经 WS 被动维护(对齐 §5.5/§5.6 "被动 WS" + Q17);cache 余额 = WS 上报值,`_check_balance` 直接信不再减;`get_balance()` 页面抓取作过渡兜底,权威源是 WS 帧
 
 ---
 

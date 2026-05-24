@@ -1,83 +1,167 @@
 """
 InstrumentRefresher Actor 测试(用例见 README.md)。
 
-InstrumentRefresher 是 Step 2 引入的独立 Actor(每 venue 一个),职责:
-- 周期触发 InstrumentProvider.load_all_async
-- 持有 refresh_interval 并通过 NT on_save/on_load 持久化(Q6)
-- 通过 MessageBus 命令 config.{venue}.refresh_interval 运行时调整(Q3)
-- 完成后 publish InstrumentsRefreshed 事件(Q4)
-- 失败时静默不发事件(让 MatchingActor 自然 gate 住)
+职责:周期触发 Provider.load_all_async / 失败/0 不 publish / on_save/on_load 持久化
+refresh_interval / msgbus 命令运行时改值。
 
-对应章节: refactor.md §5.2.2, §6.3
+对应章节: refactor.md §5.2.2, §6.3;架构 architectures/discovery/architecture.md §3.3/§4.2/§4.3
 """
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.common.component import TestClock
+from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.portfolio.portfolio import Portfolio
+from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
-@pytest.mark.skip(reason="not implemented; impl pending Step 2 execution")
-def test_refresher_periodic_trigger():
-    """
-    discovery-2.1: Refresher 周期触发
-
-    refresh_interval=5s,跑 12s,验证 provider.load_all_async 被调 ~2 次。
-    """
-
-
-@pytest.mark.skip(reason="not implemented")
-def test_refresher_runtime_mutable_interval_via_msgbus():
-    """
-    discovery-2.2: refresh_interval 通过 MessageBus 运行时可变 (Q3)
-
-    初始 30s,publish "config.{venue}.refresh_interval=5",等 7s 验证 load_all_async
-    至少触发 1 次(说明已切到 5s)。
-    """
+from src.arbitrage.discovery.events import InstrumentsRefreshed
+from src.arbitrage.discovery.refresher import InstrumentRefresher
+from src.arbitrage.discovery.refresher import InstrumentRefresherConfig
+from src.arbitrage.discovery.refresher import _RuntimeDeps
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_refresher_interval_persisted_via_nt_on_save_load():
-    """
-    discovery-2.3: refresh_interval 通过 NT on_save/on_load 持久化 (Q6)
+class _StubProvider:
+    """Provider 替身:get_all 返回 dict,load_all_async 可注入行为。"""
 
-    改 interval=60 → 触发 NT save → 验 Redis 有 actor state →
-    重启 Refresher → on_load 恢复 → self._refresh_interval == 60(不是 default)。
-    """
+    def __init__(self, instruments=None, raises=None):
+        self._instruments = instruments or {}
+        self._raises = raises
+        self.load_calls = 0
 
+    def get_all(self):
+        return self._instruments
 
-@pytest.mark.skip(reason="not implemented")
-def test_refresher_publishes_instruments_refreshed_on_success():
-    """
-    discovery-2.4: 成功 refresh 发事件 (Q4)
-
-    订阅者订 DataType(InstrumentsRefreshed),等一次 refresh,
-    验证收到一条 InstrumentsRefreshed,字段 venue / count / ts_init 正确。
-    """
+    async def load_all_async(self, filters=None):
+        self.load_calls += 1
+        if self._raises is not None:
+            raise self._raises
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_refresher_silent_on_failure():
-    """
-    discovery-2.5: refresh 失败时不发事件 (Q4)
+def _refresher(provider, interval=10.0, min_interval=5.0, venue="ORBITEXCH"):
+    clock = TestClock()
+    msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
+    cache = TestComponentStubs.cache()
+    portfolio = Portfolio(msgbus=msgbus, cache=cache, clock=clock)
 
-    模拟 provider.load_all_async 抛异常,验证不 publish InstrumentsRefreshed,
-    日志记录,下周期照常尝试。
-    """
-
-
-@pytest.mark.skip(reason="not implemented")
-def test_refresher_min_interval_clamp():
-    """
-    discovery-2.6: MIN_INTERVAL 强制下限 (Q3)
-
-    publish "config.{venue}.refresh_interval=0",验证内部 clamp 到 MIN_INTERVAL。
-    避免误设 0 把 venue 刷挂。
-    """
+    cfg = InstrumentRefresherConfig(
+        venue=venue, refresh_interval_default=interval, min_interval=min_interval,
+    )
+    loop = asyncio.new_event_loop()
+    deps = _RuntimeDeps(provider=provider, loop=loop)
+    r = InstrumentRefresher(cfg, deps)
+    r.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
+    return r, clock, msgbus
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_pm_oe_refreshers_isolation():
-    """
-    discovery-2.7: 双 venue Refresher 隔离
+# ── 生命周期 / 调度 ────────────────────────────────────────────────
+def test_on_start_schedules_first_alert():
+    """discovery-2.1: on_start 后 NT clock 上挂着 interval 后的 alert。"""
+    r, clock, _ = _refresher(_StubProvider(), interval=10.0)
+    r.on_start()
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") == secs_to_nanos(10.0)
 
-    PM Refresher 抛异常,验证 OE Refresher 继续正常发 InstrumentsRefreshed,
-    不互相影响。
-    """
+
+def test_on_stop_cancels_alert():
+    """discovery-2.2: on_stop 取消 timer(不卡住关停)。"""
+    r, clock, _ = _refresher(_StubProvider())
+    r.on_start()
+    r.on_stop()
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") == 0
+
+
+# ── 持久化(on_save/on_load,Q6)────────────────────────────────────
+def test_on_save_emits_current_interval():
+    """discovery-2.3: on_save 序列化当前 refresh_interval(NT 持久化通道)。"""
+    r, *_ = _refresher(_StubProvider(), interval=12.0)
+    state = r.on_save()
+    assert state == {"refresh_interval": b"12.0"}
+
+
+def test_on_load_restores_interval():
+    """discovery-2.4: on_load 从字节状态恢复 interval。"""
+    r, *_ = _refresher(_StubProvider(), interval=30.0)
+    r.on_load({"refresh_interval": b"45.0"})
+    assert r._interval_secs == 45.0
+
+
+def test_on_load_clamps_to_min():
+    """discovery-2.5: 持久值低于 min_interval → 夹到下界(防过频拉)。"""
+    r, *_ = _refresher(_StubProvider(), interval=30.0, min_interval=5.0)
+    r.on_load({"refresh_interval": b"1.0"})
+    assert r._interval_secs == 5.0
+
+
+def test_on_load_corrupt_keeps_default():
+    """discovery-2.6: 损坏的持久值 → 保留 default、不抛(不让坏数据炸启动)。"""
+    r, *_ = _refresher(_StubProvider(), interval=30.0)
+    r.on_load({"refresh_interval": b"not-a-number"})
+    assert r._interval_secs == 30.0
+
+
+# ── 运行时改值(msgbus 命令,Q3)────────────────────────────────────
+def test_runtime_command_updates_interval():
+    """discovery-2.7: msgbus 命令 `config.{venue}.refresh_interval` 改值;next 重排读新值。"""
+    r, clock, msgbus = _refresher(_StubProvider(), interval=10.0)
+    r.on_start()
+    msgbus.publish(topic="config.ORBITEXCH.refresh_interval", msg=20.0)
+    assert r._interval_secs == 20.0
+    # 立刻重排一次看读新值
+    clock.cancel_timer(f"instrument_refresher:ORBITEXCH")
+    r._schedule_next()
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") == secs_to_nanos(20.0)
+
+
+def test_runtime_command_clamps_to_min():
+    """discovery-2.8: 命令值小于 min_interval → 夹到下界。"""
+    r, _, msgbus = _refresher(_StubProvider(), interval=10.0, min_interval=5.0)
+    r.on_start()
+    msgbus.publish(topic="config.ORBITEXCH.refresh_interval", msg=1.0)
+    assert r._interval_secs == 5.0
+
+
+# ── tick 行为(成功 publish / 0 / 异常)──────────────────────────────
+@pytest.mark.asyncio
+async def test_tick_publishes_on_success():
+    """discovery-2.9: load_all_async 成功 + count>0 → publish InstrumentsRefreshed + 重排。"""
+    p = _StubProvider(instruments={"i1": object(), "i2": object()})
+    r, clock, _ = _refresher(p, interval=10.0)
+    r._running = True  # 模拟 on_start 已跑
+    published = []
+    r.publish_data = lambda *, data_type, data: published.append(data)
+
+    await r._tick()
+
+    assert p.load_calls == 1
+    assert len(published) == 1 and isinstance(published[0], InstrumentsRefreshed)
+    assert published[0].venue == "ORBITEXCH" and published[0].count == 2
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") > 0  # 重排
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_publish_when_zero_count():
+    """discovery-2.10: provider 0 instrument → 不 publish,仍重排。"""
+    p = _StubProvider(instruments={})
+    r, clock, _ = _refresher(p)
+    published = []
+    r.publish_data = lambda **k: published.append(k)
+    await r._tick()
+    assert published == []
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") > 0
+
+
+@pytest.mark.asyncio
+async def test_tick_swallows_provider_error_no_publish_reschedules():
+    """discovery-2.11: provider 抛 → 不 publish + 不抛,仍重排(Q4 静默失败 + 不卡死)。"""
+    p = _StubProvider(raises=RuntimeError("scraper failed"))
+    r, clock, _ = _refresher(p)
+    published = []
+    r.publish_data = lambda **k: published.append(k)
+    await r._tick()                                    # 不抛
+    assert published == []
+    assert clock.next_time_ns(f"instrument_refresher:ORBITEXCH") > 0  # 仍重排

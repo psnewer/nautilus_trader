@@ -1,66 +1,87 @@
 """
 OE InstrumentProvider 测试(用例见 README.md)。
 
-迁移决定: OE 没有上游适配器,自写 OrbitExchInstrumentProvider。本测试验证:
-- BettingInstrument 类型 + InstrumentId 命名可逆
-- info dict 必含 §6.4 锁定的 6 个统一 key(供异构归一)
-- Browser 通过 manager 的 page name "discovery" 拿专属 page
-- 抓取失败不污染 Cache 也不破坏 BrowserManager 状态
+OE 没有上游适配器 → 自写 `OrbitExchInstrumentProvider` 包 `OrbitExchScraper.discover_events`。
+本测试用 mock scraper 验证:每场 MatchEvent → 各方向 BettingInstrument(只对有 selection_id 的
+方向产腿)、info 6-key 完整、命名 + venue 正确。Browser/page 路径属 live(/live-test 验)。
 
-对应章节: refactor.md §5.1.2, §6.2, §6.4
+对应章节: refactor.md §5.1.2, §6.2, §6.4;架构 architectures/discovery/architecture.md §3.2/§4.1
 """
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from nautilus_trader.adapters.orbitexch.discovery_scraper import MatchEvent
 
-@pytest.mark.skip(reason="not implemented; impl pending Step 1 execution")
-def test_oe_provider_cold_start():
-    """
-    discovery-1.4: OE Provider 冷启动加载
-
-    验证 cache.instruments(venue=ORBITEXCH) 非空且 BettingInstrument 类型,
-    InstrumentId 格式 = {market_id}-{selection_id}.ORBITEXCH 可被 helper 反解。
-    """
+from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_oe_provider_info_dict_unified_keys():
-    """
-    discovery-1.5: OE Provider info dict 必含 6 个统一 key (Q9)
-
-    验证 instrument.info 含 sport / competition / home_team / away_team /
-    start_ts / selection_role 全部 6 个 key 且类型正确。
-    这是 MarketMatchingActor 跨 venue 归一的依赖,Step 1 OE 实施时必须填齐。
-    """
+@pytest.fixture
+def provider():
+    return OrbitExchInstrumentProvider(SimpleNamespace())  # scraper 不被 _build_legs 触及
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_pm_oe_share_match_keys():
-    """
-    discovery-1.6: PM 与 OE Provider 共享匹配字段
-
-    验证 PM BinaryOption 与 OE BettingInstrument 的 info dict 都含相同的
-    6 个 key,语义一致。MatchEngine 不依赖 isinstance 区分类型。
-    """
+def _event(home_sel="1", draw_sel="2", away_sel="3"):
+    return MatchEvent(
+        sport="Soccer", competition="EPL", home_team="Arsenal", away_team="Chelsea",
+        sport_id="1", competition_id="100", market_id="1-123456",
+        home_selection_id=home_sel, draw_selection_id=draw_sel, away_selection_id=away_sel,
+    )
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_oe_provider_uses_discovery_page_name():
-    """
-    discovery-1.4 (子) : OE Provider 用 page name "discovery"
-
-    验证 provider 调 browser_manager.create_page("discovery"),
-    不是 "data" / "execution"(三方共享 BrowserContext,各自专属 page)。
-    """
+def test_build_legs_three_way(provider):
+    """discovery-1.4.a: 三方向(含 draw)各出一条腿,顺序 home/draw/away。"""
+    legs = list(provider._build_legs(_event()))
+    assert [leg.info["selection_role"] for leg in legs] == ["home", "draw", "away"]
 
 
-@pytest.mark.skip(reason="not implemented")
-def test_oe_provider_scrape_failure_preserves_cache():
-    """
-    discovery-1.7: OE Provider 抓取失败处理
+def test_build_legs_two_way_drops_missing_draw(provider):
+    """discovery-1.4.b: 无 draw_selection_id 时只产 home/away,不强插 draw。"""
+    legs = list(provider._build_legs(_event(draw_sel="")))
+    assert [leg.info["selection_role"] for leg in legs] == ["home", "away"]
 
-    模拟 Playwright 加载超时 / 元素找不到。验证:
-    - 不抛异常
-    - Cache 不被清空
-    - 不调 manager.close()(provider 不拥有 manager 生命周期)
-    """
+
+def test_build_legs_fills_six_info_keys(provider):
+    """discovery-1.4.c: info 必含 Q9 六统一 key(sport/competition/home_team/away_team/start_ts/selection_role)。"""
+    leg = next(iter(provider._build_legs(_event())))
+    required = {"sport", "competition", "home_team", "away_team", "start_ts", "selection_role"}
+    assert required <= set(leg.info.keys())
+    assert leg.info["competition"] == "EPL"
+    assert leg.info["sport"] == "Soccer"
+    assert leg.info["home_team"] == "Arsenal" and leg.info["away_team"] == "Chelsea"
+    assert leg.info["start_ts"] == 0  # TODO Step 1:scraper 抽开赛时间
+
+
+def test_build_legs_instrument_id_carries_market_and_selection(provider):
+    """discovery-1.4.d: InstrumentId 形如 `{market_id}-{selection_id}*.ORBITEXCH`(Q1)。"""
+    legs = list(provider._build_legs(_event()))
+    for leg, sel in zip(legs, ["1", "2", "3"]):
+        s = str(leg.id)
+        assert s.endswith(".ORBITEXCH"), s
+        assert "1-123456" in s and sel in s
+
+
+@pytest.mark.asyncio
+async def test_load_all_async_invokes_scraper_and_adds_instruments():
+    """discovery-1.4.e: load_all_async → scraper.discover_events → 基类 add。"""
+    scraper = SimpleNamespace()
+    scraper.discover_events = AsyncMock(return_value=[_event()])
+    prov = OrbitExchInstrumentProvider(scraper)
+
+    await prov.load_all_async()
+
+    scraper.discover_events.assert_awaited_once()
+    instruments = prov.get_all()
+    assert len(instruments) == 3  # home/draw/away
+
+
+@pytest.mark.asyncio
+async def test_load_all_async_empty_does_not_raise():
+    """discovery-1.4.f: scraper 返空 → load_all_async 不抛、Provider 仍可用。"""
+    scraper = SimpleNamespace()
+    scraper.discover_events = AsyncMock(return_value=[])
+    prov = OrbitExchInstrumentProvider(scraper)
+    await prov.load_all_async()
+    assert prov.get_all() == {}

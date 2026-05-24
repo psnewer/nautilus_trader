@@ -1,8 +1,8 @@
-# settlement 测试(占位)
+# settlement 测试
 
-待 Step 8 启动时展开。
+对应章节: `refactor.md §5.8`;详细设计 `architectures/execution/architecture.md §4.6`
 
-对应章节: `refactor.md §5.8`
+**落地状态(2026-05-22)**:`PolymarketSettlement` 已实现于 `src/arbitrage/settlement/settlement.py`(编排;IO 仍是 `nautilus_trader/adapters/polymarket/contract.py`)。`tests/arbitrage/settlement/test_settlement.py` **11 passed**(用 FakeContract 录调用,不上链):merge min 取量 + negRisk 透传 + ≥2 门槛(8.2/8.3)、redeem redeemable 门控 + negRisk amounts(8.4/8.5)、失败仅记录不抛 + 异常吞进 errors(8.7)、空/零持仓 no-op。**仍待**:8.6(数据源=Data API 原始而非 NT cache)与"在 tick 内被调用 / 结果不作健康判据"属 PM 健康检查宿主,跟 PM 子类落地一起验(见 pm-adapter README)。
 
 ## 锁定的关键性约束(Q18 + Q18b 修正,2026-05-21)
 
