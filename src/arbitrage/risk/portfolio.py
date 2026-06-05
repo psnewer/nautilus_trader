@@ -5,10 +5,12 @@ ArbitragePortfolio —— NT Portfolio 子类,扩展领域指标 way_rebate(pull
 公式平移自旧 `services/risk/position.py`,但**腿来源改为从 NT Cache 的 Position 反推**
 (不再自维护 _positions dict)。
 
-instrument.info 契约(由 discovery 组件填充,本类只读,单一 seam 见 `_resolve_pair_id` /
-`_leg_from_position`):
-- info["competition"]  → pair_id(比赛级聚合键)
-- info["market_type"]  → "home" / "draw" / "away"
+**pair_id 来源(#34 修正)**:由 matching 算出,经 `PairRegistry` 暴露;本类经 `_resolve_pair_id`
+读 registry(原"info["competition"] → pair_id"是错读,competition 是联赛名)。
+
+instrument.info 契约(由 discovery 组件填充,本类只读;单一 seam 见 `_leg_from_position`):
+- info["sport"] / info["competition"](联赛名)/ info["home_team"] / info["away_team"] / info["start_ts"] —— **matching 输入**
+- info["selection_role"]("home"/"draw"/"away")—— way_rebate 算法用("market_type" 同义)
 venue / 公式分支由 instrument 类型判定(BinaryOption=PM,BettingInstrument=OE),不靠字符串。
 
 NT `Portfolio` 是 cdef class,子类**只能加纯 Python 方法**(不能加 cpdef/cdef)。
@@ -21,6 +23,7 @@ from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.portfolio.portfolio import Portfolio
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_registry import PairRegistry
 
 
 class _Leg:
@@ -63,10 +66,12 @@ class ArbitragePortfolio(Portfolio):
         share: float = 100.0,
         fx: float = 1.0,
         leg_settled: LegSettledRegistry | None = None,
+        pair_registry: PairRegistry | None = None,
     ) -> None:
         self._arb_share = share
         self._arb_fx = fx
         self._arb_leg_settled = leg_settled
+        self._arb_pair_registry = pair_registry  # #34: matching 写,本类读;`_resolve_pair_id` 用
 
     # 兜底默认(configure_arb 未调用时)
     @property
@@ -80,6 +85,10 @@ class ArbitragePortfolio(Portfolio):
     @property
     def _settled(self) -> LegSettledRegistry | None:
         return getattr(self, "_arb_leg_settled", None)
+
+    @property
+    def _pair_registry(self) -> PairRegistry | None:
+        return getattr(self, "_arb_pair_registry", None)
 
     # ── per-pair 指标 ────────────────────────────────────────────────
     def way_rebate(self, pair_id: str, account_id=None) -> dict[str, float]:
@@ -152,18 +161,19 @@ class ArbitragePortfolio(Portfolio):
                 legs.append(leg)
         return legs
 
-    # ── instrument.info 读取 seam(契约由 discovery 满足)──────────────
+    # ── pair_id 来源(#34:由 matching 经 PairRegistry 提供;**不是** info["competition"])──
     def _resolve_pair_id(self, position) -> str | None:
-        instrument = self._arb_cache.instrument(position.instrument_id)
-        if instrument is None or not instrument.info:
-            return None
-        return instrument.info.get("competition")
+        registry = self._pair_registry
+        if registry is None:
+            return None  # registry 未注入(测试/启动早期)→ 不参与 pair 聚合
+        return registry.get(position.instrument_id)
 
     def _leg_from_position(self, position) -> _Leg | None:
         instrument = self._arb_cache.instrument(position.instrument_id)
         if instrument is None or not instrument.info:
             return None
-        market_type = instrument.info.get("market_type")
+        # Q9 标准 key:`selection_role`("home"/"draw"/"away");兼容旧 `market_type`
+        market_type = instrument.info.get("selection_role") or instrument.info.get("market_type")
         if not market_type:
             return None
         if isinstance(instrument, BinaryOption):

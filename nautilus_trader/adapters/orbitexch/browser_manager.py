@@ -61,9 +61,12 @@ class PlaywrightBrowserManager:
         self._log = logging.getLogger(self.__class__.__name__)
     
     async def start(self) -> None:
-        """Start the browser."""
+        """Start the browser. Idempotent — 已 start 时 no-op(slice 10c smoke 发现:
+        OE Data/Exec 共享 BrowserManager,先连的会 start;后连的 start 应不重复)。"""
+        if self._context is not None:
+            return  # 已起
         self._log.info('🚀 Starting Playwright browser...')
-        
+
         # Start Playwright
         self._playwright = await async_playwright().start()
         

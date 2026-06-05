@@ -6,6 +6,8 @@
 
 **写测试时抓出两个 production bug(已修)**:① `ArbitragePortfolio` 读不到基类私有 cdef `self._cache`(`Portfolio._cache` 非 readonly)→ 覆盖 `__init__` 自存 `_arb_cache`;② `order.has_price_c()` 是 cdef 不可从 Python 调 → 改 `order.has_price`(property)。两者运行期才暴露,纸面 review 抓不到——印证落地测试价值。
 
+**#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / `_pair_id_for_order` 原读 `info["competition"]` 是错读(`competition` 是联赛名,EPL/NFL...,非 pair_id)。现改读 matching 的 `PairRegistry`(`configure_arb(pair_registry=...)`);测试用例同步加 `PairRegistry.register(pair_id, [instrument_ids])`,见 `test_engine._gate_ctx` / `test_portfolio.test_resolve_pair_id_reads_from_pair_registry`。`_leg_from_position` 同步加 `selection_role`(Q9 标准 key)兼容 `market_type` fallback。
+
 **仍待落 .py / 延后**(需全节点 / discovery / execution 接线):risk-6.1/6.2(全管道透明拦截 + NT min_quantity 自动拒,需起节点)、risk-6.3/6.4(cache 真实持仓 + venue stale 兜底)、risk-6.5/6.6(账户状态维护,属 execution)、risk-6.7.5/6/9 与 6.9.{2全路径,3,5,7,8,10,11}(需 cache 真实 Position 而非 duck/stub)。
 
 ## 锁定的关键性约束(2026-05-09 三次修正后)

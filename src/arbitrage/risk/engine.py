@@ -116,7 +116,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         return True
 
     def _pair_id_for_order(self, order) -> str | None:
-        instrument = self._cache.instrument(order.instrument_id)
-        if instrument is None or not instrument.info:
+        # #34:pair_id 经 ArbitragePortfolio 的 PairRegistry 读(matching 唯一写者)
+        pf = self._portfolio
+        registry = getattr(pf, "_pair_registry", None)
+        if registry is None:
             return None
-        return instrument.info.get("competition")
+        return registry.get(order.instrument_id)

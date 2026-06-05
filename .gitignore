@@ -136,3 +136,14 @@ tests/test_data/**/backtest/**
 !tests/test_data/nautilus/*/**.parquet
 !tests/integration_tests/adapters/betfair/responses/*.log
 !/nautilus_core/adapters/src/databento/test_data/*
+
+# ── arbitrage 项目凭证保护(切勿删除)──────────────────────────
+# 设计原则:凭证只走 env,不进任何 commit-able 文件;详见
+# docs/arbitrage/architectures/_cross-cutting/configuration.md
+.env
+.env.*
+.credentials.json
+*.credentials.json
+settings.local.json
+# 历史 web_gateway 配置含明文凭证(已在 git 历史中,需轮换;新 design 不再用)
+src/arbitrage/services/web_gateway/default_config.json

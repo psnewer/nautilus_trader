@@ -1,28 +1,446 @@
-# Strategy 组件详细设计(搁置)
+# Strategy 组件详细设计
 
-> **状态:搁置**(用户 2026-05-21 决定暂不展开)。Strategy 是最复杂组件,初设 `refactor.md §5.4` 已积累一批约束,但**核心信号流水线尚未设计**。
-> 对应初设 Step 4。
+> 设计理由 / 决策史(Q13/Q14/Q16/Q19/Q20 早期约束 + **Q21 框架锁定 2026-05-24**)见初设 `refactor.md §5.4 / Q21`。
+> 冲突时:有把握 → 以本文为准并回写;没把握 → 提出讨论。对应初设 Step 4。
 
-## 已锁定的约束(散见 refactor.md,详化时汇总到本文)
+---
 
-| 主题 | 锁定点 | 出处 |
+## 1. 职责与边界
+
+| 件 | 基类 / 角色 | 职责 |
 |---|---|---|
-| 边界 | 只管决策;**不引用 Risk**(透明拦截);拥有深度缩放 | §5.4 |
-| 每轮重算 | 每轮全量重算意图,不缓存待下单 | Q13 / strategy-4.9 |
-| settled pre-check | 调 way_rebate / submit 前判 `leg_settled`(三分支) | Q-G / strategy-4.14 |
-| 调 Portfolio | `portfolio.min_way_rebate(pair)` 判机会,pull-based | Q14 / strategy-4.12 |
-| tp/sl 归 Risk | 止盈/止损/全局熔断不在 strategy(归 RiskEngine) | Q16 |
-| 健康检查互斥 | submit 前 `if _health_check_active: 放弃`(前置 pre-check) | Q19 / §6.10 / strategy-4.15 |
-| 机会快照 | 评估开跑冻 per-pair 快照(订单簿+持仓+way_rebate),全程用拷贝;回收放 finally | Q20 / strategy-4.{17,18,19} |
+| `StrategyEvaluator` | NT `Actor` | 唯一活体:订触发事件(`OrderBookDelta` / `MatchedPair` / 自定义比分/赛事开始)→ 更新 `SignalStore` → 查 `StrategyRegistry` → 并行 evaluate arb+comp 树 → fire action |
+| `StrategyRegistry` | 普通类 | 按 scope 索引策略;`get_for(pair_id) → Strategy or None`,按**挂载存在锁定**:具体比赛挂了就锁定本 scope,即使没命中也**不降级**(Q21-a) |
+| `Strategy` | dataclass | `{ scope_key, arbitrage_tree: Condition, compensation_tree: Condition, metadata }` |
+| `Condition` | dataclass | `{ self_hits: BoolExpr, sub_conditions: list[Condition], checktion: list[Check], action: Action | None }` |
+| `BoolExpr` / `SignalRef` | DSL | self_hits 的布尔表达式树,叶子是 `SignalRef("live")` 等;支持 AND/OR/NOT 嵌套(Q21-b) |
+| `Check` / `Action` | abstract | `Check.passes(ctx) -> bool`;`Action.execute(ctx)`(fire-and-forget,不阻塞 evaluate 返回) |
+| `SignalStore` | 普通类 | **双状态**:`persistent[key]=value`(写后保留,如 `live=True`)/ `transient[key]=value`(读取消费一次即清,如 `rebate`)|
+| `SignalCollector` | 普通类 | event → signal 加工(由 evaluator 持有,每个触发事件调一次)|
+| `OpportunitySnapshot` | dataclass | Q20 快照:`{ order_book, positions, way_rebate }`,evaluate 开跑时一次性冻,整轮评估+下单复用 |
 
-## 详化时还需设计(已识别的大 gap)
+**职责边界(继承自前期锁定)**:
+- ❌ **不引用 Risk**:透明拦截,strategy 只通过 `on_order_denied` 感知结果(§5.4)
+- ❌ **不缓存待下单意图**:每轮全量重算(Q13)
+- ❌ **不在策略层做 tp/sl/global 硬停**:归 RiskEngine(Q16)
+- ✅ 设计参数 / signal 配置 / 决策逻辑(包含父类默认方向选择)归本组件
+- ✅ 旧 `services/strategy/` 3000 行(signals/strategies/...)语义可作为 **具体 Check/Action/SignalCollector 类的填充内容**,但**框架结构按本文**(condition 树 + scope 优先级)
 
-**核心未设计 = 可插拔信号流水线 + 配置驱动**(2026-05-21 从 requirements 发现,refactor.md 未捕捉):
-- signal 插件(rebate / multi-way / mean_signal / pre-match / live)+ params
-- strategy = 有序信号组合,任一返 false 中止;共享"套利数组"(signal 读写)
-- 父类默认方向选择(优先级:已获返水率负 > 已获返水率最小 > fresh rebate 最大)+ 子类可覆盖
-- 概率转换(OE 100/odds、PM ×100)+ 互斥概率求和 + 返水率算法
-- mean_signal 的 discount sizing 公式
-- competition / match 级配置查找与覆盖
+---
 
-> 详细设计待用户启动 Strategy 时进行;届时按标准模板(7 节)+ 上面的信号框架展开。
+## 2. 数据流
+
+```mermaid
+flowchart TB
+  subgraph EV[触发事件]
+    OBK[OrderBookDelta]
+    MP[MatchedPair]
+    EXT["外部:比分 / 比赛开始 / ..."]
+  end
+  EV --> EVA[StrategyEvaluator Actor]
+  EVA -->|on_data / on_signal| SC[SignalCollector]
+  SC -->|update| SS[(SignalStore)]
+  EVA -->|查 pair_id| PR[(PairRegistry)]
+  EVA -->|按 scope 优先级| SR[(StrategyRegistry)]
+  SR -->|Strategy or None| EVA
+  EVA -->|Q19 mutex 检查| EXEC{execution_active?}
+  EXEC -->|是 跳过本轮| END[end]
+  EXEC -->|否| SNAP[OpportunitySnapshot 冻一份]
+  SNAP --> EVAL["并行 evaluate(arb, comp)"]
+  EVAL --> ARB[arbitrage_tree → (hit, action)]
+  EVAL --> COMP[compensation_tree → (hit, action)]
+  ARB --> ARBOK{arb.hit?}
+  COMP --> COMPOK{comp.hit?}
+  ARBOK -->|是| FIRE1[fire arb.action]
+  ARBOK -->|否| COMPOK
+  COMPOK -->|是 且 arb 否| FIRE2[fire comp.action]
+  FIRE1 & FIRE2 -.submit_order.-> RE[RiskEngine 拦截]
+```
+
+要点:
+- evaluate **无副作用**:返回 `EvalResult { hit, pending_action }`,fire 由 evaluator 顶层做(决定套利优先)
+- arb / comp 两棵树 **真并行**(`asyncio.gather`);套利没命中,补救才执行(Q21)
+- safety gate(settled / risk)在 RiskEngine 端走 live(不在策略快照内,Q20)
+
+---
+
+## 3. 接口设计
+
+### 3.1 `SignalStore`(`src/arbitrage/strategy/signals.py`)
+
+```python
+class SignalStore:
+    """双状态信号:persistent 写后保留;transient 读取消费一次即清。"""
+    def __init__(self):
+        self._persistent: dict[str, object] = {}
+        self._transient: dict[str, object] = {}
+
+    def set_persistent(self, key: str, value): self._persistent[key] = value
+    def clear_persistent(self, key: str):     self._persistent.pop(key, None)
+    def set_transient(self, key: str, value): self._transient[key] = value
+
+    def get(self, key: str) -> object | None:
+        if key in self._transient:
+            return self._transient.pop(key)        # 用后即清
+        return self._persistent.get(key)
+
+    def peek(self, key: str) -> object | None:
+        return self._transient.get(key, self._persistent.get(key))  # 不消费(BoolExpr 求值用)
+```
+
+设计要点:`get` 消费 transient(避免 stale rebate 二次用);`peek` 不消费(BoolExpr 求值时只看一眼,不能因为求值就把信号清掉)。**Action 内部消费决定值用 `get`**。
+
+### 3.2 `BoolExpr` + `SignalRef`(条件 DSL)
+
+```python
+class BoolExpr(ABC):
+    @abstractmethod
+    def eval(self, store: SignalStore) -> bool: ...
+
+class SignalRef(BoolExpr):
+    """叶子:读信号 + 可选谓词(默认 truthy)。"""
+    def __init__(self, key: str, pred: Callable[[object], bool] | None = None): ...
+    def eval(self, store):
+        v = store.peek(self.key)
+        return self.pred(v) if self.pred else bool(v)
+
+class AndExpr(BoolExpr):  # 同 OrExpr / NotExpr
+    def __init__(self, *exprs: BoolExpr): self.exprs = exprs
+    def eval(self, store): return all(e.eval(store) for e in self.exprs)
+```
+
+### 3.3 `Condition` / `Check` / `Action`
+
+```python
+@dataclass
+class Condition:
+    self_hits: BoolExpr                        # 自身命中(场景 guard,Q1+Q9 双状态信号组合)
+    sub_conditions: list["Condition"] = field(default_factory=list)   # 子组合互斥
+    checktion: list["Check"] = field(default_factory=list)            # 决策核查(AND,空 list = 默认通过)
+    action: "Action" | None = None                                    # 命中后执行(None = no-op pass)
+
+@dataclass
+class EvalResult:
+    hit: bool
+    pending_action: "Action" | None = None     # hit=True 且非 sub_conditions 路径时才非空
+
+class Check(ABC):
+    @abstractmethod
+    def passes(self, ctx: "EvalContext") -> bool: ...
+
+class Action(ABC):
+    @abstractmethod
+    def execute(self, ctx: "EvalContext") -> None: ...  # fire-and-forget;evaluator 顶层 create_task
+```
+
+### 3.4 `Strategy` / `StrategyRegistry`
+
+```python
+ScopeKey = Union[PairId, CompetitionName, SportName]   # 三种 scope,带类型
+
+@dataclass
+class Strategy:
+    scope_key: ScopeKey
+    arbitrage_tree: Condition
+    compensation_tree: Condition
+    metadata: dict = field(default_factory=dict)
+
+class StrategyRegistry:
+    """按 scope 索引;查找按优先级 pair_id > competition > sport,
+    **挂载存在锁定**(Q21-a):某 scope 挂了 = 锁定本 scope,即使没命中也不下放。"""
+    def __init__(self):
+        self._by_pair: dict[str, Strategy] = {}
+        self._by_competition: dict[str, Strategy] = {}
+        self._by_sport: dict[str, Strategy] = {}
+
+    def register(self, strategy: Strategy): ...
+    def get_for(self, pair_id: str, competition: str, sport: str) -> Strategy | None:
+        # 严格按优先级,挂了就锁定,不降级
+        if pair_id in self._by_pair: return self._by_pair[pair_id]
+        if competition in self._by_competition: return self._by_competition[competition]
+        return self._by_sport.get(sport)
+```
+
+### 3.5 `StrategyEvaluator`(NT `Actor`,唯一活体)
+
+**算法 `evaluate_tree` 是 `condition.py` 的模块级纯函数**(从 Actor 解耦,可全单测;Actor 只做
+orchestration:snapshot / gather / fire)。
+
+```python
+# condition.py(模块级,纯)
+def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
+    if not cond.self_hits.eval(ctx.store):
+        return EvalResult(hit=False)
+    if cond.sub_conditions:
+        for sub in cond.sub_conditions:
+            res = evaluate_tree(sub, ctx)
+            if res.hit:
+                return res            # 互斥:命中即停(Q21)
+        return EvalResult(hit=False)
+    if all(c.passes(ctx) for c in cond.checktion):
+        return EvalResult(hit=True, pending_action=cond.action)
+    return EvalResult(hit=False)
+
+
+# actor.py
+class StrategyEvaluator(Actor):
+    def __init__(self, config, deps): ...   # deps: pair_registry / strategy_registry / portfolio /
+                                            #       signal_store / is_execution_active / loop / signal_collector
+
+    def on_start(self):
+        # slice 10d(#52):msgbus 直订 — NT `subscribe_data` 强制 SubscribeData cmd 路由(需 client_id/instrument_id);
+        # MatchedPair 是 Actor-to-Actor 事件(MarketMatchingActor publish),走 msgbus broker。
+        self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)
+        # OrderBookDeltas 是 venue/instrument-tied,**slice 10d MVP 不预订**(MatchedPair 触发足以验全链路);
+        # 需要 OBD-driven 重评时改 per-iid `subscribe_order_book_deltas(iid)` MatchedPair fire 后调
+        # 外部事件(比分 / 比赛开始):自建 topic 或 custom Data type,具体接入点 Step 4 落地时定
+
+    def on_data(self, data):
+        # 1. SignalCollector 先消化 event → 写 SignalStore(可选)
+        # 2. _extract_evaluation_target(data) → (pair_id, sport, competition);MatchedPair 直读,
+        #    其它 event 经 PairRegistry + instrument.info 反查
+        # 3. 查 StrategyRegistry,有则 self._loop.create_task(self._evaluate_and_fire(strategy, pair_id))
+
+    async def _evaluate_and_fire(self, strategy, pair_id):
+        if self._is_execution_active(): return    # Q19:让路
+        snap = build_snapshot(pair_id, cache=self.cache, portfolio=self._portfolio,
+                              pair_registry=self._pair_registry)            # Q20
+        ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=self._signal_store)
+        arb_res, comp_res = await asyncio.gather(                # 并行(_aevaluate 是 sync evaluate 的 async 包)
+            self._aevaluate(strategy.arbitrage_tree, ctx),
+            self._aevaluate(strategy.compensation_tree, ctx),
+        )
+        # 套利 > 补救;fire-and-forget(不阻塞)
+        if arb_res.hit and arb_res.pending_action is not None:
+            self._loop.create_task(arb_res.pending_action.execute(ctx))
+        elif comp_res.hit and comp_res.pending_action is not None:
+            self._loop.create_task(comp_res.pending_action.execute(ctx))
+
+    async def _aevaluate(self, tree, ctx):
+        return evaluate_tree(tree, ctx)         # sync evaluate 包成 coroutine 供 gather;
+                                                # Check 演进到 async I/O 时本层无需改动
+        return EvalResult(hit=False)
+```
+
+### 3.6 消息接线
+
+| 类 | 接收 | 发布 |
+|---|---|---|
+| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / 外部事件 topics | `submit_order`(经 Action;走 RiskEngine 标准管道)|
+| `Action` 类 | (无订阅) | `submit_order` / `cancel_order`(NT 标准 client 接口)|
+
+### 3.7 Check/Action 类型注册 + JSON loader(#44 slice 5)
+
+**前置**:Q21 框架的 `Check` / `Action` 是 ABC,具体类用户域(#41 撤回旧策略平移)。
+**注册路径**:`src/arbitrage/strategy/check_action_registry.py` 提供两个 dict + `register_*` / `build_*`,
+框架**不预注册**任何具体类(launcher main 调 `register_check("rebate", RebateCheck)` 等装入)。
+
+```python
+register_check(name: str, cls: type[Check])    # 同名异类 raise(防误覆盖)
+register_action(name: str, cls: type[Action])
+build_check({"type": name, "params": {...}})   # → cls(**params);未注册 → StrategyConfigError
+build_action(...)                              # 同上
+```
+
+**JSON loader**(`src/arbitrage/strategy/json_loader.py`):3 个递归解析 + 1 个 registry 装配。
+
+```python
+bool_expr_from_json(spec)        # {"signal"|"AND"|"OR"|"NOT": ...} → BoolExpr
+condition_from_json(spec)        # 递归 sub_conditions / checktion / action
+strategy_from_json(id, spec, scope_key)  # 组装 Strategy
+build_strategy_registry(cfg.strategy)    # bindings → StrategyRegistry
+```
+
+**缺值兜底**(Q21 必填字段):
+- `self_hits` 缺 / None → `AndExpr()`(空 AND = vacuous truth,让下游决定 hit)
+- `compensation_tree` 缺 / None → 永 False no-op `Condition(self_hits=OrExpr())`(空 OR,从不 fire)
+
+**scope 字符串格式**:`pair:<id>`(或别名 `pair_id:<id>`)/ `competition:<name>` / `sport:<name>`。
+loader 解析前缀 → 调对应 `register_pair/_competition/_sport`。
+
+**配置驱动 vs 代码硬编码**(#41 Q25 决策):配置驱动允许用户在 JSON 里递归组合
+Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了真正的运行时 wiring。
+**dispatch 路径**:`to_strategy_registry(cfg)`(`config/dispatcher.py`)。
+
+### 3.8 slice 9 落地(#49):per-pair 隔离 + per-eval scratch + 用户域 Check/Action
+
+**问题背景**:具体策略(如 mean_rebate)需要 Check 算 derived 数据(legs:每方向最优 venue + price + size)交给 Action 下单;同时持久信号(如 `in_play`)需跨 evaluate 保留 + per-pair 隔离(避免 pair A 的 `in_play=True` 污染 pair B 评估)。三件隔离机制各落其位:
+
+| 数据类型 | 例子 | 落点 | 隔离 |
+|---|---|---|---|
+| 同 condition 树内 Check→Action 传值 | mean_rebate 算的 legs | `EvalContext.scratch: dict` | **per-eval 自动**(每次 evaluate 新建 ctx)|
+| per-pair 持久态(跨 evaluate)| 真"持久信号"(外部输入 user_pause 等;**注**:`in_play` 不走这,见下)| `SignalStore.view(pair_id)` 子视图 | **per-pair**(内部 key 加 `.{pair_id}` 后缀)|
+| 派生自最新瞬时数据(每事件能从 cache 重读)| `in_play`(OE WS 帧带)| OE DataClient 写 `cache.instrument.info["in_play"]` + `build_snapshot` 派生 | **天然**(instrument.info 是 per-instrument mutable dict,cache-resident)|
+
+**`OpportunitySnapshot` 新字段**:
+- `in_play: bool` — 任一 OE leg `instrument.info["in_play"]=True` → True
+- `instrument_info: dict[InstrumentId, dict]` — 各 leg `instrument.info` 浅拷贝冻结(Check/Action decouple from cache;直接读 `selection_role` 等 6-key)
+
+**`SignalStore.view(pair_id)` 返 `_PairScopedStoreView`**:thin wrapper,所有读写自动 namespace 到 `f"{key}.{pair_id}"`。evaluator 构造 EvalContext 时传 `store=self._signal_store.view(pair_id)`,SignalRef / Action 写法不变。跨 pair 全局信号走 root store(罕见;`signal_collector` 决定走哪条)。
+
+**`EvalContext.scratch: dict`**:per-eval 自动隔离的 mutable scratch space。Check 算的 derived 数据(如 `ctx.scratch["legs"]`)给同 condition 树内 Action 用;Action consume 不需考虑跨 pair race(EvalContext 是 per-evaluate 新建,natural lifecycle)。
+
+**用户域子类(slice 9 #49 落地)**:
+
+| 类 | 文件 | 用 |
+|---|---|---|
+| `PreMatchCheck()` | `src/arbitrage/strategy/checks/pre_match.py` | 无参;`passes = not ctx.snapshot.in_play`;放 `checktion` 列表前位,利用 `all` 短路避免后续 Check 跑空 |
+| `MeanRebateCheck(min_rate)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写 `ctx.scratch["legs"]` + return True |
+| `PlaceBetsAction(share)` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;PM=`size=share` / OE=`size=share/price`(stake);当前**log-only smoke(Q-D1=A)**,后续 Q-D1=B 接 `await ctx.submitter(order)` 真下单 |
+
+**OE DataClient `_on_price_frame` 透 inPlay**:每帧调 `write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper;helper 防御性 — instrument 不在 cache 不 raise(冷启动场景)。
+
+**冷启动假阳性**:不存在 —— OE 赔率是 MeanRebateCheck 的硬前置(没 OE best_ask 算不出 prob),OE 赔率帧本身就携带 inplay → 赔率到 = in_play 到。同一时刻发生。
+
+### 3.9 slice 10a 落地(#50):`EvalContext.submitter` + 真出单链路
+
+**问题**:Action 是 ABC,`execute(ctx)` 默认无法 submit_order(StrategyEvaluator 是 Actor,非 Strategy,无 `self.submit_order` facade)。
+
+**落地**:
+- `EvalContext.submitter: Callable[[dict], Awaitable[None]] | None`(默认 None,Action log-only fallback)
+- `StrategyEvaluator._evaluate_and_fire` 构造 ctx 时 `submitter=self._make_submitter()`
+- `make_submitter(*, cache, msgbus, clock, trader_id, log)` module-level 工厂 → `async def submit(spec)`:
+  1. `cache.instrument(iid).{size_precision, price_precision}` 拿精度
+  2. 构 NT `LimitOrder`(`OrderSide.BUY/SELL` from spec / `Quantity` / `Price` / `TimeInForce.GTC` / 随机 `ClientOrderId`)
+  3. 包成 `SubmitOrder` cmd
+  4. `msgbus.send("ExecEngine.execute", cmd)` → NT ExecEngine 路由到 venue ExecClient
+- **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float}`
+- 冷启动安全:`cache.instrument(iid)` 返 None → warning + skip,不 raise
+
+**PlaceBetsAction.execute 双路径**(slice 10a):
+- `ctx.submitter` 非 None → `await submitter(spec)` 真出单(log `PlaceBets[submit]`)
+- `ctx.submitter` None → log-only fallback(log `PlaceBets[smoke]` + `would submit: ...`)
+
+**配合 Q11.3 SkipExecutionClient**:`debug.skip_execution=true` 时 SkipExecutionClient 拦 ExecClient `_submit_order` mock 全成,**Action→submitter→真 SubmitOrder→SkipExecution 兜底**完整链路安全可跑(不上链)。
+
+**`StrategyId` 用 fixed literal** `"ARB-EVAL-001"`:StrategyEvaluator 是 Actor 非 Strategy,无独立 StrategyId;统一记账用。
+
+---
+
+## 4. 算法
+
+### 4.1 evaluate 主流程(见 §3.5 `_evaluate_tree`)
+
+伪代码上面已写。**关键不变量**:
+- evaluate 是**纯求值**(无副作用):返 `EvalResult { hit, pending_action }`
+- fire action 在 evaluator 顶层做(决定套利优先)
+- sub_conditions 互斥:命中第一个就停,不遍历后续
+
+### 4.2 arb / comp 并行 + 套利优先(Q8)
+
+```python
+arb_res, comp_res = await asyncio.gather(
+    evaluate(arb_tree, ctx),
+    evaluate(comp_tree, ctx),
+)
+# 套利结果优先:套利命中 → 套利 action;否则补救命中 → 补救 action
+if arb_res.hit:   fire(arb_res.pending_action)
+elif comp_res.hit: fire(comp_res.pending_action)
+```
+
+**为什么 evaluate 必须分离求值与执行**:补救要"等套利的 evaluate 结果"才决定 fire,所以 evaluate 不能边求值边执行 action(否则补救 evaluate 走到叶子就会 fire,无法回收)。这就是 Q21 "evaluate 返 True 不等 action 完成"的根本原因。
+
+### 4.3 信号量双状态(Q9)
+
+- **persistent**:`live=True`(比赛开始信号到 → set,后续读不重算;比赛结束信号到 → clear)
+- **transient**:`rebate=0.025`(赔率到 → SignalCollector 算 → set;Action 读 → `store.get()` 消费;下次赔率到才重算)
+- BoolExpr 用 `peek`(不消费);Action 内决策用 `get`(消费)
+
+### 4.4 scope 优先级查找(Q3 / Q6)
+
+挂载存在锁定:具体比赛 > comp > sport,**先挂者得**,即使本轮没命中也不下放(运营在该 scope 挂 = 承诺该 scope 全权负责该 pair_id)。
+
+### 4.5 Q19 互斥 + Q20 快照咬合
+
+- evaluate 开跑前查 `_execution_active`(经 `LegSettledRegistry` 或共享 flag),在飞就 skip(让路)
+- evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
+- 回收:绑 per-evaluation 上下文,evaluate + fire 结束 GC
+
+---
+
+## 5. 与横切的咬合
+
+| 横切 | 约束 |
+|---|---|
+| **PairRegistry**(matching 写) | evaluator 从触发 event 的 instrument_id pull pair_id,再查 StrategyRegistry;未注册 pair → no-op |
+| **LegSettledRegistry**(execution 写) | 补救路径的 `self_hits` / `checktion` 常常依赖 leg_settled(如"有腿 unsettled" 才走补救);BoolExpr 经 SignalRef 间接读 |
+| **Q19/§6.10 同步** | `_execution_active` ref-count 由 execution 维护(经 msgbus `execution.*`);evaluator 在 evaluate 开跑前查,在飞跳过 |
+| **Q20 快照** | OpportunitySnapshot per-evaluation;safety gate(settled/Risk)走 live |
+| **Q21 scope 优先级** | 挂载存在锁定;不降级 |
+| **Risk(透明拦截)** | strategy `submit_order` → RiskEngine `_check_order` → 通过则路由;deny → on_order_denied;strategy 不 import Risk(§5.4) |
+| **NT 原生优先级 — 无** | NT msgbus 有 handler priority 但语义不同;策略 scope 优先级**自建**于本组件,**不超前抽象**为通用件(P7) |
+
+---
+
+## 6. 时序:一次触发到下单
+
+```mermaid
+sequenceDiagram
+  participant DE as DataEngine
+  participant EV as StrategyEvaluator
+  participant SC as SignalCollector
+  participant SS as SignalStore
+  participant SR as StrategyRegistry
+  participant PR as PairRegistry
+  participant Q19 as _execution_active
+  participant CA as Cache
+  participant RE as RiskEngine
+
+  DE->>EV: OrderBookDeltas(instrument_id)
+  EV->>PR: get(instrument_id) → pair_id
+  EV->>SC: handle(event) → 更新 signals
+  SC->>SS: set_transient(rebate, ...)
+  EV->>SR: get_for(pair_id, comp, sport)
+  alt 无策略
+    SR-->>EV: None
+    EV->>EV: no-op
+  else 有策略
+    EV->>Q19: check
+    alt 执行在飞
+      Q19-->>EV: active → skip
+    else 闲
+      EV->>CA: snapshot(orderbook + positions + way_rebate)
+      par 并行 evaluate
+        EV->>EV: arb_tree.evaluate(ctx)
+      and
+        EV->>EV: comp_tree.evaluate(ctx)
+      end
+      alt arb.hit
+        EV->>RE: submit_order (经 arb.action)
+      else comp.hit
+        EV->>RE: submit_order (经 comp.action)
+      end
+    end
+  end
+```
+
+---
+
+## 7. 落地清单(Step 4 实施;按依赖顺序)
+
+**框架基础(纯逻辑,可全单测)**:
+- [ ] `SignalStore`(`signals.py`)+ 双状态读写测试
+- [ ] `BoolExpr` / `SignalRef` / `AndExpr` / `OrExpr` / `NotExpr`(`bool_expr.py`)+ AND/OR/NOT 嵌套求值测试
+- [ ] `Condition` / `EvalResult` dataclass + 抽象 `Check` / `Action`(`condition.py`)
+- [ ] `Strategy` / `ScopeKey` dataclass + `StrategyRegistry`(`registry.py`)+ scope 优先级 + 挂载存在锁定测试
+
+**评估器(NT Actor)**:
+- [ ] `StrategyEvaluator(Actor)`(`actor.py`)+ `_evaluate_tree` 递归 + `gather(arb,comp)` + 套利优先 fire 测试(fake event + 受控 SignalStore + 受控 StrategyRegistry + capture action)
+- [ ] `OpportunitySnapshot` 取数 + 回收(`snapshot.py`)+ Q19 跳过 + Q20 整轮复用测试
+
+**具体填充(渐进,旧 `services/strategy/` 平移)**:
+- [ ] 把旧 `signals/{rebate,multi_way,mean_signal,match_status}.py` 重构为本框架的 `Check` 子类;**计算**部分进 `SignalCollector`,**判定**部分进 `Check`
+- [ ] 把旧 `strategies/{default,max_rebate}.py` 重构为本框架的 `Action` 子类(含父类默认方向选择算法、深度缩放、概率转换)
+- [ ] 配置驱动:`StrategyRegistry` 从 YAML/JSON 装载(sport / competition / pair_id 三层)
+
+**外部事件接入(part of Step 4 + Step 7)**:
+- [ ] 比分 / 比赛开始等自定义 Data 类(`events.py`)+ 来源接入(web / 外部 API,具体到 Step 7 决定)
+
+**集成 + /live-test**:
+- [ ] launcher 接 `StrategyEvaluator` Actor + 注册 `StrategyRegistry`(配置加载)+ 通过 `ArbContext` 共享 PairRegistry / LegSettledRegistry / SignalStore
+- [ ] /live-test:小 scope 配置 + 实盘小单跑通 evaluate → submit
+
+> **未决/待 Step 4 启动时讨论**:
+> - SignalCollector 怎么接 NT msgbus(放 Actor 内部,还是独立 Actor)?
+> - 外部信号源(比分 / 赛事开始)的接入方式(web 推 / 第三方 API)— 跟 Step 7 web 重启时一起设计
+> - 旧 mean_signal discount sizing / 父类默认方向选择算法移植细节

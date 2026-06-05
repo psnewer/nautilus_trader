@@ -79,11 +79,42 @@ def test_leg_from_position_missing_info_returns_none():
     assert pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4)) is None
 
 
-def test_resolve_pair_id_reads_competition():
+def test_leg_from_position_prefers_selection_role_q9_key():
+    """#34/35:Q9 标准 key 是 selection_role;Provider 写它,本类优先读它。"""
+    cache = TestComponentStubs.cache()
+    pm = pm_instrument("match_1", "home")
+    # 模拟 Provider(matching/discovery)用 Q9 标准 selection_role 而非旧 market_type
+    pm.info.update({"selection_role": "draw"})
+    pm.info.pop("market_type", None)
+    cache.add_instrument(pm)
+    pf = _portfolio(cache=cache)
+    leg = pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
+    assert leg is not None and leg.market_type == "draw"
+
+
+def test_leg_from_position_falls_back_to_market_type():
+    """selection_role 缺、market_type 在 → 用 market_type(向后兼容旧 _factories 风格)。"""
+    cache = TestComponentStubs.cache()
+    pm = pm_instrument("match_1", "away")   # _factories 设的 info["market_type"]="away"
+    pm.info.pop("selection_role", None)     # 显式去掉新 key
+    cache.add_instrument(pm)
+    pf = _portfolio(cache=cache)
+    leg = pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
+    assert leg is not None and leg.market_type == "away"
+
+
+def test_resolve_pair_id_reads_from_pair_registry():
+    """#34: pair_id 经 PairRegistry(matching 写),不再读 info["competition"]。"""
+    from src.arbitrage.common.pair_registry import PairRegistry
     cache = TestComponentStubs.cache()
     pm = pm_instrument("match_42", "home")
     cache.add_instrument(pm)
     pf = _portfolio(cache=cache)
+    # 没注册时返回 None(下游 settled gate 自然不触发)
+    assert pf._resolve_pair_id(DuckPosition(pm.id, 100.0, 0.4)) is None
+    # 注册后正常返
+    registry = PairRegistry(); registry.register("match_42", [pm.id])
+    pf.configure_arb(pair_registry=registry)
     assert pf._resolve_pair_id(DuckPosition(pm.id, 100.0, 0.4)) == "match_42"
 
 

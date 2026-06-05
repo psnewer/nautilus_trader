@@ -72,6 +72,11 @@ def _gate_ctx(params, *, way_rebate=None, global_sum=0.0):
     ctx = _Ctx(params)
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
+    # #34:pair_id 来自 PairRegistry,非 info["competition"]。模拟 matching 已注册。
+    from src.arbitrage.common.pair_registry import PairRegistry
+    registry = PairRegistry()
+    registry.register("match_X", [pm.id])
+    ctx.portfolio.configure_arb(pair_registry=registry)
     ctx.portfolio.way_rebate = lambda pair_id, account_id=None: way_rebate or {}
     ctx.portfolio.global_min_rebate_sum = lambda account_id=None: global_sum
     denials = []

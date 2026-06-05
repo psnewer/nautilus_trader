@@ -27,6 +27,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.health_check import HealthCheckLoop
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.settlement.settlement import PolymarketSettlement
@@ -57,6 +58,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         name=None,
         *,
         leg_settled: LegSettledRegistry,
+        pair_registry: PairRegistry | None = None,
         settlement: PolymarketSettlement | None = None,
         positions_fetcher: Callable[[], Awaitable[list]] | None = None,
         session_timeout_secs: float = 30.0,
@@ -66,7 +68,11 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             loop, http_client, msgbus, cache, clock,
             instrument_provider, ws_auth, config, name,
         )
-        self._init_arb_session(leg_settled=leg_settled, session_timeout_secs=session_timeout_secs)
+        self._init_arb_session(
+            leg_settled=leg_settled,
+            session_timeout_secs=session_timeout_secs,
+            pair_registry=pair_registry,
+        )
         self._settlement = settlement
         self._positions_fetcher = positions_fetcher  # async () -> list[PolymarketPosition](Data API /positions,launcher 注入)
         self._health_interval_secs = health_interval_secs

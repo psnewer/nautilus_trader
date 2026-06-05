@@ -1,0 +1,85 @@
+{
+  "_doc": "ArbConfig 示例 — Tennis × OE Roland Garros 2026 × PM atp,debug.skip_execution smoke。详见 docs/arbitrage/architectures/_cross-cutting/configuration.md。凭证不要写这里,走 .env。",
+
+  "discovery": {
+    "enabled": true,
+    "refresh_interval_secs": 60,
+    "polymarket": {
+      "enabled": true,
+      "sports": [{"sport": "Tennis", "competitions": ["atp"]}]
+    },
+    "orbitexch": {
+      "enabled": true,
+      "sports": [{"sport": "Tennis", "competitions": ["Men's Roland Garros 2026"]}]
+    }
+  },
+
+  "matching": {
+    "enabled": true,
+    "min_similarity": 1,
+    "sport_aliases": {},
+    "competition_aliases": {
+      "atp": "ATP",
+      "Men's Roland Garros 2026": "ATP"
+    },
+    "competition_max_matches": {"ATP": 1}
+  },
+
+  "venues": {
+    "polymarket": {
+      "clob_url": "https://clob.polymarket.com",
+      "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    },
+    "orbitexch": {
+      "base_url": "https://www.orbitexch.com",
+      "headless": false,
+      "page_load_timeout_sec": 60
+    }
+  },
+
+  "risk": {
+    "share": 22.5,
+    "fx": 1.33,
+    "match_tp": 0.05,
+    "match_sl": -0.05,
+    "global_sl": -0.10
+  },
+
+  "execution": {
+    "tracking_timeout_sec": 30,
+    "health_check_interval_sec": 120
+  },
+
+  "strategy": {
+    "_doc": "slice 9(#49)落 mean_rebate 策略:checktion 短路 AND(pre_match 先验 → mean_rebate;前者 False 后者不跑);action place_bets log-only(Q-D1=A,Q-D1=B 阶段真下单经 SkipExecutionClient 兜底 mock 全成)",
+    "enabled": true,
+    "signals": {},
+    "strategies": {
+      "mean_rebate": {
+        "arbitrage_tree": {
+          "checktion": [
+            {"type": "pre_match"},
+            {"type": "mean_rebate", "params": {"min_rate": 0.01}}
+          ],
+          "action": {"type": "place_bets", "params": {"share": 22.5}}
+        }
+      }
+    },
+    "bindings": [
+      {"scope": "competition:ATP", "strategy_id": "mean_rebate"}
+    ]
+  },
+
+  "debug": {
+    "_doc": "smoke 用:skip_execution=true 时 SkipExecution{PM,OE}Client 拦 _submit_order 直接 mock 全成,不真上链。生产跑改 enabled=false 或整段删",
+    "enabled": true,
+    "overrides": {
+      "skip_execution": {
+        "enabled": true,
+        "value": true,
+        "description": "smoke 不真下单"
+      }
+    },
+    "mock_data": {}
+  }
+}

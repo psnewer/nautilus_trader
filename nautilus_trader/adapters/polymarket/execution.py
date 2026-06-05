@@ -270,7 +270,11 @@ class PolymarketExecutionClient(LiveExecutionClient):
             await self._await_account_registered()
         except PolyApiException as e:
             self._log.error(repr(e))
-            if e.error_msg["error"] == POLYMARKET_INVALID_API_KEY:
+            # error_msg is a dict only for API-level errors; for transport/network
+            # failures (status_code=None, e.g. "Request exception!") it is a plain
+            # string — guard before indexing so the real error surfaces instead of
+            # a masking TypeError(string indices must be integers).
+            if isinstance(e.error_msg, dict) and e.error_msg.get("error") == POLYMARKET_INVALID_API_KEY:
                 await self._ws_client.disconnect()
             raise e
 
@@ -291,10 +295,25 @@ class PolymarketExecutionClient(LiveExecutionClient):
             asset_type=AssetType.COLLATERAL,
             signature_type=self._config.signature_type,
         )
-        response: dict[str, Any] = await asyncio.to_thread(
-            self._http_client.get_balance_allowance,
-            params,
-        )
+        # #59:余额读取有界重试 —— PM CLOB 余额端点偶发瞬时 `Request exception!`(transport 错,
+        # status_code=None)曾连挂 connect → ExecEngine 不连 → 节点 120s 超时 + trader 不启动。
+        # 只读重试(不碰下单);持续 outage 仍按原语义抛(真钱读不到余额不应启动 trading)。
+        max_attempts = 3
+        response: dict[str, Any] | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = await asyncio.to_thread(
+                    self._http_client.get_balance_allowance,
+                    params,
+                )
+                break
+            except PolyApiException as e:
+                if attempt >= max_attempts:
+                    raise
+                self._log.warning(
+                    f"Balance check failed (attempt {attempt}/{max_attempts}): {e!r}; retrying in 2s",
+                )
+                await asyncio.sleep(2.0)
         total = usdce_from_units(int(response["balance"]))
         account_balance = AccountBalance(
             total=total,

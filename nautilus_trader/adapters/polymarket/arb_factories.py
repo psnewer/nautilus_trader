@@ -26,18 +26,115 @@ import asyncio
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.arb_provider import ArbPolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_api_key
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_api_secret
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_passphrase
+from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
+from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
+from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
+from nautilus_trader.common.providers import InstrumentProvider
 
 from src.arbitrage.bootstrap import get_arb_context
+
+
+class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
+    """#60:PM Sports 比分 firehose DataClient(`PMSPORTS` —— 名不含 `-`,否则 NT node_builder
+    会按 `partition("-")[0]` 前缀路由到 POLYMARKET 主 factory)。无 instrument 订阅,
+    `_connect` 即开 WS;装 bare `InstrumentProvider()` 占位(NT 基类要求)。"""
+
+    @staticmethod
+    def create(  # type: ignore[override]
+        loop: asyncio.AbstractEventLoop,
+        name: str,
+        config,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: LiveClock,
+    ) -> PolymarketSportsDataClient:
+        return PolymarketSportsDataClient(
+            loop=loop,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            instrument_provider=InstrumentProvider(),
+            config=config,
+        )
+
+
+class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
+    """替代上游 `PolymarketLiveDataClientFactory`,用 `ArbPolymarketInstrumentProvider`
+    给 instrument.info 补 Q9 6-key(matching 必需)。"""
+
+    @staticmethod
+    def create(  # type: ignore[override]
+        loop: asyncio.AbstractEventLoop,
+        name: str,
+        config: PolymarketDataClientConfig,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: LiveClock,
+    ) -> PolymarketDataClient:
+        http_client = get_polymarket_http_client(
+            private_key=config.private_key,
+            signature_type=config.signature_type,
+            funder=config.funder,
+            api_key=config.api_key,
+            api_secret=config.api_secret,
+            passphrase=config.passphrase,
+            base_url=config.base_url_http,
+        )
+        ctx = get_arb_context()
+        # #55:ArbPolymarketInstrumentProvider.load_all_async 整体 override(series-based 发现),
+        # 不再依赖 upstream event_slug_builder;直接读 ArbContext.pm_event_slug_tags(目标 competition)。
+        # #58(slice A):强制 load_all=True —— PM 上游 `_update_instruments` 走 `initialize(reload=True)`,
+        # 而 `initialize` 仅 load_all=True 才调 load_all_async(否则 "No loading configured" 加载 0 → cache 空,
+        # 历史上靠 refresher 直调 load_all_async 兜底;refresher 退役后必须让原生路径自己能 load)。
+        import msgspec
+
+        from nautilus_trader.config import InstrumentProviderConfig
+
+        instrument_config = config.instrument_config or InstrumentProviderConfig()
+        if not instrument_config.load_all:
+            instrument_config = msgspec.structs.replace(instrument_config, load_all=True)
+        provider = ArbPolymarketInstrumentProvider(
+            client=http_client,
+            clock=clock,
+            config=instrument_config,
+        )
+        ctx.pm_instrument_provider = provider  # slice 8A 回写,InstrumentRefresher 取同一实例
+        debug = ctx.debug_config
+        if debug is not None and getattr(debug, "enabled", False):
+            from src.arbitrage.debug.data_clients import DebugPolymarketDataClient
+            return DebugPolymarketDataClient(
+                loop=loop,
+                http_client=http_client,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+                instrument_provider=provider,
+                config=config,
+                name=name,
+                debug=debug,
+            )
+        return PolymarketDataClient(
+            loop=loop,
+            http_client=http_client,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            instrument_provider=provider,
+            config=config,
+            name=name,
+        )
 
 
 class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
@@ -76,7 +173,8 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
         provider = get_polymarket_instrument_provider(
             client=http_client, clock=clock, config=config.instrument_config,
         )
-        return ArbPolymarketExecutionClient(
+        debug = ctx.debug_config
+        common_kwargs = dict(
             loop=loop,
             http_client=http_client,
             msgbus=msgbus,
@@ -87,8 +185,13 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             config=config,
             name=name,
             leg_settled=ctx.leg_settled,
+            pair_registry=ctx.pair_registry,
             settlement=ctx.pm_settlement,
             positions_fetcher=ctx.pm_positions_fetcher,
             session_timeout_secs=ctx.pm_session_timeout_secs,
             health_interval_secs=ctx.pm_health_interval_secs,
         )
+        if debug is not None and getattr(debug, "enabled", False):
+            from src.arbitrage.debug.execution_clients import SkipExecutionPolymarketClient
+            return SkipExecutionPolymarketClient(debug=debug, **common_kwargs)
+        return ArbPolymarketExecutionClient(**common_kwargs)

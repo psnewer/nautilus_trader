@@ -1,8 +1,31 @@
-# debug 测试(占位)
+# debug 测试
 
-待 Q11 各子项实施时填实。
+对应章节: `refactor.md §6.6 / #38`;详细设计 `architectures/_cross-cutting/debug-injection.md`
 
-对应章节: `refactor.md §6.6`(Debug 注入框架完整设计)
+**Q11 框架基础落地(2026-05-24 #38)**:`DebugConfig` + `DebugArbitrageLiveRiskEngine.skip_check_size` + bootstrap 接线已落,**17 passed**。
+- ✅ `test_debug_config.py`(7:default disabled / 双闸 enabled / get_override default fallback / mock 按 category+conditions / mock priority / JSON roundtrip / disabled blocks all)
+- ✅ `test_debug_risk_engine.py`(5:skip 未激活走 super / skip 激活只跑应用层 / 余额拒短路 gates 不跑 / gates 拒 / debug.enabled=False 等同生产)
+- ✅ `test_bootstrap_integration.py`(5:无 debug 装生产 / disabled 装生产 / enabled 装 Debug 子类 / kernel-injected 包装类闭包绑 cfg / ArbContext.debug_config 字段)
+
+**Q11.A DebugDataClient 落地(2026-05-26 #39)**:行情数据掉包 framework + factory 分支已落,**+10 passed**(累计 **27 passed**)。
+- ✅ `test_debug_data_clients.py`(5:默认 passthrough / 子类覆盖 hook 替换 / hook 返 None 退化 passthrough / 子类经 self._debug 读 mock_data 决定替换 / debug_config 访问器)
+- ✅ `test_debug_data_factories.py`(5:PM 无 debug / PM disabled / PM enabled 装 Debug 子类 + 传 debug=cfg / OE 无 debug / OE enabled 装 Debug 子类 + 传 debug=cfg)
+
+**Q11.3 SkipExecutionClient 落地(2026-05-26 #40)**:跳真执行 + mock 全成交已落,**+12 passed**(累计 **39 passed**)。
+- ✅ `test_debug_execution_clients.py`(8:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE GBP / market 单 0.5 兜底 / limit 用 order.price / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super)
+- ✅ `test_debug_exec_factories.py`(4:PM 无 debug 装 prod / PM enabled 装 Skip + 传 debug=cfg / OE 无 debug / OE enabled 装 Skip + 传 debug=cfg)
+- 顺补 latent bug:`arb_factories.py` 漏 import `get_polymarket_instrument_provider`(live 运行会 NameError;Step 6 PM exec 未真接 live 没暴露)
+
+**落地决策修正**(2026-05-26 #39):
+- ❌ **撤回** `DebugArbitrageStrategy` 整条 —— Q21 框架下 strategy 参数(min_rebate / price / size)是具体 `Check`/`Action` 的构造参数,**直接配置 debug 版 Strategy 实例**即可,**不需要任何 Strategy 层 Debug 子类**(候选 a/b 都取消)。Q21 拆出 Check/Action 后,参数已经 first-class。
+- ❌ "下单价格掉包"**不放 execution** —— execution 一直规划为透明传递层,改 order content 违反语义;由 Strategy 层 Action 参数化(如 `PMSubmitAction(price_override=0.01)`)处理。
+
+**仍待**(后续 slice):
+- ⬜ `timeline.py`(Q11.4 NT Clock 状态机;只在 SkipExecution 真要 mock 订单 lifecycle 时才需要 —— 当前"立即全成"足够链路测)
+
+## Slice 10c smoke 浮上(#51):SkipExecutionOrbitExchClient 加 `_connect/_disconnect` no-op
+
+base `OrbitExchExecutionClient._connect` 是 `NotImplementedError`(OE live 接线未实写);**skip_execution=true 下不真出单**,_connect / _disconnect no-op 安全过(NT ExecClient 状态 transition 成 Connected)。非 skip 模式仍透传 base 的 NotImplementedError(待 slice 10b 真接线)。Smoke 验证:OE Exec Client 状态从 Connecting → Connected 正常。
 
 ## 锁定的关键性约束(P10)
 

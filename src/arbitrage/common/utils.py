@@ -69,6 +69,46 @@ def calculate_spread_pct(price_a: float, price_b: float) -> float:
     return ((price_b - price_a) / price_a) * 100
 
 
+def polymarket_price_to_probability(price: float) -> float:
+    """
+    PM 价格转概率(PM binary outcome 价格本身就是 0-1 概率,做 clamp 校验防脏数据)。
+
+    Args:
+        price: PM 价格(预期 0-1)
+
+    Returns:
+        概率值(clamp 到 [0, 1]);**<=0 或非数 → 0.0**(代表无效价位,上层短路)
+    """
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return 0.0
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return 1.0
+    return p
+
+
+def orbitexch_odds_to_probability(odds: float) -> float:
+    """
+    OE 赔率转概率(OE 赔率是 stake odds,如 2.26,概率 = 1/odds)。
+
+    Args:
+        odds: OE stake odds(>1 才有意义)
+
+    Returns:
+        概率值;**odds <= 1.0 或非数 → 0.0**(无效价位,上层短路)
+    """
+    try:
+        o = float(odds)
+    except (TypeError, ValueError):
+        return 0.0
+    if o <= 1.0:  # odds <=1 不可能(stake 不可能小于本金 + 利润 = 1)
+        return 0.0
+    return 1.0 / o
+
+
 # =============================================================================
 # 字符串处理函数
 # =============================================================================

@@ -1,8 +1,21 @@
 # matching 测试
 
-覆盖**市场匹配**capability(Step 3,摘要级别)。详细设计待 Step 3 启动时展开。
+覆盖**市场匹配**capability(Step 3)。
 
-对应章节: `refactor.md §5.3, §6.4`
+对应章节: `refactor.md §5.3, §6.4`;详细设计 `architectures/matching/architecture.md`;**#34** 修正 pair_id 来源
+
+**落地状态(2026-05-24)**:`src/arbitrage/matching/{events,normalizer,engine,actor}.py` + `src/arbitrage/common/pair_registry.py` 全落,**26 passed**:
+- ✅ `test_pair_registry.py`(6:register/get/unregister/同 pair 覆盖/隔离)
+- ✅ `test_matched_pair_event.py`(3:Data 子类、字段、roundtrip)
+- ✅ `test_normalizer.py`(5:`normalize_team_name` + `events_from_instruments` 反推/分组/info 缺失跳过/group_key)
+- ✅ `test_engine.py`(7:同组队名匹/跨 competition 隔/相似度近似匹/贪心/`competition_max_matches`/`min_similarity` 过滤/空输入)
+- ✅ `test_actor.py`(6:timer 驱动 + cache-非空 latch —— 单边 cache 空不配 / 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
+  > **#59→#60 演进**:旧 `on_data(InstrumentsRefreshed)`+2×window gate(#52)退役 → matching 自 clock timer 读 cache(#59,refresher 退役);eviction 从 #59 的 expiration 扫描换成 **#60 sports `ended` 事件驱动**(用户判 gamma expiration 不准)。`PairRegistry` key 归一 str(#58)。
+- ⬜ 全链路 wiring(DataClient 原生发现 → cache → matching timer → MatchedPair)经 /live-test 验:**#59 smoke10 已验**(PM Loaded 114 + MatchedPair mensik-zverev,refresher 未参与)
+
+**抓出的 bug(已修)**:
+1. `_both_recent` gate 用 `.get(v, 0)` 在 TestClock t=0 时假阳性放行 → 改为"两 venue 都必须有过 refresh 事件"。
+2. NT Actor 属性是 `self.cache` / `self.clock`(public readonly cdef),不是 `self._cache` / `self._clock`。
 
 ## 锁定决定
 
@@ -18,6 +31,10 @@
 | `test_event_normalizer.py` | 名称归一化算法(平移自原 service,接口不变) |
 | `test_match_engine.py` | 匹配算法(平移自原 service,但输入改为 NT instrument 列表) |
 | `test_market_matching_actor.py` | Actor 触发逻辑(订阅 + gating + 防抖) |
+
+## Slice 10d 修(#52):msgbus 直订替代 subscribe_data
+
+`MarketMatchingActor.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{InstrumentsRefreshed.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(InstrumentsRefreshed))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 经 DataEngine 路由,需 `client_id` 或 `instrument_id`(slice 10c live smoke 见 3 个 ERROR);custom Actor-to-Actor 事件无 venue/instrument 归属,正确路径是 msgbus 直订(`publish_data` 内部就是 msgbus.publish 到 `data.<TypeName>` topic)。**slice 10d live smoke 验:0 ERROR + OE refresh 3 次正常推进**。
 | `test_heterogeneous_normalization.py` | 跨 venue 异构 instrument 归一(Q9 验收) |
 
 ---

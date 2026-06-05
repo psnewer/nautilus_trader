@@ -18,6 +18,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 | 文件 | 范围 |
 |---|---|
 | `test_upstream_integration.py` | 上游 PM 适配器在我们配置下能正常加载 / 订阅 / 下单 / 事件回写 |
+| `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
+| `test_sports.py` | **#60** PM Sports 比分信号(`sports.py`):4 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
 
 ---
 
@@ -30,15 +32,12 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: Cache 中有 PM `BinaryOption` 列表,字段完整
 **验收**: 不需要修改上游代码即可工作
 
-### pm-adapter-1.2: 套利系统自定义 info 字段填充
-
-**前置**: 上游 Provider 加载完成
-**输入**: 取一个 `BinaryOption.info`
-**期望**: 上游版本提供的 info dict **可能不含**我们 §6.4 锁定的 6 个统一 key(sport / competition / home_team / away_team / start_ts / selection_role)
-**验收**:
-- 如上游已含 6 key,直接可用
-- 如上游缺,**Step 1 实施时需评估**: 子类化 `PolymarketInstrumentProvider` 在 `parse_polymarket_instrument` 后补齐 info,或在 MatchingActor 内反查
-**关注**: 此用例的输出影响 §6.4 的实现路径,Step 1 必须先跑这个
+### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 结构落地,extraction TODO)
+**落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 4 passed)
+- 评估结果:**上游 info=market_info(gamma dict)缺 6-key** → 走"子类化 PolymarketInstrumentProvider 补"路径
+- `ArbPolymarketInstrumentProvider._parse_instrument` super 后调 `enrich_pm_six_key_info(market_info, outcome)` update info
+- 当前 enricher 是 **best-effort seam**:`sport ← market_info["category"]`(能拿就拿);其它 5-key 空字符串/0 占位
+- ⬜ **TODO live**:实写需 PM gamma `/events/{event_id}` HTTP + ticker 拆解(参旧 `odds_client.py:255+`);现 matching `events_from_instruments` 见空 key 跳过 → **PM 侧暂不参与匹配**(结构完整,extraction 实写时下游不动)
 
 ### pm-adapter-2.1: 上游 DataClient 输出 OrderBookDelta 而非 dict
 

@@ -85,3 +85,43 @@ async def test_load_all_async_empty_does_not_raise():
     prov = OrbitExchInstrumentProvider(scraper)
     await prov.load_all_async()
     assert prov.get_all() == {}
+
+
+# ── slice 7A:aliases 注入 ─────────────────────────────────────
+
+def test_build_legs_applies_sport_alias():
+    """discovery-1.4.g(slice 7A): sport_aliases 命中时 info["sport"] 替换为规范名。"""
+    prov = OrbitExchInstrumentProvider(
+        SimpleNamespace(),
+        sport_aliases={"Soccer": "Soccer Normalized"},
+    )
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.info["sport"] == "Soccer Normalized"
+
+
+def test_build_legs_applies_competition_alias():
+    """discovery-1.4.h: competition_aliases 命中(`Men's Roland Garros 2026` → `ATP`)。"""
+    prov = OrbitExchInstrumentProvider(
+        SimpleNamespace(),
+        competition_aliases={"EPL": "English Premier League"},
+    )
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.info["competition"] == "English Premier League"
+
+
+def test_build_legs_alias_miss_uses_raw():
+    """无 alias 命中 → info 用原 sport/competition 字符串。"""
+    prov = OrbitExchInstrumentProvider(
+        SimpleNamespace(),
+        sport_aliases={"Tennis": "TENNIS"},  # 不匹配 _event 的 Soccer
+    )
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.info["sport"] == "Soccer"  # 原值透传
+
+
+def test_build_legs_no_aliases_provided():
+    """`sport_aliases=None` / `competition_aliases=None`(默认)→ 原值透传。"""
+    prov = OrbitExchInstrumentProvider(SimpleNamespace())
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.info["sport"] == "Soccer"
+    assert leg.info["competition"] == "EPL"

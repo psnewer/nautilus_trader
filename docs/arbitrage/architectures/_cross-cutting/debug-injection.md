@@ -1,8 +1,20 @@
 # 横切:Debug 注入框架详细设计
 
-> **定位**:详细设计。理由/历史见初设 `refactor.md §6.6`(Q11)。
+> **定位**:详细设计。理由/历史见初设 `refactor.md §6.6`(Q11)+ #38(2026-05-24 框架基础落地)。
 > 冲突时:**有把握 → 以本文为准并回写 `refactor.md` 修订记录;没把握 → 讨论**。
 > **横切机制**(贯穿 data / strategy / risk / execution 各组件的测试注入)。
+
+**落地状态(2026-05-24 #38 + 2026-05-26 #39)**:
+- ✅ `DebugConfig`(`src/arbitrage/debug/config.py`)— 普通对象,DI 注入,**去 `DebugManager` 单例**(撤销 `services/debug/`,Q11.5)
+- ✅ `DebugArbitrageLiveRiskEngine.skip_check_size`(`src/arbitrage/debug/risk.py`)— Q11.2 落地;`_check_order` 跳 NT 父类、只跑应用层 `_check_balance` + `_check_rebate_gates`(用户审问后撤"粒度"伪问题:就是 `super` 不调,~10 行)
+- ✅ `bootstrap.install_arbitrage_engines(debug_config=...)`— `enabled` 时装 `_KernelInjectedDebugEngine` 闭包包装类(kernel 不传 `debug=`,从闭包注入);`enabled=False` 或 None → 装生产
+- ✅ `ArbContext.debug_config` 字段(launcher → factory DI)
+- ✅ **#39 `Debug{PM,OE}DataClient`(Q11.A)**(`src/arbitrage/debug/data_clients.py`)— `_DebugDataClientMixin` 拦 `_handle_data`,`_maybe_substitute(data) → data|None` 钩子(默认 passthrough,具体替换算法 user 子类化覆盖);PM/OE data factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Debug 子类)。框架只提供拦截 seam,**不预设 mock_data schema**(user 场景特定)。
+- ✅ **#40 `SkipExecution{PM,OE}Client`(Q11.3)**(`src/arbitrage/debug/execution_clients.py`)— 覆盖 `_submit_order`,`is_override_active("skip_execution")` 真时跳 `_begin_session` + 真 venue 上送,直接 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=GBP,commission=0,liquidity=TAKER,venue_order_id=`MOCK-{cid}`);未激活透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支。**当前是"立即全成"**,不实现部分填 / 拒单 / 撤单时序(Q11.4 `timeline.py` 仅在真需要订单 lifecycle 模拟时才做)。
+- ✅ **#51 `SkipExecutionOrbitExchClient._connect/_disconnect` skip 模式 no-op**(slice 10c smoke 修):base `OrbitExchExecutionClient._connect` 是 `NotImplementedError("OE _connect: live 接线(browser/executor/general WS),/live-test 验")`;skip_execution=true 不真出单 → `_connect` no-op 让 NT ExecClient 状态正常 transition 成 Connected;非 skip 模式仍透传 base 的 NotImplementedError 等 slice 10b 真接线。同理 `_disconnect`。
+- ⬜ `timeline.py` NT Clock 状态机(Q11.4)— 只在 SkipExecution 真要 mock 订单 lifecycle 时才需要
+- ❌ **撤回 `DebugArbitrageStrategy` 整条**(#39):Q21 框架下 strategy 参数(min_rebate / price / size)是具体 `Check`/`Action` 的**构造参数**,不是 Strategy 类的 hook。**直接配置 debug 版 Strategy 实例**(同 scope,`Check`/`Action` 用极端值参数)即可,**不需要任何 Strategy 层 Debug 子类**。旧"候选 (a) `EvalContext.debug_overrides` 注入"+"候选 (b) Debug Check/Action 子类替换"**都取消** —— (a) 违反 P10,(b) 工程量大但实际需求(参数 override)已被参数化 first-class 吸收。
+- ❌ **"下单价格掉包"不放 execution**(#39):execution 一直规划为透明传递层(只决定要不要执行 / 怎么报告,不改 order content)。下单价的极端 override 由 Strategy 层 Action 参数化处理(如 `PMSubmitAction(price_override=0.01)`)。
 
 ---
 

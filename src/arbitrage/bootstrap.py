@@ -20,6 +20,7 @@ from typing import Callable
 import nautilus_trader.system.kernel as _kernel
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
@@ -40,6 +41,7 @@ class ArbContext:
     """factory create 时读取的进程级共享件。"""
 
     leg_settled: LegSettledRegistry | None = None  # 跨 PM/OE 共享同一份
+    pair_registry: PairRegistry | None = None      # matching 唯一写;risk/portfolio/session 只读(#34)
 
     # PM 专属
     pm_settlement: object | None = None
@@ -50,6 +52,23 @@ class ArbContext:
     # OE 专属
     oe_session_timeout_secs: float = 30.0
     oe_health_interval_secs: float = 30.0
+    # OE Discovery:scraper config + Provider 写 info 时查 aliases(slice 7A / #46)
+    oe_scraper_config: object | None = None  # OrbitExchVenueConfig | None;运行时类型避循环 import
+    oe_sport_aliases: dict = field(default_factory=dict)
+    oe_competition_aliases: dict = field(default_factory=dict)
+
+    # Provider 实例回写(slice 8A / #47):data factory 构造完 provider 后写回此处。
+    # #59:原读者 InstrumentRefresher 已退役(发现迁 DataClient),当前**无读者**(仅 prepare_arb_context
+    # / 测试设值);保留字段备未来跨组件取 provider 用,删除需级联 prepare_arb_context 签名 + 测试。
+    pm_instrument_provider: object | None = None
+    oe_instrument_provider: object | None = None
+
+    # PM 发现目标(#55):`ArbPolymarketInstrumentProvider.load_all_async` 读这两字段做 series-based 发现。
+    pm_event_slug_tags: list = field(default_factory=list)        # 目标 competition 列表(如 ["atp"]);PM /sports `sport` 字段比对
+    pm_competition_to_sport: dict = field(default_factory=dict)   # competition→sport map(如 {"atp": "Tennis"});provider 写 info["sport"]
+
+    # Debug 注入(Q11 / §6.6;`enabled=False` 或 None → 全套生产路径)
+    debug_config: object | None = None  # `DebugConfig | None`;运行时类型,避免 bootstrap import debug 模块循环
 
 
 _arb_context: ArbContext = ArbContext()
@@ -75,10 +94,28 @@ def reset_arb_context() -> None:
     _arb_context = ArbContext()
 
 
-def install_arbitrage_engines() -> None:
-    """构造 TradingNode 之前调用一次。幂等。"""
+def install_arbitrage_engines(debug_config: object | None = None) -> None:
+    """构造 TradingNode 之前调用一次。幂等。
+
+    `debug_config`:`DebugConfig | None`;不传或 `enabled=False` → 装生产 `ArbitrageLiveRiskEngine`;
+    `enabled=True` → 装一个 `DebugArbitrageLiveRiskEngine` 的薄包装(kernel 不会传 `debug=`,
+    包装类在 __init__ 内从闭包注入)。Portfolio 不分 debug(本轮 Q11.A 只覆盖 Risk;
+    `DebugArbitragePortfolio` 待后续 slice 按需做)。
+    """
     _kernel.Portfolio = ArbitragePortfolio
-    _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
+
+    if debug_config is not None and getattr(debug_config, "enabled", False):
+        from src.arbitrage.debug.risk import DebugArbitrageLiveRiskEngine
+
+        class _KernelInjectedDebugEngine(DebugArbitrageLiveRiskEngine):
+            """薄包装:kernel 按 LiveRiskEngine 实参表构造,不会传 `debug=`;闭包注入。"""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, debug=debug_config, **kwargs)
+
+        _kernel.LiveRiskEngine = _KernelInjectedDebugEngine
+    else:
+        _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 
 
 def wire_arbitrage_runtime(
@@ -92,8 +129,9 @@ def wire_arbitrage_runtime(
     返回共享的 LegSettledRegistry(execution 接线时复用同一份)。
     """
     params = params or ArbRiskParams()
-    # 优先用 launcher 已经 prepare 进 ArbContext 的那份(execution factory 与 runtime 共享同一对象)
+    # 优先用 launcher 已经 prepare 进 ArbContext 的那份(execution factory / matching actor / runtime 共享同一对象)
     leg_settled = leg_settled or _arb_context.leg_settled or LegSettledRegistry()
+    pair_registry = _arb_context.pair_registry or PairRegistry()
 
     portfolio = node.kernel.portfolio
     if not isinstance(portfolio, ArbitragePortfolio):
@@ -101,7 +139,10 @@ def wire_arbitrage_runtime(
             "kernel.portfolio 不是 ArbitragePortfolio —— install_arbitrage_engines() "
             "必须在构造 TradingNode 之前调用",
         )
-    portfolio.configure_arb(share=params.share, fx=params.fx, leg_settled=leg_settled)
+    portfolio.configure_arb(
+        share=params.share, fx=params.fx,
+        leg_settled=leg_settled, pair_registry=pair_registry,
+    )
 
     risk_engine = node.kernel.risk_engine
     if not isinstance(risk_engine, ArbitrageLiveRiskEngine):

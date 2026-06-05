@@ -29,15 +29,24 @@ from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScrape
 
 
 class OrbitExchInstrumentProvider(InstrumentProvider):
-    """OE 自写 Provider。`scraper` 由 factory 注入(共享 `BrowserManager` 的 `discovery` page)。"""
+    """OE 自写 Provider。`scraper` 由 factory 注入。
+
+    slice 7A(#46):`sport_aliases` / `competition_aliases` 在写 info 时查表,
+    实现 normalizer 假设的"Provider 填 info 时已 alias"(如 `"atp"` → `"ATP"`)。
+    """
 
     def __init__(
         self,
         scraper: OrbitExchScraper,
         config: InstrumentProviderConfig | None = None,
+        *,
+        sport_aliases: dict[str, str] | None = None,
+        competition_aliases: dict[str, str] | None = None,
     ) -> None:
         super().__init__(config=config)
         self._scraper = scraper
+        self._sport_aliases = sport_aliases or {}
+        self._competition_aliases = competition_aliases or {}
 
     async def load_all_async(self, filters: dict | None = None) -> None:
         """一轮发现:scraper → MatchEvent[] → 每场 ≥1 条 BettingInstrument 入基类。"""
@@ -47,15 +56,16 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
                 self.add(instrument)
 
     def _build_legs(self, event: MatchEvent) -> Iterable[BettingInstrument]:
-        """每方向(有 selection_id 才出腿)一条 `BettingInstrument`,info 填 6-key。"""
+        """每方向(有 selection_id 才出腿)一条 `BettingInstrument`,info 填 6-key
+        (sport / competition 走 aliases 规范化)。"""
         roles = [
             ("home", event.home_selection_id),
             ("draw", event.draw_selection_id),
             ("away", event.away_selection_id),
         ]
         info_base = {
-            "sport": event.sport,
-            "competition": event.competition,
+            "sport": self._sport_aliases.get(event.sport, event.sport),
+            "competition": self._competition_aliases.get(event.competition, event.competition),
             "home_team": event.home_team,
             "away_team": event.away_team,
             "start_ts": 0,  # TODO Step 1:scraper DOM 抽开赛时间

@@ -1,8 +1,12 @@
-# strategy 测试(占位)
+# strategy 测试
 
-待 Step 4 启动时展开。
+对应章节: `refactor.md §5.4 / Q21`;详细设计 `architectures/strategy/architecture.md`(Q21 锁定 2026-05-24)
 
-对应章节: `refactor.md §5.4`
+**Q21 框架锁定(2026-05-24)**:Strategy 不再是单体决策类,而是 **scope-priority + condition tree + 套利/补救并行** 框架。架构详细设计见 `architectures/strategy/architecture.md`(标准 7 节);旧 `services/strategy/` 3000 行(signals / strategies)语义可作为新框架的 **Check / Action / SignalCollector 类填充**,不再是骨架。
+
+**测试结构**:
+- 框架层(本 README §"strategy-4.framework.x"):`SignalStore` / `BoolExpr` / `Condition` 树评估 / `StrategyRegistry` / `StrategyEvaluator` —— 纯逻辑,可全单测
+- 实现层(本 README §"strategy-4.{N}.x" 沿用编号):具体策略行为(Q13 全量重算 / 双腿原子 / 补偿撤单 / hook 契约 / 深度缩放 / 概率转换)—— 平移自旧实现,挂在新框架的 Check/Action 上落地
 
 ## 锁定的关键性约束(2026-05-09 修正后)
 
@@ -20,18 +24,26 @@
 - execution 内部 **recovery loop 已移除**;补救 / 撤后再下 / 单腿失败时的另一腿补偿撤单,**全部由 strategy 承担**(显式 defer 到 Step 4 设计)
 - 现实风险: 短期会出现"裸单飘着没人管"的窗口(Q-F),strategy 设计时必须有兜底
 
-## Strategy hook 点契约(P10 设计原则)
+## Strategy Debug 覆盖契约(Q21 + #39 修订)
 
-为支持 §6.6 Debug 子类化覆盖,生产 Strategy 必须把可变行为拆成 protected hook:
+**老的"单体 Strategy + protected hook + Debug 子类"设计已撤回**(refactor.md #39)。Q21 框架下,
+strategy 参数(min_rebate / price / size / share_scaler 等)是具体 `Check`/`Action` 的**构造参数**,
+属于 first-class config。要 debug 时,**直接配置一份 debug 版 Strategy 实例**(同 scope,
+`Check`/`Action` 用极端参数),走 `StrategyRegistry.register_*` 装载:
 
-| Hook | 默认实现 | Debug 覆盖意图 |
-|---|---|---|
-| `_get_min_rebate_rate` | `config.min_rebate_rate` | `overrides.min_rebate_rate` |
-| `_get_pm_price(ctx, dir)` | `cache.order_book(...)` 读最优价 | `overrides.polymarket_price` 强制覆盖 |
-| `_get_oe_price(ctx, dir)` | 同上 | `overrides.orbitexch_price` |
-| `_get_pm_size(share, dir)` | `share`(转换成 PM 标准 size) | `overrides.polymarket_size` |
-| `_get_oe_size(share, dir)` | `share / odds / fx`(OE stake) | `overrides.orbitexch_size` |
-| `_adjust_share_by_liquidity(ctx, best)` | 读 orderbook 深度按比例缩放 | (Debug 不覆盖此 hook;skip_check_size 在 Risk 层) |
+```python
+prod = Strategy(scope_key="sport:Soccer",
+                arbitrage_tree=Condition(..., checktion=[RebateCheck(min_rate=0.05)],
+                                          action=PMSubmitAction(...)))
+dbg  = Strategy(scope_key="sport:Soccer",
+                arbitrage_tree=Condition(..., checktion=[RebateCheck(min_rate=-10.0)],
+                                          action=PMSubmitAction(price_override=0.01, size_scaler=0.001)))
+strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
+```
+
+无 `DebugArbitrageStrategy` 类,无 `_get_*` hook,无 `EvalContext.debug_overrides`。原因:Q21
+拆出 Check/Action 后,参数已是 first-class,**hook 机制冗余**;且 hook 注入会让生产 Check/Action
+带 `if ctx.debug_overrides` 分支,违反 P10。
 
 ## 预期用例(摘要)
 
@@ -156,9 +168,106 @@
 - 异常路径不漏快照(`finally` 覆盖)
 - 内存监测:长时间运行快照占用不单调增长
 
+## Slice 9 落地(2026-05-31 #49):mean_rebate 策略 + 框架小改
+
+详设见 `architectures/strategy/architecture.md §3.8`(slice 9 落地段)+ `_cross-cutting/configuration.md §10`(slice 9 ✅)。
+
+**框架改 3 件**(per-pair 隔离 + per-eval scratch):
+- ✅ `test_signal_store_view.py`(6):view writes 写 namespaced / view reads 只看 namespace / per-pair 不污染 / transient get 消费仅在 namespace / has namespaced / clear_persistent / root+view 共存
+- ✅ `test_snapshot.py` +3:in_play False when no leg marks / in_play True when any leg marks / 缺 cache.instrument 不 raise
+- ✅ `test_evaluator.py`(5 旧 test 改用 `store.view(pair_id).set_persistent(...)`,符合 view idiom)
+
+**用户域 Check/Action**(slice 9 #49):
+- ✅ `test_check_pre_match.py`(3):not in_play → True / in_play → False / snapshot=None → True 不阻塞
+- ✅ `test_check_mean_rebate.py`(4):3-way 套利 > 阈值 → True 写 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持
+- ✅ `test_action_place_bets.py`(5):PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg
+
+**OE inplay 写入**:
+- ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise
+
+## Slice 10e(2026-06-04 #61):OBD per-iid 订阅 + OBD-driven 重评
+
+`StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:两边各腿首次见到时
+`subscribe_order_book_deltas(InstrumentId)`(去重 `_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
+流进 cache → `build_snapshot` 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
+`on_order_book_deltas` → `_route_eval`(经 `instrument_id→PairRegistry→pair_id` 评估,OBD-driven 重评)。
+- ✅ `test_evaluator.py` +1 `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿订 OBD,同 pair 再来去重。
+- **live smoke15 验**:MatchedPair mensik-zverev → 4 个 `SubscribeOrderBook`(2 PM token + 2 OE selection)→ 两 data client `Subscribed ... order book deltas`,0 ERROR。
+
+## Slice 10d(2026-05-31 #52):msgbus 直订替代 subscribe_data
+
+`StrategyEvaluator.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(MatchedPair))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 路由经 DataEngine,需 client_id/instrument_id;MatchedPair 是 Actor-to-Actor 事件无 venue/instrument 归属。同时**MVP 不预订 OrderBookDeltas**(原 `subscribe_data(DataType(OrderBookDeltas))` 同样需要 instrument_id),需 OBD-driven 重评时 MatchedPair fire 后 per-iid 调 `subscribe_order_book_deltas(iid)`。**slice 10d live smoke 验:strategy 端 0 ERROR**。
+
+## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
+
+- ✅ `test_submitter.py`(3):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise
+- ✅ `test_action_place_bets.py` +2:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise
+- ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
+
+**Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,3 tests):
+- ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
+- ✅ 门控 smoke:snapshot.in_play=True → PreMatchCheck False → checktion AND 短路 → MeanRebateCheck 不跑 → 无 fire
+- ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
+- **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
+
+## Slice 5 落地(2026-05-28 #44):Check/Action registry + JSON loader
+
+`src/arbitrage/strategy/check_action_registry.py` + `src/arbitrage/strategy/json_loader.py`(框架层,具体 Check/Action 子类由用户后落)。
+
+- ✅ `test_check_action_registry.py`(8):register + build + 默认 params / 未知 type / 缺 type / 同名同类幂等 / 同名异类 raise
+- ✅ `test_json_loader.py`(26):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry
+
 ## Debug 相关
 
-`DebugArbitrageStrategy` 子类的测试归于 `tests/arbitrage/debug/`(§6.6),覆盖:
-- `min_rebate_rate` / `polymarket_price` / `orbitexch_price` / `polymarket_size` / `orbitexch_size` 等 override hook
+**无 strategy 层 Debug 子类**(refactor.md #39 撤回 `DebugArbitrageStrategy` 整条)。
+Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scope,
+`Check`/`Action` 用不同构造参数),不是**类 vs 类**。
 
-不在本目录。
+其余 Debug 件(数据流 `Debug{PM,OE}DataClient` / Risk `DebugArbitrageLiveRiskEngine.skip_check_size` /
+未来 `SkipExecution{PM,OE}ExecutionClient`)的测试在 `tests/arbitrage/debug/`,**不在本目录**。
+
+---
+
+## strategy-4.framework.x:Q21 新框架层用例(2026-05-24)
+
+新框架的纯逻辑件,可全单测。落地顺序见 `architectures/strategy/architecture.md §7`。
+
+### strategy-4.framework.store.{1-4}:SignalStore 双状态读写
+- **.1**:`set_persistent` 后多次 `peek`/`get` 都拿到值(写后保留)
+- **.2**:`set_transient` 后 `peek` 拿到值不消费;`get` 拿到值后再 `get` 返 None(用后即清)
+- **.3**:`clear_persistent` 删除该 key
+- **.4**:同 key 同时存在 persistent + transient 时,`get` 优先消费 transient(避免 stale)
+
+### strategy-4.framework.expr.{1-5}:BoolExpr (AND/OR/NOT) + SignalRef 求值
+- **.1**:`SignalRef("live")` 缺 → False;`set_persistent("live", True)` → True
+- **.2**:`AndExpr(a, b)` 全 True 才 True;任一 False → False
+- **.3**:`OrExpr(a, b)` 任一 True 即 True
+- **.4**:`NotExpr(a)` 取反
+- **.5**:嵌套 `AND(a, OR(b, NOT(c)))` 求值正确
+- **.6**:`BoolExpr.eval` 经 `SignalStore.peek` 不消费 transient
+
+### strategy-4.framework.cond.{1-6}:Condition 树评估(EvalResult)
+- **.1**:self_hits=False → `EvalResult(hit=False, action=None)`
+- **.2**:self_hits=True、有 sub_conditions、第一个 sub 命中 → 返该 sub 的 EvalResult(后续不跑)
+- **.3**:self_hits=True、有 sub_conditions、全没命中 → `EvalResult(hit=False)`
+- **.4**:叶子节点(sub_conditions 空)、checktion 全过、action 非 None → `EvalResult(hit=True, pending_action=action)`(不执行 action)
+- **.5**:叶子、checktion 空 list → 默认通过
+- **.6**:叶子、action=None → 仍 `hit=True`(`pending_action=None` 上层无事可 fire)
+
+### strategy-4.framework.reg.{1-4}:StrategyRegistry scope 优先级 + 挂载锁定
+- **.1**:只挂 sport → 找该 sport 下任意 pair 都返该策略
+- **.2**:挂 sport + comp → comp 内 pair 返 comp 策略;comp 外的 pair 返 sport 策略
+- **.3**:挂 sport + comp + 具体 pair → 该 pair 返 pair 策略,**即使没命中也不下放**(Q21-a 挂载存在锁定)
+- **.4**:都没挂 → 返 None
+
+### strategy-4.framework.eval.{1-5}:StrategyEvaluator 评估器
+- **.1**:`on_data` 收 `OrderBookDeltas` → 查 PairRegistry 拿 pair_id → 查 StrategyRegistry 拿 strategy → 触发 `_evaluate_strategy`
+- **.2**:strategy 为 None(无挂载)→ no-op,无 fire
+- **.3**:Q19:`_execution_active` True 时 evaluate 跳过(让路)
+- **.4**:Q21 套利优先:arb.hit=True + comp.hit=True → fire arb.action,**不** fire comp.action
+- **.5**:Q21 补救兜底:arb.hit=False + comp.hit=True → fire comp.action(等 arb evaluate 完成确认未命中后才 fire)
+
+### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
+- **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份
+- **.2**:期间 cache 被新事件更新,evaluate 内读到的还是 snapshot 旧值(隔离)
+- **.3**:evaluate 结束 + fire 结束后,snapshot 可被 GC(绑 per-evaluation 上下文,无长存 dict)

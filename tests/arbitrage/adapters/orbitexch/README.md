@@ -24,6 +24,21 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 | `test_provider.py` | OE Provider 的具体行为(Q9 字段 / 抓取失败 / page 命名) |
 | `test_data_client.py` | OE DataClient(Step 2 占位,详细等 Step 2 启动) |
 | `test_execution_client.py` | OE ExecutionClient(Step 5 占位,详细等 Step 5 启动) |
+| `test_data_factory_provider_wiring.py` | **slice 7A(#46)**:`OrbitExchLiveDataClientFactory.create` 按 `ArbContext.oe_scraper_config` 分支(缺→`InstrumentProvider()` 占位 / 有→真 `OrbitExchInstrumentProvider(scraper, aliases)`)|
+| `test_data_client_inplay_writeback.py` | **slice 9(#49)**:`write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper(`_on_price_frame` 路径 NT 重,_cache cdef readonly Mock 困难,验 helper 即可)。case:present True / present False / cache 缺 instrument 不 raise / info=None 不 raise |
+
+## Slice 10c smoke 浮上(#51):OE live connect 接线修
+
+- **`BrowserManager.start()` 幂等化**(`if self._context is not None: return`):共享 BrowserManager 被多次 client 触发 start 时不重复 init Playwright。
+- **`OrbitExchDataClient._connect` 自管 start + 改用 `create_page`**(原 bug:`get_page` 是只读,首次连返 None → `.goto` AttributeError)。设计意图原是 "factory 层先 start",但 factory 未接;DataClient 自管 + 幂等更稳。
+- **`SkipExecutionOrbitExchClient._connect/_disconnect` skip 模式 no-op**:base `OrbitExchExecutionClient._connect = NotImplementedError`("OE _connect: live 接线(browser/executor/general WS),/live-test 验");skip_execution=true 下不真出单 → no-op 安全过;非 skip 模式仍透传 NotImplementedError(待 slice 10b 真接线)。
+
+## Slice 7A 浮上(#46):scraper 浏览器自管 known divergence
+
+- OE `OrbitExchScraper` 自管 Playwright lifecycle(独立 browser 进程,无登录共享)
+- OE Data/Exec client 走 `BrowserManager.get_page("data"/"exec")`(Q2 / §6.2)
+- **discovery 是第三方,Q2 原本只覆盖 Data+Exec**;scraper 跑 unauthenticated 看 competition list 够用
+- 若后续 discovery 需要登录状态(私有赛事 / 用户偏好),拆 slice 7C:refactor scraper 接 `BrowserManager.get_page("discovery")`
 
 ---
 
@@ -73,16 +88,14 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 ---
 
-### oe-adapter-2.x (Step 2): OE DataClient
-
-**待 Step 2 启动时展开**。预期范围:
-- 继承 `LiveMarketDataClient`(不是 `LiveDataClient`)
-- `_subscribe_order_book_deltas` 实现
-- 通过 `manager.get_page("data")` 拿 page,**不**调 `start()` / `close()`
-- 输出 NT 标准 `OrderBookDelta`(不是 `QuoteTick`)
-- WS 帧解析(从 `odds_client.py` 平移)+ Playwright CDP 抓取
-- 重连机制(Playwright page reload,从 `odds_client.py` 平移)
-- **健康检查 / 网页刷新归本 client(Q13)** —— 见下方 oe-adapter-2.health.*
+### oe-adapter-2.x (Step 2): OE DataClient(✅ Step 2 主体落地,10 passed)
+**落地**:`nautilus_trader/adapters/orbitexch/data.py` 整体重写 + `factories.py` 加 `OrbitExchLiveDataClientFactory`(`test_data_client_step2.py`)
+- ✅ 继承 `LiveMarketDataClient`(取代旧 `LiveDataClient`);type-specific `_subscribe_order_book_deltas`
+- ✅ `manager.get_page("data")` 拿 page,**不**调 `start()`/`close()`(共享单例)
+- ✅ 输出 NT 标准 `OrderBookDeltas`(取代旧 `QuoteTick`):snapshot CLEAR + N×BACK ADD(BUY) + M×LAY ADD(SELL)
+- ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
+- ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
+- ⬜ **待 live 接**:OE 健康检查 / 页面 reload 机制(`HealthCheckLoop` 接入,见 oe-adapter-2.health.*);scraper DOM 抽 `start_ts`
 
 ---
 

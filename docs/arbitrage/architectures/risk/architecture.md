@@ -136,11 +136,14 @@ class ArbitragePortfolio(Portfolio):
     def global_min_rebate_sum(self, account_id=None) -> float | None: ...
     # ── 内部 ──
     def _legs_for_pair(self, pair_id, account_id) -> list[_Leg]: ...
-    def _resolve_pair_id(self, position) -> str | None:  # instrument.info["competition"]
-    def _leg_from_position(self, position) -> _Leg | None:  # info["market_type"] + 类型判 venue
+    def _resolve_pair_id(self, position) -> str | None:  # PairRegistry.get(instrument_id), #34
+    def _leg_from_position(self, position) -> _Leg | None:  # info["selection_role"] (Q9) + 类型判 venue
 ```
 
-**腿来源(平移自旧 `position.py`,但不再自维护 `_positions`)**:从 NT Cache 的 `positions_open()` 反推 `_Leg`。`instrument.info` 契约(由 **discovery** 填充,本类只读,单一 seam 在 `_resolve_pair_id` / `_leg_from_position`):`info["competition"]`→pair_id、`info["market_type"]`→home/draw/away;venue 与公式分支由 instrument 类型判定(`BinaryOption`=PM,`BettingInstrument`=OE),不靠字符串。
+**腿来源(平移自旧 `position.py`,但不再自维护 `_positions`)**:从 NT Cache 的 `positions_open()` 反推 `_Leg`。
+- **pair_id 经 `PairRegistry`**(matching 写、本类读;#34 修正,原误用 `info["competition"]` 是联赛名非 pair_id)。
+- **`instrument.info` 契约**(由 **discovery** 填充,本类只读,单一 seam 在 `_leg_from_position`):`info["selection_role"]`→home/draw/away(Q9 标准 key;旧 `info["market_type"]` 作 fallback 兼容);其它 Q9 6-key 是 matching 输入。
+- **venue / 公式分支**由 instrument 类型判定(`BinaryOption`=PM,`BettingInstrument`=OE),不靠字符串。
 
 **接线 —— 导入名替换(`src/arbitrage/bootstrap.py`),取代旧"构造后 swap"方案**(Step 6 改进,见 refactor.md 修订记录):
 
@@ -255,11 +258,13 @@ sequenceDiagram
 - [x] `bootstrap.install_arbitrage_engines`(导入名替换)+ `wire_arbitrage_runtime`(configure_arb 注入)
 - [x] 共享 `LegSettledRegistry`(`common/leg_settled.py`)settled gate seam
 - [x] **核实 NT cpdef `_check_order` 子类覆盖**:已 end-to-end 验证(`_handle_submit_order` 派发到 Python 覆盖,deny 事件发出,订单不泄漏)
-- [ ] `skip_check_size` Debug 粒度(Q11,留 Step 6 Debug 子类):待核实 NT 是否有跳过 native `_check_orders_risk` 余额检查的开关(小单实测用)
+- [x] **`skip_check_size`** ✅ Q11 Debug slice #38 落地(2026-05-24):`DebugArbitrageLiveRiskEngine._check_order` 子类覆盖,`DebugConfig.is_override_active("skip_check_size")` 时跳过 `super()._check_order`(跳过 NT 父类 price/quantity/GTD 校验),直跑应用层 `_check_balance` + `_check_rebate_gates`。`src/arbitrage/debug/risk.py`,~10 行;`bootstrap.install_arbitrage_engines(debug_config=)` 接线 → kernel 自动装 Debug 子类。tests:`tests/arbitrage/debug/test_debug_risk_engine.py` 5 passed。
 - [ ] 对应测试 .py:`tests/arbitrage/risk/README.md`(risk-6.1~6.7 / 6.9.x)
 
 > **已闭环**:`_check_rebate_gates` 取 rebate 经 `self._portfolio`(import 替换后即 `ArbitragePortfolio` 实例)调其方法 ✓;cpdef 覆盖可行性 ✓。
 > **仍依赖外部契约**:`instrument.info["competition"]/["market_type"]` 由 discovery 填充(本类只读,单一 seam);OE 腿的 size/price 语义(stake / 十进制赔率)由 OE ExecutionClient 上报时保证。
+
+**#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / 引擎的 `_pair_id_for_order` 原读 `instrument.info["competition"]` 是**错读**——`competition` 是联赛名(EPL/NFL),不是 pair_id;pair_id 由 matching 算出经 `PairRegistry` 暴露。现两处都改读 registry(`ArbitragePortfolio._pair_registry`),`configure_arb` 增 `pair_registry` 参,launcher 经 `ArbContext.pair_registry` 注入(同 leg_settled 模式)。`_leg_from_position` 同时把 `info` 读 key 校正:Q9 标准是 `selection_role`,旧 `market_type` 作 fallback 兼容。
 
 **NT 子类化两个 cdef 可见性陷阱(写测试时发现,已修;production-affecting)**:
 1. **`Portfolio._cache` 是私有 `cdef`(非 `readonly`)→ Python 子类方法 `self._cache` 抛 AttributeError**(`RiskEngine._cache` 是 `readonly` 故引擎侧无此问题)。`ArbitragePortfolio` 改为**覆盖 `__init__`**(签名 `msgbus/cache/clock/config`,与 kernel 原生构造一致)`super().__init__(...)` 后自存 `self._arb_cache = cache`,所有腿提取走 `_arb_cache`。

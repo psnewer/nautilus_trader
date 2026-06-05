@@ -35,6 +35,7 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 ORBITEXCH = "ORBITEXCH"
@@ -61,6 +62,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         config,
         *,
         leg_settled: LegSettledRegistry,
+        pair_registry: PairRegistry | None = None,
         session_timeout_secs: float = 30.0,
     ) -> None:
         super().__init__(
@@ -76,7 +78,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             clock=clock,
             config=config,
         )
-        self._init_arb_session(leg_settled=leg_settled, session_timeout_secs=session_timeout_secs)
+        self._init_arb_session(
+            leg_settled=leg_settled,
+            session_timeout_secs=session_timeout_secs,
+            pair_registry=pair_registry,
+        )
         self._set_account_id(AccountId(f"{ORBITEXCH}-001"))
         self._browser_manager = browser_manager
         self._config = config

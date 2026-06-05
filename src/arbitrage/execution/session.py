@@ -28,6 +28,7 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_registry import PairRegistry
 
 # venue 确认事件(任一落地 → leg_settled=true,§4.4);OrderSubmitted/Denied 非 venue 确认,不计
 _VENUE_CONFIRM = (OrderAccepted, OrderFilled, OrderCanceled, OrderRejected, OrderExpired)
@@ -40,8 +41,15 @@ _TIMEOUT_PREFIX = "arb_exec_timeout:"
 class ArbExecutionSessionMixin:
 
     # ── 宿主在 __init__ 末尾调用 ───────────────────────────────────────
-    def _init_arb_session(self, *, leg_settled: LegSettledRegistry, session_timeout_secs: float) -> None:
+    def _init_arb_session(
+        self,
+        *,
+        leg_settled: LegSettledRegistry,
+        session_timeout_secs: float,
+        pair_registry: PairRegistry | None = None,
+    ) -> None:
         self._leg_settled = leg_settled
+        self._pair_registry = pair_registry  # #34: matching 写,本类读;`_pair_id_for` 用
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
         # coid -> {qty, filled, instrument_id, pair_id}
         self._active_sessions: dict = {}
@@ -127,10 +135,10 @@ class ArbExecutionSessionMixin:
 
     # ── helpers / hooks ───────────────────────────────────────────────
     def _pair_id_for(self, instrument_id):
-        inst = self._cache.instrument(instrument_id)
-        if inst is None or not inst.info:
+        # #34:pair_id 来自 matching 的 PairRegistry,**不是** info["competition"](后者是联赛名)
+        if self._pair_registry is None:
             return None
-        return inst.info.get("competition")
+        return self._pair_registry.get(instrument_id)
 
     def _publish_execution(self, topic: str, instrument_id, pair_id) -> None:
         self._msgbus.publish(topic=topic, msg={"instrument_id": instrument_id, "pair_id": pair_id})

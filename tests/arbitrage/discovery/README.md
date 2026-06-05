@@ -5,6 +5,8 @@
 - Step 2 InstrumentRefresher Actor(调度 + 持久化)—— `refactor.md §5.2.2`
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
+> **#59(slice A)架构反转**:`InstrumentRefresher` Actor **已退役** —— 周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE `adapters/orbitexch/data.py` 新增 `_send_all_instruments_to_data_engine` + `_update_instruments` task)。Q8"调度归 Refresher"被验证为重造 NT 原生而反转(refactor.md §5.2.3/#59)。下方 `test_instrument_refresher.py` / `test_instruments_refreshed_event.py` 现测 **dead code**(refresher.py/events.py 暂留,smoke 验后删);新增「DataClient 周期发现 + on_instrument 灌 cache」用例**待补**(#59 已 live smoke10 验:PM `initialize` Loaded 114 + matching timer 出 MatchedPair,refresher 未参与)。
+
 **落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
 - ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
@@ -12,7 +14,9 @@
 - ⬜ `test_polymarket_provider.py`(1.1/1.2/1.3 上游构造需链上 creds,/live-test 验)
 - ⬜ 浏览器抓取失败处理(1.7)、双 venue Refresher 隔离(2.7 整端到端,要起 node)、`InstrumentsRefreshed` msgbus 全链路(3.2)—— 经 /live-test 或上层 e2e 验
 
-**仍待 Step 1**:scraper DOM 抽 `start_ts`(现 Provider 暂置 0);PM info 6-key post-processor 接线(launcher 层)。
+**仍待 Step 1**:scraper DOM 抽 `start_ts`(现 Provider 暂置 0);PM info 6-key 真 extraction(`#35` 已落 seam:`adapters/polymarket/arb_provider.py:enrich_pm_six_key_info`,**TODO** 实写需 gamma `/events/{id}` 调用 + ticker 拆解;参旧 `odds_client.py:255+`)。
+
+**#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
 ## 文件分布
 
@@ -77,6 +81,80 @@
 - `cache.instruments(venue=POLYMARKET)` 返回上次成功的快照
 
 **验收标准**: API 异常不污染 Cache 状态
+
+---
+
+### discovery-7B.1(slice 7B,#53):PM `enrich_pm_six_key_info` 真写
+
+**前置**: `ArbPolymarketInstrumentProvider._parse_instrument` 截 BinaryOption 创建后,调 `enrich_pm_six_key_info(market_info, outcome)` 补 info 6-key
+
+**输入**: PM gamma `market_info`(含嵌 events[0].ticker / slug / outcomes / startDate / category)
+
+**期望**(详 `tests/arbitrage/adapters/polymarket/test_arb_provider_enricher.py` 14 tests):
+- ticker `{comp}-{home}-{away}-YYYY-MM-DD` 解析:competition 大写,home/away 由 outcomes index 或 abbr 决定
+- selection_role 由 market_slug 推 / sub-markets(first-set-winner / match-total / set-totals)返空 → matching 跳
+- 非 match-level events(`2026-mens-french-open-winner`)→ 返空,不阻塞 matching
+- sport 推断走 ticker 前缀 map(`atp→Tennis`),unmapped 用 `market_info["category"]` 兜底
+- 容错:events 缺 / outcomes 是 JSON 字符串 / outcome 不在 outcomes 列表
+
+**验收**: 14 测试通过 + live smoke 用 `series_slug=atp` filter 35s load 100 events → 2026 instruments
+
+### discovery-7B.2(slice 7B,#53):PM `event_slug_builder` 路径
+
+**前置**: `PolymarketInstrumentProviderConfig.event_slug_builder = "nautilus_trader.adapters.polymarket.arb_provider:build_pm_event_slugs_from_arb_context"`;`ArbContext.pm_event_slug_tags = ["atp"]`(launcher 经 dispatcher 从 `cfg.discovery.polymarket.sports[].competitions` 派生)
+
+**输入**: 启动 PM Provider,upstream `_load_from_event_slugs` 触发 callable
+
+**期望**:
+- `build_pm_event_slugs_from_arb_context` sync 调 gamma `/events?series_slug=atp&closed=false&limit=500` 返 100 events 的 slug 列表
+- 比起 `_load_all_using_gamma_markets` 路径(全量 crawl 50K+ markets / 5+ 分钟):event_slug_builder 路径 **35s 完成 100 events 加载** → 产 2026 instruments
+- 关键 audit:**`tag_slug=atp` 在 gamma `/events` 错配**(返 outright winners);**`series_slug=atp`** 才对(返 match-level)
+
+**验收**: live smoke 实测 PM 35s 完成 + InstrumentRefresher tick fire("refresh ok count=2026")
+
+### discovery-10d.E(slice 10d,#52):InstrumentRefresher clean shutdown
+
+**前置**: launcher 启 + InstrumentRefresher 注册 + tick 已 fire 至少一轮(`_tick_task` 已存)
+
+**输入**: `node.dispose()` 触发 actor on_stop
+
+**期望**:
+- `on_stop` cancel 未完成的 `_tick_task`(避免 "Task was destroyed but it is pending" warning)
+- `_cancel_alert` 也照常执行
+
+**验收**: slice 10d live smoke 实测 0 pending task warning(对比 #51 1 条),log tail 干净 dispose
+
+---
+
+### discovery-2.A.1(slice 8A,#47):Provider 共享机制(回写 ArbContext + Refresher 读)
+
+**前置**: `node.build()` 已运行,data factory 在 `create` 内回写 `ArbContext.{pm,oe}_instrument_provider = provider`
+
+**输入**: launcher `add_actors(node, cfg, pair_registry=...)` 在 build 后调用
+
+**期望**:
+- PM `ArbPolymarketLiveDataClientFactory.create` 完成后,`ctx.pm_instrument_provider is provider`(same instance)
+- OE `OrbitExchLiveDataClientFactory.create` 完成后,`ctx.oe_instrument_provider is provider`
+- launcher 构造 `InstrumentRefresher(deps=RefresherDeps(provider=ctx.{pm,oe}_instrument_provider, loop=asyncio.get_event_loop()))`,**与 DataClient 用同一 provider 实例**(cache add 视图一致)
+
+**provider 缺失场景**: `ctx.pm_instrument_provider is None`(PM data factory 未跑 / discovery 禁用) → launcher 跳过该 venue 的 Refresher 装载,不 raise
+
+**测试**: `tests/arbitrage/launchers/test_arb_node.py` 6 新增(4 actors when both providers / skip PM when missing / skip both / Strategy gets portfolio from kernel / refresher uses ctx provider / bootstrap calls add_actors)
+
+---
+
+### discovery-1.4.g/h(slice 7A,#46):OE Provider aliases 注入
+
+**前置**: `OrbitExchInstrumentProvider(scraper, sport_aliases={...}, competition_aliases={...})` 构造
+
+**输入**: scraper 返一个 MatchEvent(`sport="soccer"`, `competition="Men's Roland Garros 2026"`)
+
+**期望**:
+- `info["sport"]` = `sport_aliases.get("soccer", "soccer")` (alias 命中则规范名,否则原值透传)
+- `info["competition"]` = `competition_aliases.get("Men's Roland Garros 2026", ...)`
+- 无 aliases 参 / 默认 `None` → 原值透传(向后兼容)
+
+**测试**: `test_orbitexch_provider.py` 4 新增(sport alias 命中 / competition alias 命中 / miss 透传 / 无参默认)
 
 ---
 

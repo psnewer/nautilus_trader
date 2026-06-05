@@ -21,7 +21,7 @@ from typing import Hashable
 class LegSettledRegistry:
     """进程内共享的 leg_settled 状态表。线程不安全,仅供单 asyncio loop 串行访问。
 
-    `pair_id` 为比赛级聚合键(instrument.info["competition"]);腿键为该腿的 `instrument_id`。
+    `pair_id` 为比赛级聚合键(由 matching 算出,经 `PairRegistry` 暴露;#34 起不再用 info["competition"]);腿键为该腿的 `instrument_id`。
     """
 
     def __init__(self) -> None:

@@ -36,8 +36,11 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
         Page load timeout in milliseconds
     scrape_interval_ms : int, default 1000
         Odds scraping interval in milliseconds
+    update_instruments_interval_mins : int or None, default 60
+        Periodic instrument re-discovery interval (mins); None disables. #58(slice A):
+        DataClient 拥有周期发现(原生 `_update_instruments`),替代退役的 InstrumentRefresher。
     """
-    
+
     username: str
     password: str
     base_url: str = 'https://orbitexch.com'
@@ -46,6 +49,7 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     user_data_dir: Optional[str] = None
     page_timeout: int = 30000
     scrape_interval_ms: int = 1000
+    update_instruments_interval_mins: Optional[int] = 60
 
 
 class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True):
