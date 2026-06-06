@@ -95,12 +95,12 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
         self._debug = debug
 
     async def _connect(self) -> None:
-        """slice 10c smoke 修正:base `OrbitExchExecutionClient._connect` 是 NotImplementedError
-        (live 接线未实写);skip_execution=true 时不真出单,**_connect no-op 安全**(BrowserManager
-        由 DataClient 起共享 context;OE Exec 不需独立 page / WS 在 skip 模式下)。"""
+        """skip_execution=true 时不真出单,**_connect no-op 安全**(BrowserManager 由 DataClient
+        起共享 context;OE Exec 在 skip 模式下不需独立 page / WS)。非 skip 时透传 base 真 `_connect`
+        (#63 Gap C:login + executor + general WS,2026-06-06 live 验过,[[gap_c_oe_exec_live_validated]])。"""
         if self._debug.is_override_active(_SKIP_KEY):
             return  # no-op,connect 状态自动 transition 成功
-        await super()._connect()  # 非 skip 模式仍触发 base 的 NotImplementedError(待 slice 10b)
+        await super()._connect()  # 非 skip:走 Gap C 真接线
 
     async def _disconnect(self) -> None:
         """同上:skip 模式 no-op。"""

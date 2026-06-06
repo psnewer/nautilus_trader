@@ -24,6 +24,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 | `test_provider.py` | OE Provider 的具体行为(Q9 字段 / 抓取失败 / page 命名) |
 | `test_data_client.py` | OE DataClient(Step 2 占位,详细等 Step 2 启动) |
 | `test_execution_client.py` | OE ExecutionClient(Step 5 占位,详细等 Step 5 启动) |
+| `test_execution_translation.py` | **Gap C(#63/#64)纯映射,17 case**:① `nt_order_to_legacy_order`(NT Order→executor 旧 Order)5 case:BUY→BACK / SELL→LAY / `null_handicap`(-9999999.0 sentinel)→0 / 真 handicap 保留 / 缺 market\|selection→None。② **`current_bets_to_fills`(成交回执)7 case**:空→[] / unmatched→[] / 新成交→full delta / 增量(5→8)→delta=3 / 同累积值→[] / 无价(avg=0)→跳过 / 缺 offerId→跳过。③ **`bet_order_progress`(reconcile 派生)8 case**:缺 offerId→None / 仅 remaining→accepted / remaining+matched→partially_filled / 仅 matched→filled / 都 0→unknown / **bet 自带 side+market+selection+price 透出** / **原始量优先 sizePlaced** / 无 sizePlaced→matched+remaining 兜底。真 `executor.place_order` + `_connect` + `_on_current_bets`→`generate_order_filled` + `generate_order_status_report(s)`(**bet 自带 `side`/`sizePlaced` 直接派生,`market+selection` 反查 instrument → 外部/重启单也能 reconcile**)= **真钱,/live-test 经 `launchers/arb_node.py` 验**(scenario 跑老栈不验 NT client);matched 帧填充值待真成交 |
 | `test_data_factory_provider_wiring.py` | **slice 7A(#46)**:`OrbitExchLiveDataClientFactory.create` 按 `ArbContext.oe_scraper_config` 分支(缺→`InstrumentProvider()` 占位 / 有→真 `OrbitExchInstrumentProvider(scraper, aliases)`)|
 | `test_data_client_inplay_writeback.py` | **slice 9(#49)**:`write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper(`_on_price_frame` 路径 NT 重,_cache cdef readonly Mock 困难,验 helper 即可)。case:present True / present False / cache 缺 instrument 不 raise / info=None 不 raise |
 
@@ -39,6 +40,14 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - OE Data/Exec client 走 `BrowserManager.get_page("data"/"exec")`(Q2 / §6.2)
 - **discovery 是第三方,Q2 原本只覆盖 Data+Exec**;scraper 跑 unauthenticated 看 competition list 够用
 - 若后续 discovery 需要登录状态(私有赛事 / 用户偏好),拆 slice 7C:refactor scraper 接 `BrowserManager.get_page("discovery")`
+
+## #62(2026-06-04):两个可见窗口修复 —— data/exec 真共享 + scraper headless
+
+用户报"弹两个浏览器,一个停在主页"。根因:§6.2/Q2"data+exec 共享"**未落地**——`factories.py` 的 data/exec factory **各 `new` 一个 `PlaywrightBrowserManager`**;scraper 又自起一套(Slice 7A 已知),且跟随 venue `headless`(=false 可见)+ 用 data/exec 的登录 `user_data_dir`。修:
+- **data+exec 共享单例**:`ArbContext.oe_browser_manager` + `_shared_oe_browser_manager(ctx,config)`(data 先建回写、exec 复用)→ 一个登录浏览器。
+- **scraper 解耦 headless**:`to_oe_scraper_config` 强制 `headless=True` + `user_data_dir=None`(免登录、非持久化、后台隐身)—— **不与 data/exec 共享**(用户:免登录 + 定时跑,共享会打断登录会话/抢资源)。
+- 验:`test_dispatcher` 断言 `headless is True`/`user_data_dir is None`;live smoke16 `MatchedPair (oe=2)` 证 headless scraper 发现仍产 OE instrument,0 错误。
+- exec 非 skip 真接线(Gap C)后,exec 经共享 BM 取 `"execution"` page,不再多窗口。
 
 ---
 
@@ -238,7 +247,12 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 ### oe-adapter-5.client: OrbitExchExecutionClient 骨架(✅ 离线核心已测,集成 /live-test)
 **落地**: `src/arbitrage/execution/orbitexch.py`(`tests/arbitrage/execution/test_orbitexch_client.py`,全 arb 套件 76 passed)
 - **已测(离线)**: 离线可构造(super 只需 instrument_provider + 标准 NT 依赖);`_on_general_frame` BALANCE→`generate_account_state`(`oe_balance_to_account_balances`:WS 已净挂单→total=free GBP)、未知/null 忽略;`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单);`_submit_order` session 门控(cancel-only 丢弃 / executor 失败→reject)
-- **live seam(/live-test 验)**: `_connect`(browser/executor/general WS)、`_place_via_executor`(NT Order→executor 旧 Order,market_id/selection_id 取自 instrument.info)、`_cancel_*`(executor);`CURRENT_BETS` item→事件 + reports 待 populated 抓帧
+- **#63 Gap C:`_connect` + 翻译 + 撤单结构接通**(原 `NotImplementedError` seam → 实现;仅非 skip 触达):
+  - `nt_order_to_legacy_order` 纯映射(`test_execution_translation.py` 5 case)+ `_place_via_executor`(守卫 + executor.place_order)
+  - `_connect`:共享 BM `create_page("execution")` + 持久化 profile 未登录才 `_login`(填 user/pwd 等 `/customer/`)+ `OrbitExchExecutor` + `OrbitExchWebSocketHandler.on_order_update(_on_general_frame)` + 初始 account state;`_disconnect` 停 ws_handler(不 close 共享 BM,#62)
+  - `_cancel_order`→`_cancel_one`(executor.cancel_order + `generate_order_canceled/_cancel_rejected`)/ `_cancel_all_orders`→`cancel_all_unmatched` / `_cancel_residual_one`→`_cancel_one`
+  - **订单回执已实写**:`current_bets_to_fills`(CURRENT_BETS 快照→`offerId` 算 `sizeMatched` delta)+ `_on_current_bets`→`generate_order_filled`。**2026-06-06 live 抓帧确认** item schema(`offerId`==venue_order_id 是 join key,修正旧 `marketId` 假设);仅 unmatched 态实测,matched 填充值待真成交。
+  - **真·待 /live-test**(真钱,需用户确认 + 经 `launchers/arb_node.py`,**非 place_and_cancel**——它跑老 `services/` 栈不验 NT client):真登录 + 真下注/撤单 + 真成交回执;补偿撤单**触发策略**([[bug_compensating_cancel_missing]])
 
 ### oe-adapter-5.ws.2: WS 余额帧 → generate_account_state(✅ 解析层+客户端路由已实现+测)
 **前置**: `parse_general_frame` 识别 `BALANCE` 帧 → `{"type":"balance","balance":float,"av_balance":...}`(已测,含 null/字符串/非法值健壮)

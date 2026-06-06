@@ -147,7 +147,10 @@ def test_arb_context_init_kwargs_includes_oe_scraper_config():
     sc = kw["oe_scraper_config"]
     assert sc is not None
     assert sc.enabled is True
-    assert sc.browser.headless is False
+    # #62:scraper 强制 headless + 无登录 profile(免登录、后台定时、与 data/exec 登录浏览器解耦),
+    # 不跟随 venue.headless(=False)
+    assert sc.browser.headless is True
+    assert sc.browser.user_data_dir is None
     assert sc.browser.timeout_ms == 90000   # 90s → 90000ms
     assert sc.sports[0].sport == "Tennis"
     assert sc.sports[0].competitions == ["Men's Roland Garros 2026"]

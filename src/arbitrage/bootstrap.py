@@ -62,6 +62,9 @@ class ArbContext:
     # / 测试设值);保留字段备未来跨组件取 provider 用,删除需级联 prepare_arb_context 签名 + 测试。
     pm_instrument_provider: object | None = None
     oe_instrument_provider: object | None = None
+    # OE 共享 BrowserManager(§6.2 单例):data factory 先建并回写,exec factory 复用同一实例
+    # → 一个浏览器(data/exec 各取专属 page),而非各 new 一个(两窗口 bug,#62)。
+    oe_browser_manager: object | None = None
 
     # PM 发现目标(#55):`ArbPolymarketInstrumentProvider.load_all_async` 读这两字段做 series-based 发现。
     pm_event_slug_tags: list = field(default_factory=list)        # 目标 competition 列表(如 ["atp"]);PM /sports `sport` 字段比对

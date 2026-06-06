@@ -209,9 +209,12 @@ def to_oe_scraper_config(cfg: ArbConfig):
     oe_venue = cfg.venues.orbitexch
     return OrbitExchVenueConfig(
         enabled=True,
+        # #62:scraper 独立浏览器,**免登录、定时后台跑** —— 强制 headless(无需可见,也不干扰
+        # data/exec 的登录会话)+ **不用登录 profile**(`user_data_dir=None`:免登录,且避免和 data BM
+        # 抢同一 persistent 目录)。与 data/exec 的可见登录浏览器(共享单例,§6.2)解耦。
         browser=BrowserConfig(
-            headless=oe_venue.headless,
-            user_data_dir=oe_venue.user_data_dir,
+            headless=True,
+            user_data_dir=None,
             timeout_ms=int(oe_venue.page_load_timeout_sec * 1000),
         ),
         sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in oe_dis.sports],

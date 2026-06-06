@@ -28,6 +28,23 @@ from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClien
 from src.arbitrage.bootstrap import get_arb_context
 
 
+def _shared_oe_browser_manager(ctx, config) -> PlaywrightBrowserManager:
+    """§6.2 单例:复用 `ctx.oe_browser_manager`,无则建并回写(#62)。
+
+    NT build 顺序 data→exec:data factory 先建回写,exec factory 复用同一实例 → **一个浏览器**
+    (data/exec 各取专属 page),而非各 `new` 一个(headless=false 时是两个窗口的 bug)。
+    """
+    bm = getattr(ctx, "oe_browser_manager", None)
+    if bm is None:
+        bm = PlaywrightBrowserManager(
+            browser_type=config.browser_type,
+            headless=config.headless,
+            user_data_dir=config.user_data_dir,
+        )
+        ctx.oe_browser_manager = bm
+    return bm
+
+
 class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
     """OrbitExch 自写适配器的 data client factory(Step 2)。"""
 
@@ -40,15 +57,11 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         cache: Cache,
         clock: LiveClock,
     ) -> OrbitExchDataClient:
-        # OE 共享 BrowserManager(单例,§6.2):data + exec + discovery 同一 browser context、各取专属 page
-        browser_manager = PlaywrightBrowserManager(
-            browser_type=config.browser_type,
-            headless=config.headless,
-            user_data_dir=config.user_data_dir,
-        )
+        ctx = get_arb_context()
+        # OE 共享 BrowserManager(§6.2 单例;#62:exec factory 复用同一实例 → 一个浏览器)
+        browser_manager = _shared_oe_browser_manager(ctx, config)
         # slice 7A(#46):真接 scraper + OrbitExchInstrumentProvider(aliases 注入)。
         # `oe_scraper_config` 缺 → 装空 InstrumentProvider 占位(`enabled=False` 路径)。
-        ctx = get_arb_context()
         oe_scraper_cfg = getattr(ctx, "oe_scraper_config", None)
         if oe_scraper_cfg is not None:
             from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper
@@ -105,12 +118,8 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
                 "必须在 node.build() 之前调用",
             )
 
-        # OE browser_manager:遵循 §6.2 共享单例(三方共享 BrowserContext,各自按 page name 取页)
-        browser_manager = PlaywrightBrowserManager(
-            browser_type=config.browser_type,
-            headless=config.headless,
-            user_data_dir=config.user_data_dir,
-        )
+        # §6.2 共享单例:复用 data factory 建的 BrowserManager(#62:避免各 new 一个 → 两窗口)
+        browser_manager = _shared_oe_browser_manager(ctx, config)
         from nautilus_trader.common.providers import InstrumentProvider
         provider = InstrumentProvider()  # OE 端 provider 由 DataClient/Refresher 维护,exec 端仅占位
 
