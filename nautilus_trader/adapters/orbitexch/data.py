@@ -139,27 +139,22 @@ class OrbitExchDataClient(LiveMarketDataClient):
         self._config = config
         self._browser_manager = browser_manager  # 共享单例,仅消费(Q2)
         self._parser = OrbitExchMessageParser()
-        self._page = None
-        self._ws_handler: Optional[OrbitExchWebSocketHandler] = None
-        # 路由:market_id(str) -> {selection_id(str): InstrumentId}
+        # #68:每 competition 一页(key=f"{sport_id}_{competition_id}"),新开/刷新统一。
+        self._comp_pages: dict[str, object] = {}                          # page_key -> Page
+        self._comp_handlers: dict[str, OrbitExchWebSocketHandler] = {}    # page_key -> WS handler
+        # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
         self._market_to_instruments: dict[str, dict[str, InstrumentId]] = {}
         # #58(slice A):DataClient 拥有周期发现(替代退役的 InstrumentRefresher)
         self._update_instruments_task: Optional[asyncio.Task] = None
 
     # ── 生命周期(live;共享 browser,但 start 防御性 idempotent)──────────
     async def _connect(self) -> None:
-        # slice 10c smoke 修正:原设计依赖 factory 层先调 `start()`,实际未接;
-        # `start()` 已加幂等(BrowserManager 内 `_context is not None` 早返),DataClient 自管更稳。
-        # `get_page` 是只读;**首次连必须 `create_page`**(原代码 bug:用 get_page → None)。
+        # #68:不再开 `inplay/highlights` 单页 / 不再起单一 WS handler。competition 页按订阅惰性开
+        # (`_subscribe_order_book_deltas`→`_ensure_competition_page`,eager)。`start()` 幂等(共享单例)。
         await self._browser_manager.start()
-        self._page = await self._browser_manager.create_page("data")
-        await self._page.goto(f"{self._config.base_url}/customer/inplay/highlights")
-        self._ws_handler = OrbitExchWebSocketHandler(self._page)
-        self._ws_handler.on_price_update(self._on_price_frame)
-        await self._ws_handler.start()
-        self._log.info(f"OrbitExchDataClient connected; pages={self._page is not None}")
 
         # #58(slice A):DataClient 拥有发现 —— 首次抓全 + 周期重抓(替代退役的 InstrumentRefresher)。
+        # 发现用 provider 自己的 scraper 浏览器(#62 解耦),不依赖 competition 页。
         # 直调 load_all_async(不走 initialize 的 load_all config 闸,Gap α);灌 cache 经 _handle_data→DataEngine。
         await self._instrument_provider.load_all_async()
         self._send_all_instruments_to_data_engine()
@@ -167,13 +162,16 @@ class OrbitExchDataClient(LiveMarketDataClient):
             self._update_instruments_task = self.create_task(
                 self._update_instruments(self._config.update_instruments_interval_mins),
             )
+        self._log.info("OrbitExchDataClient connected (competition pages opened on subscribe)")
 
     async def _disconnect(self) -> None:
         if self._update_instruments_task:
             self._update_instruments_task.cancel()
             self._update_instruments_task = None
-        if self._ws_handler is not None:
-            await self._ws_handler.stop()
+        for handler in self._comp_handlers.values():
+            await handler.stop()
+        self._comp_handlers.clear()
+        self._comp_pages.clear()
         # **不**关 browser(共享单例;关停由 factory 层)
 
     # ── 周期发现(#58 slice A:DataClient-owned,NT 原生 _update_instruments 范式)──
@@ -193,11 +191,57 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
     # ── NT type-specific subscribe 钩子 ──────────────────────────────
     async def _subscribe_order_book_deltas(self, command) -> None:
-        """注册 instrument → 路由表;WS 推到该 market 时 publish 对应 OrderBookDeltas。"""
+        """#68:注册路由 + **eager 开 competition 页**(订阅即开 → 价格 WS 流起,供 strategy 评估)。
+        page_key = `{sport_id}_{competition_id}`(同 competition 多腿共用一页)。"""
         self._register_instrument_routing(command.instrument_id)
+        await self._ensure_competition_page(command.instrument_id)
 
     async def _unsubscribe_order_book_deltas(self, command) -> None:
+        # #68:关页 = 保持打开(对齐老 odds_client;competition 数有界,空页成本可接受)。
         self._unregister_instrument_routing(command.instrument_id)
+
+    # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
+    async def _ensure_competition_page(self, instrument_id: InstrumentId) -> None:
+        """确保该 instrument 所属 competition 页已开(去重);未开则 open。"""
+        inst = self._cache.instrument(instrument_id)
+        if inst is None:
+            return  # routing 注册时已 warn
+        sport_id = str(getattr(inst, "event_type_id", "") or "")
+        competition_id = str(getattr(inst, "competition_id", "") or "")
+        if not sport_id or not competition_id:
+            self._log.warning(
+                f"OE open page: {instrument_id} missing sport_id/competition_id; skip")
+            return
+        page_key = f"{sport_id}_{competition_id}"
+        if page_key in self._comp_pages:
+            return  # 已开,复用
+        await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+
+    async def _open_or_reload_competition_page(
+        self, page_key: str, sport_id: str, competition_id: str,
+    ) -> None:
+        """**新开/刷新统一入口**(#68;对齐老 odds_client `_open_or_reload_page`)。
+        - page 不存在 → `create_page` + 挂 WS 监听(#67 先挂后 goto)+ goto
+        - 已存在 → `reload`(page-level 监听跨 reload 自动存活,#67 实测,无需重挂)
+
+        §4.3 健康检查 reload 将来复用本方法的 reload 分支。"""
+        url = f"{self._config.base_url}/customer/sport/{sport_id}/competition/{competition_id}"
+        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),用配置 page_timeout(默认 90s),
+        # 对齐老 odds_client(`networkidle` + `timeout=page_load_timeout_sec*1000`);默认 30s 不够会超时。
+        timeout_ms = self._config.page_timeout
+        page = self._comp_pages.get(page_key)
+        if page is None:
+            page = await self._browser_manager.create_page(f"comp-{page_key}")
+            handler = OrbitExchWebSocketHandler(page)
+            handler.on_price_update(self._on_price_frame)
+            await handler.start()                       # #67:先挂监听
+            self._comp_pages[page_key] = page
+            self._comp_handlers[page_key] = handler
+            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
+            self._log.info(f"OE competition page opened: {page_key}")
+        else:
+            await page.reload(wait_until="networkidle", timeout=timeout_ms)
+            self._log.info(f"OE competition page reloaded: {page_key}")
 
     def _register_instrument_routing(self, instrument_id: InstrumentId) -> None:
         inst = self._cache.instrument(instrument_id)

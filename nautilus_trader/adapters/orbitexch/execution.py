@@ -232,14 +232,17 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         await self._browser_manager.start()  # 幂等(#62 共享单例;data 或 exec 谁先连谁起)
         self._page = await self._browser_manager.create_page("execution")
+        # #67:**先挂 WS 监听,再导航**。`page.on('websocket')` 只捕获注册之后页面新建的 WS;general
+        # WS 在登录导航 `/customer/` 期间建立,若先 goto/login 再 start 会错过它 → 收不到 BALANCE/
+        # CURRENT_BETS(老 odds_client 注释明示"必须在 goto 前挂拦截,否则错过 WS 创建")。
+        self._ws_handler = OrbitExchWebSocketHandler(self._page)
+        self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
+        await self._ws_handler.start()
         await self._page.goto(self._config.base_url, wait_until="domcontentloaded")
         if "/customer/" not in (self._page.url or ""):  # 持久化 profile 未登录 → 填表单
             await self._login()
         self._executor = OrbitExchExecutor(config=ExecutionConfig())
         self._executor.set_page("default", self._page)
-        self._ws_handler = OrbitExchWebSocketHandler(self._page)
-        self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
-        await self._ws_handler.start()
         # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
         self.generate_account_state(
             balances=oe_balance_to_account_balances(0.0),
@@ -250,7 +253,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._log.info("OrbitExchExecutionClient connected (live)")
 
     async def _login(self) -> None:
-        """OE 登录(平移自 `scraper.py:login`):填 username/password → 点 Log In → 等 `/customer/`。"""
+        """OE 登录(平移自 `scraper.py:login`):填 username/password → 点 Log In → 等 `/customer/`
+        → **关登录后弹窗**(否则弹层盖住页面,general WS 不推 BALANCE/CURRENT_BETS)。"""
         cfg = self._config
         await self._page.goto(cfg.base_url, wait_until="networkidle")
         await self._page.wait_for_selector('input[name="username"]', timeout=10000)
@@ -259,6 +263,24 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         await self._page.click('button[type="submit"]:has-text("Log In")')
         await self._page.wait_for_url("**/customer/**", timeout=15000)
         self._log.info("OrbitExch login successful")
+        await self._dismiss_post_login_popup()
+
+    async def _dismiss_post_login_popup(self) -> None:
+        """关登录后弹窗(平移自 `scraper._handle_post_login_popup`):等页面稳定 → 点 OK。
+        无弹窗 / 出错都不致命(吞掉),不阻断连接。"""
+        import asyncio
+
+        try:
+            await asyncio.sleep(2)  # 等弹窗渲染
+            ok_button = self._page.locator('xpath=//button[normalize-space()="OK"]')
+            if await ok_button.is_visible(timeout=5000):
+                await ok_button.click()
+                await asyncio.sleep(1)
+                self._log.info("OrbitExch post-login popup dismissed")
+            else:
+                self._log.debug("OrbitExch no post-login popup")
+        except Exception as e:
+            self._log.debug(f"OrbitExch no post-login popup (error: {e})")
 
     async def _disconnect(self) -> None:
         if self._ws_handler is not None:

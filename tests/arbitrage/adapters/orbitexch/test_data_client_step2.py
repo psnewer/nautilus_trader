@@ -152,3 +152,83 @@ def test_on_price_frame_unsubscribed_market_dropped():
     c._handle_data = lambda d: captured.append(d)
     c._on_price_frame({"id": "unsubscribed", "rc": [], "marketDefinition": {}})
     assert captured == []
+
+
+# ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
+class _FakePage:
+    def __init__(self): self.goto_calls = []; self.reload_calls = 0
+    def on(self, event, cb): pass          # WS handler 挂 page.on('websocket')
+    def remove_listener(self, event, cb): pass
+    async def goto(self, url, **kw): self.goto_calls.append(url)
+    async def reload(self, **kw): self.reload_calls += 1
+
+
+class _FakeBM:
+    """fake BrowserManager:记录 create_page;page 复用按 name。"""
+    def __init__(self): self.created = []; self._pages = {}
+    async def start(self): pass
+    async def create_page(self, name):
+        self.created.append(name)
+        p = self._pages.setdefault(name, _FakePage())
+        return p
+
+
+def _client_with_bm(bm):
+    clock = LiveClock()
+    msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
+    c = OrbitExchDataClient(
+        loop=asyncio.new_event_loop(), browser_manager=bm, msgbus=msgbus,
+        cache=TestComponentStubs.cache(), clock=clock,
+        instrument_provider=InstrumentProvider(),
+        config=OrbitExchDataClientConfig(username="u", password="p", base_url="https://oe.test"),
+    )
+    return c
+
+
+def test_subscribe_opens_competition_page_eager():
+    """data-2.page.1(#68): 订阅即开 competition 页,page_key=f'{sport_id}_{competition_id}'。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    inst = oe_instrument("EPL", "home", selection_id=42)   # competition_id=1, event_type_id=1
+    c._cache.add_instrument(inst)
+    cmd = SimpleNamespace(instrument_id=inst.id)
+    asyncio.get_event_loop().run_until_complete(c._subscribe_order_book_deltas(cmd))
+    assert "comp-1_1" in bm.created
+    assert "1_1" in c._comp_pages
+    assert c._comp_pages["1_1"].goto_calls == ["https://oe.test/customer/sport/1/competition/1"]
+
+
+def test_subscribe_same_competition_dedups_page():
+    """data-2.page.2(#68): 同 competition 多腿 → 只开一页(去重)。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    home = oe_instrument("EPL", "home", selection_id=42)
+    away = oe_instrument("EPL", "away", selection_id=43)   # 同 market/competition
+    c._cache.add_instrument(home); c._cache.add_instrument(away)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(c._subscribe_order_book_deltas(SimpleNamespace(instrument_id=home.id)))
+    loop.run_until_complete(c._subscribe_order_book_deltas(SimpleNamespace(instrument_id=away.id)))
+    assert bm.created.count("comp-1_1") == 1     # 只 create 一次
+    assert len(c._comp_pages) == 1
+
+
+def test_open_or_reload_reloads_existing_page():
+    """data-2.page.3(#68): 已存在的 page_key 再调 → reload(新开/刷新同一套)。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+    loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+    page = c._comp_pages["2_999"]
+    assert len(page.goto_calls) == 1 and page.reload_calls == 1   # 首次 goto,二次 reload
+
+
+def test_ensure_page_skips_when_instrument_not_in_cache():
+    """data-2.page.4(#68): instrument 不在 cache → 不开页,不崩(routing 注册时已 warn)。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    asyncio.get_event_loop().run_until_complete(
+        c._ensure_competition_page(InstrumentId(Symbol("nonexistent"), Venue("ORBITEXCH"))))
+    assert bm.created == []

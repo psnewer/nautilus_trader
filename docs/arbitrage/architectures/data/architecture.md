@@ -51,19 +51,49 @@ flowchart LR
 
 ### 3.1 `OrbitExchDataClient`(`nautilus_trader/adapters/orbitexch/data.py`)
 
+**页面模型(#68):每 competition 一页,新开/刷新统一**。OE 赔率来自 competition 页(`/customer/sport/{sport_id}/competition/{competition_id}`)的价格 WS —— **不是**单一 `inplay/highlights` 页(那只给概览、不含完整盘口;旧"单页多市场"设计废止)。`BettingInstrument` 已带 `competition_id`(`event.competition_id`)+ `event_type_id`(=sport_id),订阅时即可定位开哪页。
+
 ```python
 class OrbitExchDataClient(LiveMarketDataClient):
     async def _connect(self):
-        self._page = await self._browser_manager.get_page("data")
-        await self._page.goto(f"{base_url}/customer/inplay/highlights")
-        self._ws_handler = OrbitExchWebSocketHandler(self._page)
-        self._ws_handler.on_price_update(self._on_price_frame)
-        await self._ws_handler.start()
-    async def _disconnect(self):           # **不**关 browser(共享)
-        if self._ws_handler: await self._ws_handler.stop()
-    async def _subscribe_order_book_deltas(self, command):   # 命令路由
-        self._register_instrument_routing(command.instrument_id)
-    def _on_price_frame(self, message):    # WS callback
+        await self._browser_manager.start()          # 幂等(共享单例)
+        # 不再开 highlights 页 / 不再起单一 ws_handler;competition 页按订阅惰性开。
+        await self._instrument_provider.load_all_async()   # 发现(用 provider 自己的 scraper 浏览器)
+        self._send_all_instruments_to_data_engine()
+        # ... _update_instruments 周期 task(slice A,不变)
+
+    async def _subscribe_order_book_deltas(self, command):
+        iid = command.instrument_id
+        inst = self._cache.instrument(iid)
+        page_key = f"{inst.event_type_id}_{inst.competition_id}"   # sport_id_competition_id
+        self._register_instrument_routing(iid)                     # 全局 routing(price 帧带 market_id)
+        await self._ensure_competition_page(page_key)              # eager:订阅即开页(#61 要赔率流)
+
+    async def _ensure_competition_page(self, page_key):
+        """每 competition 一页 + WS handler(去重);已存在则复用。"""
+        if page_key in self._comp_pages:
+            return
+        await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+
+    async def _open_or_reload_competition_page(self, page_key, sport_id, competition_id):
+        """**新开/刷新统一入口**(对齐老 odds_client `_open_or_reload_page`;#68)。
+        page 不存在 → create_page + 挂 WS 监听(#67 先挂后 goto)+ goto;
+        已存在 → reload(page-level 监听跨 reload 存活,#67 实测,无需重挂)。
+        健康检查 §4.3 reload 将来复用本方法的 reload 分支。"""
+        url = f"{base_url}/customer/sport/{sport_id}/competition/{competition_id}"
+        page = self._comp_pages.get(page_key)
+        if page is None:
+            page = await self._browser_manager.create_page(f"comp-{page_key}")
+            handler = OrbitExchWebSocketHandler(page)
+            handler.on_price_update(self._on_price_frame)
+            await handler.start()                     # #67:先挂监听
+            self._comp_pages[page_key] = page
+            self._comp_handlers[page_key] = handler
+            await page.goto(url, wait_until="networkidle")   # 再导航(价格 WS 此时建,被抓)
+        else:
+            await page.reload(wait_until="networkidle")      # 监听自动捕获新 WS(#67)
+
+    def _on_price_frame(self, message):     # 所有 competition 页共用(routing 按 market_id 分流)
         parsed = self._parser.parse_price_message(message)
         if not parsed: return
         routing = self._market_to_instruments.get(str(parsed["market_id"]))
@@ -74,9 +104,16 @@ class OrbitExchDataClient(LiveMarketDataClient):
             if iid is None: continue
             deltas = oe_runner_to_book_deltas(iid, runner, ts)
             if deltas is not None: self._handle_data(deltas)
+
+    async def _disconnect(self):            # **不**关 browser(共享);停所有 competition 页 handler
+        for h in self._comp_handlers.values(): await h.stop()
 ```
 
-**routing 表**:`dict[market_id_str, dict[selection_id_str, InstrumentId]]`,订阅时从 `cache.instrument(id)` 读 `BettingInstrument.market_id` / `.selection_id` 建。
+- **routing 表**:`dict[market_id_str, dict[selection_id_str, InstrumentId]]`,订阅时从 `cache.instrument(id)` 读 `BettingInstrument.market_id` / `.selection_id` 建。**全局**(跨所有 competition 页),price 帧自带 market_id 直接分流。
+- **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
+- **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查,但本 NT 模型健康检查 loop 未接线,且 #61 要求订阅即流)。
+- **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
+- **健康检查 reload(§4.3,未接线 TODO)** 将来复用 `_open_or_reload_competition_page` 的 reload 分支。
 
 **纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。
 

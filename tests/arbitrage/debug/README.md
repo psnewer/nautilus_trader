@@ -23,9 +23,12 @@
 **仍待**(后续 slice):
 - ⬜ `timeline.py`(Q11.4 NT Clock 状态机;只在 SkipExecution 真要 mock 订单 lifecycle 时才需要 —— 当前"立即全成"足够链路测)
 
-## Slice 10c smoke 浮上(#51):SkipExecutionOrbitExchClient 加 `_connect/_disconnect` no-op
+## #66:skip_execution 语义统一 =「真连接 + mock 订单 IO」(取代 #51 的 OE `_connect` no-op)
 
-base `OrbitExchExecutionClient._connect` 是 `NotImplementedError`(OE live 接线未实写);**skip_execution=true 下不真出单**,_connect / _disconnect no-op 安全过(NT ExecClient 状态 transition 成 Connected)。非 skip 模式仍透传 base 的 NotImplementedError(待 slice 10b 真接线)。Smoke 验证:OE Exec Client 状态从 Connecting → Connected 正常。
+#51 曾给 `SkipExecutionOrbitExchClient` 加 `_connect/_disconnect` no-op——纯属当时 OE `_connect` 还是 `NotImplementedError` 的权宜之计,且与 PM(skip 下 `_connect` 照常真跑、只 mock `_submit_order`)**不一致**。Gap C `_connect`(#63)落地后,**已删除该 no-op**:skip 下 OE 也**真连接**(登录/page/general WS/初始账户状态),与 PM 对齐,只 mock 订单 IO(`_submit_order` + `_cancel_*` no-op,因 mock 单已终态全成、且不可拿 MOCK id 真撤)。
+- **收益**:`skip_execution=true` 本身即「安全验连接路径(登录/WS/账户状态/余额帧/CURRENT_BETS 读侧)而不下真单」的 smoke;曾评估的 `dry_run_execution` 旗标因此**撤回**(多余)。
+- **代价**:skip 下 OE 会真登录账户(与 PM 真连 CLOB 一致)。设计见 `architectures/_cross-cutting/debug-injection.md` #66。
+- 验收:`skip_execution=true` 跑 `launchers/arb_node.py` → OE/PM Exec 均 Connected、有真账户余额、无真单。
 
 ## 锁定的关键性约束(P10)
 

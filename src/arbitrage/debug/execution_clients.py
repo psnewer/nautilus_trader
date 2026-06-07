@@ -80,11 +80,25 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
         super().__init__(*args, **kwargs)
         self._debug = debug
 
+    def _mock_orders(self) -> bool:
+        """skip_execution 真 → mock 订单 IO(submit/cancel 不碰真 venue)。连接照常真跑(#66)。"""
+        return self._debug.is_override_active(_SKIP_KEY)
+
     async def _submit_order(self, command) -> None:
-        if self._debug.is_override_active(_SKIP_KEY):
+        if self._mock_orders():
             _mock_fill(self, command, USDC_POS)
             return
         await super()._submit_order(command)
+
+    async def _cancel_order(self, command) -> None:
+        if self._mock_orders():
+            return  # mock 模式无真单可撤
+        await super()._cancel_order(command)
+
+    async def _cancel_all_orders(self, command) -> None:
+        if self._mock_orders():
+            return
+        await super()._cancel_all_orders(command)
 
 
 class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
@@ -94,22 +108,30 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
         super().__init__(*args, **kwargs)
         self._debug = debug
 
-    async def _connect(self) -> None:
-        """skip_execution=true 时不真出单,**_connect no-op 安全**(BrowserManager 由 DataClient
-        起共享 context;OE Exec 在 skip 模式下不需独立 page / WS)。非 skip 时透传 base 真 `_connect`
-        (#63 Gap C:login + executor + general WS,2026-06-06 live 验过,[[gap_c_oe_exec_live_validated]])。"""
-        if self._debug.is_override_active(_SKIP_KEY):
-            return  # no-op,connect 状态自动 transition 成功
-        await super()._connect()  # 非 skip:走 Gap C 真接线
+    def _mock_orders(self) -> bool:
+        """skip_execution 真 → mock 订单 IO(submit/cancel 不碰真 venue)。连接照常真跑(#66)。"""
+        return self._debug.is_override_active(_SKIP_KEY)
 
-    async def _disconnect(self) -> None:
-        """同上:skip 模式 no-op。"""
-        if self._debug.is_override_active(_SKIP_KEY):
-            return
-        await super()._disconnect()
+    # #66:不再覆盖 _connect/_disconnect —— 继承 base 真连接(#63 Gap C:登录/page/general WS/账户状态),
+    # 与 PM 对齐。skip 下仍真连接、只 mock 订单 IO,故 skip_execution=true 即「安全验连接路径」smoke。
 
     async def _submit_order(self, command) -> None:
-        if self._debug.is_override_active(_SKIP_KEY):
+        if self._mock_orders():
             _mock_fill(self, command, GBP)
             return
         await super()._submit_order(command)
+
+    async def _cancel_order(self, command) -> None:
+        if self._mock_orders():
+            return  # mock 模式无真单可撤
+        await super()._cancel_order(command)
+
+    async def _cancel_all_orders(self, command) -> None:
+        if self._mock_orders():
+            return
+        await super()._cancel_all_orders(command)
+
+    async def _cancel_residual_one(self, order) -> None:
+        if self._mock_orders():
+            return
+        await super()._cancel_residual_one(order)

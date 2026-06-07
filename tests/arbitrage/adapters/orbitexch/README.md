@@ -32,7 +32,9 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 - **`BrowserManager.start()` 幂等化**(`if self._context is not None: return`):共享 BrowserManager 被多次 client 触发 start 时不重复 init Playwright。
 - **`OrbitExchDataClient._connect` 自管 start + 改用 `create_page`**(原 bug:`get_page` 是只读,首次连返 None → `.goto` AttributeError)。设计意图原是 "factory 层先 start",但 factory 未接;DataClient 自管 + 幂等更稳。
-- **`SkipExecutionOrbitExchClient._connect/_disconnect` skip 模式 no-op**:base `OrbitExchExecutionClient._connect = NotImplementedError`("OE _connect: live 接线(browser/executor/general WS),/live-test 验");skip_execution=true 下不真出单 → no-op 安全过;非 skip 模式仍透传 NotImplementedError(待 slice 10b 真接线)。
+- **#66 `skip_execution`=「真连接 + mock 订单 IO」(PM/OE 对齐)**:取代旧的 OE skip `_connect` no-op(那是 Gap C `_connect` 还是 NotImplementedError 时的权宜)。现 skip 下 OE 也真连接(登录/page/general WS/账户状态),只 mock `_submit_order`(全成)+ `_cancel_*`(no-op)。`skip_execution=true` 即「安全验连接路径而不下真单」smoke。
+- **#68 每 competition 一页 + 新开/刷新统一**:OE data client 价格订阅从"单 `inplay/highlights` 页"(盘口稀疏根因)改为**每 competition 一页**(key=`{sport_id}_{competition_id}`,从 instrument 的 `event_type_id`/`competition_id` 取)。`_subscribe_order_book_deltas` → `_ensure_competition_page`(**eager 订阅即开**)→ `_open_or_reload_competition_page`(不存在 create_page+挂监听(#67)+goto / 已存在 reload)。`test_data_client_step2.py` +4(订阅即开 page_key=`comp-1_1` / 同 competition 去重只开一页 / 已存在→reload(首 goto 次 reload)/ 不在 cache→不开)。设计 refactor.md #68 + data/architecture.md §3.1。**待 live smoke 验真盘口流入**。
+- **#67 OE 连接两 bug 修复(live smoke 抓出,连接路径 live 验证通过)**:① **漏关登录后弹窗** —— `_login` 加 `_dismiss_post_login_popup`(平移 scraper `_handle_post_login_popup`;弹层盖页 → general WS 不推 BALANCE);② **WS 监听注册晚于页面建 WS** —— `page.on('websocket')` 只捕获注册后新建的 WS,`_connect`/data `_connect` 改为 **先 `ws_handler.start()` 再 `goto/_login`**(老 odds_client 注释:"必须在 goto 前挂拦截")。验证(`launchers/arb_node.py` + skip=true):`popup dismissed` + OE 账户 `0.00 → 37.49 GBP` 真余额 + 两腿 Connected + MatchedPair + 0 ERROR。**Gap C 连接路径(登录/弹窗/general WS/真 BALANCE→账户状态)完整 live 验证**;仍待:OE 下单/撤单/成交回执(真单)。
 
 ## Slice 7A 浮上(#46):scraper 浏览器自管 known divergence
 
