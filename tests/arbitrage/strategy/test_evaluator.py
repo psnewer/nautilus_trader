@@ -72,7 +72,7 @@ def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) 
     return Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree)
 
 
-def _harness(execution_active: bool = False):
+def _harness(execution_active: bool = False, log_evaluations: bool = False):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = TestComponentStubs.cache()
@@ -93,7 +93,7 @@ def _harness(execution_active: bool = False):
         loop=loop,
         signal_collector=None,
     )
-    actor = StrategyEvaluator(StrategyEvaluatorConfig(), deps)
+    actor = StrategyEvaluator(StrategyEvaluatorConfig(log_evaluations=log_evaluations), deps)
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
     return actor, store, pair_reg, strat_reg, loop, active_flag
 
@@ -149,6 +149,48 @@ async def test_execution_active_skips_evaluation():
     await _drain(loop)
     # _evaluate_and_fire 跑了但开头就 return(execution_active)→ 没 fire
     assert arb_action.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_log_evaluations_enabled_keeps_evaluator_behavior():
+    """log_evaluations 只增加评估锚点日志,不改变 Q21 fire 语义。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(log_evaluations=True)
+    arb_action = _RecordingAction("arb")
+    comp_action = _RecordingAction("comp")
+    strat_reg.register_pair("match_X", _strategy(True, True, arb_action=arb_action, comp_action=comp_action))
+    store.view("match_X").set_persistent("arb_on", True)
+    store.view("match_X").set_persistent("comp_on", True)
+
+    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
+                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    actor.on_data(mp)
+    await _drain(loop)
+
+    assert arb_action.calls == 1
+    assert comp_action.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_log_evaluations_enabled_covers_skip_paths():
+    """log_evaluations=True 时无策略 / 执行在飞路径仍保持 no-op。"""
+    actor, store, pair_reg, strat_reg, loop, active_flag = _harness(
+        execution_active=True,
+        log_evaluations=True,
+    )
+    arb_action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
+    store.view("match_X").set_persistent("arb_on", True)
+
+    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_unknown", sport="Soccer",
+                              competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[],
+                              confidence=0))
+    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
+                              competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[],
+                              confidence=0))
+    await _drain(loop)
+
+    assert arb_action.calls == 0
+    assert loop.tasks == []
 
 
 # ── eval.4: Q21 套利优先 — arb 命中 + comp 命中 → 只 fire arb ────

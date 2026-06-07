@@ -194,6 +194,14 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_evaluator.py` +1 `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿订 OBD,同 pair 再来去重。
 - **live smoke15 验**:MatchedPair mensik-zverev → 4 个 `SubscribeOrderBook`(2 PM token + 2 OE selection)→ 两 data client `Subscribed ... order book deltas`,0 ERROR。
 
+## Slice 10e 观测增强(2026-06-07):`log_evaluations` 评估锚点
+
+`StrategyEvaluatorConfig.log_evaluations=True` 时,`StrategyEvaluator` 对 schedule / skip /
+result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 OBD 是否真的触发 strategy evaluate。
+默认值仍为 `False`,不改变生产运行行为。
+
+- ✅ `test_evaluator.py` +2:启用 `log_evaluations` 后套利优先语义不变;无策略 / execution_active skip 路径保持 no-op。
+
 ## Slice 10d(2026-05-31 #52):msgbus 直订替代 subscribe_data
 
 `StrategyEvaluator.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(MatchedPair))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 路由经 DataEngine,需 client_id/instrument_id;MatchedPair 是 Actor-to-Actor 事件无 venue/instrument 归属。同时**MVP 不预订 OrderBookDeltas**(原 `subscribe_data(DataType(OrderBookDeltas))` 同样需要 instrument_id),需 OBD-driven 重评时 MatchedPair fire 后 per-iid 调 `subscribe_order_book_deltas(iid)`。**slice 10d live smoke 验:strategy 端 0 ERROR**。

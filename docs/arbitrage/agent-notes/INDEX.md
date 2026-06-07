@@ -11,7 +11,8 @@
 - [feedback_verify_path_and_schema_source](feedback_verify_path_and_schema_source.md) — 两个易复发失误:① 别拿"测试通过"推断某代码路径已验(先确认它真跑了);② venue payload 的 schema 权威是老代码实读字段,不是精选 debug log。
 
 ## 项目进展
-- [gap_c_oe_exec_live_validated](gap_c_oe_exec_live_validated.md) — **重要勘误**:`place_and_cancel` 跑老 services 栈、**不验** NT 适配器;Gap C(OE 执行端 NT client)仍未 live 验,须走 `launchers/arb_node.py`。含实测 CURRENT_BETS WS 帧 schema(`offerId == venue_order_id` 是 join key)。
+- [gap_c_oe_exec_live_validated](gap_c_oe_exec_live_validated.md) — **重要勘误**:`place_and_cancel` 跑老 services 栈、**不验** NT 适配器;Gap C connect/login/general WS 已经走 `launchers/arb_node.py` skip=true 验过,但 OE 下单/撤单/成交回执仍未真单验证。含实测 CURRENT_BETS WS 帧 schema(`offerId == venue_order_id` 是 join key)。
+- [oe_competition_page_timeout_smoke68](oe_competition_page_timeout_smoke68.md) — Claude 最新会话迁移:#68 每 competition 一页后,competition 页保留 `networkidle`;OE 页面默认 timeout 统一为 120s;PM proxy 透传修复后,PM+OE 双边 OBD 同场到齐并触发 StrategyEvaluator 重评已用 NT-node skip=true live 验证。
 - [project_dual_venv_layout](project_dual_venv_layout.md) — `.venv/`(uv,正统)vs `venv/`(旧、不全);切分支后"缺包"怪象多源于此。
 
 ## 开放 Bug

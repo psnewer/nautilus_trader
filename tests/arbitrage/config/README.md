@@ -6,13 +6,13 @@
 
 ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 
-- ✅ `test_loader.py`(15):JSON 解析 / 默认值 / 凭证 env 注入 / env 缺失保 None / 别名 fallback / 凭证-JSON ConfigWarning / 错误路径(文件不存在 / 无效 JSON / schema 不匹配)
+- ✅ `test_loader.py`(17):JSON 解析 / 默认值 / 凭证 env 注入 / PM proxy env 注入(JSON 显式值优先) / env 缺失保 None / 别名 fallback / 凭证-JSON ConfigWarning / 错误路径(文件不存在 / 无效 JSON / schema 不匹配)
 
 ## Slice 4 落地(2026-05-28 #43)
 
 `ArbConfig` → 各组件 config 的纯函数派发。
 
-- ✅ `test_dispatcher.py`(17):PM/OE Data/Exec Client config 凭证映射 / PM 凭证 None passthrough / OE 凭证空串 fallback / InstrumentRefresher (PM,OE) pair / MarketMatching min_similarity + competition_max_matches (含 empty → None 兜底)/ StrategyEvaluator log_evaluations / ArbRiskParams 全字段 / ArbContext init kwargs(execution → PM+OE session/health)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
+- ✅ `test_dispatcher.py`(28):PM/OE Data/Exec Client config 凭证映射 / PM `proxy_url` 透传 / OE `page_load_timeout_sec` → Data/Exec `page_timeout` / PM 凭证 None passthrough / OE 凭证空串 fallback / MarketMatching min_similarity + competition_max_matches(含 empty → None 兜底)/ StrategyEvaluator log_evaluations 默认值 + `strategy.log_evaluations` 映射 / ArbRiskParams 全字段 / ArbContext init kwargs(execution → PM+OE session/health)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
 
 ## Slice 5 落地(2026-05-28 #44)
 
@@ -35,6 +35,7 @@ ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 - **.1**:default JSON(全字段省略)→ ArbConfig 默认值
 - **.2**:JSON 全字段 → 全部解析
 - **.3**:env 凭证注入 PM 字段 → cfg.venues.polymarket.* 取 env 值
+- **.3b**:PM proxy JSON 缺省时从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入;JSON 显式 `proxy_url` 优先
 - **.4**:env 凭证注入 OE 字段 → cfg.venues.orbitexch.* 取 env 值
 - **.5**:env 缺失 → cfg 字段保 None,不 raise
 - **.6**:`POLYMARKET_ADDRESS` 别名 fallback for `POLYMARKET_USER_ADDRESS`

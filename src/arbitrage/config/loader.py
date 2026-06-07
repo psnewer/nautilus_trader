@@ -8,8 +8,9 @@ ArbConfig loader —— JSON + env 凭证注入(Q23 C:env 优先,JSON fallback)�
   2. 检测 JSON 内是否含凭证字段(`venues.polymarket.{clob_api_*,...}` / `venues.orbitexch.{username,password}`)
      → 发 `ConfigWarning`(凭证应只走 env,§9 安全原则)
   3. 凭证字段从 env 覆盖(沿用旧 `state.py` 变量名,用户 `.env` 不用改)
-  4. `msgspec.convert(dict, ArbConfig)` 校验 + 冻结
-  5. 返回
+  4. PM proxy 从 JSON 或 env 注入(不属于凭证)
+  5. `msgspec.convert(dict, ArbConfig)` 校验 + 冻结
+  6. 返回
 
 错误路径:JSON 解析失败 / schema 不匹配 → `ConfigError`(原异常 chained)。
 """
@@ -71,6 +72,7 @@ def load_arb_config(path: str | Path) -> ArbConfig:
 
     _warn_credentials_in_json(raw)
     _inject_env_credentials(raw)
+    _inject_env_proxy(raw)
 
     try:
         return msgspec.convert(raw, type=ArbConfig)
@@ -121,3 +123,19 @@ def _inject_env_credentials(raw: dict) -> None:
         val = os.environ.get(env_name)
         if val is not None:
             oe[field] = val
+
+
+def _inject_env_proxy(raw: dict) -> None:
+    """PM CLOB WS 使用 NT pyo3 client,需显式 proxy_url;不读系统代理会导致直连超时。"""
+    raw.setdefault("venues", {})
+    raw["venues"].setdefault("polymarket", {})
+
+    pm = raw["venues"]["polymarket"]
+    if pm.get("proxy_url"):
+        return
+
+    for env_name in ("POLYMARKET_PROXY_URL", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
+        val = os.environ.get(env_name)
+        if val:
+            pm["proxy_url"] = val
+            return

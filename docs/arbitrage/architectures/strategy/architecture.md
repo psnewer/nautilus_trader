@@ -222,6 +222,11 @@ class StrategyEvaluator(Actor):
         return EvalResult(hit=False)
 ```
 
+`StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加低噪声运行锚点日志,不改变决策语义:
+`Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /
+`Strategy action fired|skipped`。该开关用于 NT-node smoke 中确认 `OrderBookDeltas` 是否真的触发了
+strategy evaluate,默认 `False` 保持生产路径安静。
+
 ### 3.6 消息接线
 
 | 类 | 接收 | 发布 |

@@ -39,6 +39,18 @@ if TYPE_CHECKING:
 # ─── Venues ───────────────────────────────────────────────────────────────
 
 
+def _polymarket_ws_base_url(url: str | None) -> str | None:
+    """兼容旧配置的 full endpoint,输出 NT 上游 PolymarketWebSocketClient 期望的 base URL。"""
+    if url is None:
+        return None
+    normalized = url.rstrip("/")
+    for suffix in ("/market", "/user"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    return normalized.rstrip("/") + "/"
+
+
 def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConfig:
     pm = cfg.venues.polymarket
     return PolymarketDataClientConfig(
@@ -48,7 +60,8 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
         api_secret=pm.clob_api_secret,
         passphrase=pm.clob_passphrase,
         base_url_http=pm.clob_url,
-        base_url_ws=pm.ws_url,
+        base_url_ws=_polymarket_ws_base_url(pm.ws_url),
+        proxy_url=pm.proxy_url,
     )
 
 
@@ -66,7 +79,8 @@ def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConf
         api_secret=pm.clob_api_secret,
         passphrase=pm.clob_passphrase,
         base_url_http=pm.clob_url,
-        base_url_ws=pm.ws_url,
+        base_url_ws=_polymarket_ws_base_url(pm.ws_url),
+        proxy_url=pm.proxy_url,
     )
 
 
@@ -81,6 +95,7 @@ def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig
         headless=oe.headless,
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
+        page_timeout=int(oe.page_load_timeout_sec * 1000),
     )
 
 
@@ -93,6 +108,7 @@ def to_orbitexch_exec_client_config(cfg: ArbConfig) -> OrbitExchExecClientConfig
         headless=oe.headless,
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
+        page_timeout=int(oe.page_load_timeout_sec * 1000),
     )
 
 
@@ -117,7 +133,7 @@ def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingConfig:
 def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig:
     """StrategyEvaluatorConfig 只有 `log_evaluations`;其余(registries / store / portfolio /
     is_execution_active / loop / signal_collector)经 `_RuntimeDeps` 注入,launcher 装配。"""
-    return StrategyEvaluatorConfig(log_evaluations=False)
+    return StrategyEvaluatorConfig(log_evaluations=cfg.strategy.log_evaluations)
 
 
 def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:

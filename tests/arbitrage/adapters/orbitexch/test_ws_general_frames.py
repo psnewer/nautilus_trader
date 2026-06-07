@@ -48,6 +48,24 @@ def test_balance_string_or_null_robust():
     assert p.parse_general_frame({"BALANCE": {"balance": "0"}})["balance"] == 0.0
 
 
+def test_balance_nested_json_string_payload():
+    p = OrbitExchMessageParser()
+    out = p.parse_general_frame({"BALANCE": "{\"balance\":\"37.49\",\"avBalance\":null}"})
+    assert out == {"type": "balance", "balance": 37.49, "av_balance": None}
+
+
+def test_balance_non_dict_payload_ignored():
+    p = OrbitExchMessageParser()
+    assert p.parse_general_frame({"BALANCE": "not-json"}) is None
+
+
+def test_current_bets_nested_json_string_payload_filters_non_dict_items():
+    p = OrbitExchMessageParser()
+    bet = {"offerId": "abc", "sizeMatched": 0}
+    out = p.parse_general_frame({"CURRENT_BETS": "[{\"offerId\":\"abc\",\"sizeMatched\":0},\"bad\"]"})
+    assert out == {"type": "current_bets", "bets": [bet]}
+
+
 # ── 全链路:SockJS a[...] 解包 → callback → 解析(oe-adapter-5.ws.2)──
 def test_sockjs_unwrap_to_parsed_balance():
     handler = OrbitExchWebSocketHandler(page=None)

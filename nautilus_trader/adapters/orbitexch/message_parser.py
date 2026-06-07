@@ -9,8 +9,9 @@
 
 """OrbitExch WebSocket 消息解析器"""
 
-from typing import Dict, List, Any, Optional
+import json
 import logging
+from typing import Any, Dict, Optional
 
 
 class OrbitExchMessageParser:
@@ -156,7 +157,10 @@ class OrbitExchMessageParser:
             return None
 
         if 'BALANCE' in message:
-            payload = message.get('BALANCE') or {}
+            payload = self._decode_nested_json(message.get('BALANCE')) or {}
+            if not isinstance(payload, dict):
+                self._log.debug(f'未知 BALANCE payload,忽略: {str(payload)[:120]}')
+                return None
             return {
                 'type': 'balance',
                 'balance': self._to_float(payload.get('balance')),
@@ -164,9 +168,13 @@ class OrbitExchMessageParser:
             }
 
         if 'CURRENT_BETS' in message:
+            bets = self._decode_nested_json(message.get('CURRENT_BETS')) or []
+            if not isinstance(bets, list):
+                self._log.debug(f'未知 CURRENT_BETS payload,忽略: {str(bets)[:120]}')
+                return None
             return {
                 'type': 'current_bets',
-                'bets': message.get('CURRENT_BETS') or [],
+                'bets': [bet for bet in bets if isinstance(bet, dict)],
             }
 
         self._log.debug(f'未知 general 帧,忽略: {str(message)[:120]}')
@@ -175,6 +183,15 @@ class OrbitExchMessageParser:
     # 兼容旧名(原 TODO stub);新代码用 parse_general_frame
     def parse_order_message(self, message: Dict) -> Optional[Dict[str, Any]]:
         return self.parse_general_frame(message)
+
+    @staticmethod
+    def _decode_nested_json(value):
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
 
     @staticmethod
     def _to_float(value) -> Optional[float]:

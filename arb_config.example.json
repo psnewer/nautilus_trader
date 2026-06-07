@@ -28,12 +28,12 @@
   "venues": {
     "polymarket": {
       "clob_url": "https://clob.polymarket.com",
-      "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+      "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/"
     },
     "orbitexch": {
       "base_url": "https://www.orbitexch.com",
       "headless": false,
-      "page_load_timeout_sec": 60
+      "page_load_timeout_sec": 120
     }
   },
 
@@ -53,6 +53,7 @@
   "strategy": {
     "_doc": "slice 9(#49)落 mean_rebate 策略:checktion 短路 AND(pre_match 先验 → mean_rebate;前者 False 后者不跑);action place_bets log-only(Q-D1=A,Q-D1=B 阶段真下单经 SkipExecutionClient 兜底 mock 全成)",
     "enabled": true,
+    "log_evaluations": false,
     "signals": {},
     "strategies": {
       "mean_rebate": {

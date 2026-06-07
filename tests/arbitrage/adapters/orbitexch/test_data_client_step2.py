@@ -143,6 +143,8 @@ def test_on_price_frame_routes_to_handle_data():
     c._on_price_frame(message)
     assert len(captured) == 1
     assert isinstance(captured[0], OrderBookDeltas)
+    assert c._price_frames_seen == 1
+    assert c._price_deltas_published == 1
 
 
 def test_on_price_frame_unsubscribed_market_dropped():
@@ -152,6 +154,8 @@ def test_on_price_frame_unsubscribed_market_dropped():
     c._handle_data = lambda d: captured.append(d)
     c._on_price_frame({"id": "unsubscribed", "rc": [], "marketDefinition": {}})
     assert captured == []
+    assert c._price_frames_seen == 0
+    assert c._price_deltas_published == 0
 
 
 # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
@@ -163,13 +167,35 @@ class _FakePage:
     async def reload(self, **kw): self.reload_calls += 1
 
 
+class _FailingGotoPage(_FakePage):
+    async def goto(self, url, **kw):
+        self.goto_calls.append(url)
+        raise TimeoutError("goto timeout")
+
+
 class _FakeBM:
     """fake BrowserManager:记录 create_page;page 复用按 name。"""
-    def __init__(self): self.created = []; self._pages = {}
+    def __init__(self): self.created = []; self.closed = []; self._pages = {}
     async def start(self): pass
     async def create_page(self, name):
         self.created.append(name)
         p = self._pages.setdefault(name, _FakePage())
+        return p
+    async def close_page(self, name):
+        self.closed.append(name)
+        self._pages.pop(name, None)
+
+
+class _SlowFakeBM(_FakeBM):
+    async def create_page(self, name):
+        await asyncio.sleep(0)
+        return await super().create_page(name)
+
+
+class _FailingBM(_FakeBM):
+    async def create_page(self, name):
+        self.created.append(name)
+        p = self._pages.setdefault(name, _FailingGotoPage())
         return p
 
 
@@ -214,6 +240,26 @@ def test_subscribe_same_competition_dedups_page():
     assert len(c._comp_pages) == 1
 
 
+def test_concurrent_subscribe_same_competition_dedups_page():
+    """data-2.page.5(#68): 同 competition 双腿并发订阅也只开一页(防 create_page 前竞态)。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    bm = _SlowFakeBM()
+    c = _client_with_bm(bm)
+    home = oe_instrument("EPL", "home", selection_id=42)
+    away = oe_instrument("EPL", "away", selection_id=43)
+    c._cache.add_instrument(home); c._cache.add_instrument(away)
+
+    async def subscribe_both():
+        await asyncio.gather(
+            c._subscribe_order_book_deltas(SimpleNamespace(instrument_id=home.id)),
+            c._subscribe_order_book_deltas(SimpleNamespace(instrument_id=away.id)),
+        )
+
+    asyncio.get_event_loop().run_until_complete(subscribe_both())
+    assert bm.created.count("comp-1_1") == 1
+    assert len(c._comp_pages) == 1
+
+
 def test_open_or_reload_reloads_existing_page():
     """data-2.page.3(#68): 已存在的 page_key 再调 → reload(新开/刷新同一套)。"""
     bm = _FakeBM()
@@ -223,6 +269,19 @@ def test_open_or_reload_reloads_existing_page():
     loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
     page = c._comp_pages["2_999"]
     assert len(page.goto_calls) == 1 and page.reload_calls == 1   # 首次 goto,二次 reload
+
+
+def test_open_page_failure_does_not_cache_stale_page():
+    """data-2.page.6(#68): competition goto 失败 → 清理 page/handler,不污染已开页状态。"""
+    bm = _FailingBM()
+    c = _client_with_bm(bm)
+    with pytest.raises(TimeoutError):
+        asyncio.get_event_loop().run_until_complete(
+            c._open_or_reload_competition_page("2_999", "2", "999"),
+        )
+    assert "2_999" not in c._comp_pages
+    assert "2_999" not in c._comp_handlers
+    assert bm.closed == ["comp-2_999"]
 
 
 def test_ensure_page_skips_when_instrument_not_in_cache():

@@ -105,7 +105,7 @@ def create_data_client_config(env: str = 'dev'):
         headless=config_dict.get('headless', True),
         browser_type=config_dict.get('browser_type', 'chromium'),
         user_data_dir=config_dict.get('user_data_dir'),
-        page_timeout=config_dict.get('page_timeout', 30000),
+        page_timeout=config_dict.get('page_timeout', 120000),
         scrape_interval_ms=config_dict.get('scrape_interval_ms', 1000),
     )
 
@@ -134,8 +134,7 @@ def create_exec_client_config(env: str = 'dev'):
         headless=config_dict.get('headless', True),
         browser_type=config_dict.get('browser_type', 'chromium'),
         user_data_dir=config_dict.get('user_data_dir'),
-        page_timeout=config_dict.get('page_timeout', 30000),
+        page_timeout=config_dict.get('page_timeout', 120000),
         max_bet_amount=config_dict.get('max_bet_amount', 10000.0),
         confirm_bet=config_dict.get('confirm_bet', True),
     )
-

@@ -20,6 +20,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 | `test_upstream_integration.py` | 上游 PM 适配器在我们配置下能正常加载 / 订阅 / 下单 / 事件回写 |
 | `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
 | `test_sports.py` | **#60** PM Sports 比分信号(`sports.py`):4 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
+| `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
+| `tests/arbitrage/config/test_dispatcher.py` / `test_loader.py` | PM adapter 接线前置:项目 `venues.polymarket.ws_url` 兼容旧 full endpoint(`/ws/market` / `/ws/user`),dispatcher 传给上游 `PolymarketWebSocketClient` 前归一化为 base URL(`/ws/`);`proxy_url` 从 JSON 或 env 注入并透传给 PM Data/Exec client |
 
 ---
 
@@ -45,6 +47,34 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **输入**: PM WS 推送 book 更新
 **期望**: 通过 NT MessageBus 收到 NT 标准 `OrderBookDelta`
 **验收**: 数据出口确认是 NT 类型(便于 ArbitrageStrategy 使用 `cache.order_book(...)`)
+
+### pm-adapter-2.2: PM WS URL 归一化为上游 base URL
+
+**前置**: `ArbConfig.venues.polymarket.ws_url` 可填新 base URL `wss://ws-subscriptions-clob.polymarket.com/ws/`,也可填旧服务遗留 full endpoint `.../ws/market` 或 `.../ws/user`
+**输入**: `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
+**期望**: 两者输出的 `base_url_ws` 均为 `.../ws/`,由上游 `PolymarketWebSocketClient` 自行拼接 `market` / `user`
+**验收**: `tests/arbitrage/config/test_dispatcher.py::test_polymarket_ws_url_normalized_to_nt_base_url` 覆盖旧/新写法;live smoke 日志不得出现隐式 `.../ws/marketmarket` 或 `.../ws/marketuser` 目标
+
+### pm-adapter-2.3: PM market WS 启动连接失败自动重试
+
+**前置**: StrategyEvaluator 已对 PM instrument 发起 `SubscribeOrderBook`;PM DataClient 已记录 token 订阅
+**输入**: `_delayed_connect` 中第一次 `PolymarketWebSocketClient.connect()` 抛网络异常(如 `Operation timed out`)
+**期望**: 不丢订阅、不让 task error 终止;DataClient 记录 warning 并按至少 5s 间隔重新调 `_delayed_connect`
+**验收**: `test_data_client_ws_retry.py` 覆盖失败重排与 disconnect 期间不重试;live smoke 若 PM CLOB WS 网络 transient,后续应看到重复 retry warning 而不是永久无 PM 盘口
+
+### pm-adapter-2.3b: PM market WS 显式代理透传
+
+**前置**: 当前网络访问 PM CLOB WS 需要 HTTP(S) proxy;进程 env 中存在 `POLYMARKET_PROXY_URL` 或 `https_proxy` / `http_proxy`
+**输入**: `load_arb_config` + `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
+**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env
+**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+
+### pm-adapter-2.4: PM 首个 OBD 发布观测锚点
+
+**前置**: PM market WS 已连并收到 book snapshot 或 price change
+**输入**: `_handle_deltas` / quote update 生成 `OrderBookDeltas`
+**期望**: 第一次发布时记录 `PM OrderBookDeltas published: instrument_id=..., deltas=...`,并递增 `_book_deltas_published`
+**验收**: `test_data_client_ws_retry.py::test_publish_deltas_records_first_pm_obd`;live smoke 用该日志判定 PM 盘口已进入 NT DataEngine 前的数据出口
 
 ### pm-adapter-5.1: 上游 ExecutionClient 下单 + 事件回写
 

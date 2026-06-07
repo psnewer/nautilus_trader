@@ -33,8 +33,9 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **`BrowserManager.start()` 幂等化**(`if self._context is not None: return`):共享 BrowserManager 被多次 client 触发 start 时不重复 init Playwright。
 - **`OrbitExchDataClient._connect` 自管 start + 改用 `create_page`**(原 bug:`get_page` 是只读,首次连返 None → `.goto` AttributeError)。设计意图原是 "factory 层先 start",但 factory 未接;DataClient 自管 + 幂等更稳。
 - **#66 `skip_execution`=「真连接 + mock 订单 IO」(PM/OE 对齐)**:取代旧的 OE skip `_connect` no-op(那是 Gap C `_connect` 还是 NotImplementedError 时的权宜)。现 skip 下 OE 也真连接(登录/page/general WS/账户状态),只 mock `_submit_order`(全成)+ `_cancel_*`(no-op)。`skip_execution=true` 即「安全验连接路径而不下真单」smoke。
-- **#68 每 competition 一页 + 新开/刷新统一**:OE data client 价格订阅从"单 `inplay/highlights` 页"(盘口稀疏根因)改为**每 competition 一页**(key=`{sport_id}_{competition_id}`,从 instrument 的 `event_type_id`/`competition_id` 取)。`_subscribe_order_book_deltas` → `_ensure_competition_page`(**eager 订阅即开**)→ `_open_or_reload_competition_page`(不存在 create_page+挂监听(#67)+goto / 已存在 reload)。`test_data_client_step2.py` +4(订阅即开 page_key=`comp-1_1` / 同 competition 去重只开一页 / 已存在→reload(首 goto 次 reload)/ 不在 cache→不开)。设计 refactor.md #68 + data/architecture.md §3.1。**待 live smoke 验真盘口流入**。
-- **#67 OE 连接两 bug 修复(live smoke 抓出,连接路径 live 验证通过)**:① **漏关登录后弹窗** —— `_login` 加 `_dismiss_post_login_popup`(平移 scraper `_handle_post_login_popup`;弹层盖页 → general WS 不推 BALANCE);② **WS 监听注册晚于页面建 WS** —— `page.on('websocket')` 只捕获注册后新建的 WS,`_connect`/data `_connect` 改为 **先 `ws_handler.start()` 再 `goto/_login`**(老 odds_client 注释:"必须在 goto 前挂拦截")。验证(`launchers/arb_node.py` + skip=true):`popup dismissed` + OE 账户 `0.00 → 37.49 GBP` 真余额 + 两腿 Connected + MatchedPair + 0 ERROR。**Gap C 连接路径(登录/弹窗/general WS/真 BALANCE→账户状态)完整 live 验证**;仍待:OE 下单/撤单/成交回执(真单)。
+- **#68 每 competition 一页 + 新开/刷新统一**:OE data client 价格订阅从"单 `inplay/highlights` 页"(盘口稀疏根因)改为**每 competition 一页**(key=`{sport_id}_{competition_id}`,从 instrument 的 `event_type_id`/`competition_id` 取)。`_subscribe_order_book_deltas` → `_ensure_competition_page`(**eager 订阅即开**)→ `_open_or_reload_competition_page`(不存在 create_page+挂监听(#67)+goto / 已存在 reload)。competition 页继续用老代码同款 `networkidle`,但必须传 `page_timeout`(`cfg.venues.orbitexch.page_load_timeout_sec` → 默认 120s);30s/60s/90s live smoke 均出现过 timeout。新开页 `goto` 成功后才登记到 `_comp_pages`;失败时 stop handler + close page,避免另一腿复用未加载成功的 page。`test_data_client_step2.py` 覆盖订阅即开 page_key=`comp-1_1` / 同 competition 顺序+并发订阅都只开一页 / 已存在→reload(首 goto 次 reload)/ 不在 cache→不开 / goto 失败不缓存 stale page。设计 refactor.md #68 + data/architecture.md §3.1。**live smoke 已验 OE 真盘口流入**:`OE price frame routed` + `OE OrderBookDeltas published`;PM proxy 透传修复后已同场验证 PM+OE 双边 OBD 触发 StrategyEvaluator 重评。
+- **#68 观测锚点**:`OrbitExchDataClient` 用自身 `_log` 输出 competition 页打开后的 WS 摘要(`ws_count/ws_types`)和首个 routed price frame / 首个 `OrderBookDeltas` publish,避免只依赖 `OrbitExchWebSocketHandler` 的 stdlib logger。`test_data_client_step2.py` 断言命中 routing 后 `_price_frames_seen/_price_deltas_published` 递增,未订阅 market 不递增。
+- **#67 OE 连接两 bug 修复(live smoke 抓出,连接路径 live 验证通过)**:① **漏关登录后弹窗** —— `_login` 加 `_dismiss_post_login_popup`(平移 scraper `_handle_post_login_popup`;弹层盖页 → general WS 不推 BALANCE);② **WS 监听注册晚于页面建 WS** —— `page.on('websocket')` 只捕获注册后新建的 WS,`_connect`/data `_connect` 改为 **先 `ws_handler.start()` 再 `goto/_login`**(老 odds_client 注释:"必须在 goto 前挂拦截")。③ exec page timeout 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置并显式传给 `goto`,避免 BrowserManager 默认 30s 在 OE 首页超时。验证(`launchers/arb_node.py` + skip=true):`popup dismissed` + OE 账户 `0.00 → 37.49 GBP` 真余额 + 两腿 Connected + MatchedPair + 0 ERROR。**Gap C 连接路径(登录/弹窗/general WS/真 BALANCE→账户状态)完整 live 验证**;仍待:OE 下单/撤单/成交回执(真单)。
 
 ## Slice 7A 浮上(#46):scraper 浏览器自管 known divergence
 
@@ -233,9 +234,10 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - WS USER channel 订阅订单状态(如 OE 提供;否则轮询)
 - Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
 
-**`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` **8 passed**):
+**`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` 覆盖):
 - `{"BALANCE":{"balance":"37.49","avBalance":null}}` —— `balance` 是**字符串**,WS 已含挂单占用。
 - `{"CURRENT_BETS":[<bet>,...]}` —— 当前注单(抓到样本为空 `[]`)。
+- payload 兼容:顶层 key 下可能再包 JSON 字符串;parser 会解嵌套 JSON,校验 `BALANCE` 为 dict / `CURRENT_BETS` 为 list,并过滤非 dict bet item,避免 callback 因字符串 payload 抛 `'str' object has no attribute 'get'`。
 - 上行订阅请求 `["{...subscribe:true...}"]`(无 `a`/无数据);**未知 key 帧时不时收到 → 忽略**。
 
 ### oe-adapter-5.ws.1: 订单帧解析 → generate_order_*(envelope 已解,**item schema 待 populated 抓帧**)
@@ -257,7 +259,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
   - **真·待 /live-test**(真钱,需用户确认 + 经 `launchers/arb_node.py`,**非 place_and_cancel**——它跑老 `services/` 栈不验 NT client):真登录 + 真下注/撤单 + 真成交回执;补偿撤单**触发策略**([[bug_compensating_cancel_missing]])
 
 ### oe-adapter-5.ws.2: WS 余额帧 → generate_account_state(✅ 解析层+客户端路由已实现+测)
-**前置**: `parse_general_frame` 识别 `BALANCE` 帧 → `{"type":"balance","balance":float,"av_balance":...}`(已测,含 null/字符串/非法值健壮)
+**前置**: `parse_general_frame` 识别 `BALANCE` 帧 → `{"type":"balance","balance":float,"av_balance":...}`(已测,含 null/字符串/非法值/嵌套 JSON 字符串 payload 健壮)
 **输入**: 一条 `BALANCE` 帧
 **期望**: OE ExecClient `_on_balance_frame` → `generate_account_state(...)` 写 Cache(待 OE ExecClient 落地接线)
 **验收**:

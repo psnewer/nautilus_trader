@@ -30,6 +30,7 @@ def _clean_env(monkeypatch):
         "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER",
         "POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "POLYMARKET_EOA_ADDRESS",
         "POLYMARKET_API_KEY", "POLYMARKET_API_SECRET", "POLYMARKET_PASSPHRASE",
+        "POLYMARKET_PROXY_URL", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
     ]:
         monkeypatch.delenv(var, raising=False)
 
@@ -97,6 +98,20 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     assert cfg.venues.polymarket.funder == "0xfun"
     assert cfg.venues.polymarket.user_address == "0xuser"
     assert cfg.venues.polymarket.eoa_address == "0xeoa"
+
+
+def test_env_injects_polymarket_proxy_when_json_missing(cfg_path, monkeypatch):
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    cfg_path.write_text("{}")
+    cfg = load_arb_config(cfg_path)
+    assert cfg.venues.polymarket.proxy_url == "http://127.0.0.1:7890"
+
+
+def test_json_polymarket_proxy_wins_over_env(cfg_path, monkeypatch):
+    monkeypatch.setenv("https_proxy", "http://env-proxy:7890")
+    cfg_path.write_text(json.dumps({"venues": {"polymarket": {"proxy_url": "http://json-proxy:7890"}}}))
+    cfg = load_arb_config(cfg_path)
+    assert cfg.venues.polymarket.proxy_url == "http://json-proxy:7890"
 
 
 # ── .4 env 凭证注入 OE ──────────────────────────────────────────

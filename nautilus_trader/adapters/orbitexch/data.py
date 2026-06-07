@@ -22,6 +22,7 @@ OrbitExchDataClient —— OE 自写 `LiveMarketDataClient` 子类(Step 2,整体
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Optional
 
 from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
@@ -142,8 +143,11 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # #68:每 competition 一页(key=f"{sport_id}_{competition_id}"),新开/刷新统一。
         self._comp_pages: dict[str, object] = {}                          # page_key -> Page
         self._comp_handlers: dict[str, OrbitExchWebSocketHandler] = {}    # page_key -> WS handler
+        self._comp_pages_lock = asyncio.Lock()                            # 防并发订阅双开同一 competition
         # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
         self._market_to_instruments: dict[str, dict[str, InstrumentId]] = {}
+        self._price_frames_seen = 0
+        self._price_deltas_published = 0
         # #58(slice A):DataClient 拥有周期发现(替代退役的 InstrumentRefresher)
         self._update_instruments_task: Optional[asyncio.Task] = None
 
@@ -213,9 +217,10 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 f"OE open page: {instrument_id} missing sport_id/competition_id; skip")
             return
         page_key = f"{sport_id}_{competition_id}"
-        if page_key in self._comp_pages:
-            return  # 已开,复用
-        await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+        async with self._comp_pages_lock:
+            if page_key in self._comp_pages:
+                return  # 已开,复用
+            await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
 
     async def _open_or_reload_competition_page(
         self, page_key: str, sport_id: str, competition_id: str,
@@ -226,22 +231,41 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
         §4.3 健康检查 reload 将来复用本方法的 reload 分支。"""
         url = f"{self._config.base_url}/customer/sport/{sport_id}/competition/{competition_id}"
-        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),用配置 page_timeout(默认 90s),
+        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),用配置 page_timeout(默认 120s),
         # 对齐老 odds_client(`networkidle` + `timeout=page_load_timeout_sec*1000`);默认 30s 不够会超时。
         timeout_ms = self._config.page_timeout
         page = self._comp_pages.get(page_key)
         if page is None:
-            page = await self._browser_manager.create_page(f"comp-{page_key}")
+            page_name = f"comp-{page_key}"
+            page = await self._browser_manager.create_page(page_name)
             handler = OrbitExchWebSocketHandler(page)
             handler.on_price_update(self._on_price_frame)
-            await handler.start()                       # #67:先挂监听
+            try:
+                await handler.start()                   # #67:先挂监听
+                await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
+            except Exception:
+                with suppress(Exception):
+                    await handler.stop()
+                with suppress(Exception):
+                    await self._browser_manager.close_page(page_name)
+                raise
             self._comp_pages[page_key] = page
             self._comp_handlers[page_key] = handler
-            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
-            self._log.info(f"OE competition page opened: {page_key}")
+            self._log.info(f"OE competition page opened: {page_key} ({self._websocket_summary(handler)})")
         else:
+            handler = self._comp_handlers.get(page_key)
             await page.reload(wait_until="networkidle", timeout=timeout_ms)
-            self._log.info(f"OE competition page reloaded: {page_key}")
+            summary = self._websocket_summary(handler) if handler is not None else "ws_count=unknown"
+            self._log.info(f"OE competition page reloaded: {page_key} ({summary})")
+
+    @staticmethod
+    def _websocket_summary(handler: OrbitExchWebSocketHandler) -> str:
+        active = handler.get_active_websockets()
+        counts: dict[str, int] = {}
+        for item in active:
+            ws_type = str(item.get("type", "unknown"))
+            counts[ws_type] = counts.get(ws_type, 0) + 1
+        return f"ws_count={len(active)}, ws_types={counts}"
 
     def _register_instrument_routing(self, instrument_id: InstrumentId) -> None:
         inst = self._cache.instrument(instrument_id)
@@ -270,6 +294,12 @@ class OrbitExchDataClient(LiveMarketDataClient):
         routing = self._market_to_instruments.get(market_id)
         if not routing:
             return  # 未订阅此 market,丢弃
+        self._price_frames_seen += 1
+        if self._price_frames_seen == 1:
+            self._log.info(
+                f"OE price frame routed: market_id={market_id}, runners={len(parsed.get('runners', []))}, "
+                f"subscribed_selections={len(routing)}",
+            )
         # slice 9(#49):透 marketDefinition.inPlay 到 instrument.info["in_play"]
         in_play = bool(parsed.get("in_play", False))
         ts = self._clock.timestamp_ns()
@@ -281,6 +311,12 @@ class OrbitExchDataClient(LiveMarketDataClient):
             write_inplay_to_instrument_info(self._cache, instrument_id, in_play)
             deltas = oe_runner_to_book_deltas(instrument_id, runner, ts)
             if deltas is not None:
+                self._price_deltas_published += 1
+                if self._price_deltas_published == 1:
+                    self._log.info(
+                        f"OE OrderBookDeltas published: instrument_id={instrument_id}, "
+                        f"deltas={len(deltas.deltas)}",
+                    )
                 self._handle_data(deltas)
 
 

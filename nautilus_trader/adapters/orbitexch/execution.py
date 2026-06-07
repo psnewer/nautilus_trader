@@ -232,13 +232,18 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         await self._browser_manager.start()  # 幂等(#62 共享单例;data 或 exec 谁先连谁起)
         self._page = await self._browser_manager.create_page("execution")
+        self._page.set_default_timeout(self._config.page_timeout)
         # #67:**先挂 WS 监听,再导航**。`page.on('websocket')` 只捕获注册之后页面新建的 WS;general
         # WS 在登录导航 `/customer/` 期间建立,若先 goto/login 再 start 会错过它 → 收不到 BALANCE/
         # CURRENT_BETS(老 odds_client 注释明示"必须在 goto 前挂拦截,否则错过 WS 创建")。
         self._ws_handler = OrbitExchWebSocketHandler(self._page)
         self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
         await self._ws_handler.start()
-        await self._page.goto(self._config.base_url, wait_until="domcontentloaded")
+        await self._page.goto(
+            self._config.base_url,
+            wait_until="domcontentloaded",
+            timeout=self._config.page_timeout,
+        )
         if "/customer/" not in (self._page.url or ""):  # 持久化 profile 未登录 → 填表单
             await self._login()
         self._executor = OrbitExchExecutor(config=ExecutionConfig())
@@ -256,7 +261,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         """OE 登录(平移自 `scraper.py:login`):填 username/password → 点 Log In → 等 `/customer/`
         → **关登录后弹窗**(否则弹层盖住页面,general WS 不推 BALANCE/CURRENT_BETS)。"""
         cfg = self._config
-        await self._page.goto(cfg.base_url, wait_until="networkidle")
+        await self._page.goto(cfg.base_url, wait_until="networkidle", timeout=cfg.page_timeout)
         await self._page.wait_for_selector('input[name="username"]', timeout=10000)
         await self._page.fill('input[name="username"]', cfg.username)
         await self._page.fill('input[name="password"]', cfg.password)

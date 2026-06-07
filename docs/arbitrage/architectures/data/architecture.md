@@ -9,7 +9,7 @@
 
 | 件 | 基类 | 职责 |
 |---|---|---|
-| PM `PolymarketDataClient` | 上游 | **零代码**(P1)。WS 订阅 → 输出 NT 标准 `OrderBookDelta` |
+| PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
 | `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 Q9 6-key,matching 必需;#35) |
 | `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + ADDs);BACK→BUY 侧 / LAY→SELL 侧;路由 market_id+selection_id → InstrumentId |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
@@ -44,6 +44,7 @@ flowchart LR
 - OE WS 给的是 **snapshot of best N levels**(`bdatb`/`bdatl` 各档),`oe_runner_to_book_deltas` 转为 `OrderBookDeltas`(1×CLEAR + N×ADD)入标准管道。
 - BACK ≡ 买入该方向 → BookOrder side = BUY;LAY ≡ 卖出该方向 → side = SELL。
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
+- PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
 
 ---
 
@@ -53,11 +54,15 @@ flowchart LR
 
 **页面模型(#68):每 competition 一页,新开/刷新统一**。OE 赔率来自 competition 页(`/customer/sport/{sport_id}/competition/{competition_id}`)的价格 WS —— **不是**单一 `inplay/highlights` 页(那只给概览、不含完整盘口;旧"单页多市场"设计废止)。`BettingInstrument` 已带 `competition_id`(`event.competition_id`)+ `event_type_id`(=sport_id),订阅时即可定位开哪页。
 
+并发约束:同一 `MatchedPair` 会同时订阅 home/away 两腿,因此 `_ensure_competition_page` 必须用 `_comp_pages_lock` 包住 page_key 检查 + 首次 open,避免两个协程在 `create_page` 前同时判断"未开"而双开同一 competition 页。
+
+观测约束:价格 WS handler 的内部日志不一定进入 NT node 日志,DataClient 自身必须记录低噪声锚点:competition 页打开后的 `ws_count/ws_types`,首个 routed price frame,首个 `OrderBookDeltas` publish。live smoke 判断 OE 盘口链路时以这些 DataClient 日志为准。
+
 ```python
 class OrbitExchDataClient(LiveMarketDataClient):
     async def _connect(self):
         await self._browser_manager.start()          # 幂等(共享单例)
-        # 不再开 highlights 页 / 不再起单一 ws_handler;competition 页按订阅惰性开。
+        # 不再开 highlights 页 / 不再起单一 ws_handler;competition 页按订阅 eager 开。
         await self._instrument_provider.load_all_async()   # 发现(用 provider 自己的 scraper 浏览器)
         self._send_all_instruments_to_data_engine()
         # ... _update_instruments 周期 task(slice A,不变)
@@ -67,7 +72,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         inst = self._cache.instrument(iid)
         page_key = f"{inst.event_type_id}_{inst.competition_id}"   # sport_id_competition_id
         self._register_instrument_routing(iid)                     # 全局 routing(price 帧带 market_id)
-        await self._ensure_competition_page(page_key)              # eager:订阅即开页(#61 要赔率流)
+        await self._ensure_competition_page(page_key)              # eager:订阅即开页(#61 要赔率流);内部加锁去重
 
     async def _ensure_competition_page(self, page_key):
         """每 competition 一页 + WS handler(去重);已存在则复用。"""
@@ -81,17 +86,21 @@ class OrbitExchDataClient(LiveMarketDataClient):
         已存在 → reload(page-level 监听跨 reload 存活,#67 实测,无需重挂)。
         健康检查 §4.3 reload 将来复用本方法的 reload 分支。"""
         url = f"{base_url}/customer/sport/{sport_id}/competition/{competition_id}"
+        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),对齐老 odds_client:
+        # networkidle + cfg.venues.orbitexch.page_load_timeout_sec → page_timeout,默认 120s。
+        timeout_ms = self._config.page_timeout
         page = self._comp_pages.get(page_key)
         if page is None:
             page = await self._browser_manager.create_page(f"comp-{page_key}")
             handler = OrbitExchWebSocketHandler(page)
             handler.on_price_update(self._on_price_frame)
             await handler.start()                     # #67:先挂监听
+            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
+            # goto 成功后才登记;失败时 stop handler + close page,避免下一腿复用未加载成功的 page。
             self._comp_pages[page_key] = page
             self._comp_handlers[page_key] = handler
-            await page.goto(url, wait_until="networkidle")   # 再导航(价格 WS 此时建,被抓)
         else:
-            await page.reload(wait_until="networkidle")      # 监听自动捕获新 WS(#67)
+            await page.reload(wait_until="networkidle", timeout=timeout_ms)      # 监听自动捕获新 WS(#67)
 
     def _on_price_frame(self, message):     # 所有 competition 页共用(routing 按 market_id 分流)
         parsed = self._parser.parse_price_message(message)

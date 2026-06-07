@@ -18,6 +18,10 @@
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
+**#68(2026-06-07)OE DataClient competition 页订阅模型**:OE OBD 订阅从单 `inplay/highlights` 页改为每 competition 一页;同一 `MatchedPair` 会同时订阅 home/away 两腿,因此 `_ensure_competition_page` 用 `_comp_pages_lock` 防止并发双开同一 competition 页。`tests/arbitrage/adapters/orbitexch/test_data_client_step2.py` 覆盖顺序订阅去重 + 并发订阅去重,并断言 routed price frame / `OrderBookDeltas` publish 计数。live smoke 复验:同一 `2_12803182` competition 只 open 一次,两腿均 subscribed,且出现 `OE price frame routed` + `OE OrderBookDeltas published`;PM proxy 透传修复后已验证双边 OBD 触发 StrategyEvaluator 重评。
+
+**2026-06-07 PM WS base URL 修复**:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,内部自行拼 `market` / `user`;旧配置沿用 `.../ws/market` 会导致 DataClient / ExecClient 目标变成 `.../ws/marketmarket` / `.../ws/marketuser`。dispatcher 已兼容旧 full endpoint 并统一归一化为 base URL;对应配置测试见 `tests/arbitrage/config/test_dispatcher.py`。
+
 ## 文件分布
 
 | 文件 | 范围 |

@@ -170,7 +170,18 @@ class StrategyEvaluator(Actor):
         # scope-priority 查策略(挂载存在锁定,Q21-a)
         strategy = self._strategy_registry.get_for(pair_id, competition, sport)
         if strategy is None:
+            if self._log_evaluations:
+                self._log.info(
+                    f"Strategy evaluate skipped: pair_id={pair_id}, sport={sport}, "
+                    f"competition={competition}, reason=no_strategy",
+                )
             return
+        if self._log_evaluations:
+            event_type = type(data).__name__
+            self._log.info(
+                f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
+                f"competition={competition}, event={event_type}",
+            )
         # sync 入口 → async evaluate
         self._loop.create_task(self._evaluate_and_fire(strategy, pair_id))
 
@@ -192,6 +203,8 @@ class StrategyEvaluator(Actor):
     async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
         # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
         if self._is_execution_active():
+            if self._log_evaluations:
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
             return
         # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
         snapshot = build_snapshot(
@@ -210,11 +223,24 @@ class StrategyEvaluator(Actor):
             self._aevaluate(strategy.arbitrage_tree, ctx),
             self._aevaluate(strategy.compensation_tree, ctx),
         )
+        if self._log_evaluations:
+            self._log.info(
+                f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
+                f"arb_action={type(arb_res.pending_action).__name__ if arb_res.pending_action else None}, "
+                f"comp_hit={comp_res.hit}, "
+                f"comp_action={type(comp_res.pending_action).__name__ if comp_res.pending_action else None}",
+            )
         # Q21:套利优先 — 套利命中 → fire 套利 action;否则 → 补救 action(如命中)
         if arb_res.hit and arb_res.pending_action is not None:
+            if self._log_evaluations:
+                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
             self._loop.create_task(arb_res.pending_action.execute(ctx))
         elif comp_res.hit and comp_res.pending_action is not None:
+            if self._log_evaluations:
+                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
             self._loop.create_task(comp_res.pending_action.execute(ctx))
+        elif self._log_evaluations:
+            self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_action")
 
     async def _aevaluate(self, tree, ctx):
         """async 包 sync 的 `evaluate_tree`,使 `asyncio.gather` 模式可用。

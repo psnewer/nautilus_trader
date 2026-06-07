@@ -153,6 +153,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         # Hot caches
         self._last_quotes: dict[InstrumentId, QuoteTick] = {}
         self._local_books: dict[InstrumentId, OrderBook] = {}
+        self._book_deltas_published = 0
 
         # Auto-load coordination
         self._pending_instrument_loads: dict[InstrumentId, asyncio.Future[None]] = {}
@@ -212,7 +213,17 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._log.info(f"Delaying websocket connections start for {delay_secs}s...")
         await asyncio.sleep(delay_secs)
         self._ws_connect_task = None
-        await self._ws_client.connect()
+        try:
+            await self._ws_client.connect()
+        except Exception as e:
+            if self._disconnecting or not self._ws_client.has_subscriptions:
+                self._log.warning(f"WebSocket connection failed during shutdown/no subscriptions: {e!r}")
+                return
+            retry_delay_secs = max(float(self._config.ws_connection_initial_delay_secs), 5.0)
+            self._log.warning(
+                f"WebSocket connection failed: {e!r}; retrying in {retry_delay_secs:g}s",
+            )
+            self._ws_connect_task = self.create_task(self._delayed_connect(retry_delay_secs))
 
     def _create_local_book(self, instrument_id: InstrumentId) -> OrderBook:
         local_book = OrderBook(instrument_id, book_type=BookType.L2_MBP)
@@ -556,7 +567,16 @@ class PolymarketDataClient(LiveMarketDataClient):
 
         # Check if any effective deltas remain
         if deltas:
-            self._handle_data(deltas)
+            self._publish_deltas(deltas)
+
+    def _publish_deltas(self, deltas: OrderBookDeltas) -> None:
+        self._book_deltas_published += 1
+        if self._book_deltas_published == 1:
+            self._log.info(
+                f"PM OrderBookDeltas published: instrument_id={deltas.instrument_id}, "
+                f"deltas={len(deltas.deltas)}",
+            )
+        self._handle_data(deltas)
 
     def _handle_quotes(
         self,
@@ -613,7 +633,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         local_book = self._local_books[instrument.id]
         local_book.apply(deltas)
 
-        self._handle_data(deltas)
+        self._publish_deltas(deltas)
 
         if instrument.id in self.subscribed_quote_ticks():
             bid_price = local_book.best_bid_price()

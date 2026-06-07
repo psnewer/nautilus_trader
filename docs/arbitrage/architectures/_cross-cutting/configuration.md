@@ -78,9 +78,10 @@ class VenuesConfig(Struct, kw_only=True):
 
 class PolymarketSectionConfig(Struct, kw_only=True):
     clob_url:                 str = "https://clob.polymarket.com"
-    ws_url:                   str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    ws_url:                   str = "wss://ws-subscriptions-clob.polymarket.com/ws/"
     relayer_url:              str = "https://relayer-v2.polymarket.com/"
     polygon_rpc_url:          str = "https://polygon-rpc.com/"
+    proxy_url:                str | None = None  # PM HTTP/WS 代理;loader 可从 env 注入
     # 凭证字段(loader 阶段从 env 注入,不入 JSON;详见 §4)
     clob_api_key:             str | None = None
     clob_api_secret:          str | None = None
@@ -99,7 +100,7 @@ class OrbitExchSectionConfig(Struct, kw_only=True):
     base_url:                 str = "https://www.orbitexch.com"
     api_url:                  str = "https://www.orbitexch.com/customer/api"
     zoom_level:               float = 0.8
-    page_load_timeout_sec:    float = 60.0
+    page_load_timeout_sec:    float = 120.0
     page_refresh_sec:         int = 600
     staleness_timeout_sec:    int = 300
     headless:                 bool = True
@@ -119,11 +120,12 @@ class OrbitExchSectionConfig(Struct, kw_only=True):
 
 
 class StrategySectionConfig(Struct, kw_only=True):
-    enabled:    bool = True
+    enabled:         bool = True
+    log_evaluations: bool = False
     # 用户定义信号 / Check / Action 实现 + JSON 配置(§7 Strategy 解析)
-    signals:    dict[str, SignalDefConfig] = {}
-    strategies: dict[str, StrategyJsonConfig] = {}
-    bindings:   list[StrategyBindingConfig] = []  # scope → strategy_id
+    signals:         dict[str, SignalDefConfig] = {}
+    strategies:      dict[str, StrategyJsonConfig] = {}
+    bindings:        list[StrategyBindingConfig] = []  # scope → strategy_id
 
 
 class StrategyBindingConfig(Struct, kw_only=True):
@@ -267,6 +269,26 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams: ...
 def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict: ...     # prepare_arb_context(**dict)
 def to_debug_config(cfg: ArbConfig) -> DebugConfig | None: ...
 ```
+
+`to_strategy_evaluator_config` 只把 `cfg.strategy.log_evaluations` 映射到
+`StrategyEvaluatorConfig.log_evaluations`;registries / store / portfolio / execution-active callable
+等运行时依赖仍由 launcher 经 `_RuntimeDeps` 注入。`log_evaluations` 默认 `False`;仅在专项诊断时临时设
+`true` 输出 strategy evaluate 的 schedule / skip / result / fire 锚点,常规 smoke / 示例配置保持关闭。
+
+OE `venues.orbitexch.page_load_timeout_sec` 是共享页面加载超时,dispatcher 转为毫秒后同时传给
+`OrbitExchDataClientConfig.page_timeout`、`OrbitExchExecClientConfig.page_timeout` 和 discovery scraper
+`BrowserConfig.timeout_ms`。默认 120s 与 OE 页面等待策略一致;30s/60s/90s 在 OE 首页或 competition 页
+均出现过 timeout。
+
+Polymarket `ws_url` 传给 NT 上游 `PolymarketWebSocketClient` 时必须是 base URL
+(`.../ws/`),因为上游 client 会按 channel 自行拼接 `market` / `user`。dispatcher 兼容旧
+`.../ws/market` / `.../ws/user` 写法,统一归一化为 `.../ws/`,避免 DataClient 生成
+`.../ws/marketmarket`、ExecClient 生成 `.../ws/marketuser`。
+
+Polymarket `proxy_url` 传给 NT 上游 `PolymarketDataClientConfig` / `PolymarketExecClientConfig`。
+若 JSON 未显式配置,loader 按 `POLYMARKET_PROXY_URL` → `https_proxy` / `HTTPS_PROXY` →
+`http_proxy` / `HTTP_PROXY` 顺序兜底注入。原因:NT pyo3 `WebSocketClient` 不自动读取系统代理;
+PM CLOB market WS 在部分网络下直连会 `Operation timed out`,显式 `proxy_url` 后可正常握手。
 
 ---
 

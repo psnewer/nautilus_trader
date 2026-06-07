@@ -15,6 +15,7 @@ from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
+from src.arbitrage.config.dispatcher import _polymarket_ws_base_url
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import MockCategory
@@ -30,6 +31,7 @@ def _cfg(**overrides) -> ArbConfig:
 def test_polymarket_data_client_config_maps_credentials():
     cfg = _cfg(venues={"polymarket": {
         "clob_url": "https://x.com", "ws_url": "wss://y.com",
+        "proxy_url": "http://127.0.0.1:7890",
         "clob_api_key": "K", "clob_api_secret": "S", "clob_passphrase": "P",
         "private_key": "0xpk", "funder": "0xfn",
     }})
@@ -40,13 +42,38 @@ def test_polymarket_data_client_config_maps_credentials():
     assert cc.private_key == "0xpk"
     assert cc.funder == "0xfn"
     assert cc.base_url_http == "https://x.com"
-    assert cc.base_url_ws == "wss://y.com"
+    assert cc.base_url_ws == "wss://y.com/"
+    assert cc.proxy_url == "http://127.0.0.1:7890"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("wss://ws-subscriptions-clob.polymarket.com/ws/", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
+        ("wss://ws-subscriptions-clob.polymarket.com/ws", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
+        ("wss://ws-subscriptions-clob.polymarket.com/ws/market", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
+        ("wss://ws-subscriptions-clob.polymarket.com/ws/user", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
+    ],
+)
+def test_polymarket_ws_url_normalized_to_nt_base_url(raw, expected):
+    """配置层兼容旧 full endpoint,传给上游 Polymarket WS client 前转为 base URL。"""
+    assert _polymarket_ws_base_url(raw) == expected
 
 
 def test_polymarket_exec_client_config_maps_credentials():
-    cfg = _cfg(venues={"polymarket": {"clob_api_key": "K"}})
+    cfg = _cfg(venues={"polymarket": {
+        "clob_api_key": "K",
+        "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    }})
     cc = to_polymarket_exec_client_config(cfg)
     assert cc.api_key == "K"
+    assert cc.base_url_ws == "wss://ws-subscriptions-clob.polymarket.com/ws/"
+
+
+def test_polymarket_exec_client_config_maps_proxy():
+    cfg = _cfg(venues={"polymarket": {"proxy_url": "http://127.0.0.1:7890"}})
+    cc = to_polymarket_exec_client_config(cfg)
+    assert cc.proxy_url == "http://127.0.0.1:7890"
 
 
 def test_polymarket_credentials_none_passthrough():
@@ -59,12 +86,14 @@ def test_polymarket_credentials_none_passthrough():
 def test_orbitexch_data_client_config_maps_credentials():
     cfg = _cfg(venues={"orbitexch": {
         "username": "u", "password": "p", "headless": False, "browser_type": "firefox",
+        "page_load_timeout_sec": 90.0,
     }})
     cc = to_orbitexch_data_client_config(cfg)
     assert cc.username == "u"
     assert cc.password == "p"
     assert cc.headless is False
     assert cc.browser_type == "firefox"
+    assert cc.page_timeout == 90000
 
 
 def test_orbitexch_credentials_empty_string_fallback():
@@ -77,10 +106,11 @@ def test_orbitexch_credentials_empty_string_fallback():
 
 
 def test_orbitexch_exec_client_config_maps_credentials():
-    cfg = _cfg(venues={"orbitexch": {"username": "u", "password": "p"}})
+    cfg = _cfg(venues={"orbitexch": {"username": "u", "password": "p", "page_load_timeout_sec": 90.0}})
     cc = to_orbitexch_exec_client_config(cfg)
     assert cc.username == "u"
     assert cc.password == "p"
+    assert cc.page_timeout == 90000
 
 
 # ─── Actors ───────────────────────────────────────────────────────────
@@ -110,6 +140,12 @@ def test_strategy_evaluator_config_log_evaluations_default():
     cfg = _cfg()
     sc = to_strategy_evaluator_config(cfg)
     assert sc.log_evaluations is False
+
+
+def test_strategy_evaluator_config_log_evaluations_maps_strategy_section():
+    cfg = _cfg(strategy={"log_evaluations": True})
+    sc = to_strategy_evaluator_config(cfg)
+    assert sc.log_evaluations is True
 
 
 # ─── Risk / Context / Debug ───────────────────────────────────────────

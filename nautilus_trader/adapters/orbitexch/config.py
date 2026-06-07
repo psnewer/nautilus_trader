@@ -32,8 +32,8 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
         Browser type: 'chromium', 'firefox', or 'webkit'
     user_data_dir : str, optional
         Directory to persist browser session (for login persistence)
-    page_timeout : int, default 90000
-        Page load timeout in milliseconds(competition 页 networkidle 加载重,默认 90s;#68)
+    page_timeout : int, default 120000
+        Page load timeout in milliseconds(OE 页面默认等 120s;#68)
     scrape_interval_ms : int, default 1000
         Odds scraping interval in milliseconds
     update_instruments_interval_mins : int or None, default 60
@@ -47,7 +47,7 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     headless: bool = True
     browser_type: str = 'chromium'
     user_data_dir: Optional[str] = None
-    page_timeout: int = 90000
+    page_timeout: int = 120000
     scrape_interval_ms: int = 1000
     update_instruments_interval_mins: Optional[int] = 60
 
@@ -70,7 +70,7 @@ class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True)
         Browser type: 'chromium', 'firefox', or 'webkit'
     user_data_dir : str, optional
         Directory to persist browser session
-    page_timeout : int, default 30000
+    page_timeout : int, default 120000
         Page operation timeout in milliseconds
     max_bet_amount : float, default 10000.0
         Maximum bet amount (risk control)
@@ -84,6 +84,6 @@ class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True)
     headless: bool = True
     browser_type: str = 'chromium'
     user_data_dir: Optional[str] = None
-    page_timeout: int = 30000
+    page_timeout: int = 120000
     max_bet_amount: float = 10000.0
     confirm_bet: bool = True

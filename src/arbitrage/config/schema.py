@@ -58,9 +58,10 @@ class PolymarketSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     """Polymarket 接入参数 + 凭证(凭证字段由 env 注入,JSON 中应留 None)。"""
 
     clob_url: str = "https://clob.polymarket.com"
-    ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/"
     relayer_url: str = "https://relayer-v2.polymarket.com/"
     polygon_rpc_url: str = "https://polygon-rpc.com/"
+    proxy_url: str | None = None
     # 凭证(env-only,见 loader §4)
     clob_api_key: str | None = None
     clob_api_secret: str | None = None
@@ -79,7 +80,7 @@ class OrbitExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     base_url: str = "https://www.orbitexch.com"
     api_url: str = "https://www.orbitexch.com/customer/api"
     zoom_level: float = 0.8
-    page_load_timeout_sec: float = 60.0
+    page_load_timeout_sec: float = 120.0
     page_refresh_sec: int = 600
     staleness_timeout_sec: int = 300
     headless: bool = True
@@ -135,6 +136,7 @@ class StrategyBindingConfig(msgspec.Struct, frozen=True, kw_only=True):
 
 class StrategySectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     enabled: bool = True
+    log_evaluations: bool = False
     signals: dict[str, SignalDefConfig] = msgspec.field(default_factory=dict)
     strategies: dict[str, StrategyJsonConfig] = msgspec.field(default_factory=dict)
     bindings: list[StrategyBindingConfig] = msgspec.field(default_factory=list)
