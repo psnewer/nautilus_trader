@@ -142,3 +142,124 @@ async def test_submit_order_debug_disabled_calls_super():
     await client._submit_order(cmd)
     # 总开关关 → is_override_active 返 False → 走 super
     assert client.super_called and not client.accepted
+
+
+# ── 真类分支(PM/OE 对齐)──────────────────────────────────────
+# `__new__` 跳过重基类 __init__(需 browser_manager/ClobClient/msgbus 等),只注入 `_debug`;
+# monkeypatch 基类 async 方法当 super() 探针。测真实 SkipExecution{PM,OE}Client 分支(非复制逻辑)。
+
+import src.arbitrage.debug.execution_clients as debug_exec  # noqa: E402
+
+from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient  # noqa: E402
+from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient  # noqa: E402
+
+from src.arbitrage.debug.execution_clients import SkipExecutionOrbitExchClient  # noqa: E402
+from src.arbitrage.debug.execution_clients import SkipExecutionPolymarketClient  # noqa: E402
+
+
+def _skip_cfg(active: bool) -> DebugConfig:
+    cfg = DebugConfig(enabled=True)
+    if active:
+        cfg.overrides["skip_execution"] = DebugOverride(name="skip_execution", enabled=True, value=True)
+    return cfg
+
+
+def _bare(cls, *, active: bool):
+    """构造跳过重基类 init 的实例,仅注入 _debug。"""
+    c = cls.__new__(cls)
+    c._debug = _skip_cfg(active)
+    return c
+
+
+# ── OE: _submit_order 走 _mock_fill(GBP)/ 透传 ──────────────
+@pytest.mark.asyncio
+async def test_oe_skip_submit_active_uses_mock_fill_gbp(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=True)
+    ccys, super_called = [], []
+    monkeypatch.setattr(debug_exec, "_mock_fill", lambda client, cmd, ccy: ccys.append(ccy))
+    async def base_submit(self, command): super_called.append(command)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_submit_order", base_submit)
+    await c._submit_order(MagicMock())
+    assert ccys == [GBP] and super_called == []  # OE mock 用 GBP,不碰真 venue
+
+
+@pytest.mark.asyncio
+async def test_oe_skip_submit_inactive_calls_super(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=False)
+    ccys, super_called = [], []
+    monkeypatch.setattr(debug_exec, "_mock_fill", lambda *a: ccys.append(a))
+    async def base_submit(self, command): super_called.append(command)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_submit_order", base_submit)
+    await c._submit_order(MagicMock())
+    assert ccys == [] and len(super_called) == 1
+
+
+# ── OE: cancel / cancel_all / residual no-op(skip)/ 透传 ────
+@pytest.mark.asyncio
+async def test_oe_skip_cancel_noop_when_active(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=True)
+    called = []
+    async def base(self, command): called.append(command)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_order", base)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_all_orders", base)
+    await c._cancel_order(MagicMock())
+    await c._cancel_all_orders(MagicMock())
+    assert called == []  # mock 模式无真单可撤
+
+
+@pytest.mark.asyncio
+async def test_oe_skip_cancel_calls_super_when_inactive(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=False)
+    called = []
+    async def base(self, command): called.append(command)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_order", base)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_all_orders", base)
+    await c._cancel_order(MagicMock())
+    await c._cancel_all_orders(MagicMock())
+    assert len(called) == 2
+
+
+@pytest.mark.asyncio
+async def test_oe_skip_residual_noop_when_active(monkeypatch):
+    """OE 专属 _cancel_residual_one:skip 下 no-op(PM 无此方法)。"""
+    c = _bare(SkipExecutionOrbitExchClient, active=True)
+    called = []
+    async def base(self, order): called.append(order)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_residual_one", base)
+    await c._cancel_residual_one(MagicMock())
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_oe_skip_residual_calls_super_when_inactive(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=False)
+    called = []
+    async def base(self, order): called.append(order)
+    monkeypatch.setattr(OrbitExchExecutionClient, "_cancel_residual_one", base)
+    await c._cancel_residual_one(MagicMock())
+    assert len(called) == 1
+
+
+# ── PM: cancel / cancel_all no-op(skip)/ 透传(对齐 OE,补 cancel 分支)──
+@pytest.mark.asyncio
+async def test_pm_skip_cancel_noop_when_active(monkeypatch):
+    c = _bare(SkipExecutionPolymarketClient, active=True)
+    called = []
+    async def base(self, command): called.append(command)
+    monkeypatch.setattr(ArbPolymarketExecutionClient, "_cancel_order", base)
+    monkeypatch.setattr(ArbPolymarketExecutionClient, "_cancel_all_orders", base)
+    await c._cancel_order(MagicMock())
+    await c._cancel_all_orders(MagicMock())
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_pm_skip_cancel_calls_super_when_inactive(monkeypatch):
+    c = _bare(SkipExecutionPolymarketClient, active=False)
+    called = []
+    async def base(self, command): called.append(command)
+    monkeypatch.setattr(ArbPolymarketExecutionClient, "_cancel_order", base)
+    monkeypatch.setattr(ArbPolymarketExecutionClient, "_cancel_all_orders", base)
+    await c._cancel_order(MagicMock())
+    await c._cancel_all_orders(MagicMock())
+    assert len(called) == 2

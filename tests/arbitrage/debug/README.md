@@ -9,11 +9,19 @@
 
 **Q11.A DebugDataClient 落地(2026-05-26 #39)**:行情数据掉包 framework + factory 分支已落,**+10 passed**(累计 **27 passed**)。
 - ✅ `test_debug_data_clients.py`(5:默认 passthrough / 子类覆盖 hook 替换 / hook 返 None 退化 passthrough / 子类经 self._debug 读 mock_data 决定替换 / debug_config 访问器)
-- ✅ `test_debug_data_factories.py`(5:PM 无 debug / PM disabled / PM enabled 装 Debug 子类 + 传 debug=cfg / OE 无 debug / OE enabled 装 Debug 子类 + 传 debug=cfg)
+- ✅ `test_debug_data_factories.py`(6:PM 无 debug / PM disabled / PM enabled 装 Debug 子类 + 传 debug=cfg / OE 无 debug / **OE disabled**(#69 补,对齐 PM) / OE enabled 装 Debug 子类 + 传 debug=cfg)
 
 **Q11.3 SkipExecutionClient 落地(2026-05-26 #40)**:跳真执行 + mock 全成交已落,**+12 passed**(累计 **39 passed**)。
 - ✅ `test_debug_execution_clients.py`(8:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE GBP / market 单 0.5 兜底 / limit 用 order.price / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super)
 - ✅ `test_debug_exec_factories.py`(4:PM 无 debug 装 prod / PM enabled 装 Skip + 传 debug=cfg / OE 无 debug / OE enabled 装 Skip + 传 debug=cfg)
+
+**#69:mock 层 PM/OE 测试对齐**:此前 `test_debug_execution_clients.py` 只有 `_FakeSkipPM`、且只测 `_submit_order` 一条分支;OE skip 客户端的真分支与 cancel 系列均无测。补 +9(真类 `__new__` + monkeypatch 基类 async 当 super 探针,测真实 `SkipExecution{PM,OE}Client`,非复制逻辑):
+- OE `_submit_order`:skip 激活走 `_mock_fill(GBP)`、不调 super / skip 未激活调 super(2)
+- OE `_cancel_order`+`_cancel_all_orders`:skip 激活 no-op / 未激活调 super(2)
+- OE 专属 `_cancel_residual_one`(PM 无):skip 激活 no-op / 未激活调 super(2)
+- PM `_cancel_order`+`_cancel_all_orders`:skip 激活 no-op / 未激活调 super(2,补此前缺的 cancel 分支)
+- 外加 data factory OE disabled 1(见上)。debug 套件累计 **48 passed**。
+- 备注:mock **代码**两边本已对称(共享 `_mock_fill` / `_DebugDataClientMixin`,OE 仅多 OE 专属 `_cancel_residual_one`);本次补的是**测试覆盖**对齐,非代码改动。
 - 顺补 latent bug:`arb_factories.py` 漏 import `get_polymarket_instrument_provider`(live 运行会 NameError;Step 6 PM exec 未真接 live 没暴露)
 
 **落地决策修正**(2026-05-26 #39):

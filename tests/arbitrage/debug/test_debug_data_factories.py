@@ -99,6 +99,18 @@ def test_oe_factory_uses_production_when_no_debug(monkeypatch):
     assert prod.called and not dbg.called
 
 
+def test_oe_factory_uses_production_when_debug_disabled(monkeypatch):
+    prod, dbg = MagicMock(name="oe_prod"), MagicMock(name="oe_debug")
+    monkeypatch.setattr(oe_factories, "OrbitExchDataClient", prod)
+    monkeypatch.setattr(debug_dc, "DebugOrbitExchDataClient", dbg)
+    monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
+
+    bootstrap.prepare_arb_context(debug_config=DebugConfig(enabled=False))
+    oe_factories.OrbitExchLiveDataClientFactory.create(name="OE", **_oe_args())
+
+    assert prod.called and not dbg.called
+
+
 def test_oe_factory_uses_debug_when_enabled(monkeypatch):
     prod, dbg = MagicMock(name="oe_prod"), MagicMock(name="oe_debug")
     monkeypatch.setattr(oe_factories, "OrbitExchDataClient", prod)

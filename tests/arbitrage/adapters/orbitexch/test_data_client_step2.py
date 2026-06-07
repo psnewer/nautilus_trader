@@ -181,6 +181,8 @@ class _FakeBM:
         self.created.append(name)
         p = self._pages.setdefault(name, _FakePage())
         return p
+    async def get_page(self, name):
+        return self._pages.get(name)
     async def close_page(self, name):
         self.closed.append(name)
         self._pages.pop(name, None)
@@ -199,14 +201,17 @@ class _FailingBM(_FakeBM):
         return p
 
 
-def _client_with_bm(bm):
+def _client_with_bm(bm, *, leg_settled=None, exec_reload_enabled=False):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     c = OrbitExchDataClient(
         loop=asyncio.new_event_loop(), browser_manager=bm, msgbus=msgbus,
         cache=TestComponentStubs.cache(), clock=clock,
         instrument_provider=InstrumentProvider(),
-        config=OrbitExchDataClientConfig(username="u", password="p", base_url="https://oe.test"),
+        config=OrbitExchDataClientConfig(
+            username="u", password="p", base_url="https://oe.test",
+            health_check_exec_reload_enabled=exec_reload_enabled),
+        leg_settled=leg_settled,
     )
     return c
 
@@ -291,3 +296,130 @@ def test_ensure_page_skips_when_instrument_not_in_cache():
     asyncio.get_event_loop().run_until_complete(
         c._ensure_competition_page(InstrumentId(Symbol("nonexistent"), Venue("ORBITEXCH"))))
     assert bm.created == []
+
+
+# ── §6.8.3 健康检查 Phase 1(时间维度:competition 页赔率防冻 reload)──────
+from nautilus_trader.core.datetime import secs_to_nanos  # noqa: E402
+
+
+def _open_page(c, page_key="2_999", sport="2", comp="999"):
+    asyncio.get_event_loop().run_until_complete(
+        c._open_or_reload_competition_page(page_key, sport, comp))
+    return c._comp_pages[page_key]
+
+
+def test_health_check_reloads_stale_page():
+    """data-2.health.1: page `now-last_update>staleness_timeout`(默认 30s)→ reload。"""
+    c = _client_with_bm(_FakeBM())
+    page = _open_page(c)
+    assert len(page.goto_calls) == 1 and page.reload_calls == 0
+    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns() - secs_to_nanos(40)  # stale
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert page.reload_calls == 1
+
+
+def test_health_check_skips_fresh_page():
+    """data-2.health.2: 刚收帧(last_update≈now)→ 不 reload。"""
+    c = _client_with_bm(_FakeBM())
+    page = _open_page(c)
+    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns()
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert page.reload_calls == 0
+
+
+def test_health_check_skips_page_without_update_yet():
+    """data-2.health.3: 刚开页未收帧(无 last_update)→ 不 reload(避免开页即刷)。"""
+    c = _client_with_bm(_FakeBM())
+    page = _open_page(c)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())  # 不设 last_update
+    assert page.reload_calls == 0
+
+
+def test_exec_active_refcount_toggles():
+    """data-2.health.4: execution.* msgbus ref-count(Q19 互斥;不负)。"""
+    c = _client_with_bm(_FakeBM())
+    assert c._is_execution_active() is False
+    c._on_execution_started({})
+    assert c._is_execution_active() is True
+    c._on_execution_started({})
+    c._on_execution_finished({})
+    assert c._is_execution_active() is True   # 还有一个在飞
+    c._on_execution_finished({})
+    assert c._is_execution_active() is False
+    c._on_execution_finished({})
+    assert c._is_execution_active() is False  # ref-count 不会负
+
+
+def test_price_frame_stamps_last_update_ns():
+    """data-2.health.5: 收价格帧 → 写该 competition 页 last_update_ns(时间维度判定依据)。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client_with_bm(_FakeBM())
+    inst = oe_instrument("EPL", "home", selection_id=42)   # competition_id=1, event_type_id=1, market "1-123"
+    c._cache.add_instrument(inst)
+    c._register_instrument_routing(inst.id)
+    assert c._market_to_page_key["1-123"] == "1_1"
+    c._handle_data = lambda d: None
+    c._on_price_frame({
+        "id": "1-123",
+        "mainEventId": "evt-1", "mainEventName": "A v B", "marketNameWithParents": "Match Odds",
+        "rc": [{"id": 42, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}],
+                "bdatl": [{"index": 0, "odds": 2.1, "amount": 5}], "tv": 100, "locked": False}],
+        "marketDefinition": {"marketType": "MATCH_ODDS", "status": "OPEN", "inPlay": False},
+    })
+    assert "1_1" in c._comp_last_update_ns
+
+
+# ── §6.8.3 健康检查 Phase 2(状态维度:leg_settled=false → reload execution 页;A 方案,安全闸)──
+from src.arbitrage.common.leg_settled import LegSettledRegistry  # noqa: E402
+
+
+def _reg_with_unsettled():
+    reg = LegSettledRegistry()
+    reg.arm("pair-1", "inst-A")   # arm → false(未结算)
+    return reg
+
+
+def _bm_with_exec_page():
+    bm = _FakeBM()
+    bm._pages["execution"] = _FakePage()   # ExecClient 的页(共享 bm,DataClient 经 get_page 取)
+    return bm
+
+
+def test_health_state_dim_reloads_exec_page_when_enabled():
+    """data-2.health.6: leg_settled 有未结算腿 + 安全闸开 → reload execution 页。"""
+    bm = _bm_with_exec_page()
+    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=True)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert bm._pages["execution"].reload_calls == 1
+
+
+def test_health_state_dim_gated_off_by_default():
+    """data-2.health.7: 安全闸默认关 → 即使有未结算腿也不 reload 交易页(默认安全)。"""
+    bm = _bm_with_exec_page()
+    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=False)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert bm._pages["execution"].reload_calls == 0
+
+
+def test_health_state_dim_skips_when_all_settled():
+    """data-2.health.8: 全部已结算 → 不 reload(即使闸开)。"""
+    reg = LegSettledRegistry(); reg.arm("pair-1", "inst-A"); reg.mark("pair-1", "inst-A")
+    bm = _bm_with_exec_page()
+    c = _client_with_bm(bm, leg_settled=reg, exec_reload_enabled=True)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert bm._pages["execution"].reload_calls == 0
+
+
+def test_health_state_dim_no_legsettled_no_crash():
+    """data-2.health.9: leg_settled=None(data-only 上下文)→ 跳过状态维度,不崩。"""
+    bm = _bm_with_exec_page()
+    c = _client_with_bm(bm, leg_settled=None, exec_reload_enabled=True)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert bm._pages["execution"].reload_calls == 0
+
+
+def test_health_state_dim_exec_page_missing_no_crash():
+    """data-2.health.10: execution 页未开(get_page None)→ warn,不崩。"""
+    bm = _FakeBM()   # 无 execution 页
+    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=True)
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())   # 不抛

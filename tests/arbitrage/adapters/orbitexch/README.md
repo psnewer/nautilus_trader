@@ -107,11 +107,35 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - ✅ 输出 NT 标准 `OrderBookDeltas`(取代旧 `QuoteTick`):snapshot CLEAR + N×BACK ADD(BUY) + M×LAY ADD(SELL)
 - ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
 - ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
-- ⬜ **待 live 接**:OE 健康检查 / 页面 reload 机制(`HealthCheckLoop` 接入,见 oe-adapter-2.health.*);scraper DOM 抽 `start_ts`
+- ✅ **#70 健康检查 Phase 1 已接**(时间维度):`HealthCheckLoop` 在 `_connect` 挂起;见下方 oe-adapter-2.health.* + Phase 分期说明
+- ⬜ **待 live 接**:scraper DOM 抽 `start_ts`
 
 ---
 
-### oe-adapter-2.health.1: OE 时间维度刷新触发(Q13,§6.8.3)
+#### #70:OE 健康检查接线(Phase 分期)
+
+§6.8.3 原文写于 #68 拆页前("单页同出赔率 + 持仓/挂单")。#68 后页拆两类:**competition 页**(DataClient,赔率)/ **execution 页**(ExecClient,`CURRENT_BETS`=持仓/挂单)。恢复机制 = **reload 页 → 该页 WS 自然重推**(非 DOM 抓;监听跨 reload 存活 #67)。故:
+
+- **Phase 1 ✅ 已落地(时间维度)**:`adapters/orbitexch/data.py` —— `_connect` 挂 `HealthCheckLoop`(interval=`config.health_interval_secs`;Q19 互斥经 DataClient 订 `execution.started/finished` ref-count);`_on_price_frame` 写 `_comp_last_update_ns[page_key]`;`_run_health_check` 扫 competition 页,`now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` reload 分支(赔率防冻,对等 PM `_delayed_connect` 行情 WS 重连)。**离线测**:`test_data_client_step2.py` data-2.health.{1-5}。
+- **Phase 2 ✅ 代码已接(A 方案,用户选)/ 真实 reload 待 live 验(状态维度)**:`_run_health_check` 状态分支 —— `leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload **execution 页**(其 `CURRENT_BETS` WS 重推 → ExecClient `_on_current_bets` → leg_settled 标记)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`)。**安全闸 `config.health_check_exec_reload_enabled` 默认 False**:reload 已登录交易页的弹窗(#67 关弹窗只在 `_login` 路径)/会话行为待真单 live 验,验前不自动 reload;live 验时显式置 True。**离线测**:data-2.health.{6-10}。下方 2.health.2/.3/.4(设计意图原文,Phase 2)。设计见 execution §4.3 落地状态段。
+
+**新增离线用例(Phase 1 时间维度)**:
+- **data-2.health.1**:page `now-last_update>staleness_timeout`(默认 30s)→ reload(`test_health_check_reloads_stale_page`)
+- **data-2.health.2**:刚收帧(last_update≈now)→ 不 reload(`test_health_check_skips_fresh_page`)
+- **data-2.health.3**:刚开页未收帧(无 last_update)→ 不 reload,避免开页即刷(`test_health_check_skips_page_without_update_yet`)
+- **data-2.health.4**:`execution.*` msgbus ref-count 升降、不为负(`test_exec_active_refcount_toggles`)
+- **data-2.health.5**:收价格帧 → 写该页 `last_update_ns`(`test_price_frame_stamps_last_update_ns`)
+
+**新增离线用例(Phase 2 状态维度,A 方案 + 安全闸)**:
+- **data-2.health.6**:`leg_settled` 有未结算腿 + 安全闸开 → reload execution 页(`test_health_state_dim_reloads_exec_page_when_enabled`)
+- **data-2.health.7**:安全闸默认关 → 即使有未结算腿也不 reload 交易页(`test_health_state_dim_gated_off_by_default`)
+- **data-2.health.8**:全部已结算 → 不 reload(`test_health_state_dim_skips_when_all_settled`)
+- **data-2.health.9**:`leg_settled=None`(data-only)→ 跳过状态维度不崩(`test_health_state_dim_no_legsettled_no_crash`)
+- **data-2.health.10**:execution 页未开(`get_page` None)→ warn 不崩(`test_health_state_dim_exec_page_missing_no_crash`)
+
+---
+
+### oe-adapter-2.health.1: OE 时间维度刷新触发(Q13,§6.8.3)— **Phase 1 ✅,见 #70**
 
 **前置**: OE DataClient 启动并订阅某 competition X;`leg_settled` entry 不存在(未发起过 execution)
 **输入**: 让该 competition 页面在阈值时间内**无任何**赔率/订单更新(冻结 mock data 或暂停 page push)
@@ -136,7 +160,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - staleness 判定全部在健康检查 tick 的 callback 内完成
 **验收**: 静态检查无独立 staleness 循环;旧 `_staleness_monitor_task` / `_staleness_check_interval` 在迁移收尾删除
 
-### oe-adapter-2.health.2: OE 状态维度刷新触发(Q13)
+### oe-adapter-2.health.2: OE 状态维度刷新触发(Q13)— **Phase 2 ⬜ 待真单 live 验,见 #70**
 
 **前置**: 已对 competition X 发起过一次 execution,`leg_settled` entry 存在;X 的两个方向中至少一个 `settled=false`(模拟 tracking 漏 WS 帧)
 **输入**: 健康检查 tick 触发

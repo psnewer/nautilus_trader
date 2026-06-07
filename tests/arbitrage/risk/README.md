@@ -265,7 +265,8 @@ ExecutionClient (维护账户)
   - `reset(p, ["A.PM","B.OE"])` → `any_unsettled(p)` True(全 false)
   - `mark(p,"A.PM")` + `mark(p,"B.OE")` → `any_unsettled(p)` False 且 `all_settled(p)` True
   - `mark` 命中不存在的 entry / 不在本轮腿集合的 instrument → 忽略(非 execution 触发不创建,未知腿不崩)
-- 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
+  - **`has_any_unsettled()`(#70 新增,全局)**:无 entry → False;`reset(p,...)` 后 → True;某 pair 全 mark 后若无其它未结算 entry → False;另一 pair `reset` → True(`test_has_any_unsettled_global`)
+- 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;**OE 健康检查状态维度(#70,execution §4.3 Phase 2)经 `has_any_unsettled()` 读**;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
 
 ---
 

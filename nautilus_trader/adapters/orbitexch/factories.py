@@ -75,6 +75,7 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         else:
             provider = InstrumentProvider()  # discovery 禁用时占位
         ctx.oe_instrument_provider = provider  # slice 8A 回写,InstrumentRefresher 取同一实例
+        leg_settled = getattr(ctx, "leg_settled", None)  # §6.8.3 状态维度健康检查(Phase 2);None → 只时间维度
         debug = ctx.debug_config
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.data_clients import DebugOrbitExchDataClient
@@ -86,6 +87,7 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
                 clock=clock,
                 instrument_provider=provider,
                 config=config,
+                leg_settled=leg_settled,
                 debug=debug,
             )
         return OrbitExchDataClient(
@@ -96,6 +98,7 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
             clock=clock,
             instrument_provider=provider,
             config=config,
+            leg_settled=leg_settled,
         )
 
 

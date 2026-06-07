@@ -120,9 +120,9 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
 - **routing 表**:`dict[market_id_str, dict[selection_id_str, InstrumentId]]`,订阅时从 `cache.instrument(id)` 读 `BettingInstrument.market_id` / `.selection_id` 建。**全局**(跨所有 competition 页),price 帧自带 market_id 直接分流。
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
-- **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查,但本 NT 模型健康检查 loop 未接线,且 #61 要求订阅即流)。
+- **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
 - **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
-- **健康检查 reload(§4.3,未接线 TODO)** 将来复用 `_open_or_reload_competition_page` 的 reload 分支。
+- **健康检查 reload(§4.3,Phase 1 ✅ 已接线 / Phase 2 ⬜ 待真单 live 验)**:本 DataClient 是健康检查宿主。`_connect` 挂 `HealthCheckLoop`;Phase 1(时间维度)= `_on_price_frame` 写 `_comp_last_update_ns[page_key]`,`_run_health_check` 发现 `now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` 的 reload 分支(赔率防冻,对等 PM 行情 WS 重连)。Q19 互斥经 DataClient 订 `execution.*` 自维护 ref-count(`_is_execution_active`)。**Phase 2 ✅ 代码已接(A 方案)/ 真实 reload 待 live 验**:状态维度 `leg_settled.has_any_unsettled()` → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload 交易页(`leg_settled` 经 factory 注入;安全闸 `config.health_check_exec_reload_enabled` 默认 False)。落点/数据源/A vs B 见 execution §4.3。
 
 **纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。
 

@@ -59,3 +59,7 @@ class LegSettledRegistry:
         """entry 存在且所有腿均 true。"""
         legs = self._settled.get(pair_id)
         return bool(legs) and all(legs.values())
+
+    def has_any_unsettled(self) -> bool:
+        """全局:任一 pair 有未结算腿(OE 健康检查状态维度兜底的触发条件,§6.8.3 Phase 2)。"""
+        return any(not all(legs.values()) for legs in self._settled.values() if legs)

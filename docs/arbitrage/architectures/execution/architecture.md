@@ -182,6 +182,11 @@ def _on_session_timeout(self, event):
 - 执行在飞时整个 tick 跳过(§3.4 / Q19)。
 - **reload 后无需重挂 WS 监听(#67 实测,关键简化)**:NT 适配器用 Playwright `page.on('websocket')`(非老 odds_client 的 CDP)。实测(`/tmp/ws_reload_probe.py` 等价复现)`page.reload()` 后,页面新建的 WS **被同一监听自动捕获、帧正常收到**——监听挂在 page 对象上,reload 换 WS 不换 page。**对比老 CDP**:CDP session 会被 reload 重置,老代码每轮 reload 必须 detach 旧 CDP→重 setup 拦截→reload→补 `Network.enable`(`odds_client._open_or_reload_page`)。**故本 reload slice 比老代码简单**:reload 动作 = `page.reload()` + 重订阅 instrument(OBD),**WS 层零额外工作**;唯一留意 `handler._websockets` dict 跨 reload 累积(旧 WS close 触发清理,不影响帧处理)。
 
+- **#68 拆页带来的数据源澄清(本节原文写于拆页前)**:§6.8.3 原描述"reload 页面 → 拉持仓/挂单"基于"单页同出赔率 + 持仓/挂单"的旧心智。#68 后页拆两类:**competition(数据)页**(`OrbitExchDataClient` 持有)上是**赔率**;**execution 页**(`OrbitExchExecutionClient` 持有)上才是 `BALANCE`+`CURRENT_BETS`(**持仓/挂单**)。两类页都在共享 `PlaywrightBrowserManager` 上,健康检查宿主(DataClient)经它都够得着。恢复机制 = **reload 页面 → 该页 WS 自然重推帧**(非 DOM 抓取;page-level 监听跨 reload 存活,#67)。故两触发维度的 reload 落点不同:**时间维度(赔率冻结)→ reload competition 页**;**状态维度(`leg_settled=false`)→ reload execution 页**(其 `CURRENT_BETS` WS 重推 → `_on_current_bets` → `generate_order_filled` → leg_settled 标记)。
+- **落地状态(分期)**:
+  - **Phase 1 ✅ 已落地**(时间维度,`adapters/orbitexch/data.py`):`_connect` 挂 `HealthCheckLoop`(`interval_secs_provider`=`config.health_interval_secs`;`is_execution_active`= DataClient 订 `execution.started/finished` 的 ref-count,Q19/§6.10);`_on_price_frame` 每帧写 `_comp_last_update_ns[page_key]`;`_run_health_check` 扫 competition 页,`now-last_update>config.staleness_timeout_secs` → 走 `_open_or_reload_competition_page` reload 分支。是 PM 行情 WS 重连(`_delayed_connect`)的 OE 对等物。测试:`test_data_client_step2.py` data-2.health.{1-5}。
+  - **Phase 2 ✅ 代码已接(A 方案)/ ⬜ 真实 reload 待 live 验**(状态维度):`_run_health_check` 加状态分支——`self._leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()`:经共享 `PlaywrightBrowserManager.get_page("execution")` 取 ExecClient 的交易页 reload(page-level 监听跨 reload 存活 #67 → general WS 重推 `CURRENT_BETS` → ExecClient `_on_current_bets` 标 leg_settled)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`,None → 只跑时间维度)。**安全闸 `config.health_check_exec_reload_enabled` 默认 False**:reload 已登录交易页的弹窗(#67 `_dismiss_post_login_popup` 仅在 `_login` 路径)/会话行为未经真单 live 验,验前不自动 reload;live 验时显式置 True。离线测:`test_data_client_step2.py` data-2.health.{6-10}。**A vs B**:用户 2026-06-07 选 A(守 §6.8.3 单宿主=DataClient,经共享 browser_manager 够到 execution 页),不改宿主归属。
+
 ### 4.4 leg_settled 语义(§6.8.2)
 
 - 含义 = **execution 启动后通讯通道存活信号**(非"已完全成交")。
@@ -189,7 +194,7 @@ def _on_session_timeout(self, event):
 - 结构:`dict[pair_id, dict[instrument_id, bool]]` —— **腿键 = `instrument_id`**(一个 instrument = 一条腿,全局唯一,**不需 方向→下标 映射**;2026-05-22 定,取代原 `list[bool]`+整数下标)。**首次 execution 创建,不删,每次新 execution 用本轮提交的腿 instrument_id 集合整组重置 false**;非 execution 触发事件不创建 entry,但命中已有 entry 时也置 true(未知 instrument 忽略)。
 - 写入侧:execution client 覆盖 `generate_order_*`(均 NT `cpdef void`,可子类覆盖)→ 拿 `order.instrument_id` + `info["competition"]` 解析 pair_id → `mark(pair_id, instrument_id)`;`_begin_session` 用本轮腿集合 `reset(pair_id, instrument_ids)`。
 - 消费方:Strategy settled pre-check、ArbitragePortfolio settled gate(见 risk 文档 §4.2),只问 `any_unsettled(pair_id)`,与腿键无关。
-- 共享对象 `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`):`reset(pair_id, instrument_ids)` / `mark(pair_id, instrument_id)` / `any_unsettled` / `all_settled` / `has_entry`。
+- 共享对象 `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`):`reset(pair_id, instrument_ids)` / `arm(pair_id, instrument_id)` / `mark(pair_id, instrument_id)` / `any_unsettled(pair_id)` / `all_settled(pair_id)` / `has_entry(pair_id)` / `has_any_unsettled()`(全局,§4.3 Phase 2 状态维度触发)。
 
 ### 4.5 账户状态维护(Q17)
 
