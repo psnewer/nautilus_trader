@@ -71,11 +71,11 @@ def test_prepare_get_reset_arb_context():
     assert bootstrap.get_arb_context().leg_settled is None
     reg = LegSettledRegistry()
     ctx = bootstrap.prepare_arb_context(
-        leg_settled=reg, pm_health_interval_secs=8.0, oe_health_interval_secs=20.0,
+        leg_settled=reg, pm_health_interval_secs=8.0,
     )
     assert ctx.leg_settled is reg
     assert bootstrap.get_arb_context() is ctx                # 进程级单例
-    assert ctx.pm_health_interval_secs == 8.0 and ctx.oe_health_interval_secs == 20.0
+    assert ctx.pm_health_interval_secs == 8.0
     bootstrap.reset_arb_context()
     assert bootstrap.get_arb_context().leg_settled is None
 

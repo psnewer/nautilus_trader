@@ -423,3 +423,39 @@ def test_health_state_dim_exec_page_missing_no_crash():
     bm = _FakeBM()   # 无 execution 页
     c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=True)
     asyncio.get_event_loop().run_until_complete(c._run_health_check())   # 不抛
+
+
+# ── 连接重试维度:已订阅但未开的 competition 页 → 健康检查补开(对齐 PM `_delayed_connect`)──
+def test_health_check_reopens_missing_subscribed_page():
+    """data-2.health.11: 已订阅(`_market_to_page_key`)但未开 → 健康检查补开。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    c._market_to_page_key["mkt-1"] = "2_999"   # 订阅了该 competition,但页没开(初次失败/未开)
+    assert "2_999" not in c._comp_pages
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert "comp-2_999" in bm.created and "2_999" in c._comp_pages
+
+
+def test_health_check_reopen_failure_swallowed_retries_next_tick():
+    """data-2.health.12: 补开失败不抛、不入册,留到下一次健康检查重试(每 tick 再试一次)。"""
+    bm = _FailingBM()
+    c = _client_with_bm(bm)
+    c._market_to_page_key["mkt-1"] = "2_999"
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(c._run_health_check())   # tick1:goto 失败 → 吞掉
+    assert "2_999" not in c._comp_pages
+    assert bm.created.count("comp-2_999") == 1
+    loop.run_until_complete(c._run_health_check())   # tick2:留到下次再试(不本轮重试)
+    assert bm.created.count("comp-2_999") == 2
+
+
+def test_health_check_no_reopen_when_already_open():
+    """data-2.health.13: 已开且新鲜 → 补开维度不重复开(去重),时间维度也不刷。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    _open_page(c, "2_999", "2", "999")               # 已开
+    c._market_to_page_key["mkt-1"] = "2_999"
+    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns()  # 新鲜
+    asyncio.get_event_loop().run_until_complete(c._run_health_check())
+    assert bm.created.count("comp-2_999") == 1        # 仅首次 _open_page;health 不再开
+    assert c._comp_pages["2_999"].reload_calls == 0

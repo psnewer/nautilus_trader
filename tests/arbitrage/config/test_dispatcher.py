@@ -96,6 +96,34 @@ def test_orbitexch_data_client_config_maps_credentials():
     assert cc.page_timeout == 90000
 
 
+def test_orbitexch_data_client_config_maps_health_params():
+    """OE 健康检查 cadence + Phase 2 安全闸经 dispatcher 进 OrbitExchDataClientConfig
+    (宿主=DataClient,config 自包含;异于 PM 走 ArbContext kwarg)。"""
+    cfg = _cfg(venues={"orbitexch": {
+        "health_interval_sec": 120.0,
+        "staleness_timeout_sec": 300,
+        "health_check_exec_reload_enabled": True,
+    }})
+    cc = to_orbitexch_data_client_config(cfg)
+    assert cc.health_interval_secs == 120.0
+    assert cc.staleness_timeout_secs == 300
+    assert cc.health_check_exec_reload_enabled is True
+
+
+def test_orbitexch_data_client_config_health_defaults():
+    """未显式配置时:cadence 取 schema 默认(120/300),Phase 2 闸 #75 默认开(已 live 验)。"""
+    cc = to_orbitexch_data_client_config(_cfg())
+    assert cc.health_interval_secs == 120.0
+    assert cc.staleness_timeout_secs == 300
+    assert cc.health_check_exec_reload_enabled is True
+
+
+def test_orbitexch_data_client_config_health_gate_can_disable():
+    """可经 venues.orbitexch 显式关回(运营兜底)。"""
+    cfg = _cfg(venues={"orbitexch": {"health_check_exec_reload_enabled": False}})
+    assert to_orbitexch_data_client_config(cfg).health_check_exec_reload_enabled is False
+
+
 def test_orbitexch_credentials_empty_string_fallback():
     """OE Config 把 username/password 标为必填 str;env 缺失时 dispatcher 回退空串
     让下游 login 触发明确错误(loader 不预判)。"""
@@ -168,7 +196,9 @@ def test_arb_context_init_kwargs_maps_execution_section():
     assert kw["pm_session_timeout_secs"] == 45.0
     assert kw["pm_health_interval_secs"] == 90.0
     assert kw["oe_session_timeout_secs"] == 45.0
-    assert kw["oe_health_interval_secs"] == 90.0
+    # OE 健康 interval 不再走 ArbContext(死接线已删);经 OrbitExchDataClientConfig 直传,见
+    # test_orbitexch_data_client_config_maps_health_params。
+    assert "oe_health_interval_secs" not in kw
 
 
 # ── slice 7A:OE scraper config + aliases 进 ArbContext ────

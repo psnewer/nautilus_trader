@@ -96,6 +96,10 @@ def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
         page_timeout=int(oe.page_load_timeout_sec * 1000),
+        # NT 健康检查(宿主=DataClient,execution §4.3):tick 间隔 / staleness 阈值 / Phase 2 安全闸
+        health_interval_secs=oe.health_interval_sec,
+        staleness_timeout_secs=oe.staleness_timeout_sec,
+        health_check_exec_reload_enabled=oe.health_check_exec_reload_enabled,
     )
 
 
@@ -175,7 +179,6 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
         "pm_session_timeout_secs": cfg.execution.tracking_timeout_sec,
         "pm_health_interval_secs": cfg.execution.health_check_interval_sec,
         "oe_session_timeout_secs": cfg.execution.tracking_timeout_sec,
-        "oe_health_interval_secs": cfg.execution.health_check_interval_sec,
         "oe_scraper_config": to_oe_scraper_config(cfg),
         "oe_sport_aliases": dict(cfg.matching.sport_aliases),
         "oe_competition_aliases": dict(cfg.matching.competition_aliases),

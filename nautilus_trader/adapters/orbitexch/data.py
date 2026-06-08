@@ -243,6 +243,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
         **Phase 1 = 时间维度**:competition 页 `now-last_update_ns>staleness_timeout` → reload
         (赔率冻结兜底,对齐 PM 的行情 WS 重连)。reload 走 `_open_or_reload_competition_page`
         的 reload 分支(page-level 监听跨 reload 存活,#67)。
+        **+ 连接重试维度**:已订阅但未开的 competition 页(初次 goto 失败 / 未开)→ 本 tick 补开;
+        补开失败不本轮重试,留下一次健康检查(对齐 PM `_delayed_connect` 连接失败重排)。
 
         **Phase 2 = 状态维度**:`leg_settled` 有未结算腿 → reload execution 页(其 `CURRENT_BETS`
         WS 重推 → ExecClient `_on_current_bets` 标 leg_settled)。execution 页归 ExecClient,本宿主
@@ -266,6 +268,20 @@ class OrbitExchDataClient(LiveMarketDataClient):
             async with self._comp_pages_lock:
                 if page_key in self._comp_pages:  # 重查:可能并发解订/重开
                     await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+
+        # 连接重试维度:已订阅(应开)但未开的 competition 页(初次 goto 失败 / 未开)→ 本 tick 补开。
+        # 对齐 PM `_delayed_connect` 的"连接失败 → 重排重试"。**补开失败不本轮重试,留下一次健康检查**
+        # (每页 try/except 吞掉,不打断其它页 / Phase 2;复用 loop "异常吞掉、下轮重排"节奏)。
+        for page_key in set(self._market_to_page_key.values()) - set(self._comp_pages):
+            sport_id, _, competition_id = page_key.partition("_")
+            try:
+                async with self._comp_pages_lock:
+                    if page_key not in self._comp_pages:  # 重查:并发订阅可能已开
+                        self._log.info(f"OE health check: reopening missing competition page {page_key}")
+                        await self._open_or_reload_competition_page(page_key, sport_id, competition_id)
+            except Exception as e:  # noqa: BLE001 — 单页补开失败不打断本 tick;留下次健康检查重试
+                self._log.warning(
+                    f"OE health check: reopen competition {page_key} failed: {e!r}; retry next tick")
 
         # 状态维度(Phase 2,安全闸默认关):leg_settled 有未结算腿 → reload execution 页
         if (

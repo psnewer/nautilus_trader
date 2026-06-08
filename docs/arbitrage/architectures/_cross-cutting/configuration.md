@@ -280,6 +280,20 @@ OE `venues.orbitexch.page_load_timeout_sec` 是共享页面加载超时,dispatch
 `BrowserConfig.timeout_ms`。默认 120s 与 OE 页面等待策略一致;30s/60s/90s 在 OE 首页或 competition 页
 均出现过 timeout。
 
+**OE 健康检查 cadence + Phase 2 安全闸**(宿主=DataClient,详设见 execution `architecture.md §4.3`):
+`to_orbitexch_data_client_config` 把三个 `venues.orbitexch` 字段直传进 `OrbitExchDataClientConfig`:
+
+| `venues.orbitexch` 字段 | → `OrbitExchDataClientConfig` | 默认 | 含义 |
+|---|---|---|---|
+| `health_interval_sec` | `health_interval_secs` | 120s | `HealthCheckLoop` tick 间隔(多久跑一次健康检查) |
+| `staleness_timeout_sec` | `staleness_timeout_secs` | 300s | competition 页多久无赔率更新判 stale → reload(时间维度) |
+| `health_check_exec_reload_enabled` | 同名 | `True` | Phase 2 状态维度:`leg_settled` 未结时 reload execution 页(#75 默认开,reload 弹窗/会话 + CURRENT_BETS 重推已 live 验 2026-06-08;可经此字段显式关回) |
+
+cadence(120s/300s)采老栈值(refactor.md 修订 #74)。**异于 PM**:PM 健康检查宿主=ExecClient、复用上游 config
+缺这些字段,故走 `ctx.pm_health_interval_secs` **构造 kwarg**;OE 宿主=DataClient、config 自包含,走 dispatcher
+直传 config 字段。早先 ArbContext 里曾有一条对称占位 `oe_health_interval_secs`,因 OE 不走 ctx-kwarg 模式
+而成死接线,已删(#74)。
+
 Polymarket `ws_url` 传给 NT 上游 `PolymarketWebSocketClient` 时必须是 base URL
 (`.../ws/`),因为上游 client 会按 channel 自行拼接 `market` / `user`。dispatcher 兼容旧
 `.../ws/market` / `.../ws/user` 写法,统一归一化为 `.../ws/`,避免 DataClient 生成

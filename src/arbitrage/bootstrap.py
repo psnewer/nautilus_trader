@@ -51,7 +51,9 @@ class ArbContext:
 
     # OE 专属
     oe_session_timeout_secs: float = 30.0
-    oe_health_interval_secs: float = 30.0
+    # 注:OE 健康检查 interval/staleness/exec_reload 闸经 dispatcher 直接进
+    # OrbitExchDataClientConfig(OE 宿主=DataClient、config 自包含),不走 ArbContext kwarg
+    # (异于 PM:PM 宿主=ExecClient、复用上游 config 缺字段,故走 ctx.pm_health_interval_secs)。
     # OE Discovery:scraper config + Provider 写 info 时查 aliases(slice 7A / #46)
     oe_scraper_config: object | None = None  # OrbitExchVenueConfig | None;运行时类型避循环 import
     oe_sport_aliases: dict = field(default_factory=dict)

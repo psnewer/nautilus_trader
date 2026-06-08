@@ -127,7 +127,8 @@ def test_bootstrap_populates_arb_context():
     assert ctx.pm_session_timeout_secs == 45.0
     assert ctx.pm_health_interval_secs == 90.0
     assert ctx.oe_session_timeout_secs == 45.0
-    assert ctx.oe_health_interval_secs == 90.0
+    # oe_health_interval_secs 死接线已删:OE 健康 cadence 经 OrbitExchDataClientConfig 直传
+    assert not hasattr(ctx, "oe_health_interval_secs")
     assert ctx.pm_settlement is None      # slice 6 not yet wired
     assert ctx.pm_positions_fetcher is None
 

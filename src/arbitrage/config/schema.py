@@ -83,6 +83,11 @@ class OrbitExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     page_load_timeout_sec: float = 120.0
     page_refresh_sec: int = 600
     staleness_timeout_sec: int = 300
+    # NT 健康检查(宿主=DataClient,execution §4.3):tick 间隔 + Phase 2 状态维度安全闸。
+    # cadence 用老栈值(tick=120s / staleness=300s,见 refactor.md 修订 #74)。
+    # Phase 2 闸 #75 默认开:reload 弹窗/会话 + CURRENT_BETS 重推已 live 验(2026-06-08)。
+    health_interval_sec: float = 120.0
+    health_check_exec_reload_enabled: bool = True
     headless: bool = True
     browser_type: str = "chromium"
     user_data_dir: str | None = None

@@ -1,5 +1,5 @@
 {
-  "_doc": "ArbConfig 示例 — Tennis × OE Roland Garros 2026 × PM atp,debug.skip_execution smoke。详见 docs/arbitrage/architectures/_cross-cutting/configuration.md。凭证不要写这里,走 .env。",
+  "_doc": "ArbConfig 示例 — Tennis × OE ATP Stuttgart 2026 × PM atp,debug.skip_execution smoke。详见 docs/arbitrage/architectures/_cross-cutting/configuration.md。凭证不要写这里,走 .env。",
 
   "discovery": {
     "enabled": true,
@@ -10,7 +10,7 @@
     },
     "orbitexch": {
       "enabled": true,
-      "sports": [{"sport": "Tennis", "competitions": ["Men's Roland Garros 2026"]}]
+      "sports": [{"sport": "Tennis", "competitions": ["ATP Stuttgart 2026"]}]
     }
   },
 
@@ -20,7 +20,7 @@
     "sport_aliases": {},
     "competition_aliases": {
       "atp": "ATP",
-      "Men's Roland Garros 2026": "ATP"
+      "ATP Stuttgart 2026": "ATP"
     },
     "competition_max_matches": {"ATP": 1}
   },

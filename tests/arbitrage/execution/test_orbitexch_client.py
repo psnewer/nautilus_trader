@@ -13,7 +13,10 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
@@ -36,6 +39,16 @@ def _client():
         config=OrbitExchExecClientConfig(username="u", password="p"),
         leg_settled=LegSettledRegistry(),
     )
+
+
+def _run(coro):
+    """运行 async client 方法,并恢复旧测试依赖的 main-thread 默认 loop。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 # ── 纯映射 ─────────────────────────────────────────────────────────
@@ -77,8 +90,7 @@ def test_on_general_frame_null_balance_no_account_state():
 
 
 # ── modify 拒绝 ────────────────────────────────────────────────────
-@pytest.mark.asyncio
-async def test_modify_order_is_rejected():
+def test_modify_order_is_rejected():
     c = _client()
     rejected = {}
     c.generate_order_modify_rejected = lambda *, strategy_id, instrument_id, client_order_id, venue_order_id, reason, ts_event: rejected.update(reason=reason)
@@ -87,7 +99,7 @@ async def test_modify_order_is_rejected():
         client_order_id=ClientOrderId("O-1"),
         strategy_id="S", instrument_id="I", venue_order_id=None,
     )
-    await c._modify_order(cmd)
+    _run(c._modify_order(cmd))
     assert "does not support" in rejected["reason"]
 
 
@@ -99,8 +111,7 @@ class _FakeResult:
     message: str = ""
 
 
-@pytest.mark.asyncio
-async def test_submit_order_rejects_on_executor_failure():
+def test_submit_order_rejects_on_executor_failure():
     c = _client()
     events = {}
     c._begin_session = lambda command: True          # 跳过残留检测
@@ -112,15 +123,50 @@ async def test_submit_order_rejects_on_executor_failure():
     c._place_via_executor = _fail
 
     order = SimpleNamespace(strategy_id="S", instrument_id="I", client_order_id=SimpleNamespace(value="O-1"))
-    await c._submit_order(SimpleNamespace(order=order))
+    _run(c._submit_order(SimpleNamespace(order=order)))
     assert events.get("rej") == "venue rejected" and "acc" not in events
 
 
-@pytest.mark.asyncio
-async def test_submit_order_cancel_only_discards():
+def test_submit_order_cancel_only_discards():
     c = _client()
     placed = []
     c._begin_session = lambda command: False         # cancel-only:丢弃
     c._place_via_executor = lambda order: placed.append(order)
-    await c._submit_order(SimpleNamespace(order=SimpleNamespace()))
+    _run(c._submit_order(SimpleNamespace(order=SimpleNamespace())))
     assert placed == []                              # 未下单
+
+
+def test_cancel_order_passes_market_id_from_current_bets():
+    """Gap C live 暴露:cancel_order 只带 venue_order_id 会被 executor 拒绝 missing market_id。"""
+    c = _client()
+    captured = {}
+
+    class _FakeExecutor:
+        async def cancel_order(self, order, page):
+            captured["order"] = order
+            return SimpleNamespace(success=True, message="ok")
+
+    c._executor = _FakeExecutor()
+    c._page = object()
+    c._current_bets = {
+        "221972467": {
+            "offerId": "221972467",
+            "marketId": "1.258977638",
+            "selectionId": "8266399",
+            "sizeRemaining": "7.00",
+        },
+    }
+    c.generate_order_canceled = lambda *args, **kwargs: captured.update(canceled=True)
+
+    _run(c._cancel_order(SimpleNamespace(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1-258977638-8266399-None.ORBITEXCH"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=VenueOrderId("221972467"),
+    )))
+
+    legacy = captured["order"]
+    assert legacy.venue_order_id == "221972467"
+    assert legacy.market_id == "1.258977638"
+    assert legacy.selection_id == "8266399"
+    assert captured["canceled"] is True

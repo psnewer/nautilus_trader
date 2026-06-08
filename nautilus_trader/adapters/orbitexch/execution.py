@@ -351,7 +351,14 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 "no executor / venue_order_id", now,
             )
             return
-        legacy = _Order(venue=_Venue.ORBITEXCH, venue_order_id=str(voi))
+        inst = self._cache.instrument(instrument_id)
+        bet = self._current_bets.get(str(voi))
+        legacy = _Order(
+            venue=_Venue.ORBITEXCH,
+            venue_order_id=str(voi),
+            market_id=str(getattr(inst, "market_id", "") or (bet or {}).get("marketId", "")),
+            selection_id=str(getattr(inst, "selection_id", "") or (bet or {}).get("selectionId", "")),
+        )
         result = await self._executor.cancel_order(legacy, self._page)
         if result is not None and getattr(result, "success", False):
             self.generate_order_canceled(strategy_id, instrument_id, client_order_id, voi, now)
