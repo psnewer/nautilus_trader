@@ -291,7 +291,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 |---|---|---|
 | `PreMatchCheck()` | `src/arbitrage/strategy/checks/pre_match.py` | 无参;`passes = not ctx.snapshot.in_play`;放 `checktion` 列表前位,利用 `all` 短路避免后续 Check 跑空 |
 | `MeanRebateCheck(min_rate)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写 `ctx.scratch["legs"]` + return True |
-| `PlaceBetsAction(share)` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;PM=`size=share` / OE=`size=share/price`(stake);当前**log-only smoke(Q-D1=A)**,后续 Q-D1=B 接 `await ctx.submitter(order)` 真下单 |
+| `PlaceBetsAction(share)` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;PM=`size=share` / OE=`size=share/price`(stake);`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
 
 **OE DataClient `_on_price_frame` 透 inPlay**:每帧调 `write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper;helper 防御性 — instrument 不在 cache 不 raise(冷启动场景)。
 
@@ -310,6 +310,9 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
   3. 包成 `SubmitOrder` cmd
   4. `msgbus.send("ExecEngine.execute", cmd)` → NT ExecEngine 路由到 venue ExecClient
 - **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float}`
+- `instrument_id` 允许是策略快照/legs 使用的字符串视图,也允许是 NT 原生 `InstrumentId`;
+  `make_submitter` 是边界适配点,统一转成 `InstrumentId` 后再调用 `cache.instrument(...)`
+  和构造 `LimitOrder`。这是 Strategy 与 NT cache 的契约边界,避免 Action 层直接依赖 NT 标识对象。
 - 冷启动安全:`cache.instrument(iid)` 返 None → warning + skip,不 raise
 
 **PlaceBetsAction.execute 双路径**(slice 10a):
@@ -317,6 +320,12 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 - `ctx.submitter` None → log-only fallback(log `PlaceBets[smoke]` + `would submit: ...`)
 
 **配合 Q11.3 SkipExecutionClient**:`debug.skip_execution=true` 时 SkipExecutionClient 拦 ExecClient `_submit_order` mock 全成,**Action→submitter→真 SubmitOrder→SkipExecution 兜底**完整链路安全可跑(不上链)。
+
+**验证状态(2026-06-08)**:NT-node skip smoke 用临时配置强制 `mean_rebate` 命中后,
+`PlaceBetsAction` 已实测进入 `ExecClient-ORBITEXCH: Submit LimitOrder(...)`,并由 SkipExecution
+mock fill 更新 portfolio。限制:skip 模式立即全成,不产生 open order,所以不能用来验证真实撤单 / cancel-only;
+cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` 离线覆盖。
+同次 smoke 暴露 OBD 高频下同一机会可重复 fire/重复 mock submit,需后续单独补 strategy 执行保护。
 
 **`StrategyId` 用 fixed literal** `"ARB-EVAL-001"`:StrategyEvaluator 是 Actor 非 Strategy,无独立 StrategyId;统一记账用。
 
@@ -357,7 +366,8 @@ elif comp_res.hit: fire(comp_res.pending_action)
 
 ### 4.5 Q19 互斥 + Q20 快照咬合
 
-- evaluate 开跑前查 `_execution_active`(经 `LegSettledRegistry` 或共享 flag),在飞就 skip(让路)
+- **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:`_execution_active`/`leg_settled` 都在异步 `_submit_order` 下游才置位,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
+- evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
 - evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
 - 回收:绑 per-evaluation 上下文,evaluate + fire 结束 GC
 

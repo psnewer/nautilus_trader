@@ -24,6 +24,11 @@
 - 备注:mock **代码**两边本已对称(共享 `_mock_fill` / `_DebugDataClientMixin`,OE 仅多 OE 专属 `_cancel_residual_one`);本次补的是**测试覆盖**对齐,非代码改动。
 - 顺补 latent bug:`arb_factories.py` 漏 import `get_polymarket_instrument_provider`(live 运行会 NameError;Step 6 PM exec 未真接 live 没暴露)
 
+**#79:PM skip_execution 连接 transport 容错(2026-06-08)**:
+- 仅 `skip_execution=true` 时,`SkipExecutionPolymarketClient._connect` 容忍 transport 级 `PolyApiException(status_code=None)`(典型 PM 余额端点 `Request exception!`),记录 warning、启动健康检查循环并返回 connected,让无真单 smoke 不被 PM CLOB 网络抖动卡住。
+- API 级错误(如 invalid api key,status_code 非空)仍抛;生产 `ArbPolymarketExecutionClient` 不变,真下单模式仍必须读到余额。
+- 测试:`test_skip_pm_connect_tolerates_transport_polyapi_exception` / `test_skip_pm_connect_rethrows_api_level_polyapi_exception`;debug capability 当前 **50 passed**。
+
 **落地决策修正**(2026-05-26 #39):
 - ❌ **撤回** `DebugArbitrageStrategy` 整条 —— Q21 框架下 strategy 参数(min_rebate / price / size)是具体 `Check`/`Action` 的构造参数,**直接配置 debug 版 Strategy 实例**即可,**不需要任何 Strategy 层 Debug 子类**(候选 a/b 都取消)。Q21 拆出 Check/Action 后,参数已经 first-class。
 - ❌ "下单价格掉包"**不放 execution** —— execution 一直规划为透明传递层,改 order content 违反语义;由 Strategy 层 Action 参数化(如 `PMSubmitAction(price_override=0.01)`)处理。
@@ -33,10 +38,10 @@
 
 ## #66:skip_execution 语义统一 =「真连接 + mock 订单 IO」(取代 #51 的 OE `_connect` no-op)
 
-#51 曾给 `SkipExecutionOrbitExchClient` 加 `_connect/_disconnect` no-op——纯属当时 OE `_connect` 还是 `NotImplementedError` 的权宜之计,且与 PM(skip 下 `_connect` 照常真跑、只 mock `_submit_order`)**不一致**。Gap C `_connect`(#63)落地后,**已删除该 no-op**:skip 下 OE 也**真连接**(登录/page/general WS/初始账户状态),与 PM 对齐,只 mock 订单 IO(`_submit_order` + `_cancel_*` no-op,因 mock 单已终态全成、且不可拿 MOCK id 真撤)。
-- **收益**:`skip_execution=true` 本身即「安全验连接路径(登录/WS/账户状态/余额帧/CURRENT_BETS 读侧)而不下真单」的 smoke;曾评估的 `dry_run_execution` 旗标因此**撤回**(多余)。
+#51 曾给 `SkipExecutionOrbitExchClient` 加 `_connect/_disconnect` no-op——纯属当时 OE `_connect` 还是 `NotImplementedError` 的权宜之计,且与 PM(skip 下 `_connect` 照常真跑、只 mock `_submit_order`)**不一致**。Gap C `_connect`(#63)落地后,**已删除该 no-op**:skip 下 OE 也**真连接**(登录/page/general WS/初始账户状态),与 PM 对齐,只 mock 订单 IO(`_submit_order` + `_cancel_*` no-op,因 mock 单已终态全成、且不可拿 MOCK id 真撤)。#79 后,PM skip `_connect` 对 transport 级 `PolyApiException(status_code=None)` 有显式容错,但 API 级错误仍抛。
+- **收益**:`skip_execution=true` 本身即「安全验连接路径(登录/WS/账户状态/余额帧/CURRENT_BETS 读侧)而不下真单」的 smoke;曾评估的 `dry_run_execution` 旗标因此**撤回**(多余)。PM transport 容错只保障 mock 订单 IO 的 smoke 可继续,不等价于 PM 余额读取已验证。
 - **代价**:skip 下 OE 会真登录账户(与 PM 真连 CLOB 一致)。设计见 `architectures/_cross-cutting/debug-injection.md` #66。
-- 验收:`skip_execution=true` 跑 `launchers/arb_node.py` → OE/PM Exec 均 Connected、有真账户余额、无真单。
+- 验收:`skip_execution=true` 跑 `launchers/arb_node.py` → OE/PM Exec 均 Connected、无真单；若 PM 余额端点 transport 失败,日志必须明确出现 skip 容错 warning,不能静默当成余额路径通过。
 
 ## 锁定的关键性约束(P10)
 

@@ -208,9 +208,11 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 
 ## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
 
-- ✅ `test_submitter.py`(3):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise
+- ✅ `test_submitter.py`(4):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId`
 - ✅ `test_action_place_bets.py` +2:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
+- ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
+- ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
 
 **Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,3 tests):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
@@ -274,6 +276,11 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.3**:Q19:`_execution_active` True 时 evaluate 跳过(让路)
 - **.4**:Q21 套利优先:arb.hit=True + comp.hit=True → fire arb.action,**不** fire comp.action
 - **.5**:Q21 补救兜底:arb.hit=False + comp.hit=True → fire comp.action(等 arb evaluate 完成确认未命中后才 fire)
+
+### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
+- **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_route_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次;fire 后 gate 仍 in-flight(交执行清)。
+- **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
+- gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / max-hold 自愈 / 负计数防御)。设计 = synchronization.md §7。
 
 ### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
 - **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份

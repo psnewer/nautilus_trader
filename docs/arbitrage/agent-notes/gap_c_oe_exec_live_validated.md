@@ -1,15 +1,31 @@
 ---
 name: gap_c_oe_exec_live_validated
-description: "CORRECTION — Gap C (NT-native OrbitExchExecutionClient) is NOT yet live-validated. The 2026-06-06 place_and_cancel PASS exercised the LEGACY services pipeline, not the NT adapter. Captured the real CURRENT_BETS frame schema though."
+description: "Gap C status — legacy place_and_cancel still does NOT validate the NT adapter, but NT-native OE ExecutionClient Tier 1 place+cancel has now been live-validated (2026-06-08). Tier 2 true matched-fill remains open."
 metadata: 
   node_type: memory
   type: project
   originSessionId: 218d30e5-cb09-4c32-bdb4-6d3c7214a6f7
 ---
 
-**Correction (do not repeat the earlier mistake).** The `place_and_cancel` scenario (`python3 -u -m src.arbitrage.testing --scenario ...`) launches the **legacy** `src/arbitrage/services/` web_gateway pipeline via `src/arbitrage/testing/runner.py` (`WebGatewayService`) — **NOT** the NT `TradingNode`. So the 2026-06-06 real-money PASS validated the legacy `OrbitExchExecutor` + `OrbitExchOdds` path, which already worked pre-Gap-C. **Gap C — the NT-native `OrbitExchExecutionClient` (`nautilus_trader/adapters/orbitexch/execution.py`): `_connect`/login/WS, `_place_via_executor`, `_cancel_*` — was NOT exercised** (zero `OrbitExchExecutionClient`/`TradingNode`/`LiveExecutionClient` trace in the log; my exec WS handler never started, `_on_current_bets` never logged). The shared `OrbitExchExecutor.place_order` placed the order, but called by the legacy `ExecutionService`, not by my NT client. To actually live-test Gap C you must launch the NT node (`launchers/arb_node.py`), not the scenario harness.
+**Correction (do not repeat the earlier mistake).** The `place_and_cancel` scenario (`python3 -u -m src.arbitrage.testing --scenario ...`) launches the **legacy** `src/arbitrage/services/` web_gateway pipeline via `src/arbitrage/testing/runner.py` (`WebGatewayService`) — **NOT** the NT `TradingNode`. So the 2026-06-06 real-money PASS validated the legacy `OrbitExchExecutor` + `OrbitExchOdds` path, which already worked pre-Gap-C. The shared `OrbitExchExecutor.place_order` placed the order, but called by the legacy `ExecutionService`, not by my NT client. Do not use that scenario as proof for NT-native Gap C.
 
 **Lesson**: don't infer "the NT adapter works" from a scenario PASS — the scenario runs the legacy stack. Check the log for `TradingNode`/the specific NT client before claiming an adapter is validated.
+
+**2026-06-08 — NT-native OE Gap C Tier 1 is now live-validated.** Controlled probe:
+`python3 -m scripts.gapc_place_cancel_probe --config arb_config.example.json --confirm --size 7`
+
+- True account / true OE login / true order, but non-matched design: `SELL(LAY) @ 1.01`, stake `7`, estimated liability `0.07 GBP`.
+- Event: ATP Stuttgart 2026, Pierre-Hugues Herbert v Martin Landaluce, home selection.
+- First true run proved `_submit_order` + CURRENT_BETS working + reconcile, then exposed `_cancel_order` bug: legacy cancel Order carried `venue_order_id` only, while `executor.cancel_order` requires `market_id`.
+- Residual offer `221972467` was cleaned via probe `--cleanup-only`; final active order count was 0.
+- Fix: `OrbitExchExecutionClient._cancel_one` now passes `market_id`/`selection_id` to `executor.cancel_order`, preferring instrument fields and falling back to `_current_bets[venue_order_id]`; regression `test_cancel_order_passes_market_id_from_current_bets`.
+- Second true run passed end-to-end with offer `221973242`: `_submit_order → venue_order_id`, CURRENT_BETS working, `generate_order_status_reports`, `_cancel_order`, and cleanup-only active count 0.
+
+**Current Gap C status**:
+- ✅ OE `_connect` / login / general WS / real BALANCE frame.
+- ✅ OE Tier 1 true place+cancel, non-matched (`SELL(LAY)@1.01`, stake 7).
+- ✅ OE CURRENT_BETS unmatched working schema + reconcile path.
+- ⬜ Tier 2 true matched-fill sample: `sizeMatched>0`, `averagePrice>0`, `generate_order_filled` values, and MAKER liquidity assumption.
 
 **Still valuable from that run — the real CURRENT_BETS WS item schema** (captured live by `OrbitExchOdds` while a real OE order was live, `offerId=221832455` == the placed venue_order_id):
 - Confirmed keys (odds_client `odds_client.py` reads these): `offerId` (== venue_order_id, the join key to the NT order), `marketId`, `selectionId`, `sizeRemaining` (>0 → active/working order), `sizeMatched` (>0 → filled/position), `averagePrice` (fill avg, 0.0 when unmatched), `profitNet`, `liability`.
@@ -30,9 +46,9 @@ metadata:
   - **Result (smoke4)**: popup dismissed + OE account `0.00 → 37.49 GBP` + both legs Connected + MatchedPair + 0 ERROR. Connect path fully done.
   - Note (user Q): no conflict with design §4.3 "reload→re-subscribe" — page-level listener survives reload (reload swaps WS, not the page). §4.3 periodic-reload health-check is still an unwired TODO.
 
-**how to live-test Gap C (#66)**: `skip_execution` was made uniform = **real connect + mock order IO** (PM/OE aligned; the old OE `_connect` no-op was dropped). So:
+**how to live-test Gap C (#66/#78)**: `skip_execution` was made uniform = **real connect + mock order IO** (PM/OE aligned; the old OE `_connect` no-op was dropped). So:
 - **Safe connect smoke (no real orders)**: run `python3 -m launchers.arb_node --config <arb_config.json>` with `debug.enabled=true` + `skip_execution=true`. This now **really logs into OE (browser) + opens general WS + emits account state**, and PM really auths CLOB — validating the Gap C connect/login/WS path — while mocking all order placement/cancel. This is the right first live step.
-- **Real order test** still needs `skip_execution=false` (real money, fires on real opportunities; no controlled extreme-price place+cancel harness exists for the NT node yet — that'd be a port of the legacy `place_and_cancel`).
+- **Controlled OE real order test** now exists as `scripts.gapc_place_cancel_probe.py`. Default dry-run logs in and prints the exact order. `--confirm --size 7` places a true `SELL(LAY)@1.01` order and cancels it; `--cleanup-only` checks/cancels existing OE active bets without placing.
 - Needs an `arb_config.json` (only `arb_config.example.json` template exists) + creds in `.env`.
 
-**Open**: WS fill-reconciliation in the NT client + compensating-cancel trigger ([[bug_compensating_cancel_missing]]); a controlled (extreme-price place+cancel) NT-node test harness.
+**Open**: Tier 2 true matched-fill validation + compensating-cancel trigger ([[bug_compensating_cancel_missing]]); PM NT adapter live validation.

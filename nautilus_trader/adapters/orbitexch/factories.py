@@ -137,6 +137,7 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
             config=config,
             leg_settled=ctx.leg_settled,
             pair_registry=ctx.pair_registry,
+            pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             session_timeout_secs=ctx.oe_session_timeout_secs,
         )
         if debug is not None and getattr(debug, "enabled", False):

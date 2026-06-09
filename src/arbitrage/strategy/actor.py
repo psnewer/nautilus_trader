@@ -54,6 +54,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.enums import TimeInForce
     from nautilus_trader.model.identifiers import ClientOrderId
+    from nautilus_trader.model.identifiers import InstrumentId
     from nautilus_trader.model.identifiers import StrategyId
     from nautilus_trader.model.objects import Price
     from nautilus_trader.model.objects import Quantity
@@ -62,7 +63,8 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
     strategy_id = StrategyId(_STRATEGY_ID_LITERAL)
 
     async def submit(spec: dict) -> None:
-        iid = spec["instrument_id"]
+        raw_iid = spec["instrument_id"]
+        iid = raw_iid if isinstance(raw_iid, InstrumentId) else InstrumentId.from_str(str(raw_iid))
         inst = cache.instrument(iid)
         if inst is None:
             log.warning(f"submit: instrument {iid} not in cache; skip")
@@ -111,6 +113,8 @@ class _RuntimeDeps:
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
     loop: object                            # asyncio.AbstractEventLoop
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
+    pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
+    pair_inflight_max_hold_secs: float = 60.0  # in-flight 陈旧自愈上界(> 单笔套利最长耗时)
 
 
 class StrategyEvaluator(Actor):
@@ -125,6 +129,8 @@ class StrategyEvaluator(Actor):
         self._loop = deps.loop
         self._log_evaluations = config.log_evaluations
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
+        self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
+        self._pair_inflight_max_hold_ns = int(deps.pair_inflight_max_hold_secs * 1e9)
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -182,6 +188,14 @@ class StrategyEvaluator(Actor):
                 f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
                 f"competition={competition}, event={event_type}",
             )
+        # §6.10 §7:per-pair 串行 —— 同步 acquire(`create_task` 前,首个 await 前)。
+        # 同 pair 已在飞(评估中/执行中)→ 直接放弃,不派发评估。单 loop 串行保证同突发后到的评估立刻看到。
+        if self._pair_inflight is not None and not self._pair_inflight.try_enter(
+            pair_id, self.clock.timestamp_ns(), self._pair_inflight_max_hold_ns,
+        ):
+            if self._log_evaluations:
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
+            return
         # sync 入口 → async evaluate
         self._loop.create_task(self._evaluate_and_fire(strategy, pair_id))
 
@@ -201,46 +215,55 @@ class StrategyEvaluator(Actor):
 
     # ── 评估主流程 ────────────────────────────────────────────────────
     async def _evaluate_and_fire(self, strategy, pair_id: str) -> None:
-        # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
-        if self._is_execution_active():
-            if self._log_evaluations:
-                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
-            return
-        # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
-        snapshot = build_snapshot(
-            pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
-        )
-        # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建(per-eval 自动隔离 Check→Action 传值)
-        # slice 10a(#50):submitter 注入 — Action 经 `await ctx.submitter(spec)` 真出单
-        ctx = EvalContext(
-            pair_id=pair_id,
-            snapshot=snapshot,
-            store=self._signal_store.view(pair_id),
-            submitter=self._make_submitter(),
-        )
-        # 并行 evaluate(纯求值,无副作用);asyncio.gather 让 evaluator 顶层能等两树都返才决定 fire
-        arb_res, comp_res = await asyncio.gather(
-            self._aevaluate(strategy.arbitrage_tree, ctx),
-            self._aevaluate(strategy.compensation_tree, ctx),
-        )
-        if self._log_evaluations:
-            self._log.info(
-                f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
-                f"arb_action={type(arb_res.pending_action).__name__ if arb_res.pending_action else None}, "
-                f"comp_hit={comp_res.hit}, "
-                f"comp_action={type(comp_res.pending_action).__name__ if comp_res.pending_action else None}",
+        # §6.10 §7:per-pair 闸已在 `_route_eval` 同步 acquire。未 fire(让路/无机会/异常)→ finally 释放;
+        # 已 fire → 不释放,所有权交执行(execution `exec_finished` 在双腿 session 归 0 时清)。
+        fired = False
+        try:
+            # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
+            if self._is_execution_active():
+                if self._log_evaluations:
+                    self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
+                return
+            # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
+            snapshot = build_snapshot(
+                pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
             )
-        # Q21:套利优先 — 套利命中 → fire 套利 action;否则 → 补救 action(如命中)
-        if arb_res.hit and arb_res.pending_action is not None:
+            # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建(per-eval 自动隔离 Check→Action 传值)
+            # slice 10a(#50):submitter 注入 — Action 经 `await ctx.submitter(spec)` 真出单
+            ctx = EvalContext(
+                pair_id=pair_id,
+                snapshot=snapshot,
+                store=self._signal_store.view(pair_id),
+                submitter=self._make_submitter(),
+            )
+            # 并行 evaluate(纯求值,无副作用);asyncio.gather 让 evaluator 顶层能等两树都返才决定 fire
+            arb_res, comp_res = await asyncio.gather(
+                self._aevaluate(strategy.arbitrage_tree, ctx),
+                self._aevaluate(strategy.compensation_tree, ctx),
+            )
             if self._log_evaluations:
-                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-            self._loop.create_task(arb_res.pending_action.execute(ctx))
-        elif comp_res.hit and comp_res.pending_action is not None:
-            if self._log_evaluations:
-                self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-            self._loop.create_task(comp_res.pending_action.execute(ctx))
-        elif self._log_evaluations:
-            self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_action")
+                self._log.info(
+                    f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
+                    f"arb_action={type(arb_res.pending_action).__name__ if arb_res.pending_action else None}, "
+                    f"comp_hit={comp_res.hit}, "
+                    f"comp_action={type(comp_res.pending_action).__name__ if comp_res.pending_action else None}",
+                )
+            # Q21:套利优先 — 套利命中 → fire 套利 action;否则 → 补救 action(如命中)
+            if arb_res.hit and arb_res.pending_action is not None:
+                fired = True
+                if self._log_evaluations:
+                    self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
+                self._loop.create_task(arb_res.pending_action.execute(ctx))
+            elif comp_res.hit and comp_res.pending_action is not None:
+                fired = True
+                if self._log_evaluations:
+                    self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
+                self._loop.create_task(comp_res.pending_action.execute(ctx))
+            elif self._log_evaluations:
+                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_action")
+        finally:
+            if not fired and self._pair_inflight is not None:
+                self._pair_inflight.release_eval(pair_id)
 
     async def _aevaluate(self, tree, ctx):
         """async 包 sync 的 `evaluate_tree`,使 `asyncio.gather` 模式可用。

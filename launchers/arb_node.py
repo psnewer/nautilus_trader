@@ -46,6 +46,7 @@ from src.arbitrage.bootstrap import install_arbitrage_engines
 from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import wire_arbitrage_runtime
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.config import ArbConfig
 from src.arbitrage.config import load_arb_config
@@ -105,12 +106,13 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
 
 
 def prepare_runtime_state(cfg: ArbConfig):
-    """共享 runtime 件:`(LegSettledRegistry, PairRegistry, DebugConfig | None)`。
+    """共享 runtime 件:`(LegSettledRegistry, PairRegistry, PairInFlightGate, DebugConfig | None)`。
 
-    LegSettledRegistry / PairRegistry 是 launcher 持有的进程级单例,经 ArbContext 传给
-    factory + Actor 装配(slice 8)。
+    LegSettledRegistry / PairRegistry / PairInFlightGate 是 launcher 持有的进程级单例,经
+    ArbContext 传给 factory + Actor 装配(slice 8)。`PairInFlightGate`(§6.10 §7)被 strategy
+    评估入口 + execution session 共享,做 per-pair 串行。
     """
-    return LegSettledRegistry(), PairRegistry(), to_debug_config(cfg)
+    return LegSettledRegistry(), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
 
 
 def register_factories(node: TradingNode) -> None:
@@ -144,6 +146,7 @@ def add_actors(
     cfg: ArbConfig,
     *,
     pair_registry: PairRegistry,
+    pair_inflight: PairInFlightGate | None = None,
 ) -> None:
     """slice 8A:**必须在 `node.build()` 之后调用**(provider 由 data factory 构造后回写到
     `ArbContext.{pm,oe}_instrument_provider`,Refresher 取同一实例确保 cache add 视图一致)。
@@ -183,6 +186,8 @@ def add_actors(
                 is_execution_active=_make_is_execution_active(node),  # Q19:桥到 exec client `_execution_active`
                 loop=loop,
                 signal_collector=None,              # 用户域(slice 9 起)
+                pair_inflight=pair_inflight,        # §6.10 §7:per-pair 串行(与 execution 共享同一份)
+                pair_inflight_max_hold_secs=2 * cfg.execution.tracking_timeout_sec,  # 自愈上界 > 单笔套利最长耗时
             ),
         ),
     )
@@ -198,7 +203,7 @@ def bootstrap_and_build(
     `node_factory` 注入便于 test mock;生产路径走默认 `TradingNode`。
     返:`(node, leg_settled, pair_registry)` —— 后两个供 slice 8 Actors 装配复用同一对象。
     """
-    leg_settled, pair_registry, debug_config = prepare_runtime_state(cfg)
+    leg_settled, pair_registry, pair_inflight, debug_config = prepare_runtime_state(cfg)
 
     # 1. 替换 kernel 类(必须在 TradingNode 之前)
     install_arbitrage_engines(debug_config=debug_config)
@@ -211,6 +216,7 @@ def bootstrap_and_build(
     prepare_arb_context(
         leg_settled=leg_settled,
         pair_registry=pair_registry,
+        pair_inflight=pair_inflight,    # §6.10 §7:strategy + execution 共享同一份 per-pair 闸
         debug_config=debug_config,
         pm_settlement=None,             # TODO slice 8/9:PolymarketSettlement 接线
         pm_positions_fetcher=None,      # TODO slice 8:positions_fetcher 接线
@@ -231,7 +237,7 @@ def bootstrap_and_build(
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
-    add_actors(node, cfg, pair_registry=pair_registry)
+    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight)
 
     return node, leg_settled, pair_registry
 

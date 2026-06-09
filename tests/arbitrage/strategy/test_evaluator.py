@@ -72,7 +72,7 @@ def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) 
     return Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree)
 
 
-def _harness(execution_active: bool = False, log_evaluations: bool = False):
+def _harness(execution_active: bool = False, log_evaluations: bool = False, pair_inflight=None):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = TestComponentStubs.cache()
@@ -92,6 +92,7 @@ def _harness(execution_active: bool = False, log_evaluations: bool = False):
         is_execution_active=lambda: active_flag["v"],
         loop=loop,
         signal_collector=None,
+        pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
     )
     actor = StrategyEvaluator(StrategyEvaluatorConfig(log_evaluations=log_evaluations), deps)
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
@@ -313,3 +314,47 @@ async def test_matched_pair_subscribes_obd_deduped():
     assert set(calls) == {"A.PM", "B.PM", "X.OE"}
     actor.on_data(mp)                                  # 再来同 pair → 去重,不再订
     assert len(calls) == 3
+
+
+# ── eval.15(§6.10 §7,#84):同 pair 并发触发 → per-pair 闸只放一次 fire ──
+@pytest.mark.asyncio
+async def test_same_pair_concurrent_eval_fires_once():
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    gate = PairInFlightGate()
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
+    arb_action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
+    store.view("match_X").set_persistent("arb_on", True)
+
+    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
+                     pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0)
+    # drain 前两次触发(模拟同突发并发):第一次 try_enter 成功派发评估;第二次 gate busy → 不派发
+    actor.on_data(mp)
+    actor.on_data(mp)
+    assert len(loop.tasks) == 1                        # 只派发了一个评估 task(第二个被闸挡)
+    await _drain(loop)
+    assert arb_action.calls == 1                       # 只 fire 一次
+    assert gate.is_in_flight("match_X") is True        # fire 后持有,交执行清(本测试无 execution)
+
+
+# ── eval.16(§6.10 §7):不同 pair 不互相阻塞 ──
+@pytest.mark.asyncio
+async def test_different_pairs_not_blocked():
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    gate = PairInFlightGate()
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
+    a1, a2 = _RecordingAction("p1"), _RecordingAction("p2")
+    strat_reg.register_pair("P1", _strategy(True, False, arb_action=a1))
+    strat_reg.register_pair("P2", _strategy(True, False, arb_action=a2))
+    store.view("P1").set_persistent("arb_on", True)
+    store.view("P2").set_persistent("arb_on", True)
+
+    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="P1", sport="S", competition="C",
+                              pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
+    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="P2", sport="S", competition="C",
+                              pm_instrument_ids=["B.PM"], oe_instrument_ids=["Y.OE"], confidence=1.0))
+    assert len(loop.tasks) == 2                        # 不同 pair 各派发
+    await _drain(loop)
+    assert a1.calls == 1 and a2.calls == 1

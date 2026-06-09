@@ -52,15 +52,17 @@ def test_build_trading_node_config_includes_credentials_from_cfg():
 
 def test_prepare_runtime_state_no_debug():
     cfg = _cfg()
-    leg, pair, dbg = arb_node.prepare_runtime_state(cfg)
+    leg, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
     assert isinstance(leg, LegSettledRegistry)
     assert isinstance(pair, PairRegistry)
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+    assert isinstance(inflight, PairInFlightGate)   # §6.10 §7:per-pair 闸进程级单例
     assert dbg is None
 
 
 def test_prepare_runtime_state_enabled_debug():
     cfg = _cfg(debug={"enabled": True})
-    leg, pair, dbg = arb_node.prepare_runtime_state(cfg)
+    leg, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
     assert isinstance(dbg, DebugConfig)
     assert dbg.enabled is True
 

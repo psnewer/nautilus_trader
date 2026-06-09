@@ -283,7 +283,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 self._log.warning(
                     f"OE health check: reopen competition {page_key} failed: {e!r}; retry next tick")
 
-        # 状态维度(Phase 2,安全闸默认关):leg_settled 有未结算腿 → reload execution 页
+        # 状态维度(Phase 2,安全闸 #75 默认开):leg_settled 有未结算腿 → reload execution 页
         if (
             self._leg_settled is not None
             and self._config.health_check_exec_reload_enabled

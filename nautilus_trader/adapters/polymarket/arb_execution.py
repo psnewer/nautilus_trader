@@ -59,6 +59,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         *,
         leg_settled: LegSettledRegistry,
         pair_registry: PairRegistry | None = None,
+        pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         settlement: PolymarketSettlement | None = None,
         positions_fetcher: Callable[[], Awaitable[list]] | None = None,
         session_timeout_secs: float = 30.0,
@@ -72,6 +73,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             leg_settled=leg_settled,
             session_timeout_secs=session_timeout_secs,
             pair_registry=pair_registry,
+            pair_inflight=pair_inflight,
         )
         self._settlement = settlement
         self._positions_fetcher = positions_fetcher  # async () -> list[PolymarketPosition](Data API /positions,launcher 注入)

@@ -42,6 +42,7 @@ class ArbContext:
 
     leg_settled: LegSettledRegistry | None = None  # 跨 PM/OE 共享同一份
     pair_registry: PairRegistry | None = None      # matching 唯一写;risk/portfolio/session 只读(#34)
+    pair_inflight: object | None = None            # PairInFlightGate(§6.10 §7,per-pair 串行);strategy+execution 共享一份
 
     # PM 专属
     pm_settlement: object | None = None

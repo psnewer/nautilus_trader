@@ -186,6 +186,7 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             name=name,
             leg_settled=ctx.leg_settled,
             pair_registry=ctx.pair_registry,
+            pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             settlement=ctx.pm_settlement,
             positions_fetcher=ctx.pm_positions_fetcher,
             session_timeout_secs=ctx.pm_session_timeout_secs,

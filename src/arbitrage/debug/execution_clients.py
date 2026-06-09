@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from py_clob_client.exceptions import PolyApiException
+
 from nautilus_trader.model.currencies import GBP
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import LiquiditySide
@@ -83,6 +85,21 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
     def _mock_orders(self) -> bool:
         """skip_execution 真 → mock 订单 IO(submit/cancel 不碰真 venue)。连接照常真跑(#66)。"""
         return self._debug.is_override_active(_SKIP_KEY)
+
+    async def _connect(self) -> None:
+        if not self._mock_orders():
+            await super()._connect()
+            return
+        try:
+            await super()._connect()
+        except PolyApiException as e:
+            if getattr(e, "status_code", None) is not None:
+                raise
+            self._log.warning(
+                f"skip_execution: PM execution connect tolerated transport failure: {e!r}; "
+                "mock order IO remains enabled, true PM orders are not allowed in this mode",
+            )
+            self._health.start()
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():

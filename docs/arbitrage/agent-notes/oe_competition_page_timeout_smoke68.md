@@ -1,6 +1,6 @@
 ---
 name: oe_competition_page_timeout_smoke68
-description: "Claude 最新会话迁移:#68 每 competition 一页后,competition 页保留 networkidle;OE 页面默认 timeout 统一为 120s,仍待真盘口 OBD 闭环复验。"
+description: "Claude 最新会话迁移:#68 每 competition 一页后,competition 页保留 networkidle;OE 页面默认 timeout 统一为 120s;PM+OE 双边 OBD 同场到齐并触发 StrategyEvaluator 重评已用 NT-node skip=true live 验证。"
 metadata:
   node_type: memory
   type: project
@@ -26,7 +26,7 @@ metadata:
   4. 若 PM WS 仍出现 `Operation timed out`,需单独归类为 PM 网络问题,不要混同为 OE #68 失败。
 
 相关已迁移记忆:
-- [[gap_c_oe_exec_live_validated]]:Gap C connect path 已经用 NT node skip=true live 验过,但下单/撤单/成交回执仍未真单验证。
+- [[gap_c_oe_exec_live_validated]]:Gap C connect path 已经用 NT node skip=true live 验过;OE Tier 1 true place+cancel 不成交也已于 2026-06-08 验过。仍待的是 Tier 2 真成交 matched 帧。
 - [[bug_pm_exec_connect_balance_fatal]]:PM CLOB 网络抖动会让 exec connect 失败或后续 WS 超时,判定 OE smoke 时需要区分。
 
 **2026-06-07 Codex 接手后继续验证.**

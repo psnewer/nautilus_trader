@@ -189,6 +189,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         *,
         leg_settled: LegSettledRegistry,
         pair_registry: PairRegistry | None = None,
+        pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         session_timeout_secs: float = 30.0,
     ) -> None:
         super().__init__(
@@ -208,6 +209,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             leg_settled=leg_settled,
             session_timeout_secs=session_timeout_secs,
             pair_registry=pair_registry,
+            pair_inflight=pair_inflight,
         )
         self._set_account_id(AccountId(f"{ORBITEXCH}-001"))
         self._browser_manager = browser_manager
@@ -418,7 +420,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         `current_bets_to_fills` 算新增成交;每条按 `offerId == venue_order_id` 反查 NT order →
         发 `generate_order_filled`(last_qty=delta, last_px=averagePrice)。accepted 已由 `_submit_order`
         同步生成、撤单由 `_cancel_*` 生成,这里只补成交。leg_settled 由 mixin 的 `_send_order_event`
-        漏斗自动标记。**live 待验**:matched 帧填充值 + liquidity=MAKER(mean_rebate 挂单吃返水)假设。"""
+        漏斗自动标记。**matched 帧填充值已 live 验**(#82,offerId=222016509:sizeMatched/averagePrice)。
+        `liquidity_side=MAKER` 无条件硬编码:**已评估无害**——OE 是博彩交易所、CURRENT_BETS 无 maker/taker
+        字段(maker/taker 是 PM CLOB 概念),且 OE fill `commission=0`、套利 rebate(way_rebate)在
+        strategy/portfolio 层算、不读此字段 → 该侧纯名义,留 MAKER 即可(refactor.md #82/#83)。"""
         from nautilus_trader.model.enums import LiquiditySide
         from nautilus_trader.model.identifiers import TradeId
         from nautilus_trader.model.identifiers import VenueOrderId

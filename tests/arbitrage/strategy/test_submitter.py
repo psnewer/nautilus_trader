@@ -1,9 +1,8 @@
 """Slice 10a(#50):`make_submitter(cache, msgbus, clock, trader_id, log)` 真出 NT `SubmitOrder` cmd 到 msgbus。"""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-
-import pytest
 
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.model.enums import OrderSide
@@ -29,20 +28,26 @@ def _build():
     return submit, cache, msgbus
 
 
-@pytest.mark.asyncio
-async def test_submit_builds_limit_order_and_sends_to_exec_engine():
+def _run(coro):
+    try:
+        return asyncio.run(coro)
+    finally:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
+def test_submit_builds_limit_order_and_sends_to_exec_engine():
     """spec → LimitOrder(side/qty/price/precision)→ SubmitOrder cmd → msgbus.send("ExecEngine.execute", cmd)。"""
     submit, cache, msgbus = _build()
     cache.instrument.return_value = _fake_instrument(size_precision=3, price_precision=2)
     from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
     iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
 
-    await submit({
+    _run(submit({
         "instrument_id": iid,
         "side": "BUY",
         "qty": 5.625,   # 3 位精度刚好
         "price": 4.0,
-    })
+    }))
 
     cache.instrument.assert_called_once_with(iid)
     msgbus.send.assert_called_once()
@@ -59,27 +64,42 @@ async def test_submit_builds_limit_order_and_sends_to_exec_engine():
     assert float(cmd.order.price) == 4.0
 
 
-@pytest.mark.asyncio
-async def test_submit_with_sell_side():
+def test_submit_with_sell_side():
     submit, cache, msgbus = _build()
     cache.instrument.return_value = _fake_instrument()
     from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
     iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
 
-    await submit({"instrument_id": iid, "side": "SELL", "qty": 1.0, "price": 2.5})
+    _run(submit({"instrument_id": iid, "side": "SELL", "qty": 1.0, "price": 2.5}))
 
     cmd = msgbus.send.call_args.args[1]
     assert cmd.order.side == OrderSide.SELL
 
 
-@pytest.mark.asyncio
-async def test_submit_skips_when_instrument_missing():
+def test_submit_skips_when_instrument_missing():
     """cache.instrument 返 None → warning + skip,不 raise,不 send。"""
     submit, cache, msgbus = _build()
     cache.instrument.return_value = None
     from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
     iid = InstrumentId(Symbol("X-1"), Venue("ORBITEXCH"))
 
-    await submit({"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 4.0})
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 4.0}))
 
     msgbus.send.assert_not_called()
+
+
+def test_submit_accepts_string_instrument_id_from_strategy_specs():
+    """PlaceBetsAction legs 保留 str 视图;submitter 边界转 NT InstrumentId 再查 cache / 出单。"""
+    submit, cache, msgbus = _build()
+    cache.instrument.return_value = _fake_instrument(size_precision=2, price_precision=2)
+
+    iid = "1-258949524-4290403-None.ORBITEXCH"
+
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 2.5}))
+
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    iid_obj = InstrumentId.from_str(iid)
+    cache.instrument.assert_called_once_with(iid_obj)
+    cmd = msgbus.send.call_args.args[1]
+    assert cmd.order.instrument_id == iid_obj

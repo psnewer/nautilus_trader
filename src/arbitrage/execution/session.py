@@ -47,9 +47,11 @@ class ArbExecutionSessionMixin:
         leg_settled: LegSettledRegistry,
         session_timeout_secs: float,
         pair_registry: PairRegistry | None = None,
+        pair_inflight=None,  # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不参与
     ) -> None:
         self._leg_settled = leg_settled
         self._pair_registry = pair_registry  # #34: matching 写,本类读;`_pair_id_for` 用
+        self._pair_inflight = pair_inflight   # §6.10 §7:execution 段维护 per-pair session 计数,归 0 释放闸
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
         # coid -> {qty, filled, instrument_id, pair_id}
         self._active_sessions: dict = {}
@@ -82,6 +84,9 @@ class ArbExecutionSessionMixin:
         pair_id = self._pair_id_for(instrument_id)
         if pair_id is not None:
             self._leg_settled.arm(pair_id, instrument_id)
+            # §6.10 §7:per-pair session 计数 ++(套利已由 strategy fire,所有权进入执行)
+            if self._pair_inflight is not None:
+                self._pair_inflight.exec_started(pair_id)
         self._active_sessions[coid] = {
             "qty": order.quantity.as_double(),
             "filled": 0.0,
@@ -132,6 +137,9 @@ class ArbExecutionSessionMixin:
         if not timed_out:
             self._clock.cancel_timer(f"{_TIMEOUT_PREFIX}{coid.value}")  # terminal 抢先取消 watchdog
         self._publish_execution("execution.finished", sess["instrument_id"], sess["pair_id"])
+        # §6.10 §7:per-pair session 计数 --;归 0 → 释放 per-pair 闸(本笔套利执行结束)
+        if self._pair_inflight is not None and sess["pair_id"] is not None:
+            self._pair_inflight.exec_finished(sess["pair_id"])
 
     # ── helpers / hooks ───────────────────────────────────────────────
     def _pair_id_for(self, instrument_id):

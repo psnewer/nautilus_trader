@@ -170,3 +170,43 @@ def test_cancel_order_passes_market_id_from_current_bets():
     assert legacy.market_id == "1.258977638"
     assert legacy.selection_id == "8266399"
     assert captured["canceled"] is True
+
+
+# ── Tier 2(真成交)matched 帧 → generate_order_filled ──────────────
+def test_on_current_bets_matched_fires_generate_order_filled():
+    """Gap C Tier 2(2026-06-09 live offerId=222016509 的**真实 matched 帧值**:
+    `sizeMatched=7.00`/`averagePrice=2.3`)→ `_on_current_bets` → `generate_order_filled`
+    (`last_qty=delta`, `last_px=avg`)。需 cache 有 order + voi 索引——生产由 ExecEngine apply
+    `OrderAccepted` 建该索引;`gapc_fill_probe` 无 ExecEngine 故事件路径未触发(探针局限,非 bug),
+    此处离线补全。`liquidity_side=MAKER` 无条件硬编码,**已评估无害**(#83):OE 无 maker/taker 概念、
+    fill commission=0、rebate 不读此字段 → 纯名义。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import LiquiditySide
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=4290403)
+    c._cache.add_instrument(inst)
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    voi = VenueOrderId("222016509")
+    c._cache.add_venue_order_id(order.client_order_id, voi)
+
+    captured: list = []
+    c.generate_order_filled = lambda **kw: captured.append(kw)
+    c._on_current_bets([{
+        "offerId": "222016509", "marketId": inst.market_id, "selectionId": "4290403",
+        "side": "BACK", "sizePlaced": "7.00", "sizeMatched": "7.00",
+        "sizeRemaining": "0.00", "averagePrice": "2.3", "price": "1.01",
+    }])
+
+    assert len(captured) == 1
+    f = captured[0]
+    assert f["venue_order_id"] == voi
+    assert f["last_qty"].as_double() == 7.0       # delta = sizeMatched - prev(0)
+    assert f["last_px"].as_double() == 2.3        # averagePrice(成交均价,非 1.01 限价)
+    assert f["liquidity_side"] == LiquiditySide.MAKER    # 硬编码假设
