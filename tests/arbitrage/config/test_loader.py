@@ -27,7 +27,7 @@ def _clean_env(monkeypatch):
     for var in [
         "ORBITEXCH_USERNAME", "ORBITEXCH_PASSWORD",
         "POLYMARKET_CLOB_API_KEY", "POLYMARKET_CLOB_SECRET", "POLYMARKET_CLOB_PASSPHRASE",
-        "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER",
+        "POLYMARKET_SIGNATURE_TYPE", "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER",
         "POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "POLYMARKET_EOA_ADDRESS",
         "POLYMARKET_API_KEY", "POLYMARKET_API_SECRET", "POLYMARKET_PASSPHRASE",
         "POLYMARKET_PROXY_URL", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
@@ -85,6 +85,7 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     monkeypatch.setenv("POLYMARKET_CLOB_API_KEY", "test_key")
     monkeypatch.setenv("POLYMARKET_CLOB_SECRET", "test_secret")
     monkeypatch.setenv("POLYMARKET_CLOB_PASSPHRASE", "test_pass")
+    monkeypatch.setenv("POLYMARKET_SIGNATURE_TYPE", "2")
     monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0xdead")
     monkeypatch.setenv("POLYMARKET_FUNDER", "0xfun")
     monkeypatch.setenv("POLYMARKET_USER_ADDRESS", "0xuser")
@@ -94,6 +95,7 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     assert cfg.venues.polymarket.clob_api_key == "test_key"
     assert cfg.venues.polymarket.clob_api_secret == "test_secret"
     assert cfg.venues.polymarket.clob_passphrase == "test_pass"
+    assert cfg.venues.polymarket.signature_type == 2
     assert cfg.venues.polymarket.private_key == "0xdead"
     assert cfg.venues.polymarket.funder == "0xfun"
     assert cfg.venues.polymarket.user_address == "0xuser"

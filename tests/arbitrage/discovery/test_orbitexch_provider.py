@@ -8,6 +8,7 @@ OE 没有上游适配器 → 自写 `OrbitExchInstrumentProvider` 包 `OrbitExch
 对应章节: refactor.md §5.1.2, §6.2, §6.4;架构 architectures/discovery/architecture.md §3.2/§4.1
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -29,6 +30,13 @@ def _event(home_sel="1", draw_sel="2", away_sel="3"):
         sport_id="1", competition_id="100", market_id="1-123456",
         home_selection_id=home_sel, draw_selection_id=draw_sel, away_selection_id=away_sel,
     )
+
+
+def _run(coro):
+    try:
+        return asyncio.run(coro)
+    finally:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 def test_build_legs_three_way(provider):
@@ -63,27 +71,25 @@ def test_build_legs_instrument_id_carries_market_and_selection(provider):
         assert "1-123456" in s and sel in s
 
 
-@pytest.mark.asyncio
-async def test_load_all_async_invokes_scraper_and_adds_instruments():
+def test_load_all_async_invokes_scraper_and_adds_instruments():
     """discovery-1.4.e: load_all_async → scraper.discover_events → 基类 add。"""
     scraper = SimpleNamespace()
     scraper.discover_events = AsyncMock(return_value=[_event()])
     prov = OrbitExchInstrumentProvider(scraper)
 
-    await prov.load_all_async()
+    _run(prov.load_all_async())
 
     scraper.discover_events.assert_awaited_once()
     instruments = prov.get_all()
     assert len(instruments) == 3  # home/draw/away
 
 
-@pytest.mark.asyncio
-async def test_load_all_async_empty_does_not_raise():
+def test_load_all_async_empty_does_not_raise():
     """discovery-1.4.f: scraper 返空 → load_all_async 不抛、Provider 仍可用。"""
     scraper = SimpleNamespace()
     scraper.discover_events = AsyncMock(return_value=[])
     prov = OrbitExchInstrumentProvider(scraper)
-    await prov.load_all_async()
+    _run(prov.load_all_async())
     assert prov.get_all() == {}
 
 

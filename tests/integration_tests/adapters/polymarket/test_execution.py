@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import msgspec
 import pytest
-from py_clob_client.client import ClobClient
+from py_clob_client_v2 import ClobClient
 
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_CANCEL_ALREADY_DONE

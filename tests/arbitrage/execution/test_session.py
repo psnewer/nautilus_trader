@@ -107,7 +107,8 @@ def test_submit_track_arms_leg_publishes_started():
 
 
 # ── cancel-only(残留挂单 → 撤 + reject + 丢弃）────────────────────
-def test_cancel_only_when_residual_rejects_and_discards():
+def test_cancel_only_when_residual_rejects_and_discards(caplog):
+    caplog.set_level(logging.INFO, logger="session-test")
     client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
@@ -120,10 +121,13 @@ def test_cancel_only_when_residual_rejects_and_discards():
     assert client.rejected and client.rejected[0][0] == order.client_order_id
     assert not client._execution_active                  # 未建 session
     assert not leg_settled.has_entry("match_1")             # 未 arm
+    assert "Execution session cancel-only" in caplog.text
+    assert str(residual.client_order_id) in caplog.text
 
 
 # ── leg_settled 标记(任一 venue 确认事件）─────────────────────────
-def test_venue_confirm_marks_leg_settled():
+def test_venue_confirm_marks_leg_settled(caplog):
+    caplog.set_level(logging.INFO, logger="session-test")
     client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
@@ -136,6 +140,8 @@ def test_venue_confirm_marks_leg_settled():
     assert leg_settled.all_settled("match_1")               # accepted 即置 true
     assert client.sent                                   # super() 仍正常上送
     assert client._execution_active                       # accepted 非终态,session 仍在
+    assert "Execution session accepted" in caplog.text
+    assert str(order.client_order_id) in caplog.text
 
 
 # ── 终态(全成 / 撤单 → 结束 + finished + 取消 watchdog）───────────

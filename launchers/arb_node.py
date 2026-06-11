@@ -23,6 +23,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from py_clob_client_v2 import BalanceAllowanceParams
+from py_clob_client_v2.clob_types import AssetType
+from py_clob_client_v2.exceptions import PolyApiException
+
 # 兜底:`python launchers/arb_node.py` 直跑时把项目根加 sys.path(`python -m launchers.arb_node` 不需要)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -35,6 +39,8 @@ from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveD
 from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveExecClientFactory
 from nautilus_trader.adapters.polymarket.arb_factories import PolymarketSportsLiveDataClientFactory
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
+from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
+from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -71,6 +77,7 @@ from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.signals import SignalStore
+from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
 
 def register_builtin_checks_and_actions() -> None:
@@ -147,6 +154,7 @@ def add_actors(
     *,
     pair_registry: PairRegistry,
     pair_inflight: PairInFlightGate | None = None,
+    leg_settled: LegSettledRegistry | None = None,
 ) -> None:
     """slice 8A:**必须在 `node.build()` 之后调用**(provider 由 data factory 构造后回写到
     `ArbContext.{pm,oe}_instrument_provider`,Refresher 取同一实例确保 cache add 视图一致)。
@@ -164,7 +172,13 @@ def add_actors(
     """
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    # 防御:add_actors 在 node.run() 之前调,不保证有「当前」event loop(Py3.13 无当前 loop 时
+    # get_event_loop() 抛 RuntimeError)。无则现地建一个并设为当前(actor 仅用它 create_task)。
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     # MarketMatchingActor:自 timer 读 cache → 算 MatchedPair → PairRegistry
     node.trader.add_actor(
@@ -188,6 +202,7 @@ def add_actors(
                 signal_collector=None,              # 用户域(slice 9 起)
                 pair_inflight=pair_inflight,        # §6.10 §7:per-pair 串行(与 execution 共享同一份)
                 pair_inflight_max_hold_secs=2 * cfg.execution.tracking_timeout_sec,  # 自愈上界 > 单笔套利最长耗时
+                leg_settled=leg_settled,            # §6.10 §7:健检兜底 clear_all 的 arb 在飞判据
             ),
         ),
     )
@@ -237,14 +252,57 @@ def bootstrap_and_build(
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
-    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight)
+    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight, leg_settled=leg_settled)
 
     return node, leg_settled, pair_registry
+
+
+def preflight_polymarket_trading(cfg: ArbConfig) -> None:
+    """Run a read-only PM trading route preflight without building the NT node."""
+    pm_config = to_polymarket_exec_client_config(cfg)
+    result = check_polymarket_geoblock(pm_config.proxy_url)
+    client = get_polymarket_http_client(
+        api_key=pm_config.api_key,
+        api_secret=pm_config.api_secret,
+        passphrase=pm_config.passphrase,
+        base_url=pm_config.base_url_http,
+        signature_type=pm_config.signature_type,
+        private_key=pm_config.private_key,
+        funder=pm_config.funder,
+        proxy_url=pm_config.proxy_url,
+    )
+    server_time = client.get_server_time()
+    open_orders = client.get_open_orders()
+    balance_response = client.get_balance_allowance(
+        BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=pm_config.signature_type,
+        ),
+    )
+    balance = usdce_from_units(int(balance_response["balance"]))
+    if balance.as_decimal() <= 0:
+        raise RuntimeError(
+            f"Polymarket CLOB balance is zero for signature_type={pm_config.signature_type}; "
+            "check POLYMARKET_SIGNATURE_TYPE/funder before live trading",
+        )
+    country = result.get("country") or "unknown"
+    region = result.get("region") or "unknown"
+    ip_addr = result.get("ip") or "unknown"
+    print(
+        f"Polymarket preflight OK: country={country} region={region} ip={ip_addr} "
+        f"server_time={server_time} open_order_count={len(open_orders or [])} "
+        f"balance={balance}",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Arbitrage NT live node launcher")
     parser.add_argument("--config", required=True, help="path to arb_config.json")
+    parser.add_argument(
+        "--preflight-polymarket",
+        action="store_true",
+        help="run read-only Polymarket REST/geoblock preflight and exit",
+    )
     args = parser.parse_args(argv)
 
     # 从项目根 .env 注入凭证(slice 10c smoke 发现:launcher 进程不自动 load,导致
@@ -257,6 +315,14 @@ def main(argv: list[str] | None = None) -> int:
 
     register_builtin_checks_and_actions()    # slice 9:必须在 to_strategy_registry 之前(JSON 用 type 名查 registry)
     cfg = load_arb_config(args.config)
+    if args.preflight_polymarket:
+        try:
+            preflight_polymarket_trading(cfg)
+        except (RuntimeError, PolyApiException) as e:
+            print(f"Polymarket preflight failed: {e}", file=sys.stderr)
+            return 2
+        return 0
+
     node, _, _ = bootstrap_and_build(cfg)
 
     try:

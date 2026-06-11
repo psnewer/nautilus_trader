@@ -98,3 +98,29 @@ def test_upstream_subscribe_frame_not_data():
     handler._on_frame_received("orders", RAW_SUBSCRIBE_UP)
 
     assert captured == []
+
+
+def test_first_frame_logs_ws_type_kind_and_size():
+    logger = _CapturingLogger()
+    handler = OrbitExchWebSocketHandler(page=None, logger=logger)
+
+    handler._on_frame_received("prices", 'a["{}"]')
+    handler._on_frame_received("prices", 'a["{}"]')
+
+    assert logger.info_messages == [
+        "OE WS first frame received: type=prices, kind=sockjs_message, bytes=7",
+    ]
+
+
+class _CapturingLogger:
+    def __init__(self):
+        self.info_messages = []
+
+    def info(self, message):
+        self.info_messages.append(message)
+
+    def debug(self, message):
+        pass
+
+    def error(self, message):
+        pass

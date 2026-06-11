@@ -70,6 +70,12 @@ class ArbExecutionSessionMixin:
         residual = self._cache.orders_open(instrument_id=instrument_id)
         if residual:
             # cancel-only:撤残留挂单 + 丢弃当次 submit(reject 让 NT 解析,strategy 下轮全量重算重发)
+            self._log.info(
+                "Execution session cancel-only: residual open orders present "
+                f"instrument_id={instrument_id}, "
+                f"new_client_order_id={order.client_order_id}, "
+                f"residuals={self._format_residual_orders(residual)}",
+            )
             self._cancel_residual_orders(instrument_id, list(residual))
             self.generate_order_rejected(
                 strategy_id=order.strategy_id,
@@ -113,6 +119,13 @@ class ArbExecutionSessionMixin:
         sess = self._active_sessions.get(event.client_order_id)
         if sess is None:
             return
+        if isinstance(event, OrderAccepted):
+            self._log.info(
+                "Execution session accepted: "
+                f"client_order_id={event.client_order_id}, "
+                f"venue_order_id={event.venue_order_id}, "
+                f"instrument_id={event.instrument_id}; tracking continues until terminal/timeout",
+            )
         terminal = isinstance(event, _TERMINAL)
         if isinstance(event, OrderFilled):
             sess["filled"] += event.last_qty.as_double()
@@ -157,3 +170,13 @@ class ArbExecutionSessionMixin:
             f"cancel-only: {len(residual)} residual order(s) on {instrument_id}; "
             "override _cancel_residual_orders for venue cancel",
         )
+
+    @staticmethod
+    def _format_residual_orders(residual: list) -> list[dict]:
+        return [
+            {
+                "client_order_id": str(getattr(order, "client_order_id", "")),
+                "venue_order_id": str(getattr(order, "venue_order_id", "")),
+            }
+            for order in residual
+        ]

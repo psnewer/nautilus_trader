@@ -9,6 +9,7 @@
 也就是 `mean_rebate` 配置→决策→fire(log-only)端到端真实跑一次。
 """
 
+import asyncio
 import logging
 from unittest.mock import MagicMock
 
@@ -44,6 +45,13 @@ def _fake_book(ask_price):
     book = MagicMock()
     book.best_ask_price = MagicMock(return_value=ask_price)
     return book
+
+
+def _run(coro):
+    try:
+        return asyncio.run(coro)
+    finally:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 def _build_mean_rebate_strategy():
@@ -99,8 +107,7 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
 
 # ─── 端到端 smoke ──────────────────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
+def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     """**核心 e2e**:JSON 配置 → JSON loader → Strategy → evaluate_tree 命中 → PlaceBetsAction.execute → log 3 leg。
 
     `min(prob) × 3 = 0.25 × 3 = 0.75 → rate = 0.25 > 0.05` → mean_rebate 命中。
@@ -122,7 +129,7 @@ async def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
 
     # 3. fire action(log-only smoke)
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        await res.pending_action.execute(ctx)
+        _run(res.pending_action.execute(ctx))
 
     msgs = [r.message for r in caplog.records]
     # header log
@@ -131,8 +138,7 @@ async def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     assert sum("ORBITEXCH" in m and "would submit" in m for m in msgs) == 3
 
 
-@pytest.mark.asyncio
-async def test_in_play_blocks_mean_rebate(caplog):
+def test_in_play_blocks_mean_rebate(caplog):
     """**门控 smoke**:snapshot.in_play=True → PreMatchCheck False → AND 短路 → MeanRebateCheck 不跑 → 无 action fire。"""
     strategy = _build_mean_rebate_strategy()
     snap = _3way_arbitrage_snapshot(in_play=True)
@@ -143,8 +149,7 @@ async def test_in_play_blocks_mean_rebate(caplog):
     assert "legs" not in ctx.scratch    # MeanRebateCheck 没跑 → 没写 scratch
 
 
-@pytest.mark.asyncio
-async def test_no_arb_below_threshold_no_action(caplog):
+def test_no_arb_below_threshold_no_action(caplog):
     """**阈值 smoke**:rate=0.05(刚好等于阈值 0.05)+ 改阈值 0.10 不命中。"""
     # 构造 rate=0.05(prob sum=0.95)
     books = {

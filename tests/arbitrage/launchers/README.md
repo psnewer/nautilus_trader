@@ -28,3 +28,9 @@
 落地:`_make_is_execution_active(node)` 遍历 `node.kernel.exec_engine._clients`,`getattr(client, "_execution_active", False)` 兜底任意 client(无 mixin 也不 raise);任一 True → 聚合返 True;StrategyEvaluator deps 改用真 callable(撤 `lambda: False`)。
 
 - ✅ `test_arb_node.py` +4:无 session 在飞 → False / 任一 client True → 聚合 True(切 client 状态后 callable 反映最新)/ 无 `_execution_active` 属性的 client 不 raise / `add_actors` 装的 StrategyEvaluator `_is_execution_active` 是真聚合 callable(不是 `lambda: False`)
+
+## PM live preflight(2026-06-10 #98)
+
+`launchers/arb_node.py --preflight-polymarket --config <cfg>` 是只读入口:加载同一 ArbConfig,用 `to_polymarket_exec_client_config(cfg).proxy_url` 调官方 geoblock endpoint,再用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()`,然后退出;不 build TradingNode、不登录 OE、不下单。JP 属官方 `Frontend UI restricted`,不应因 `blocked=true` 误拦 API;AU/US 等 API-blocked 仍返回 2。余额为 0 或 v2 SDK transport 失败也返回 2 并打印单行 stderr,用于提前暴露 `POLYMARKET_SIGNATURE_TYPE` / funder 配错或代理链路不可用。
+
+- ✅ `test_arb_node.py` +5:preflight CLI 在 build 前退出 / blocked 时返回 2 且打印简洁 stderr / v2 SDK transport 失败返回 2 且不冒 traceback / preflight 使用 Exec config 的 `proxy_url` / 0 余额返回错误

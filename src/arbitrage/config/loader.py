@@ -43,6 +43,7 @@ _PM_CRED_ENV: list[tuple[str, str | None, str]] = [
     ("POLYMARKET_CLOB_API_KEY", None, "clob_api_key"),
     ("POLYMARKET_CLOB_SECRET", None, "clob_api_secret"),         # 注意旧码用 _SECRET 非 _API_SECRET
     ("POLYMARKET_CLOB_PASSPHRASE", None, "clob_passphrase"),
+    ("POLYMARKET_SIGNATURE_TYPE", None, "signature_type"),
     ("POLYMARKET_PRIVATE_KEY", None, "private_key"),
     ("POLYMARKET_FUNDER", None, "funder"),
     ("POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "user_address"),
@@ -52,7 +53,7 @@ _PM_CRED_ENV: list[tuple[str, str | None, str]] = [
     ("POLYMARKET_PASSPHRASE", None, "builder_passphrase"),
 ]
 
-_CREDENTIAL_FIELDS_PM = {p[2] for p in _PM_CRED_ENV}
+_CREDENTIAL_FIELDS_PM = {p[2] for p in _PM_CRED_ENV if p[2] != "signature_type"}
 _CREDENTIAL_FIELDS_OE = {p[1] for p in _OE_CRED_ENV}
 
 
@@ -116,6 +117,8 @@ def _inject_env_credentials(raw: dict) -> None:
         if val is None and fallback is not None:
             val = os.environ.get(fallback)
         if val is not None:
+            if field == "signature_type":
+                val = int(val)
             pm[field] = val
 
     oe = raw["venues"]["orbitexch"]

@@ -33,9 +33,10 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **`BrowserManager.start()` 幂等化**(`if self._context is not None: return`):共享 BrowserManager 被多次 client 触发 start 时不重复 init Playwright。
 - **`OrbitExchDataClient._connect` 自管 start + 改用 `create_page`**(原 bug:`get_page` 是只读,首次连返 None → `.goto` AttributeError)。设计意图原是 "factory 层先 start",但 factory 未接;DataClient 自管 + 幂等更稳。
 - **#66 `skip_execution`=「真连接 + mock 订单 IO」(PM/OE 对齐)**:取代旧的 OE skip `_connect` no-op(那是 Gap C `_connect` 还是 NotImplementedError 时的权宜)。现 skip 下 OE 也真连接(登录/page/general WS/账户状态),只 mock `_submit_order`(全成)+ `_cancel_*`(no-op)。`skip_execution=true` 即「安全验连接路径而不下真单」smoke。
-- **#68 每 competition 一页 + 新开/刷新统一**:OE data client 价格订阅从"单 `inplay/highlights` 页"(盘口稀疏根因)改为**每 competition 一页**(key=`{sport_id}_{competition_id}`,从 instrument 的 `event_type_id`/`competition_id` 取)。`_subscribe_order_book_deltas` → `_ensure_competition_page`(**eager 订阅即开**)→ `_open_or_reload_competition_page`(不存在 create_page+挂监听(#67)+goto / 已存在 reload)。competition 页继续用老代码同款 `networkidle`,但必须传 `page_timeout`(`cfg.venues.orbitexch.page_load_timeout_sec` → 默认 120s);30s/60s/90s live smoke 均出现过 timeout。新开页 `goto` 成功后才登记到 `_comp_pages`;失败时 stop handler + close page,避免另一腿复用未加载成功的 page。`test_data_client_step2.py` 覆盖订阅即开 page_key=`comp-1_1` / 同 competition 顺序+并发订阅都只开一页 / 已存在→reload(首 goto 次 reload)/ 不在 cache→不开 / goto 失败不缓存 stale page。设计 refactor.md #68 + data/architecture.md §3.1。**live smoke 已验 OE 真盘口流入**:`OE price frame routed` + `OE OrderBookDeltas published`;PM proxy 透传修复后已同场验证 PM+OE 双边 OBD 触发 StrategyEvaluator 重评。
-- **#68 观测锚点**:`OrbitExchDataClient` 用自身 `_log` 输出 competition 页打开后的 WS 摘要(`ws_count/ws_types`)和首个 routed price frame / 首个 `OrderBookDeltas` publish,避免只依赖 `OrbitExchWebSocketHandler` 的 stdlib logger。`test_data_client_step2.py` 断言命中 routing 后 `_price_frames_seen/_price_deltas_published` 递增,未订阅 market 不递增。
-- **#67 OE 连接两 bug 修复(live smoke 抓出,连接路径 live 验证通过)**:① **漏关登录后弹窗** —— `_login` 加 `_dismiss_post_login_popup`(平移 scraper `_handle_post_login_popup`;弹层盖页 → general WS 不推 BALANCE);② **WS 监听注册晚于页面建 WS** —— `page.on('websocket')` 只捕获注册后新建的 WS,`_connect`/data `_connect` 改为 **先 `ws_handler.start()` 再 `goto/_login`**(老 odds_client 注释:"必须在 goto 前挂拦截")。③ exec page timeout 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置并显式传给 `goto`,避免 BrowserManager 默认 30s 在 OE 首页超时。验证(`launchers/arb_node.py` + skip=true):`popup dismissed` + OE 账户 `0.00 → 37.49 GBP` 真余额 + 两腿 Connected + MatchedPair + 0 ERROR。**Gap C 连接路径(登录/弹窗/general WS/真 BALANCE→账户状态)完整 live 验证**。**Tier 1 探针**:`scripts/gapc_place_cancel_probe.py`(真账户 place+cancel 不成交:LAY@1.01 + OE 最小 stake 7 + 默认 dry-run/`--confirm` 真下单 + 撤单兜底;`--cleanup-only` 零下单 cancel/check;BACK odds 越大越好,`BACK@1.01` 不是保护价)。**2026-06-08 live**:首跑 `_submit_order`→venue_order_id ✓ / CURRENT_BETS working ✓ / reconcile ✓,但 `_cancel_order` 暴露 `missing market_id` bug;残单经 cleanup-only 清理且活单数 0。#77 修 `_cancel_order` 从 instrument 或 CURRENT_BETS 回填 `market_id/selection_id`,并加 `test_cancel_order_passes_market_id_from_current_bets`;#78 修后复跑完整 place+cancel 通过(offerId=221973242:submit/CURRENT_BETS/reconcile/cancel 全 ✓,cleanup-only 复查活单数 0)。**Tier 2(真成交)✅ live 验完成(#82)**:`scripts/gapc_fill_probe.py`(市价 BACK@1.01 TAKER、最小注、只下单+报告不撤不对冲)真下成交单 offerId=222016509(BACK Roberto Bautista Agut £7)。**真实 matched 帧**:`sizeMatched=7.00`/`averagePrice=2.3`(BACK@1.01 在最优 back 赔率 2.3 成交,价格改善)/`sizeRemaining=0.00`;`bet_order_progress` 派生 `filled/7.0/2.3` ✓。**`generate_order_filled` 探针内 0 次=探针无 ExecEngine 局限**(`OrderAccepted` 未 apply→cache 无 voi 索引→`_on_current_bets` 反查 None 跳过),非 bug;事件路径离线补验 `test_orbitexch_client.py::test_on_current_bets_matched_fires_generate_order_filled`(预置 `add_venue_order_id`→fire last_qty=7/last_px=2.3/MAKER)。**MAKER 硬编码已评估无害(#83)**:`_on_current_bets` 无条件 `liquidity_side=MAKER` —— OE 无 maker/taker 概念(博彩交易所,CURRENT_BETS 无该字段;那是 PM CLOB 的)、fill `commission=0`、rebate 在 strategy/portfolio 层算不读此字段 → 纯名义不改。详见 execution §4.3 Gap C 分档。
+- **#68 每 competition 一页 + 新开/刷新统一**:OE data client 价格订阅从"单 `inplay/highlights` 页"(盘口稀疏根因)改为**每 competition 一页**(key=`{sport_id}_{competition_id}`,从 instrument 的 `event_type_id`/`competition_id` 取)。`_subscribe_order_book_deltas` → `_ensure_competition_page`(**eager 订阅即开**)→ `_open_or_reload_competition_page`(不存在 create_page+挂监听(#67)+goto / 已存在 reload)。competition 页继续用老代码同款 `networkidle`,但必须传 `page_timeout`(`cfg.venues.orbitexch.page_load_timeout_sec` → 默认 120s);30s/60s/90s live smoke 均出现过 timeout。新开页 `goto` 成功后才登记到 `_comp_pages`;失败时 stop handler + close page,避免另一腿复用未加载成功的 page。`test_data_client_step2.py` 覆盖订阅即开 page_key=`comp-1_1` / 同 competition 顺序+并发订阅都只开一页 / 已存在→reload(首 goto 次 reload)/ 不在 cache→不开 / goto 失败不缓存 stale page / 新开页先注册 Playwright WS handler 且不挂 CDP probe。设计 refactor.md #68 + data/architecture.md §3.1。**live smoke 已验 OE 真盘口流入**:`OE price frame routed` + `OE OrderBookDeltas published`;PM proxy 透传修复后已同场验证 PM+OE 双边 OBD 触发 StrategyEvaluator 重评。
+- **#87 competition 页可见性**:2026-06-09 DevTools/CDP 复核:前台 OE competition 页会创建 `multiple-market-prices` WS 并推目标 market 帧,但 NT live node 曾出现 competition 页打开摘要先只有 `orders` 的样本。OE 前端会读取 `document.visibilityState` / market 可见性参数订阅价格。修复:`PlaywrightBrowserManager` 固定 document 可见/hasFocus 并让 `IntersectionObserver` 返回可见;`OrbitExchDataClient._open_or_reload_competition_page` 在新开和 reload 前 `page.bring_to_front()`。`test_data_client_step2.py` 断言订阅新开页与 reload 分支都会前置页面。
+- **#68/#95/#100 观测锚点**:`OrbitExchWebSocketHandler` 使用调用方 NT logger,输出 `OE WS connected(type=prices/orders/unknown)` 与每类 WS 首帧 `OE WS first frame received(type/kind/bytes)`;`OrbitExchDataClient` 继续用自身 `_log` 输出 competition 页打开后的 WS 摘要(`ws_count/ws_types`)和首个 routed price frame / 首个 `OrderBookDeltas` publish。这样 live 中用 Playwright handler 这一条运行锚点区分“prices WS 没被捕获 / 捕获但无下行 / 已有下行但解析或路由未进 DataClient”。#95 曾附加同页 CDP `Network` 旁路探针;#100 按实盘诊断要求撤回 open 时 CDP probe,避免 open/reload 两条路径观测锚点不一致。`test_ws_general_frames.py` 覆盖首帧锚点只打一次;`test_data_client_step2.py` 断言命中 routing 后 `_price_frames_seen/_price_deltas_published` 递增、未订阅 market 不递增,并覆盖新开页先注册 Playwright WS handler 且不创建 CDP session。
+- **#67 OE 连接两 bug 修复(live smoke 抓出,连接路径 live 验证通过)**:① **漏关登录后弹窗** —— `_login` 加 `_dismiss_post_login_popup`(弹层盖页 → general WS 不推 BALANCE),#89 校准为“等待 `postLoginPopup` 容器出现后点击主页面区域,timeout 后静默继续”,不再固定 sleep 后点 OK;② **WS 监听注册晚于页面建 WS** —— `page.on('websocket')` 只捕获注册后新建的 WS,`_connect`/data `_connect` 改为 **先 `ws_handler.start()` 再 `goto/_login`**(老 odds_client 注释:"必须在 goto 前挂拦截")。③ exec page timeout 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置并显式传给 `goto`,避免 BrowserManager 默认 30s 在 OE 首页超时。验证(`launchers/arb_node.py` + skip=true):`popup dismissed` + OE 账户 `0.00 → 37.49 GBP` 真余额 + 两腿 Connected + MatchedPair + 0 ERROR。**Gap C 连接路径(登录/弹窗/general WS/真 BALANCE→账户状态)完整 live 验证**。**Tier 1 探针**:`scripts/gapc_place_cancel_probe.py`(真账户 place+cancel 不成交:LAY@1.01 + OE 最小 stake 7 + 默认 dry-run/`--confirm` 真下单 + 撤单兜底;`--cleanup-only` 零下单 cancel/check;BACK odds 越大越好,`BACK@1.01` 不是保护价)。**2026-06-08 live**:首跑 `_submit_order`→venue_order_id ✓ / CURRENT_BETS working ✓ / reconcile ✓,但 `_cancel_order` 暴露 `missing market_id` bug;残单经 cleanup-only 清理且活单数 0。#77 修 `_cancel_order` 从 instrument 或 CURRENT_BETS 回填 `market_id/selection_id`,并加 `test_cancel_order_passes_market_id_from_current_bets`;#78 修后复跑完整 place+cancel 通过(offerId=221973242:submit/CURRENT_BETS/reconcile/cancel 全 ✓,cleanup-only 复查活单数 0)。**Tier 2(真成交)✅ live 验完成(#82)**:`scripts/gapc_fill_probe.py`(市价 BACK@1.01 TAKER、最小注、只下单+报告不撤不对冲)真下成交单 offerId=222016509(BACK Roberto Bautista Agut £7)。**真实 matched 帧**:`sizeMatched=7.00`/`averagePrice=2.3`(BACK@1.01 在最优 back 赔率 2.3 成交,价格改善)/`sizeRemaining=0.00`;`bet_order_progress` 派生 `filled/7.0/2.3` ✓。**`generate_order_filled` 探针内 0 次=探针无 ExecEngine 局限**(`OrderAccepted` 未 apply→cache 无 voi 索引→`_on_current_bets` 反查 None 跳过),非 bug;事件路径离线补验 `test_orbitexch_client.py::test_on_current_bets_matched_fires_generate_order_filled`(预置 `add_venue_order_id`→fire last_qty=7/last_px=2.3/MAKER)。**MAKER 硬编码已评估无害(#83)**:`_on_current_bets` 无条件 `liquidity_side=MAKER` —— OE 无 maker/taker 概念(博彩交易所,CURRENT_BETS 无该字段;那是 PM CLOB 的)、fill `commission=0`、rebate 在 strategy/portfolio 层算不读此字段 → 纯名义不改。详见 execution §4.3 Gap C 分档。
 
 ## Slice 7A 浮上(#46):scraper 浏览器自管 known divergence
 
@@ -116,7 +117,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 §6.8.3 原文写于 #68 拆页前("单页同出赔率 + 持仓/挂单")。#68 后页拆两类:**competition 页**(DataClient,赔率)/ **execution 页**(ExecClient,`CURRENT_BETS`=持仓/挂单)。恢复机制 = **reload 页 → 该页 WS 自然重推**(非 DOM 抓;监听跨 reload 存活 #67)。故:
 
-- **Phase 1 ✅ 已落地(时间维度)**:`adapters/orbitexch/data.py` —— `_connect` 挂 `HealthCheckLoop`(interval=`config.health_interval_secs`;Q19 互斥经 DataClient 订 `execution.started/finished` ref-count);`_on_price_frame` 写 `_comp_last_update_ns[page_key]`;`_run_health_check` 扫 competition 页,`now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` reload 分支(赔率防冻,对等 PM `_delayed_connect` 行情 WS 重连)。**离线测**:`test_data_client_step2.py` data-2.health.{1-5}。
+- **Phase 1 ✅ 已落地(时间维度)**:`adapters/orbitexch/data.py` —— `_connect` 挂 `HealthCheckLoop`(interval=`config.health_interval_secs`;Q19 互斥经 DataClient 订 `execution.started/finished` ref-count,**#89 起按 venue 过滤只数 OE 自己的腿**);`_on_price_frame` 写 `_comp_last_update_ns[page_key]`;`_run_health_check` 扫 competition 页,`now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` reload 分支(赔率防冻,对等 PM `_delayed_connect` 行情 WS 重连)。**离线测**:`test_data_client_step2.py` data-2.health.{1-5}。
 - **Phase 2 ✅ 代码已接(A 方案,用户选)+ ✅ live 验完成(#75,见下)**:`_run_health_check` 状态分支 —— `leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload **execution 页**(其 `CURRENT_BETS` WS 重推 → ExecClient `_on_current_bets` → leg_settled 标记)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`)。**安全闸 `config.health_check_exec_reload_enabled` #75 默认 True**(2026-06-08 live 验:reload 不重现弹窗 + CURRENT_BETS 重推 → 隐患消除;可经 `venues.orbitexch` 关回)。**离线测**:data-2.health.{6-10}。下方 2.health.2/.3/.4(设计意图原文,Phase 2)。设计见 execution §4.3 落地状态段。
 - **✅ #74 接线补全(cadence/闸经 arb_config 透传)**:#70 时 `config.{health_interval_secs,staleness_timeout_secs,health_check_exec_reload_enabled}` 只有 adapter 层硬编码默认(15/30/False),**dispatcher 没透传** → 生产路径 Phase 2 闸打不开、cadence 改不了。#74 补 `to_orbitexch_data_client_config` 直传 `venues.orbitexch.{health_interval_sec,staleness_timeout_sec,health_check_exec_reload_enabled}`(cadence 默认 **120s/300s**;Phase 2 闸 #75 live 验后默认 **True**);并删 ArbContext 死接线 `oe_health_interval_secs`(OE 宿主=DataClient 不走 ctx-kwarg,异于 PM)。**dispatcher 测**见 `config/README.md` `test_dispatcher`(+2)。注:本文件 data-2.health.* 离线测仍用 adapter 默认 30s 直构 config(不经 dispatcher),不受影响。设计见 `configuration.md §6`。
 - **Phase 2 真账户验证工具(零下单)**:`scripts/phase2_exec_reload_probe.py` —— 离线测只能证伪逻辑分支,reload 已登录交易页的**会话/弹窗**行为只能真账户验。探针真登录 OE → arm 未结腿(**不提交订单**)→ 驱动真实 `_run_health_check` 触发 `_reload_execution_page` → 报告:登录态存活 / 登录后弹窗是否重现 / `CURRENT_BETS` 是否重推。✅ **Phase 2 live 验完成(#75,2026-06-08)**:实测已登录后 reload **不重现登录弹窗**(仅首次登录弹)+ `CURRENT_BETS` 如期重推 → 隐患全消,安全闸 **#75 默认开**(`health_check_exec_reload_enabled=True`,可经 `venues.orbitexch` 显式关回)。探针 `scripts/phase2_exec_reload_probe.py`(真账户零下单)留作回归工具:`python3 -m scripts.phase2_exec_reload_probe --config arb_config.json --headed`。详见 execution §4.3 Phase 2 段。
@@ -125,9 +126,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **data-2.health.1**:page `now-last_update>staleness_timeout`(默认 30s)→ reload(`test_health_check_reloads_stale_page`)
 - **data-2.health.2**:刚收帧(last_update≈now)→ 不 reload(`test_health_check_skips_fresh_page`)
 - **data-2.health.3**:刚开页未收帧(无 last_update)→ 不 reload,避免开页即刷(`test_health_check_skips_page_without_update_yet`)
-- **data-2.health.4**:`execution.*` msgbus ref-count 升降、不为负(`test_exec_active_refcount_toggles`)
+- **data-2.health.4(#89 per-venue)**:OE 健康检查只数 **OE 自己的腿**(`_on_execution_started/finished` 按 msg instrument venue 过滤)—— OE 腿计入、PM 腿不计入、ref-count 不为负(`test_exec_active_refcount_only_counts_oe_legs`)。互斥是 venue-local:OE 健检 reload OE 页面只跟 OE 下单冲突,不跟 PM
 - **data-2.health.5**:收价格帧 → 写该页 `last_update_ns`(`test_price_frame_stamps_last_update_ns`)
-
 **新增离线用例(连接重试维度,补开已订阅未开的 competition 页,对齐 PM `_delayed_connect`)**:
 - **data-2.health.11**:已订阅(`_market_to_page_key`)但未开 → 健康检查补开(`test_health_check_reopens_missing_subscribed_page`)
 - **data-2.health.12**:补开失败不抛、不入册,**留下一次健康检查重试**(每 tick 再试一次,不本轮重试)(`test_health_check_reopen_failure_swallowed_retries_next_tick`)
@@ -280,14 +280,18 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **待**:单 bet item 字段映射 —— 工作假设与 REST `/customer/api/currentBets` `bets[]` 同源(`marketId`/`selectionId`/`sizeMatched`/`averagePrice`/`side`/...),**需 populated 抓帧确认**后实写 bet→OrderStatusReport 映射
 
 ### oe-adapter-5.client: OrbitExchExecutionClient 骨架(✅ 离线核心已测,集成 /live-test)
-**落地**: `src/arbitrage/execution/orbitexch.py`(`tests/arbitrage/execution/test_orbitexch_client.py`,全 arb 套件 76 passed)
+**落地**: `nautilus_trader/adapters/orbitexch/execution.py`(`tests/arbitrage/execution/test_orbitexch_client.py`)
 - **已测(离线)**: 离线可构造(super 只需 instrument_provider + 标准 NT 依赖);`_on_general_frame` BALANCE→`generate_account_state`(`oe_balance_to_account_balances`:WS 已净挂单→total=free GBP)、未知/null 忽略;`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单);`_submit_order` session 门控(cancel-only 丢弃 / executor 失败→reject)
+- **oe-adapter-5.client.popup.1(#89)**:登录后弹窗关闭策略。前置:`_login` 已进入 `/customer/`;输入:弹窗容器 `div[class*="_postLoginPopup_"]` 在 timeout 内出现;步骤:`_dismiss_post_login_popup` 等容器可见后调用 `page.mouse.click(24,160)` 点主页面区域;期望:不点 OK 按钮,记录 dismiss。**验收**:`test_dismiss_post_login_popup_clicks_main_page_when_popup_visible`。
+- **oe-adapter-5.client.popup.2(#89)**:无弹窗 / timeout 分支。前置同上;输入:等待弹窗容器超时;步骤:`_dismiss_post_login_popup`;期望:不抛异常、不点击页面、继续连接。**验收**:`test_dismiss_post_login_popup_timeout_continues_without_click`。
 - **#63 Gap C:`_connect` + 翻译 + 撤单结构接通**(原 `NotImplementedError` seam → 实现;仅非 skip 触达):
   - `nt_order_to_legacy_order` 纯映射(`test_execution_translation.py` 5 case)+ `_place_via_executor`(守卫 + executor.place_order)
   - `_connect`:共享 BM `create_page("execution")` + 持久化 profile 未登录才 `_login`(填 user/pwd 等 `/customer/`)+ `OrbitExchExecutor` + `OrbitExchWebSocketHandler.on_order_update(_on_general_frame)` + 初始 account state;`_disconnect` 停 ws_handler(不 close 共享 BM,#62)
   - `_cancel_order`→`_cancel_one`(executor.cancel_order + `generate_order_canceled/_cancel_rejected`;#77 必须带 `market_id`/`selection_id`,优先 instrument,缺则 CURRENT_BETS 回填)/ `_cancel_all_orders`→`cancel_all_unmatched` / `_cancel_residual_one`→`_cancel_one`
   - **订单回执已实写**:`current_bets_to_fills`(CURRENT_BETS 快照→`offerId` 算 `sizeMatched` delta)+ `_on_current_bets`→`generate_order_filled`。**2026-06-06 live 抓帧确认** item schema(`offerId`==venue_order_id 是 join key,修正旧 `marketId` 假设);仅 unmatched 态实测,matched 填充值待真成交。
-  - **真·待 /live-test**(真钱,需用户确认 + 经 `launchers/arb_node.py`,**非 place_and_cancel**——它跑老 `services/` 栈不验 NT client):真登录 + 真下注/撤单 + 真成交回执;补偿撤单**触发策略**([[bug_compensating_cancel_missing]])
+  - **live 已分档验证**:连接/余额、place+cancel、真成交 matched 帧均已验;2026-06-09 `launchers/arb_node.py`
+    真执行校准 #85:OE `placeBets` venue 回执返回 offerIds;下一轮 cancel-only 能撤旧 open order,说明
+    NT cache 已有 open order + venue_order_id。未成交订单按 Q15 等到 30s 绝对超时,属于当前默认语义。
 
 ### oe-adapter-5.ws.2: WS 余额帧 → generate_account_state(✅ 解析层+客户端路由已实现+测)
 **前置**: `parse_general_frame` 识别 `BALANCE` 帧 → `{"type":"balance","balance":float,"av_balance":...}`(已测,含 null/字符串/非法值/嵌套 JSON 字符串 payload 健壮)
@@ -309,6 +313,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - 撤掉残留 → track 到 CANCELED terminal → 命中方向 `leg_settled=true`
 - strategy 端不到下一轮重发,系统不替它补发
 **验收**: cancel session 单一职责,submit 被显式丢弃
+- **日志锚点(#85)**:`Execution session cancel-only` 打印新单 `client_order_id` 与残留单
+  `client_order_id/venue_order_id`,用于 live 确认下一轮确实先撤旧 open order。
 
 ### oe-adapter-5.session.2: submit+track session(无残留)(Q13)
 
@@ -382,6 +388,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - 进 NT 标准管道
 - `leg_settled[X][home] = true`(说明 submit 已到 venue,通讯通道存活)
 **验收**: 即使没有任何 fill,settled 也已为 true → health check 不再误判"完全没回信"
+- **日志锚点(#85)**:`Execution session accepted` 打印
+  `client_order_id/venue_order_id/instrument_id`,用于 live 确认 accepted 事件进入 session 漏斗。
 
 ---
 
@@ -411,16 +419,16 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - 静态搜索 execution timeout 处理代码:仅 log + 结束 session
 - 状态自洽:cache.order = `PARTIALLY_FILLED`,position = $30,settled = true,strategy 下轮闭环
 
-### oe-adapter-5.timeout.3: submit+track session 超时(零 venue 响应)(Q15 极端)
+### oe-adapter-5.timeout.3: submit+track session 超时(零 venue 响应)(Q15 极端,默认契约)
 
 **前置**: session timeout = 30s;`leg_settled[X][home] = false`
 **输入**: submit → venue 端无任何响应(可能 submit 没到 / WS 死)→ 30s timeout
 **期望**:
-- 30s timeout:session 结束,无任何补救
+- 默认 30s timeout:session 结束,无任何补救
 - `leg_settled[X][home]` 仍 = false(从未收到确认)
 - 下一个 OE health check tick 看到 `settled=false` → 触发兜底刷新页面 → 通过 `generate_*_status_report` 同步 → settled=true
 **验收**:
-- timeout 不试图自救,**依赖健康检查兜底**
+- 共用 session 默认 timeout 不试图自救,**依赖健康检查兜底**
 - 这是"通讯通道死了"的兜底闭环验证
 
 ### oe-adapter-5.timeout.4: cancel-only session 超时(Q15)
@@ -441,3 +449,16 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - timeout alert 仍在 `submit_ts + 30s` fire,**与最后 partial 时刻无关**
 - 绝对超时语义:alert 一次性设在 submit 时刻 + timeout,partial 事件**不调** `set_time_alert`(不重设)
 **验收**: 静态检查:partial fill 处理路径无 `set_time_alert_ns` 重设超时 alert 的调用
+
+### oe-adapter-5.timeout.6: accepted 后未成交等待绝对超时(#85 校准)
+
+**前置**: session timeout = 30s;OE `_place_via_executor` 返回 `status=OK + offerIds`;`_submit_order` 成功路径调用 `generate_order_accepted`,订单保持 unmatched。
+**输入**: strategy submit → OE 下单 accepted → 30s 内没有 fill/cancel/reject/expire terminal。
+**期望**:
+- submit+track session 继续等待直到 30s 绝对超时,不因 accepted 提前结束。
+- timeout 只结束 session / 释放执行闸,不做 cleanup / retry / recovery。
+- 下一轮机会如果发现 cache 仍有 open order,进入 cancel-only,先撤旧单并丢弃当次 submit。
+**验收**:
+- live #85 复验:两笔 `placeBets` 返回 offerIds 后 30s timeout;下一轮 cancel-only 成功撤
+  `222032569`/`222032570`,反证 cache 已有 open order + venue_order_id。
+- 诊断候选 `_page_write_lock` / request-response 日志已撤回。

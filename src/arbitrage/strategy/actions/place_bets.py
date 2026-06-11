@@ -23,8 +23,15 @@ _LOG = logging.getLogger(__name__)
 class PlaceBetsAction(Action):
     """通用下单 Action。"""
 
-    def __init__(self, share: float = 22.5) -> None:
+    def __init__(
+        self,
+        share: float = 22.5,
+        price_overrides: dict[str, float] | None = None,
+        qty_overrides: dict[str, float] | None = None,
+    ) -> None:
         self._share = float(share)
+        self._price_overrides = _normalize_venue_overrides(price_overrides)
+        self._qty_overrides = _normalize_venue_overrides(qty_overrides)
 
     async def execute(self, ctx: EvalContext) -> None:
         legs = ctx.scratch.get("legs", [])
@@ -40,12 +47,14 @@ class PlaceBetsAction(Action):
             f"mean_rebate_rate={rate}",
         )
         for leg in legs:
-            size = _compute_size(leg["venue"], self._share, leg["price"])
+            venue = leg["venue"]
+            price = self._price_overrides.get(venue, leg["price"])
+            size = self._qty_overrides.get(venue, _compute_size(venue, self._share, price))
             spec = {
                 "instrument_id": leg["instrument_id"],
                 "side": leg["side"],
                 "qty": size,
-                "price": leg["price"],
+                "price": price,
             }
             if submitter is not None:
                 # slice 10a(#50):真出单(SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成)
@@ -54,7 +63,7 @@ class PlaceBetsAction(Action):
                 # log-only fallback(无 submitter 注入;单测 / smoke)
                 _LOG.info(
                     f"  would submit: instrument={leg['instrument_id']} side={leg['side']} "
-                    f"role={leg['role']} venue={leg['venue']} qty={size:.4f} price={leg['price']}",
+                    f"role={leg['role']} venue={venue} qty={size:.4f} price={price}",
                 )
 
 
@@ -67,3 +76,10 @@ def _compute_size(venue: str, share: float, price: float) -> float:
             return 0.0
         return share / price
     return 0.0
+
+
+def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:
+    """配置里的 venue key 统一转大写,便于临时 live 验证覆盖。"""
+    if not raw:
+        return {}
+    return {str(k).upper(): float(v) for k, v in raw.items()}

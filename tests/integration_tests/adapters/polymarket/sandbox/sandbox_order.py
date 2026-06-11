@@ -13,10 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from py_clob_client.client import BalanceAllowanceParams
-from py_clob_client.client import OrderArgs
-from py_clob_client.client import PartialCreateOrderOptions
-from py_clob_client.clob_types import AssetType
+from py_clob_client_v2 import BalanceAllowanceParams
+from py_clob_client_v2 import OrderArgs
+from py_clob_client_v2 import PartialCreateOrderOptions
+from py_clob_client_v2.clob_types import AssetType
 
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 

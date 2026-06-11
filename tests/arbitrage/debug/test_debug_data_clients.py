@@ -10,6 +10,13 @@ from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import MockCategory
 from src.arbitrage.debug.config import MockDataItem
 from src.arbitrage.debug.data_clients import _DebugDataClientMixin
+from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.enums import BookAction
+from nautilus_trader.model.enums import OrderSide
+from tests.arbitrage.risk._factories import oe_instrument
+from tests.arbitrage.risk._factories import pm_instrument
 
 
 class _RecorderBase:
@@ -23,9 +30,41 @@ class _RecorderBase:
 
 
 class _DebugClient(_DebugDataClientMixin, _RecorderBase):
-    def __init__(self, debug):
+    def __init__(self, debug, cache=None):
         super().__init__()
         self._debug = debug
+        self._cache = cache
+
+
+class _Cache:
+    def __init__(self, instrument):
+        self._instrument = instrument
+
+    def instrument(self, instrument_id):
+        return self._instrument if instrument_id == self._instrument.id else None
+
+
+def _source_deltas(instrument):
+    order = BookOrder(
+        side=OrderSide.SELL,
+        price=instrument.make_price(0.50),
+        size=instrument.make_qty(10),
+        order_id=1,
+    )
+    return OrderBookDeltas(
+        instrument.id,
+        [
+            OrderBookDelta(
+                instrument_id=instrument.id,
+                action=BookAction.ADD,
+                order=order,
+                flags=0,
+                sequence=1,
+                ts_event=11,
+                ts_init=22,
+            ),
+        ],
+    )
 
 
 # ── debug-A.1: 默认 passthrough(`_maybe_substitute` 返 None,原 data 透传)─
@@ -75,6 +114,73 @@ def test_hook_reads_debug_config_mock_data():
     client = _Sub(debug=cfg)
     client._handle_data("ignored")
     assert client.received == ["price=0.5"]
+
+
+def test_default_odds_mock_replaces_polymarket_order_book_deltas():
+    inst = pm_instrument("ATP", "home")
+    cfg = DebugConfig(enabled=True)
+    cfg.mock_data["pm_home"] = MockDataItem(
+        id="pm_home",
+        category=MockCategory.ODDS,
+        enabled=True,
+        data={"bid": 0.01, "ask": 0.02, "size": 5.0},
+        conditions={"venue": "polymarket", "market_type": "home"},
+    )
+    source = _source_deltas(inst)
+
+    client = _DebugClient(debug=cfg, cache=_Cache(inst))
+    client._handle_data(source)
+
+    out = client.received[0]
+    assert isinstance(out, OrderBookDeltas)
+    assert out is not source
+    assert [d.action for d in out.deltas] == [BookAction.CLEAR, BookAction.ADD, BookAction.ADD]
+    assert out.deltas[1].order.side == OrderSide.BUY
+    assert float(out.deltas[1].order.price) == 0.01
+    assert out.deltas[2].order.side == OrderSide.SELL
+    assert float(out.deltas[2].order.price) == 0.02
+    assert out.deltas[0].ts_event == 11
+    assert out.deltas[0].ts_init == 22
+
+
+def test_default_odds_mock_accepts_orbitexch_back_lay_names():
+    inst = oe_instrument("ATP", "away")
+    cfg = DebugConfig(enabled=True)
+    cfg.mock_data["oe_away"] = MockDataItem(
+        id="oe_away",
+        category=MockCategory.ODDS,
+        enabled=True,
+        data={"back": 2.0, "lay": 2.2, "size": 7.0},
+        conditions={"venue": "orbitexch", "market_type": "away"},
+    )
+
+    client = _DebugClient(debug=cfg, cache=_Cache(inst))
+    client._handle_data(_source_deltas(inst))
+
+    out = client.received[0]
+    assert [d.action for d in out.deltas] == [BookAction.CLEAR, BookAction.ADD, BookAction.ADD]
+    assert out.deltas[1].order.side == OrderSide.BUY
+    assert float(out.deltas[1].order.price) == 2.0
+    assert out.deltas[2].order.side == OrderSide.SELL
+    assert float(out.deltas[2].order.price) == 2.2
+
+
+def test_default_odds_mock_no_match_passes_through():
+    inst = pm_instrument("ATP", "home")
+    cfg = DebugConfig(enabled=True)
+    cfg.mock_data["pm_away"] = MockDataItem(
+        id="pm_away",
+        category=MockCategory.ODDS,
+        enabled=True,
+        data={"ask": 0.02},
+        conditions={"venue": "polymarket", "market_type": "away"},
+    )
+    source = _source_deltas(inst)
+
+    client = _DebugClient(debug=cfg, cache=_Cache(inst))
+    client._handle_data(source)
+
+    assert client.received == [source]
 
 
 # ── debug_config 访问器 ──────────────────────────────────────

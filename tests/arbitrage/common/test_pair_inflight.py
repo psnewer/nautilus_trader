@@ -56,6 +56,21 @@ def test_max_hold_self_heal_on_leak():
     assert g.try_enter("P", now_ns=_MAX_HOLD + 1, max_hold_ns=_MAX_HOLD) is True
 
 
+def test_clear_all_wipes_inflight_and_exec_count():
+    """§6.10 §7 兜底:clear_all 连 _inflight + _exec_count 一起清(max-hold 清不到 exec_count)。"""
+    g = PairInFlightGate()
+    g.try_enter("P1", now_ns=0, max_hold_ns=_MAX_HOLD)
+    g.try_enter("P2", now_ns=0, max_hold_ns=_MAX_HOLD)
+    g.exec_started("P1")                                 # 模拟泄漏的脏计数
+    g.clear_all()
+    assert g.is_in_flight("P1") is False and g.is_in_flight("P2") is False
+    # exec_count 也清了:再 try_enter + 正常 exec 流程不被脏计数干扰
+    assert g.try_enter("P1", now_ns=1, max_hold_ns=_MAX_HOLD) is True
+    g.exec_started("P1")
+    g.exec_finished("P1")
+    assert g.is_in_flight("P1") is False                 # 计数干净,1→0 正常释放
+
+
 def test_exec_finished_without_started_is_safe():
     """防御:exec_finished 多于 started 不崩、不负计数。"""
     g = PairInFlightGate()

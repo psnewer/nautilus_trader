@@ -33,12 +33,13 @@ def test_polymarket_data_client_config_maps_credentials():
         "clob_url": "https://x.com", "ws_url": "wss://y.com",
         "proxy_url": "http://127.0.0.1:7890",
         "clob_api_key": "K", "clob_api_secret": "S", "clob_passphrase": "P",
-        "private_key": "0xpk", "funder": "0xfn",
+        "signature_type": 2, "private_key": "0xpk", "funder": "0xfn",
     }})
     cc = to_polymarket_data_client_config(cfg)
     assert cc.api_key == "K"
     assert cc.api_secret == "S"
     assert cc.passphrase == "P"
+    assert cc.signature_type == 2
     assert cc.private_key == "0xpk"
     assert cc.funder == "0xfn"
     assert cc.base_url_http == "https://x.com"
@@ -67,7 +68,14 @@ def test_polymarket_exec_client_config_maps_credentials():
     }})
     cc = to_polymarket_exec_client_config(cfg)
     assert cc.api_key == "K"
+    assert cc.signature_type == 0
     assert cc.base_url_ws == "wss://ws-subscriptions-clob.polymarket.com/ws/"
+
+
+def test_polymarket_exec_client_config_maps_signature_type():
+    cfg = _cfg(venues={"polymarket": {"signature_type": 2}})
+    cc = to_polymarket_exec_client_config(cfg)
+    assert cc.signature_type == 2
 
 
 def test_polymarket_exec_client_config_maps_proxy():

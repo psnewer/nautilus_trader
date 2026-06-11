@@ -82,6 +82,7 @@ class PolymarketSectionConfig(Struct, kw_only=True):
     relayer_url:              str = "https://relayer-v2.polymarket.com/"
     polygon_rpc_url:          str = "https://polygon-rpc.com/"
     proxy_url:                str | None = None  # PM HTTP/WS 代理;loader 可从 env 注入
+    signature_type:           int = 0            # EOA=0;Polymarket proxy/funder 钱包通常为 2
     # 凭证字段(loader 阶段从 env 注入,不入 JSON;详见 §4)
     clob_api_key:             str | None = None
     clob_api_secret:          str | None = None
@@ -164,6 +165,12 @@ class DebugSectionConfig(Struct, kw_only=True):
     mock_data:  dict = {}      # {id: {category, enabled, data, conditions, priority}}
 ```
 
+`strategy.enabled=false` 的语义是**禁用策略决策 / Action**,不是关闭 `StrategyEvaluator`
+Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → SubscribeOrderBookDeltas`
+的订阅桥职责;如果直接不装 Actor,PM/OE OBD 也不会被订阅。dispatcher 因此在 disabled 时让
+`to_strategy_registry(cfg)` 返回空 registry:Evaluator 仍接收 `MatchedPair` 并发起 OBD 订阅,
+但查不到策略后 no-op,不会触发 `PlaceBetsAction` / submit。
+
 ---
 
 ## 3. JSON 文件 schema(用户视角)
@@ -220,6 +227,7 @@ class DebugSectionConfig(Struct, kw_only=True):
 | `POLYMARKET_CLOB_API_KEY` | `venues.polymarket.clob_api_key` | 沿用 |
 | `POLYMARKET_CLOB_SECRET` | `venues.polymarket.clob_api_secret` | 沿用(注意旧码用 `_SECRET` 不是 `_API_SECRET`)|
 | `POLYMARKET_CLOB_PASSPHRASE` | `venues.polymarket.clob_passphrase` | 沿用 |
+| `POLYMARKET_SIGNATURE_TYPE` | `venues.polymarket.signature_type` | NT 上游 CLOB 签名类型;EOA=0,proxy/funder 钱包=2 |
 | `POLYMARKET_PRIVATE_KEY` | `venues.polymarket.private_key` | 沿用 |
 | `POLYMARKET_FUNDER` | `venues.polymarket.funder` | 沿用 |
 | `POLYMARKET_USER_ADDRESS` *(或 `POLYMARKET_ADDRESS` 兼容)* | `venues.polymarket.user_address` | 沿用 |
@@ -270,10 +278,18 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict: ...     # prepare_arb_co
 def to_debug_config(cfg: ArbConfig) -> DebugConfig | None: ...
 ```
 
+PM dispatcher 必须把 `venues.polymarket.signature_type` 同时透传给 Data/Exec config。否则
+proxy/funder 钱包会按 EOA(`0`)查 CLOB collateral,表现为 NT 账户余额 `0.000000 USDC.e`,
+而同一凭证用 `signature_type=2` 才能读到真实 proxy 钱包余额。
+
 `to_strategy_evaluator_config` 只把 `cfg.strategy.log_evaluations` 映射到
 `StrategyEvaluatorConfig.log_evaluations`;registries / store / portfolio / execution-active callable
 等运行时依赖仍由 launcher 经 `_RuntimeDeps` 注入。`log_evaluations` 默认 `False`;仅在专项诊断时临时设
 `true` 输出 strategy evaluate 的 schedule / skip / result / fire 锚点,常规 smoke / 示例配置保持关闭。
+
+`to_strategy_registry(cfg)` 消费 `cfg.strategy.enabled`:为 `False` 时直接返回空
+`StrategyRegistry`,即便 JSON 里仍有 `strategies/bindings`。这用于 live observe / smoke 只看 discovery
+→ matching → OBD 数据链路,不触发策略 Action。
 
 OE `venues.orbitexch.page_load_timeout_sec` 是共享页面加载超时,dispatcher 转为毫秒后同时传给
 `OrbitExchDataClientConfig.page_timeout`、`OrbitExchExecClientConfig.page_timeout` 和 discovery scraper
@@ -365,6 +381,9 @@ def strategy_from_json(strategy_id: str, spec: dict, scope: str) -> Strategy:
 def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
     """从 cfg.strategy.strategies + cfg.strategy.bindings 装配 StrategyRegistry。"""
 ```
+
+`cfg.strategy.enabled=false` 时返回空 registry;这保留 `StrategyEvaluator` 的 OBD 订阅桥,
+但禁用策略树评估与 Action。
 
 **错误路径**:Check/Action `type` 不在 registry → `ConfigError(unknown check type: ...)`;binding 引用未知 strategy_id → `ConfigError`。
 

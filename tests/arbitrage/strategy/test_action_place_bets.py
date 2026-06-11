@@ -94,6 +94,34 @@ def test_action_calls_submitter_when_present(caplog):
     assert not any("would submit" in m for m in msgs)
 
 
+def test_action_can_override_venue_price_and_qty_for_live_probe():
+    """临时 live 验证可覆盖 OE 下单价/量,但不影响 Check 使用真实 order book 算机会。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4},
+    ]
+
+    action = PlaceBetsAction(
+        share=22.5,
+        price_overrides={"orbitexch": 1000.0},
+        qty_overrides={"ORBITEXCH": 7.0},
+    )
+    _run(action.execute(ctx))
+
+    assert calls == [{
+        "instrument_id": "A.ORBITEXCH",
+        "side": "BUY",
+        "qty": 7.0,
+        "price": 1000.0,
+    }]
+
+
 def test_submitter_none_falls_back_to_log_only():
     """显式确认:submitter=None 走 log-only,无 raise(已被 test_action_logs_each_leg 覆盖,但显式再确认)。"""
     ctx = EvalContext(pair_id="p", submitter=None)

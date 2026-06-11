@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import msgspec
 import pytest
+from py_clob_client_v2.exceptions import PolyApiException
 
 import src.arbitrage.bootstrap as bootstrap
 from launchers import arb_node
@@ -174,6 +175,112 @@ def test_main_parses_config_and_runs(tmp_path, monkeypatch):
     assert rc == 0
     fake_node.run.assert_called_once()
     fake_node.dispose.assert_called_once()
+
+
+def test_main_preflight_polymarket_exits_before_build(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "arb_config.json"
+    cfg_path.write_text("{}")
+
+    preflight = MagicMock()
+    build = MagicMock()
+    monkeypatch.setattr(arb_node, "preflight_polymarket_trading", preflight)
+    monkeypatch.setattr(arb_node, "bootstrap_and_build", build)
+
+    rc = arb_node.main(["--config", str(cfg_path), "--preflight-polymarket"])
+
+    assert rc == 0
+    preflight.assert_called_once()
+    build.assert_not_called()
+
+
+def test_main_preflight_polymarket_failure_returns_2(tmp_path, monkeypatch, capsys):
+    cfg_path = tmp_path / "arb_config.json"
+    cfg_path.write_text("{}")
+
+    def fail(_cfg):
+        raise RuntimeError("Polymarket trading is geoblocked")
+
+    monkeypatch.setattr(arb_node, "preflight_polymarket_trading", fail)
+    monkeypatch.setattr(arb_node, "bootstrap_and_build", MagicMock())
+
+    rc = arb_node.main(["--config", str(cfg_path), "--preflight-polymarket"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Polymarket preflight failed" in err
+    assert "geoblocked" in err
+
+
+def test_main_preflight_polymarket_sdk_error_returns_2(tmp_path, monkeypatch, capsys):
+    cfg_path = tmp_path / "arb_config.json"
+    cfg_path.write_text("{}")
+
+    def fail(_cfg):
+        raise PolyApiException(error_msg="Request exception!")
+
+    monkeypatch.setattr(arb_node, "preflight_polymarket_trading", fail)
+    monkeypatch.setattr(arb_node, "bootstrap_and_build", MagicMock())
+
+    rc = arb_node.main(["--config", str(cfg_path), "--preflight-polymarket"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Polymarket preflight failed" in err
+    assert "Request exception" in err
+
+
+def test_preflight_polymarket_trading_uses_exec_proxy(monkeypatch, capsys):
+    cfg = _cfg(venues={"polymarket": {"proxy_url": "http://127.0.0.1:7890"}})
+    calls = []
+
+    def fake_check(proxy_url):
+        calls.append(proxy_url)
+        return {"blocked": False, "country": "IE", "region": "", "ip": "203.0.113.42"}
+
+    class _Client:
+        def get_server_time(self):
+            return 123
+
+        def get_open_orders(self):
+            return []
+
+        def get_balance_allowance(self, params):
+            return {"balance": "1000000"}
+
+    monkeypatch.setattr(arb_node, "check_polymarket_geoblock", fake_check)
+    monkeypatch.setattr(arb_node, "get_polymarket_http_client", lambda **kwargs: _Client())
+
+    arb_node.preflight_polymarket_trading(cfg)
+
+    assert calls == ["http://127.0.0.1:7890"]
+    out = capsys.readouterr().out
+    assert "Polymarket preflight OK" in out
+    assert "open_order_count=0" in out
+    assert "balance=1.000000 USDC.e" in out
+
+
+def test_preflight_polymarket_trading_rejects_zero_balance(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr(
+        arb_node,
+        "check_polymarket_geoblock",
+        lambda proxy_url: {"blocked": False, "country": "IE", "region": "", "ip": "203.0.113.42"},
+    )
+
+    class _Client:
+        def get_server_time(self):
+            return 123
+
+        def get_open_orders(self):
+            return []
+
+        def get_balance_allowance(self, params):
+            return {"balance": "0"}
+
+    monkeypatch.setattr(arb_node, "get_polymarket_http_client", lambda **kwargs: _Client())
+
+    with pytest.raises(RuntimeError, match="balance is zero"):
+        arb_node.preflight_polymarket_trading(cfg)
 
 
 def test_main_disposes_even_on_run_exception(tmp_path, monkeypatch):

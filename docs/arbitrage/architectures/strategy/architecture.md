@@ -166,6 +166,11 @@ class StrategyRegistry:
 **算法 `evaluate_tree` 是 `condition.py` 的模块级纯函数**(从 Actor 解耦,可全单测;Actor 只做
 orchestration:snapshot / gather / fire)。
 
+`strategy.enabled=false` 不卸载本 Actor。原因是本 Actor 还承担 `MatchedPair` 后
+`_ensure_obd_subscribed` 的 OBD 订阅桥职责;卸载会让 PM/OE 盘口不进入 cache。禁用策略时,
+配置 dispatcher 返回空 `StrategyRegistry`,Evaluator 仍订阅 OBD,但 `_route_eval` 查不到策略后 no-op,
+因此不会评估条件树或触发 Action/submit。
+
 ```python
 # condition.py(模块级,纯)
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
@@ -265,7 +270,8 @@ loader 解析前缀 → 调对应 `register_pair/_competition/_sport`。
 
 **配置驱动 vs 代码硬编码**(#41 Q25 决策):配置驱动允许用户在 JSON 里递归组合
 Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了真正的运行时 wiring。
-**dispatch 路径**:`to_strategy_registry(cfg)`(`config/dispatcher.py`)。
+**dispatch 路径**:`to_strategy_registry(cfg)`(`config/dispatcher.py`)。`strategy.enabled=false`
+时 dispatcher 返回空 registry,保留 OBD 订阅桥但禁用策略 Action。
 
 ### 3.8 slice 9 落地(#49):per-pair 隔离 + per-eval scratch + 用户域 Check/Action
 
@@ -291,7 +297,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 |---|---|---|
 | `PreMatchCheck()` | `src/arbitrage/strategy/checks/pre_match.py` | 无参;`passes = not ctx.snapshot.in_play`;放 `checktion` 列表前位,利用 `all` 短路避免后续 Check 跑空 |
 | `MeanRebateCheck(min_rate)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写 `ctx.scratch["legs"]` + return True |
-| `PlaceBetsAction(share)` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;PM=`size=share` / OE=`size=share/price`(stake);`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
+| `PlaceBetsAction(share, price_overrides=None, qty_overrides=None)` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;PM=`size=share` / OE=`size=share/price`(stake);`price_overrides` / `qty_overrides` 是 venue-keyed Action 参数,只改最终 submit spec,不改 mean_rebate 用真实 order book 选腿;`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
 
 **OE DataClient `_on_price_frame` 透 inPlay**:每帧调 `write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper;helper 防御性 — instrument 不在 cache 不 raise(冷启动场景)。
 
@@ -318,6 +324,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 **PlaceBetsAction.execute 双路径**(slice 10a):
 - `ctx.submitter` 非 None → `await submitter(spec)` 真出单(log `PlaceBets[submit]`)
 - `ctx.submitter` None → log-only fallback(log `PlaceBets[smoke]` + `would submit: ...`)
+- Action 参数覆盖(#88):`price_overrides={"ORBITEXCH": 1000.0}` / `qty_overrides={"ORBITEXCH": 7.0}` 只用于构造最终 submit spec,适合 live 验证“不成交挂单 → 下一轮 cancel-only”这类执行路径;`MeanRebateCheck` 仍用真实 OBD 的 best ask 计算机会与选择 venue,execution 仍透明执行传入订单内容。
 
 **配合 Q11.3 SkipExecutionClient**:`debug.skip_execution=true` 时 SkipExecutionClient 拦 ExecClient `_submit_order` mock 全成,**Action→submitter→真 SubmitOrder→SkipExecution 兜底**完整链路安全可跑(不上链)。
 
@@ -367,6 +374,7 @@ elif comp_res.hit: fire(comp_res.pending_action)
 ### 4.5 Q19 互斥 + Q20 快照咬合
 
 - **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:`_execution_active`/`leg_settled` 都在异步 `_submit_order` 下游才置位,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
+- **健康检查互斥 + 兜底 clear_all(§6.10 §7.6,#88)**:`on_start` 订 `health_check.*`,维护**在跑的 source 集合** `_hc_running`(per-venue,非 ref-count;started→add/finished→discard)。`_route_eval` pre-check `if _hc_running: 放弃 fire`(健检 reload 页面期间不下单)。收到任一 `finished` 且 `_hc_running` 空 且 `not leg_settled.has_any_unsettled()`(arb 级判据)→ `pair_inflight.clear_all()`(兜底清异常泄漏的 per-pair 闸;不叠加 is_execution_active,详见 synchronization.md §7.6)。
 - evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
 - evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
 - 回收:绑 per-evaluation 上下文,evaluate + fire 结束 GC

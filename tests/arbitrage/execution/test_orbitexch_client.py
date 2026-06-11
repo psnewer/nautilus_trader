@@ -89,6 +89,65 @@ def test_on_general_frame_null_balance_no_account_state():
     assert calls == []
 
 
+# ── 登录后弹窗 ────────────────────────────────────────────────────
+class _FakePopup:
+    def __init__(self, *, raises=False):
+        self.raises = raises
+        self.waits = []
+
+    async def wait_for(self, *, state, timeout):
+        self.waits.append((state, timeout))
+        if self.raises:
+            raise TimeoutError("popup not visible")
+
+
+class _FakeLocator:
+    def __init__(self, popup):
+        self.first = popup
+
+
+class _FakeMouse:
+    def __init__(self):
+        self.clicks = []
+
+    async def click(self, x, y):
+        self.clicks.append((x, y))
+
+
+class _FakePage:
+    def __init__(self, popup):
+        self.popup = popup
+        self.mouse = _FakeMouse()
+        self.selectors = []
+
+    def locator(self, selector):
+        self.selectors.append(selector)
+        return _FakeLocator(self.popup)
+
+
+def test_dismiss_post_login_popup_clicks_main_page_when_popup_visible():
+    c = _client()
+    popup = _FakePopup()
+    c._page = _FakePage(popup)
+
+    _run(c._dismiss_post_login_popup())
+
+    assert c._page.selectors == ['div[class*="_postLoginPopup_"]']
+    assert popup.waits == [("visible", 7000)]
+    assert c._page.mouse.clicks == [(24, 160)]
+
+
+def test_dismiss_post_login_popup_timeout_continues_without_click():
+    c = _client()
+    popup = _FakePopup(raises=True)
+    c._page = _FakePage(popup)
+
+    _run(c._dismiss_post_login_popup())
+
+    assert popup.waits == [("visible", 7000)]
+    assert c._page.mouse.clicks == []
+
+
 # ── modify 拒绝 ────────────────────────────────────────────────────
 def test_modify_order_is_rejected():
     c = _client()

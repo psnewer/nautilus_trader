@@ -55,6 +55,7 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
     pm = cfg.venues.polymarket
     return PolymarketDataClientConfig(
         private_key=pm.private_key,
+        signature_type=pm.signature_type,
         funder=pm.funder,
         api_key=pm.clob_api_key,
         api_secret=pm.clob_api_secret,
@@ -74,6 +75,7 @@ def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConf
     pm = cfg.venues.polymarket
     return PolymarketExecClientConfig(
         private_key=pm.private_key,
+        signature_type=pm.signature_type,
         funder=pm.funder,
         api_key=pm.clob_api_key,
         api_secret=pm.clob_api_secret,
@@ -146,9 +148,14 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
     **前置**:用户必须先调 `register_check(name, cls)` / `register_action(name, cls)` 注册
     具体 Check/Action 类(slice 9 用户域)。未注册的 type 名 → `StrategyConfigError`。
 
+    `strategy.enabled=false` → 空 registry:保留 StrategyEvaluator 作为 MatchedPair→OBD 订阅桥,
+    但不挂任何策略,因此不评估、不触发 Action。
+
     空 bindings → 空 registry(launcher 仍能起 connect/discovery/matching,
     `StrategyEvaluator` no-op evaluate)。
     """
+    if not cfg.strategy.enabled:
+        return StrategyRegistry()
     return build_strategy_registry(cfg.strategy)
 
 

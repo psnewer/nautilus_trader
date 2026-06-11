@@ -228,11 +228,21 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
     # ── §6.8.3 健康检查(宿主 = DataClient;Phase 1 = 时间维度赔率防冻)──────
     # Q19 互斥(§6.10):DataClient 与 ExecClient 不同对象,故订 `execution.*` 自维护 ref-count。
+    @staticmethod
+    def _is_oe_exec_msg(msg) -> bool:
+        """per-venue 互斥(#89):只数 **OE 自己的腿**。`execution.*` 是全局 topic(PM/OE 共发),
+        OE 健康检查(reload OE 页面)只跟 OE 下单冲突,不跟 PM —— 故按 msg 的 instrument venue 过滤。
+        msg = `{"instrument_id": InstrumentId, "pair_id": ...}`(session.py:_publish_execution)。"""
+        venue = getattr((msg or {}).get("instrument_id"), "venue", None)
+        return getattr(venue, "value", None) == ORBITEXCH
+
     def _on_execution_started(self, msg) -> None:
-        self._exec_active_count += 1
+        if self._is_oe_exec_msg(msg):
+            self._exec_active_count += 1
 
     def _on_execution_finished(self, msg) -> None:
-        self._exec_active_count = max(0, self._exec_active_count - 1)
+        if self._is_oe_exec_msg(msg):
+            self._exec_active_count = max(0, self._exec_active_count - 1)
 
     def _is_execution_active(self) -> bool:
         return self._exec_active_count > 0
@@ -348,10 +358,11 @@ class OrbitExchDataClient(LiveMarketDataClient):
         if page is None:
             page_name = f"comp-{page_key}"
             page = await self._browser_manager.create_page(page_name)
-            handler = OrbitExchWebSocketHandler(page)
+            handler = OrbitExchWebSocketHandler(page, logger=self._log)
             handler.on_price_update(self._on_price_frame)
             try:
                 await handler.start()                   # #67:先挂监听
+                await page.bring_to_front()             # #87:OE prices socket 受页面/market 可见性影响
                 await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
             except Exception:
                 with suppress(Exception):
@@ -364,6 +375,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
             self._log.info(f"OE competition page opened: {page_key} ({self._websocket_summary(handler)})")
         else:
             handler = self._comp_handlers.get(page_key)
+            await page.bring_to_front()
             await page.reload(wait_until="networkidle", timeout=timeout_ms)
             summary = self._websocket_summary(handler) if handler is not None else "ws_count=unknown"
             self._log.info(f"OE competition page reloaded: {page_key} ({summary})")

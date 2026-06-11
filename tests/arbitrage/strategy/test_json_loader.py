@@ -290,6 +290,20 @@ def test_empty_bindings_returns_empty_registry():
     assert reg.get_for("x", "y", "z") is None
 
 
+def test_strategy_disabled_returns_empty_registry_even_with_bindings():
+    """strategy.enabled=false → 保留 OBD 订阅桥,但 registry 为空,不触发策略 Action。"""
+    cfg = msgspec.convert(
+        {"strategy": {
+            "enabled": False,
+            "strategies": {"s": {"arbitrage_tree": {"action": {"type": "noop"}}}},
+            "bindings": [{"scope": "sport:Tennis", "strategy_id": "s"}],
+        }},
+        type=ArbConfig,
+    )
+    reg = to_strategy_registry(cfg)
+    assert reg.get_for("any", "ATP", "Tennis") is None
+
+
 # ─── helpers ──────────────────────────────────────────────────────
 
 def _ctx(store):

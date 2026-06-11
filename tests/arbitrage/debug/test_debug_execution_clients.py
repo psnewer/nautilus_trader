@@ -11,7 +11,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-from py_clob_client.exceptions import PolyApiException
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.model.currencies import GBP
 from nautilus_trader.model.currencies import USDC_POS
@@ -21,6 +21,7 @@ from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecu
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
 from src.arbitrage.debug.execution_clients import _mock_fill
+from src.arbitrage.debug.execution_clients import _mock_submit
 from src.arbitrage.debug.execution_clients import SkipExecutionPolymarketClient
 
 
@@ -100,6 +101,30 @@ def test_mock_fill_uses_order_price_when_present():
     assert str(rec.filled[0]["last_px"]) == "0.37"
 
 
+def test_mock_submit_starts_session_then_mock_fills(monkeypatch):
+    rec = _Recorder()
+    cmd = MagicMock(); cmd.order = _make_order()
+    calls = []
+    rec._begin_session = lambda command: calls.append(("begin", command)) or True
+    monkeypatch.setattr("src.arbitrage.debug.execution_clients._mock_fill", lambda client, command, ccy: calls.append(("fill", command, ccy)))
+
+    _mock_submit(rec, cmd, USDC_POS)
+
+    assert calls == [("begin", cmd), ("fill", cmd, USDC_POS)]
+
+
+def test_mock_submit_cancel_only_skips_mock_fill(monkeypatch):
+    rec = _Recorder()
+    cmd = MagicMock(); cmd.order = _make_order()
+    calls = []
+    rec._begin_session = lambda command: calls.append(("begin", command)) or False
+    monkeypatch.setattr("src.arbitrage.debug.execution_clients._mock_fill", lambda *args: calls.append(("fill", args)))
+
+    _mock_submit(rec, cmd, USDC_POS)
+
+    assert calls == [("begin", cmd)]
+
+
 # ── PM skip connect 容忍 transport 级余额/USER WS 失败 ───────────────
 
 def _skip_debug(active=True):
@@ -147,6 +172,20 @@ def test_skip_pm_connect_tolerates_transport_polyapi_exception(monkeypatch):
     assert "tolerated transport failure" in client._log_rec.warnings[0]
 
 
+def test_skip_pm_connect_tolerates_geoblock_preflight_failure(monkeypatch):
+    async def fail_preflight(self):
+        raise RuntimeError("Polymarket trading is geoblocked for the configured HTTP route")
+
+    monkeypatch.setattr(ArbPolymarketExecutionClient, "_connect", fail_preflight)
+    monkeypatch.setattr(SkipExecutionPolymarketClient, "_log", property(lambda self: self._log_rec))
+    client = _skip_pm_client(_skip_debug(active=True))
+
+    _run(client._connect())
+
+    assert client._health.started
+    assert "tolerated preflight failure" in client._log_rec.warnings[0]
+
+
 def test_skip_pm_connect_rethrows_api_level_polyapi_exception(monkeypatch):
     class _Resp:
         status_code = 401
@@ -187,9 +226,12 @@ class _FakeSkipPM:
         # 复制 SkipExecutionPolymarketClient._submit_order 逻辑
         from src.arbitrage.debug.execution_clients import _SKIP_KEY
         if self._debug.is_override_active(_SKIP_KEY):
-            _mock_fill(self, command, USDC_POS)
+            _mock_submit(self, command, USDC_POS)
             return
         await self._super_submit_order(command)
+
+    def _begin_session(self, command):
+        return True
 
 
 def test_submit_order_skip_inactive_calls_super():
@@ -249,11 +291,24 @@ def _bare(cls, *, active: bool):
 def test_oe_skip_submit_active_uses_mock_fill_gbp(monkeypatch):
     c = _bare(SkipExecutionOrbitExchClient, active=True)
     ccys, super_called = [], []
+    begins = []
+    c._begin_session = lambda command: begins.append(command) or True
     monkeypatch.setattr(debug_exec, "_mock_fill", lambda client, cmd, ccy: ccys.append(ccy))
     async def base_submit(self, command): super_called.append(command)
     monkeypatch.setattr(OrbitExchExecutionClient, "_submit_order", base_submit)
-    _run(c._submit_order(MagicMock()))
+    cmd = MagicMock()
+    _run(c._submit_order(cmd))
+    assert begins == [cmd]
     assert ccys == [GBP] and super_called == []  # OE mock 用 GBP,不碰真 venue
+
+
+def test_oe_skip_submit_cancel_only_skips_mock_fill(monkeypatch):
+    c = _bare(SkipExecutionOrbitExchClient, active=True)
+    ccys = []
+    c._begin_session = lambda command: False
+    monkeypatch.setattr(debug_exec, "_mock_fill", lambda client, cmd, ccy: ccys.append(ccy))
+    _run(c._submit_order(MagicMock()))
+    assert ccys == []
 
 
 def test_oe_skip_submit_inactive_calls_super(monkeypatch):

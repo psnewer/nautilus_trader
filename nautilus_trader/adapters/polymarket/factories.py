@@ -16,9 +16,8 @@
 import asyncio
 from functools import lru_cache
 
-from py_clob_client.client import ApiCreds
-from py_clob_client.client import ClobClient
-from py_clob_client.constants import POLYGON
+from py_clob_client_v2 import ApiCreds
+from py_clob_client_v2 import ClobClient
 
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.credentials import get_polymarket_api_key
@@ -30,6 +29,7 @@ from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfi
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.http.transport import configure_clob_http_transport
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProviderConfig
 from nautilus_trader.cache.cache import Cache
@@ -38,6 +38,8 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 
+POLYGON_CHAIN_ID = 137
+
 
 @lru_cache(1)
 def get_polymarket_http_client(
@@ -45,10 +47,11 @@ def get_polymarket_http_client(
     api_secret: str | None = None,
     passphrase: str | None = None,
     base_url: str | None = None,
-    chain_id: int = POLYGON,
+    chain_id: int = POLYGON_CHAIN_ID,
     signature_type: int = 0,
     private_key: str | None = None,
     funder: str | None = None,
+    proxy_url: str | None = None,
 ) -> ClobClient:
     """
     Cache and return a Polymarket CLOB client.
@@ -73,12 +76,15 @@ def get_polymarket_http_client(
         The private key for the wallet on the **Polygon** network.
     funder : str, optional
         The wallet address (public key) on the **Polygon** network used for funding USDC.
+    proxy_url : str, optional
+        Explicit proxy URL for CLOB REST requests.
 
     Returns
     -------
     ClobClient
 
     """
+    configure_clob_http_transport(proxy_url)
     creds = ApiCreds(
         api_key=api_key or get_polymarket_api_key(),
         api_secret=api_secret or get_polymarket_api_secret(),
@@ -109,7 +115,7 @@ def get_polymarket_instrument_provider(
 
     Parameters
     ----------
-    client : py_clob_client.client.ClobClient
+    client : py_clob_client_v2.ClobClient
         The client for the instrument provider.
     clock : LiveClock
         The clock for the instrument provider.
@@ -173,6 +179,7 @@ class PolymarketLiveDataClientFactory(LiveDataClientFactory):
             api_secret=config.api_secret,
             passphrase=config.passphrase,
             base_url=config.base_url_http,
+            proxy_url=config.proxy_url,
         )
         provider = get_polymarket_instrument_provider(
             client=http_client,
@@ -236,6 +243,7 @@ class PolymarketLiveExecClientFactory(LiveExecClientFactory):
             api_secret=config.api_secret,
             passphrase=config.passphrase,
             base_url=config.base_url_http,
+            proxy_url=config.proxy_url,
         )
         ws_auth = PolymarketWebSocketAuth(
             apiKey=config.api_key or get_polymarket_api_key(),

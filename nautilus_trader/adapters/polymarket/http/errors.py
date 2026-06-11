@@ -15,7 +15,7 @@
 
 from typing import Any
 
-from py_clob_client.exceptions import PolyApiException
+from py_clob_client_v2.exceptions import PolyApiException
 
 
 class PolymarketError(Exception):

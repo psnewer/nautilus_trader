@@ -60,6 +60,15 @@ class PairInFlightGate:
         else:
             self._exec_count[pair_id] = n
 
+    def clear_all(self) -> None:
+        """整体清空(in-flight + exec 计数)。
+
+        由 strategy 在「确无 arb 在飞」时调(§6.10 §7):收到健康检查 `finished` 且全部健康检查不在跑、
+        且 `leg_settled` 全 true(无腿「已发未确认」)→ 此刻任何残留都是异常泄漏 → 清掉。
+        比 max-hold 陈旧自愈更主动、且连 `_exec_count` 一起清(后者 max-hold 清不到)。"""
+        self._inflight.clear()
+        self._exec_count.clear()
+
     def is_in_flight(self, pair_id: str) -> bool:
         """只读探测(测试 / 诊断用);不带 max-hold 判断。"""
         return pair_id in self._inflight

@@ -159,12 +159,58 @@ def test_on_price_frame_unsubscribed_market_dropped():
 
 
 # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
+class _FakeWebSocket:
+    def __init__(self, url):
+        self.url = url
+    def on(self, event, cb): pass
+
+
+class _FakeCdpSession:
+    def __init__(self):
+        self.callbacks = {}
+        self.sent = []
+        self.detached = 0
+
+    def on(self, event, cb):
+        self.callbacks[event] = cb
+
+    async def send(self, command):
+        self.sent.append(command)
+
+    async def detach(self):
+        self.detached += 1
+
+
+class _FakeContext:
+    def __init__(self):
+        self.sessions = []
+
+    async def new_cdp_session(self, page):
+        session = _FakeCdpSession()
+        self.sessions.append(session)
+        return session
+
+
 class _FakePage:
-    def __init__(self): self.goto_calls = []; self.reload_calls = 0
-    def on(self, event, cb): pass          # WS handler 挂 page.on('websocket')
+    def __init__(self):
+        self.goto_calls = []
+        self.reload_calls = 0
+        self.bring_to_front_calls = 0
+        self._callbacks = {}
+        self.context = _FakeContext()
+    def on(self, event, cb): self._callbacks.setdefault(event, []).append(cb)
     def remove_listener(self, event, cb): pass
-    async def goto(self, url, **kw): self.goto_calls.append(url)
-    async def reload(self, **kw): self.reload_calls += 1
+    async def bring_to_front(self): self.bring_to_front_calls += 1
+    async def goto(self, url, **kw):
+        self.goto_calls.append(url)
+        self._emit_websocket("wss://oe.test/customer/ws/general/websocket")
+        self._emit_websocket("wss://oe.test/customer/ws/multiple-market-prices/websocket")
+    async def reload(self, **kw):
+        self.reload_calls += 1
+        self._emit_websocket(f"wss://oe.test/customer/ws/multiple-market-prices/reload-{self.reload_calls}/websocket")
+    def _emit_websocket(self, url):
+        for cb in self._callbacks.get("websocket", []):
+            cb(_FakeWebSocket(url))
 
 
 class _FailingGotoPage(_FakePage):
@@ -228,6 +274,7 @@ def test_subscribe_opens_competition_page_eager():
     assert "comp-1_1" in bm.created
     assert "1_1" in c._comp_pages
     assert c._comp_pages["1_1"].goto_calls == ["https://oe.test/customer/sport/1/competition/1"]
+    assert c._comp_pages["1_1"].bring_to_front_calls == 1
 
 
 def test_subscribe_same_competition_dedups_page():
@@ -274,6 +321,7 @@ def test_open_or_reload_reloads_existing_page():
     loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
     page = c._comp_pages["2_999"]
     assert len(page.goto_calls) == 1 and page.reload_calls == 1   # 首次 goto,二次 reload
+    assert page.bring_to_front_calls == 2
 
 
 def test_open_page_failure_does_not_cache_stale_page():
@@ -283,10 +331,23 @@ def test_open_page_failure_does_not_cache_stale_page():
     with pytest.raises(TimeoutError):
         asyncio.get_event_loop().run_until_complete(
             c._open_or_reload_competition_page("2_999", "2", "999"),
-        )
+    )
     assert "2_999" not in c._comp_pages
     assert "2_999" not in c._comp_handlers
     assert bm.closed == ["comp-2_999"]
+
+
+def test_open_page_registers_playwright_ws_handler_before_navigation():
+    """data-2.page.7(#100): 新开 competition 页只保留 Playwright WS handler 锚点。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+
+    asyncio.get_event_loop().run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+
+    page = c._comp_pages["2_999"]
+    assert "websocket" in page._callbacks
+    assert page.goto_calls == ["https://oe.test/customer/sport/2/competition/999"]
+    assert page.context.sessions == []
 
 
 def test_ensure_page_skips_when_instrument_not_in_cache():
@@ -335,19 +396,31 @@ def test_health_check_skips_page_without_update_yet():
     assert page.reload_calls == 0
 
 
-def test_exec_active_refcount_toggles():
-    """data-2.health.4: execution.* msgbus ref-count(Q19 互斥;不负)。"""
+def test_exec_active_refcount_only_counts_oe_legs():
+    """data-2.health.4(#89 per-venue):OE 健康检查只数 **OE 自己的腿**,PM 腿不计入;ref-count 不负。
+
+    互斥是 venue-local:OE 健检 reload OE 页面只跟 OE 下单冲突,不跟 PM。`execution.*` 是全局 topic,
+    按 msg 的 instrument venue 过滤。"""
+    from nautilus_trader.model.identifiers import InstrumentId
+
     c = _client_with_bm(_FakeBM())
+    oe = {"instrument_id": InstrumentId.from_str("1-1-1-None.ORBITEXCH"), "pair_id": "P"}
+    pm = {"instrument_id": InstrumentId.from_str("tok.POLYMARKET"), "pair_id": "P"}
+
     assert c._is_execution_active() is False
-    c._on_execution_started({})
+    c._on_execution_started(pm)                  # PM 腿:OE 健检不数
+    assert c._is_execution_active() is False
+    c._on_execution_started(oe)
     assert c._is_execution_active() is True
-    c._on_execution_started({})
-    c._on_execution_finished({})
-    assert c._is_execution_active() is True   # 还有一个在飞
-    c._on_execution_finished({})
+    c._on_execution_started(oe)
+    c._on_execution_finished(oe)
+    assert c._is_execution_active() is True       # 还有一个 OE 在飞
+    c._on_execution_finished(pm)                 # PM finished:不影响 OE 计数
+    assert c._is_execution_active() is True
+    c._on_execution_finished(oe)
     assert c._is_execution_active() is False
-    c._on_execution_finished({})
-    assert c._is_execution_active() is False  # ref-count 不会负
+    c._on_execution_finished(oe)
+    assert c._is_execution_active() is False       # 不负
 
 
 def test_price_frame_stamps_last_update_ns():

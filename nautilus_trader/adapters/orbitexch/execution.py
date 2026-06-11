@@ -238,7 +238,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # #67:**先挂 WS 监听,再导航**。`page.on('websocket')` 只捕获注册之后页面新建的 WS;general
         # WS 在登录导航 `/customer/` 期间建立,若先 goto/login 再 start 会错过它 → 收不到 BALANCE/
         # CURRENT_BETS(老 odds_client 注释明示"必须在 goto 前挂拦截,否则错过 WS 创建")。
-        self._ws_handler = OrbitExchWebSocketHandler(self._page)
+        self._ws_handler = OrbitExchWebSocketHandler(self._page, logger=self._log)
         self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
         await self._ws_handler.start()
         await self._page.goto(
@@ -273,19 +273,15 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         await self._dismiss_post_login_popup()
 
     async def _dismiss_post_login_popup(self) -> None:
-        """关登录后弹窗(平移自 `scraper._handle_post_login_popup`):等页面稳定 → 点 OK。
+        """关登录后弹窗:等待弹窗出现 → 点主页面区域关闭。
         无弹窗 / 出错都不致命(吞掉),不阻断连接。"""
-        import asyncio
-
         try:
-            await asyncio.sleep(2)  # 等弹窗渲染
-            ok_button = self._page.locator('xpath=//button[normalize-space()="OK"]')
-            if await ok_button.is_visible(timeout=5000):
-                await ok_button.click()
-                await asyncio.sleep(1)
-                self._log.info("OrbitExch post-login popup dismissed")
-            else:
-                self._log.debug("OrbitExch no post-login popup")
+            popup = self._page.locator('div[class*="_postLoginPopup_"]').first
+            if callable(popup):
+                popup = popup()
+            await popup.wait_for(state="visible", timeout=7000)
+            await self._page.mouse.click(24, 160)
+            self._log.info("OrbitExch post-login popup dismissed")
         except Exception as e:
             self._log.debug(f"OrbitExch no post-login popup (error: {e})")
 

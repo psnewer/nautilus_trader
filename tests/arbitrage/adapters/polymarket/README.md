@@ -66,8 +66,15 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: 当前网络访问 PM CLOB WS 需要 HTTP(S) proxy;进程 env 中存在 `POLYMARKET_PROXY_URL` 或 `https_proxy` / `http_proxy`
 **输入**: `load_arb_config` + `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
-**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env
-**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env。#98 起同一个 `proxy_url` 也必须配置到 `py_clob_client_v2` CLOB REST transport,显式代理存在时关闭环境代理继承,确保 WS/REST 同路由。
+**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`、`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_factory_configures_v2_http_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`,PM CLOB REST 也走同一配置路由。
+
+### pm-adapter-2.3c: PM proxy 钱包 signature_type 透传
+
+**前置**: PM 账户使用 Polymarket proxy/funder 钱包,env 配置 `POLYMARKET_SIGNATURE_TYPE=2`
+**输入**: `load_arb_config` + `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
+**期望**: `venues.polymarket.signature_type` 从 env 转 int 注入,并透传到 PM Data/Exec config。proxy/funder 钱包必须用 `2`,否则上游 CLOB balance endpoint 按 EOA(`0`)查 collateral,NT 账户状态会显示 `0.000000 USDC.e`
+**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_credentials` 覆盖 env 注入;`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_signature_type` 覆盖 Exec config 透传;live 只读探针确认 `signature_type=0 → 0.000000 USDC.e`,`signature_type=2 → 67.916080 USDC.e`
 
 ### pm-adapter-2.4: PM 首个 OBD 发布观测锚点
 
@@ -82,20 +89,45 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **输入**: NT `Strategy.submit_order(...)` 一笔限价单
 **步骤**:
 1. ExecutionEngine 路由到上游 `PolymarketExecutionClient._submit_order`
-2. py_clob_client 签名 + 提交
+2. py_clob_client_v2 签名 + 提交
 3. 通过 USER channel 收到 ack → `generate_order_submitted` / `generate_order_accepted`
 4. 模拟成交后 → `generate_order_filled`
 **期望**: Strategy.on_order_* 系列回调全部触发
 **验收**:
 - 订单生命周期完整(submitted → accepted → filled)
-- `bug_polymarket_order_version_mismatch` **不复现**(上游用 py_clob_client.create_order 内部 nonce/version 处理)
+- `bug_polymarket_order_version_mismatch` **不复现**(PM adapter 使用 `py_clob_client_v2` L2 client)
+
+### pm-adapter-5.1b: PM py_clob_client_v2 surface 锁定
+
+**前置**: 本地 `py_clob_client_v2` 版本为当前项目依赖版本
+**输入**: `get_polymarket_http_client` / `PolymarketExecutionClient._submit_limit_order` / `_submit_order_list` / cancel/report 路径
+**步骤**:
+1. factory 返回 `py_clob_client_v2.ClobClient`
+2. 单笔路径调用 v2 `ClobClient.post_order`
+3. 批量路径构造 v2 `PostOrdersArgs`
+4. order status reports 调 `get_open_orders`
+5. 单笔撤单调 `cancel_order(OrderPayload(...))`
+**期望**: PM adapter 不回退旧 `py_clob_client`;使用 v2 SDK 的订单提交 / 查询 / 撤单 surface
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface`
+
+### pm-adapter-5.1c: PM CLOB REST geoblock + API readiness preflight
+
+**前置**: `skip_execution=false`,PM ExecClient 准备真连接;`venues.polymarket.proxy_url` 已由 JSON 或 env 决定。
+**输入**: `PolymarketExecutionClient._connect`
+**步骤**:
+1. 用与 CLOB REST 相同的 `proxy_url` 请求官方 `https://polymarket.com/api/geoblock`
+2. 若 country 属 API-blocked / close-only / blocked region,直接失败并阻止真实 submit
+3. 若 country 属 frontend-only restricted(官方当前 JP),不因 `blocked=true` 一刀切失败;继续后续 CLOB REST 检查
+4. launcher 只读 `--preflight-polymarket` 额外调用 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()`
+**期望**: API-blocked / close-only / REST 不通的出口不会进入真下单路径;JP 这类 frontend-only restricted 不误拦 API 路径;`signature_type` / funder 配错导致余额为 0 时也在启动前失败;错误信息包含 country/region、signature_type 或 SDK transport 失败原因。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_geoblock_preflight_rejects_blocked_route` / `test_polymarket_geoblock_preflight_allows_frontend_only_restricted_country` / `test_polymarket_geoblock_preflight_uses_configured_proxy`;`tests/arbitrage/launchers/test_arb_node.py::test_main_preflight_polymarket_sdk_error_returns_2` / `test_preflight_polymarket_trading_uses_exec_proxy` / `test_preflight_polymarket_trading_rejects_zero_balance`。2026-06-10 JP 出口实测 preflight OK:`server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`;AU/NSW 仍按官方 API-blocked fail fast。
 
 ### pm-adapter-5.2: 撤单接口
 
 **前置**: 已下一笔挂单
 **输入**: `Strategy.cancel_order(...)`
-**期望**: `_cancel_order` → 上游撤单 → `generate_order_canceled` 回写
-**验收**: 订单状态最终为 CANCELED,Cache 与 venue 一致
+**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)` → 响应 `canceled[]` 中的订单立即 `generate_order_canceled` 回写;`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
 
 ### pm-adapter-5.3: Reconciliation(启动重连对账)
 

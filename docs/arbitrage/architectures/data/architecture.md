@@ -45,6 +45,7 @@ flowchart LR
 - BACK ≡ 买入该方向 → BookOrder side = BUY;LAY ≡ 卖出该方向 → side = SELL。
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
+- PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
 
 ---
 
@@ -56,7 +57,9 @@ flowchart LR
 
 并发约束:同一 `MatchedPair` 会同时订阅 home/away 两腿,因此 `_ensure_competition_page` 必须用 `_comp_pages_lock` 包住 page_key 检查 + 首次 open,避免两个协程在 `create_page` 前同时判断"未开"而双开同一 competition 页。
 
-观测约束:价格 WS handler 的内部日志不一定进入 NT node 日志,DataClient 自身必须记录低噪声锚点:competition 页打开后的 `ws_count/ws_types`,首个 routed price frame,首个 `OrderBookDeltas` publish。live smoke 判断 OE 盘口链路时以这些 DataClient 日志为准。
+可见性约束(#87):2026-06-09 DevTools/CDP 复核确认,前台 competition 页会创建 `multiple-market-prices` WS 并推送目标 market 帧;但 NT live node 曾出现 competition 页打开摘要先只有 `general` WS 的样本。OE 前端 bundle 会读取 `document.visibilityState` / market 可见性参数来决定价格订阅,因此 data client 在新开或 reload competition 页前必须 `page.bring_to_front()`,`PlaywrightBrowserManager` 也固定 `document.hidden=false`、`visibilityState='visible'`、`hasFocus=true`,并把 `IntersectionObserver` 结果视为可见,避免 data/exec 共享浏览器时后台页不触发 prices WS。
+
+观测约束:OE `OrbitExchWebSocketHandler` 必须使用调用方组件 logger(不能自建 stdlib logger 后丢在 NT 日志之外),并记录低噪声断点:`OE WS connected(type=prices/orders/unknown)`,每类 WS 首帧 `OE WS first frame received(type/kind/bytes)`。`OrbitExchDataClient` 还必须记录 competition 页打开后的 `ws_count/ws_types`,首个 routed price frame,首个 `OrderBookDeltas` publish。live smoke 判断 OE 盘口链路时只用 Playwright handler 这一条运行锚点分层定位:未见 `prices` connected = Playwright 未捕获价格 WS;见 connected 但无 first frame = prices WS 无下行;见 first frame 但无 routed = 解析/market 路由问题。#95 的 CDP `Network` 旁路探针已按 #100 撤回,避免 open/reload 两条路径出现不同观测锚点。
 
 ```python
 class OrbitExchDataClient(LiveMarketDataClient):
@@ -92,14 +95,16 @@ class OrbitExchDataClient(LiveMarketDataClient):
         page = self._comp_pages.get(page_key)
         if page is None:
             page = await self._browser_manager.create_page(f"comp-{page_key}")
-            handler = OrbitExchWebSocketHandler(page)
+            handler = OrbitExchWebSocketHandler(page, logger=self._log)
             handler.on_price_update(self._on_price_frame)
             await handler.start()                     # #67:先挂监听
+            await page.bring_to_front()               # #87:触发 OE 可见 market 的 prices WS 订阅
             await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
             # goto 成功后才登记;失败时 stop handler + close page,避免下一腿复用未加载成功的 page。
             self._comp_pages[page_key] = page
             self._comp_handlers[page_key] = handler
         else:
+            await page.bring_to_front()               # #87:reload 前同样保持 competition 页可见
             await page.reload(wait_until="networkidle", timeout=timeout_ms)      # 监听自动捕获新 WS(#67)
 
     def _on_price_frame(self, message):     # 所有 competition 页共用(routing 按 market_id 分流)
@@ -122,7 +127,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
 - **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
 - **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
-- **健康检查 reload(§4.3,Phase 1 ✅ 已接线 / Phase 2 ✅ live 验完成)**:本 DataClient 是健康检查宿主。`_connect` 挂 `HealthCheckLoop`;Phase 1 两维度:**时间维度** = `_on_price_frame` 写 `_comp_last_update_ns[page_key]`,`_run_health_check` 发现 `now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` 的 reload 分支(赔率防冻);**连接重试维度** = `set(_market_to_page_key.values())-set(_comp_pages)`(已订阅未开)→ 本 tick 补开,失败吞掉、留下一次健康检查重试(对等 PM `_delayed_connect`)。Q19 互斥经 DataClient 订 `execution.*` 自维护 ref-count(`_is_execution_active`)。**Phase 2 ✅ 代码已接(A 方案)+✅ 真实 reload 已验(#75)**:状态维度 `leg_settled.has_any_unsettled()` → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload 交易页(`leg_settled` 经 factory 注入;安全闸 `config.health_check_exec_reload_enabled` 默认 True,可配置关回)。2026-06-08 真账户零下单探针确认:已登录 execution 页 reload 不重现登录弹窗,且 `CURRENT_BETS` 如期重推。落点/数据源/A vs B 见 execution §4.3。
+- **健康检查 reload(§4.3,Phase 1 ✅ 已接线 / Phase 2 ✅ live 验完成)**:本 DataClient 是健康检查宿主。`_connect` 挂 `HealthCheckLoop`;Phase 1 两维度:**时间维度** = `_on_price_frame` 写 `_comp_last_update_ns[page_key]`,`_run_health_check` 发现 `now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` 的 reload 分支(赔率防冻);**连接重试维度** = `set(_market_to_page_key.values())-set(_comp_pages)`(已订阅未开)→ 本 tick 补开,失败吞掉、留下一次健康检查重试(对等 PM `_delayed_connect`)。Q19 互斥经 DataClient 订 `execution.*` 自维护 ref-count(`_is_execution_active`),**per-venue(#89):按 msg instrument venue 过滤、只数 OE 自己的腿**(OE reload 只跟 OE 下单冲突,不跟 PM;详见 `_cross-cutting/synchronization.md §2.1`)。**Phase 2 ✅ 代码已接(A 方案)+✅ 真实 reload 已验(#75)**:状态维度 `leg_settled.has_any_unsettled()` → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload 交易页(`leg_settled` 经 factory 注入;安全闸 `config.health_check_exec_reload_enabled` 默认 True,可配置关回)。2026-06-08 真账户零下单探针确认:已登录 execution 页 reload 不重现登录弹窗,且 `CURRENT_BETS` 如期重推。落点/数据源/A vs B 见 execution §4.3。
 
 **纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。
 
@@ -146,7 +151,7 @@ matching `events_from_instruments` 见 4-key 任一空就跳过该 instrument �
 
 ### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py`)
 
-- `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)
+- `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。
 - `OrbitExchLiveDataClientFactory.create()`:构造 `PlaywrightBrowserManager` + `OrbitExchDataClient`,instrument_provider 暂用 `InstrumentProvider()` 占位
 - **`PolymarketSportsLiveDataClientFactory.create()`(#60)**:构造 `PolymarketSportsDataClient`(bare `InstrumentProvider()` 占位)
 

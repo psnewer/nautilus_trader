@@ -117,15 +117,70 @@ class PlaywrightBrowserManager:
     async def _setup_stealth(self) -> None:
         """Setup anti-detection measures."""
         await self._context.add_init_script('''
-            // Remove webdriver flag
+            // 移除 webdriver 标记。
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
             
-            // Mock plugins
+            // 模拟浏览器插件。
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5]
             });
+
+            // OE competition 页会按 document/market 可见性决定是否订阅 prices WS。
+            // Data/Exec 共用浏览器时 competition 页可能在后台,因此固定为可见态。
+            try {
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false,
+                    configurable: true
+                });
+            } catch (e) {}
+            try {
+                Object.defineProperty(document, 'visibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+            } catch (e) {}
+            try {
+                document.hasFocus = () => true;
+            } catch (e) {}
+
+            const OriginalIntersectionObserver = window.IntersectionObserver;
+            if (OriginalIntersectionObserver) {
+                window.IntersectionObserver = function(callback, options) {
+                    const observer = new OriginalIntersectionObserver((entries, obs) => {
+                        callback(entries.map(entry => ({
+                            boundingClientRect: entry.boundingClientRect,
+                            intersectionRatio: 1.0,
+                            intersectionRect: entry.boundingClientRect,
+                            isIntersecting: true,
+                            isVisible: true,
+                            rootBounds: entry.rootBounds,
+                            target: entry.target,
+                            time: entry.time
+                        })), obs);
+                    }, options);
+                    const originalObserve = observer.observe.bind(observer);
+                    observer.observe = function(target) {
+                        originalObserve(target);
+                        setTimeout(() => {
+                            const rect = target.getBoundingClientRect();
+                            callback([{
+                                boundingClientRect: rect,
+                                intersectionRatio: 1.0,
+                                intersectionRect: rect,
+                                isIntersecting: true,
+                                isVisible: true,
+                                rootBounds: null,
+                                target,
+                                time: performance.now()
+                            }], observer);
+                        }, 10);
+                    };
+                    return observer;
+                };
+                window.IntersectionObserver.prototype = OriginalIntersectionObserver.prototype;
+            }
         ''')
     
     async def create_page(self, name: str) -> Page:

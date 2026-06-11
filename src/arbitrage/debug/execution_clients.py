@@ -4,8 +4,8 @@ Debug ExecutionClient 子类 —— Q11.3 跳真执行 + mock 全成交(子类�
 设计见 `architectures/_cross-cutting/debug-injection.md`。
 
 行为:覆盖 `_submit_order(command)` —— 当 `DebugConfig.is_override_active("skip_execution")`
-真时,跳过 `_begin_session` + 真 venue 上送,直接 `generate_order_accepted` + `generate_order_filled`
-mock 全成交事件;未激活时透传 `super()._submit_order(command)`(走真路径)。
+真时,只跳过真 venue 上送;仍先进入 `_begin_session`,再 `generate_order_accepted` +
+`generate_order_filled` mock 全成交事件;未激活时透传 `super()._submit_order(command)`(走真路径)。
 
 **不实现订单状态时序**(Q11.4 `timeline.py`)—— 当前版本是"立即全成",足够覆盖大多数链路测试
 (risk → submit → fill → portfolio 更新)。需要部分填 / 拒单 / 撤单时序的场景再加 timeline。
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from py_clob_client.exceptions import PolyApiException
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.model.currencies import GBP
 from nautilus_trader.model.currencies import USDC_POS
@@ -75,6 +75,13 @@ def _mock_fill(client, command, quote_currency) -> None:
     )
 
 
+def _mock_submit(client, command, quote_currency) -> None:
+    """skip_execution submit:保留 session/gate 生命周期,只替换 venue IO 为 mock fill。"""
+    if not client._begin_session(command):
+        return
+    _mock_fill(client, command, quote_currency)
+
+
 class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
     """PM 执行客户端 Debug 子类(quote=USDC)。"""
 
@@ -92,7 +99,14 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
             return
         try:
             await super()._connect()
-        except PolyApiException as e:
+        except (PolyApiException, RuntimeError) as e:
+            if isinstance(e, RuntimeError):
+                self._log.warning(
+                    f"skip_execution: PM execution connect tolerated preflight failure: {e!r}; "
+                    "mock order IO remains enabled, true PM orders are not allowed in this mode",
+                )
+                self._health.start()
+                return
             if getattr(e, "status_code", None) is not None:
                 raise
             self._log.warning(
@@ -103,7 +117,7 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            _mock_fill(self, command, USDC_POS)
+            _mock_submit(self, command, USDC_POS)
             return
         await super()._submit_order(command)
 
@@ -134,7 +148,7 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            _mock_fill(self, command, GBP)
+            _mock_submit(self, command, GBP)
             return
         await super()._submit_order(command)
 

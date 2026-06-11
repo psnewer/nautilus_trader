@@ -20,17 +20,19 @@ from collections import defaultdict
 from typing import Any
 
 import msgspec
-from py_clob_client.client import BalanceAllowanceParams
-from py_clob_client.client import ClobClient
-from py_clob_client.client import MarketOrderArgs
-from py_clob_client.client import OpenOrderParams
-from py_clob_client.client import OrderArgs
-from py_clob_client.client import PartialCreateOrderOptions
-from py_clob_client.client import TradeParams
-from py_clob_client.clob_types import AssetType
-from py_clob_client.clob_types import OrderType as PolyOrderType
-from py_clob_client.clob_types import PostOrdersArgs
-from py_clob_client.exceptions import PolyApiException
+from py_clob_client_v2 import BalanceAllowanceParams
+from py_clob_client_v2 import ClobClient
+from py_clob_client_v2 import MarketOrderArgs
+from py_clob_client_v2 import OpenOrderParams
+from py_clob_client_v2 import OrderArgs
+from py_clob_client_v2 import OrderMarketCancelParams
+from py_clob_client_v2 import OrderPayload
+from py_clob_client_v2 import PartialCreateOrderOptions
+from py_clob_client_v2 import TradeParams
+from py_clob_client_v2.clob_types import AssetType
+from py_clob_client_v2.clob_types import OrderType as PolyOrderType
+from py_clob_client_v2.clob_types import PostOrdersV2Args as PostOrdersArgs
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD
@@ -54,6 +56,7 @@ from nautilus_trader.adapters.polymarket.common.types import JSON
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.http.conversion import convert_tif_to_polymarket_order_type
 from nautilus_trader.adapters.polymarket.http.errors import should_retry
+from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
 from nautilus_trader.adapters.polymarket.order_fill_tracker import OrderFillTracker
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeReport
@@ -121,7 +124,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
     ----------
     loop : asyncio.AbstractEventLoop
         The event loop for the client.
-    http_client : py_clob_client.client.ClobClient
+    http_client : py_clob_client_v2.ClobClient
         The Polymarket HTTP client.
     msgbus : MessageBus
         The message bus for the client.
@@ -253,6 +256,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         return Money(commission, USDC_POS)
 
     async def _connect(self) -> None:
+        await asyncio.to_thread(check_polymarket_geoblock, self._config.proxy_url)
         await self._instrument_provider.initialize()
 
         # Add initial market subscriptions
@@ -398,14 +402,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
             params = None
 
         # Check active orders with venue
-        # Note: py_clob_client.get_orders() handles pagination internally
+        # Note: py_clob_client_v2.get_open_orders() handles pagination internally
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             response: list[JSON] | None = await retry_manager.run(
                 "generate_order_status_reports",
                 [command.instrument_id],
                 asyncio.to_thread,
-                self._http_client.get_orders,
+                self._http_client.get_open_orders,
                 params=params,
             )
 
@@ -646,7 +650,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         if command.instrument_id:
             details.append(command.instrument_id)
 
-        # Note: py_clob_client.get_trades() handles pagination internally
+        # Note: py_clob_client_v2.get_trades() handles pagination internally
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             response: list[JSON] | None = await retry_manager.run(
@@ -845,6 +849,33 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts_event=ts_event,
         )
 
+    def _generate_cancel_success_event(
+        self,
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        venue_order_id,
+        ts_event: int,
+    ) -> None:
+        order = self._cache.order(client_order_id) if client_order_id else None
+        if order is not None and getattr(order, "status", None) == OrderStatus.CANCELED:
+            self._log.debug(
+                f"Order {client_order_id!r} already canceled - "
+                "skipping duplicate cancel success event",
+            )
+            return
+
+        self._log.info(
+            f"Cancel confirmed for {client_order_id!r}: venue_order_id={venue_order_id}",
+        )
+        self.generate_order_canceled(
+            strategy_id=strategy_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=ts_event,
+        )
+
     def _get_neg_risk_for_instrument(self, instrument) -> bool:
         if instrument is None or instrument.info is None:
             return False
@@ -889,14 +920,19 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 "cancel_order",
                 [order.client_order_id, venue_order_id],
                 asyncio.to_thread,
-                self._http_client.cancel,
-                order_id=venue_order_id.value,
+                self._http_client.cancel_order,
+                OrderPayload(orderID=venue_order_id.value),
             )
 
             if not response or not retry_manager.result:
                 reason = retry_manager.message
             else:
-                reason = response.get("not_canceled")
+                not_canceled = response.get("not_canceled") or {}
+                reason = (
+                    not_canceled.get(venue_order_id.value)
+                    if isinstance(not_canceled, dict)
+                    else not_canceled
+                )
 
             if reason:
                 self._generate_cancel_event(
@@ -905,6 +941,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     client_order_id=order.client_order_id,
                     venue_order_id=venue_order_id,
                     reason=str(reason),
+                    ts_event=self._clock.timestamp_ns(),
+                )
+            elif response and venue_order_id.value in (response.get("canceled") or []):
+                self._generate_cancel_success_event(
+                    strategy_id=order.strategy_id,
+                    instrument_id=order.instrument_id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=venue_order_id,
                     ts_event=self._clock.timestamp_ns(),
                 )
         finally:
@@ -921,14 +965,19 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 "cancel_order",
                 [order.client_order_id, venue_order_id],
                 asyncio.to_thread,
-                self._http_client.cancel,
-                order_id=venue_order_id.value,
+                self._http_client.cancel_order,
+                OrderPayload(orderID=venue_order_id.value),
             )
 
             if not response or not retry_manager.result:
                 reason = retry_manager.message
             else:
-                reason = response.get("not_canceled")
+                not_canceled = response.get("not_canceled") or {}
+                reason = (
+                    not_canceled.get(venue_order_id.value)
+                    if isinstance(not_canceled, dict)
+                    else not_canceled
+                )
 
             if reason:
                 self._generate_cancel_event(
@@ -937,6 +986,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     client_order_id=order.client_order_id,
                     venue_order_id=venue_order_id,
                     reason=str(reason),
+                    ts_event=self._clock.timestamp_ns(),
+                )
+            elif response and venue_order_id.value in (response.get("canceled") or []):
+                self._generate_cancel_success_event(
+                    strategy_id=order.strategy_id,
+                    instrument_id=order.instrument_id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=venue_order_id,
                     ts_event=self._clock.timestamp_ns(),
                 )
         finally:
@@ -975,13 +1032,15 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 [command.instrument_id],
                 asyncio.to_thread,
                 self._http_client.cancel_orders,
-                order_ids=order_ids,
+                order_ids,
             )
 
             if not response or not retry_manager.result:
                 reason_map = dict.fromkeys(order_ids, retry_manager.message)
+                canceled_ids = set()
             else:
                 reason_map = response.get("not_canceled", {})
+                canceled_ids = set(response.get("canceled") or [])
 
             for order_id, reason in reason_map.items():
                 venue_order_id = VenueOrderId(order_id)
@@ -993,6 +1052,17 @@ class PolymarketExecutionClient(LiveExecutionClient):
                         client_order_id=client_order_id,
                         venue_order_id=venue_order_id,
                         reason=str(reason),
+                        ts_event=self._clock.timestamp_ns(),
+                    )
+            for order_id in canceled_ids:
+                venue_order_id = VenueOrderId(order_id)
+                client_order_id = self._cache.client_order_id(venue_order_id)
+                if client_order_id:
+                    self._generate_cancel_success_event(
+                        strategy_id=command.strategy_id,
+                        instrument_id=command.instrument_id,
+                        client_order_id=client_order_id,
+                        venue_order_id=venue_order_id,
                         ts_event=self._clock.timestamp_ns(),
                     )
         finally:
@@ -1026,13 +1096,15 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 [command.instrument_id],
                 asyncio.to_thread,
                 self._http_client.cancel_orders,
-                order_ids=order_ids,
+                order_ids,
             )
 
             if not response or not retry_manager.result:
                 reason_map = dict.fromkeys(order_ids, retry_manager.message)
+                canceled_ids = set()
             else:
                 reason_map = response.get("not_canceled", {})
+                canceled_ids = set(response.get("canceled") or [])
 
             for order_id, reason in reason_map.items():
                 venue_order_id = VenueOrderId(order_id)
@@ -1044,6 +1116,17 @@ class PolymarketExecutionClient(LiveExecutionClient):
                         client_order_id=client_order_id,
                         venue_order_id=venue_order_id,
                         reason=str(reason),
+                        ts_event=self._clock.timestamp_ns(),
+                    )
+            for order_id in canceled_ids:
+                venue_order_id = VenueOrderId(order_id)
+                client_order_id = self._cache.client_order_id(venue_order_id)
+                if client_order_id:
+                    self._generate_cancel_success_event(
+                        strategy_id=command.strategy_id,
+                        instrument_id=command.instrument_id,
+                        client_order_id=client_order_id,
+                        venue_order_id=venue_order_id,
                         ts_event=self._clock.timestamp_ns(),
                     )
         finally:
@@ -1131,8 +1214,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 [instrument_id] if instrument_id else [],
                 asyncio.to_thread,
                 self._http_client.cancel_market_orders,
-                market,
-                asset_id,
+                OrderMarketCancelParams(market=market or None, asset_id=asset_id or None),
             )
 
             if not response or not retry_manager.result:
@@ -1366,7 +1448,6 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     PostOrdersArgs(
                         order=signed_order,
                         orderType=order_type,
-                        postOnly=order.is_post_only,
                     ),
                 )
                 successfully_signed_orders.append(order)
@@ -1620,13 +1701,12 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts_event=self._clock.timestamp_ns(),
         )
 
-        await self._post_signed_order(order, signed_order, post_only=order.is_post_only)
+        await self._post_signed_order(order, signed_order)
 
     async def _post_signed_order(
         self,
         order: Order,
         signed_order,
-        post_only: bool = False,
         order_type_override=None,
         base_quantity: Quantity | None = None,
     ) -> None:
@@ -1642,7 +1722,6 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 self._http_client.post_order,
                 signed_order,
                 poly_order_type,
-                post_only,
             )
 
             if not response or not response.get("success"):

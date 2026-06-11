@@ -180,7 +180,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_pre_match.py`(3):not in_play → True / in_play → False / snapshot=None → True 不阻塞
 - ✅ `test_check_mean_rebate.py`(4):3-way 套利 > 阈值 → True 写 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持
-- ✅ `test_action_place_bets.py`(5):PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg
+- ✅ `test_action_place_bets.py`(6):PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单)
 
 **OE inplay 写入**:
 - ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise
@@ -209,7 +209,7 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 ## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
 
 - ✅ `test_submitter.py`(4):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId`
-- ✅ `test_action_place_bets.py` +2:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise
+- ✅ `test_action_place_bets.py` +3:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
@@ -225,7 +225,7 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 `src/arbitrage/strategy/check_action_registry.py` + `src/arbitrage/strategy/json_loader.py`(框架层,具体 Check/Action 子类由用户后落)。
 
 - ✅ `test_check_action_registry.py`(8):register + build + 默认 params / 未知 type / 缺 type / 同名同类幂等 / 同名异类 raise
-- ✅ `test_json_loader.py`(26):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry
+- ✅ `test_json_loader.py`(27):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry + `strategy.enabled=false` 时即使有 bindings 也返回空 registry(保留 OBD 订阅桥,禁用 Action)
 
 ## Debug 相关
 
@@ -280,7 +280,12 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
 - **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_route_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次;fire 后 gate 仍 in-flight(交执行清)。
 - **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
-- gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / max-hold 自愈 / 负计数防御)。设计 = synchronization.md §7。
+- gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / max-hold 自愈 / 负计数防御 / **`clear_all` 清 inflight+exec_count**)。设计 = synchronization.md §7。
+
+### strategy-4.framework.eval.{17-19}:健康检查互斥 + 兜底 clear_all(§6.10 §7.6,#88)
+- **.17**(`test_health_check_active_skips_fire`):`_on_health_check_started` 置 `_hc_running` 后 `on_data` → `_route_eval` 见 `_hc_running` 非空 → **不派发评估**(`loop.tasks` 空,arb_action 0 次)。补 §6.10 缺失的 strategy⊥健康检查互斥。
+- **.18**(`test_health_check_finished_clears_gate_when_all_settled`):gate 有泄漏残留(`LEAKED` in-flight + 脏 exec_count)。OE/PM 两健检都 started;OE `finished` 时 PM 仍在跑 → **不清**;PM 也 `finished`(`_hc_running` 空)+ `leg_settled` 全 true → `clear_all` → 残留清掉。
+- **.19**(`test_health_check_finished_keeps_gate_when_leg_unsettled`):`leg.arm("P","leg-1")` 造未结腿;health_check `finished` 时 `has_any_unsettled()` 真 → **不 clear**(保护真在飞 arb)。
 
 ### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
 - **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份

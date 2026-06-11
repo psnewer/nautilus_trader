@@ -12,11 +12,12 @@ ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 
 `ArbConfig` → 各组件 config 的纯函数派发。
 
-- ✅ `test_dispatcher.py`(31):PM/OE Data/Exec Client config 凭证映射 / PM `proxy_url` 透传 / OE `page_load_timeout_sec` → Data/Exec `page_timeout` / **OE 健康检查 cadence + Phase 2 闸**(`venues.orbitexch.{health_interval_sec,staleness_timeout_sec,health_check_exec_reload_enabled}` → `OrbitExchDataClientConfig` 同名字段;默认 120s/300s/**True**(#75 live 验后默认开)+ 可显式关回;#74/#75)/ PM 凭证 None passthrough / OE 凭证空串 fallback / MarketMatching min_similarity + competition_max_matches(含 empty → None 兜底)/ StrategyEvaluator log_evaluations 默认值 + `strategy.log_evaluations` 映射 / ArbRiskParams 全字段 / ArbContext init kwargs(execution → PM+OE session/health;**OE 健康 interval 死接线 `oe_health_interval_secs` 已删 #74,断言不再出现**)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
+- ✅ `test_dispatcher.py`(31):PM/OE Data/Exec Client config 凭证映射 / PM `proxy_url` 透传(WS + #98 CLOB REST factory 消费) / OE `page_load_timeout_sec` → Data/Exec `page_timeout` / **OE 健康检查 cadence + Phase 2 闸**(`venues.orbitexch.{health_interval_sec,staleness_timeout_sec,health_check_exec_reload_enabled}` → `OrbitExchDataClientConfig` 同名字段;默认 120s/300s/**True**(#75 live 验后默认开)+ 可显式关回;#74/#75)/ PM 凭证 None passthrough / OE 凭证空串 fallback / MarketMatching min_similarity + competition_max_matches(含 empty → None 兜底)/ StrategyEvaluator log_evaluations 默认值 + `strategy.log_evaluations` 映射 / ArbRiskParams 全字段 / ArbContext init kwargs(execution → PM+OE session/health;**OE 健康 interval 死接线 `oe_health_interval_secs` 已删 #74,断言不再出现**)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
 
 ## Slice 5 落地(2026-05-28 #44)
 
 `to_strategy_registry(cfg)` 增补 dispatcher(消费 ArbConfig.strategy 经 `build_strategy_registry`);
+`strategy.enabled=false` 时返回空 registry,保留 StrategyEvaluator 的 MatchedPair→OBD 订阅桥但不触发 Action。
 本身的 Strategy JSON 解析测试在 **`tests/arbitrage/strategy/test_json_loader.py`**(strategy capability 域)。
 
 **仍待**(后续 slice):

@@ -115,6 +115,7 @@ class _RuntimeDeps:
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
     pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
     pair_inflight_max_hold_secs: float = 60.0  # in-flight 陈旧自愈上界(> 单笔套利最长耗时)
+    leg_settled: object = None              # LegSettledRegistry(§6.10 §7:健检兜底 clear_all 的 arb 在飞判据)
 
 
 class StrategyEvaluator(Actor):
@@ -131,6 +132,8 @@ class StrategyEvaluator(Actor):
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
         self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
         self._pair_inflight_max_hold_ns = int(deps.pair_inflight_max_hold_secs * 1e9)
+        self._leg_settled = deps.leg_settled      # §6.10 §7:健检兜底 clear_all 的判据
+        self._hc_running: set[str] = set()        # §6.10:在跑的健康检查 source 集合(per-venue,非 ref-count)
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -149,6 +152,10 @@ class StrategyEvaluator(Actor):
             topic=f"data.{SportsGameUpdate.__name__}*",
             handler=self.on_data,
         )
+        # §6.10:strategy ⊥ 健康检查互斥 —— 订 `health_check.*`(OE/PM 各发各的,带 source)。
+        # 在跑期间放弃 fire(避免下单撞到正在 reload 的页面);全部跑完 + leg_settled 全 true → 兜底 clear_all。
+        self._msgbus.subscribe(topic="health_check.started", handler=self._on_health_check_started)
+        self._msgbus.subscribe(topic="health_check.finished", handler=self._on_health_check_finished)
         # slice 10e:OBD 不在 on_start 预订(无 instrument-level 订阅可言)——改 **MatchedPair fire 后
         # per-iid `subscribe_order_book_deltas(iid)`**(`_ensure_obd_subscribed`),真实赔率进 cache;
         # 订阅的 OBD 由 NT 投到 `on_order_book_deltas` → `_route_eval`(OBD-driven 重评)。
@@ -168,6 +175,29 @@ class StrategyEvaluator(Actor):
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         self._route_eval(deltas)
 
+    # ── §6.10:健康检查互斥 + per-pair 闸兜底 clear_all ────────────────
+    def _on_health_check_started(self, msg) -> None:
+        """某 venue 健康检查 tick 开始 → 记其 source 在跑(per-venue 信号位,非 ref-count)。"""
+        src = (msg or {}).get("source")
+        if src is not None:
+            self._hc_running.add(src)
+
+    def _on_health_check_finished(self, msg) -> None:
+        """某 venue 健康检查 tick 结束 → 移除其 source。
+
+        移除后若**全部健康检查都不在跑** 且 `leg_settled` 全 true(无腿「已发未确认」=确无 arb 在飞)→
+        `pair_inflight.clear_all()` 兜底清掉异常泄漏的 per-pair 闸(§6.10 §7,#85)。"""
+        src = (msg or {}).get("source")
+        if src is not None:
+            self._hc_running.discard(src)
+        if self._hc_running:
+            return  # 还有别的健康检查在跑,不清
+        if self._pair_inflight is None:
+            return
+        if self._leg_settled is not None and self._leg_settled.has_any_unsettled():
+            return  # 有腿「已发未确认」→ 有 arb 真在飞,不清
+        self._pair_inflight.clear_all()
+
     def _route_eval(self, data) -> None:
         target = self._extract_evaluation_target(data)
         if target is None:
@@ -181,6 +211,11 @@ class StrategyEvaluator(Actor):
                     f"Strategy evaluate skipped: pair_id={pair_id}, sport={sport}, "
                     f"competition={competition}, reason=no_strategy",
                 )
+            return
+        # §6.10:strategy ⊥ 健康检查互斥 —— 任一健康检查在跑 → 放弃 fire(避免下单撞正在 reload 的页面)。
+        if self._hc_running:
+            if self._log_evaluations:
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=health_check_active")
             return
         if self._log_evaluations:
             event_type = type(data).__name__
