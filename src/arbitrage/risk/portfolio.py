@@ -48,10 +48,15 @@ class _Leg:
             return self.size * self.price
         return self.size * self.fx  # orbitexch
 
+    def share_if_wins(self) -> float:
+        if self.venue == "polymarket":
+            return self.size
+        return self.size * self.price * self.fx  # orbitexch gross payout
+
 
 class ArbitragePortfolio(Portfolio):
-    """way_rebate 等领域指标。share/fx/leg_settled 由 launcher 经 `configure_arb` 注入
-    (NT 构造时实参表固定,见 bootstrap.py)。"""
+    """way_rebate 等领域指标。fx/leg_settled 由 launcher 经 `configure_arb` 注入
+    (NT 构造时实参表固定,见 bootstrap.py);share 保留配置兼容,不再作 way_rebate 分母。"""
 
     def __init__(self, msgbus, cache, clock, config=None) -> None:
         super().__init__(msgbus=msgbus, cache=cache, clock=clock, config=config)
@@ -131,7 +136,7 @@ class ArbitragePortfolio(Portfolio):
         outcomes = {"home", "away"}
         if any(leg.market_type == "draw" for leg in legs):
             outcomes.add("draw")
-        share = self._share
+        share = max(leg.share_if_wins() for leg in legs)
         result: dict[str, float] = {}
         for outcome in outcomes:
             net = 0.0

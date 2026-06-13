@@ -100,7 +100,22 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
     async def _submit_order(self, command) -> None:
         if not self._begin_session(command):
             return
-        await super()._submit_order(command)
+        try:
+            await super()._submit_order(command)
+        except Exception as e:
+            order = command.order
+            self._log.error(
+                f"Polymarket submit failed before venue acknowledgement "
+                f"client_order_id={order.client_order_id}: {e!r}",
+            )
+            self.generate_order_denied(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                reason=f"PM submit exception before venue acknowledgement: {e!r}",
+                ts_event=self._clock.timestamp_ns(),
+            )
+            self._end_session(order.client_order_id)
 
     def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
         for order in residual:

@@ -6,6 +6,7 @@
 import inspect
 import asyncio
 from dataclasses import dataclass
+from decimal import Decimal
 from types import SimpleNamespace
 
 from py_clob_client_v2 import ClobClient
@@ -20,6 +21,7 @@ from nautilus_trader.adapters.polymarket.http import transport as pm_transport
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import pm_position_to_settlement
 from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -107,6 +109,28 @@ def _cancel_test_client(response):
 
 async def _noop_async():
     return None
+
+
+async def _pm_positions_with_avg_price(**_kwargs):
+    return [
+        {
+            "conditionId": "0xcond",
+            "asset": "123",
+            "size": "5",
+            "avgPrice": "0.47",
+        },
+    ]
+
+
+async def _pm_positions_without_valid_avg_price(**_kwargs):
+    return [
+        {
+            "conditionId": "0xcond",
+            "asset": "123",
+            "size": "5",
+            "avgPrice": "not-a-price",
+        },
+    ]
 
 
 def _run(coro):
@@ -220,6 +244,56 @@ def test_polymarket_cancel_order_reject_generates_cancel_rejected_event():
     assert captured["rejected"]["venue_order_id"] == expected_venue_order_id
     assert captured["rejected"]["reason"] == "already open on another market"
     assert "canceled" not in captured
+
+
+def test_polymarket_position_report_maps_avg_price_from_data_api():
+    """PM /positions 的 avgPrice 必须进入 NT PositionStatusReport.avg_px_open。"""
+    instrument_id = InstrumentId.from_str("0xcond-123.POLYMARKET")
+    client = SimpleNamespace()
+    client.account_id = AccountId("PM-001")
+    client._clock = _Clock()
+    client._log = _Log()
+    client._fetch_user_positions = _pm_positions_with_avg_price
+    client._fetch_positions_from_data_api = (
+        PolymarketExecutionClient._fetch_positions_from_data_api.__get__(client)
+    )
+    client.generate_position_status_reports = (
+        PolymarketExecutionClient.generate_position_status_reports.__get__(client)
+    )
+    client._log_report_receipt = lambda *_args, **_kwargs: None
+
+    reports = _run(client.generate_position_status_reports(
+        SimpleNamespace(instrument_id=instrument_id, log_receipt_level=None),
+    ))
+
+    assert len(reports) == 1
+    assert reports[0].instrument_id == instrument_id
+    assert reports[0].quantity.as_double() == 5.0
+    assert reports[0].avg_px_open == Decimal("0.47")
+
+
+def test_polymarket_position_report_keeps_quantity_when_avg_price_unknown():
+    instrument_id = InstrumentId.from_str("0xcond-123.POLYMARKET")
+    client = SimpleNamespace()
+    client.account_id = AccountId("PM-001")
+    client._clock = _Clock()
+    client._log = _Log()
+    client._fetch_user_positions = _pm_positions_without_valid_avg_price
+    client._fetch_positions_from_data_api = (
+        PolymarketExecutionClient._fetch_positions_from_data_api.__get__(client)
+    )
+    client.generate_position_status_reports = (
+        PolymarketExecutionClient.generate_position_status_reports.__get__(client)
+    )
+    client._log_report_receipt = lambda *_args, **_kwargs: None
+
+    reports = _run(client.generate_position_status_reports(
+        SimpleNamespace(instrument_id=instrument_id, log_receipt_level=None),
+    ))
+
+    assert len(reports) == 1
+    assert reports[0].quantity.as_double() == 5.0
+    assert reports[0].avg_px_open is None
 
 
 def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):

@@ -33,14 +33,24 @@ def _portfolio(cache=None, registry: LegSettledRegistry | None = None) -> Arbitr
 
 
 # ── 公式(risk-6.9.2 / 6.9.4 / 6.9.7)─────────────────────────────────
-def test_compute_way_rebate_matches_legacy_example():
-    # 文档示例:PM home 100@0.4 + OE away 50@2.5 → home=0.10, away=0.35
+def test_compute_way_rebate_equal_share_matches_mean_rebate_shape():
+    # mean_rebate 下单形态:PM share=100;OE stake=100/2.5=40 → 两腿赢时 share 都是 100
+    pf = _portfolio()
+    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 40, 2.5, 1.0)]
+    r = pf._compute_way_rebate(legs)
+    assert r["home"] == pytest.approx(0.20)
+    assert r["away"] == pytest.approx(0.20)
+    assert min(r.values()) == pytest.approx(0.20)  # min_way_rebate 等价
+
+
+def test_compute_way_rebate_uses_largest_actual_leg_share():
+    # PM 实际 share=100;OE 实际 share=50*2.5=125 → 用最大腿 share=125 归一化
     pf = _portfolio()
     legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 50, 2.5, 1.0)]
     r = pf._compute_way_rebate(legs)
-    assert r["home"] == pytest.approx(0.10)
-    assert r["away"] == pytest.approx(0.35)
-    assert min(r.values()) == pytest.approx(0.10)  # min_way_rebate 等价
+    assert r["home"] == pytest.approx(0.08)
+    assert r["away"] == pytest.approx(0.28)
+    assert min(r.values()) == pytest.approx(0.08)
 
 
 def test_compute_way_rebate_three_way_adds_draw():

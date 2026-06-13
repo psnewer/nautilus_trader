@@ -10,6 +10,8 @@ notional/submit_rate/TradingState/native 余额)+ 应用层余额检查 + 组合
 - 自定义拒绝**必须自己 emit denied 事件**(父类 `_handle_submit_order` 见 False 仅 return,
   指望 _check_order 已调 `_deny_order`),否则 Strategy.on_order_denied 不触发。
 - `CancelOrder` 走另一条命令通路,不经 _check_order,故补偿撤单永远放行。
+- `arb:intent=recovery` 的补救下单仍走 NT 基础检查 + 余额检查,但跳过 rebate gates
+  (match_tp/match_sl/global_sl),避免“别开新仓”硬停挡住降风险补救。
 - 门限读 **live** Cache(非 Strategy 快照)。tp/sl/global 经 self._portfolio(实为
   ArbitragePortfolio)pull way_rebate。
 """
@@ -89,6 +91,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
     # ── 应用层:组合级硬停三门限(Q16)────────────────────────────────
     def _check_rebate_gates(self, order) -> bool:
+        if _order_intent(order) == "recovery":
+            return True
+
         pf = self._portfolio  # 实为 ArbitragePortfolio(import 替换后 kernel 原生构造)
         pair_id = self._pair_id_for_order(order)
         params = self._params
@@ -122,3 +127,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if registry is None:
             return None
         return registry.get(order.instrument_id)
+
+
+def _order_intent(order) -> str:
+    """从 NT order tags 读取套利域意图。默认 `arbitrage` 保持旧行为。"""
+    for tag in getattr(order, "tags", None) or []:
+        if isinstance(tag, str) and tag.startswith("arb:intent="):
+            return tag.split("=", 1)[1]
+    return "arbitrage"

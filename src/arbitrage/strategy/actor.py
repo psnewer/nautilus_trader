@@ -80,6 +80,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             quantity=Quantity(float(spec["qty"]), precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
             time_in_force=TimeInForce.GTC,
+            tags=[f"arb:intent={spec.get('intent', 'arbitrage')}"],
             init_id=UUID4(),
             ts_init=clock.timestamp_ns(),
         )

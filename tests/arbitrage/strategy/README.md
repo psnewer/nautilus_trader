@@ -180,7 +180,8 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_pre_match.py`(3):not in_play → True / in_play → False / snapshot=None → True 不阻塞
 - ✅ `test_check_mean_rebate.py`(4):3-way 套利 > 阈值 → True 写 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持
-- ✅ `test_action_place_bets.py`(6):PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单)
+- ✅ `test_check_mean_rebate_recovery.py`(6):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE 缺口 qty 按 gross payout 反算 / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
+- ✅ `test_action_place_bets.py`(11):PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
 
 **OE inplay 写入**:
 - ✅ `tests/arbitrage/adapters/orbitexch/test_data_client_inplay_writeback.py`(4):present True/False 写 info / cache 缺 instrument 不 raise / info=None 不 raise
@@ -208,16 +209,17 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 
 ## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
 
-- ✅ `test_submitter.py`(4):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId`
-- ✅ `test_action_place_bets.py` +3:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会
+- ✅ `test_submitter.py`(5):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 写入 `Order.tags=["arb:intent=<intent>"]`
+- ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
 
-**Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,3 tests):
+**Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,4 tests):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)
 - ✅ 门控 smoke:snapshot.in_play=True → PreMatchCheck False → checktion AND 短路 → MeanRebateCheck 不跑 → 无 fire
 - ✅ 阈值 smoke:rate=0.20 但 min_rate=0.30 → 不命中
+- ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
 
 ## Slice 5 落地(2026-05-28 #44):Check/Action registry + JSON loader

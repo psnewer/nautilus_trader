@@ -71,7 +71,12 @@ def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) 
     return Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree)
 
 
-def _harness(execution_active: bool = False, log_evaluations: bool = False, pair_inflight=None, leg_settled=None):
+def _harness(
+    execution_active: bool = False,
+    log_evaluations: bool = False,
+    pair_inflight=None,
+    leg_settled=None,
+):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = TestComponentStubs.cache()
@@ -94,7 +99,10 @@ def _harness(execution_active: bool = False, log_evaluations: bool = False, pair
         pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
         leg_settled=leg_settled,                   # §6.10 §7:健检兜底 clear_all 判据
     )
-    actor = StrategyEvaluator(StrategyEvaluatorConfig(log_evaluations=log_evaluations), deps)
+    actor = StrategyEvaluator(
+        StrategyEvaluatorConfig(log_evaluations=log_evaluations),
+        deps,
+    )
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
     return actor, store, pair_reg, strat_reg, loop, active_flag
 

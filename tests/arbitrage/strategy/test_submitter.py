@@ -62,6 +62,7 @@ def test_submit_builds_limit_order_and_sends_to_exec_engine():
     assert cmd.order.side == OrderSide.BUY
     assert float(cmd.order.quantity) == 5.625
     assert float(cmd.order.price) == 4.0
+    assert cmd.order.tags == ["arb:intent=arbitrage"]
 
 
 def test_submit_with_sell_side():
@@ -74,6 +75,18 @@ def test_submit_with_sell_side():
 
     cmd = msgbus.send.call_args.args[1]
     assert cmd.order.side == OrderSide.SELL
+
+
+def test_submit_marks_recovery_intent_tag():
+    submit, cache, msgbus = _build()
+    cache.instrument.return_value = _fake_instrument()
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    iid = InstrumentId(Symbol("X-1"), Venue("POLYMARKET"))
+
+    _run(submit({"instrument_id": iid, "side": "BUY", "qty": 1.0, "price": 0.5, "intent": "recovery"}))
+
+    cmd = msgbus.send.call_args.args[1]
+    assert cmd.order.tags == ["arb:intent=recovery"]
 
 
 def test_submit_skips_when_instrument_missing():

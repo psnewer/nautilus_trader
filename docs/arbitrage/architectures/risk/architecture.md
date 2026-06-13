@@ -121,6 +121,12 @@ def _check_rebate_gates(self, order: Order) -> bool:
 
 settled gate(见 §4.2):entry 不存在→放行;`global_min_rebate_sum()` 返 `None`(任一 active pair 一腿 false,fail-closed)→ **deny**。
 
+**补救下单 intent 例外(2026-06-11)**:
+- Strategy submitter 将 `spec["intent"]` 写入 NT `Order.tags=["arb:intent=<intent>"]`,详见 strategy 详设 §3.9。
+- `arb:intent=recovery` 表示该订单用于降低不完整持仓风险,不是新增套利开仓;Risk 仍执行 NT 父类基础检查和 `_check_balance`,但 `_check_rebate_gates` 内部直接放行 recovery,跳过 `match_tp / match_sl / global_sl / settled global fail-closed`。
+- 默认无 tag 或未知 tag 按 `"arbitrage"` 处理,保持旧行为。
+- `CancelOrder` 本来不经 `_check_order`,不需要 intent。
+
 ### 3.2 `ArbitragePortfolio`(`src/arbitrage/risk/portfolio.py`)
 
 子类化 NT `cdef class Portfolio` —— **只能加纯 Python 方法**(不能加 cpdef/cdef):
@@ -156,7 +162,7 @@ def install_arbitrage_engines():       # 构造 TradingNode 之前调用,幂等
     _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 ```
 
-领域参数(share/fx/leg_settled/三门限)在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, leg_settled=)` / `risk_engine.configure_arb(params)`(`wire_arbitrage_runtime(node, ...)`)。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
+领域参数(fx/leg_settled/三门限,以及保留兼容的 share)在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, leg_settled=)` / `risk_engine.configure_arb(params)`(`wire_arbitrage_runtime(node, ...)`)。`share` 不再作为 `way_rebate` 分母,该分母由实际持仓 legs 决定(见 §4.1)。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 ### 3.3 消息接线(订阅 / 发布)
 
@@ -187,7 +193,8 @@ way_rebate[outcome] = ( Σ profit_if_wins(leg)   for leg.market_type == outcome
 ```
 - `profit_if_wins`:PM = `size*(1-price)`;OE = `size*(price-1)*fx`
 - `loss_if_loses`:PM = `size*price`;OE = `size*fx`
-- `share` 基准金额(默认 100,面板可调);`outcome ∈ {home, draw, away}`,draw 仅当有腿 `market_type=="draw"`
+- `share` 取参与计算 legs 中最大的实际腿 share:PM=`size`;OE=`size*price*fx`(stake×odds×fx 的 gross payout)。`mean_rebate` 正常下单会让所有腿 share 相同;若 live probe / 手动仓位造成各腿 share 不同,用最大腿 share 归一化,避免配置 share 与真实持仓脱节。
+- `outcome ∈ {home, draw, away}`,draw 仅当有腿 `market_type=="draw"`
 - 不依赖 mark price,只依赖成交落库的 `size/price/fx`
 
 `global_min_rebate_sum` **只遍历有 open position 的 active pair**(对应旧 `_positions.values()`);**未交易比赛不进遍历、不致 None**。

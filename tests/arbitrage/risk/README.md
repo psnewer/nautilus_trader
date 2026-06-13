@@ -119,6 +119,12 @@ ExecutionClient (维护账户)
 - 期望: 撤单正常路由到 ExecutionClient,**不被 `_check_rebate_gates` 拦**
 - 验收: deny 只作用于 `SubmitOrder` 通路;`bug_compensating_cancel_missing` 的补偿撤单照常发出
 
+### risk-6.7.6: recovery intent 跳过 rebate gates,但不跳余额
+- 前置: Strategy submitter 给补救单写 `Order.tags=["arb:intent=recovery"]`;`global_min_rebate_sum()` 返回 `None` 或 `match_sl` 已触发
+- 输入: recovery submit
+- 期望: `_check_order` 仍先跑 NT 父类基础检查和 `_check_balance`;余额通过时跳过 `_check_rebate_gates` 并路由到 ExecutionClient
+- 验收: 真实 `SubmitOrder` 管道下,recovery intent 在 settled/global fail-closed 场景仍能到 exec;余额不足时仍 `OrderDenied`,不泄漏到 exec
+
 ### risk-6.7.6: 机会评估与硬停正交(strategy 通过但 risk 仍拦)
 - 前置: 某机会 `min_way_rebate ≥ strategy.min_rebate_rate`(strategy 认为值得做)但同时所有方向 `≥ match_tp`
 - 输入: strategy 评估通过 → submit
@@ -150,7 +156,7 @@ ExecutionClient (维护账户)
 
 ## ArbitragePortfolio: way_rebate 等领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 4 个 Python 方法,与 NT `unrealized_pnl` 并列扩展。算法平移自 `services/risk/position.py`。
+子类化 `Portfolio` 加 4 个 Python 方法,与 NT `unrealized_pnl` 并列扩展。算法来源于 `services/risk/position.py`,分母口径已按 NT `mean_rebate` 下单语义校准为最大实际腿 share。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
@@ -158,17 +164,17 @@ ExecutionClient (维护账户)
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 share/fx/leg_settled(portfolio)与三门限 params(engine)
+  - `configure_arb` 注入 fx/leg_settled(portfolio)与三门限 params(engine);share 保留兼容注入,不作 `way_rebate` 分母
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)
 
-### risk-6.9.2: way_rebate 算法等价于 services/risk/position.py
+### risk-6.9.2: way_rebate 算法使用最大实际腿 share 归一化
 
-- 前置: cache 中 PM token A `BUY 100 @ 0.4`,OE selection X `BACK 50 @ 2.5`;两者 `instrument.info["competition"] == pair_id="match_1"`;share = 100
+- 前置: cache 中 PM token A `BUY 100 @ 0.4`,OE selection X `BACK 50 @ 2.5`;两者属于 `pair_id="match_1"`;PM 实际 share=100,OE 实际 share=`50*2.5=125`
 - 输入: `portfolio.way_rebate("match_1")`
-- 期望: `{"home": 0.10, "away": 0.35}`(对照 §6.9.2 公式)
-- 验收: 与现 `MatchPosition.calculate_way_rebate()` 输出一致
+- 期望: `{"home": 0.08, "away": 0.28}`(net payoff 分别为 10/35,统一除以最大腿 share=125)
+- 验收: 不使用配置里的固定 share 做分母;`mean_rebate` 正常下单产生的等 share 腿仍按共同 share 归一化
 
 ### risk-6.9.3: way_rebates_by_venue 按 venue 拆分
 

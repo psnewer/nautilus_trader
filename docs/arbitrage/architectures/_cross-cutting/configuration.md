@@ -399,7 +399,7 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 | `MarketMatchingActor` | `to_market_matching_actor_config(cfg)`(含 aliases / max_matches)|
 | `StrategyEvaluator` | `to_strategy_evaluator_config(cfg)` + `to_strategy_registry(cfg)` |
 | `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg))` |
-| `ArbitragePortfolio` | `share/fx` 经 `wire_arbitrage_runtime` |
+| `ArbitragePortfolio` | `fx` 经 `wire_arbitrage_runtime`;`share` 保留配置兼容,`way_rebate` 分母取最大实际腿 share |
 | `ArbContext`(session / debug / pair_registry / settlement) | `prepare_arb_context(**to_arb_context_init_kwargs(cfg))` |
 | `DebugConfig`(Q11) | `to_debug_config(cfg)`(`enabled=False` → None)|
 

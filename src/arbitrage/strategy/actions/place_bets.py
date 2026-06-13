@@ -4,9 +4,8 @@ PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check 算好,如 MeanRebateCheck),按 venue 算 size:
   - POLYMARKET: size = share(PM 单位是 shares,1 share = $1 win)
   - ORBITEXCH: size = share / price(stake = share / odds,确保 win = share)
-
-**当前是 log-only**(Q-D1 阶段 A;Q-D1=B 后改为 `await ctx.submitter(order)` 真下单,
-跟 SkipExecutionClient 配合做 mock 全成 smoke)。
+  - 若 leg 已带 `qty`,优先使用该值(给 compensation/recovery Check 写入补缺口订单量)
+  - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
 """
 
 from __future__ import annotations
@@ -28,10 +27,12 @@ class PlaceBetsAction(Action):
         share: float = 22.5,
         price_overrides: dict[str, float] | None = None,
         qty_overrides: dict[str, float] | None = None,
+        intent: str = "arbitrage",
     ) -> None:
         self._share = float(share)
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
+        self._intent = str(intent)
 
     async def execute(self, ctx: EvalContext) -> None:
         legs = ctx.scratch.get("legs", [])
@@ -49,12 +50,13 @@ class PlaceBetsAction(Action):
         for leg in legs:
             venue = leg["venue"]
             price = self._price_overrides.get(venue, leg["price"])
-            size = self._qty_overrides.get(venue, _compute_size(venue, self._share, price))
+            size = _compute_leg_size(leg, venue, self._share, price, self._qty_overrides)
             spec = {
                 "instrument_id": leg["instrument_id"],
                 "side": leg["side"],
                 "qty": size,
                 "price": price,
+                "intent": self._intent,
             }
             if submitter is not None:
                 # slice 10a(#50):真出单(SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成)
@@ -76,6 +78,21 @@ def _compute_size(venue: str, share: float, price: float) -> float:
             return 0.0
         return share / price
     return 0.0
+
+
+def _compute_leg_size(
+    leg: dict,
+    venue: str,
+    share: float,
+    price: float,
+    qty_overrides: dict[str, float],
+) -> float:
+    """按优先级决定最终 qty:显式 override > leg 自带 qty > share 公式。"""
+    if venue in qty_overrides:
+        return qty_overrides[venue]
+    if "qty" in leg:
+        return float(leg["qty"])
+    return _compute_size(venue, share, price)
 
 
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:

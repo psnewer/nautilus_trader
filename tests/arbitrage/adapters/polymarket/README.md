@@ -122,6 +122,16 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: API-blocked / close-only / REST 不通的出口不会进入真下单路径;JP 这类 frontend-only restricted 不误拦 API 路径;`signature_type` / funder 配错导致余额为 0 时也在启动前失败;错误信息包含 country/region、signature_type 或 SDK transport 失败原因。
 **验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_geoblock_preflight_rejects_blocked_route` / `test_polymarket_geoblock_preflight_allows_frontend_only_restricted_country` / `test_polymarket_geoblock_preflight_uses_configured_proxy`;`tests/arbitrage/launchers/test_arb_node.py::test_main_preflight_polymarket_sdk_error_returns_2` / `test_preflight_polymarket_trading_uses_exec_proxy` / `test_preflight_polymarket_trading_rejects_zero_balance`。2026-06-10 JP 出口实测 preflight OK:`server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`;AU/NSW 仍按官方 API-blocked fail fast。
 
+### pm-adapter-5.1d: PM submit 本地/传输异常不拖满 session timeout
+
+**前置**: `ArbPolymarketExecutionClient._submit_order` 已 `_begin_session`,但上游 PM submit 在收到 venue ack 前抛异常(例如 market WS / CLOB 路由 `Connection reset by peer`)。
+**输入**: 一笔 PM `LimitOrder` 进入 `_submit_order`。
+**期望**:
+- 生成 `OrderDenied`,原因包含 `PM submit exception before venue acknowledgement`
+- 立即结束当前 execution session,发布 `execution.finished`,释放 per-pair 执行闸
+- 不生成 `OrderRejected`,不标 `leg_settled`,避免把本地/传输异常误写成 venue confirm
+**验收**: live 日志应看到 `Polymarket submit failed before venue acknowledgement ...` 后不再等待 `Execution session timeout`。当前尚未补离线 fake-client 单测;后续可用 stub 上游 `_submit_order` 抛异常覆盖。
+
 ### pm-adapter-5.2: 撤单接口
 
 **前置**: 已下一笔挂单
@@ -135,6 +145,18 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **输入**: NT TradingNode 启动 + ExecutionEngine reconciliation
 **期望**: ExecutionEngine 调上游 `generate_order_status_reports` / `generate_position_status_reports`,把遗留挂单/仓位补到 Cache
 **验收**: Cache 中能查到这些挂单,Strategy 可以选择保留或撤销
+
+### pm-adapter-5.3b: PositionStatusReport 携带 PM 平均开仓成本
+
+**前置**: PM Data API `/positions` 返回某 token 持仓,字段包含 `size` 与 `avgPrice`(或兼容旧名 `avg_price`)。
+**输入**: `PolymarketExecutionClient.generate_position_status_reports(...)`
+**步骤**:
+1. 一次性分页拉取 `/positions`
+2. 按 `{conditionId}-{asset}.POLYMARKET` 映射回 `InstrumentId`
+3. 将 `size` 转为 `PositionStatusReport.quantity`
+4. 将 `avgPrice` / `avg_price` 转为 `PositionStatusReport.avg_px_open`
+**期望**: NT cache/Portfolio 中由该 report 派生的 Position 带真实平均成本;缺失或无法解析时 `avg_px_open=None`,但不得丢掉 quantity report,也不在 strategy/risk 侧估算。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_position_report_maps_avg_price_from_data_api` / `test_polymarket_position_report_keeps_quantity_when_avg_price_unknown`
 
 ### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
 

@@ -83,6 +83,7 @@ def test_action_calls_submitter_when_present(caplog):
     assert calls[0]["side"] == "BUY"
     assert calls[0]["qty"] == 22.5
     assert calls[0]["price"] == 0.4
+    assert calls[0]["intent"] == "arbitrage"
     # OE leg:size=22.5/2.5=9.0,price=2.5
     assert calls[1]["instrument_id"] == "A.ORBITEXCH"
     assert calls[1]["qty"] == 9.0
@@ -92,6 +93,30 @@ def test_action_calls_submitter_when_present(caplog):
     assert any("PlaceBets[submit]" in m for m in msgs)
     # log-only fallback "would submit" 不应出现
     assert not any("would submit" in m for m in msgs)
+
+
+def test_action_uses_leg_qty_when_check_precomputes_size():
+    """recovery Check 可把补缺口 qty 写进 leg,复用 place_bets 出补救单。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
+    ]
+
+    _run(PlaceBetsAction(share=22.5).execute(ctx))
+
+    assert calls == [{
+        "instrument_id": "A.ORBITEXCH",
+        "side": "BUY",
+        "qty": 3.25,
+        "price": 2.5,
+        "intent": "arbitrage",
+    }]
 
 
 def test_action_can_override_venue_price_and_qty_for_live_probe():
@@ -119,7 +144,44 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         "side": "BUY",
         "qty": 7.0,
         "price": 1000.0,
+        "intent": "arbitrage",
     }]
+
+
+def test_action_qty_override_beats_leg_qty():
+    """显式 venue qty override 是 live probe 开关,优先级高于 Check 写出的 qty。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
+    ]
+
+    _run(PlaceBetsAction(share=22.5, qty_overrides={"ORBITEXCH": 7.0}).execute(ctx))
+
+    assert calls[0]["qty"] == 7.0
+
+
+def test_action_can_mark_recovery_intent():
+    """compensation tree 可把补救单标成 recovery,供 Risk 跳过 rebate gates。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+         "role": "home", "price": 0.4, "prob": 0.4},
+    ]
+
+    _run(PlaceBetsAction(share=5.0, intent="recovery").execute(ctx))
+
+    assert calls[0]["intent"] == "recovery"
 
 
 def test_submitter_none_falls_back_to_log_only():

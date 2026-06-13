@@ -23,6 +23,7 @@ from src.arbitrage.strategy.check_action_registry import _reset_for_tests
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
+from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
@@ -36,6 +37,7 @@ def _registry():
     _reset_for_tests()
     register_check("pre_match", PreMatchCheck)
     register_check("mean_rebate", MeanRebateCheck)
+    register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
     register_action("place_bets", PlaceBetsAction)
     yield
     _reset_for_tests()
@@ -191,3 +193,34 @@ def test_no_arb_below_threshold_no_action(caplog):
     ctx = EvalContext(pair_id="pair_X", snapshot=snap, store=SignalStore().view("pair_X"))
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
     assert res.hit is False
+
+
+def test_recovery_tree_config_builds_with_recovery_intent():
+    cfg = msgspec.convert({
+        "strategy": {
+            "strategies": {
+                "mr_recovery": {
+                    "arbitrage_tree": {
+                        "checktion": [
+                            {"type": "pre_match"},
+                            {"type": "mean_rebate", "params": {"min_rate": 0.30}},
+                        ],
+                        "action": {"type": "place_bets", "params": {"share": 5.0}},
+                    },
+                    "compensation_tree": {
+                        "checktion": [
+                            {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}},
+                        ],
+                        "action": {"type": "place_bets", "params": {"share": 5.0, "intent": "recovery"}},
+                    },
+                },
+            },
+            "bindings": [{"scope": "competition:ATP", "strategy_id": "mr_recovery"}],
+        },
+    }, type=ArbConfig)
+
+    registry = to_strategy_registry(cfg)
+    strategy = registry.get_for(None, "ATP", None)
+
+    assert strategy is not None
+    assert isinstance(strategy.compensation_tree.action, PlaceBetsAction)

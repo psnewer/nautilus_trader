@@ -17,6 +17,8 @@ import asyncio
 import json
 from collections import OrderedDict
 from collections import defaultdict
+from decimal import Decimal
+from decimal import InvalidOperation
 from typing import Any
 
 import msgspec
@@ -114,6 +116,16 @@ from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import Order
+
+
+def _parse_position_avg_price(position: dict[str, Any]) -> Decimal | None:
+    avg_price = position.get("avgPrice", position.get("avg_price"))
+    if avg_price in (None, ""):
+        return None
+    try:
+        return Decimal(str(avg_price))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 class PolymarketExecutionClient(LiveExecutionClient):
@@ -691,10 +703,11 @@ class PolymarketExecutionClient(LiveExecutionClient):
         else:
             instrument_ids = [inst.id for inst in self._cache.instruments(venue=POLYMARKET_VENUE)]
 
-        quantities_by_instrument = await self._fetch_quantities_from_gamma_api(instrument_ids)
+        positions_by_instrument = await self._fetch_positions_from_data_api(instrument_ids)
 
         # Generate reports from quantities (filter dust positions)
-        for instrument_id, quantity in quantities_by_instrument.items():
+        for instrument_id, position in positions_by_instrument.items():
+            quantity, avg_px_open = position
             size = float(quantity)
             if 0.0 < size < DUST_SNAP_THRESHOLD:
                 self._log.debug(f"Filtering dust position: {instrument_id}, size={size}")
@@ -712,6 +725,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 report_id=UUID4(),
                 ts_last=now,
                 ts_init=now,
+                avg_px_open=avg_px_open,
             )
             reports.append(report)
 
@@ -779,14 +793,14 @@ class PolymarketExecutionClient(LiveExecutionClient):
             parsed_fill_keys.add(fill_key)
             reports.append(report)
 
-    async def _fetch_quantities_from_gamma_api(
+    async def _fetch_positions_from_data_api(
         self,
         instrument_ids: list[InstrumentId],
-    ) -> dict[InstrumentId, Quantity]:
+    ) -> dict[InstrumentId, tuple[Quantity, Decimal | None]]:
         """
-        Fetch position quantities using Gamma API (bulk fetch).
+        Fetch position quantities and average open prices from Polymarket Data API.
         """
-        self._log.debug("Fetching positions from Gamma API")
+        self._log.debug("Fetching positions from Polymarket Data API")
 
         # Fetch all user positions once (paginated)
         positions: list[dict[str, Any]] = await self._fetch_user_positions(
@@ -794,8 +808,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
             size_threshold=0,
         )
 
-        # Map asset (token id) -> size (shares)
-        size_by_asset: dict[str, float] = {}
+        # Map instrument ID -> (size, avg open price).
+        raw_by_instrument: dict[InstrumentId, tuple[float, Decimal | None]] = {}
 
         for p in positions:
             instrument_id = InstrumentId.from_str(
@@ -803,7 +817,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
             size_val = p.get("size", 0) or 0
             try:
-                size_by_asset[instrument_id] = float(size_val)
+                raw_by_instrument[instrument_id] = (
+                    float(size_val),
+                    _parse_position_avg_price(p),
+                )
             except Exception as e:
                 self._log.warning(
                     f"Failed to parse position size for instrument {instrument_id}: {e}",
@@ -811,14 +828,17 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 continue
 
         # Convert to quantities by instrument ID
-        quantities: dict[InstrumentId, Quantity] = {}
+        reports: dict[InstrumentId, tuple[Quantity, Decimal | None]] = {}
 
         for instrument_id in instrument_ids:
-            size = size_by_asset.get(instrument_id, 0.0)
-            # Gamma API returns size as decimal float (e.g., 1.5 shares)
-            quantities[instrument_id] = Quantity(float(size), precision=USDC_POS.precision)
+            size, avg_px_open = raw_by_instrument.get(instrument_id, (0.0, None))
+            # Data API returns size as decimal float (e.g., 1.5 shares).
+            reports[instrument_id] = (
+                Quantity(float(size), precision=USDC_POS.precision),
+                avg_px_open,
+            )
 
-        return quantities
+        return reports
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 

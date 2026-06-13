@@ -11,9 +11,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ArbRiskParams:
-    """组合级硬停门限 + way_rebate 计算基准。"""
+    """组合级硬停门限 + 组合指标运行参数。"""
 
-    # way_rebate 计算基准(平移自旧 PositionManager.default_share / fx)
+    # share 保留为策略/配置层目标规模;way_rebate 分母由实际持仓 legs 的最大 share 决定。
     share: float = 100.0
     fx: float = 1.0  # OrbitExch 货币换算汇率(USD↔下注币种)
 

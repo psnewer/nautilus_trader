@@ -75,6 +75,7 @@ from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
+from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.signals import SignalStore
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
@@ -88,6 +89,7 @@ def register_builtin_checks_and_actions() -> None:
     """
     register_check("pre_match", PreMatchCheck)
     register_check("mean_rebate", MeanRebateCheck)
+    register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
     register_action("place_bets", PlaceBetsAction)
 
 
