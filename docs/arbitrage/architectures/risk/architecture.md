@@ -19,7 +19,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 **明确不做**(对照旧微服务架构,全部砍掉):
 
-- ❌ 无 `LiquidityRiskActor` / `check_min_size`(最小限额由 NT `instrument.min_quantity` 自动管)
+- ❌ 无 `LiquidityRiskActor` / `check_min_size`(最小限额由 NT instrument 元数据自动管:PM `min_quantity=5 shares`,OE `min_notional=7 GBP stake`)
 - ❌ 无 `BalanceMonitorActor` / 余额阈值告警 publish(告警让前端订阅 `AccountState` 自己看)
 - ❌ 无独立熔断 Actor / 不翻 `TradingState`(全局止损 = 逐 submit deny,见 §4.3)
 - ❌ Strategy **不引用** Risk —— 透明拦截,Strategy 只通过 `on_order_denied` 感知结果
@@ -96,6 +96,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 **NT 检查分两步,本类只覆盖第一步**(Step 6 核实修正):
 - `_check_order`(本类覆盖点):仅 **price / quantity / GTD**。
 - `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT 的 native 余额读 cache `free`——对 PM 因 `free==total` 偏宽松(不会误拒,只是不够紧),故本类在 `_check_order` 内**前置**更严的 PM 自扣余额检查(它先于 native 跑、先拒)。
+
+**venue 最小下单门控来源**:
+- PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
+- OE:最小值是 stake,由 OE Provider 写入 `BettingInstrument.min_notional=7 GBP`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦 `notional < 7 GBP`。
+- Risk 组件不再维护 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量;若本地门控失效,优先检查 instrument 元数据是否正确进入 cache。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 

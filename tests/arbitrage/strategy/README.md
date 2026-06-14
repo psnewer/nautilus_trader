@@ -212,6 +212,7 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 - ✅ `test_submitter.py`(5):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 写入 `Order.tags=["arb:intent=<intent>"]`
 - ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
+- ✅ **#105(2026-06-13)place_bets 顺序提交 → 并发 `gather`**:`place_bets.py` 多腿改 `await asyncio.gather(*(submitter(spec) ...))`(顺序 workaround 退役;同页并发 placeBets 丢回执由 OE ExecClient 页锁串行兜底,PM/OE 腿并行 → 对冲窗口更窄,synchronization §8.3)。`test_action_place_bets.py` 既有用例(submitter 调用次数 / spec 正确 / log-only fallback)在并发下仍 23 passed。⚠️ **仍需 live 重验**两腿真盘回执不丢。
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
 
@@ -288,6 +289,13 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.17**(`test_health_check_active_skips_fire`):`_on_health_check_started` 置 `_hc_running` 后 `on_data` → `_route_eval` 见 `_hc_running` 非空 → **不派发评估**(`loop.tasks` 空,arb_action 0 次)。补 §6.10 缺失的 strategy⊥健康检查互斥。
 - **.18**(`test_health_check_finished_clears_gate_when_all_settled`):gate 有泄漏残留(`LEAKED` in-flight + 脏 exec_count)。OE/PM 两健检都 started;OE `finished` 时 PM 仍在跑 → **不清**;PM 也 `finished`(`_hc_running` 空)+ `leg_settled` 全 true → `clear_all` → 残留清掉。
 - **.19**(`test_health_check_finished_keeps_gate_when_leg_unsettled`):`leg.arm("P","leg-1")` 造未结腿;health_check `finished` 时 `has_any_unsettled()` 真 → **不 clear**(保护真在飞 arb)。
+
+### strategy-4.framework.eval.{20-22}:`try_enter` desync 兜底(#105 A5,§6.10 §8.4)
+`_route_eval` try_enter 被拒时,`exec_in_flight(pair)`(`_exec_count>0`)+ 全局 execution 非 alive + `leg_settled` 全 true → desync 泄漏 → `clear_all` 重试一次。**与 max-hold + health_check→clear_all 并存**。
+- **.20**(`test_pair_inflight_leak_backstop_clears_and_fires`):造 desync 泄漏(`try_enter`+`exec_started` 卡 `_exec_count`),`active_flag=False`、leg_settled 全 settled → 兜底 `clear_all` + 重试 → fire(arb_action 1 次)。
+- **.21**(`test_pair_inflight_backstop_skips_when_execution_active`):同上但 `active_flag=True`(execution alive)→ 非泄漏 → 不清、不派发(0 次)。
+- **.22**(`test_pair_inflight_backstop_skips_when_unsettled`):`active_flag=False` 但 `leg.arm` 造未结腿 → 不清、不派发。
+- **handoff 防护(隐含)**:`exec_in_flight`(`_exec_count>0`)排除 fire 后 session 未起的 handoff 窗口(exec_count==0)→ `test_same_pair_concurrent_eval_fires_once` 不被破坏(若漏掉该条件会重复 fire)。gate `exec_in_flight` 单测见 `common/test_pair_inflight.py` 复用。
 
 ### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
 - **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份

@@ -99,7 +99,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
             currency="GBP",
             price_precision=2,
             size_precision=2,
-            min_notional=Money(Decimal("1"), GBP),
+            min_notional=Money(Decimal("7"), GBP),
             ts_event=0,
             ts_init=0,
             info=info,

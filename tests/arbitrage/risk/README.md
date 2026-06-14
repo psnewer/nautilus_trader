@@ -26,7 +26,7 @@ ExecutionClient (维护账户)
 ```
 
 **唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
-- NT 父类自动处理最小限额(`instrument.min_quantity`)
+- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE:`instrument.min_notional=7 GBP stake`)
 - 子类加 `_check_balance` hook 做余额检查
 
 **删除**:
@@ -42,10 +42,12 @@ ExecutionClient (维护账户)
 - 期望: `ArbitrageLiveRiskEngine._check_order` 被调用 → 通过则路由到 ExecutionClient,被拒发 `OrderDenied`
 - 验收: Strategy 不需要主动调任何 risk API,完全透明
 
-### risk-6.2: NT 自动处理 instrument.min_quantity
-- 输入: 提交一个 `quantity < instrument.min_quantity` 的订单
+### risk-6.2: NT 自动处理 venue 最小下单额
+- 输入:
+  - PM:提交一个 `quantity < instrument.min_quantity(5 shares)` 的订单
+  - OE:提交一个 `stake/notional < instrument.min_notional(7 GBP)` 的订单
 - 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
-- 验收: 应用层无需任何"最小限额"代码
+- 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测
 
 ### risk-6.3: 应用层余额检查(自算可用余额,扣在途挂单)
 - 前置: ExecutionClient 已写入 cache.account_state
@@ -272,6 +274,7 @@ ExecutionClient (维护账户)
   - `mark(p,"A.PM")` + `mark(p,"B.OE")` → `any_unsettled(p)` False 且 `all_settled(p)` True
   - `mark` 命中不存在的 entry / 不在本轮腿集合的 instrument → 忽略(非 execution 触发不创建,未知腿不崩)
   - **`has_any_unsettled()`(#70 新增,全局)**:无 entry → False;`reset(p,...)` 后 → True;某 pair 全 mark 后若无其它未结算 entry → False;另一 pair `reset` → True(`test_has_any_unsettled_global`)
+  - **`mark_venue(venue_value)`(#105 新增)**:某 venue 一次完整 order 真值 → 该 venue 所有 armed 腿置 true(腿键 `instrument_id.venue.value` 命中;缺席快照腿=已澄清没成功亦置;他 venue/已 true/无 `.venue` 的 str 键跳过)→ 返回新置位数。OE `_on_current_bets` 调它(只挂 order 真值,position 解耦;execution §4.3bis(5))(`test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`)
 - 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;**OE 健康检查状态维度(#70,execution §4.3 Phase 2)经 `has_any_unsettled()` 读**;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
 
 ---

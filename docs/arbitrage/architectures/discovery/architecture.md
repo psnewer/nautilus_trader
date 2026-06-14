@@ -17,6 +17,8 @@
 
 PM WS 配置约束:`ArbConfig.venues.polymarket.ws_url` 的推荐值是上游 base URL `.../ws/`。为兼容旧 discovery / odds 订阅配置,dispatcher 接受旧 full endpoint `.../ws/market` / `.../ws/user` 并归一化后再交给 PM Data/Exec client。
 
+最小下单元数据契约:PM 的 venue 最小值是 **share 数量 5**,写入 `BinaryOption.min_quantity`;OE 的 venue 最小值是 **stake 7 GBP**,写入 `BettingInstrument.min_notional`。Risk 不另维护 venue 常量,只经 NT 父类读取 instrument 元数据。
+
 **明确不做**:
 - ⚠️ ~~DataClient 不拥有调度(归 Refresher,Q8)~~ **#59 反转**:Q8 的"调度归 Refresher"被验证为重造 NT 原生(refresher 3 个 bug 都是脱离原生路径的症状)→ **调度迁回 DataClient 原生**(refactor.md #58/#59)。
 - ❌ 不为每个 Refresher 单独建子目录(P8;两个 venue 共用一个类,实例化时区分)
@@ -113,6 +115,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 120s(初次 load connect 窗口)。
+> **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。
 
 ### 3.3 周期发现:DataClient 原生 `_update_instruments`(#59;替代退役的 `InstrumentRefresher`)
 
@@ -173,10 +176,13 @@ for role, sel_id in [("home", event.home_selection_id),
             market_id=event.market_id,
             selection_id=int(sel_id),
             ...上游必填字段...,
+            min_notional=Money(Decimal("7"), GBP),  # OE 最小 stake
             info={"sport": ..., "competition": ..., "home_team": ..., "away_team": ...,
                   "start_ts": 0, "selection_role": role},
         )
 ```
+
+OE 的 `quantity` 表示 stake,`BettingInstrument.notional_value(quantity, price)` 返回 stake notional。因此最小 stake 7 GBP 用 `min_notional=7 GBP` 表达,由 NT `_check_orders_risk_for_account` 拦截;不额外在 Risk 组件维护 `MIN_SIZE_ORBITEXCH`。
 
 ### 4.2 周期循环(对齐 §6.8.4.5 同节奏)
 

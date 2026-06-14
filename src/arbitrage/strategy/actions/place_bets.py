@@ -10,6 +10,7 @@ Action 通用 — 读 `ctx.scratch["legs"]`(由 Check 算好,如 MeanRebateCheck
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from src.arbitrage.strategy.condition import Action
@@ -47,6 +48,7 @@ class PlaceBetsAction(Action):
             f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} share={self._share} "
             f"mean_rebate_rate={rate}",
         )
+        prepared = []
         for leg in legs:
             venue = leg["venue"]
             price = self._price_overrides.get(venue, leg["price"])
@@ -58,11 +60,16 @@ class PlaceBetsAction(Action):
                 "price": price,
                 "intent": self._intent,
             }
-            if submitter is not None:
-                # slice 10a(#50):真出单(SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成)
-                await submitter(spec)
-            else:
-                # log-only fallback(无 submitter 注入;单测 / smoke)
+            prepared.append((leg, venue, size, price, spec))
+
+        if submitter is not None:
+            # #105:多腿**并发**提交(顺序 workaround 退役)。同页并发 placeBets 丢回执的风险由
+            # OE ExecClient 页锁串行碰页操作兜底;PM/OE 腿并行 → 对冲窗口更窄(synchronization §8.3)。
+            # slice 10a(#50):SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成。
+            await asyncio.gather(*(submitter(spec) for (_, _, _, _, spec) in prepared))
+        else:
+            # log-only fallback(无 submitter 注入;单测 / smoke)
+            for leg, venue, size, price, _spec in prepared:
                 _LOG.info(
                     f"  would submit: instrument={leg['instrument_id']} side={leg['side']} "
                     f"role={leg['role']} venue={venue} qty={size:.4f} price={price}",

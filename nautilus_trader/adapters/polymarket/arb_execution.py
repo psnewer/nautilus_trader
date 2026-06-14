@@ -117,18 +117,19 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             )
             self._end_session(order.client_order_id)
 
-    def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
-        for order in residual:
-            cmd = CancelOrder(
-                trader_id=self.trader_id,
-                strategy_id=order.strategy_id,
-                instrument_id=instrument_id,
-                client_order_id=order.client_order_id,
-                venue_order_id=order.venue_order_id,
-                command_id=UUID4(),
-                ts_init=self._clock.timestamp_ns(),
-            )
-            self._loop.create_task(self._cancel_order(cmd))
+    async def _cancel_residual_one(self, order) -> None:
+        """#105:撤一条残单 —— 构 `CancelOrder` 走 `_cancel_order`。循环 + exec_count 跟踪由 base
+        `_cancel_residual_orders`/`_tracked_residual_cancel` 统一(撤单纳入 exec_count,exec_count→0 才清 in-flight)。"""
+        cmd = CancelOrder(
+            trader_id=self.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+        await self._cancel_order(cmd)
 
     async def _run_health_check(self) -> None:
         if self._positions_fetcher is None:

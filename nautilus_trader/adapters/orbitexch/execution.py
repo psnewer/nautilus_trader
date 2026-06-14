@@ -22,6 +22,9 @@ item→`generate_order_*`/report(item schema 待 populated 抓帧)、reports。
 
 from __future__ import annotations
 
+import asyncio
+
+from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.currencies import GBP
 from nautilus_trader.model.enums import AccountType
@@ -39,6 +42,9 @@ from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 ORBITEXCH = "ORBITEXCH"
+
+# #105 §4.3bis(4):exec 页 WS 存活锚 idle_timeout(live 实测心跳 ≈35s,300s 保守;config-wire 待 cutover)
+_EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
 
 
 def oe_balance_to_account_balances(balance: float, currency=GBP) -> list:
@@ -176,6 +182,50 @@ def bet_order_progress(bet) -> dict | None:
     }
 
 
+def current_bets_to_positions(bets) -> list:
+    """OE `CURRENT_BETS` 快照 → 每 selection 净持仓(纯函数,可单测,无 NT 依赖;#105 §4.3bis(2))。
+
+    BACK=long / LAY=short;`net = ΣBACK_matched − ΣLAY_matched`(matched = `sizeMatched`);
+    `avg_px = 主方向(net 符号侧)成交量加权 averagePrice`(反方向当平仓只减 qty、不进 avg_px,
+    对齐 NT "avg_px_open 只算开仓侧",不依赖 fill 时序);`net==0` 跳过(FLAT);matched=0 不计。
+
+    返回 `list[dict]`:`{"market_id","selection_id","side"(LONG/SHORT),"qty","avg_px"}`。
+    """
+    acc: dict = {}   # (market_id, selection_id) -> {long_q, long_w, short_q, short_w}
+    for bet in (bets or []):
+        prog = bet_order_progress(bet)
+        if prog is None:
+            continue
+        matched = float(prog["filled_qty"])      # = sizeMatched(累积成交量)
+        if matched <= 0:
+            continue
+        avg = float(prog["avg_px"])
+        a = acc.setdefault(
+            (prog["market_id"], prog["selection_id"]),
+            {"long_q": 0.0, "long_w": 0.0, "short_q": 0.0, "short_w": 0.0},
+        )
+        if prog["side"] == "BACK":
+            a["long_q"] += matched
+            a["long_w"] += matched * avg
+        elif prog["side"] == "LAY":
+            a["short_q"] += matched
+            a["short_w"] += matched * avg
+    out = []
+    for (market_id, selection_id), a in acc.items():
+        net = a["long_q"] - a["short_q"]
+        if abs(net) < 1e-9:
+            continue                              # FLAT(完全对冲)
+        if net > 0:
+            side, avg_px = "LONG", (a["long_w"] / a["long_q"] if a["long_q"] > 0 else 0.0)
+        else:
+            side, avg_px = "SHORT", (a["short_w"] / a["short_q"] if a["short_q"] > 0 else 0.0)
+        out.append({
+            "market_id": market_id, "selection_id": selection_id,
+            "side": side, "qty": abs(net), "avg_px": avg_px,
+        })
+    return out
+
+
 class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     def __init__(
         self,
@@ -221,6 +271,18 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._bet_matched: dict = {}    # offerId → 累积 sizeMatched(CURRENT_BETS 快照算 delta)
         self._bet_fill_seq: dict = {}   # offerId → 成交序号(trade_id 唯一)
         self._current_bets: dict = {}   # offerId → 最新 bet(快照,供 reconcile reports)
+        # #105:页锁 —— 串行所有"碰 OE execution 页"的操作(place / cancel / 未来 reload),
+        # 因 NT 不串行化命令(均 create_task);同页并发 placeBets 会丢回执(synchronization §8.1/§8.2)。
+        self._page_lock = asyncio.Lock()
+        # #105 A1 §4.3bis(4):exec 页 WS 存活锚 —— general WS 任一帧(含 SockJS 心跳)刷新;
+        # `_exec_ws_fresh()` 据此判 idle(reconcile/venue-liveness 用,A2+ 接入)。0 = 还没收过帧。
+        self._last_frame_ns = 0
+        self._exec_ws_idle_timeout_ns = secs_to_nanos(_EXEC_WS_IDLE_TIMEOUT_SECS)
+        # #105 A2 §4.3bis(3):reload-then-report 机制(单 flight + 存活闸)。reconcile 成功信号 =
+        # reload 后 CURRENT_BETS 重推(刷 `_last_current_bets_ns`)。**A2 只建方法,flag off 不接入 reports**。
+        self._last_current_bets_ns = 0
+        self._reload_inflight = None
+        self._reload_bets_wait_ns = secs_to_nanos(8.0)   # reload 后等 CURRENT_BETS 重推上限
 
     async def _connect(self) -> None:
         """Gap C(#63):真接线 —— 共享 BM 取 `"execution"` page(#62:data/exec 同登录 context)→
@@ -240,6 +302,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # CURRENT_BETS(老 odds_client 注释明示"必须在 goto 前挂拦截,否则错过 WS 创建")。
         self._ws_handler = OrbitExchWebSocketHandler(self._page, logger=self._log)
         self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
+        self._ws_handler.on_frame(self._mark_exec_frame)          # #105 A1:每帧(含心跳)刷存活锚
         await self._ws_handler.start()
         await self._page.goto(
             self._config.base_url,
@@ -326,7 +389,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("OE place: executor 未初始化(_connect 未接线 / 非 live)")
             return None
-        return await self._executor.place_order(legacy, self._page)
+        async with self._page_lock:  # #105:页锁串行碰页操作(place / cancel / reload)
+            return await self._executor.place_order(legacy, self._page)
 
     async def _cancel_order(self, command) -> None:
         await self._cancel_one(
@@ -357,7 +421,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             market_id=str(getattr(inst, "market_id", "") or (bet or {}).get("marketId", "")),
             selection_id=str(getattr(inst, "selection_id", "") or (bet or {}).get("selectionId", "")),
         )
-        result = await self._executor.cancel_order(legacy, self._page)
+        async with self._page_lock:  # #105:页锁(同 place,串行碰页)
+            result = await self._executor.cancel_order(legacy, self._page)
         if result is not None and getattr(result, "success", False):
             self.generate_order_canceled(strategy_id, instrument_id, client_order_id, voi, now)
         else:
@@ -382,17 +447,60 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         result = await self._executor.cancel_all_unmatched(self._page)
         self._log.info(f"OE cancel_all_unmatched: success={getattr(result, 'success', None)}")
 
-    def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
-        for order in residual:
-            self._loop.create_task(self._cancel_residual_one(order))
-
     async def _cancel_residual_one(self, order) -> None:
-        """Gap C(#63):补偿/残单撤 —— 复用 `_cancel_one`(order 是 NT Order)。
-        注:补偿撤单的**触发策略**(单腿失败 → 撤另一腿)见 [[bug_compensating_cancel_missing]],本方法只负责"撤一单"。"""
+        """Gap C(#63):撤一条残单 —— 复用 `_cancel_one`(order 是 NT Order)。#105:循环 + exec_count
+        跟踪由 base `_cancel_residual_orders`/`_tracked_residual_cancel` 统一,本方法只负责"撤一单"。
+        注:补偿撤单的**触发策略**(单腿失败 → 撤另一腿)见 [[bug_compensating_cancel_missing]]。"""
         await self._cancel_one(
             order.strategy_id, order.instrument_id,
             order.client_order_id, order.venue_order_id,
         )
+
+    def _mark_exec_frame(self) -> None:
+        """#105 A1:exec 页 general WS 任一帧(含 SockJS 心跳)→ 刷存活锚 `_last_frame_ns`。"""
+        self._last_frame_ns = self._clock.timestamp_ns()
+
+    def _exec_ws_fresh(self) -> bool:
+        """#105 §4.3bis(4):exec 页 WS 是否新鲜(idle_timeout 内有帧)。
+        `_last_frame_ns==0`(尚未收过任何帧)视为不新鲜。供 reconcile 存活闸 / venue-liveness 用(A2+ 接入)。"""
+        if self._last_frame_ns == 0:
+            return False
+        return (self._clock.timestamp_ns() - self._last_frame_ns) <= self._exec_ws_idle_timeout_ns
+
+    async def _reload_exec_page(self) -> bool:
+        """#105 §4.3bis:reload exec 页(走页锁)→ 等 CURRENT_BETS 重推。
+        返回 True=拿到真实 response(reconcile 成功),False=reload 失败 / CURRENT_BETS 超时未重推(venue dead)。
+        **A2:已建,flag off 暂不接入 `generate_*_reports`**。"""
+        if self._page is None:
+            return False
+        reload_ts = self._clock.timestamp_ns()
+        try:
+            async with self._page_lock:   # 与 place/cancel 同锁串行(#105 §8.2)
+                await self._page.reload(wait_until="networkidle", timeout=self._config.page_timeout)
+        except Exception as e:  # noqa: BLE001 — reload 失败 = reconcile 失败,交调用方判 dead
+            self._log.warning(f"OE exec page reload failed: {e!r}")
+            return False
+        # 等 reload 后新 CURRENT_BETS(`_on_current_bets` 刷 `_last_current_bets_ns`);锁外等,不挡 place/cancel
+        while self._last_current_bets_ns <= reload_ts:
+            if self._clock.timestamp_ns() - reload_ts > self._reload_bets_wait_ns:
+                self._log.warning("OE exec reload: CURRENT_BETS 未在超时内重推 → reconcile 失败")
+                return False
+            await asyncio.sleep(0.1)
+        return True
+
+    async def _ensure_exec_snapshot_fresh(self) -> bool:
+        """#105 §4.3bis(3):确保 `_current_bets` 新鲜(reconcile)。WS 活(`_exec_ws_fresh`)→ True 不 reload;
+        否则 single-flight reload 一次(并发调用共享同一 future)。返回 True=快照可信,False=reconcile 失败(venue dead)。
+        **A2:已建,flag off 暂不接入 `generate_*_reports`**。"""
+        if self._exec_ws_fresh():
+            return True
+        if self._reload_inflight is not None:
+            return await self._reload_inflight
+        self._reload_inflight = asyncio.ensure_future(self._reload_exec_page())
+        try:
+            return await self._reload_inflight
+        finally:
+            self._reload_inflight = None
 
     def _on_general_frame(self, message) -> None:
         parsed = self._parser.parse_general_frame(message)
@@ -427,6 +535,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         # 快照(非增量)→ 缓存供 reconcile reports;键 = offerId
         self._current_bets = {str(b.get("offerId", "")): b for b in (bets or []) if b.get("offerId")}
+        # #105 A2:CURRENT_BETS 重推时刻 = reconcile 成功信号(`_reload_exec_page` 等它越过 reload_ts)
+        self._last_current_bets_ns = self._clock.timestamp_ns()
+        # #105 A3 §4.3bis(5):完整 order 真值快照 → mark 该 venue 所有 armed 腿(缺席=已澄清没成功,亦置 true)。
+        # 与 `_send_order_event` funnel mark 并存(幂等);flip(B4)删 funnel,只留此处避开 Path B fabricate。
+        if self._leg_settled is not None:
+            self._leg_settled.mark_venue(ORBITEXCH)
 
         for fill in current_bets_to_fills(bets, self._bet_matched):
             offer_id = fill["offer_id"]
@@ -574,6 +688,33 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         return []
 
     async def generate_position_status_reports(self, command) -> list:
-        """OE 持仓 reconcile 延后:NT Portfolio 由 order fills 自行派生持仓;OE 账户经 BALANCE 帧
-        对账(Q17,WS 余额已含挂单占用)。betting back/lay→position_side 语义 + matched 样本待真成交。返 []。"""
-        return []
+        """OE 持仓 reconcile(#105 §4.3bis(2)):从 CURRENT_BETS 快照聚合净持仓
+        (BACK=long/LAY=short,net=ΣBACK−ΣLAY,avg_px=主方向成交量加权)。matched=0 / 净 0 跳过;
+        instrument 经 market_id+selection_id 反查,反查不到跳过。
+        **注**:NT Portfolio 平时由 order fills 自行派生持仓;本 report 仅供 reconcile 对账用。"""
+        from decimal import Decimal
+
+        from nautilus_trader.core.uuid import UUID4
+        from nautilus_trader.execution.reports import PositionStatusReport
+        from nautilus_trader.model.enums import PositionSide
+
+        reports = []
+        now = self._clock.timestamp_ns()
+        for pos in current_bets_to_positions(self._current_bets.values()):
+            inst = self._resolve_oe_instrument(pos["market_id"], pos["selection_id"])
+            if inst is None:
+                self._log.warning(
+                    f"position reconcile: 反查不到 instrument(market={pos['market_id']},"
+                    f"selection={pos['selection_id']});跳过")
+                continue
+            reports.append(PositionStatusReport(
+                account_id=self.account_id,
+                instrument_id=inst.id,
+                position_side=PositionSide.LONG if pos["side"] == "LONG" else PositionSide.SHORT,
+                quantity=inst.make_qty(pos["qty"]),
+                report_id=UUID4(),
+                ts_last=now,
+                ts_init=now,
+                avg_px_open=Decimal(str(pos["avg_px"])) if pos["avg_px"] > 0 else None,
+            ))
+        return reports

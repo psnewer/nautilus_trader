@@ -21,6 +21,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 | `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
 | `test_sports.py` | **#60** PM Sports 比分信号(`sports.py`):4 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
+| `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译;本项目要求 `minimum_order_size` 映射到 `min_quantity` |
 | `tests/arbitrage/config/test_dispatcher.py` / `test_loader.py` | PM adapter 接线前置:项目 `venues.polymarket.ws_url` 兼容旧 full endpoint(`/ws/market` / `/ws/user`),dispatcher 传给上游 `PolymarketWebSocketClient` 前归一化为 base URL(`/ws/`);`proxy_url` 从 JSON 或 env 注入并透传给 PM Data/Exec client |
 
 ---
@@ -40,6 +41,13 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `ArbPolymarketInstrumentProvider._parse_instrument` super 后调 `enrich_pm_six_key_info(market_info, outcome)` update info
 - 当前 enricher 是 **best-effort seam**:`sport ← market_info["category"]`(能拿就拿);其它 5-key 空字符串/0 占位
 - ⬜ **TODO live**:实写需 PM gamma `/events/{event_id}` HTTP + ticker 拆解(参旧 `odds_client.py:255+`);现 matching `events_from_instruments` 见空 key 跳过 → **PM 侧暂不参与匹配**(结构完整,extraction 实写时下游不动)
+
+### pm-adapter-1.3: PM 最小下单 share 映射
+
+**前置**: PM Gamma/CLOB market payload 含 `minimum_order_size`(来自 `orderMinSize`)。
+**输入**: `parse_polymarket_instrument(market_info, token_id, outcome, ...)`
+**期望**: 产出的 `BinaryOption.min_quantity` 等于 `minimum_order_size`(当前 venue 默认 5 shares),由 NT RiskEngine 在本地拒绝 `quantity < 5`。
+**验收**: `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size`
 
 ### pm-adapter-2.1: 上游 DataClient 输出 OrderBookDelta 而非 dict
 

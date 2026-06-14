@@ -193,6 +193,30 @@ def test_parse_polymarket_instrument_defaults_fees_without_fee_schedule() -> Non
     assert instrument.taker_fee == Decimal(0)
 
 
+def test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size() -> None:
+    """
+    Polymarket 的本地下单最小值是 share 数量,应落到 BinaryOption.min_quantity。
+    """
+    token_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+    market_info: dict[str, object] = {
+        "condition_id": "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        "question": "Test market?",
+        "minimum_tick_size": 0.001,
+        "minimum_order_size": 5,
+        "end_date_iso": "2025-12-31T00:00:00Z",
+        "tokens": [{"token_id": token_id, "outcome": "Yes"}],
+    }
+
+    instrument = parse_polymarket_instrument(
+        market_info=market_info,
+        token_id=token_id,
+        outcome="Yes",
+        ts_init=0,
+    )
+
+    assert instrument.min_quantity.as_double() == 5.0
+
+
 def test_parse_order_book_snapshots() -> None:
     # Arrange
     data = pkgutil.get_data(

@@ -165,10 +165,30 @@ class ArbExecutionSessionMixin:
         self._msgbus.publish(topic=topic, msg={"instrument_id": instrument_id, "pair_id": pair_id})
 
     def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
-        """撤残留挂单(venue IO)。基类仅告警避免无声;PM/OE 子类覆盖做真实撤单。"""
+        """#105:撤残单 —— **每条残单的撤单都是一次 tracked execution**,纳入 per-pair `exec_count`
+        (`exec_count→0` 才清 in-flight)。这样 cancel-only 这次执行(撤单)与 submit+track 一样有头有尾,
+        **撤单 task 还在跑时 in-flight 不会被提前清**;一条 session 都没起的 cancel-only 也由 exec_count 兜到底
+        (无需 max-hold 等兜底)。`exec_started` 在本同步段先为所有残单加完(避免某条先完成就提前清),撤单 task
+        在 `finally` `exec_finished`。子类实现 `_cancel_residual_one(order)`(真实 venue 撤单,async)。"""
+        pair_id = self._pair_id_for(instrument_id)
+        for order in residual:
+            if pair_id is not None and self._pair_inflight is not None:
+                self._pair_inflight.exec_started(pair_id)
+            self._loop.create_task(self._tracked_residual_cancel(order, pair_id))
+
+    async def _tracked_residual_cancel(self, order, pair_id) -> None:
+        """#105:撤一条残单 + 保证 `exec_finished`(finally,无论成败/超时)→ 撤单纳入 exec_count 收尾。"""
+        try:
+            await self._cancel_residual_one(order)
+        finally:
+            if pair_id is not None and self._pair_inflight is not None:
+                self._pair_inflight.exec_finished(pair_id)
+
+    async def _cancel_residual_one(self, order) -> None:
+        """子类实现真实 venue 撤单(OE Playwright / PM CLOB)。base 占位告警。"""
         self._log.warning(
-            f"cancel-only: {len(residual)} residual order(s) on {instrument_id}; "
-            "override _cancel_residual_orders for venue cancel",
+            f"cancel-only: no venue cancel impl for {getattr(order, 'client_order_id', '')}; "
+            "override _cancel_residual_one",
         )
 
     @staticmethod

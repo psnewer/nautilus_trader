@@ -71,6 +71,13 @@ def test_build_legs_instrument_id_carries_market_and_selection(provider):
         assert "1-123456" in s and sel in s
 
 
+def test_build_legs_sets_orbitexch_min_stake(provider):
+    """OE 最小下单额是 stake 7 GBP,应落到 BettingInstrument.min_notional。"""
+    leg = next(iter(provider._build_legs(_event())))
+    assert leg.min_notional.as_double() == 7.0
+    assert str(leg.min_notional.currency) == "GBP"
+
+
 def test_load_all_async_invokes_scraper_and_adds_instruments():
     """discovery-1.4.e: load_all_async → scraper.discover_events → 基类 add。"""
     scraper = SimpleNamespace()

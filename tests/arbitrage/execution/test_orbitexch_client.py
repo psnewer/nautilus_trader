@@ -23,6 +23,7 @@ from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
+from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positions
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
 
 
@@ -231,6 +232,43 @@ def test_cancel_order_passes_market_id_from_current_bets():
     assert captured["canceled"] is True
 
 
+# ── #105 页锁:并发碰页操作串行 ──────────────────────────────────
+def test_page_lock_serializes_concurrent_page_ops():
+    """#105:两笔并发 cancel 走 OE ExecClient 页锁 → executor 调用永不并发(max_concurrent==1)。
+    NT 命令均 create_task 并发,页锁在资源层串行碰页操作,避免同页并发 placeBets/cancel 丢回执。"""
+    c = _client()
+    state = {"in_flight": 0, "max_concurrent": 0}
+
+    class _SlowExecutor:
+        async def cancel_order(self, order, page):
+            state["in_flight"] += 1
+            state["max_concurrent"] = max(state["max_concurrent"], state["in_flight"])
+            await asyncio.sleep(0.02)        # 制造重叠窗口:无锁则 max_concurrent==2
+            state["in_flight"] -= 1
+            return SimpleNamespace(success=True, message="ok")
+
+    c._executor = _SlowExecutor()
+    c._page = object()
+    c._current_bets = {}
+    c.generate_order_canceled = lambda *a, **k: None
+    c.generate_order_cancel_rejected = lambda *a, **k: None
+
+    iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+
+    async def _two():
+        await asyncio.gather(
+            c._cancel_order(SimpleNamespace(
+                strategy_id="S", instrument_id=iid,
+                client_order_id=ClientOrderId("O-1"), venue_order_id=VenueOrderId("111"))),
+            c._cancel_order(SimpleNamespace(
+                strategy_id="S", instrument_id=iid,
+                client_order_id=ClientOrderId("O-2"), venue_order_id=VenueOrderId("222"))),
+        )
+
+    _run(_two())
+    assert state["max_concurrent"] == 1      # 页锁串行 → 永不并发
+
+
 # ── Tier 2(真成交)matched 帧 → generate_order_filled ──────────────
 def test_on_current_bets_matched_fires_generate_order_filled():
     """Gap C Tier 2(2026-06-09 live offerId=222016509 的**真实 matched 帧值**:
@@ -269,3 +307,223 @@ def test_on_current_bets_matched_fires_generate_order_filled():
     assert f["last_qty"].as_double() == 7.0       # delta = sizeMatched - prev(0)
     assert f["last_px"].as_double() == 2.3        # averagePrice(成交均价,非 1.01 限价)
     assert f["liquidity_side"] == LiquiditySide.MAKER    # 硬编码假设
+
+
+# ── #105 持仓聚合 current_bets_to_positions(纯函数,§4.3bis(2))──────
+def _pos_bet(market, sel, side, matched, avg, remaining=0.0):
+    return {
+        "offerId": f"{market}-{sel}-{side}-{int(matched)}", "marketId": market,
+        "selectionId": sel, "side": side, "sizeMatched": matched,
+        "averagePrice": avg, "sizeRemaining": remaining,
+    }
+
+
+def test_positions_single_back_long():
+    out = current_bets_to_positions([_pos_bet("M1", "S1", "BACK", 10.0, 2.0)])
+    assert len(out) == 1
+    p = out[0]
+    assert p["side"] == "LONG" and p["qty"] == pytest.approx(10.0) and p["avg_px"] == pytest.approx(2.0)
+
+
+def test_positions_two_back_size_weighted_avg():
+    out = current_bets_to_positions([
+        _pos_bet("M1", "S1", "BACK", 100.0, 2.0), _pos_bet("M1", "S1", "BACK", 50.0, 2.2),
+    ])
+    p = out[0]
+    assert p["qty"] == pytest.approx(150.0)
+    assert p["avg_px"] == pytest.approx((100 * 2.0 + 50 * 2.2) / 150)
+
+
+def test_positions_mixed_back_lay_dominant_side_avg():
+    # BACK 100@2.0 + LAY 40@3.0 → net 60 LONG;avg_px=BACK 加权 2.0(LAY 只减 qty,不进 avg_px)
+    out = current_bets_to_positions([
+        _pos_bet("M1", "S1", "BACK", 100.0, 2.0), _pos_bet("M1", "S1", "LAY", 40.0, 3.0),
+    ])
+    p = out[0]
+    assert p["side"] == "LONG" and p["qty"] == pytest.approx(60.0) and p["avg_px"] == pytest.approx(2.0)
+
+
+def test_positions_lay_dominant_short():
+    out = current_bets_to_positions([
+        _pos_bet("M1", "S1", "LAY", 80.0, 3.0), _pos_bet("M1", "S1", "BACK", 30.0, 2.0),
+    ])
+    p = out[0]
+    assert p["side"] == "SHORT" and p["qty"] == pytest.approx(50.0) and p["avg_px"] == pytest.approx(3.0)
+
+
+def test_positions_net_zero_skipped():
+    out = current_bets_to_positions([
+        _pos_bet("M1", "S1", "BACK", 30.0, 2.0), _pos_bet("M1", "S1", "LAY", 30.0, 2.5),
+    ])
+    assert out == []                              # 完全对冲 → FLAT
+
+
+def test_positions_unmatched_skipped():
+    out = current_bets_to_positions([_pos_bet("M1", "S1", "BACK", 0.0, 0.0, remaining=7.0)])
+    assert out == []                              # 无 matched 不计
+
+
+def test_generate_position_status_reports_aggregates():
+    from nautilus_trader.model.enums import PositionSide
+    from nautilus_trader.model.objects import Quantity
+
+    c = _client()
+    c._current_bets = {
+        "o1": _pos_bet("1.23", "8266", "BACK", 10.0, 2.0),
+        "o2": _pos_bet("1.23", "8266", "BACK", 5.0, 2.2),
+    }
+    fake_inst = SimpleNamespace(
+        id=InstrumentId.from_str("1-23-8266-None.ORBITEXCH"),
+        make_qty=lambda v: Quantity(v, precision=2),
+    )
+    c._resolve_oe_instrument = lambda m, s: fake_inst
+
+    reports = _run(c.generate_position_status_reports(SimpleNamespace()))
+    assert len(reports) == 1
+    r = reports[0]
+    assert r.position_side == PositionSide.LONG
+    assert float(r.quantity) == pytest.approx(15.0)
+    assert float(r.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
+
+
+# ── #105 A1 存活锚(_last_frame_ns / on_frame / _exec_ws_fresh)──────
+def test_handler_on_frame_fires_for_heartbeat_and_data_not_empty():
+    from nautilus_trader.adapters.orbitexch.websocket_handler import OrbitExchWebSocketHandler
+
+    h = OrbitExchWebSocketHandler(page=None)
+    hits = []
+    h.on_frame(lambda: hits.append(1))
+    h._on_frame_received("orders", "")           # empty → 不触发
+    h._on_frame_received("orders", "h")          # SockJS 心跳 → 触发(关键:心跳计入存活)
+    h._on_frame_received("orders", 'a["x"]')     # 业务帧 → 触发
+    assert len(hits) == 2                         # 'h' + 'a',不含 empty
+
+
+def test_exec_ws_fresh_lifecycle():
+    c = _client()
+    assert c._exec_ws_fresh() is False            # 尚未收过帧
+    c._mark_exec_frame()
+    assert c._exec_ws_fresh() is True             # 刚刷锚 → 新鲜
+    c._last_frame_ns = c._clock.timestamp_ns() - (c._exec_ws_idle_timeout_ns + 1)
+    assert c._exec_ws_fresh() is False            # 超 idle_timeout → 不新鲜
+
+
+# ── #105 A2 reload-then-report 机制(_reload_exec_page / _ensure_exec_snapshot_fresh)──
+class _FakePageReload:
+    def __init__(self, on_reload=None):
+        self.reload_count = 0
+        self._on_reload = on_reload
+
+    async def reload(self, **kwargs):
+        self.reload_count += 1
+        if self._on_reload is not None:
+            self._on_reload()              # 模拟 reload 后 CURRENT_BETS 重推
+
+
+def test_ensure_fresh_skips_reload_when_ws_fresh():
+    c = _client()
+    c._page = _FakePageReload()
+    c._mark_exec_frame()                            # WS 新鲜
+    assert _run(c._ensure_exec_snapshot_fresh()) is True
+    assert c._page.reload_count == 0                # 新鲜 → 不 reload
+
+
+def test_ensure_fresh_reloads_when_stale_and_succeeds():
+    c = _client()
+    c._page = _FakePageReload(on_reload=lambda: c._on_current_bets([]))   # reload → CURRENT_BETS 重推
+    assert _run(c._ensure_exec_snapshot_fresh()) is True                  # stale → reload → 拿到真值
+    assert c._page.reload_count == 1
+
+
+def test_reload_exec_page_timeout_returns_false():
+    c = _client()
+    c._reload_bets_wait_ns = 50_000_000             # 0.05s 快超时
+    c._page = _FakePageReload(on_reload=None)        # reload 不触发 CURRENT_BETS 重推
+    assert _run(c._reload_exec_page()) is False      # CURRENT_BETS 未重推 → reconcile 失败
+
+
+def test_ensure_fresh_single_flight_one_reload():
+    c = _client()
+    c._page = _FakePageReload(on_reload=lambda: c._on_current_bets([]))
+
+    async def _two():
+        return await asyncio.gather(
+            c._ensure_exec_snapshot_fresh(), c._ensure_exec_snapshot_fresh(),
+        )
+
+    assert _run(_two()) == [True, True]
+    assert c._page.reload_count == 1                 # single-flight → 只 reload 一次
+
+
+# ── #105 A3 _on_current_bets → mark_venue(leg_settled order 真值)──────
+def test_on_current_bets_marks_oe_legs_settled():
+    oe = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+    c = _client()
+    c._leg_settled.arm("P1", oe)
+    assert c._leg_settled.any_unsettled("P1")        # armed false
+    c._on_current_bets([])                            # 任一 CURRENT_BETS 帧(order 真值)
+    assert c._leg_settled.all_settled("P1")           # OE 腿经 mark_venue 置 true(funnel 未触发,纯 A3 路径)
+
+
+# ── #105 撤单纳入 exec_count(cancel-only 也由 exec_count→0 兜底,不靠 max-hold)──
+async def _noop_cancel(order):
+    pass
+
+
+class _CollectLoop:
+    def __init__(self):
+        self.tasks = []
+
+    def create_task(self, coro):
+        self.tasks.append(coro)
+        return coro
+
+
+def test_cancel_residual_tracked_clears_inflight_when_all_done():
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    c = _client()
+    gate = PairInFlightGate()
+    c._pair_inflight = gate
+    c._pair_registry = SimpleNamespace(get=lambda x: "P1")
+    loop = _CollectLoop()
+    c._loop = loop
+    c._cancel_residual_one = _noop_cancel
+    iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+
+    gate.try_enter("P1", now_ns=0, max_hold_ns=10**12)        # strategy fire 持 in-flight
+    o1 = SimpleNamespace(instrument_id=iid)
+    o2 = SimpleNamespace(instrument_id=iid)
+    c._cancel_residual_orders(iid, [o1, o2])
+
+    assert gate.is_in_flight("P1") is True                     # exec_started ×2(同步),in-flight 仍持有
+    assert len(loop.tasks) == 2                                # 每条残单一个 tracked cancel task
+
+    async def _drain():
+        for coro in loop.tasks:
+            await coro
+    _run(_drain())
+
+    assert gate.is_in_flight("P1") is False                    # 撤单跑完 exec_finished ×2 → exec_count→0 → 清
+
+
+def test_cancel_residual_inflight_held_until_last_cancel():
+    """撤单 task 还在跑时 in-flight 不提前清(你指出的"session 结束时撤单还在执行"问题已堵)。"""
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    c = _client()
+    gate = PairInFlightGate()
+    c._pair_inflight = gate
+    c._pair_registry = SimpleNamespace(get=lambda x: "P1")
+    loop = _CollectLoop()
+    c._loop = loop
+    c._cancel_residual_one = _noop_cancel
+    iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+
+    gate.try_enter("P1", now_ns=0, max_hold_ns=10**12)
+    c._cancel_residual_orders(iid, [SimpleNamespace(instrument_id=iid), SimpleNamespace(instrument_id=iid)])
+
+    async def _drain_one():
+        await loop.tasks[0]                                    # 只跑完第一个撤单
+    _run(_drain_one())
+    assert gate.is_in_flight("P1") is True                     # 还有一个撤单没跑完 → in-flight 不清

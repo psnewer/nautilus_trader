@@ -45,6 +45,21 @@ class LegSettledRegistry:
         if legs is not None and instrument_id in legs:
             legs[instrument_id] = True
 
+    def mark_venue(self, venue_value: str) -> int:
+        """#105:某 venue 一次完整 order 真值快照 / 成功 reconcile → **该 venue 所有 armed 腿置 true**。
+        腿键 `instrument_id` 的 `.venue.value == venue_value` 即命中(缺席快照的腿 = 已澄清"没成功",亦置 true)。
+        返回新置位腿数。与 PM "拉取成功该 venue 所有方向置 true"(§4.4)同逻辑;**只挂 order 真值,不碰 position**
+        (execution `architecture.md §4.3bis(5)`)。注:腿键非该 venue(无 `.venue.value`)或已 true 的跳过。"""
+        n = 0
+        for legs in self._settled.values():
+            for iid in list(legs):
+                if legs[iid]:
+                    continue
+                if getattr(getattr(iid, "venue", None), "value", None) == venue_value:
+                    legs[iid] = True
+                    n += 1
+        return n
+
     # ── risk / portfolio / strategy 读取侧 ────────────────────────────
     def has_entry(self, pair_id: str) -> bool:
         """该 pair 是否下过单(execution 是否启动过)。"""

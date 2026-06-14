@@ -17,6 +17,7 @@
 **单一职责契约(Q13)**:execution = **执行 + 追踪**,不做决策。一次 session 单一职责;**移除内部 recovery loop**;补救 / 撤后再下 / 单腿失败补偿 **全归 Strategy**。
 
 **OE 健康检查的宿主**:页面 reload 机制代码住 `OrbitExchDataClient`(它持 page),但本质是**执行完整性**,故在本文档 §4.3 一并描述;data 组件文档只引此处。
+> ⚠️ **失效指针(#105,2026-06-13)**:**reload 宿主将从 `OrbitExchDataClient` 搬到 `OrbitExchExecutionClient` 自己**——迁移到 NT 原生 reconciliation 后,"reload-then-report" 进 OE ExecClient 的 `generate_*_reports`(同对象拥有页 + 报告 + 页锁)。§4.3 的"宿主=DataClient"是迁移前设计;现状真理源见 **§4.3bis**。
 
 **不做**:recovery / re-plan / retry;裸单补救;跨腿对冲。
 
@@ -195,6 +196,8 @@ def _on_session_timeout(self, event):
 
 ### 4.3 健康检查(§6.8.3 / §6.8.4,loop 节奏 §6.8.4.5)
 
+> ⚠️ **失效横幅(#105,2026-06-13,设计/待落地)**:本节(自写 `HealthCheckLoop`)将被 **NT 原生 reconciliation** 取代——现状真理源见 **§4.3bis**。具体失效:**OE reload 宿主 DataClient→ExecClient**;**`HealthCheckLoop` + `trigger_now` + 健康检查⊥执行 `is_execution_active` 让路 + `health_check.*` 退役**(改 NT 持续对账触发 + OE 页锁 + single-flight + 存活闸);**PM 的 `_on_health_check_tick` 拉 report 部分→ NT 原生 `generate_*_status_reports` 经 reconcile**(merge/redeem 仍自写,§4.6 不动)。§4.3 保留为迁移前设计记录;先读 §4.3bis。
+
 **归属 / 不变量(读这节先读这块;本节是健康检查详细设计的单一真理源,refactor.md §6.8.x 只留决策指针)**:
 - **OE 健康检查宿主 = `OrbitExchDataClient`**(它持 competition 页,且经共享 `PlaywrightBrowserManager` 够到 execution 页);两触发维度都在它(时间维度 reload competition 页 / 状态维度 reload execution 页,见下表 + #68 澄清)。
 - **PM 健康检查宿主 = PM ExecClient 薄子类**(唯一同时具 `generate_*_status_report` + 钱包 creds + tick)。
@@ -225,6 +228,71 @@ def _on_session_timeout(self, event):
   - **Phase 2 ✅ 代码已接(A 方案)+ ✅ live 验完成(#75,2026-06-08)**(状态维度):`_run_health_check` 加状态分支——`self._leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()`:经共享 `PlaywrightBrowserManager.get_page("execution")` 取 ExecClient 的交易页 reload(page-level 监听跨 reload 存活 #67 → general WS 重推 `CURRENT_BETS` → ExecClient `_on_current_bets` 标 leg_settled)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`,None → 只跑时间维度)。**安全闸 `config.health_check_exec_reload_enabled` #75 默认 True**:曾默认关待验 reload 已登录交易页的弹窗/会话行为;2026-06-08 用户实测——已登录后 reload **不重现登录弹窗**(仅首次登录弹)且 **`CURRENT_BETS` 如期重推** → 隐患消除,默认开。运营可经 `venues.orbitexch.health_check_exec_reload_enabled: false` 显式关回。离线测:`test_data_client_step2.py` data-2.health.{6-10}。**A vs B**:用户 2026-06-07 选 A(守 §6.8.3 单宿主=DataClient,经共享 browser_manager 够到 execution 页),不改宿主归属。
   - ✅ **弹窗/CURRENT_BETS 隐患已 live 证伪(2026-06-08,用户实测)**:曾担心 `_reload_execution_page` 只裸 `exec_page.reload(networkidle)`、reload 后不重调 `_dismiss_post_login_popup`(该方法仅 `_login` 路径触发),若 OE 每次加载都弹窗会盖住页面堵死 general WS。**实测:已登录后 reload 不重现登录弹窗**(弹窗仅首次登录出现),且 `CURRENT_BETS` 如期重推 → **无需在 reload 后补 dismiss**,reload 对会话/弹窗/订单快照重推安全。**验证工具**:`scripts/phase2_exec_reload_probe.py`(真账户登录、**零下单**:arm 未结腿 → 驱动真实 `_run_health_check` 触发 reload → 报告登录态/弹窗/CURRENT_BETS 重推)。
   - **接线**(#74):cadence/闸经 `venues.orbitexch.{health_interval_sec=120,staleness_timeout_sec=300,health_check_exec_reload_enabled}` → dispatcher → `OrbitExchDataClientConfig`(详见 `_cross-cutting/configuration.md §6`)。
+
+### 4.3bis OE 接 NT 原生 reconciliation（#105,设计/待落地 as-of 2026-06-13）
+
+> **本小节是 OE 健康检查的现状真理源**(取代 §4.3 的 OE 部分)。决策史见 `refactor.md #105`;横切同步部分(页锁层次/状态位迁移/pair_inflight 兜底/NT 不串行化)见 `_cross-cutting/synchronization.md §8`,本节不复述。
+
+**总体**:OE 不再自跑 `HealthCheckLoop`;改由 **NT 原生 reconciliation** 调 OE ExecClient 的 `generate_*_status_reports` 拉对账。PM 同理(merge/redeem 仍自写,§4.6)。`reconciliation`(engine 级)开关 + kernel 时序见 `refactor.md #105`(reconcile 时 OE 已登录;`timeout_connection` 须 > OE 登录最坏耗时)。
+
+**(1) reload 抽成接口,"reload-then-report" 进 OE ExecClient**
+- reload 宿主从 DataClient 搬到 **`OrbitExchExecutionClient` 自己**(同对象拥有 execution 页 + 报告方法 + 页锁,消掉跨对象 hack)。
+- `generate_order_status_reports` / `generate_position_status_reports` 进来先 `await _ensure_exec_snapshot_fresh()`(见下),再读 `_current_bets` 出报告。
+
+**(2) `_current_bets` 双视图(单一真理源)**
+- `_current_bets`(offerId→全字段 bet 全量快照,`_on_current_bets` 每帧整体替换)是 OE venue 状态的单一真理源。**用户确认 CURRENT_BETS 保留全成交 bet** → 快照 = 完整 venue 真值。
+- **order 视图**:逐条 `_build_order_report`(现有,读 `side/sizeMatched/sizeRemaining/averagePrice`)。
+- **position 视图**(补 Q17 延后,#105;**✅ 已落地 2026-06-13**:`execution.py` 模块级纯函数 `current_bets_to_positions` + `generate_position_status_reports`(`_resolve_oe_instrument` 反查);`test_orbitexch_client.py::test_positions_*`/`test_generate_position_status_reports_aggregates`。⚠️ **当前不被实时调用**——reconciliation=False、position_check 关,仅能力补齐,待协调切换接入):按 `selectionId` 聚合 `_current_bets`(BACK=long、LAY=short,与现有 BACK↔BUY/LAY↔SELL 一致):
+  - `net qty = Σ(BACK sizeMatched) − Σ(LAY sizeMatched)`(signed);`net>0→LONG / <0→SHORT / 0→FLAT`;
+  - `avg_px = 主方向(=net 符号侧)的成交量加权 averagePrice`(net>0 → 只用 BACK 的 `Σ(sizeMatched×averagePrice)/Σ sizeMatched`;net<0 → 只用 LAY 的;**反方向当平仓只减 qty、不进 avg_px**,对齐 NT "avg_px_open 只算开仓侧" 语义,且不依赖 fill 时间顺序);`net==0` → FLAT、avg_px N/A;
+  - 每 selection 一条 `PositionStatusReport(quantity, position_side, avg_px_open)`。
+- **一次 reload 喂两个视图**:NT 启动后把 order/position 检查分开调度,但都落到"读同一份刚刷新的 `_current_bets`",经下面的 single-flight 合并为一次 reload。
+
+**(3) single-flight + 存活闸:reload 退化为恢复动作**(**✅ A2 已落地 2026-06-13**:`_reload_exec_page`/`_ensure_exec_snapshot_fresh`,`test_orbitexch_client.py::test_ensure_fresh_*`;**flag off 未接入 `generate_*_reports`**——接入是 cutover B1)
+```
+async def _ensure_exec_snapshot_fresh():
+    if 已有 reload 在跑:  await 那个同一 future        # single-flight
+    if exec WS 存活(快照实时新鲜): return             # 健康态不 reload
+    起一次 reload(持页锁) ; await
+```
+- **健康态(WS 活)**:order 检查、position 检查都判"新鲜"→ **零 reload**,只读实时 `_current_bets`。
+- **WS 判死 / 单卡死**:single-flight 守卫起**一次** reload(恢复),order+position 共享。
+- single-flight **不发任何消息**(纯 asyncio 去重),只翻 future;它**不**驱动 strategy 互斥(见下,靠页锁 + leg_settled,不引入 `reconcile_in_progress`,synchronization §8.2)。
+
+**(4) venue 死活 = reconcile 成败(统一断线保护,#105 已定;OE/PM 同构)**
+死活判据**不是"WS 断线"**,而是 **reconcile(取真值)成败**——一套信号同时驱动 leg_settled 置位、venue 死活、断线重试:
+
+| | reconcile(取真值) | alive | dead |
+|---|---|---|---|
+| **OE** | reload-then-report | 拿到新 `CURRENT_BETS` | reload 超时/报错、无新帧 |
+| **PM** | REST 拉 positions/orders | REST 正常返回 | REST 超时/报错 |
+
+- **reconcile 成功(真实 response)→ alive + mark leg_settled 该 venue 所有腿**(与 (5) 的"真实 response"是同一事件)。
+- **reconcile 失败 → dead + leg_settled 不置位 + 持续重试 reconcile 直到成功**(OE 重试 reload / PM 重试 REST;cadence/backoff 实现细节,待 live 调)。这是两 venue **对称**的断线保护,也是 (5) 里 Path B 后的恢复驱动。
+- **何时探(silence 触发)**:平时业务帧(OE `CURRENT_BETS` / PM USER WS)持续到达 = 持续 alive;**帧静默超 `idle_timeout`(#2=300s,对齐 PM 安静的账户频道)→ 触发一次探测 reconcile**,其成败才是死活裁决。
+  - OE 静默锚(**✅ A1 已落地 2026-06-13**):`websocket_handler.on_frame` 回调每帧(含 SockJS 心跳 `'h'`)→ ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)读。**用心跳而非业务帧做锚**(业务帧空闲时本就静默,否则误判)。**`_exec_ws_fresh` 暂未驱动 reload**(A2/flip 接入)。**心跳周期 ≈35s(live 实测,`scripts/oe_heartbeat_probe.py` 2026-06-13:general/orders WS median 35.5s、max 38.8s;prices WS 因常推无心跳)**;**`idle_timeout=300s`**(保守,存活态心跳每 35s 刷锚故永不误触发;≈8 个心跳全丢才判死)。
+- **OE 不能主动心跳**(只读观察口、不能注入 ping)所以走这套被动 silence 触发;**PM 的 NT Rust `WebSocketClient` 自带 WS 层心跳/重连**保数据新鲜,但**venue 死活仍以 reconcile(REST 拉)成败为准**(两层:WS 重连保流、reconcile 成败定死活)。
+
+**(5) leg_settled 置位不变量(迁移修正,安全关键)**:`leg_settled=true ⟺ 拿到过 venue 真实 response 确认`。
+
+> **统一原则(order/position 解耦,#105)**:`leg_settled` 是**订单确认信号**(§4.4,`true`=至少一次 venue **订单确认**已落 cache),**只挂 order 真值**,**position reconcile 不碰它、也不判 venue 死**。理由:① 持仓本就是 order fills 派生(每笔 fill = 一个 OrderFilled 事件)→ order reconcile 已覆盖 leg_settled 全部所需;② **NT 启动后 order/position 是各自独立的检查**(`_check_inflight_orders`/`_check_orders_consistency` 管 order、`_check_positions_consistency` 管 position,各自 interval;仅启动期 `generate_mass_status` bundle 三者)→ **运行期没有"统一 reconcile 一次覆盖 order+position"的出入口**,所以 leg_settled/liveness 必须挂在**各 venue 的 order 真值点**:OE=`_on_current_bets`(CURRENT_BETS 的 order 面)、PM=order report 拉取成功 / USER WS order 事件。position(OE 同一份 `_current_bets` 派生 / PM 独立 REST)只喂 portfolio。**"order 真值到达"这一件事同时驱动 leg_settled mark + venue-alive**(断线保护,(4)),不必纠结 order/position 是否都对账。
+
+- **只认真值确认才置 true**:① 真实 WS 帧(OE `CURRENT_BETS` / PM USER channel)→ mark 对应腿;② **reconcile 成功**(reload-then-report / PM pull 拿到**真实 response**)→ 该 venue **所有腿**置 true(成功 pull = 完整权威快照,沿用 §4.4 "刷新成功置 true" 语义)。
+- **NT Path B(in-flight check 重试耗尽、无真实 response、本地 `create_order_rejected/canceled_event` fabricate)→ 绝不 mark leg_settled**。**不管重试几次,没拿到正常 response 就不置位。**
+- **实现要点(mark 单点 = `_on_current_bets`)**:mark **不能再挂在通用 `_send_order_event` 漏斗上**(§4.1 现状)——它会捕获 NT fabricate 的事件。OE 的真实 response **只有一种形态 = 一帧 CURRENT_BETS**,无论哪个 reconcile 机制(in-flight/open/position/启动对账)触发,真值都汇聚到 **`_on_current_bets`(`execution.py:413/429`)这一处**:reload → 页面重推 CURRENT_BETS → 落此 handler;或 WS 本就活、快照已被上一帧 `_on_current_bets` mark 过。`generate_*_reports` 只**读**被它刷新的 `_current_bets`,不是 mark 点。**故 leg_settled 的"reconcile 成功置位"= 在 `_on_current_bets` 收到一帧完整快照时 mark 该 venue 所有腿**(不 hook 每个 reconcile,hook 它们共同的数据落点)。NT fabricate 的终态走 `_send_order_event` 漏斗供 NT 收口订单,**不经 `_on_current_bets` → 不触达 leg_settled**,自然实现"无真实 response 不置位"。(PM 对等单点 = PM report-pull 成功 / USER WS 确认路径。)**✅ A3 已落地 2026-06-13**:`_on_current_bets`→`mark_venue(ORBITEXCH)`(`test_on_current_bets_marks_oe_legs_settled`);**但 funnel mark 暂仍并存(幂等)**——删 funnel(强制"Path B 不 mark")是 cutover **B4**,A3 阶段 Q3 不变量尚未完全 enforce。
+- **后果(正是要的安全行为)**:Path B 解掉 NT cache 里那个 SUBMITTED order(NT 停重试),但 **leg_settled 留 false → settled gate 继续安全挡住该 pair**;直到一次**真实 reconcile 成功**(WS 恢复后存活闸 reload / open·position check 拿到真值)才置 true 解封。**venue 真值未知时宁可挡住,绝不靠 NT 猜测解封** —— 直接对冲 `bug_compensating_cancel_missing`。
+- **"超时+从未确认"场景串起来**:一腿从未收 venue 确认 → leg_settled 留 false;tracking watchdog 超时只收 session(`_end_session` 不生成订单终态、不碰 leg_settled),pair_inflight 正常释放,但 NT cache 里 order 卡 SUBMITTED;**NT in-flight check(5s,早于 30s tracking 超时)接手 → reload-then-report**:拿到真值 → mark + 解 order;**拿不到 → 不 mark,pair 安全保持挡住**,等真实 reconcile。
+
+**(5b) in-flight check / reconcile 失败语义(#105 已定)**:
+- **in-flight check 保持开**(全局,PM 需要;不为 OE 单独关)。OE 同步生成终态 + 页锁 → 订单几乎不滞留在飞 → 极少对 OE 触发。
+- **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;与 (4) venue→dead、(5) 不 mark leg_settled 一致)。
+- **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → leg_settled 留 false(strategy 安全),但 NT cache order 错置终态(通道其实在时需人工对账)。
+
+**(6) 互斥**:reload 与 place/cancel 同页冲突由 **OE ExecClient 页锁**串行(NT 不串行化,详见 synchronization §8.1/§8.2);本节只负责"reload-then-report"读写 `_current_bets`,锁的归属与 strategy 侧状态位迁移在横切章。
+
+**(7) NT 开关 / 配置(#105 已定)**:`reconciliation`=True(启动对账,reconcile 时 OE 已登录);**`timeout_connection ≥ 180s**(> OE Playwright 登录最坏 ~150s);**`open_check`/`position_check` 默认关**(in-flight + reconcile 存活探测 + `_on_current_bets` 连续 mark 已够;live 出现持仓漂移再开 position_check);`inflight_check` 默认开。
+
+**仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
 ### 4.4 leg_settled 语义(§6.8.2)
 

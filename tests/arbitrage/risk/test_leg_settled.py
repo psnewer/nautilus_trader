@@ -53,3 +53,30 @@ def test_has_any_unsettled_global():
     assert not r.has_any_unsettled()           # p1 全 settled,无其它 entry
     r.reset("p2", ["C.PM"])
     assert r.has_any_unsettled()               # p2 未结算
+
+
+def test_mark_venue_marks_all_that_venue_legs():
+    """#105:某 venue 一次完整 order 真值 → 该 venue 所有 armed 腿置 true;他 venue 不动。"""
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    r = LegSettledRegistry()
+    oe1 = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+    oe2 = InstrumentId.from_str("2-2-2-None.ORBITEXCH")
+    pm = InstrumentId.from_str("tok.POLYMARKET")
+    r.arm("P1", oe1)
+    r.arm("P1", pm)
+    r.arm("P2", oe2)
+
+    n = r.mark_venue("ORBITEXCH")
+    assert n == 2                              # oe1 + oe2 置 true
+    assert r.all_settled("P2")                 # P2 只有 oe2 → 全 settled
+    assert r.any_unsettled("P1")               # P1 的 pm 仍 false(他 venue 不动)
+    assert r.mark_venue("ORBITEXCH") == 0      # 已 true,不重复计
+
+
+def test_mark_venue_ignores_string_keys_without_venue():
+    """防御:腿键无 `.venue.value`(如 str)→ 不命中、不崩。"""
+    r = LegSettledRegistry()
+    r.reset("p1", ["A.PM", "B.OE"])            # str 键
+    assert r.mark_venue("ORBITEXCH") == 0
+    assert r.any_unsettled("p1")               # 未被误置

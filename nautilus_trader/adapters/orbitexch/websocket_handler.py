@@ -35,6 +35,7 @@ class OrbitExchWebSocketHandler:
         # Callbacks
         self._price_callbacks: List[Callable] = []
         self._order_callbacks: List[Callable] = []
+        self._frame_callbacks: List[Callable] = []   # #105:每帧(含 SockJS 心跳)→ 存活锚
         
         # WebSocket tracking
         self._websockets: Dict[str, Any] = {}
@@ -92,6 +93,13 @@ class OrbitExchWebSocketHandler:
             # Skip empty data
             if not data:
                 return
+
+            # #105:任一非空帧(含心跳 'h')→ 刷存活锚(在心跳/业务分型前)
+            for cb in self._frame_callbacks:
+                try:
+                    cb()
+                except Exception as e:  # noqa: BLE001 — 存活锚回调不得影响帧处理
+                    self._log_debug(f"OE WS frame callback error: {e}")
 
             self._frame_counts[ws_type] = self._frame_counts.get(ws_type, 0) + 1
             if self._frame_counts[ws_type] == 1:
@@ -186,7 +194,12 @@ class OrbitExchWebSocketHandler:
         """
         self._order_callbacks.append(callback)
         self._log_info(f"OE WS registered order callback: {callback.__name__}")
-    
+
+    def on_frame(self, callback: Callable) -> None:
+        """#105:注册"每收到一帧(含 SockJS 心跳 `'h'`)"回调,供 ExecClient 刷存活锚 `_last_frame_ns`。
+        callback 无参(只表示"有帧到达"),在 empty 检查后、心跳/业务分型前触发。"""
+        self._frame_callbacks.append(callback)
+
     def get_active_websockets(self) -> List[Dict[str, str]]:
         """
         Get list of active WebSocket connections.

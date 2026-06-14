@@ -1,0 +1,43 @@
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 51%]
+........................................................................ [ 64%]
+........................................................................ [ 77%]
+........................................................................ [ 90%]
+..................sssssssssssssssssssssssssssssssss                      [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_execution_client.py:17: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_execution_client.py:22: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_execution_client.py:32: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_execution_client.py:37: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_execution_client.py:42: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_data_client.py:16: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_data_client.py:21: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_data_client.py:26: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_data_client.py:31: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_data_client.py:36: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_provider.py:13: not implemented; pending Step 1
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_provider.py:24: not implemented
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_provider.py:34: not implemented
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_browser_manager_sharing.py:16: not implemented; pending Step 1 factory wiring
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_browser_manager_sharing.py:21: not implemented
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_browser_manager_sharing.py:31: not implemented
+SKIPPED [1] tests/arbitrage/adapters/orbitexch/test_browser_manager_sharing.py:40: not implemented
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:13: not implemented; pending Step 1
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:18: not implemented; pending Step 1; CRITICAL for §6.4
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:28: not implemented; pending Step 2
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:33: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:42: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/adapters/polymarket/test_upstream_integration.py:47: not implemented; pending Step 5
+SKIPPED [1] tests/arbitrage/matching/test_heterogeneous_normalization.py:14: not implemented; impl pending Step 3
+SKIPPED [1] tests/arbitrage/matching/test_market_matching_actor.py:16: not implemented; impl pending Step 3
+SKIPPED [1] tests/arbitrage/matching/test_market_matching_actor.py:26: not implemented
+SKIPPED [1] tests/arbitrage/matching/test_market_matching_actor.py:36: not implemented
+SKIPPED [1] tests/arbitrage/matching/test_match_engine.py:15: not implemented; impl pending Step 3
+SKIPPED [1] tests/arbitrage/matching/test_match_engine.py:25: not implemented
+SKIPPED [1] tests/arbitrage/matching/test_event_normalizer.py:13: not implemented; impl pending Step 3 execution
+SKIPPED [1] tests/arbitrage/discovery/test_polymarket_provider.py:13: not implemented; impl pending Step 1 execution
+SKIPPED [1] tests/arbitrage/discovery/test_polymarket_provider.py:23: not implemented
+SKIPPED [1] tests/arbitrage/discovery/test_polymarket_provider.py:34: not implemented
+522 passed, 33 skipped in 2.52s

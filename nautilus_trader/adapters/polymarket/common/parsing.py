@@ -215,10 +215,7 @@ def parse_polymarket_instrument(
     raw_symbol = Symbol(get_polymarket_token_id(instrument_id))
     description = market_info["question"]
     price_increment = Price.from_str(str(market_info["minimum_tick_size"]))
-    # Polymarket exposes `orderMinSize` (limit-order minimum shares) and a separate
-    # $1 market-order minimum amount; the instrument model can only carry one
-    # `min_quantity`, so leave it unset and let the venue reject out-of-bounds orders.
-    # The raw `orderMinSize` remains accessible via `instrument.info`.
+    min_quantity = Quantity.from_str(str(market_info.get("minimum_order_size", 5)))
     # size_increment can be 0.01 or 0.001 (precision 2 or 3). Need to determine a reliable solution
     # trades are reported with USDC.e increments though - so we use that here
     size_increment = Quantity.from_str("0.000001")
@@ -248,7 +245,7 @@ def parse_polymarket_instrument(
         activation_ns=0,  # TBD?
         expiration_ns=expiration_ns,
         max_quantity=None,
-        min_quantity=None,
+        min_quantity=min_quantity,
         maker_fee=maker_fee,
         taker_fee=taker_fee,
         ts_event=ts_init,
@@ -278,7 +275,7 @@ def update_instrument(
         activation_ns=instrument.activation_ns,
         expiration_ns=instrument.expiration_ns,
         max_quantity=None,
-        min_quantity=None,
+        min_quantity=instrument.min_quantity,
         maker_fee=instrument.maker_fee,
         taker_fee=instrument.taker_fee,
         ts_event=ts_init,

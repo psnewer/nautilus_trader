@@ -21,7 +21,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 | 文件 | 范围 |
 |---|---|
 | `test_browser_manager_sharing.py` | Q2 验收: 三方共享 manager + page 命名 + 生命周期 |
-| `test_provider.py` | OE Provider 的具体行为(Q9 字段 / 抓取失败 / page 命名) |
+| `test_provider.py` | OE Provider 的具体行为(Q9 字段 / 抓取失败 / page 命名 / 最小 stake 元数据) |
 | `test_data_client.py` | OE DataClient(Step 2 占位,详细等 Step 2 启动) |
 | `test_execution_client.py` | OE ExecutionClient(Step 5 占位,详细等 Step 5 启动) |
 | `test_execution_translation.py` | **Gap C(#63/#64)纯映射,20 case**:① `nt_order_to_legacy_order`(NT Order→executor 旧 Order)5 case:BUY→BACK / SELL→LAY / `null_handicap`(-9999999.0 sentinel)→0 / 真 handicap 保留 / 缺 market\|selection→None。② **`current_bets_to_fills`(成交回执)7 case**:空→[] / unmatched→[] / 新成交→full delta / 增量(5→8)→delta=3 / 同累积值→[] / 无价(avg=0)→跳过 / 缺 offerId→跳过。③ **`bet_order_progress`(reconcile 派生)8 case**:缺 offerId→None / 仅 remaining→accepted / remaining+matched→partially_filled / 仅 matched→filled / 都 0→unknown / **bet 自带 side+market+selection+price 透出** / **原始量优先 sizePlaced** / 无 sizePlaced→matched+remaining 兜底。真 `executor.place_order` + `_connect` + `_on_current_bets`→`generate_order_filled` + `generate_order_status_report(s)`(**bet 自带 `side`/`sizePlaced` 直接派生,`market+selection` 反查 instrument → 外部/重启单也能 reconcile**)= **真钱,/live-test 经 `launchers/arb_node.py` 验**(scenario 跑老栈不验 NT client);matched 帧填充值待真成交 |
@@ -90,6 +90,13 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 ### oe-adapter-1.2: OE Provider info 6 key (Q9)
 
 参考 `discovery/README.md` discovery-1.5(Q9 关键)。
+
+### oe-adapter-1.2b: OE Provider 最小 stake 元数据
+
+**前置**: `OrbitExchInstrumentProvider._build_legs` 产出 `BettingInstrument`。
+**输入**: 任取一条 OE 腿。
+**期望**: `instrument.min_notional == 7 GBP`,表达 OE venue 最小 stake;Risk 不另维护 OE 最小额常量。
+**验收**: `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake`
 
 ### oe-adapter-1.3: OE Provider 用 page name "discovery"
 
@@ -265,6 +272,18 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - WS USER channel 订阅订单状态(如 OE 提供;否则轮询)
 - Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
 
+### oe-adapter-5.liveness(#105 A1):exec 页 WS 存活锚(§4.3bis(4))
+**✅ 已落地 2026-06-13**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle`。⚠️ `_exec_ws_fresh` 暂未驱动 reload(A2/flip 接入)。
+
+### oe-adapter-5.legmark(#105 A3):_on_current_bets → leg_settled mark_venue(§4.3bis(5))
+**✅ 已落地 2026-06-13**(active,与 funnel mark 并存幂等;删 funnel 是 cutover B4)。前置:`_leg_settled.arm("P1", oe_iid)`(armed false);输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` → `mark_venue(ORBITEXCH)` 把该 venue 所有 armed 腿置 true(缺席快照=已澄清没成功亦置;只挂 order 真值,position 解耦);期望:OE 腿 `all_settled` 为 true(funnel 未触发,纯 A3 路径)。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_legs_settled`;registry 侧 `test_leg_settled.py::test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`。
+
+### oe-adapter-5.reload(#105 A2):reload-then-report 机制(§4.3bis(3))
+**✅ 已落地 2026-06-13**(方法建好,**flag off 未接入 reports**)。前置:`_FakePageReload`(记 reload 次数 + 可选 on_reload 模拟 CURRENT_BETS 重推)。用例:① WS 新鲜(`_mark_exec_frame` 后)→ `_ensure_exec_snapshot_fresh` 不 reload(reload_count==0);② 陈旧 → reload + CURRENT_BETS 重推 → True(reload_count==1);③ reload 后 CURRENT_BETS 不重推 → `_reload_exec_page` 超时(`_reload_bets_wait_ns` 调小)→ False(reconcile 失败=venue dead);④ 两并发 `_ensure_exec_snapshot_fresh` → single-flight 只 reload 一次。**验收**:`test_orbitexch_client.py::test_ensure_fresh_skips_reload_when_ws_fresh` / `_reloads_when_stale_and_succeeds` / `test_reload_exec_page_timeout_returns_false` / `test_ensure_fresh_single_flight_one_reload`。
+
+### oe-adapter-5.position(#105):CURRENT_BETS → 持仓聚合(§4.3bis(2))
+**✅ 已落地 2026-06-13**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`);算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;`generate_position_status_reports` 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`。**验收**:`test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates`(7 case,513 passed)。⚠️ **当前不被实时调用**(reconciliation=False、position_check 关),仅能力补齐,待协调切换接入。
+
 **`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` 覆盖):
 - `{"BALANCE":{"balance":"37.49","avBalance":null}}` —— `balance` 是**字符串**,WS 已含挂单占用。
 - `{"CURRENT_BETS":[<bet>,...]}` —— 当前注单(抓到样本为空 `[]`)。
@@ -284,6 +303,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **已测(离线)**: 离线可构造(super 只需 instrument_provider + 标准 NT 依赖);`_on_general_frame` BALANCE→`generate_account_state`(`oe_balance_to_account_balances`:WS 已净挂单→total=free GBP)、未知/null 忽略;`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单);`_submit_order` session 门控(cancel-only 丢弃 / executor 失败→reject)
 - **oe-adapter-5.client.popup.1(#89)**:登录后弹窗关闭策略。前置:`_login` 已进入 `/customer/`;输入:弹窗容器 `div[class*="_postLoginPopup_"]` 在 timeout 内出现;步骤:`_dismiss_post_login_popup` 等容器可见后调用 `page.mouse.click(24,160)` 点主页面区域;期望:不点 OK 按钮,记录 dismiss。**验收**:`test_dismiss_post_login_popup_clicks_main_page_when_popup_visible`。
 - **oe-adapter-5.client.popup.2(#89)**:无弹窗 / timeout 分支。前置同上;输入:等待弹窗容器超时;步骤:`_dismiss_post_login_popup`;期望:不抛异常、不点击页面、继续连接。**验收**:`test_dismiss_post_login_popup_timeout_continues_without_click`。
+- **oe-adapter-5.client.pagelock(#105)**:页锁串行碰页操作。前置:ExecClient 注入慢 `_FakeExecutor.cancel_order`(0.02s sleep + 记录并发数);输入:`asyncio.gather` 两笔 `_cancel_order`(O-1/O-2);步骤:两笔并发经 `_page_lock` 进 `executor.cancel_order`;期望:executor 调用**永不并发**(`max_concurrent==1`)——NT 命令均 create_task 并发,页锁在资源层串行,避免同页并发 placeBets/cancel 丢回执。**验收**:`test_orbitexch_client.py::test_page_lock_serializes_concurrent_page_ops`。
 - **#63 Gap C:`_connect` + 翻译 + 撤单结构接通**(原 `NotImplementedError` seam → 实现;仅非 skip 触达):
   - `nt_order_to_legacy_order` 纯映射(`test_execution_translation.py` 5 case)+ `_place_via_executor`(守卫 + executor.place_order)
   - `_connect`:共享 BM `create_page("execution")` + 持久化 profile 未登录才 `_login`(填 user/pwd 等 `/customer/`)+ `OrbitExchExecutor` + `OrbitExchWebSocketHandler.on_order_update(_on_general_frame)` + 初始 account state;`_disconnect` 停 ws_handler(不 close 共享 BM,#62)
