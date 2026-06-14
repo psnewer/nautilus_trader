@@ -76,6 +76,7 @@ flowchart LR
 | Strategy | ArbitrageStrategy(信号流水线 + 快照) | **搁置**(核心信号框架待设计) | [strategy/](architectures/strategy/architecture.md) |
 | **Execution** | ExecClients + session + timeout + 健康检查 + settlement | **✅ 详细** | [execution/](architectures/execution/architecture.md) |
 | **Risk** | ArbitrageRiskEngine + ArbitragePortfolio | **✅ 详细** | [risk/](architectures/risk/architecture.md) |
+| Common | 跨组件轻量契约 / 注册表 / 工具 | **✅ 详细** | [common/](architectures/common/architecture.md) |
 | Web | WebGatewayActor | 占位(暂不迁移) | [web/](architectures/web/architecture.md) |
 | **横切·同步** | 健康检查 ⊥ 执行 全局互斥 | **✅ 详细** | [_cross-cutting/synchronization.md](architectures/_cross-cutting/synchronization.md) |
 | **横切·Debug** | 子类化 + 工厂注入 | **✅ 详细** | [_cross-cutting/debug-injection.md](architectures/_cross-cutting/debug-injection.md) |

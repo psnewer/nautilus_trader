@@ -33,6 +33,8 @@ from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.registry import StrategyRegistry
 from src.arbitrage.strategy.signals import SignalStore
 from src.arbitrage.strategy.snapshot import build_snapshot
+from src.arbitrage.common.opportunity import OpportunityMeta
+from src.arbitrage.common.opportunity import tags_from_meta
 
 
 _STRATEGY_ID_LITERAL = "ARB-EVAL-001"
@@ -41,11 +43,11 @@ _STRATEGY_ID_LITERAL = "ARB-EVAL-001"
 def make_submitter(*, cache, msgbus, clock, trader_id, log):
     """slice 10a(#50)module-level 工厂:返 `async def submit(spec)` callable。
 
-    `spec` schema:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float}`
+    `spec` schema:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, ...}`
 
     流程:`spec` → 经 `cache.instrument(iid).{size_precision,price_precision}` 构 NT `LimitOrder`
-    → 包成 `SubmitOrder` cmd → `msgbus.send("ExecEngine.execute", cmd)` → NT ExecEngine 路由到
-    venue ExecClient(若 debug.skip_execution=True,SkipExecutionClient 拦截 mock 全成)。
+    → 包成 `SubmitOrder` cmd → `msgbus.send("RiskEngine.execute", cmd)` → Risk pass 后再进
+    Execution opportunity barrier / venue ExecClient。
 
     `cache.instrument(iid)` 返 None(冷启动 / 未订阅)→ 跳过 + warning,不 raise。
     """
@@ -71,6 +73,15 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             return
         side_str = spec.get("side", "BUY").upper()
         order_side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
+        tags = [f"arb:intent={spec.get('intent', 'arbitrage')}"]
+        if all(k in spec for k in ("opportunity_id", "pair_id", "leg_key", "expected_legs")):
+            tags = tags_from_meta(OpportunityMeta(
+                opportunity_id=str(spec["opportunity_id"]),
+                pair_id=str(spec["pair_id"]),
+                leg_key=str(spec["leg_key"]),
+                expected_legs=tuple(str(v) for v in spec["expected_legs"]),
+                intent=str(spec.get("intent", "arbitrage")),
+            ))
         order = LimitOrder(
             trader_id=trader_id,
             strategy_id=strategy_id,
@@ -80,7 +91,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             quantity=Quantity(float(spec["qty"]), precision=inst.size_precision),
             price=Price(float(spec["price"]), precision=inst.price_precision),
             time_in_force=TimeInForce.GTC,
-            tags=[f"arb:intent={spec.get('intent', 'arbitrage')}"],
+            tags=tags,
             init_id=UUID4(),
             ts_init=clock.timestamp_ns(),
         )
@@ -92,7 +103,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
             command_id=UUID4(),
             ts_init=clock.timestamp_ns(),
         )
-        msgbus.send("ExecEngine.execute", cmd)
+        msgbus.send("RiskEngine.execute", cmd)
 
     return submit
 

@@ -2,9 +2,11 @@
 套利组件接线 —— 在构造 TradingNode **之前**替换 kernel 模块的类名,使 NT 原生构造我们的子类。
 
 为什么用导入替换而非构造后 swap(决策见 refactor.md 修订记录):
-- NT `system/kernel.py` 用模块级名字构造 `Portfolio(...)` / `LiveRiskEngine(...)`,无 class 注入点。
+- NT `system/kernel.py` 用模块级名字构造 `Portfolio(...)` / `LiveRiskEngine(...)` /
+  `LiveExecutionEngine(...)`,无 class 注入点。
 - 构造后 swap 需重连 msgbus 4 处 endpoint/订阅 + Trader 引用 + 在 node.start 前赋值,易碎。
-- 替换 `nautilus_trader.system.kernel.Portfolio` / `.LiveRiskEngine` → kernel 原生构造子类,
+- 替换 `nautilus_trader.system.kernel.Portfolio` / `.LiveRiskEngine` / `.LiveExecutionEngine`
+  → kernel 原生构造子类,
   零摘除、零重注册。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 实盘环境下 kernel 用的是 `LiveRiskEngine`(非基类 `RiskEngine`),故只替换 Live 版本。
@@ -21,6 +23,7 @@ import nautilus_trader.system.kernel as _kernel
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
@@ -109,6 +112,7 @@ def install_arbitrage_engines(debug_config: object | None = None) -> None:
     `DebugArbitragePortfolio` 待后续 slice 按需做)。
     """
     _kernel.Portfolio = ArbitragePortfolio
+    _kernel.LiveExecutionEngine = ArbLiveExecutionEngine
 
     if debug_config is not None and getattr(debug_config, "enabled", False):
         from src.arbitrage.debug.risk import DebugArbitrageLiveRiskEngine
@@ -157,5 +161,9 @@ def wire_arbitrage_runtime(
             "必须在构造 TradingNode 之前调用",
         )
     risk_engine.configure_arb(params)
+
+    exec_engine = getattr(node.kernel, "exec_engine", None)
+    if isinstance(exec_engine, ArbLiveExecutionEngine):
+        exec_engine.configure_arb(pair_inflight=_arb_context.pair_inflight)
 
     return leg_settled

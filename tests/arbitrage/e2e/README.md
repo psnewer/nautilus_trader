@@ -19,3 +19,38 @@
 - e2e-3: 单腿成交另一腿失败时的专门 recovery 状态机(后议,不属于当前主流程闭环)
 - e2e-4: 启动重连 reconciliation(Cache 状态与 venue 一致)
 - e2e-5: 多 MatchedPair 并发处理
+
+## Opportunity execution barrier(已落地代码,待 live 验证,2026-06-14)
+
+对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.4bis` + execution §3.5。
+
+### e2e-6: 两腿 Risk pass 后才 release 到 ExecutionClient
+- 前置: 两条 `SubmitOrder` 带同一 `opportunity_id`,不同 `leg_key`,相同 `expected_legs`。
+- 输入: 两条订单均经 Risk pass 回到 `ExecEngine.execute`。
+- 步骤: 在只收到第一条 pass 时断言 ExecutionClient 未被调用;收到第二条 pass 后再断言两条都 release。
+- 期望: barrier 暂存 partial pass;收齐才进入 venue execution。
+- 验收: 没有一腿先于另一腿 risk decision 进入 ExecutionClient。
+- 状态:✅ 离线 execution 单测覆盖;live e2e 待验证。
+
+### e2e-7: 任一腿 Risk deny 时整次 opportunity zero-session finish
+- 前置: 第一腿 Risk pass 已在 barrier pending;第二腿 Risk deny 并发布 `risk.opportunity.leg_denied`。
+- 输入: barrier 收到 deny 消息。
+- 步骤: 检查 pending 第一腿未进入 ExecutionClient,并收到本地 `OrderDenied`。
+- 期望: opportunity 以 denied 结束,所有 pending 清理。
+- 验收: 统一 execution finish outlet 被调用一次,`pair_inflight` 由 outlet 释放,不是 deny 分支直接释放。
+- 状态:✅ 离线 execution 单测覆盖;live e2e 待验证。
+
+### e2e-8: barrier timeout 使用 NT clock 并走统一出口
+- 前置: barrier 收到一条 risk-pass leg,缺少另一个 expected leg。
+- 输入: 用 `TestClock.advance_time(...)` 触发 `arb_opp_timeout:{opportunity_id}`。
+- 步骤: 检查 pending leg 未进入 ExecutionClient,收到本地 `OrderDenied`。
+- 期望: timeout 等同 opportunity denied,取消 timer 并清 context。
+- 验收: timeout 只覆盖 Risk decision 收齐窗口;release 后不影响 per-session venue watchdog。
+- 状态:✅ 离线 execution 单测覆盖;live e2e 待验证。
+
+### e2e-9: release 后由真实 session 汇总到同一 execution 出口
+- 前置: 两腿 Risk pass,barrier 已 release 到 PM/OE ExecutionClient;两侧 session 各自结束。
+- 输入: 先结束一腿,再结束另一腿。
+- 步骤: 观察 opportunity context。
+- 期望: 第一腿结束不释放 `pair_inflight`;最后一腿结束触发同一个 finish outlet。
+- 验收: pass / deny / timeout 三条路径都由同一个 outlet 释放 `pair_inflight`。

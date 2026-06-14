@@ -34,10 +34,10 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 ```mermaid
 flowchart LR
-  S[ArbitrageStrategy] -->|submit_order| EE[NT ExecutionEngine]
-  EE -->|SubmitOrder| RE[ArbitrageRiskEngine._check_order]
-  RE -->|pass| EC[ExecutionClient → venue]
-  RE -->|deny| OD[generate_order_denied]
+  S[ArbitrageStrategy] -->|SubmitOrder| RE[RiskEngine.execute]
+  RE -->|pass| EE[NT ExecutionEngine barrier]
+  EE -->|all legs pass| EC[ExecutionClient → venue]
+  RE -->|deny| OD[generate_order_denied + risk.opportunity.leg_denied]
   OD -->|events.order.*| S2[Strategy.on_order_denied]
   RE -.读 live.-> CACHE[(NT Cache:<br/>account_state / positions / orders)]
   RE -.读指标.-> AP[ArbitragePortfolio.way_rebate]
@@ -175,10 +175,27 @@ Risk 是 **submit 管道拦截 + P2P endpoint** 型,**不是 topic pub/sub 重�
 
 | 类 | 接收 | 发布 | 不订阅 |
 |---|---|---|---|
-| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/rebate deny | 拒绝 → `_deny_order` → `events.order.{strategy_id}`(`Strategy.on_order_denied` 收) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);套利领域 topic |
+| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/rebate deny | 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
 | `ArbitragePortfolio` | P2P endpoint(基类 `__init__` 注册;import 替换后 kernel 原生构造即注册):`Portfolio.update_account` / `update_order` / `update_position` | **无**(way_rebate pull-based,不发事件、不写 cache) | 任何 topic(纯函数式) |
 
 > NT 父类 `RiskEngine` 在 `set_trading_state` 时会发 `events.risk`(`TradingStateChanged`);本系统**不主动改 TradingState**(Q16 全局止损走逐 submit deny),故该 topic 不被触发。
+
+**opportunity deny 领域消息(已落地代码,待 live 验证,2026-06-14)**:
+- `ArbitrageLiveRiskEngine` 覆盖 `_deny_order(order, reason)` 时必须先调用 `super()._deny_order(order, reason)`,保留 NT 原生 `OrderDenied` / cache / order event 链。
+- 若 `order.tags` 含 `arb:opportunity_id` / `arb:pair_id` / `arb:leg_key`,再 publish:
+
+```json
+{
+  "opportunity_id": "...",
+  "pair_id": "...",
+  "leg_key": "...",
+  "client_order_id": "...",
+  "reason": "..."
+}
+```
+
+- 该领域消息只服务 Execution opportunity barrier,不能替代 NT `OrderDenied`。
+- Risk 不等待其它 legs,不维护 opportunity 状态,不释放 `pair_inflight`;统一出口属 Execution barrier。
 
 ### 3.4 同步参与(Q19 / §6.10)+ leg_settled 读取
 

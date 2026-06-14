@@ -209,12 +209,40 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 
 ## Slice 10a 落地(2026-05-31 #50):`EvalContext.submitter` + 真出单链路
 
-- ✅ `test_submitter.py`(5):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `ExecEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 写入 `Order.tags=["arb:intent=<intent>"]`
+- ✅ `test_submitter.py`(6):`make_submitter` 构 LimitOrder + SubmitOrder cmd send 到 `RiskEngine.execute` / SELL 侧 / cache.instrument None → skip 不 raise / 策略 spec 的字符串 `instrument_id` 在 submitter 边界转 NT `InstrumentId` / `spec["intent"]` 写入 `Order.tags=["arb:intent=<intent>"]` / opportunity metadata 写入 `Order.tags`。
 - ✅ `test_action_place_bets.py` +6:submitter 注入 → Action 调 submitter 2 次 spec 正确 + log mode "[submit]" 无 "would submit" / submitter=None → log-only fallback 不 raise / `leg["qty"]` 可由 compensation Check 写入并被 `place_bets` 复用 / `price_overrides={"ORBITEXCH": 1000}` + `qty_overrides={"ORBITEXCH": 7}` 可把 OE live probe 单变成不易成交 limit,同时不影响 Check 用真实 OBD 算机会 / 显式 `qty_overrides` 优先于 `leg["qty"]` / `intent="recovery"` 标记补救单
 - ✅ `test_evaluator.py` +1:evaluator 构造 ctx 时 `submitter=self._make_submitter()` 已注入 — Action 拿到的 ctx.submitter 是 callable
 - ✅ **#105(2026-06-13)place_bets 顺序提交 → 并发 `gather`**:`place_bets.py` 多腿改 `await asyncio.gather(*(submitter(spec) ...))`(顺序 workaround 退役;同页并发 placeBets 丢回执由 OE ExecClient 页锁串行兜底,PM/OE 腿并行 → 对冲窗口更窄,synchronization §8.3)。`test_action_place_bets.py` 既有用例(submitter 调用次数 / spec 正确 / log-only fallback)在并发下仍 23 passed。⚠️ **仍需 live 重验**两腿真盘回执不丢。
 - ✅ NT-node skip smoke(2026-06-08):临时强制 `mean_rebate.min_rate=-10.0` + `pre_match` 关闭后,真实 PM/OE 盘口触发 `PlaceBetsAction` → `ExecClient-ORBITEXCH: Submit LimitOrder(...)` → SkipExecution mock fill → portfolio position 更新。该 smoke 只验证安全 submit/mock-fill 链路;`skip_execution=true` 会立即全成,不会留下 open order,因此不验证真实撤单。
 - ⚠️ 同次 smoke 暴露 OBD 高频下同一机会会重复 fire/重复 mock submit;需后续以 strategy 执行保护/节流单独处理,不混入 recovery 状态机。
+
+## Opportunity barrier strategy 用例(已落地代码,待 live 验证,2026-06-14)
+
+对应设计:`architectures/_cross-cutting/synchronization.md §8.4bis` + strategy §3.9。
+
+### strategy-4.23: submitter 入口走 RiskEngine
+- 前置: `make_submitter` 注入 mock msgbus;cache 有 instrument。
+- 输入: 调 `submit(spec)`。
+- 步骤: 捕获 `msgbus.send(...)`。
+- 期望: endpoint 为 `RiskEngine.execute`,不是 `ExecEngine.execute`。
+- 验收: Strategy 下单路径不绕过 `ArbitrageLiveRiskEngine`。
+- 状态:✅ `test_submitter.py::test_submit_builds_limit_order_and_sends_to_risk_engine`
+
+### strategy-4.24: 同一次 PlaceBetsAction 给所有真实腿写同一 opportunity metadata
+- 前置: `ctx.pair_id="P1"`,scratch 中有 PM/OE 两条真实 legs,submitter 记录 spec。
+- 输入: 执行 `PlaceBetsAction.execute(ctx)`。
+- 步骤: 检查两次 submit spec。
+- 期望: 两条 spec 拥有相同 `opportunity_id` / `pair_id=P1`;各自 `leg_key` 不同;`expected_legs` 包含两条真实腿且包含自己。
+- 验收: 不发送 0 qty 空单;没有真实下单的 outcome 不进入 `expected_legs`。
+- 状态:✅ `test_action_place_bets.py::test_action_calls_submitter_when_present`
+
+### strategy-4.25: submitter 将 opportunity metadata 写入 Order.tags
+- 前置: spec 带 `opportunity_id/pair_id/leg_key/expected_legs/intent`。
+- 输入: 调 `submit(spec)`。
+- 步骤: 捕获生成的 `SubmitOrder.order.tags`。
+- 期望: tags 包含 `arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs` / `arb:intent`。
+- 验收: Risk deny 时只拿到 order 也能发布结构化 opportunity deny 消息。
+- 状态:✅ `test_submitter.py::test_submit_writes_opportunity_metadata_tags`
 
 **Slice 9.5 in-process e2e smoke**(`test_mean_rebate_e2e.py`,4 tests):
 - ✅ 完整 e2e:JSON config → JSON loader → Strategy(Check/Action registry)→ `evaluate_tree` 命中(rate=0.25,3-way 套利) → `PlaceBetsAction.execute` log 3 leg(`would submit: ... qty=5.6250 price=4.0` × 3)

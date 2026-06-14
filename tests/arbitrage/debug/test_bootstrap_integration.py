@@ -10,6 +10,7 @@ import src.arbitrage.bootstrap as bootstrap
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
 from src.arbitrage.debug.risk import DebugArbitrageLiveRiskEngine
+from src.arbitrage.execution import ArbLiveExecutionEngine
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 
 
@@ -18,15 +19,18 @@ def _restore_kernel_types():
     """每个 test 后还原 kernel 的类替换,避免污染。"""
     orig_portfolio = _kernel.Portfolio
     orig_engine = _kernel.LiveRiskEngine
+    orig_exec_engine = _kernel.LiveExecutionEngine
     yield
     _kernel.Portfolio = orig_portfolio
     _kernel.LiveRiskEngine = orig_engine
+    _kernel.LiveExecutionEngine = orig_exec_engine
 
 
 # ── debug-bootstrap.1: debug_config=None → 装生产 ArbitrageLiveRiskEngine ─
 def test_install_without_debug_uses_production_engine():
     bootstrap.install_arbitrage_engines()  # 无参 = production
     assert _kernel.LiveRiskEngine is ArbitrageLiveRiskEngine
+    assert _kernel.LiveExecutionEngine is ArbLiveExecutionEngine
 
 
 # ── debug-bootstrap.2: debug_config.enabled=False → 装生产 ────────

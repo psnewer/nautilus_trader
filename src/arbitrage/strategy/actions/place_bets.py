@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -48,8 +49,10 @@ class PlaceBetsAction(Action):
             f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} share={self._share} "
             f"mean_rebate_rate={rate}",
         )
+        expected_legs = tuple(_leg_key(leg, idx) for idx, leg in enumerate(legs))
+        opportunity_id = new_opportunity_id()
         prepared = []
-        for leg in legs:
+        for idx, leg in enumerate(legs):
             venue = leg["venue"]
             price = self._price_overrides.get(venue, leg["price"])
             size = _compute_leg_size(leg, venue, self._share, price, self._qty_overrides)
@@ -59,6 +62,10 @@ class PlaceBetsAction(Action):
                 "qty": size,
                 "price": price,
                 "intent": self._intent,
+                "opportunity_id": opportunity_id,
+                "pair_id": ctx.pair_id,
+                "leg_key": expected_legs[idx],
+                "expected_legs": expected_legs,
             }
             prepared.append((leg, venue, size, price, spec))
 
@@ -107,3 +114,9 @@ def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]
     if not raw:
         return {}
     return {str(k).upper(): float(v) for k, v in raw.items()}
+
+
+def _leg_key(leg: dict, idx: int) -> str:
+    role = str(leg.get("role") or idx)
+    venue = str(leg.get("venue") or "venue").lower()
+    return f"{venue}:{role}:{idx}"

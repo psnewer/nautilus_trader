@@ -26,6 +26,7 @@ from nautilus_trader.trading.strategy import Strategy
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
+from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
@@ -262,3 +263,53 @@ def test_recovery_intent_still_checks_balance():
 
     assert len(denied) >= 1
     assert exec_engine.command_count == 0
+
+
+def test_opportunity_deny_publishes_domain_message():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=1))
+    ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    domain_msgs = []
+    ctx.msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=lambda msg: domain_msgs.append(msg))
+
+    strategy = Strategy()
+    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
+    order = strategy.order_factory.limit(
+        pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4),
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,oe:away:1",
+            "arb:intent=arbitrage",
+        ],
+    )
+
+    ctx.engine._deny_order(order, "blocked")
+
+    assert domain_msgs == [{
+        "opportunity_id": "opp-1",
+        "pair_id": "pair-1",
+        "leg_key": "pm:home:0",
+        "client_order_id": str(order.client_order_id),
+        "reason": "blocked",
+    }]
+
+
+def test_non_opportunity_deny_does_not_publish_domain_message():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    domain_msgs = []
+    ctx.msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=lambda msg: domain_msgs.append(msg))
+
+    strategy = Strategy()
+    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
+    order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4))
+
+    ctx.engine._deny_order(order, "blocked")
+
+    assert domain_msgs == []

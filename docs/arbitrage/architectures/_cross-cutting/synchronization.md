@@ -217,12 +217,86 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 - **退役 / 回退**:① **A5 desync 兜底回退**(2026-06-14;它会误清 fire→`_begin_session` 的 handoff 窗口 → 同突发重复 fire,`test_same_pair_concurrent_eval_fires_once` 实测会挂);② **max-hold** + **`health_check.finished→clear_all`** 待 deny(见下)解决后删。
 - ⚠️ **待决:deny**(strategy fired、**全 deny** → RiskEngine 在 `_submit_order` 前拒 → 根本没进 execution → `exec_count==0` → in-flight 漏)。**deny 不是一次 execution**,exec_count 兜不到 → 需单独处理:strategy `on_order_denied` 释放 / fire 前加 settled·risk pre-check 不 fire / 暂保留 max-hold 仅为此。**删 max-hold 前必须先定 deny。**
 
+### 8.4bis opportunity execution barrier(已落地代码,待 live 验证,2026-06-14)
+
+> **状态**:代码已落地(`common/opportunity.py`、`strategy/actions/place_bets.py`、`strategy/actor.py`、`risk/engine.py`、`execution/engine.py`、`bootstrap.py`),离线单测通过;尚未 live 验证。本文是跨 Strategy / Risk / Execution / `PairInFlightGate` 的单一真理源;各组件文档只写本方职责并交叉引用本节。
+
+**目标**:一次 opportunity 的所有真实腿先完成 Risk 决策,再决定是否进入 venue execution。任一腿被 Risk deny 时,整次 opportunity 走 execution 统一出口结束,不让已 pass 的其它腿进入 venue,也不由分支代码直接释放 `pair_inflight`。
+
+**关键事实**:
+- NT 原生 `SubmitOrderList` 只支持同一个 `instrument_id` 的订单列表,不能表达 PM/OE 跨 venue 或同 venue 多 selection 的套利机会。
+- 当前套利机会要继续用多条 `SubmitOrder`,但每条必须先走 `RiskEngine.execute`;Risk pass 后才由 NT RiskEngine 回送 `ExecEngine.execute`。
+- opportunity barrier 位于 **Risk pass 之后、ExecutionClient 之前**;它只控制是否 release 到 venue,不替代 RiskEngine 的逐单校验。
+
+**metadata 契约**(Strategy 写,Risk/Execution 读):
+
+| 字段 | 落位 | 含义 |
+|---|---|---|
+| `arb:opportunity_id=<id>` | `Order.tags` | 本轮机会 ID,隔离同 pair 连续机会 |
+| `arb:pair_id=<pair>` | `Order.tags` | `PairRegistry` 产出的 pair_id,用于统一出口释放 per-pair 闸 |
+| `arb:leg_key=<key>` | `Order.tags` | 本轮机会内腿标识,如 `pm_home` / `oe_home` |
+| `arb:expected_legs=a,b,...` | `Order.tags` | 本轮应收齐的真实腿集合,包含自己;不发 0 qty 空单 |
+| `arb:intent=<intent>` | `Order.tags` | 既有 intent 契约(`arbitrage` / `recovery`) |
+
+> metadata 放 `Order.tags`,不是仅放 `SubmitOrder.params`,因为 Risk deny 时 `_deny_order(order, reason)` 直接拿到的是 `order`;Execution 处理 `OrderDenied` 时也可经 cache 反查 order tags。
+
+**消息 / 入口**:
+- Strategy submitter:生成带 metadata 的 `SubmitOrder`,发送到 `RiskEngine.execute`。
+- Risk pass:NT RiskEngine 原生 `_send_to_execution(command)` → `ExecEngine.execute`;Execution barrier 暂存该 leg。
+- Risk deny:Risk 保留原生 `OrderDenied`,同时额外发布领域消息 `risk.opportunity.leg_denied`:
+
+```json
+{
+  "opportunity_id": "...",
+  "pair_id": "...",
+  "leg_key": "oe_home",
+  "client_order_id": "...",
+  "reason": "..."
+}
+```
+
+Execution barrier 以领域消息为主消费 deny;若需要容错,也可从 `OrderDenied` 经 cache 反查 tags。
+
+**Execution context 状态机**:
+
+```text
+OPEN
+  risk-pass leg 到达 → pending.allowed[leg_key] = SubmitOrder
+  risk-denied leg 到达 → DENIED
+  expected_legs 全部 pass → RELEASED
+  barrier timeout → TIMED_OUT
+
+RELEASED
+  release 所有 pending SubmitOrder 到原生 ExecutionEngine._execute_command
+  后续由各 ExecutionClient session 结束汇总到同一个 execution 出口
+
+DENIED / TIMED_OUT
+  不 release 任何 leg 到 ExecutionClient
+  对已暂存但未执行的 pass legs 生成本地 OrderDenied
+  以 zero-session execution 进入统一出口
+```
+
+**统一出口**:
+- opportunity context 有一个统一 finish outlet,负责清 pending、取消 timer、发布 opportunity finished(若需要)、释放 `PairInFlightGate`。
+- `pair_inflight` **不得**在 Risk deny 分支或 barrier cleanup 分支直接释放;pass / deny / timeout 都必须经该统一出口释放。
+- pass 路径进入 venue 后,现有 per-leg session 的 `_end_session` / cancel-only tracked cancel 仍负责报告 session 完成;最终由 opportunity context 汇总“所有真实 session finished”后走同一 finish outlet。deny / timeout 路径没有 venue session,session 数为 0,立即走同一 outlet。
+
+**timeout**:
+- barrier timeout 使用 NT 原生 clock:`set_time_alert_ns` / `cancel_timer`。
+- timeout 只覆盖 Risk decision 收齐窗口,建议短值(如 1-2s);release 到 ExecutionClient 后由既有 per-session watchdog 负责 venue 回执/成交等待。
+- timeout 命中等同 opportunity denied:不进 venue,暂存 pass legs 补本地 `OrderDenied`,再走统一出口。
+
+**边界**:
+- barrier 只能保证“所有腿 Risk pass 后才进入 venue”,不能保证 venue 原子成交;release 后的 accepted/rejected/timeout 仍归 execution session 与后续 recovery 机制处理。
+- 不发送 0 qty 空单。没有真实下单的 outcome 不进 `expected_legs`;若未来确需显式 noop,应新增领域 marker,不能伪造 NT `SubmitOrder`。
+
 ### 8.5 迁移后状态位最终图景
 
 | 机制 | 去留 | 维护 / 读取 |
 |---|---|---|
 | `leg_settled`(per-pair-leg) | **保留** | `_begin_session` arm false / venue-confirm mark true;RiskEngine·Portfolio live fail-closed |
 | `PairInFlightGate`(per-pair) | **保留**(兜底改 §8.4) | strategy `_route_eval` 同步 `try_enter` / execution `exec_started`·`exec_finished` |
+| opportunity execution barrier | **已落地代码,待 live 验证** | Risk pass 后暂存 legs;Risk deny / timeout / 全 pass 都走 execution context 统一出口 |
 | per-session 超时 watchdog | **保留**(pair_inflight 主防线) | `_begin_session` 挂 NT clock alert |
 | `execution.started/finished` 消息 | **退役** | 旧消费者(OE DataClient 互斥)随迁移消失;strategy 改直读 callable → 无消费者 |
 | 全局 `is_execution_active` callable | **新增** | launcher 注入 strategy;OR(PM `_execution_active`, OE `_execution_active`)= 各自 `len(_active_sessions)`;供 try_enter 兜底 |
@@ -238,6 +312,7 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 - [x] `place_bets` 顺序提交 → `gather`(**✅ 已落地 2026-06-13,`place_bets.py`;`test_action_place_bets.py`**);⚠️ **仍需 live 重验**两腿回执(页锁串行兜底,真盘确认不丢回执)
 - [ ] 退役 `health_check.*` topic + Strategy `_hc_running` + 健康检查⊥执行 per-venue 互斥(§1–7 对应代码)
 - [ ] `PairInFlightGate`:删 max-hold;`try_enter` 加 execution-alive + leg_settled 全 true → `clear_all` 兜底
+- [x] opportunity execution barrier:Strategy 写 opportunity tags 并走 `RiskEngine.execute`;Risk 额外发布 `risk.opportunity.leg_denied`;Execution 用 NT clock 等齐/deny/timeout,统一 outlet 释放 `pair_inflight`(**离线 43 passed,待 live 验证**)
 - [ ] launcher 注入全局 `is_execution_active` callable(OR PM/OE `_execution_active`)给 strategy;**退役 `execution.*` 消息**(无消费者)
 - [ ] venue-liveness 预闸:launcher 注入 `is_<venue>_alive` callable(死活=reconcile 成败,见 execution §4.3bis(4));strategy fire 前置 pre-check
 - [ ] 统一断线保护:reconcile 失败 → venue dead + 持续重试(OE reload / PM REST)直到成功;成功 → alive + mark leg_settled

@@ -21,6 +21,9 @@ from __future__ import annotations
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.instruments import BinaryOption
 
+from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.risk.config import ArbRiskParams
 
 
@@ -43,6 +46,22 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if not self._check_rebate_gates(order):
             return False
         return True
+
+    def _deny_order(self, order, reason: str) -> None:
+        super()._deny_order(order, reason)
+        meta = meta_from_order(order)
+        if meta is None:
+            return
+        self._msgbus.publish(
+            topic=RISK_LEG_DENIED_TOPIC,
+            msg={
+                "opportunity_id": meta.opportunity_id,
+                "pair_id": meta.pair_id,
+                "leg_key": meta.leg_key,
+                "client_order_id": str(order.client_order_id),
+                "reason": str(reason),
+            },
+        )
 
     # ── 应用层:余额(venue 非对称,Q17)────────────────────────────
     def _check_balance(self, instrument, order) -> bool:
@@ -91,7 +110,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
     # ── 应用层:组合级硬停三门限(Q16)────────────────────────────────
     def _check_rebate_gates(self, order) -> bool:
-        if _order_intent(order) == "recovery":
+        if order_intent(order) == "recovery":
             return True
 
         pf = self._portfolio  # 实为 ArbitragePortfolio(import 替换后 kernel 原生构造)
@@ -127,11 +146,3 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if registry is None:
             return None
         return registry.get(order.instrument_id)
-
-
-def _order_intent(order) -> str:
-    """从 NT order tags 读取套利域意图。默认 `arbitrage` 保持旧行为。"""
-    for tag in getattr(order, "tags", None) or []:
-        if isinstance(tag, str) and tag.startswith("arb:intent="):
-            return tag.split("=", 1)[1]
-    return "arbitrage"

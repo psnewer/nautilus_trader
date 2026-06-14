@@ -84,6 +84,11 @@ def test_action_calls_submitter_when_present(caplog):
     assert calls[0]["qty"] == 22.5
     assert calls[0]["price"] == 0.4
     assert calls[0]["intent"] == "arbitrage"
+    assert calls[0]["opportunity_id"] == calls[1]["opportunity_id"]
+    assert calls[0]["pair_id"] == "p"
+    assert calls[0]["leg_key"] != calls[1]["leg_key"]
+    assert tuple(calls[0]["expected_legs"]) == tuple(calls[1]["expected_legs"])
+    assert calls[0]["leg_key"] in calls[0]["expected_legs"]
     # OE leg:size=22.5/2.5=9.0,price=2.5
     assert calls[1]["instrument_id"] == "A.ORBITEXCH"
     assert calls[1]["qty"] == 9.0
@@ -116,6 +121,10 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
         "qty": 3.25,
         "price": 2.5,
         "intent": "arbitrage",
+        "opportunity_id": calls[0]["opportunity_id"],
+        "pair_id": "p",
+        "leg_key": "orbitexch:away:0",
+        "expected_legs": ("orbitexch:away:0",),
     }]
 
 
@@ -145,6 +154,10 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         "qty": 7.0,
         "price": 1000.0,
         "intent": "arbitrage",
+        "opportunity_id": calls[0]["opportunity_id"],
+        "pair_id": "p",
+        "leg_key": "orbitexch:away:0",
+        "expected_legs": ("orbitexch:away:0",),
     }]
 
 

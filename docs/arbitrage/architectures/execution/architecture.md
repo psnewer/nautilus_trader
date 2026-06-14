@@ -10,6 +10,7 @@
 
 | 组件 | 基类 | 职责 |
 |---|---|---|
+| **ArbLiveExecutionEngine** | NT `LiveExecutionEngine` 薄子类 | opportunity execution barrier:Risk pass 后暂存同机会 legs,等齐/deny/timeout 后决定 release 或 zero-session finish;统一释放 `pair_inflight` |
 | **PM ExecutionClient** | 上游 `PolymarketExecutionClient` **薄子类** | 订单 IO(CLOB,上游现成)+ 账户状态(事件驱动)+ reconcile reports + **PM 健康检查**(report 对账 + merge/redeem settlement)+ `leg_settled` 维护 |
 | **OE ExecutionClient** | 自写 `LiveExecutionClient` | 订单 IO(Playwright 提交)+ **订单帧解析**(现 stub→实写)+ 账户状态(WS 余额帧)+ reconcile reports + `leg_settled` 维护 |
 | `PolymarketSettlement` | 普通类 | merge/redeem 编排(被 PM 健康检查调用,见 §4.6) |
@@ -29,9 +30,11 @@
 
 ```mermaid
 flowchart LR
-  ST[Strategy] -->|submit_order| EE[ExecEngine]
-  EE --> RE[RiskEngine 拦截]
-  RE -->|pass| EC["ExecutionClient._submit_order"]
+  ST[Strategy] -->|SubmitOrder| RE[RiskEngine 拦截]
+  RE -->|pass| EE[ExecEngine opportunity barrier]
+  RE -->|deny| EE
+  EE -->|all legs pass| EC["ExecutionClient._submit_order"]
+  EE -->|deny/timeout| FIN["opportunity finish outlet"]
   EC -->|PM: CLOB / OE: Playwright| V[(venue)]
   V -.订单状态.-> WS["WS / 帧解析"]
   WS -->|generate_order_*| EE
@@ -148,6 +151,34 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 - **execution session**:submit 时 publish `execution.started` + 置 `_execution_active`(首个 await 前同步);terminal **或** timeout 时 publish `execution.finished` + 清(放 `finally`,两条路径都清,防健康检查永久饿死)。
 - **PM 健康检查 tick**:开头 `if _execution_active: 跳过`;否则 publish `health_check.started`→ 跑 → `finally` publish `health_check.finished`。
 - 单 asyncio loop 串行,置位/清位纪律见 §6.10。
+
+### 3.5 `ArbLiveExecutionEngine` opportunity barrier(已落地代码,待 live 验证)
+
+> 横切协议真理源见 `_cross-cutting/synchronization.md §8.4bis`;本节只写 execution 侧接口和出口。
+
+`ArbLiveExecutionEngine` 通过 `bootstrap.install_arbitrage_engines()` 替换 `nautilus_trader.system.kernel.LiveExecutionEngine`,方式同 `ArbitrageLiveRiskEngine`。该类不改 NT `SubmitOrderList` 语义,只在单条 `SubmitOrder` 经过 Risk pass 回到 `ExecEngine.execute` 时检查 opportunity metadata。metadata 解析复用 `src/arbitrage/common/opportunity.py`。
+
+**输入**:
+- `ExecEngine.execute(SubmitOrder)`:Risk pass 后的真实腿;若 order 无 `arb:opportunity_id`,直接 `super()._execute_command(command)`。
+- `risk.opportunity.leg_denied`:Risk deny 的领域消息;Execution barrier 以该消息关闭对应 opportunity。
+- NT clock alert:`arb_opp_timeout:{opportunity_id}`。
+
+**context 字段**:
+
+| 字段 | 含义 |
+|---|---|
+| `opportunity_id` | 本轮机会 ID |
+| `pair_id` | 用于 finish outlet 释放 `PairInFlightGate` |
+| `expected_legs` | 应收齐的真实腿 key 集合 |
+| `allowed` | `leg_key -> SubmitOrder`,尚未 release 到 venue |
+| `terminal` | `None` / `denied` / `timeout` / `released` |
+
+**出口**:
+- `all allowed`:取消 barrier timer,把 `allowed` 中所有 command 逐条交回 `super()._execute_command(command)` 进入各 venue `ExecutionClient`;后续由现有 `ArbExecutionSessionMixin` 的 per-leg session 计数在最后一腿 `_end_session` 时释放 `PairInFlightGate`。
+- `denied` / `timeout`:不 release 到 venue;对 `allowed` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
+- `finish outlet`:清 context / 取消 timer / 发布可观测 finished 消息(如需要) / 释放 `PairInFlightGate`。代码中 deny / timeout 经 `_finish(...)` 一个出口;pass 路径交给已存在的 session `_end_session` 出口。`pair_inflight` 不在 Risk deny 分支释放。
+
+**timeout**:使用 NT 原生 clock `set_time_alert_ns` / `cancel_timer`;只覆盖 Risk decision 收齐窗口,不替代 §4.2 per-session venue timeout。
 
 ---
 
@@ -421,12 +452,12 @@ NT `LiveExecClientFactory.create(loop, name, config, msgbus, cache, clock)` 签�
 positions_fetcher / 间隔)—— 同 `install_arbitrage_engines` 的 import-替换思路。
 
 启动顺序(launcher):
-1. `install_arbitrage_engines()` —— 替换 kernel.Portfolio / .LiveRiskEngine
+1. `install_arbitrage_engines()` —— 替换 kernel.Portfolio / .LiveRiskEngine / .LiveExecutionEngine
 2. `node = TradingNode(config)` —— kernel 原生构造 Arbitrage 子类
 3. `prepare_arb_context(leg_settled=, pm_settlement=, pm_positions_fetcher=, pm_health_interval_secs=, oe_health_interval_secs=, ...)` —— 填好共享件
 4. `node.add_exec_client_factory("POLYMARKET", ArbPolymarketLiveExecClientFactory)`、`("ORBITEXCH", ArbOrbitExchLiveExecClientFactory)`
 5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 leg_settled/settlement/fetcher/间隔);**漏调 prepare 早失败**(`RuntimeError: ArbContext.leg_settled is None`)
-6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 leg_settled 时**复用 context 那份**(execution 与 portfolio/risk 同一对象)
+6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 leg_settled 时**复用 context 那份**(execution 与 portfolio/risk 同一对象),并把 `pair_inflight` 注入 `ArbLiveExecutionEngine`
 7. `node.run()`
 
 **共用 —— ✅ session 核心已落地(`src/arbitrage/execution/session.py`,8 passed)**:

@@ -13,6 +13,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 import src.arbitrage.bootstrap as bootstrap
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.execution import ArbLiveExecutionEngine
 from src.arbitrage.risk import ArbitragePortfolio
 from src.arbitrage.risk import ArbitrageLiveRiskEngine
 from src.arbitrage.risk import ArbRiskParams
@@ -23,6 +24,7 @@ def test_install_replaces_kernel_module_names():
     import nautilus_trader.system.kernel as k
     assert k.Portfolio is ArbitragePortfolio
     assert k.LiveRiskEngine is ArbitrageLiveRiskEngine
+    assert k.LiveExecutionEngine is ArbLiveExecutionEngine
 
 
 def _arb_node():

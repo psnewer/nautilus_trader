@@ -154,6 +154,23 @@ ExecutionClient (维护账户)
 - 期望: 持 `ArbitragePortfolio` 引用调 `way_rebate / min_way_rebate / global_min_rebate_sum`,即时现算反映最新持仓
 - 验收: **cache 不存 rebate**;`_check_rebate_gates` 不读任何"已存 rebate"字段,不重复算法(算法只在 ArbitragePortfolio 一份)
 
+### risk-6.7.10: opportunity leg deny 领域消息(已落地代码,待 live 验证)
+- 前置: `SubmitOrder.order.tags` 包含 `arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`;Risk 某门控触发 deny。
+- 输入: 该订单经 `ArbitrageLiveRiskEngine._handle_submit_order`。
+- 步骤: 订阅 `events.order.*` 与 `risk.opportunity.leg_denied`。
+- 期望:
+  - 原生 `OrderDenied` 仍发出并进入 NT order/cache 标准链路。
+  - 额外发布 `risk.opportunity.leg_denied`,payload 至少含 `opportunity_id/pair_id/leg_key/client_order_id/reason`。
+- 验收: 领域消息是补充信号,不能替代 `OrderDenied`;Risk 不等待其它 legs、不释放 `pair_inflight`。
+- 状态:✅ `test_engine.py::test_opportunity_deny_publishes_domain_message`
+
+### risk-6.7.11: 无 opportunity metadata 的 deny 不发布领域消息
+- 前置: 普通非套利订单或旧路径订单无 `arb:opportunity_id` tag。
+- 输入: Risk deny。
+- 期望: 只发 NT 原生 `OrderDenied`,不发 `risk.opportunity.leg_denied`。
+- 验收: 非套利/外部订单不被 opportunity barrier 协议污染。
+- 状态:✅ `test_engine.py::test_non_opportunity_deny_does_not_publish_domain_message`
+
 ---
 
 ## ArbitragePortfolio: way_rebate 等领域指标(Q14,§6.9)

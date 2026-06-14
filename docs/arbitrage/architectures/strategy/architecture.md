@@ -315,8 +315,8 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
   1. `cache.instrument(iid).{size_precision, price_precision}` 拿精度
   2. 构 NT `LimitOrder`(`OrderSide.BUY/SELL` from spec / `Quantity` / `Price` / `TimeInForce.GTC` / 随机 `ClientOrderId`)
   3. 包成 `SubmitOrder` cmd
-  4. `msgbus.send("ExecEngine.execute", cmd)` → NT ExecEngine 路由到 venue ExecClient
-- **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, intent?: "arbitrage"|"recovery"}`
+  4. **已落地链路(#106)**:`msgbus.send("RiskEngine.execute", cmd)` → NT RiskEngine 逐单检查 → pass 后回 `ExecEngine.execute`;Execution opportunity barrier 等齐本轮 legs 后才 release 到 venue ExecClient。横切协议见 `_cross-cutting/synchronization.md §8.4bis`。
+- **spec schema**:`{instrument_id, side: "BUY"|"SELL", qty: float, price: float, intent?: "arbitrage"|"recovery", opportunity_id?: str, pair_id?: str, leg_key?: str, expected_legs?: list[str]}`
 - `instrument_id` 允许是策略快照/legs 使用的字符串视图,也允许是 NT 原生 `InstrumentId`;
   `make_submitter` 是边界适配点,统一转成 `InstrumentId` 后再调用 `cache.instrument(...)`
   和构造 `LimitOrder`。这是 Strategy 与 NT cache 的契约边界,避免 Action 层直接依赖 NT 标识对象。
@@ -328,6 +328,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 - size 计算优先级:`qty_overrides[venue]` > `leg["qty"]` > 默认 share 公式。这样 `mean_rebate_recovery` 这类 compensation Check 可直接把缺口 `qty` 写入 `ctx.scratch["legs"]`,继续复用 `place_bets`,不另起 `repair_mean_rebate` Action。
 - Action 参数覆盖(#88):`price_overrides={"ORBITEXCH": 1000.0}` / `qty_overrides={"ORBITEXCH": 7.0}` 只用于构造最终 submit spec,适合 live 验证“不成交挂单 → 下一轮 cancel-only”这类执行路径;`MeanRebateCheck` 仍用真实 OBD 的 best ask 计算机会与选择 venue,execution 仍透明执行传入订单内容。
 - `intent` 默认 `"arbitrage"`;compensation/recovery tree 应显式配置 `"recovery"`。submitter 将其写入 `Order.tags` 的 `arb:intent=<intent>` 标签。该标签是 Strategy → Risk 的跨组件契约:Risk 对 `recovery` 仍执行 NT 基础检查 + 余额检查,但跳过 rebate gates(`match_tp/match_sl/global_sl`),详见 risk 详设 §3.1。
+- **opportunity metadata(已落地代码,待 live 验证,2026-06-14)**:`PlaceBetsAction` 在同一次 `execute(ctx)` 内为所有真实 legs 生成同一个 `opportunity_id`,并为每条 spec 写 `pair_id=ctx.pair_id`、稳定 `leg_key`、`expected_legs`(所有真实腿 key,包含自己)。submitter 把这些字段写入 `Order.tags`:`arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`。不发送 0 qty 空单;没有真实下单的 outcome 不进 `expected_legs`。tag 构造/解析复用 `src/arbitrage/common/opportunity.py`。
 
 **mean_rebate recovery 配置形态(已落地 Check,2026-06-11)**:
 
