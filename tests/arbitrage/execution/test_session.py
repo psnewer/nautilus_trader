@@ -18,6 +18,7 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from tests.arbitrage.risk._factories import pm_instrument
@@ -59,25 +60,26 @@ class _Base:
 
 
 class FakeSessionClient(ArbExecutionSessionMixin, _Base):
-    def __init__(self, clock, msgbus, cache, leg_settled, pair_registry, timeout_secs):
+    def __init__(self, clock, msgbus, cache, leg_settled, pair_registry, timeout_secs, pair_inflight=None):
         _Base.__init__(self, clock, msgbus, cache)
         self._init_arb_session(
             leg_settled=leg_settled,
             session_timeout_secs=timeout_secs,
             pair_registry=pair_registry,
+            pair_inflight=pair_inflight,
         )
 
     def _cancel_residual_orders(self, instrument_id, residual):
         self.cancels.append((instrument_id, list(residual)))
 
 
-def _harness(timeout_secs=30.0):
+def _harness(timeout_secs=30.0, pair_inflight=None):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = _FakeCache()
     leg_settled = LegSettledRegistry()
     pair_registry = PairRegistry()
-    client = FakeSessionClient(clock, msgbus, cache, leg_settled, pair_registry, timeout_secs)
+    client = FakeSessionClient(clock, msgbus, cache, leg_settled, pair_registry, timeout_secs, pair_inflight)
     published = []
     msgbus.subscribe("execution.started", lambda m: published.append(("started", m)))
     msgbus.subscribe("execution.finished", lambda m: published.append(("finished", m)))
@@ -215,3 +217,72 @@ def test_refcount_two_concurrent_legs():
     assert client._execution_active                       # 还剩一条在飞
     client._send_order_event(TestEventStubs.order_canceled(o2))
     assert not client._execution_active
+
+
+# ── #105 ②:watchdog 与 exec_started 原子(置位一定有出口）─────────
+# 说明:strategy `try_enter` 先置 `_inflight`(is_in_flight 探针);session `exec_started` 置
+# `_exec_count`。下列测试先 try_enter 模拟 strategy 已 acquire,再验 exec_started/exec_finished 的 count。
+def _exec_count(gate, pair_id):
+    return gate._exec_count.get(pair_id, 0)
+
+
+def test_watchdog_armed_before_exec_started_no_leak_on_alert_failure():
+    """set_time_alert 抛(本块唯一可能抛的操作)→ 尚未 exec_started → exec_count 不会 ++ 而无看门狗;
+    eval 层 in-flight 仍可由 strategy `release_eval` 清(因 exec_count==0)。"""
+    gate = PairInFlightGate()
+    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm)
+    gate.try_enter("match_1")   # strategy 已 acquire
+
+    class _AlertBoomClock:  # Cython TestClock.set_time_alert_ns 只读,代理使其抛
+        def __init__(self, real): self._real = real
+        def timestamp_ns(self): return self._real.timestamp_ns()
+        def set_time_alert_ns(self, **kwargs): raise RuntimeError("clock alert failed")
+    client._clock = _AlertBoomClock(clock)
+
+    try:
+        client._begin_session(_cmd(order))
+    except RuntimeError:
+        pass
+    assert _exec_count(gate, "match_1") == 0             # exec_started 未触达 → 无悬挂 count
+    assert not client._execution_active                   # session 未建立
+    gate.release_eval("match_1")                          # exec_count==0 → 正常释放
+    assert not gate.is_in_flight("match_1")
+
+
+def test_begin_session_arms_watchdog_and_exec_started():
+    gate = PairInFlightGate()
+    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm)
+    gate.try_enter("match_1")
+
+    assert client._begin_session(_cmd(order)) is True
+    assert _exec_count(gate, "match_1") == 1             # exec_started 已 ++
+    assert client._clock.timer_count >= 1                 # watchdog 已 arm
+
+
+def test_end_session_clears_inflight_even_if_publish_throws():
+    """#105 ②(出口对称):_publish_execution 抛 → exec_finished 已先行,in-flight 仍被清。"""
+    gate = PairInFlightGate()
+    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm)
+    gate.try_enter("match_1")
+    client._begin_session(_cmd(order))
+    assert gate.is_in_flight("match_1") and _exec_count(gate, "match_1") == 1
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("msgbus publish failed")
+    client._publish_execution = _boom
+
+    try:
+        client._end_session(order.client_order_id)
+    except RuntimeError:
+        pass
+    assert _exec_count(gate, "match_1") == 0            # exec_finished 已先行
+    assert not gate.is_in_flight("match_1")             # 归 0 → in-flight 被清(publish 抛之前)

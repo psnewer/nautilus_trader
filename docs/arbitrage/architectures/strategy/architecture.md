@@ -397,8 +397,9 @@ elif comp_res.hit: fire(comp_res.pending_action)
 
 ### 4.5 Q19 互斥 + Q20 快照咬合
 
-- **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:`_execution_active`/`leg_settled` 都在异步 `_submit_order` 下游才置位,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
-- **健康检查互斥 + 兜底 clear_all(§6.10 §7.6,#88)**:`on_start` 订 `health_check.*`,维护**在跑的 source 集合** `_hc_running`(per-venue,非 ref-count;started→add/finished→discard)。`_route_eval` pre-check `if _hc_running: 放弃 fire`(健检 reload 页面期间不下单)。收到任一 `finished` 且 `_hc_running` 空 且 `not leg_settled.has_any_unsettled()`(arb 级判据)→ `pair_inflight.clear_all()`(兜底清异常泄漏的 per-pair 闸;不叠加 is_execution_active,详见 synchronization.md §7.6)。
+- **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:Risk/Execution 的信号都在下游,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
+- **健康检查互斥(§6.10 §7.6,#88;#105 ② 后不再清闸)**:`on_start` 订 `health_check.*`,维护**在跑的 source 集合** `_hc_running`(per-venue,非 ref-count;started→add/finished→discard)。`_route_eval` pre-check `if _hc_running: 放弃 fire`(健检 reload 页面期间不下单)。**`finished` 仅移除 source —— 不再 `pair_inflight.clear_all()`**(#105 ②:in-flight 出口靠结构保证 = opportunity barrier 出口 + session `exec_started`↔watchdog 原子;strategy 不再注入 `leg_settled`)。详见 synchronization.md §7.6。
+- **VenueExecutionLiveness 不在 Strategy 读(2026-06-15)**:Strategy 计算机会前不看 venue order/position liveness,也不再读 `leg_settled`。Strategy 只负责发现机会、生成带 `arb:expected_legs` 的 order metadata;Risk 从 metadata 推导 required venues 并统一门控。详见 `_cross-cutting/synchronization.md §8.5` 与 risk §3.1/§4.4。
 - evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
 - evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
 - 回收:绑 per-evaluation 上下文,evaluate + fire 结束 GC
@@ -410,7 +411,7 @@ elif comp_res.hit: fire(comp_res.pending_action)
 | 横切 | 约束 |
 |---|---|
 | **PairRegistry**(matching 写) | evaluator 从触发 event 的 instrument_id pull pair_id,再查 StrategyRegistry;未注册 pair → no-op |
-| **LegSettledRegistry**(execution 写) | 补救路径的 `self_hits` / `checktion` 常常依赖 leg_settled(如"有腿 unsettled" 才走补救);BoolExpr 经 SignalRef 间接读 |
+| **VenueExecutionLiveness**(execution/reconcile 写,Risk 读) | Strategy 不直接读取;Strategy 只在 order tags 中携带 `expected_legs`,供 Risk 推导 required venues |
 | **Q19/§6.10 同步** | `_execution_active` ref-count 由 execution 维护(经 msgbus `execution.*`);evaluator 在 evaluate 开跑前查,在飞跳过 |
 | **Q20 快照** | OpportunitySnapshot per-evaluation;safety gate(settled/Risk)走 live |
 | **Q21 scope 优先级** | 挂载存在锁定;不降级 |

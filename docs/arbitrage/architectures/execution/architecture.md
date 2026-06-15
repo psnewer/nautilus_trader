@@ -11,8 +11,8 @@
 | 组件 | 基类 | 职责 |
 |---|---|---|
 | **ArbLiveExecutionEngine** | NT `LiveExecutionEngine` 薄子类 | opportunity execution barrier:Risk pass 后暂存同机会 legs,等齐/deny/timeout 后决定 release 或 zero-session finish;统一释放 `pair_inflight` |
-| **PM ExecutionClient** | 上游 `PolymarketExecutionClient` **薄子类** | 订单 IO(CLOB,上游现成)+ 账户状态(事件驱动)+ reconcile reports + **PM 健康检查**(report 对账 + merge/redeem settlement)+ `leg_settled` 维护 |
-| **OE ExecutionClient** | 自写 `LiveExecutionClient` | 订单 IO(Playwright 提交)+ **订单帧解析**(现 stub→实写)+ 账户状态(WS 余额帧)+ reconcile reports + `leg_settled` 维护 |
+| **PM ExecutionClient** | 上游 `PolymarketExecutionClient` **薄子类** | 订单 IO(CLOB,上游现成)+ 账户状态(事件驱动)+ reconcile reports + **PM 健康检查**(report 对账 + merge/redeem settlement)+ `VenueExecutionLiveness` 写入 |
+| **OE ExecutionClient** | 自写 `LiveExecutionClient` | 订单 IO(Playwright 提交)+ **订单帧解析**(现 stub→实写)+ 账户状态(WS 余额帧)+ reconcile reports + `VenueExecutionLiveness` 写入 |
 | `PolymarketSettlement` | 普通类 | merge/redeem 编排(被 PM 健康检查调用,见 §4.6) |
 
 **单一职责契约(Q13)**:execution = **执行 + 追踪**,不做决策。一次 session 单一职责;**移除内部 recovery loop**;补救 / 撤后再下 / 单腿失败补偿 **全归 Strategy**。
@@ -193,9 +193,14 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 每轮全量重算(快照 Q20),下轮自行重发。
 - 收到**任一** venue 确认事件(OrderAccepted / partial Fill / 全成 / Canceled / Rejected)→ 对应方向 `leg_settled=true`(§4.4)。
-- PM submit 若在收到 venue ack 前发生本地/传输异常,`ArbPolymarketExecutionClient` 生成
-  `OrderDenied` 并结束当前 session。`OrderDenied` 不属于 venue 确认事件,因此不标
-  `leg_settled`;这只负责收口 session / 释放 pair 闸,不把"未知是否到达 venue"误写成腿已确认。
+- **submit 异常收口(PM/OE 对称,#105 ①)**:submit 若在收到 venue ack 前发生本地/传输异常,
+  **立刻**生成订单终态 + `_end_session`(收口 session / 释放 pair 闸),不干等 §4.2 watchdog 整个超时:
+  - PM:`ArbPolymarketExecutionClient._submit_order` `try/except` → `generate_order_denied` + `_end_session`。
+  - OE:`OrbitExchExecutionClient._submit_order` 把 `_place_via_executor` 的 await 包入 `try/except`
+    (Playwright 崩 / executor 抛 / 页锁异常)→ `generate_order_rejected` + `_end_session`。
+    (`_place_via_executor` **返回 None**(instrument/executor 缺失)走既有 rejected 分支;`try/except` 仅兜**抛异常**。)
+  - `OrderDenied`/异常 `OrderRejected` 只负责收口,不把"未知是否到达 venue"误写成腿已确认;`OrderDenied`
+    非 venue 确认事件,不标 `leg_settled`。
 - **低频验收日志(#85)**:
   - cancel-only 入口记录 `Execution session cancel-only`,包含新单 `client_order_id` 与残留单
     `client_order_id/venue_order_id`,用于确认“下一轮先撤旧单”。
@@ -219,6 +224,13 @@ def _on_session_timeout(self, event):
 - **绝对超时**:partial / OrderAccepted **不重置** timer。
 - 全局唯一超时配置(per-venue 不分);cancel session 超时仅 log warning。
 - terminal 与 timeout 都触发 session 结束 → 都 publish `execution.finished` + 清 `_execution_active`。
+- **watchdog 与 per-pair 计数原子(#105 ②,保证置位一定有出口)**:`_begin_session` 顺序固定为
+  ① 先 arm watchdog(`set_time_alert_ns`,本块唯一可能抛的操作 —— 若抛则尚未改任何共享态,干净失败)
+  → ② 再做纯 dict 置位(`_active_sessions` / `leg_settled.arm` / `pair_inflight.exec_started`,不会抛)
+  → ③ `_publish_execution` 收尾(非关键:即便抛,watchdog + session 已就位,终会 `_end_session`)。
+  这样**只要 `exec_started` 自增了,就一定有人(终态或看门狗)来减**,不会出现"exec_count++ 却无看门狗"的永久泄漏。
+  出口对称:`_end_session` 把 `pair_inflight.exec_finished` 提到 `cancel_timer`/`publish` **之前**,
+  保证 publish 抛也不漏减。
 - **2026-06-09 live 校准(#85)**:OE `placeBets` venue 回执已直接确认返回 `status=OK + offerIds`;
   NT `OrderAccepted` 无独立日志锚点,但代码路径会在成功 result 后调用 `generate_order_accepted`,且下一轮
   cancel-only 能从 cache open order 取到 `venue_order_id` 并撤旧单,可反证 open order 已落入 NT。
@@ -291,20 +303,23 @@ async def _ensure_exec_snapshot_fresh():
 - single-flight **不发任何消息**(纯 asyncio 去重),只翻 future;它**不**驱动 strategy 互斥(见下,靠页锁 + leg_settled,不引入 `reconcile_in_progress`,synchronization §8.2)。
 
 **(4) venue 死活 = reconcile 成败(统一断线保护,#105 已定;OE/PM 同构)**
-死活判据**不是"WS 断线"**,而是 **reconcile(取真值)成败**——一套信号同时驱动 leg_settled 置位、venue 死活、断线重试:
+死活判据**不是"WS 断线"**,而是 **reconcile(取真值)成败**——同一组真实 response 写入 `VenueExecutionLiveness` 并驱动断线重试:
 
 | | reconcile(取真值) | alive | dead |
 |---|---|---|---|
 | **OE** | reload-then-report | 拿到新 `CURRENT_BETS` | reload 超时/报错、无新帧 |
 | **PM** | REST 拉 positions/orders | REST 正常返回 | REST 超时/报错 |
 
-- **reconcile 成功(真实 response)→ alive + mark leg_settled 该 venue 所有腿**(与 (5) 的"真实 response"是同一事件)。
-- **reconcile 失败 → dead + leg_settled 不置位 + 持续重试 reconcile 直到成功**(OE 重试 reload / PM 重试 REST;cadence/backoff 实现细节,待 live 调)。这是两 venue **对称**的断线保护,也是 (5) 里 Path B 后的恢复驱动。
+- **order/open-order reconcile 成功(真实 response)→ `venue_order_alive=true`**。
+- **position reconcile 成功(真实 response)→ `venue_position_alive=true`**。
+- **reconcile 失败 → 对应 order/position alive=false + 持续重试 reconcile 直到成功**(OE 重试 reload / PM 重试 REST;cadence/backoff 实现细节,待 live 调)。这是两 venue **对称**的断线保护,也是 Path B 后的恢复驱动。
 - **何时探(silence 触发)**:平时业务帧(OE `CURRENT_BETS` / PM USER WS)持续到达 = 持续 alive;**帧静默超 `idle_timeout`(#2=300s,对齐 PM 安静的账户频道)→ 触发一次探测 reconcile**,其成败才是死活裁决。
   - OE 静默锚(**✅ A1 已落地 2026-06-13**):`websocket_handler.on_frame` 回调每帧(含 SockJS 心跳 `'h'`)→ ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)读。**用心跳而非业务帧做锚**(业务帧空闲时本就静默,否则误判)。**`_exec_ws_fresh` 暂未驱动 reload**(A2/flip 接入)。**心跳周期 ≈35s(live 实测,`scripts/oe_heartbeat_probe.py` 2026-06-13:general/orders WS median 35.5s、max 38.8s;prices WS 因常推无心跳)**;**`idle_timeout=300s`**(保守,存活态心跳每 35s 刷锚故永不误触发;≈8 个心跳全丢才判死)。
 - **OE 不能主动心跳**(只读观察口、不能注入 ping)所以走这套被动 silence 触发;**PM 的 NT Rust `WebSocketClient` 自带 WS 层心跳/重连**保数据新鲜,但**venue 死活仍以 reconcile(REST 拉)成败为准**(两层:WS 重连保流、reconcile 成败定死活)。
 
-**(5) leg_settled 置位不变量(迁移修正,安全关键)**:`leg_settled=true ⟺ 拿到过 venue 真实 response 确认`。
+**(5) VenueExecutionLiveness 写入不变量(2026-06-15 迁移修正,安全关键)**:`venue_order_alive=true ⟺ 拿到过 venue 真实 order response`;`venue_position_alive=true ⟺ 拿到过 venue 真实 position response`。
+
+> ⚠️ **失效指针(2026-06-15)**:以下关于 `leg_settled` 的描述是旧设计,不再作为现状真理源。新真理源见 `_cross-cutting/synchronization.md §8.5`。代码迁移时应删除 `LegSettledRegistry` 写入,改为写 `VenueExecutionLiveness`。
 
 > **统一原则(order/position 解耦,#105)**:`leg_settled` 是**订单确认信号**(§4.4,`true`=至少一次 venue **订单确认**已落 cache),**只挂 order 真值**,**position reconcile 不碰它、也不判 venue 死**。理由:① 持仓本就是 order fills 派生(每笔 fill = 一个 OrderFilled 事件)→ order reconcile 已覆盖 leg_settled 全部所需;② **NT 启动后 order/position 是各自独立的检查**(`_check_inflight_orders`/`_check_orders_consistency` 管 order、`_check_positions_consistency` 管 position,各自 interval;仅启动期 `generate_mass_status` bundle 三者)→ **运行期没有"统一 reconcile 一次覆盖 order+position"的出入口**,所以 leg_settled/liveness 必须挂在**各 venue 的 order 真值点**:OE=`_on_current_bets`(CURRENT_BETS 的 order 面)、PM=order report 拉取成功 / USER WS order 事件。position(OE 同一份 `_current_bets` 派生 / PM 独立 REST)只喂 portfolio。**"order 真值到达"这一件事同时驱动 leg_settled mark + venue-alive**(断线保护,(4)),不必纠结 order/position 是否都对账。
 
@@ -325,7 +340,9 @@ async def _ensure_exec_snapshot_fresh():
 
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
-### 4.4 leg_settled 语义(§6.8.2)
+### 4.4 leg_settled 语义(§6.8.2,已失效)
+
+> ⚠️ **失效**:`leg_settled` 退役。新机制为 `VenueExecutionLiveness`:order/position 拆分,execution/reconciliation 写,Risk 读,Strategy/Portfolio 不读。见 `_cross-cutting/synchronization.md §8.5`。
 
 - 含义 = **execution 启动后通讯通道存活信号**(非"已完全成交")。
 - `true` = 至少一次 venue 确认事件已落 cache(任何状态都算);`false` = "execution 启动但从未收到该腿任何事件"(submit 没到 / WS 死)——这才是健康检查兜底刷新的价值。

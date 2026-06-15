@@ -7,8 +7,13 @@
 多个评估在信号置位前各自 fire(同毫秒重复下单,见 refactor.md #82)。本闸在 **OBD 回调同步段**
 (`create_task` 之前)置位,单 loop 串行保证后到的并发评估立刻看到 → 放弃。
 
-所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。
-本类纯内存、无时钟依赖:`try_enter` 由调用方传入 `now_ns` + `max_hold_ns`(max-hold 自愈兜底)。
+所有 acquire/release 都必须在首个 `await` 之前同步调用(复用 §4 单 loop 无锁纪律)。本类纯内存、无时钟依赖。
+
+**无兜底猜测(#105 ②)**:不再有 max-hold 陈旧自愈,也不再有健检 `clear_all`。in-flight 一定有出口,
+**靠结构保证**:fire 后所有权要么进 execution(`exec_started`→`exec_finished`,由 session watchdog
+兜到底),要么经 opportunity barrier 的 deny/timeout 出口 `release_eval` 释放;未 fire 由 strategy
+`release_eval` 释放。任一执行 session 的 `exec_started` 与 watchdog 在 `_begin_session` 内原子置位,
+保证 `exec_finished` 一定被走到(终态或超时),故 `_exec_count` 必回落到 0、in-flight 必被清。
 """
 
 from __future__ import annotations
@@ -19,33 +24,28 @@ class PairInFlightGate:
 
     生命周期:
     - strategy `_route_eval`(同步,`create_task` 前):`try_enter(pair)` → False 即放弃本次评估;
-    - strategy `_evaluate_and_fire` 收尾:未 fire → `release_eval(pair)`;已 fire → 不释放(交执行);
-    - execution `_begin_session`(per-leg):`exec_started(pair)`;`_end_session`:`exec_finished(pair)`;
+    - strategy `_evaluate_and_fire` 收尾:未 fire → `release_eval(pair)`;已 fire → 不释放(交执行 / barrier);
+    - opportunity barrier deny/timeout 出口:`release_eval(pair)`(此刻 `exec_count==0`,腿被 barrier 扣着未下到 venue);
+    - execution `_begin_session`(per-leg):`exec_started(pair)`;`_end_session`/timeout:`exec_finished(pair)`;
       per-pair session 计数归 0 → 释放 in-flight。
-
-    防泄漏:fire 了但一腿 session 都没起(全 deny / cancel-only 丢弃)→ in-flight 无人清 →
-    `try_enter` 的 **max-hold 陈旧自愈**(in-flight 超 `max_hold_ns` 即视为空闲)兜底。
     """
 
     def __init__(self) -> None:
-        self._inflight: dict[str, int] = {}      # pair_id → 置位时刻 ns(用于 max-hold 自愈)
+        self._inflight: set[str] = set()         # 在飞 pair_id(评估中 / 执行中)
         self._exec_count: dict[str, int] = {}    # pair_id → 在飞 execution session 数
 
-    def try_enter(self, pair_id: str, now_ns: int, max_hold_ns: int) -> bool:
-        """评估入口同步 acquire。已在飞且未超 max_hold → False(放弃);否则置位 → True。
-
-        in-flight 超 `max_hold_ns`(> 单笔套利最长耗时,取 ≥2×tracking_timeout)视为陈旧泄漏 →
-        覆盖重入(罕见兜底:正常路径由 release_eval / exec_finished 清)。"""
-        ts = self._inflight.get(pair_id)
-        if ts is not None and (now_ns - ts) < max_hold_ns:
+    def try_enter(self, pair_id: str) -> bool:
+        """评估入口同步 acquire。已在飞 → False(放弃);否则置位 → True。"""
+        if pair_id in self._inflight:
             return False
-        self._inflight[pair_id] = now_ns
+        self._inflight.add(pair_id)
         return True
 
     def release_eval(self, pair_id: str) -> None:
-        """strategy 未 fire(无机会 / abort / 异常)→ 释放。fire 后 exec_count>0 则 no-op(交执行清)。"""
+        """strategy 未 fire(无机会 / abort / 异常)或 barrier deny/timeout → 释放。
+        fire 后已进执行(exec_count>0)则 no-op(交 `exec_finished` 清)。"""
         if self._exec_count.get(pair_id, 0) == 0:
-            self._inflight.pop(pair_id, None)
+            self._inflight.discard(pair_id)
 
     def exec_started(self, pair_id: str) -> None:
         """execution session 启动(per-leg):per-pair 计数 ++(套利已 fire,所有权进入执行)。"""
@@ -56,19 +56,10 @@ class PairInFlightGate:
         n = self._exec_count.get(pair_id, 0) - 1
         if n <= 0:
             self._exec_count.pop(pair_id, None)
-            self._inflight.pop(pair_id, None)
+            self._inflight.discard(pair_id)
         else:
             self._exec_count[pair_id] = n
 
-    def clear_all(self) -> None:
-        """整体清空(in-flight + exec 计数)。
-
-        由 strategy 在「确无 arb 在飞」时调(§6.10 §7):收到健康检查 `finished` 且全部健康检查不在跑、
-        且 `leg_settled` 全 true(无腿「已发未确认」)→ 此刻任何残留都是异常泄漏 → 清掉。
-        比 max-hold 陈旧自愈更主动、且连 `_exec_count` 一起清(后者 max-hold 清不到)。"""
-        self._inflight.clear()
-        self._exec_count.clear()
-
     def is_in_flight(self, pair_id: str) -> bool:
-        """只读探测(测试 / 诊断用);不带 max-hold 判断。"""
+        """只读探测(测试 / 诊断用)。"""
         return pair_id in self._inflight

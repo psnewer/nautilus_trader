@@ -92,7 +92,9 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - Strategy 通过 NT 标准 `self.portfolio` 接口拿数据,不引用其它组件
 - way_rebate 计算是 pull-based,Strategy 调用即重算
 
-### strategy-4.14: Strategy 调用 way_rebate 前必须做 settled pre-check(Q-G,2026-05-19)
+### strategy-4.14: Strategy 调用 way_rebate 前的 settled pre-check(已失效,2026-06-15)
+
+> ⚠️ **失效**:`leg_settled` 已由 `VenueExecutionLiveness` 取代。Strategy 不再做 settled/liveness pre-check;执行健康由 Risk 统一门控。旧用例保留为历史,不作为现状验收。
 
 **前置**: MatchedPair 事件到达,strategy 准备评估机会
 **输入**: strategy 内部按顺序:
@@ -107,6 +109,18 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - pre-check 失败时:不调用 portfolio API,不调用 submit_order,early return
 - 与 §6.9.3 way_rebate 内部 gate 双重防御(Portfolio 内部 gate 兜底其它调用方如 WebGateway)
 **注释**: pre-check 失败的原因(submit 没到 venue / WS 死 / 页面挂)留给健康检查兜底(§6.8.3 / §6.8.4),strategy 只需 abort,不做自救
+
+### strategy-4.14b: Strategy 不读取 VenueExecutionLiveness(2026-06-15)
+
+**前置**: 某 venue 的 `venue_order_alive=false` 或 `venue_position_alive=false`;MatchedPair/OBD 仍触发 Strategy 评估。
+**输入**: Strategy 计算机会并生成下单 specs。
+**期望**:
+- Strategy 不查询 `VenueExecutionLiveness`、不查询 `leg_settled`。
+- Strategy 若机会满足自身条件,仍生成带 `arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs` 的 SubmitOrder。
+- 是否拦截由 Risk 的 required venues liveness gate 决定。
+**验收**:
+- Strategy deps 中无 `leg_settled` / `venue_liveness` 注入。
+- 测试可用 fake Risk 接收路径验证 submitter 仍写完整 opportunity metadata。
 
 ### strategy-4.13: Strategy 不缓存 way_rebate(Q14)
 
@@ -146,7 +160,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - 该次套利结束(双腿 terminal/timeout/放弃)→ 丢弃快照;下一轮重新取**新鲜**快照
 **验收**:
 - way_rebate **不从 cache 读**(cache 没有),是快照里冻结的预算结果
-- **安全闸走 live 不走快照**:settled pre-check(4.14)/ Q19 健康检查互斥(4.15)/ RiskEngine 余额检查 都读最新 live 状态
+- **安全闸走 live 不走快照**:Q19 健康检查互斥(4.15,退役中)与 RiskEngine 余额/venue-liveness 门控都读最新 live 状态;Strategy 不读取 venue liveness
 - 快照不跨轮持久(与 4.9 每轮重算一致);strategy 不持有跨轮快照字段
 - 实现自建(NT 无原生读隔离快照):持仓 `pickle` 深拷贝,订单簿冻取所需值;不依赖 `Cache.snapshot_position`(那是 netting 归档,非读隔离)
 
@@ -311,19 +325,12 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
 - **.15**(`test_same_pair_concurrent_eval_fires_once`):同 pair 两次 `on_data`(drain 前,模拟同突发并发)→ 第一次 `_route_eval` 同步 `try_enter` 成功派发评估,第二次 gate busy → **不派发**(`loop.tasks` 仅 1)→ drain 后只 fire 一次;fire 后 gate 仍 in-flight(交执行清)。
 - **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
-- gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / max-hold 自愈 / 负计数防御 / **`clear_all` 清 inflight+exec_count**)。设计 = synchronization.md §7。
+- gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / fire 后 release_eval no-op / 负计数防御)。**#105 ②:无 max-hold、无 `clear_all`**。设计 = synchronization.md §7。
 
-### strategy-4.framework.eval.{17-19}:健康检查互斥 + 兜底 clear_all(§6.10 §7.6,#88)
-- **.17**(`test_health_check_active_skips_fire`):`_on_health_check_started` 置 `_hc_running` 后 `on_data` → `_route_eval` 见 `_hc_running` 非空 → **不派发评估**(`loop.tasks` 空,arb_action 0 次)。补 §6.10 缺失的 strategy⊥健康检查互斥。
-- **.18**(`test_health_check_finished_clears_gate_when_all_settled`):gate 有泄漏残留(`LEAKED` in-flight + 脏 exec_count)。OE/PM 两健检都 started;OE `finished` 时 PM 仍在跑 → **不清**;PM 也 `finished`(`_hc_running` 空)+ `leg_settled` 全 true → `clear_all` → 残留清掉。
-- **.19**(`test_health_check_finished_keeps_gate_when_leg_unsettled`):`leg.arm("P","leg-1")` 造未结腿;health_check `finished` 时 `has_any_unsettled()` 真 → **不 clear**(保护真在飞 arb)。
+### strategy-4.framework.eval.17:健康检查互斥(§6.10 §7.6,#88;#105 ② 后不再清闸)
+- **.17**(`test_health_check_active_skips_fire`):`_on_health_check_started` 置 `_hc_running` 后 `on_data` → `_route_eval` 见 `_hc_running` 非空 → **不派发评估**(`loop.tasks` 空,arb_action 0 次)。补 §6.10 缺失的 strategy⊥健康检查互斥。`_on_health_check_finished` **仅移除 source**(#105 ② 后不再 `clear_all`、不再依赖 `leg_settled`)。
 
-### strategy-4.framework.eval.{20-22}:`try_enter` desync 兜底(#105 A5,§6.10 §8.4)
-`_route_eval` try_enter 被拒时,`exec_in_flight(pair)`(`_exec_count>0`)+ 全局 execution 非 alive + `leg_settled` 全 true → desync 泄漏 → `clear_all` 重试一次。**与 max-hold + health_check→clear_all 并存**。
-- **.20**(`test_pair_inflight_leak_backstop_clears_and_fires`):造 desync 泄漏(`try_enter`+`exec_started` 卡 `_exec_count`),`active_flag=False`、leg_settled 全 settled → 兜底 `clear_all` + 重试 → fire(arb_action 1 次)。
-- **.21**(`test_pair_inflight_backstop_skips_when_execution_active`):同上但 `active_flag=True`(execution alive)→ 非泄漏 → 不清、不派发(0 次)。
-- **.22**(`test_pair_inflight_backstop_skips_when_unsettled`):`active_flag=False` 但 `leg.arm` 造未结腿 → 不清、不派发。
-- **handoff 防护(隐含)**:`exec_in_flight`(`_exec_count>0`)排除 fire 后 session 未起的 handoff 窗口(exec_count==0)→ `test_same_pair_concurrent_eval_fires_once` 不被破坏(若漏掉该条件会重复 fire)。gate `exec_in_flight` 单测见 `common/test_pair_inflight.py` 复用。
+> **已删除(#105 ②,2026-06-15,用户"都撤")**:旧 eval.18/.19(健检 `finished`→`clear_all` 兜底)与 eval.20-22(`try_enter` desync A5 兜底)随 max-hold / clear_all / A5 一并退役。in-flight 出口改由 opportunity barrier 出口 + session `exec_started`↔watchdog 原子保证(synchronization.md §7.3),单测见 `test_session.py`(watchdog 原子 / 出口对称)+ `test_engine_barrier.py`(barrier deny/timeout `release_eval`)。
 
 ### strategy-4.framework.snap.{1-3}:OpportunitySnapshot(Q20)
 - **.1**:evaluate 开跑时取一次 snapshot,整轮 condition 树评估都用同一份

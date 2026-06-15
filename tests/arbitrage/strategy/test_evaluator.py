@@ -75,7 +75,6 @@ def _harness(
     execution_active: bool = False,
     log_evaluations: bool = False,
     pair_inflight=None,
-    leg_settled=None,
 ):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
@@ -97,7 +96,6 @@ def _harness(
         loop=loop,
         signal_collector=None,
         pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
-        leg_settled=leg_settled,                   # §6.10 §7:健检兜底 clear_all 判据
     )
     actor = StrategyEvaluator(
         StrategyEvaluatorConfig(log_evaluations=log_evaluations),
@@ -377,36 +375,14 @@ def test_health_check_active_skips_fire():
     assert arb_action.calls == 0
 
 
-# ── eval.18(§6.10 §7,#85):健检全部结束 + leg_settled 全 true → clear_all 兜底 ──
-def test_health_check_finished_clears_gate_when_all_settled():
-    from src.arbitrage.common.leg_settled import LegSettledRegistry
+# ── eval.17(§6.10):健检在跑期间放弃 fire(互斥仍保留)──
+def test_health_check_active_skips_fire():
     from src.arbitrage.common.pair_inflight import PairInFlightGate
 
     gate = PairInFlightGate()
-    leg = LegSettledRegistry()
-    actor, *_ = _harness(pair_inflight=gate, leg_settled=leg)
-    gate.try_enter("LEAKED", now_ns=0, max_hold_ns=10**12)   # 模拟泄漏的残留闸
-    gate.exec_started("LEAKED")                              # + 脏计数
-    # 两个 venue 健检都跑过:OE 先结束(还有 PM 在跑)→ 不清
+    actor, *_ = _harness(pair_inflight=gate)
     actor._on_health_check_started({"source": "health_check:ORBITEXCH"})
-    actor._on_health_check_started({"source": "health_check:POLYMARKET"})
+    # 健检在跑 → _route_eval 早退,gate 不置位、不派发评估
+    assert "health_check:ORBITEXCH" in actor._hc_running
     actor._on_health_check_finished({"source": "health_check:ORBITEXCH"})
-    assert gate.is_in_flight("LEAKED") is True               # PM 还在跑 → 不清
-    # PM 也结束 + leg_settled 全 true(无 entry)→ clear_all
-    actor._on_health_check_finished({"source": "health_check:POLYMARKET"})
-    assert gate.is_in_flight("LEAKED") is False              # 兜底清掉
-
-
-# ── eval.19(§6.10 §7):有腿未结算(arb 真在飞)→ 不 clear ──
-def test_health_check_finished_keeps_gate_when_leg_unsettled():
-    from src.arbitrage.common.leg_settled import LegSettledRegistry
-    from src.arbitrage.common.pair_inflight import PairInFlightGate
-
-    gate = PairInFlightGate()
-    leg = LegSettledRegistry()
-    actor, *_ = _harness(pair_inflight=gate, leg_settled=leg)
-    gate.try_enter("P", now_ns=0, max_hold_ns=10**12)
-    leg.arm("P", "leg-1")                                   # 有腿「已发未确认」= arb 真在飞
-    actor._on_health_check_started({"source": "health_check:ORBITEXCH"})
-    actor._on_health_check_finished({"source": "health_check:ORBITEXCH"})
-    assert gate.is_in_flight("P") is True                    # leg_settled 有 false → 不清
+    assert "health_check:ORBITEXCH" not in actor._hc_running   # 结束仅移除 source,不再 clear_all

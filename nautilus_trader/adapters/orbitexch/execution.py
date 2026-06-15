@@ -357,22 +357,37 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if not self._begin_session(command):
             return
         order = command.order
-        result = await self._place_via_executor(order)
-        if result is None or not result.success:
-            reason = (result.message if result is not None else "no executor result") or "submit failed"
-            self.generate_order_rejected(
+        try:
+            result = await self._place_via_executor(order)
+            if result is None or not result.success:
+                reason = (result.message if result is not None else "no executor result") or "submit failed"
+                self.generate_order_rejected(
+                    strategy_id=order.strategy_id, instrument_id=order.instrument_id,
+                    client_order_id=order.client_order_id, reason=reason,
+                    ts_event=self._clock.timestamp_ns(),
+                )
+                return
+            from nautilus_trader.model.identifiers import VenueOrderId
+            self.generate_order_accepted(
                 strategy_id=order.strategy_id, instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id, reason=reason,
+                client_order_id=order.client_order_id,
+                venue_order_id=VenueOrderId(result.order.venue_order_id or order.client_order_id.value),
                 ts_event=self._clock.timestamp_ns(),
             )
-            return
-        from nautilus_trader.model.identifiers import VenueOrderId
-        self.generate_order_accepted(
-            strategy_id=order.strategy_id, instrument_id=order.instrument_id,
-            client_order_id=order.client_order_id,
-            venue_order_id=VenueOrderId(result.order.venue_order_id or order.client_order_id.value),
-            ts_event=self._clock.timestamp_ns(),
-        )
+        except Exception as e:
+            # #105:placement 抛异常(Playwright 崩 / executor 抛 / 页锁异常)→ 立刻落终态 + 结束 session,
+            # 不干等 watchdog 整个 session_timeout(对齐 PM `arb_execution._submit_order`)。
+            self._log.error(
+                f"OE submit failed before venue acknowledgement "
+                f"client_order_id={order.client_order_id}: {e!r}",
+            )
+            self.generate_order_rejected(
+                strategy_id=order.strategy_id, instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                reason=f"OE submit exception before venue acknowledgement: {e!r}",
+                ts_event=self._clock.timestamp_ns(),
+            )
+            self._end_session(order.client_order_id)
 
     async def _place_via_executor(self, nt_order):
         """NT Order → executor 旧 Order(`nt_order_to_legacy_order`)→ `executor.place_order`(Playwright)。

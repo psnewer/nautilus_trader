@@ -166,6 +166,18 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: NT cache/Portfolio 中由该 report 派生的 Position 带真实平均成本;缺失或无法解析时 `avg_px_open=None`,但不得丢掉 quantity report,也不在 strategy/risk 侧估算。
 **验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_position_report_maps_avg_price_from_data_api` / `test_polymarket_position_report_keeps_quantity_when_avg_price_unknown`
 
+### pm-adapter-5.3c: PM order/position reconcile 写 VenueExecutionLiveness(2026-06-15)
+
+**前置**: `ArbPolymarketExecutionClient` 注入共享 `VenueExecutionLiveness`;PM 初始 `order_alive=false`,`position_alive=false`。
+**输入/期望**:
+- PM order/open-order reconcile 成功并拿到完整真实 response → `pm_order_alive=true`
+- PM position reconcile 成功并拿到完整真实 response → `pm_position_alive=true`
+- 任一路径失败/超时/response 不完整 → 对应 alive 置 false,另一维不被误改
+**验收**:
+- PM `venue_alive` 只由 `pm_order_alive && pm_position_alive` 派生,不存第三份状态。
+- 不再调用 `LegSettledRegistry.mark/mark_venue`。
+- Risk 在 PM-only 或 PM+OE opportunity 中读到 PM 任一维 false 时 fail-closed deny。
+
 ### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
 
 **前置**: PM ExecutionClient 启动
@@ -190,6 +202,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 ---
 
 ### pm-adapter-5.health.1: PM 周期健康检查走 NT report 通路(Q13 / Q-L 翻盘)
+
+> ⚠️ **部分失效(2026-06-15)**:`leg_settled=true` 相关验收退役;改为 pm-adapter-5.3c 的 `VenueExecutionLiveness` order/position alive 写入。健康检查/reconcile 仍走 NT report 通路。
 
 **前置**: PM adapter 启动,健康检查周期 = 配置默认值;某 competition X 已发起过 execution → `leg_settled` entry 存在
 **输入**: 等到下一个周期 tick 自然触发

@@ -187,6 +187,29 @@ def test_submit_order_rejects_on_executor_failure():
     assert events.get("rej") == "venue rejected" and "acc" not in events
 
 
+def test_submit_order_exception_rejects_and_ends_session():
+    """#105 ①:_place_via_executor 抛异常 → 立刻 generate_order_rejected + _end_session,
+    不干等 watchdog 整个 session_timeout(对齐 PM)。"""
+    c = _client()
+    events = {}
+    ended = []
+    c._begin_session = lambda command: True
+    c.generate_order_rejected = lambda *, strategy_id, instrument_id, client_order_id, reason, ts_event: events.update(rej=reason)
+    c.generate_order_accepted = lambda **k: events.update(acc=True)
+    c._end_session = lambda coid: ended.append(coid)
+
+    async def _boom(order):
+        raise TimeoutError("playwright page crashed")
+    c._place_via_executor = _boom
+
+    coid = SimpleNamespace(value="O-1")
+    order = SimpleNamespace(strategy_id="S", instrument_id="I", client_order_id=coid)
+    _run(c._submit_order(SimpleNamespace(order=order)))
+    assert "exception before venue acknowledgement" in events.get("rej", "")
+    assert "acc" not in events
+    assert ended == [coid]                           # session 立刻收口(非靠 watchdog)
+
+
 def test_submit_order_cancel_only_discards():
     c = _client()
     placed = []
@@ -491,7 +514,7 @@ def test_cancel_residual_tracked_clears_inflight_when_all_done():
     c._cancel_residual_one = _noop_cancel
     iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
 
-    gate.try_enter("P1", now_ns=0, max_hold_ns=10**12)        # strategy fire 持 in-flight
+    gate.try_enter("P1")        # strategy fire 持 in-flight
     o1 = SimpleNamespace(instrument_id=iid)
     o2 = SimpleNamespace(instrument_id=iid)
     c._cancel_residual_orders(iid, [o1, o2])
@@ -520,7 +543,7 @@ def test_cancel_residual_inflight_held_until_last_cancel():
     c._cancel_residual_one = _noop_cancel
     iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
 
-    gate.try_enter("P1", now_ns=0, max_hold_ns=10**12)
+    gate.try_enter("P1")
     c._cancel_residual_orders(iid, [SimpleNamespace(instrument_id=iid), SimpleNamespace(instrument_id=iid)])
 
     async def _drain_one():

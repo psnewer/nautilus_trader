@@ -203,8 +203,6 @@ def add_actors(
                 loop=loop,
                 signal_collector=None,              # 用户域(slice 9 起)
                 pair_inflight=pair_inflight,        # §6.10 §7:per-pair 串行(与 execution 共享同一份)
-                pair_inflight_max_hold_secs=2 * cfg.execution.tracking_timeout_sec,  # 自愈上界 > 单笔套利最长耗时
-                leg_settled=leg_settled,            # §6.10 §7:健检兜底 clear_all 的 arb 在飞判据
             ),
         ),
     )

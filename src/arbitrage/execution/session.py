@@ -88,23 +88,27 @@ class ArbExecutionSessionMixin:
 
         coid = order.client_order_id
         pair_id = self._pair_id_for(instrument_id)
-        if pair_id is not None:
-            self._leg_settled.arm(pair_id, instrument_id)
-            # §6.10 §7:per-pair session 计数 ++(套利已由 strategy fire,所有权进入执行)
-            if self._pair_inflight is not None:
-                self._pair_inflight.exec_started(pair_id)
+        # #105 ②:watchdog 必须在 `exec_started` **之前**且与之原子 —— 保证"只要 exec_count++ 了,
+        # 就一定有人(终态或看门狗)来减"。顺序:(1) 先 arm watchdog(本块唯一可能抛的操作,若抛则
+        # 尚未改任何共享态,干净失败);(2) 再做纯 dict 置位(exec_started / active_sessions / arm,不会抛);
+        # (3) publish 收尾(非关键:即便抛,watchdog + session 已就位,终会 _end_session)。
+        self._clock.set_time_alert_ns(
+            name=f"{_TIMEOUT_PREFIX}{coid.value}",
+            alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
+            callback=self._on_session_timeout,
+        )
         self._active_sessions[coid] = {
             "qty": order.quantity.as_double(),
             "filled": 0.0,
             "instrument_id": instrument_id,
             "pair_id": pair_id,
         }
+        if pair_id is not None:
+            self._leg_settled.arm(pair_id, instrument_id)
+            # §6.10 §7:per-pair session 计数 ++(套利已由 strategy fire,所有权进入执行)
+            if self._pair_inflight is not None:
+                self._pair_inflight.exec_started(pair_id)
         self._publish_execution("execution.started", instrument_id, pair_id)
-        self._clock.set_time_alert_ns(
-            name=f"{_TIMEOUT_PREFIX}{coid.value}",
-            alert_time_ns=self._clock.timestamp_ns() + self._session_timeout_ns,
-            callback=self._on_session_timeout,
-        )
         return True
 
     # ── 唯一漏斗:所有 order event 经此(覆盖 NT cpdef)────────────────
@@ -147,12 +151,14 @@ class ArbExecutionSessionMixin:
         sess = self._active_sessions.pop(coid, None)
         if sess is None:
             return
-        if not timed_out:
-            self._clock.cancel_timer(f"{_TIMEOUT_PREFIX}{coid.value}")  # terminal 抢先取消 watchdog
-        self._publish_execution("execution.finished", sess["instrument_id"], sess["pair_id"])
+        # #105 ②(出口对称):先清 per-pair 计数(保证 exec_count 一定回落),再做可能抛的
+        # cancel_timer / publish —— 否则 publish 抛会漏减、in-flight 永久泄漏。
         # §6.10 §7:per-pair session 计数 --;归 0 → 释放 per-pair 闸(本笔套利执行结束)
         if self._pair_inflight is not None and sess["pair_id"] is not None:
             self._pair_inflight.exec_finished(sess["pair_id"])
+        if not timed_out:
+            self._clock.cancel_timer(f"{_TIMEOUT_PREFIX}{coid.value}")  # terminal 抢先取消 watchdog
+        self._publish_execution("execution.finished", sess["instrument_id"], sess["pair_id"])
 
     # ── helpers / hooks ───────────────────────────────────────────────
     def _pair_id_for(self, instrument_id):

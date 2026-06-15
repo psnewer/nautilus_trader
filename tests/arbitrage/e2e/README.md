@@ -54,3 +54,26 @@
 - 步骤: 观察 opportunity context。
 - 期望: 第一腿结束不释放 `pair_inflight`;最后一腿结束触发同一个 finish outlet。
 - 验收: pass / deny / timeout 三条路径都由同一个 outlet 释放 `pair_inflight`。
+
+## VenueExecutionLiveness opportunity 门控(设计待落地,2026-06-15)
+
+对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + risk §3.1。
+
+### e2e-10: PM+OE opportunity 任一 required venue not alive 时不半边落地
+- 前置: Strategy 生成 PM+OE 两腿,两条订单都带 `expected_legs=("pm:home:0","oe:away:1")`;PM alive,OE `order_alive=false`。
+- 输入: 两条订单进入 Risk。
+- 步骤:
+  1. 先处理 PM leg risk check。
+  2. 再处理 OE leg risk check。
+  3. 观察 Execution barrier 与 ExecutionClient。
+- 期望:
+  - PM leg 也被 Risk deny,因为 required venues 包含 OE。
+  - OE leg 同样 deny。
+  - ExecutionClient 没有任何一腿真实 submit。
+- 验收: Risk 用 `expected_legs` 推导 required venues,不是只看当前 order venue;`risk.opportunity.leg_denied` 触发 barrier zero-session finish。
+
+### e2e-11: venue liveness 恢复后下一轮 opportunity 可通过
+- 前置: e2e-10 后,reconcile 成功写 `oe_order_alive=true` 且 `oe_position_alive=true`;PM 仍 alive。
+- 输入: 下一轮 Strategy 重新评估同 pair 并生成新 opportunity。
+- 期望: liveness gate 不再 deny;若余额/rebate gates 也通过,两腿进入 execution barrier,收齐后 release。
+- 验收: liveness 是 Risk live 状态,不依赖 Strategy 缓存或旧 opportunity 状态。

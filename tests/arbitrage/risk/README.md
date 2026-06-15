@@ -4,6 +4,8 @@
 
 **Step 6 落地状态(2026-05-22)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `common/leg_settled.py` + `bootstrap.py` 已实现,**pytest 全绿(29 passed)**:`test_{leg_settled,portfolio,engine,bootstrap}.py`(构造器在 `_factories.py`)。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、三门限 + settled fail-closed(6.7.2/3/4/8)、余额 venue 非对称(6.3b)、way_rebate 公式与 settled gate(6.9.x)、导入名替换 + wire(6.9.1)、LegSettledRegistry 语义(6.9.13)。
 
+> ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
+
 **写测试时抓出两个 production bug(已修)**:① `ArbitragePortfolio` 读不到基类私有 cdef `self._cache`(`Portfolio._cache` 非 readonly)→ 覆盖 `__init__` 自存 `_arb_cache`;② `order.has_price_c()` 是 cdef 不可从 Python 调 → 改 `order.has_price`(property)。两者运行期才暴露,纸面 review 抓不到——印证落地测试价值。
 
 **#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / `_pair_id_for_order` 原读 `info["competition"]` 是错读(`competition` 是联赛名,EPL/NFL...,非 pair_id)。现改读 matching 的 `PairRegistry`(`configure_arb(pair_registry=...)`);测试用例同步加 `PairRegistry.register(pair_id, [instrument_ids])`,见 `test_engine._gate_ctx` / `test_portfolio.test_resolve_pair_id_reads_from_pair_registry`。`_leg_from_position` 同步加 `selection_role`(Q9 标准 key)兼容 `market_type` fallback。
@@ -89,13 +91,34 @@ ExecutionClient (维护账户)
 
 ## 组合级硬停门限: tp / sl / global_sl(Q16,§5.6 `_check_rebate_gates`)
 
-三门限平移自旧 `services/risk/service.py:check_risk`,全在 `ArbitrageLiveRiskEngine._check_rebate_gates` 内,逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。
+三门限平移自旧 `services/risk/service.py:check_risk`,全在 `ArbitrageLiveRiskEngine._check_rebate_gates` 内,逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。Venue liveness 是另一道 Risk gate,位于 NT 父类检查之后、余额/rebate gates 之前。
 
 ### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行(✅ 已 e2e 验证)
 - 前置: `ArbitrageLiveRiskEngine` 已装入管道
 - 输入: 提交一笔正常订单
 - 期望: `_check_order(self, instrument, order)` 两参签名;先调 `super()._check_order(instrument, order)`(NT 仅 price/quantity/GTD),再 `_check_balance`,再 `_check_rebate_gates`。**notional/submit_rate/native 余额不在 `_check_order`,在父类 `_check_orders_risk_for_account`(本类不覆盖,管道上随后原样跑)**
 - 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,**override 被 Cython `_handle_submit_order` 派发到(已用真实 SubmitOrder 跑通:覆盖触发 1 次 + deny 事件发出 + 订单不泄漏到 exec)**。⚠️ 自定义 deny 必须自调 `self._deny_order(order, reason)`,否则订单静默丢弃、`on_order_denied` 不触发
+
+### risk-6.7.1b: VenueExecutionLiveness gate 顺序与 fail-closed(2026-06-15)
+- 前置: `ArbitrageLiveRiskEngine` 注入 `VenueExecutionLiveness`;某 opportunity 的 `expected_legs=("pm:home:0","oe:away:1")`;PM `order_alive=true/position_alive=true`,OE `order_alive=false/position_alive=true`。
+- 输入: PM leg 或 OE leg 任一 SubmitOrder 进入 `_check_order`。
+- 期望: `super()._check_order` 通过后,`_check_required_venues_alive` 发现 required venues 中 OE 不 alive → `_deny_order`。
+- 验收:
+  - `_check_balance` 和 `_check_rebate_gates` 不再继续执行。
+  - 原生 `OrderDenied` 与 `risk.opportunity.leg_denied` 都发布。
+  - 两条腿无论当前 order 自己 venue 是 PM 还是 OE,结果一致 deny。
+
+### risk-6.7.1c: required venues 从 expected_legs 推导,不是只看当前 venue
+- 前置: `expected_legs=("pm:home:0","oe:away:1")`,当前订单是 PM leg;PM alive,OE not alive。
+- 输入: PM leg SubmitOrder。
+- 期望: 仍 deny,因为 required venues 包含 OE。
+- 验收: Risk 使用 `expected_legs` partner 信息解析 required venues;不新增 `required_venues` tag 也能工作。
+
+### risk-6.7.1d: 无 opportunity metadata 时退化为当前 venue liveness
+- 前置: 普通非套利订单无 `arb:opportunity_id` / `arb:expected_legs`;当前 `order.instrument_id.venue=POLYMARKET`;PM not alive,OE alive。
+- 输入: 普通 PM SubmitOrder。
+- 期望: Risk 只检查 PM liveness 并 deny。
+- 验收: 非套利订单不被 partner 协议污染。
 
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,所有方向 `way_rebate ≥ config.match_tp`;`leg_settled` 全 true
@@ -127,19 +150,29 @@ ExecutionClient (维护账户)
 - 期望: `_check_order` 仍先跑 NT 父类基础检查和 `_check_balance`;余额通过时跳过 `_check_rebate_gates` 并路由到 ExecutionClient
 - 验收: 真实 `SubmitOrder` 管道下,recovery intent 在 settled/global fail-closed 场景仍能到 exec;余额不足时仍 `OrderDenied`,不泄漏到 exec
 
+### risk-6.7.6b: recovery intent 不跳过 VenueExecutionLiveness
+- 前置: recovery SubmitOrder 带 `arb:intent=recovery`;required venues 中 PM `position_alive=false`。
+- 输入: recovery submit。
+- 期望: `_check_required_venues_alive` deny;不进入 `_check_balance` / `_check_rebate_gates`。
+- 验收: recovery 只跳过 rebate gates,不跳过 venue liveness;撤单仍因不经 `_check_order` 而不受影响。
+
 ### risk-6.7.6: 机会评估与硬停正交(strategy 通过但 risk 仍拦)
 - 前置: 某机会 `min_way_rebate ≥ strategy.min_rebate_rate`(strategy 认为值得做)但同时所有方向 `≥ match_tp`
 - 输入: strategy 评估通过 → submit
 - 期望: strategy 不自拦(机会评估正向门槛过),`ArbitrageLiveRiskEngine` 在管道上 deny(tp 硬停)
 - 验收: 两层正交;strategy 不引用 risk,deny 经 `on_order_denied` 回传
 
-### risk-6.7.7: settled entry 不存在 → 放行(Q-G1,2026-05-19)
+### risk-6.7.7: settled entry 不存在 → 放行(Q-G1,2026-05-19,已失效)
+
+> ⚠️ **失效**:`leg_settled` gate 退役;用 risk-6.7.1b~1d 覆盖新 liveness 行为。
 - 前置: pair_id="match_X" 从没下过单 → `leg_settled` 无此 entry
 - 输入: 对 match_X submit,`_check_rebate_gates` 检查 settled
 - 期望: entry 不存在 = 无结算风险 → **本 pair 的 tp/sl 门限放行**(way_rebate 本就 `{}`,tp/sl 无从触发)
 - 验收: absent ≠ false;absent 一律放行,不与 fail-closed 混淆
 
-### risk-6.7.8: global_min_rebate_sum 返回 None → fail-closed deny(2026-05-19)
+### risk-6.7.8: global_min_rebate_sum 返回 None → fail-closed deny(2026-05-19,已失效)
+
+> ⚠️ **失效**:`global_min_rebate_sum` 不再承载执行健康 fail-closed;venue 执行健康由 `_check_required_venues_alive` 拦截。
 - 前置: **别的某个 pair** 有腿 `leg_settled=false` → `portfolio.global_min_rebate_sum()` 返回 `None`
 - 输入: 对**任意** pair(含 settled 干净的 pair)submit
 - 期望: `_check_rebate_gates` 读到 global `None` → **deny(拦截新开仓)**;全局图景不全时一律挡
@@ -246,21 +279,27 @@ ExecutionClient (维护账户)
 
 ---
 
-### risk-6.9.9: settled gate — entry 不存在通过(Q-G1)
+### risk-6.9.9: settled gate — entry 不存在通过(Q-G1,已失效)
+
+> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;本用例迁移时删除。
 
 - 前置: pair_id="match_X" 从未发起过 execution → `leg_settled` entry 不存在;但 cache 中有该 pair 的非 execution 触发持仓(如历史导入)
 - 输入: `portfolio.way_rebate("match_X")`
 - 期望: 正常计算返回 dict(无 execution-staleness 风险时不阻塞)
 - 验收: gate 失败时 entry 必须存在;不存在 entry 不触发 gate
 
-### risk-6.9.10: settled gate — entry 全 true 通过
+### risk-6.9.10: settled gate — entry 全 true 通过(已失效)
+
+> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;本用例迁移时删除。
 
 - 前置: `leg_settled["match_X"] = [true, true]`
 - 输入: `portfolio.way_rebate("match_X")` / `min_way_rebate("match_X")` / `way_rebates_by_venue("match_X")`
 - 期望: 三个方法都正常返回结果
 - 验收: 与现有 risk-6.9.{2,3,4} 行为一致
 
-### risk-6.9.11: settled gate — entry 任一 false 阻塞(Q-G2)
+### risk-6.9.11: settled gate — entry 任一 false 阻塞(Q-G2,已失效)
+
+> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;执行健康阻塞由 Risk `VenueExecutionLiveness` gate 承担。
 
 - 前置: `leg_settled["match_X"] = [true, false]`(away 方向 settled=false)
 - 输入:
@@ -275,14 +314,18 @@ ExecutionClient (维护账户)
   - 即使 cache 中有持仓数据,只要 gate 失败就阻塞计算
   - 不抛异常,不返回 sentinel,只返回空值让调用方自然处理
 
-### risk-6.9.12: global_min_rebate_sum fail-closed(Q-G3)
+### risk-6.9.12: global_min_rebate_sum fail-closed(Q-G3,已失效)
+
+> ⚠️ **失效**:`global_min_rebate_sum` 不再因执行健康返回 `None`;本用例迁移时删除或改为纯持仓聚合测试。
 
 - 前置: 多场比赛,X / Y 都有持仓;`leg_settled["match_X"] = [true, true]`,`leg_settled["match_Y"] = [false, true]`
 - 输入: `portfolio.global_min_rebate_sum()`
 - 期望: 返回 `None`(整个全局判断作废,**不返回 X 的部分和**)
 - 验收: fail-closed —— 任何 pair 任何方向 false 就让全局判断作废返回 `None`;**消费方 `_check_rebate_gates` 读到 `None` → deny(拦截新开仓)**(2026-05-19 锁定,见 risk-6.7.8)。区分两层:`global_min_rebate_sum` 方法返回 `None`(数据语义),熔断门限把 `None` 解释为"挡新单"(消费语义)
 
-### risk-6.9.13: LegSettledRegistry 共享对象语义(✅ 已验证;横切契约,见 execution §4.4)
+### risk-6.9.13: LegSettledRegistry 共享对象语义(✅ 已验证;已失效)
+
+> ⚠️ **失效**:`LegSettledRegistry` 退役;新增共享契约见 `VenueExecutionLiveness`。
 
 - 前置: `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`),execution 写、portfolio/risk/strategy 读。**腿键 = instrument_id**(一个 instrument = 一条腿,不需 方向→下标 映射)
 - 输入/期望:
@@ -293,6 +336,16 @@ ExecutionClient (维护账户)
   - **`has_any_unsettled()`(#70 新增,全局)**:无 entry → False;`reset(p,...)` 后 → True;某 pair 全 mark 后若无其它未结算 entry → False;另一 pair `reset` → True(`test_has_any_unsettled_global`)
   - **`mark_venue(venue_value)`(#105 新增)**:某 venue 一次完整 order 真值 → 该 venue 所有 armed 腿置 true(腿键 `instrument_id.venue.value` 命中;缺席快照腿=已澄清没成功亦置;他 venue/已 true/无 `.venue` 的 str 键跳过)→ 返回新置位数。OE `_on_current_bets` 调它(只挂 order 真值,position 解耦;execution §4.3bis(5))(`test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`)
 - 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;**OE 健康检查状态维度(#70,execution §4.3 Phase 2)经 `has_any_unsettled()` 读**;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
+
+### risk-6.9.14: ArbitragePortfolio 不读取执行健康状态(2026-06-15)
+
+- 前置: cache 中存在可计算的 PM/OE positions;`VenueExecutionLiveness` 中某 venue not alive。
+- 输入: 调 `portfolio.way_rebate(pair_id)` / `portfolio.global_min_rebate_sum()`。
+- 期望: Portfolio 按 positions 正常计算;不因 liveness 返回 `{}` 或 `None`。
+- 验收:
+  - `ArbitragePortfolio.configure_arb` 不接受 `leg_settled`。
+  - `portfolio.py` 不 import `LegSettledRegistry` / `VenueExecutionLiveness`。
+  - 执行健康 fail-closed 只在 `ArbitrageLiveRiskEngine._check_required_venues_alive`。
 
 ---
 

@@ -103,7 +103,7 @@ def test_barrier_waits_until_all_legs_pass_before_release():
 
 def test_barrier_deny_blocks_pending_leg_and_releases_pair_gate():
     ctx = _Ctx()
-    ctx.gate.try_enter("pair-1", ctx.clock.timestamp_ns(), 10_000_000_000)
+    ctx.gate.try_enter("pair-1")
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
     first = ctx.submit_cmd("pm:home:0")
@@ -124,7 +124,7 @@ def test_barrier_deny_blocks_pending_leg_and_releases_pair_gate():
 
 def test_barrier_timeout_blocks_pending_leg_and_releases_pair_gate():
     ctx = _Ctx()
-    ctx.gate.try_enter("pair-1", ctx.clock.timestamp_ns(), 10_000_000_000)
+    ctx.gate.try_enter("pair-1")
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
     first = ctx.submit_cmd("pm:home:0")

@@ -13,7 +13,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - Q1: InstrumentId = `{market_id}-{selection_id}.ORBITEXCH`
 - Q2: 沿用现有 `PlaywrightBrowserManager`,所有权抽到 NT factory 层(共享单例);三方按 page name `"discovery"` / `"data"` / `"execution"` 拿专属 page
 - Q9: instrument.info 必含 6 个统一 key
-- Q13(2026-05-19): OE adapter 内部承担健康检查,**吸收原 OE 网页监控**;两个刷新触发并存(时间维度 + `leg_settled=false`);**刷新后的持仓/挂单数据走 NT 标准 report 通路**(`generate_position_status_report` / `generate_order_status_report`),与 PM 对齐;execution session 单一职责(cancel-only 或 submit+track,都 track 到 terminal);移除 recovery loop。详见 `refactor.md §6.8`
+- Q13(2026-05-19): OE adapter 内部承担健康检查,**吸收原 OE 网页监控**;两个刷新触发并存(时间维度 + `leg_settled=false`);**刷新后的持仓/挂单数据走 NT 标准 report 通路**(`generate_position_status_report` / `generate_order_status_report`),与 PM 对齐;execution session 单一职责(cancel-only 或 submit+track,都 track 到 terminal);移除 recovery loop。详见 `refactor.md §6.8`。⚠️ **2026-06-15 修正**:`leg_settled` 退役,状态维度改由 `VenueExecutionLiveness` 的 order/position alive + Risk gate 承担。
 - Q17(2026-05-19): **健康检查不碰余额** —— OE 余额走 WS 被动推(reactive,**已含挂单占用**),健康检查只保 WS/页面活;OE 无 REST 不拉余额。可用余额 `_check_balance` 直接信 WS 上报值(不再减),与 PM 自扣非对称
 
 ## 文件分布
@@ -147,6 +147,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - **data-2.health.9**:`leg_settled=None`(data-only)→ 跳过状态维度不崩(`test_health_state_dim_no_legsettled_no_crash`)
 - **data-2.health.10**:execution 页未开(`get_page` None)→ warn 不崩(`test_health_state_dim_exec_page_missing_no_crash`)
 
+> ⚠️ **失效指针(2026-06-15)**:data-2.health.{6-10} 的 `leg_settled` 触发语义随 `LegSettledRegistry` 退役而失效。新的执行健康验收见 oe-adapter-5.live.{1-4};DataClient 不再通过 `leg_settled.has_any_unsettled()` 驱动 execution 页 reload。
+
 ---
 
 ### oe-adapter-2.health.1: OE 时间维度刷新触发(Q13,§6.8.3)— **Phase 1 ✅,见 #70**
@@ -175,6 +177,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **验收**: 静态检查无独立 staleness 循环;旧 `_staleness_monitor_task` / `_staleness_check_interval` 在迁移收尾删除
 
 ### oe-adapter-2.health.2: OE 状态维度刷新触发(Q13)— **Phase 2 ✅ 已接线 + live reload 已验(#75)**
+
+> ⚠️ **失效(2026-06-15)**:`leg_settled=false` 状态维度退役;新的状态维度由 ExecutionClient reconciliation 写 `VenueExecutionLiveness`,Risk 读取并门控。
 
 **前置**: 已对 competition X 发起过一次 execution,`leg_settled` entry 存在;X 的两个方向中至少一个 `settled=false`(模拟 tracking 漏 WS 帧)
 **输入**: 健康检查 tick 触发
@@ -210,6 +214,36 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - 页面 reload 不会在执行期冲掉执行用页面 / WS
 - OE 健康检查订阅 `execution.*` 维护 `_execution_active` 镜像;`execution.finished` 后下个 alert 正常执行
 - OE 健康检查 tick 开始/结束也 publish `health_check.started/finished`(供 strategy pre-check 放弃机会)
+
+---
+
+### oe-adapter-5.live.1: OE order reconcile 写 order_alive(2026-06-15)
+
+**前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
+**输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
+**期望**: `oe_order_alive=true`;不写 `oe_position_alive`。
+**验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive。
+
+### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)
+
+**前置**: OE `position_alive=false`。
+**输入**: position reconcile 成功,从 `CURRENT_BETS`/position 视图拿到完整真实 response。
+**期望**: `oe_position_alive=true`;不写 `oe_order_alive`。
+**验收**: order/position 两个事实位拆分;即使当前来源同为 `CURRENT_BETS`,接口也保持拆分。
+
+### oe-adapter-5.live.3: OE reconcile 失败置对应 alive=false
+
+**前置**: OE order/position 均 alive。
+**输入**: reload timeout、未等到新 `CURRENT_BETS`、或 report 生成确认没有完整真实 response。
+**期望**: 对应 `oe_order_alive` 或 `oe_position_alive=false`;持续重试 reconcile。
+**验收**: WS 静默只触发探测,不直接判 dead;失败依据是 reconcile 失败。
+
+### oe-adapter-5.live.4: 普通 OE submit 不主动置 alive=false
+
+**前置**: OE order/position 均 alive。
+**输入**: 普通 submit+track session 开始。
+**期望**: 不因每次下单把 alive 置 false;若后续卡已飞进入 retry/reconcile,再按 5.live.3 置 false。
+**验收**: liveness 只表达执行真相可信度,不表达“当前有执行在飞”。
 
 ---
 
