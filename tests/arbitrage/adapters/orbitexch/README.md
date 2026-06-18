@@ -115,7 +115,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - ✅ 输出 NT 标准 `OrderBookDeltas`(取代旧 `QuoteTick`):snapshot CLEAR + N×BACK ADD(BUY) + M×LAY ADD(SELL)
 - ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
 - ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
-- ✅ **#70 健康检查 Phase 1 已接**(时间维度):`HealthCheckLoop` 在 `_connect` 挂起;见下方 oe-adapter-2.health.* + Phase 分期说明
+- ✅ **competition 页存活(#109)**:封装进 WS handler(心跳超时 + close → `on_disconnect`),DataClient 事件驱动 reload、**无 HealthCheckLoop**;见上方"#109 WS 存活封装"用例(旧 #70 HealthCheckLoop 段已失效)
 - ⬜ **待 live 接**:scraper DOM 抽 `start_ts`
 
 ---
@@ -124,30 +124,23 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 §6.8.3 原文写于 #68 拆页前("单页同出赔率 + 持仓/挂单")。#68 后页拆两类:**competition 页**(DataClient,赔率)/ **execution 页**(ExecClient,`CURRENT_BETS`=持仓/挂单)。恢复机制 = **reload 页 → 该页 WS 自然重推**(非 DOM 抓;监听跨 reload 存活 #67)。故:
 
-- **Phase 1 ✅ 已落地(时间维度)**:`adapters/orbitexch/data.py` —— `_connect` 挂 `HealthCheckLoop`(interval=`config.health_interval_secs`;Q19 互斥经 DataClient 订 `execution.started/finished` ref-count,**#89 起按 venue 过滤只数 OE 自己的腿**);`_on_price_frame` 写 `_comp_last_update_ns[page_key]`;`_run_health_check` 扫 competition 页,`now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` reload 分支(赔率防冻,对等 PM `_delayed_connect` 行情 WS 重连)。**离线测**:`test_data_client_step2.py` data-2.health.{1-5}。
-- **Phase 2 ✅ 代码已接(A 方案,用户选)+ ✅ live 验完成(#75,见下)**:`_run_health_check` 状态分支 —— `leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload **execution 页**(其 `CURRENT_BETS` WS 重推 → ExecClient `_on_current_bets` → leg_settled 标记)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`)。**安全闸 `config.health_check_exec_reload_enabled` #75 默认 True**(2026-06-08 live 验:reload 不重现弹窗 + CURRENT_BETS 重推 → 隐患消除;可经 `venues.orbitexch` 关回)。**离线测**:data-2.health.{6-10}。下方 2.health.2/.3/.4(设计意图原文,Phase 2)。设计见 execution §4.3 落地状态段。
-- **✅ #74 接线补全(cadence/闸经 arb_config 透传)**:#70 时 `config.{health_interval_secs,staleness_timeout_secs,health_check_exec_reload_enabled}` 只有 adapter 层硬编码默认(15/30/False),**dispatcher 没透传** → 生产路径 Phase 2 闸打不开、cadence 改不了。#74 补 `to_orbitexch_data_client_config` 直传 `venues.orbitexch.{health_interval_sec,staleness_timeout_sec,health_check_exec_reload_enabled}`(cadence 默认 **120s/300s**;Phase 2 闸 #75 live 验后默认 **True**);并删 ArbContext 死接线 `oe_health_interval_secs`(OE 宿主=DataClient 不走 ctx-kwarg,异于 PM)。**dispatcher 测**见 `config/README.md` `test_dispatcher`(+2)。注:本文件 data-2.health.* 离线测仍用 adapter 默认 30s 直构 config(不经 dispatcher),不受影响。设计见 `configuration.md §6`。
-- **Phase 2 真账户验证工具(零下单)**:`scripts/phase2_exec_reload_probe.py` —— 离线测只能证伪逻辑分支,reload 已登录交易页的**会话/弹窗**行为只能真账户验。探针真登录 OE → arm 未结腿(**不提交订单**)→ 驱动真实 `_run_health_check` 触发 `_reload_execution_page` → 报告:登录态存活 / 登录后弹窗是否重现 / `CURRENT_BETS` 是否重推。✅ **Phase 2 live 验完成(#75,2026-06-08)**:实测已登录后 reload **不重现登录弹窗**(仅首次登录弹)+ `CURRENT_BETS` 如期重推 → 隐患全消,安全闸 **#75 默认开**(`health_check_exec_reload_enabled=True`,可经 `venues.orbitexch` 显式关回)。探针 `scripts/phase2_exec_reload_probe.py`(真账户零下单)留作回归工具:`python3 -m scripts.phase2_exec_reload_probe --config arb_config.json --headed`。详见 execution §4.3 Phase 2 段。
+- **competition 页存活 ✅ 已落地(#109,2026-06-16,封装进 WS handler,对称 PM)**:`adapters/orbitexch/data.py` —— **无 `HealthCheckLoop` / 无周期 scan**。存活检测封装进 `OrbitExchWebSocketHandler`(传 `clock`/`loop`/`liveness_timeout_secs=staleness_timeout_secs`):handler 每帧(含 SockJS 心跳)更新内部 `_last_frame_ns`,lazy self-rescheduling NT clock alert 心跳停 → fire `on_disconnect("liveness_timeout")`;prices WS close → `on_disconnect("close:prices")`。DataClient `handler.on_disconnect(...)` → `_on_comp_disconnect` → `_reload_comp_on_disconnect`(冷却 + reload-in-flight + disconnecting 三重防护),**对称 PM `_schedule_delayed_connect`**。connect-retry 事件化:开页失败 → `_delayed_reopen` 延迟重试。**机制差异**:PM 主动 ping、OE 被动盯心跳(接口对称内脏不同)。⚠️ **前提**:prices WS 真发心跳(未实测,上 live 前 `oe_heartbeat_probe.py` 扩 prices 验)。详细设计 = data §4.3。
+- **退役(#109)**:`HealthCheckLoop`(OE data 不再用;PM exec 保留)、`_run_health_check` staleness poll、`_mark_comp_frame`/`_comp_last_frame_ns`/`_on_comp_ws_close`(全搬进 handler)。⚠️ `config.health_interval_secs`(OE)**现已孤儿**(HealthCheckLoop 没了),待 config 层清理;`staleness_timeout_secs` 改作 handler liveness timeout。
+- **Phase 2 状态维度更早已退役(#108)**:`leg_settled` → `VenueExecutionLiveness`(见 oe-adapter-5.liveness)。
 
-**新增离线用例(Phase 1 时间维度)**:
-- **data-2.health.1**:page `now-last_update>staleness_timeout`(默认 30s)→ reload(`test_health_check_reloads_stale_page`)
-- **data-2.health.2**:刚收帧(last_update≈now)→ 不 reload(`test_health_check_skips_fresh_page`)
-- **data-2.health.3**:刚开页未收帧(无 last_update)→ 不 reload,避免开页即刷(`test_health_check_skips_page_without_update_yet`)
-- **data-2.health.4(#89 per-venue)**:OE 健康检查只数 **OE 自己的腿**(`_on_execution_started/finished` 按 msg instrument venue 过滤)—— OE 腿计入、PM 腿不计入、ref-count 不为负(`test_exec_active_refcount_only_counts_oe_legs`)。互斥是 venue-local:OE 健检 reload OE 页面只跟 OE 下单冲突,不跟 PM
-- **data-2.health.5**:收价格帧 → 写该页 `last_update_ns`(`test_price_frame_stamps_last_update_ns`)
-**新增离线用例(连接重试维度,补开已订阅未开的 competition 页,对齐 PM `_delayed_connect`)**:
-- **data-2.health.11**:已订阅(`_market_to_page_key`)但未开 → 健康检查补开(`test_health_check_reopens_missing_subscribed_page`)
-- **data-2.health.12**:补开失败不抛、不入册,**留下一次健康检查重试**(每 tick 再试一次,不本轮重试)(`test_health_check_reopen_failure_swallowed_retries_next_tick`)
-- **data-2.health.13**:已开且新鲜 → 补开维度不重复开、时间维度也不刷(`test_health_check_no_reopen_when_already_open`)
+**离线用例(#109 WS 存活封装)**:
+- handler 内部 liveness(`test_ws_general_frames.py`):
+  - **oe-ws-liveness.1**:无 clock/timeout → 内部存活关闭,帧不动锚、不 fire(执行页 general WS 行为不变)(`test_liveness_disabled_without_clock`)
+  - **oe-ws-liveness.2**:无帧超 timeout(心跳停=静默死亡)→ fire `on_disconnect("liveness_timeout")`(`test_liveness_fires_disconnect_on_frame_gap`)
+  - **oe-ws-liveness.3**:timeout 内有帧 → 重置存活,不 fire(安静市场靠心跳保活)(`test_liveness_frame_resets_no_disconnect`)
+  - **oe-ws-liveness.4**:prices close → fire `on_disconnect("close:prices")`(`test_close_prices_fires_disconnect`)
+- DataClient 消费侧(`test_data_client_step2.py`):
+  - **data-2.health.11/12/13**:事件化 connect-retry —— `_delayed_reopen` 开成功不再重排 / 仍失败再排 / 关停放弃(`test_delayed_reopen_*`)
+  - **data-2.health.14/15**:`on_disconnect`(close:prices / liveness_timeout)→ 调度 reload,跑完页 reload(`test_disconnect_prices_close_schedules_reload` / `_liveness_timeout_schedules_reload`)
+  - **data-2.health.16/17**:防护(非 prices/非心跳 reason / 关停 / reload 中 / 页未开 → 不调度)+ 冷却抑制风暴(`test_disconnect_guards` / `_cooldown_suppresses_storm`)
+- ~~data-2.health.{1,2,3,5}(staleness poll)+ {4}(执行⊥健康)+ 旧 {14,15,16}(`_on_comp_ws_close`)~~:**已删除(#108/#109)**——staleness 移进 handler liveness(oe-ws-liveness.*),poll/ref-count 退役。
 
-**新增离线用例(Phase 2 状态维度,A 方案 + 安全闸)**:
-- **data-2.health.6**:`leg_settled` 有未结算腿 + 安全闸开 → reload execution 页(`test_health_state_dim_reloads_exec_page_when_enabled`)
-- **data-2.health.7**:安全闸默认关 → 即使有未结算腿也不 reload 交易页(`test_health_state_dim_gated_off_by_default`)
-- **data-2.health.8**:全部已结算 → 不 reload(`test_health_state_dim_skips_when_all_settled`)
-- **data-2.health.9**:`leg_settled=None`(data-only)→ 跳过状态维度不崩(`test_health_state_dim_no_legsettled_no_crash`)
-- **data-2.health.10**:execution 页未开(`get_page` None)→ warn 不崩(`test_health_state_dim_exec_page_missing_no_crash`)
-
-> ⚠️ **失效指针(2026-06-15)**:data-2.health.{6-10} 的 `leg_settled` 触发语义随 `LegSettledRegistry` 退役而失效。新的执行健康验收见 oe-adapter-5.live.{1-4};DataClient 不再通过 `leg_settled.has_any_unsettled()` 驱动 execution 页 reload。
+> ⚠️ **失效指针**:下方 oe-adapter-2.health.* 设计意图段是 #105/#108 HealthCheckLoop 时代记录,**已被 #109 handler 封装取代**;现行验收见上方 oe-ws-liveness.* + data-2.health.{11-17}。
 
 ---
 
@@ -205,15 +198,13 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **期望**: Y 不进入"状态维度"扫描集(只有 entry 存在的比赛才检查 `settled=false`)
 **验收**: 避免对未交易比赛做无谓刷新
 
-### oe-adapter-2.health.5: 执行在飞时 OE 健康检查跳过(Q19 全局互斥)
+### ~~oe-adapter-2.health.5: 执行在飞时 OE 健康检查跳过(Q19 全局互斥)~~ —— 已退役(#108)
 
-**前置**: 一次 execution session 进行中(`_execution_active=true`,含 OE 腿)
-**输入**: OE 健康检查 alert fire
-**期望**: tick 开头判 `_execution_active` → **整个 tick 跳过**(不 reload 页面、不 reconcile);§6.8.4.5 finally 照常重排下次 alert
-**验收**:
-- 页面 reload 不会在执行期冲掉执行用页面 / WS
-- OE 健康检查订阅 `execution.*` 维护 `_execution_active` 镜像;`execution.finished` 后下个 alert 正常执行
-- OE 健康检查 tick 开始/结束也 publish `health_check.started/finished`(供 strategy pre-check 放弃机会)
+> ⚠️ **失效(#108,2026-06-16)**:OE 健康⊥执行互斥退役。competition 页 reload 在另一张页、OE 下单是
+> `page.evaluate`(与焦点无关),不冲突 → DataClient `is_execution_active=lambda: False`,不再因执行在飞
+> 而跳过 tick;`execution.*` 订阅 + `health_check.*` publish 均删除(见 synchronization §8.6 / refactor #108)。
+> 残留观察项:reload 的 `bring_to_front` 短暂背景化执行页 → 回执可能短暂延迟,由 session watchdog +
+> venue_liveness 兜,留 live 观察。
 
 ---
 
@@ -221,8 +212,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 **前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
 **输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
-**期望**: `oe_order_alive=true`;不写 `oe_position_alive`。
-**验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive。
+**期望**: `oe_order_alive=true`;`_on_current_bets` 因 CURRENT_BETS 同时是 position 真值来源,也会写 `oe_position_alive=true`。
+**验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。
 
 ### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)
 
@@ -307,13 +298,13 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
 
 ### oe-adapter-5.liveness(#105 A1):exec 页 WS 存活锚(§4.3bis(4))
-**✅ 已落地 2026-06-13**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle`。⚠️ `_exec_ws_fresh` 暂未驱动 reload(A2/flip 接入)。
+**✅ 已落地 2026-06-13**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle`。reports 入口已由 reload-then-report 用例消费该锚点。
 
-### oe-adapter-5.legmark(#105 A3):_on_current_bets → leg_settled mark_venue(§4.3bis(5))
-**✅ 已落地 2026-06-13**(active,与 funnel mark 并存幂等;删 funnel 是 cutover B4)。前置:`_leg_settled.arm("P1", oe_iid)`(armed false);输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` → `mark_venue(ORBITEXCH)` 把该 venue 所有 armed 腿置 true(缺席快照=已澄清没成功亦置;只挂 order 真值,position 解耦);期望:OE 腿 `all_settled` 为 true(funnel 未触发,纯 A3 路径)。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_legs_settled`;registry 侧 `test_leg_settled.py::test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`。
+### oe-adapter-5.liveness-current-bets(#108):_on_current_bets → VenueExecutionLiveness
+**✅ 已落地 2026-06-15**。前置:`OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` 缓存完整快照并标记 `ORBITEXCH` 的 `order_alive=true` 与 `position_alive=true`;期望:`venue_alive("ORBITEXCH")` 为 true。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive`。
 
 ### oe-adapter-5.reload(#105 A2):reload-then-report 机制(§4.3bis(3))
-**✅ 已落地 2026-06-13**(方法建好,**flag off 未接入 reports**)。前置:`_FakePageReload`(记 reload 次数 + 可选 on_reload 模拟 CURRENT_BETS 重推)。用例:① WS 新鲜(`_mark_exec_frame` 后)→ `_ensure_exec_snapshot_fresh` 不 reload(reload_count==0);② 陈旧 → reload + CURRENT_BETS 重推 → True(reload_count==1);③ reload 后 CURRENT_BETS 不重推 → `_reload_exec_page` 超时(`_reload_bets_wait_ns` 调小)→ False(reconcile 失败=venue dead);④ 两并发 `_ensure_exec_snapshot_fresh` → single-flight 只 reload 一次。**验收**:`test_orbitexch_client.py::test_ensure_fresh_skips_reload_when_ws_fresh` / `_reloads_when_stale_and_succeeds` / `test_reload_exec_page_timeout_returns_false` / `test_ensure_fresh_single_flight_one_reload`。
+**✅ 已接入 reports 2026-06-15**。前置:`_FakePageReload`(记 reload 次数 + 可选 on_reload 模拟 CURRENT_BETS 重推)。用例:① WS 新鲜(`_mark_exec_frame` 后)→ `_ensure_exec_snapshot_fresh` 不 reload(reload_count==0);② 陈旧 → reload + CURRENT_BETS 重推 → True(reload_count==1);③ reload 后 CURRENT_BETS 不重推 → `_reload_exec_page` 超时(`_reload_bets_wait_ns` 调小)→ False(reconcile 失败=venue dead);④ 两并发 `_ensure_exec_snapshot_fresh` → single-flight 只 reload 一次;⑤ 历史 `_current_bets` 存在但 WS stale 且 reload 失败 → `generate_order_status_report(s)` / `generate_position_status_reports` 不再沿用陈旧快照,按维度 mark dead;⑥ reload 成功 → reports 继续保持 alive。**验收**:`test_orbitexch_client.py::test_ensure_fresh_skips_reload_when_ws_fresh` / `_reloads_when_stale_and_succeeds` / `test_reload_exec_page_timeout_returns_false` / `test_ensure_fresh_single_flight_one_reload` / `test_reconcile_reports_stale_snapshot_reload_failure_marks_dead` / `test_reconcile_reports_stale_snapshot_reload_success_stays_alive`。
 
 ### oe-adapter-5.position(#105):CURRENT_BETS → 持仓聚合(§4.3bis(2))
 **✅ 已落地 2026-06-13**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`);算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;`generate_position_status_reports` 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`。**验收**:`test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates`(7 case,513 passed)。⚠️ **当前不被实时调用**(reconciliation=False、position_check 关),仅能力补齐,待协调切换接入。
@@ -327,7 +318,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 ### oe-adapter-5.ws.1: 订单帧解析 → generate_order_*(envelope 已解,**item schema 待 populated 抓帧**)
 **前置**: `parse_general_frame` 已能分型 + 透传 `CURRENT_BETS` 列表(envelope 已确认、已测)
 **输入**: 一条非空 `CURRENT_BETS` 帧
-**期望**: OE ExecClient `_on_current_bets_frame` 把每个 bet → `generate_order_*` / position report 回写 NT 标准管道;`leg_settled` 按 §6.8.2 置 true(经 `generate_order_*` 覆盖,腿键=instrument_id)
+**期望**: OE ExecClient `_on_current_bets_frame` 把每个 bet → `generate_order_*` / position report 回写 NT 标准管道。**(#108:原"经 `generate_order_*` 置 `leg_settled`"已退役;执行健康改由 `_on_current_bets` / reports 写 `VenueExecutionLiveness`,见 5.liveness-*)**
 **验收**:
 - **已**(✅):envelope 分型 + 列表透传(ws.1 解析层)
 - **待**:单 bet item 字段映射 —— 工作假设与 REST `/customer/api/currentBets` `bets[]` 同源(`marketId`/`selectionId`/`sizeMatched`/`averagePrice`/`side`/...),**需 populated 抓帧确认**后实写 bet→OrderStatusReport 映射
@@ -360,11 +351,11 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 ### oe-adapter-5.session.1: cancel-only session(残留挂单)(Q13)
 
-**前置**: instrument I 上有未成交残留挂单;`leg_settled` entry 已存在
+**前置**: instrument I 上有未成交残留挂单(该 pair 已发起过 execution)
 **输入**: strategy 调 `submit_order(new_order)`,execution 入口检查到残留
 **期望**:
 - session 退化为 cancel-only,**丢弃 `new_order`**(不进队列,不延后下发)
-- 撤掉残留 → track 到 CANCELED terminal → 命中方向 `leg_settled=true`
+- 撤掉残留 → track 到 CANCELED terminal(#108:不再写 `leg_settled`;残单撤单纳入 `PairInFlightGate.exec_count`,见 synchronization §8.4)
 - strategy 端不到下一轮重发,系统不替它补发
 **验收**: cancel session 单一职责,submit 被显式丢弃
 - **日志锚点(#85)**:`Execution session cancel-only` 打印新单 `client_order_id` 与残留单
@@ -376,7 +367,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **输入**: strategy 调 `submit_order(order)`
 **期望**:
 - session 走 submit+track: 下单 → 等成交 terminal
-- 命中 FILLED / CANCELED / REJECTED 任一 terminal,对应方向 `leg_settled=true`
+- 命中 FILLED / CANCELED / REJECTED 任一 terminal → `_end_session`(#108:不再写 `leg_settled`;执行健康由 reconcile 写 `VenueExecutionLiveness`)
 **验收**: track 必达 terminal 才算 session 结束
 
 ### oe-adapter-5.session.3: 移除 recovery loop(Q13)
@@ -387,6 +378,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - execution 不**再启**新一轮 plan / retry
 - 不存在 "execution 内部撤后再下" 路径(strategy 后议补救)
 **验收**: 静态检索 execution 代码无 recovery 循环;关联 `bug_compensating_cancel_missing` 留在 strategy 设计 TODO
+
+> ⚠️ **失效横幅(#108,2026-06-15):本节及以下所有 `leg_settled` 状态机用例(oe-adapter-5.health.1 ~ 5.timeout.*)全部退役**。`LegSettledRegistry` 已删除;执行健康真值改由 `OrbitExchExecutionClient` 写 `VenueExecutionLiveness`(order/position alive),Risk 读取门控。现行验收见上方 **oe-adapter-5.liveness-current-bets / 5.liveness-reload(#108)**。以下保留为迁移前记录,迁移时删除或改写。
 
 ### oe-adapter-5.health.1: leg_settled 状态机(Q13,语义=通讯通道存活信号)
 

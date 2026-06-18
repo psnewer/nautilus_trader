@@ -19,7 +19,7 @@ from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 from src.arbitrage.bootstrap import ArbContext
 from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import reset_arb_context
-from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.factories import ArbOrbitExchLiveExecClientFactory
 from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveExecClientFactory
@@ -58,14 +58,14 @@ def test_oe_factory_raises_when_context_unset():
 # ── OE factory 全程走通(stub 上下文)──────────────────────────────
 def test_oe_factory_create_with_context_returns_arb_client():
     loop, msgbus, cache, clock = _harness()
-    registry = LegSettledRegistry()
-    prepare_arb_context(leg_settled=registry, oe_session_timeout_secs=45.0)
+    liveness = VenueExecutionLiveness()
+    prepare_arb_context(venue_liveness=liveness, oe_session_timeout_secs=45.0)
     cfg = OrbitExchExecClientConfig(username="u", password="p")
 
     client = ArbOrbitExchLiveExecClientFactory.create(loop, "ORBITEXCH", cfg, msgbus, cache, clock)
 
     assert isinstance(client, OrbitExchExecutionClient)
-    assert client._leg_settled is registry                # 同份 registry 跨组件共享
+    assert client._venue_liveness is liveness             # 同份 liveness 跨组件共享
     assert client._session_timeout_ns == int(45.0 * 1e9)  # context 传值生效
     assert client._browser_manager is not None
     assert client._config is cfg

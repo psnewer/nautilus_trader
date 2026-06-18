@@ -141,7 +141,6 @@ class StrategyEvaluator(Actor):
         self._log_evaluations = config.log_evaluations
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
         self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
-        self._hc_running: set[str] = set()        # §6.10:在跑的健康检查 source 集合(per-venue,非 ref-count)
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -160,10 +159,9 @@ class StrategyEvaluator(Actor):
             topic=f"data.{SportsGameUpdate.__name__}*",
             handler=self.on_data,
         )
-        # §6.10:strategy ⊥ 健康检查互斥 —— 订 `health_check.*`(OE/PM 各发各的,带 source)。
-        # 在跑期间放弃 fire(避免下单撞到正在 reload 的页面)。
-        self._msgbus.subscribe(topic="health_check.started", handler=self._on_health_check_started)
-        self._msgbus.subscribe(topic="health_check.finished", handler=self._on_health_check_finished)
+        # #108:strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)已退役 —— 旧理由是"健康检查 reload
+        # **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、
+        # 且 OE 下单是 page.evaluate(与焦点无关),不冲突。详见 synchronization §8.6 / refactor #108。
         # slice 10e:OBD 不在 on_start 预订(无 instrument-level 订阅可言)——改 **MatchedPair fire 后
         # per-iid `subscribe_order_book_deltas(iid)`**(`_ensure_obd_subscribed`),真实赔率进 cache;
         # 订阅的 OBD 由 NT 投到 `on_order_book_deltas` → `_route_eval`(OBD-driven 重评)。
@@ -183,22 +181,6 @@ class StrategyEvaluator(Actor):
         # slice 10e:OBD-driven 重评 —— 订阅的 OBD 由 NT 投到此回调;经 instrument_id→PairRegistry→pair_id 评估
         self._route_eval(deltas)
 
-    # ── §6.10:健康检查互斥(在跑期间放弃 fire,避免下单撞正在 reload 的页面)─────
-    def _on_health_check_started(self, msg) -> None:
-        """某 venue 健康检查 tick 开始 → 记其 source 在跑(per-venue 信号位,非 ref-count)。"""
-        src = (msg or {}).get("source")
-        if src is not None:
-            self._hc_running.add(src)
-
-    def _on_health_check_finished(self, msg) -> None:
-        """某 venue 健康检查 tick 结束 → 移除其 source。
-
-        #105 ②:不再有 `clear_all` 兜底 —— in-flight 一定有出口靠结构保证(barrier deny/timeout
-        出口 + session `exec_started`↔watchdog 原子),健检不参与清闸。"""
-        src = (msg or {}).get("source")
-        if src is not None:
-            self._hc_running.discard(src)
-
     def _route_eval(self, data) -> None:
         target = self._extract_evaluation_target(data)
         if target is None:
@@ -212,11 +194,6 @@ class StrategyEvaluator(Actor):
                     f"Strategy evaluate skipped: pair_id={pair_id}, sport={sport}, "
                     f"competition={competition}, reason=no_strategy",
                 )
-            return
-        # §6.10:strategy ⊥ 健康检查互斥 —— 任一健康检查在跑 → 放弃 fire(避免下单撞正在 reload 的页面)。
-        if self._hc_running:
-            if self._log_evaluations:
-                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=health_check_active")
             return
         if self._log_evaluations:
             event_type = type(data).__name__

@@ -39,15 +39,9 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     update_instruments_interval_mins : int or None, default 60
         Periodic instrument re-discovery interval (mins); None disables. #58(slice A):
         DataClient 拥有周期发现(原生 `_update_instruments`),替代退役的 InstrumentRefresher。
-    health_interval_secs : float, default 15.0
-        健康检查 loop 节奏(§6.8.3/§6.8.4.5);每 tick 评估 competition 页 staleness。
-        应 ≤ 旧 staleness 检查间隔(30s 量级,refactor.md 行 1245),否则 stale 发现太慢。
     staleness_timeout_secs : float, default 30.0
-        competition 页赔率冻结阈值(§6.8.3 时间维度);`now-last_update_ns>阈值` → 页面 reload。
-    health_check_exec_reload_enabled : bool, default False
-        §6.8.3 状态维度(Phase 2):`leg_settled` 有未结算腿时是否 reload execution 页。
-        **默认 False(安全闸)**:reload 已登录交易页的弹窗/会话行为未经真单 live 验,
-        live 验通过前不自动 reload 交易页;live 验时显式置 True。
+        #109:competition 页 WS handler 内部 liveness timeout —— 超 此时间无任何帧(含 SockJS 心跳 ~25s)
+        → 视为 WS 死 → `on_disconnect` → reload。(旧 `health_interval_secs` 随 HealthCheckLoop #109 退役。)
     """
 
     username: str
@@ -59,9 +53,7 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     page_timeout: int = 120000
     scrape_interval_ms: int = 1000
     update_instruments_interval_mins: Optional[int] = 60
-    health_interval_secs: float = 15.0
     staleness_timeout_secs: float = 30.0
-    health_check_exec_reload_enabled: bool = False
 
 
 class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True):

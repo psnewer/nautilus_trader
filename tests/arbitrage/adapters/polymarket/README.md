@@ -137,7 +137,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**:
 - 生成 `OrderDenied`,原因包含 `PM submit exception before venue acknowledgement`
 - 立即结束当前 execution session,发布 `execution.finished`,释放 per-pair 执行闸
-- 不生成 `OrderRejected`,不标 `leg_settled`,避免把本地/传输异常误写成 venue confirm
+- 不生成 `OrderRejected`,不写 `VenueExecutionLiveness`,避免把本地/传输异常误写成 venue 真相可信
 **验收**: live 日志应看到 `Polymarket submit failed before venue acknowledgement ...` 后不再等待 `Execution session timeout`。当前尚未补离线 fake-client 单测;后续可用 stub 上游 `_submit_order` 抛异常覆盖。
 
 ### pm-adapter-5.2: 撤单接口
@@ -175,7 +175,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 任一路径失败/超时/response 不完整 → 对应 alive 置 false,另一维不被误改
 **验收**:
 - PM `venue_alive` 只由 `pm_order_alive && pm_position_alive` 派生,不存第三份状态。
-- 不再调用 `LegSettledRegistry.mark/mark_venue`。
+- 不再调用旧 leg 状态;PM liveness 只由 report/position health check 成功路径写入。
 - Risk 在 PM-only 或 PM+OE opportunity 中读到 PM 任一维 false 时 fail-closed deny。
 
 ### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
@@ -205,41 +205,38 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 > ⚠️ **部分失效(2026-06-15)**:`leg_settled=true` 相关验收退役;改为 pm-adapter-5.3c 的 `VenueExecutionLiveness` order/position alive 写入。健康检查/reconcile 仍走 NT report 通路。
 
-**前置**: PM adapter 启动,健康检查周期 = 配置默认值;某 competition X 已发起过 execution → `leg_settled` entry 存在
+**前置**: PM adapter 启动,健康检查周期 = 配置默认值。
 **输入**: 等到下一个周期 tick 自然触发
 **期望**:
 - 拉一次持仓 + 挂单(REST / Data API;**不拉余额**,Q17)
 - 持仓差异 → `generate_position_status_report(report)` → ExecutionEngine.reconcile → `cache.update_position` + `Portfolio.update_position` endpoint + `events.position.{strategy_id}` topic
 - 挂单差异 → `generate_order_status_report(report)` → 同上 (orders 通道)
 - 余额**不在此拉**(完全靠上游事件,见 pm-adapter-5.account.1)
-- 拉取成功后 PM 侧 X 的所有方向 `leg_settled=true`
+- 拉取成功后 PM 对应 liveness 维度置 alive(见 pm-adapter-5.3c)
 **验收**:
 - Portfolio.unrealized_pnl / margins_init 与 venue 真实状态一致
 - Strategy 订阅的 `on_position_event` / `on_order_event` 回调被触发(健康检查发现差异时)
 - 静态搜索 PM adapter 健康检查代码: **必须**调 `generate_*_report`,**不得**直接 `cache.update_*`
 
-### pm-adapter-5.health.4: 健康检查 tick 内顺带 merge/redeem(Q18b)
+### pm-adapter-5.health.4: NT 连续 position 对账内 merge/redeem(#110,2026-06-16;取代旧"健康检查 tick")
 
-**前置**: 健康检查那次 `/positions` 原始响应里:condition A 两 outcome 都持仓(可 merge);condition B `redeemable=true`(可 redeem)
-**输入**: 健康检查 tick 触发(reconcile 持仓/挂单后)
+> **触发改了**:不再有 PM `HealthCheckLoop`/`_run_health_check`。merge/redeem 由 **NT 连续 position 对账**(`position_check_interval_secs=300`)周期调 `generate_position_status_reports(None)` 时触发。**集成路径(真 client)经 /live-test 验**;纯映射 `pm_raw_position_to_settlement` 离线测见 `test_polymarket_client.py`。
+
+**前置**: 对账那次 `/positions` 原始响应里:condition A 两 outcome 都持仓(可 merge);condition B `redeemable=true`(可 redeem)
+**输入**: NT 连续 position 对账周期到 → `generate_position_status_reports(None)`
 **期望**:
-- 宿主 = **PM `ExecutionClient` 薄子类**(Q18c);tick 内 reconcile 后调 `self._settlement.run(positions_raw)`
-- 复用同一次 `/positions` 拉取,**不另起请求**
-- `PolymarketSettlement`(普通类)→ condition A `contract.merge_positions(...)`;condition B `contract.redeem_positions(...)`
-- merge/redeem 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
+- 上游 `_fetch_user_positions` 全量拉一次 /positions,stash `_last_raw_positions`(**一次拉喂两用**:报告 + 结算,不另起请求)
+- 拉成功 → `mark_position_alive`;**拉失败 → `mark_position_dead` 并抛**(venue dead)
+- **结算 fire-and-forget + single-flight**:`if _settlement and not _settlement_inflight: create_task(_run_settlement(raw))` —— 不 `await`(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);前一次未完成则本轮跳过
+- `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:`conditionId`/`size`/`negativeRisk`/`redeemable`)→ `PolymarketSettlement.run` → merge/redeem
+- 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
 **验收**:
-- **不存在独立 `PolymarketSettlementActor` / 独立周期调度**(静态检查)
-- 链上编排逻辑在 `PolymarketSettlement` 普通类,**不内联进 ExecutionClient 方法**(ExecutionClient 只持引用 + 触发)
-- merge/redeem 的 `TxResult` 失败时:**仅 log,不影响** 本 tick 的 `venue_connected` / `leg_settled` 判定(结果不作健康判据)
-- 失败下次 tick 重试(幂等)
+- **无 `HealthCheckLoop`/`_run_health_check`/独立调度**(静态检查);链上编排在 `PolymarketSettlement`,不内联进 ExecutionClient
+- merge/redeem `TxResult` 失败:**仅 log,不判 `VenueExecutionLiveness` dead**;下个对账周期幂等重试(min(size))
 
-### pm-adapter-5.health.5: 执行在飞时健康检查 tick 跳过(Q19 全局互斥)
+### ~~pm-adapter-5.health.5: 执行在飞时健康检查 tick 跳过~~ —— 已退役(#110)
 
-**前置**: 一次 execution session 进行中(`execution.started` 已发,`_execution_active=true`)
-**输入**: 健康检查 alert fire
-**期望**: tick 开头判 `_execution_active` → **整个 tick 跳过**(不拉 `/positions`、不 reconcile、不 merge/redeem);§6.8.4.5 finally 照常重排下次 alert
-**验收**:
-- 健康检查与执行**不并发**;跳过不报错
+> ⚠️ **失效(#110)**:PM 无 HealthCheckLoop,merge/redeem 走 NT 对账。原"健康检查⊥执行"互斥(`_run_health_check` 的 `is_execution_active` 守卫)随之退役 —— 结算 fire-and-forget,不与执行互斥;并发由 single-flight 守卫防重复提交。NT 对账 vs OE 下单的兼容性见 synchronization §8(OE 下单 page.evaluate 与对账互不冲突)。
 - execution 收到 terminal/timeout 发 `execution.finished` 后,下个 alert 正常执行
 - 断言 PM 健康检查订阅了 `execution.*` 并维护本地 `_execution_active` 镜像
 
@@ -310,6 +307,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 实例上**没有** `_health_check_blocked` 字段
 - status dict 输出**没有** `"blocked"` 字段
 **验收**: P6 不超前实现;旧 `services/risk/service.py` 中对应符号 Step 5/6 实施时一并删除
+
+> ⚠️ **失效横幅(#108,2026-06-15):以下 5.session.1 ~ 5.timeout.4 中所有 `leg_settled` 置位 / 状态机语义(尤其 5.health.2~5 整节)退役** —— `LegSettledRegistry` 已删除,执行健康真相改由 `ArbPolymarketExecutionClient` reconcile 写 `VenueExecutionLiveness`(order/position alive),现行验收见 **pm-adapter-5.3c**。**注意**:cancel-only / submit+track 的 session 入口与超时 watchdog 机制**本身仍有效**(见 synchronization §8.4 + execution §4.2),只是不再写 `leg_settled`。
 
 ### pm-adapter-5.session.1: cancel-only session(残留挂单)(Q13)
 

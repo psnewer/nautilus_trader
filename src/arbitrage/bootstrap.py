@@ -16,13 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Awaitable
-from typing import Callable
 
 import nautilus_trader.system.kernel as _kernel
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
@@ -33,7 +31,7 @@ from src.arbitrage.risk.portfolio import ArbitragePortfolio
 # 共享上下文 —— factory 注入通道
 # ─────────────────────────────────────────────────────────────────────────
 # NT 的 LiveExecClientFactory.create 签名固定 (loop, name, config, msgbus, cache, clock),
-# 没法直传我们的额外依赖(leg_settled / settlement / positions_fetcher / 间隔)。
+# 没法直传我们的额外依赖(venue_liveness / settlement / positions_fetcher / 间隔)。
 # 用进程级共享上下文做注入通道:launcher 在 `node.build()` 之前 `prepare_arb_context(...)`
 # 填好,自定义 factory 在 `create` 内 `get_arb_context()` 读出。同 install_arbitrage_engines 的
 # import-替换思路:bootstrap 持共享态,NT 机制取用。
@@ -43,21 +41,19 @@ from src.arbitrage.risk.portfolio import ArbitragePortfolio
 class ArbContext:
     """factory create 时读取的进程级共享件。"""
 
-    leg_settled: LegSettledRegistry | None = None  # 跨 PM/OE 共享同一份
+    venue_liveness: VenueExecutionLiveness | None = None  # 跨 PM/OE 共享同一份
     pair_registry: PairRegistry | None = None      # matching 唯一写;risk/portfolio/session 只读(#34)
     pair_inflight: object | None = None            # PairInFlightGate(§6.10 §7,per-pair 串行);strategy+execution 共享一份
 
     # PM 专属
     pm_settlement: object | None = None
-    pm_positions_fetcher: Callable[[], Awaitable[list]] | None = None
     pm_session_timeout_secs: float = 30.0
-    pm_health_interval_secs: float = 30.0
+    # 注(#110):PM merge/redeem 改由 NT 连续 position 对账驱动(无 HealthCheckLoop)→
+    # 不再需要 `pm_positions_fetcher` / `pm_health_interval_secs`(已删)。
 
     # OE 专属
     oe_session_timeout_secs: float = 30.0
-    # 注:OE 健康检查 interval/staleness/exec_reload 闸经 dispatcher 直接进
-    # OrbitExchDataClientConfig(OE 宿主=DataClient、config 自包含),不走 ArbContext kwarg
-    # (异于 PM:PM 宿主=ExecClient、复用上游 config 缺字段,故走 ctx.pm_health_interval_secs)。
+    # 注(#109):OE competition 页存活封装进 WS handler(无 HealthCheckLoop)→ 不再有 health interval。
     # OE Discovery:scraper config + Provider 写 info 时查 aliases(slice 7A / #46)
     oe_scraper_config: object | None = None  # OrbitExchVenueConfig | None;运行时类型避循环 import
     oe_sport_aliases: dict = field(default_factory=dict)
@@ -90,7 +86,7 @@ def get_arb_context() -> ArbContext:
 def prepare_arb_context(**kwargs) -> ArbContext:
     """构造 TradingNode **之后、`node.build()` 之前**调用一次,填好后 factory 才能取到。
 
-    至少要传 `leg_settled`(execution 写、risk/portfolio 读;`wire_arbitrage_runtime` 用同一份)。
+    至少要传 `venue_liveness`(execution 写,risk 读;`wire_arbitrage_runtime` 用同一份)。
     """
     global _arb_context
     _arb_context = ArbContext(**kwargs)
@@ -132,15 +128,15 @@ def wire_arbitrage_runtime(
     node,
     *,
     params: ArbRiskParams | None = None,
-    leg_settled: LegSettledRegistry | None = None,
-) -> LegSettledRegistry:
+    venue_liveness: VenueExecutionLiveness | None = None,
+) -> VenueExecutionLiveness:
     """TradingNode 构造后、run 之前调用:把领域参数注入已原生构造的子类实例。
 
-    返回共享的 LegSettledRegistry(execution 接线时复用同一份)。
+    返回共享的 VenueExecutionLiveness(execution/risk 接线时复用同一份)。
     """
     params = params or ArbRiskParams()
     # 优先用 launcher 已经 prepare 进 ArbContext 的那份(execution factory / matching actor / runtime 共享同一对象)
-    leg_settled = leg_settled or _arb_context.leg_settled or LegSettledRegistry()
+    venue_liveness = venue_liveness or _arb_context.venue_liveness or VenueExecutionLiveness()
     pair_registry = _arb_context.pair_registry or PairRegistry()
 
     portfolio = node.kernel.portfolio
@@ -151,7 +147,7 @@ def wire_arbitrage_runtime(
         )
     portfolio.configure_arb(
         share=params.share, fx=params.fx,
-        leg_settled=leg_settled, pair_registry=pair_registry,
+        pair_registry=pair_registry,
     )
 
     risk_engine = node.kernel.risk_engine
@@ -160,10 +156,10 @@ def wire_arbitrage_runtime(
             "kernel.risk_engine 不是 ArbitrageLiveRiskEngine —— install_arbitrage_engines() "
             "必须在构造 TradingNode 之前调用",
         )
-    risk_engine.configure_arb(params)
+    risk_engine.configure_arb(params, venue_liveness=venue_liveness)
 
     exec_engine = getattr(node.kernel, "exec_engine", None)
     if isinstance(exec_engine, ArbLiveExecutionEngine):
         exec_engine.configure_arb(pair_inflight=_arb_context.pair_inflight)
 
-    return leg_settled
+    return venue_liveness

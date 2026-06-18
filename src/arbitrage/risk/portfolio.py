@@ -22,7 +22,6 @@ from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.portfolio.portfolio import Portfolio
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
 
 
@@ -55,7 +54,7 @@ class _Leg:
 
 
 class ArbitragePortfolio(Portfolio):
-    """way_rebate 等领域指标。fx/leg_settled 由 launcher 经 `configure_arb` 注入
+    """way_rebate 等领域指标。fx 由 launcher 经 `configure_arb` 注入
     (NT 构造时实参表固定,见 bootstrap.py);share 保留配置兼容,不再作 way_rebate 分母。"""
 
     def __init__(self, msgbus, cache, clock, config=None) -> None:
@@ -70,12 +69,10 @@ class ArbitragePortfolio(Portfolio):
         *,
         share: float = 100.0,
         fx: float = 1.0,
-        leg_settled: LegSettledRegistry | None = None,
         pair_registry: PairRegistry | None = None,
     ) -> None:
         self._arb_share = share
         self._arb_fx = fx
-        self._arb_leg_settled = leg_settled
         self._arb_pair_registry = pair_registry  # #34: matching 写,本类读;`_resolve_pair_id` 用
 
     # 兜底默认(configure_arb 未调用时)
@@ -88,18 +85,12 @@ class ArbitragePortfolio(Portfolio):
         return getattr(self, "_arb_fx", 1.0)
 
     @property
-    def _settled(self) -> LegSettledRegistry | None:
-        return getattr(self, "_arb_leg_settled", None)
-
-    @property
     def _pair_registry(self) -> PairRegistry | None:
         return getattr(self, "_arb_pair_registry", None)
 
     # ── per-pair 指标 ────────────────────────────────────────────────
     def way_rebate(self, pair_id: str, account_id=None) -> dict[str, float]:
-        """各方向持仓返水率。settled gate(§4.2):该 pair 任一腿 false → 返回 {}(fail-closed)。"""
-        if self._settled is not None and self._settled.any_unsettled(pair_id):
-            return {}
+        """各方向持仓返水率。只读 NT Cache position,不承载 execution liveness 门控。"""
         return self._compute_way_rebate(self._legs_for_pair(pair_id, account_id))
 
     def min_way_rebate(self, pair_id: str, account_id=None) -> float | None:
@@ -109,8 +100,6 @@ class ArbitragePortfolio(Portfolio):
         return min(rebate.values())
 
     def way_rebates_by_venue(self, pair_id: str, account_id=None) -> dict[str, dict[str, float]]:
-        if self._settled is not None and self._settled.any_unsettled(pair_id):
-            return {}
         legs = self._legs_for_pair(pair_id, account_id)
         result: dict[str, dict[str, float]] = {}
         for venue in {leg.venue for leg in legs}:
@@ -118,12 +107,10 @@ class ArbitragePortfolio(Portfolio):
         return result
 
     # ── 全账户聚合(只遍历有 open position 的 active pair)──────────────
-    def global_min_rebate_sum(self, account_id=None) -> float | None:
-        """∑ 各 active pair 的 min_way_rebate。任一 active pair 一腿 false → None(fail-closed)。"""
+    def global_min_rebate_sum(self, account_id=None) -> float:
+        """∑ 各 active pair 的 min_way_rebate。执行健康门控在 RiskEngine 独立完成。"""
         total = 0.0
         for pair_id in self._active_pair_ids(account_id):
-            if self._settled is not None and self._settled.any_unsettled(pair_id):
-                return None
             m = self.min_way_rebate(pair_id, account_id)
             if m is not None:
                 total += m

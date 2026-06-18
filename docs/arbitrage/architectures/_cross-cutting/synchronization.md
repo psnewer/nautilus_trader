@@ -5,8 +5,8 @@
 > **这是横切协议**(P11:无单一归属)—— 由 **4 个组件共同实现同一契约**:Strategy、OE 健康检查(`OrbitExchDataClient`)、PM 健康检查(PM ExecClient 子类)、execution session。任一实现者以本文为准。
 
 > ⚠️ **失效指针(#105,2026-06-13,设计/待落地)**:§1–7 描述的是**自写 HealthCheckLoop 时代**的同步设计。**#105 决定把健康检查迁移到 NT 原生 reconciliation**,据此:
-> - **`health_check.*` 消息 + Strategy `_hc_running` + strategy⊥健康检查互斥(§1 第二条、§2.1 `_hc_running`、§3 Strategy 行、§7.6)→ 退役**(由 OE ExecClient 页锁取代其存在理由);
-> - **健康检查⊥执行 per-venue 互斥(§1 第一条、§2.1 `_execution_active`、§3 健康检查行)→ 退役**(NT 不串行化 reconciliation⊥execution,改由 OE 页锁在资源层串行);
+> - **`health_check.*` 消息 + Strategy `_hc_running` + strategy⊥健康检查互斥(§1 第二条、§2.1 `_hc_running`、§3 Strategy 行、§7.6)→ ✅ 已退役删除(#108,2026-06-16)**(执行页 reload 撞下单的原始理由随执行页 reconcile 迁移消失;OE 下单 `page.evaluate` 与焦点无关);
+> - **健康检查⊥执行 per-venue 互斥(§1 第一条、§2.1 `_execution_active`、§3 健康检查行)→ ✅ 已退役删除(#108)**;OE `execution.*` ref-count 删。**PM 的 HealthCheckLoop 也已删(#110)**:merge/redeem 改由 NT 连续 position 对账驱动、fire-and-forget,**不再与执行互斥**(并发由 single-flight 守卫);
 > - **pair_inflight 兜底 `health_check→clear_all`(§7.6)+ max-hold(§7.3)已全部删除(#105 ②,2026-06-15)→ in-flight 出口靠结构保证:opportunity barrier 出口 + session `exec_started`↔watchdog 原子(§7.3)**。
 > 读 §1–7 时务必先读 **§8**(迁移后的现状真理源);§1–7 保留为迁移前设计记录。**2026-06-15 修正**:`leg_settled` 退役,由 §8.5 `VenueExecutionLiveness` 取代;per-pair `PairInFlightGate` 机制本体保留,兜底触发已删除。
 
@@ -135,7 +135,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 ### 7.3 机制 —— 同步 per-pair 闸(`PairInFlightGate`)
 
-共享 registry(launcher 经 `ArbContext` 注入给 **StrategyEvaluator + execution session**,同 `leg_settled` 套路)。**所有置位/清位都在首个 `await` 前同步做**(复用 §4 单 loop 无锁纪律)。
+共享 registry(launcher 经 `ArbContext` 注入给 **StrategyEvaluator + execution session**,同 `VenueExecutionLiveness` / `PairRegistry` 等共享对象套路)。**所有置位/清位都在首个 `await` 前同步做**(复用 §4 单 loop 无锁纪律)。
 
 | 时机 | 组件 | 动作 |
 |---|---|---|
@@ -207,13 +207,13 @@ NT `LiveExecutionEngine` 把命令处理设计成**并发、无互斥**:
 
 ### 8.4 pair_inflight 兜底迁移(`PairInFlightGate` 本体保留,触发改变)
 
-`leg_settled` 与 `PairInFlightGate`(§7)**机制本体保留**;变的是**防泄漏兜底**:
+`PairInFlightGate`(§7)**机制本体保留**;变的是**防泄漏兜底**(注:`leg_settled` 已 #108 退役,执行健康真相改由 `VenueExecutionLiveness` 表达,见 §8.5):
 
 > **设计转向(2026-06-14,用户拍板)**:**去掉所有"兜底/猜测"机制(max-hold / A5 / health_check→clear_all),改为"保证每条 execution 结束时一定置位"**。判据:`PairInFlightGate` 的 `exec_count→0` 就是"本 pair 执行会话结束"(那一刻所有 session 都 `_end_session` 了、`_submit_order` 都返回了 → 无该 pair 任务在执行),**race-free**(exec_count 只在最后一条归 0)。关键是让**每一种 execution 都纳入 `exec_count`**,exec_count→0 自然兜到底,不需要任何 backstop。
 
 - **submit+track session(已有)**:`_begin_session` `exec_started` / `_end_session`(terminal **或** watchdog 超时,`session.py:103` NT clock 绝对 alert,不随 session 任务异常取消)`exec_finished`。
 - **cancel-only 的撤单(✅ #105 已落地 2026-06-14)**:**撤单也是一次执行,纳入 exec_count** —— base `_cancel_residual_orders` 对每条残单**同步 `exec_started`**(先全加完,避免某条先完成提前清)+ `create_task(_tracked_residual_cancel)`;`_tracked_residual_cancel` 在 `finally` `exec_finished`。子类只实现 `_cancel_residual_one`(真实 venue 撤单)。**这堵住了"`exec_count→0`(session 结束)时撤单 task 还在跑"** —— 撤单 task 在跑则 exec_count>0,不会提前清。`test_orbitexch_client.py::test_cancel_residual_tracked_*`。
-- **watchdog 保留**:它是"session 起了但 terminal 不来(卡单)"的保证 —— **session 一定结束**(`_end_session`→`exec_finished`),卡单本身(订单在 venue 上死活)是 leg_settled 的事,不是 in-flight 的事。**#105 ②**:watchdog 与 `exec_started` 在 `_begin_session` 内**原子置位**(watchdog 先 arm),保证"只要 exec_count++ 就一定有出口"。
+- **watchdog 保留**:它是"session 起了但 terminal 不来(卡单)"的保证 —— **session 一定结束**(`_end_session`→`exec_finished`),卡单本身(订单在 venue 上死活)是 venue liveness / 订单终态的事(reconcile 写 `VenueExecutionLiveness`),不是 in-flight 的事。**#105 ②**:watchdog 与 `exec_started` 在 `_begin_session` 内**原子置位**(watchdog 先 arm),保证"只要 exec_count++ 就一定有出口"。
 - **deny 已解决(✅ #105 barrier,2026-06-14)**:strategy fired、全腿被 risk deny → 不进 execution(`exec_count==0`)曾会漏 in-flight。现由 **opportunity barrier**(§8.4bis)兜:risk `_deny_order` publish `risk.opportunity.leg_denied` → barrier `_finish` → `release_eval`(`exec_count==0` 可清);连一腿都没 pass(ctx 为 None)时用 `pair_id` 合成 ctx 仍 `release_eval`。barrier timeout 同走 `_finish`。**deny 不再需要 max-hold。**
 - **退役(✅ 2026-06-15,用户拍板"都撤")**:① **A5 desync 兜底**(2026-06-14 回退:误清 fire→`_begin_session` handoff 窗口);② **max-hold 陈旧自愈** + ③ **`health_check.finished→clear_all`** —— 已**全部删除**。`try_enter(pair)` 不再带时间戳参数;`PairInFlightGate` 不再有 `clear_all`;strategy 不再注入 `leg_settled`。前置 ①(barrier 兜 deny)与 ②(watchdog↔exec_started 原子 + `_end_session` 出口对称)落地后,所有 in-flight 出口已靠结构保证(§7.3),兜底删除安全。
 
@@ -290,9 +290,9 @@ DENIED / TIMED_OUT
 - barrier 只能保证“所有腿 Risk pass 后才进入 venue”,不能保证 venue 原子成交;release 后的 accepted/rejected/timeout 仍归 execution session 与后续 recovery 机制处理。
 - 不发送 0 qty 空单。没有真实下单的 outcome 不进 `expected_legs`;若未来确需显式 noop,应新增领域 marker,不能伪造 NT `SubmitOrder`。
 
-### 8.5 VenueExecutionLiveness 与迁移后状态位最终图景(2026-06-15 设计)
+### 8.5 VenueExecutionLiveness 与迁移后状态位最终图景(2026-06-15 已落地)
 
-> **状态**:设计已锁定,待落地。理由/历史见 `refactor.md` 修订记录 #108。  
+> **状态**:代码已落地。理由/历史见 `refactor.md` 修订记录 #108。  
 > **归属**:横切机制(P11),由 execution/reconciliation 写、Risk 读、Strategy/Portfolio 不读。单一真理源在本节;Risk/Execution/Strategy 文档只写本方职责并引用本节。
 
 #### 8.5.1 目标与边界
@@ -380,7 +380,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 | 机制 | 去留 | 维护 / 读取 |
 |---|---|---|
 | `leg_settled` / `LegSettledRegistry` | **退役** | 由 `VenueExecutionLiveness` + Risk gate 取代;Portfolio 不再读取执行健康状态 |
-| `VenueExecutionLiveness` | **新增(设计已锁定,待落地)** | execution/reconciliation 写 `venue_order_alive`/`venue_position_alive`;Risk 按 opportunity required venues 读;Strategy/Portfolio 不读 |
+| `VenueExecutionLiveness` | **已落地** | execution/reconciliation 写 `venue_order_alive`/`venue_position_alive`;Risk 按 opportunity required venues 读;Strategy/Portfolio 不读 |
 | `PairInFlightGate`(per-pair) | **保留**(兜底改 §8.4) | strategy `_route_eval` 同步 `try_enter` / execution `exec_started`·`exec_finished` |
 | opportunity execution barrier | **已落地代码,待 live 验证** | Risk pass 后暂存 legs;Risk deny / timeout / 全 pass 都走 execution context 统一出口 |
 | per-session 超时 watchdog | **保留**(pair_inflight 主防线) | `_begin_session` 挂 NT clock alert |
@@ -394,49 +394,48 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 
 ### 8.6 落地清单(设计/待落地)
 
-- [~] OE ExecClient 页锁(`asyncio.Lock`)串行碰页操作:**place/cancel ✅ 已落地(2026-06-13,`execution.py` `_page_lock` 包 `_place_via_executor`/`_cancel_one`;`test_orbitexch_client.py::test_page_lock_serializes_concurrent_page_ops`)**;reload + single-flight 待 reload-then-report 落地一并接
+- [x] OE ExecClient 页锁(`asyncio.Lock`)串行碰页操作:**place/cancel ✅ 已落地(2026-06-13,`execution.py` `_page_lock` 包 `_place_via_executor`/`_cancel_one`;`test_orbitexch_client.py::test_page_lock_serializes_concurrent_page_ops`)**;reload + single-flight 已接入 reports 入口(2026-06-15,`test_reconcile_reports_stale_snapshot_*`)
 - [x] `place_bets` 顺序提交 → `gather`(**✅ 已落地 2026-06-13,`place_bets.py`;`test_action_place_bets.py`**);⚠️ **仍需 live 重验**两腿回执(页锁串行兜底,真盘确认不丢回执)
-- [ ] 退役 `health_check.*` topic + Strategy `_hc_running` + 健康检查⊥执行 per-venue 互斥(§1–7 对应代码)
+- [x] **退役 `health_check.*` + Strategy `_hc_running` + 健康检查⊥执行互斥(✅ #108,2026-06-16)**。查证:OE 下单是 `page.evaluate`(与页面焦点无关),competition 页 reload 在**另一张页**、不进执行页锁;旧执行页 reload(撞下单的真正理由)已迁 NT reconciliation。故:strategy 删 `_hc_running` + `health_check.*` 订阅 + `_route_eval` 预检;OE DataClient 删 `execution.*` 订阅 + ref-count(HealthCheckLoop `is_execution_active=lambda: False`);HealthCheckLoop 停 publish `health_check.*`。**保留**:PM 的 `is_execution_active`(merge/redeem⊥执行,直读自身 session,与消息无关)。残留观察项:competition reload 的 `bring_to_front` 可能短暂背景化执行页 → 若执行页 order socket 也受可见性影响,回执可短暂延迟(session watchdog + venue_liveness 兜,留 live 观察)。
 - [x] `PairInFlightGate`:删 max-hold / clear_all / A5 兜底(#105 ②)
 - [x] opportunity execution barrier:Strategy 写 opportunity tags 并走 `RiskEngine.execute`;Risk 额外发布 `risk.opportunity.leg_denied`;Execution 用 NT clock 等齐/deny/timeout,统一 outlet 释放 `pair_inflight`(**离线 43 passed,待 live 验证**)
-- [ ] launcher 注入全局 `is_execution_active` callable(OR PM/OE `_execution_active`)给 strategy;**退役 `execution.*` 消息**(无消费者)
-- [ ] `VenueExecutionLiveness`:新增共享对象;order/position alive 默认 false;reconcile 成功/失败写入
-- [ ] Risk 注入 liveness;从 `expected_legs` 推导 required venues;任一 required venue 不 alive → `_deny_order` + `risk.opportunity.leg_denied`
-- [ ] Portfolio 移除 `LegSettledRegistry` 依赖;`way_rebate/global_min_rebate_sum` 不再 settled gate
-- [ ] Execution/adapter 移除 `leg_settled.arm/mark` 写入;PM/OE reconcile 写 `VenueExecutionLiveness`
-- [ ] 测试:synchronization / risk / strategy / execution README 已补设计用例,py 待落地
+- [x] launcher 注入全局 `is_execution_active` callable(OR PM/OE `_execution_active`)给 strategy(Q19 旧接线复用,见 A4)。`execution.*` 消息**已退役(✅ #108)**:唯一消费者(OE DataClient 健康⊥执行 ref-count)已删,session 不再 publish;strategy 的全局 `is_execution_active` 本就直读 ExecClient `_execution_active`,与该消息无关。
+- [x] `VenueExecutionLiveness`:新增共享对象;order/position alive 默认 false;reconcile 成功/失败写入
+- [x] Risk 注入 liveness;从 `expected_legs` 推导 required venues;任一 required venue 不 alive → `_deny_order` + `risk.opportunity.leg_denied`
+- [x] Portfolio 移除 `LegSettledRegistry` 依赖;`way_rebate/global_min_rebate_sum` 不再 settled gate
+- [x] Execution/adapter 移除 `leg_settled.arm/mark` 写入;PM/OE reconcile 写 `VenueExecutionLiveness`
+- [x] 测试:synchronization / risk / strategy / execution README 已补设计用例;核心 py 已落地
 
 ---
 
 ## 8.7 协调切换 cutover 计划(顺序 / feature flag / live 验收 / 回滚)
 
-> reload-then-report 接线、退役旧健康检查、开 NT reconciliation、leg_settled remark、退役旧消息**互相依赖,必须一次切**(单独上会出现旧 DataClient reload 与新 ExecClient reload 两条不协调 reload 路径,见 §8.1/§4.3bis)。本节定 cutover 顺序,把风险压到"翻一个 flag"。
-> **scope**:本 cutover 只切 **execution-page reconciliation**;competition/OBD 页 Phase-1 staleness → WS 存活的迁移(DataClient)是**另一独立子步**,不在此。
+> 本节是 #105 迁移计划的历史记录。2026-06-15 已完成 `leg_settled` 退役、DataClient exec reload 退役、Risk liveness gate 接入;NT reconciliation 开关本身仍可按 live 验证节奏独立调整。
+> **scope**:本 cutover 只切 **execution-page reconciliation**;competition/OBD 页的健康是**另一独立子步**,该子步现已**全部落地**:**#109(2026-06-16)** competition 页存活封装进 WS handler(内部心跳超时 + close → `on_disconnect`),DataClient 事件驱动 reload、**彻底去 HealthCheckLoop**,对称 PM —— 单一真理源见 **data §4.3**(取代 #105 的 `_comp_last_frame_ns` poll + #108 的 close-driven+staleness 双路);+ **`health_check.*` / `_hc_running` / `execution.*` 消息+互斥退役**(#108,见 §8.6 / B5)。
 
-**feature flag**:`oe_native_reconcile_enabled`(config,**默认 False = 旧行为**)。Phase A 全部加性、不改 default;flip 只翻 flag。
+> **实际执行(2026-06-15):无 feature flag**。原计划设 `oe_native_reconcile_enabled` 分期 flip,实际 codex **直接一次切**(NT `reconciliation=True` 常开 + leg_settled→VenueExecutionLiveness 同改)。下方 Phase A/B 仅作**已完成项的核对清单**,`oe_native_reconcile_enabled` 字样保留为历史措辞,**代码中不存在该 flag**。
 
-### Phase A — 预备(可逐项独立 land + 测,加性、default 行为不变)
-- [x] **A1** `_last_frame_ns` 存活锚(**✅ 已落地 2026-06-13**):WS handler `on_frame` 每帧(含 SockJS 心跳 `'h'`)回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()` 读(idle=300s);`test_orbitexch_client.py::test_handler_on_frame_fires_*`/`test_exec_ws_fresh_lifecycle`。**`_exec_ws_fresh` 暂未驱动 reload(A2/flip 接入)**。
-- [x] **A2** `_reload_exec_page` + `_ensure_exec_snapshot_fresh`(reload + single-flight + 存活闸,`§4.3bis(3)`,**✅ 已落地 2026-06-13**):`_exec_ws_fresh` 真→不 reload;假→single-flight reload(走页锁)+ 等 CURRENT_BETS 重推(`_last_current_bets_ns`>reload_ts,超时=失败=venue dead)。`test_orbitexch_client.py::test_ensure_fresh_*`/`test_reload_exec_page_timeout_returns_false`(4 case)。**flag off,未接入 `generate_*_reports`**。
-- [x] **A3** leg_settled 在 `_on_current_bets` 加 mark(**✅ 已落地 2026-06-13**):`LegSettledRegistry.mark_venue(venue_value)`(该 venue 所有 armed 腿置 true,缺席快照=已澄清没成功亦置)+ `_on_current_bets` → `mark_venue(ORBITEXCH)`;**与旧 funnel mark 并存(幂等)**,flip(B4)删 funnel。`test_leg_settled.py::test_mark_venue_*` + `test_orbitexch_client.py::test_on_current_bets_marks_oe_legs_settled`。**只挂 order 真值,position 解耦**(§4.3bis(5) 统一原则)。
+### Phase A — 预备(已落地)
+- [x] **A1** `_last_frame_ns` 存活锚(**✅ 已落地 2026-06-13**):WS handler `on_frame` 每帧(含 SockJS 心跳 `'h'`)回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()` 读(idle=300s);`test_orbitexch_client.py::test_handler_on_frame_fires_*`/`test_exec_ws_fresh_lifecycle`。reports 入口已由 A2/B1 消费该锚点。
+- [x] **A2/B1** `_reload_exec_page` + `_ensure_exec_snapshot_fresh`(reload + single-flight + 存活闸,`§4.3bis(3)`,**✅ 已接入 reports 2026-06-15**):`_exec_ws_fresh` 真→不 reload;假→single-flight reload(走页锁)+ 等 CURRENT_BETS 重推(`_last_current_bets_ns`>reload_ts,超时=失败=venue dead)。`generate_order_status_report(s)` / `generate_position_status_reports` 入口先 fresh,失败即按维度 mark dead。`test_orbitexch_client.py::test_ensure_fresh_*`/`test_reload_exec_page_timeout_returns_false`/`test_reconcile_reports_stale_snapshot_*`。
+- [x] **A3/B4 修正(2026-06-15)**:`leg_settled` 路径已整体替换为 `VenueExecutionLiveness`。`_on_current_bets` 标记 OE order/position alive;旧 `mark_venue` 与 funnel mark 已删除。
 - [x] **A4** 全局 `is_execution_active` callable(**✅ 已现成**:launcher `_make_is_execution_active` OR PM/OE `_execution_active`,Q19 旧接线复用)。⚠️ per-venue `is_<venue>_alive` callable 不再引入;由 `VenueExecutionLiveness` 共享对象 + Risk gate 接管(§8.5)。
 - [x] **A5** `try_enter` desync 兜底 —— **❌ 已删除(回退于 2026-06-14,正式删于 2026-06-15 #105 ②)**:它会误清 fire→`_begin_session` 的 handoff 窗口 → 同突发重复 fire。被 opportunity barrier 出口(§8.4bis)取代。
-- [ ] **A6** position 聚合(`generate_position_status_reports`)**✅ 已落地**(本身不被实时调用,见 `§4.3bis(2)`)。
+- [x] **A6** position 聚合(`generate_position_status_reports`)已落地(见 `§4.3bis(2)`;现由 reports 入口 + `_on_current_bets` 写 `venue_position_alive`)。
 
-### Phase B — flip(翻 `oe_native_reconcile_enabled=True`;先 dev/纸面验,再 live)
-- [ ] **B1** `generate_*_reports` 接 `_ensure_exec_snapshot_fresh`(reload-then-report 实时生效)。
-- [ ] **B2** DataClient HealthCheckLoop **Phase-2 exec reload 关**(flag on → 不挂 / 跳过 `_reload_execution_page`)。
-- [ ] **B3** NT reconciliation 配置:`reconciliation=True` + `timeout_connection≥180s` + `open/position check 关` + `inflight 开`(`§4.3bis(7)`)。
-- [ ] **B4** `leg_settled` 全面退役:删 funnel mark / `_on_current_bets mark_venue` / Portfolio settled gate / strategy settled pre-check。
-- [ ] **B5** 退役 `_hc_running` + `health_check.*`(strategy 不订/不挡)→ **VenueExecutionLiveness 由 Risk 读取**,不接入 strategy fire pre-check。
-- [x] **B6** `PairInFlightGate` **删 max-hold + clear_all + A5**(✅ #105 ②,2026-06-15,独立于 flag 先行)。原"fired 但一腿 session 都没起(全 deny / cancel-only 丢弃)"的漏:全 deny 由 opportunity barrier 出口 `release_eval` 兜(§8.4bis),cancel-only 丢弃由残单 tracked cancel 的 exec_count 兜(§8.4);二者落地后兜底删除安全。剩 **退役 `execution.*` 消息**(strategy 改 callable 直读)仍随 flip。
+### Phase B — 切换(已直接落地,无 flag flip)
+- [x] **B1** `generate_*_reports` 接 `_ensure_exec_snapshot_fresh`(reload-then-report 实时生效)。
+- [x] **B2** DataClient HealthCheckLoop **Phase-2 exec reload 关**:`_reload_execution_page` / `health_check_exec_reload_enabled` 已退役,DataClient 只管 competition 页。
+- [x] **B3** NT reconciliation 配置:`reconciliation=True` + `timeout_connection=180s` + `open/position check 关` + `inflight 开`(`§4.3bis(7)`)。
+- [x] **B4** `leg_settled` 全面退役:删 funnel mark / `_on_current_bets mark_venue` / Portfolio settled gate / strategy settled pre-check。
+- [x] **B5** 退役 `_hc_running` + `health_check.*` + `execution.*` 健康⊥执行互斥(✅ #108,2026-06-16,见 §8.6 同名条)。查证后删:OE 下单 `page.evaluate` 与焦点无关 + competition reload 在另一张页,strategy⊥健康检查 / 健康⊥执行两层互斥的原始理由(执行页 reload 撞下单)已随执行页 reconcile 迁移消失。PM 的 HealthCheckLoop 后来也删了(#110:merge/redeem 改 NT 连续 position 对账驱动、fire-and-forget,不再有执行互斥)。
+- [x] **B6** `PairInFlightGate` **删 max-hold + clear_all + A5**(✅ #105 ②,2026-06-15,独立于 flag 先行)。原"fired 但一腿 session 都没起(全 deny / cancel-only 丢弃)"的漏:全 deny 由 opportunity barrier 出口 `release_eval` 兜(§8.4bis),cancel-only 丢弃由残单 tracked cancel 的 exec_count 兜(§8.4);二者落地后兜底删除安全。(`execution.*` 消息不退役 —— 仍被 OE DataClient 消费,见 §8.6。)
 
 ### live 验收锚点(flip 后真盘 / mock 验)
 1. 下单 → Accepted → fill 全链路正常;`place_bets` 并发两腿回执都收到(slice 1 的 live 待办一并验)。
 2. 制造 **reconcile 失败**(reload 失败 / 一直拿不到新 CURRENT_BETS)→ 对应 `venue_order_alive` 或 `venue_position_alive`=False → **Risk liveness gate deny 本 opportunity 所有腿** + reconcile 持续重试 → 一旦 reconcile **成功**(拿到真值)→ alive + Risk 放开。**注**:WS 静默本身**不判死**(只触发探测 reconcile,§4.3bis(4)),探测成功即 alive;死活裁决一律是 reconcile 成败。
 3. Path B(stuck order 无真实 response)→ `venue_order_alive=false`;NT cache 可收口本地 order,但 Risk 继续 fail-closed,直到真实 order reconcile 成功。
-4. 注入 pair_inflight 泄漏(`_exec_count` 卡)→ try_enter 经 execution-alive 兜底清。
+4. pair_inflight 无兜底(#105 ②):验**全 deny 一次机会后该 pair 能再次评估**(barrier `release_eval` 已清 in-flight)、以及 OE submit 抛异常时 session watchdog 收口、pair 不卡死(替代旧 execution-alive 兜底)。
 
 ### 回滚
-**`oe_native_reconcile_enabled` → False 即回旧健康检查**(DataClient HealthCheckLoop + funnel mark + `_hc_running` 恢复)。因 Phase A 加性、Phase B 全部 flag-gated,**回滚只翻 flag、无需 revert 代码**。
-> 注:pair_inflight 兜底删除(max-hold / clear_all / A5,#105 ②)**独立于本 flag**、已先行 land,**不随 flag 回滚恢复**(其替代物 barrier + watchdog 原子不依赖 reconcile 切换)。
+**无 flag,回滚 = `git revert` #105/#108 相关提交**。leg_settled / funnel mark / DataClient exec reload / max-hold / clear_all 均已**删除代码**,不存在"翻 flag 即恢复旧健康检查"的路径(原计划设想的 `oe_native_reconcile_enabled` 未落地)。若 live 验证发现回归,只能 revert 提交或前向修复,不能靠开关切回。

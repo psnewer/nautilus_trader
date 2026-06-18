@@ -27,6 +27,7 @@ from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
@@ -36,7 +37,7 @@ from tests.arbitrage.risk._factories import pm_instrument
 class _Ctx:
     """共享构造:cache + portfolio + ArbitrageLiveRiskEngine。"""
 
-    def __init__(self, params: ArbRiskParams | None = None):
+    def __init__(self, params: ArbRiskParams | None = None, *, venue_liveness=None):
         self.clock = LiveClock()
         self.trader_id = TraderId("TESTER-000")
         self.loop = asyncio.new_event_loop()
@@ -52,16 +53,18 @@ class _Ctx:
             clock=self.clock,
             config=LiveRiskEngineConfig(),
         )
-        self.engine.configure_arb(params or ArbRiskParams())
+        self.engine.configure_arb(params or ArbRiskParams(), venue_liveness=venue_liveness)
 
 
 class _DuckOrder:
-    def __init__(self, instrument_id, account_id=None, price=None, qty=None):
+    def __init__(self, instrument_id, account_id=None, price=None, qty=None, tags=None):
         self.instrument_id = instrument_id
         self.account_id = account_id
         self._price = price
         self.price = price
         self.leaves_qty = qty
+        self.tags = tags or []
+        self.client_order_id = "COID-DUCK"
 
     @property
     def has_price(self):
@@ -104,12 +107,6 @@ def test_global_sl_gate_denies():
     assert any("global_sl" in d for d in denials)
 
 
-def test_settled_gate_none_fail_closed_denies():
-    ctx, order, denials = _gate_ctx(ArbRiskParams(), global_sum=None)
-    assert ctx.engine._check_rebate_gates(order) is False
-    assert any("settled gate" in d for d in denials)
-
-
 def test_gates_pass_when_within_thresholds():
     ctx, order, denials = _gate_ctx(
         ArbRiskParams(match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
@@ -118,6 +115,48 @@ def test_gates_pass_when_within_thresholds():
     )
     assert ctx.engine._check_rebate_gates(order) is True
     assert denials == []
+
+
+def test_liveness_gate_checks_all_expected_leg_venues():
+    liveness = VenueExecutionLiveness(("POLYMARKET", "ORBITEXCH"))
+    liveness.mark_order_alive("POLYMARKET")
+    liveness.mark_position_alive("POLYMARKET")
+    ctx = _Ctx(venue_liveness=liveness)
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(
+        pm.id,
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,oe:away:1",
+        ],
+    )
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_required_venues_alive(order) is False
+    assert denials and "ORBITEXCH" in denials[0]
+
+
+def test_liveness_gate_passes_when_required_venues_alive():
+    liveness = VenueExecutionLiveness(("POLYMARKET", "ORBITEXCH"))
+    for venue in ("POLYMARKET", "ORBITEXCH"):
+        liveness.mark_order_alive(venue)
+        liveness.mark_position_alive(venue)
+    ctx = _Ctx(venue_liveness=liveness)
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(
+        pm.id,
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,oe:away:1",
+        ],
+    )
+
+    assert ctx.engine._check_required_venues_alive(order) is True
 
 
 # ── 余额 venue 非对称(risk-6.3b）──────────────────────────────────
@@ -186,8 +225,8 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
 
-    # 强制 settled gate fail-closed deny(只有我们的覆盖会这样拒)
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: None
+    # 强制 global_sl deny(只有我们的覆盖会这样拒)
+    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -216,8 +255,8 @@ def test_recovery_intent_skips_rebate_gates_on_real_submit_path():
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
 
-    # 普通套利会被 settled gate 拦;recovery intent 只跳过 rebate gates,应继续路由到 execution。
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: None
+    # 普通套利会被 global_sl 拦;recovery intent 只跳过 rebate gates,应继续路由到 execution。
+    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -248,7 +287,7 @@ def test_recovery_intent_still_checks_balance():
     exec_engine.register_client(exec_client)
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: None
+    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)

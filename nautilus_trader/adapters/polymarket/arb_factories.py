@@ -3,7 +3,7 @@ Arb PM 执行客户端 factory —— 给 `TradingNode.add_exec_client_factory(.
 
 替代上游 `PolymarketLiveExecClientFactory`,构造 `ArbPolymarketExecutionClient`(同目录
 `arb_execution.py`)。NT 的 `LiveExecClientFactory.create` 签名固定,套利额外依赖
-(leg_settled / settlement / positions_fetcher / 间隔)经 `src.arbitrage.bootstrap.ArbContext`
+(venue_liveness / settlement / positions_fetcher / 间隔)经 `src.arbitrage.bootstrap.ArbContext`
 进程级共享件注入。
 
 **位置(#33 校准)**:按 NT 约定,venue factory 与该 venue 的 client 同目录;命名
@@ -12,10 +12,10 @@ Arb PM 执行客户端 factory —— 给 `TradingNode.add_exec_client_factory(.
 启动顺序(launcher,详见同 ArbContext 文档):
 1. `install_arbitrage_engines()`  → 替换 kernel.Portfolio / .LiveRiskEngine
 2. `node = TradingNode(config)`   → kernel 原生构造 ArbitragePortfolio / ArbitrageLiveRiskEngine
-3. `prepare_arb_context(...)`     → 填好 leg_settled / settlement / fetcher / 间隔
+3. `prepare_arb_context(...)`     → 填好 venue_liveness / settlement / fetcher / 间隔
 4. `node.add_exec_client_factory("POLYMARKET", ArbPolymarketLiveExecClientFactory)`
 5. `node.build()`                 → factory.create 读 ArbContext 构造 client
-6. `wire_arbitrage_runtime(node, params=)` → 复用同份 leg_settled
+6. `wire_arbitrage_runtime(node, params=)` → 复用同份 venue_liveness
 7. `node.run()`
 """
 
@@ -150,9 +150,9 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
         clock: LiveClock,
     ) -> ArbPolymarketExecutionClient:
         ctx = get_arb_context()
-        if ctx.leg_settled is None:
+        if ctx.venue_liveness is None:
             raise RuntimeError(
-                "ArbContext.leg_settled is None —— `prepare_arb_context(leg_settled=...)` "
+                "ArbContext.venue_liveness is None —— `prepare_arb_context(venue_liveness=...)` "
                 "必须在 node.build() 之前调用",
             )
 
@@ -184,13 +184,12 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             ws_auth=ws_auth,
             config=config,
             name=name,
-            leg_settled=ctx.leg_settled,
+            venue_liveness=ctx.venue_liveness,
             pair_registry=ctx.pair_registry,
             pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             settlement=ctx.pm_settlement,
-            positions_fetcher=ctx.pm_positions_fetcher,
             session_timeout_secs=ctx.pm_session_timeout_secs,
-            health_interval_secs=ctx.pm_health_interval_secs,
+            # #110:merge/redeem 改由 NT 连续 position 对账驱动;不再需要 positions_fetcher / health_interval。
         )
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.execution_clients import SkipExecutionPolymarketClient

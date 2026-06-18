@@ -17,7 +17,6 @@ from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Quantity
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
@@ -60,7 +59,6 @@ class _ExecutionClient(ArbExecutionSessionMixin):
         self.cancels = []
         self.rejected = []
         self._init_arb_session(
-            leg_settled=LegSettledRegistry(),
             session_timeout_secs=30.0,
             pair_registry=PairRegistry(),
         )

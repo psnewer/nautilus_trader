@@ -1,4 +1,4 @@
-"""ArbExecutionSessionMixin —— session 入口 / leg_settled / 终态 / 超时 / 同步。
+"""ArbExecutionSessionMixin —— session 入口 / 终态 / 超时 / 同步。
 
 mixin 只触及 cache.orders_open + cache.instrument → 用 FakeCache 轻量化;
 order event 须真实(mixin 用 isinstance)→ 经 TestEventStubs 构造。
@@ -17,7 +17,6 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -60,10 +59,9 @@ class _Base:
 
 
 class FakeSessionClient(ArbExecutionSessionMixin, _Base):
-    def __init__(self, clock, msgbus, cache, leg_settled, pair_registry, timeout_secs, pair_inflight=None):
+    def __init__(self, clock, msgbus, cache, pair_registry, timeout_secs, pair_inflight=None):
         _Base.__init__(self, clock, msgbus, cache)
         self._init_arb_session(
-            leg_settled=leg_settled,
             session_timeout_secs=timeout_secs,
             pair_registry=pair_registry,
             pair_inflight=pair_inflight,
@@ -77,14 +75,13 @@ def _harness(timeout_secs=30.0, pair_inflight=None):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = _FakeCache()
-    leg_settled = LegSettledRegistry()
     pair_registry = PairRegistry()
-    client = FakeSessionClient(clock, msgbus, cache, leg_settled, pair_registry, timeout_secs, pair_inflight)
-    published = []
+    client = FakeSessionClient(clock, msgbus, cache, pair_registry, timeout_secs, pair_inflight)
+    published = []  # #108 退役探针:execution.* 应永不再 publish → published 始终 []
     msgbus.subscribe("execution.started", lambda m: published.append(("started", m)))
     msgbus.subscribe("execution.finished", lambda m: published.append(("finished", m)))
     factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=clock)
-    return client, clock, cache, leg_settled, pair_registry, published, factory
+    return client, clock, cache, pair_registry, published, factory
 
 
 def _order(factory, instrument, qty=10):
@@ -95,23 +92,22 @@ def _cmd(order):
     return SimpleNamespace(order=order)
 
 
-# ── submit+track 入口(arm + started + ref-count）──────────────────
-def test_submit_track_arms_leg_publishes_started():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+# ── submit+track 入口(started + ref-count）──────────────────
+def test_submit_track_marks_execution_active():
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
 
     assert client._begin_session(_cmd(order)) is True
-    assert leg_settled.any_unsettled("match_1")          # 该腿 armed=false
     assert client._execution_active
-    assert published == [("started", {"instrument_id": pm.id, "pair_id": "match_1"})]
+    assert published == []                               # #108:不再 publish execution.started
 
 
 # ── cancel-only(残留挂单 → 撤 + reject + 丢弃）────────────────────
 def test_cancel_only_when_residual_rejects_and_discards(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     residual = _order(factory, pm)
@@ -122,24 +118,20 @@ def test_cancel_only_when_residual_rejects_and_discards(caplog):
     assert client.cancels and client.cancels[0][0] == pm.id
     assert client.rejected and client.rejected[0][0] == order.client_order_id
     assert not client._execution_active                  # 未建 session
-    assert not leg_settled.has_entry("match_1")             # 未 arm
     assert "Execution session cancel-only" in caplog.text
     assert str(residual.client_order_id) in caplog.text
 
 
-# ── leg_settled 标记(任一 venue 确认事件）─────────────────────────
-def test_venue_confirm_marks_leg_settled(caplog):
+def test_accepted_keeps_session_active(caplog):
     caplog.set_level(logging.INFO, logger="session-test")
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
     client._begin_session(_cmd(order))
-    assert leg_settled.any_unsettled("match_1")
 
     client._send_order_event(TestEventStubs.order_accepted(order))
 
-    assert leg_settled.all_settled("match_1")               # accepted 即置 true
     assert client.sent                                   # super() 仍正常上送
     assert client._execution_active                       # accepted 非终态,session 仍在
     assert "Execution session accepted" in caplog.text
@@ -148,7 +140,7 @@ def test_venue_confirm_marks_leg_settled(caplog):
 
 # ── 终态(全成 / 撤单 → 结束 + finished + 取消 watchdog）───────────
 def test_full_fill_is_terminal_ends_session():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=10)
@@ -158,11 +150,11 @@ def test_full_fill_is_terminal_ends_session():
     client._send_order_event(fill)
 
     assert not client._execution_active
-    assert ("finished", {"instrument_id": pm.id, "pair_id": "match_1"}) in published
+    assert published == []                               # #108:不再 publish execution.finished
 
 
 def test_partial_fill_not_terminal():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm, qty=10)
@@ -175,7 +167,7 @@ def test_partial_fill_not_terminal():
 
 
 def test_canceled_is_terminal():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
@@ -184,12 +176,12 @@ def test_canceled_is_terminal():
     client._send_order_event(TestEventStubs.order_canceled(order))
 
     assert not client._execution_active
-    assert any(p[0] == "finished" for p in published)
+    assert published == []                               # #108:execution.* 退役
 
 
 # ── 超时(NT clock 绝对超时 → 结束,不补救）───────────────────────
 def test_timeout_ends_session():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(timeout_secs=30.0)
+    client, clock, cache, pair_registry, published, factory = _harness(timeout_secs=30.0)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
@@ -200,12 +192,12 @@ def test_timeout_ends_session():
         handler.handle()                                  # 触发超时 callback
 
     assert not client._execution_active
-    assert any(p[0] == "finished" for p in published)
+    assert published == []                               # #108:execution.* 退役
 
 
 # ── ref-count(两腿并发 → count>0 直到都结束）─────────────────────
 def test_refcount_two_concurrent_legs():
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness()
+    client, clock, cache, pair_registry, published, factory = _harness()
     pm_h = pm_instrument("match_1", "home", token="h"); cache.add_instrument(pm_h)
     pm_a = pm_instrument("match_1", "away", token="a"); cache.add_instrument(pm_a)
     pair_registry.register("match_1", [pm_h.id, pm_a.id])
@@ -230,7 +222,7 @@ def test_watchdog_armed_before_exec_started_no_leak_on_alert_failure():
     """set_time_alert 抛(本块唯一可能抛的操作)→ 尚未 exec_started → exec_count 不会 ++ 而无看门狗;
     eval 层 in-flight 仍可由 strategy `release_eval` 清(因 exec_count==0)。"""
     gate = PairInFlightGate()
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
@@ -254,7 +246,7 @@ def test_watchdog_armed_before_exec_started_no_leak_on_alert_failure():
 
 def test_begin_session_arms_watchdog_and_exec_started():
     gate = PairInFlightGate()
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)
@@ -268,7 +260,7 @@ def test_begin_session_arms_watchdog_and_exec_started():
 def test_end_session_clears_inflight_even_if_publish_throws():
     """#105 ②(出口对称):_publish_execution 抛 → exec_finished 已先行,in-flight 仍被清。"""
     gate = PairInFlightGate()
-    client, clock, cache, leg_settled, pair_registry, published, factory = _harness(pair_inflight=gate)
+    client, clock, cache, pair_registry, published, factory = _harness(pair_inflight=gate)
     pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
     pair_registry.register("match_1", [pm.id])
     order = _order(factory, pm)

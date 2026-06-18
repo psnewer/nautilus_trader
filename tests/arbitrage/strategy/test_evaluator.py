@@ -359,30 +359,6 @@ def test_different_pairs_not_blocked():
     assert a1.calls == 1 and a2.calls == 1
 
 
-# ── eval.17(§6.10,#85):健康检查在跑 → strategy 放弃 fire(互斥)──
-def test_health_check_active_skips_fire():
-    actor, store, pair_reg, strat_reg, loop, _ = _harness()
-    arb_action = _RecordingAction("arb")
-    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
-    store.view("match_X").set_persistent("arb_on", True)
-    actor._on_health_check_started({"source": "health_check:ORBITEXCH"})  # OE 健检在跑
-
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="S", competition="C",
-                     pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0)
-    actor.on_data(mp)
-    assert loop.tasks == []                            # 健检在跑 → 不派发评估
-    _run(_drain(loop))
-    assert arb_action.calls == 0
-
-
-# ── eval.17(§6.10):健检在跑期间放弃 fire(互斥仍保留)──
-def test_health_check_active_skips_fire():
-    from src.arbitrage.common.pair_inflight import PairInFlightGate
-
-    gate = PairInFlightGate()
-    actor, *_ = _harness(pair_inflight=gate)
-    actor._on_health_check_started({"source": "health_check:ORBITEXCH"})
-    # 健检在跑 → _route_eval 早退,gate 不置位、不派发评估
-    assert "health_check:ORBITEXCH" in actor._hc_running
-    actor._on_health_check_finished({"source": "health_check:ORBITEXCH"})
-    assert "health_check:ORBITEXCH" not in actor._hc_running   # 结束仅移除 source,不再 clear_all
+# ── eval.17 已删除(#108):strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)退役 ——
+# 执行页 reload 已迁 NT reconciliation,competition 页 reload 在另一张页、OE 下单 page.evaluate
+# 与焦点无关,不冲突。详见 synchronization §8.6 / refactor #108。

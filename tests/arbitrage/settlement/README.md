@@ -7,16 +7,16 @@
 ## 锁定的关键性约束(Q18 + Q18b 修正,2026-05-21)
 
 - merge / claim(redeem)是**链上 CTF 合约操作**,**上游 NT PM ExecutionClient 没有也无法表达**(只包 CLOB 订单簿)。本工程自研保留(`contract.py:PolymarketContractService`)。
-- 归属/触发(**Q18b 修正,推翻原"独立 Actor + 周期扫描"**): **并入 PM 健康检查 tick**(§6.8.4),复用其 `/positions` 拉取,**无独立 Actor、无独立调度**。
-- **三层宿主(Q18c 钉死,2026-05-21)**:
-  - 宿主/触发 = **PM `ExecutionClient` 薄子类**(`PolymarketExecutionClient` 子类;唯一同时有 `generate_*_status_report` + 钱包 creds + 健康检查 tick)
-  - 编排 = **`PolymarketSettlement` 普通类**(`src/arbitrage/settlement/settlement.py`,组合持有,平移 `cleanup.py:_do_cleanup`;**非** ExecutionClient 方法,链上逻辑不内联进订单客户端)
+- 归属/触发(**#110 修正,2026-06-16;推翻 Q18b 的"PM 健康检查 tick"**): **并入 NT 连续 position 对账**(`LiveExecEngineConfig.position_check_interval_secs=300`),复用对账那次 `/positions` 拉取。**PM 无 HealthCheckLoop**(健康检查彻底退役,对齐 OE #109);**无独立 Actor、无独立调度**。
+- **三层宿主(Q18c;#110 触发改 NT 对账)**:
+  - 宿主/触发 = **PM `ExecutionClient` 薄子类**的 `generate_position_status_reports`(NT 周期调它):上游 `_fetch_user_positions` 拉一次、stash `_last_raw_positions`;override 用 stash 喂结算。
+  - 编排 = **`PolymarketSettlement` 普通类**(`src/arbitrage/settlement/settlement.py`;非 ExecutionClient 方法)
   - IO = **`contract.py:PolymarketContractService`**(保留)
-  - ExecutionClient 子类 tick 内调 `self._settlement.run(positions_raw)` 委托。本目录用例针对 `PolymarketSettlement`(编排)+ contract IO;宿主触发/互斥见 pm-adapter README。
-- 结果不作健康判据: `TxResult` 失败仅 log + 下次 tick 重试,**不影响** `venue_connected`/`leg_settled`。
-- 数据源: **健康检查那次 PM Data API `/positions` 原始响应**(含 `redeemable`/`mergeable`/`neg_risk`/`condition_id`/`size`);**不能用 NT cache 持仓**(上游翻成 `PositionStatusReport` 时丢了 redeemable/mergeable)。
-- 与执行互斥: 在健康检查 tick 内跑,自动受 §6.10 全局互斥保护(执行在飞时整个 tick 跳过)。
-- redeem 结算滞后: 由健康检查周期性兜住(每 tick 检查 `redeemable`),无需事件。
+  - **结算 fire-and-forget + single-flight**:`create_task(_run_settlement(raw))`,**不 `await`**(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);`_settlement_inflight` 守卫防并发重复提交。本目录用例针对 `PolymarketSettlement`(编排)+ contract IO;宿主触发见 pm-adapter README(pm-adapter-5.health.4)。
+- 结果不作健康判据: `TxResult` 失败仅 log + 下个对账周期重试,**不影响** `VenueExecutionLiveness`。
+- 数据源: **对账那次 PM Data API `/positions` 原始响应**(含 `redeemable`/`negativeRisk`/`conditionId`/`size`);**不能用 NT cache 持仓**(上游翻成 `PositionStatusReport` 时丢了 redeemable 等)。映射 = `pm_raw_position_to_settlement(item: dict)`。
+- 与执行**不互斥**(#110):结算 fire-and-forget、不阻塞对账;OE 下单是 page.evaluate 与对账互不冲突(synchronization §8)。并发由 single-flight 守卫,不靠互斥。
+- redeem 结算滞后: 由 NT position 对账周期(300s)兜住(每周期检查 `redeemable`),无需事件。
 - 本目录测的是 **merge/redeem 决策逻辑 + contract IO**;**调度/在 tick 内被调用/结果不作健康判据** 的用例见 `tests/arbitrage/adapters/polymarket/README.md` 健康检查段。
 
 ## 预期用例(摘要)

@@ -1,7 +1,7 @@
-"""ArbitragePortfolio way_rebate + settled gate(risk-6.9.x)。
+"""ArbitragePortfolio way_rebate + 全局聚合(risk-6.9.x)。
 
 腿提取(`_legs_for_pair` / `_active_pair_ids`)依赖 cache 中的真实 NT Position;为隔离
-gate/聚合/公式逻辑,这些方法在相关用例里被 monkeypatch 成受控返回。腿提取本身经
+聚合/公式逻辑,这些方法在相关用例里被 monkeypatch 成受控返回。腿提取本身经
 `_leg_from_position`(duck position + 真实 instrument 入 cache)单独验证。
 """
 
@@ -12,7 +12,6 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.risk.portfolio import _Leg
 from tests.arbitrage.risk._factories import DuckPosition
@@ -20,7 +19,7 @@ from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_instrument
 
 
-def _portfolio(cache=None, registry: LegSettledRegistry | None = None) -> ArbitragePortfolio:
+def _portfolio(cache=None) -> ArbitragePortfolio:
     clock = TestClock()
     cache = cache or TestComponentStubs.cache()
     pf = ArbitragePortfolio(
@@ -28,7 +27,7 @@ def _portfolio(cache=None, registry: LegSettledRegistry | None = None) -> Arbitr
         cache=cache,
         clock=clock,
     )
-    pf.configure_arb(share=100.0, fx=1.0, leg_settled=registry)
+    pf.configure_arb(share=100.0, fx=1.0)
     return pf
 
 
@@ -120,7 +119,7 @@ def test_resolve_pair_id_reads_from_pair_registry():
     pm = pm_instrument("match_42", "home")
     cache.add_instrument(pm)
     pf = _portfolio(cache=cache)
-    # 没注册时返回 None(下游 settled gate 自然不触发)
+    # 没注册时返回 None(下游组合指标自然不参与该腿)
     assert pf._resolve_pair_id(DuckPosition(pm.id, 100.0, 0.4)) is None
     # 注册后正常返
     registry = PairRegistry(); registry.register("match_42", [pm.id])
@@ -128,31 +127,16 @@ def test_resolve_pair_id_reads_from_pair_registry():
     assert pf._resolve_pair_id(DuckPosition(pm.id, 100.0, 0.4)) == "match_42"
 
 
-# ── settled gate(risk-6.9.9 / 6.9.10 / 6.9.11）──────────────────────
 def _stub_legs(pf, legs):
     pf._legs_for_pair = lambda pair_id, account_id=None: legs
 
 
-def test_settled_gate_absent_entry_passes():
-    pf = _portfolio(registry=LegSettledRegistry())  # 空 registry
-    _stub_legs(pf, [_Leg("polymarket", "home", 100, 0.4, 1.0)])
-    assert pf.way_rebate("match_X") != {}            # entry 不存在 → 正常算
-
-
-def test_settled_gate_all_true_passes():
-    reg = LegSettledRegistry(); reg.reset("match_X", ["A.PM", "B.OE"]); reg.mark("match_X", "A.PM"); reg.mark("match_X", "B.OE")
-    pf = _portfolio(registry=reg)
+def test_way_rebate_always_computes_from_positions_without_liveness_gate():
+    pf = _portfolio()
     _stub_legs(pf, [_Leg("polymarket", "home", 100, 0.4, 1.0)])
     assert pf.way_rebate("match_X") != {}
-
-
-def test_settled_gate_any_false_blocks():
-    reg = LegSettledRegistry(); reg.reset("match_X", ["A.PM", "B.OE"]); reg.mark("match_X", "A.PM")  # 一腿仍 false
-    pf = _portfolio(registry=reg)
-    _stub_legs(pf, [_Leg("polymarket", "home", 100, 0.4, 1.0)])
-    assert pf.way_rebate("match_X") == {}
-    assert pf.min_way_rebate("match_X") is None
-    assert pf.way_rebates_by_venue("match_X") == {}
+    assert pf.min_way_rebate("match_X") is not None
+    assert pf.way_rebates_by_venue("match_X") != {}
 
 
 # ── 全局聚合(risk-6.9.5 / 6.9.5b / 6.9.12)──────────────────────────
@@ -172,10 +156,8 @@ def test_global_min_rebate_sum_untraded_match_not_in_scan():
     assert pf.global_min_rebate_sum() == pytest.approx(0.10)
 
 
-def test_global_min_rebate_sum_fail_closed_on_unsettled():
-    reg = LegSettledRegistry()
-    reg.reset("match_Y", ["A.PM", "B.OE"]); reg.mark("match_Y", "B.OE")  # match_Y 一腿 false
-    pf = _portfolio(registry=reg)
+def test_global_min_rebate_sum_does_not_carry_liveness_gate():
+    pf = _portfolio()
     pf._active_pair_ids = lambda account_id=None: {"match_X", "match_Y"}
     pf.min_way_rebate = lambda pair_id, account_id=None: 0.10
-    assert pf.global_min_rebate_sum() is None         # fail-closed,不返回部分和
+    assert pf.global_min_rebate_sum() == pytest.approx(0.20)

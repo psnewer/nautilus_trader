@@ -98,10 +98,8 @@ def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig
         browser_type=oe.browser_type,
         user_data_dir=oe.user_data_dir,
         page_timeout=int(oe.page_load_timeout_sec * 1000),
-        # NT 健康检查(宿主=DataClient,execution §4.3):tick 间隔 / staleness 阈值 / Phase 2 安全闸
-        health_interval_secs=oe.health_interval_sec,
+        # #109:OE 无 HealthCheckLoop;`staleness_timeout_secs` 改作 WS handler 内部 liveness timeout。
         staleness_timeout_secs=oe.staleness_timeout_sec,
-        health_check_exec_reload_enabled=oe.health_check_exec_reload_enabled,
     )
 
 
@@ -174,8 +172,8 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
 
 
 def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
-    """`prepare_arb_context(**dict)` 用;launcher 后续补 `leg_settled` / `pair_registry` /
-    `pm_settlement` / `pm_positions_fetcher` 等运行时件。
+    """`prepare_arb_context(**dict)` 用;launcher 后续补 `venue_liveness` / `pair_registry` /
+    `pm_settlement` 等运行时件。
 
     slice 7A:加 `oe_scraper_config` / `oe_sport_aliases` / `oe_competition_aliases`(供
     OE data factory 构造真 scraper + Provider 写 info 时查表)。
@@ -184,7 +182,6 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
     """
     return {
         "pm_session_timeout_secs": cfg.execution.tracking_timeout_sec,
-        "pm_health_interval_secs": cfg.execution.health_check_interval_sec,
         "oe_session_timeout_secs": cfg.execution.tracking_timeout_sec,
         "oe_scraper_config": to_oe_scraper_config(cfg),
         "oe_sport_aliases": dict(cfg.matching.sport_aliases),

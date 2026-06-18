@@ -807,6 +807,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             limit=100,
             size_threshold=0,
         )
+        # #110:stash 原始 /positions 响应,供 ArbPolymarketExecutionClient 在同一次拉上跑 merge/redeem
+        # (原始 dict 含 `redeemable`/`negRisk`/`conditionId`,规范化 report 丢了这些;避免二次拉)。
+        self._last_raw_positions = positions
 
         # Map instrument ID -> (size, avg open price).
         raw_by_instrument: dict[InstrumentId, tuple[float, Decimal | None]] = {}

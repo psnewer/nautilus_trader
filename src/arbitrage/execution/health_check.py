@@ -8,13 +8,14 @@ NT `Clock` 自重排 one-shot alert:callback(sync,来自 clock)→ `create_task(
 **间隔分别可设(用户 2026-05-22)**:`interval_secs_provider` 为**每实例独立**的 callable,
 每次重排时重读 → PM/OE 各传各的配置、且支持运行时改值即时生效。
 
-**执行 ⊥ 健康检查互斥(Q19/§6.10)**:`is_execution_active` callable 抽象"执行在飞"判定 ——
-PM(健康检查与 session 同在 ExecClient)直接传 `lambda: self._execution_active`;OE(健康检查
-在 DataClient,与 ExecClient 不同对象)传一个由 msgbus 订阅 `execution.*` 维护的 ref-count 标志。
-执行在飞 → 整个 tick 跳过(但仍重排下次)。
+**执行 ⊥ 健康检查互斥(Q19/§6.10)**:`is_execution_active` callable 抽象"执行在飞"判定,执行在飞
+→ 整个 tick 跳过(但仍重排下次)。**#108 现状**:**PM 仍用**(`lambda: self._execution_active` —— merge/redeem
+不能在 PM 执行中跑);**OE DataClient 不再用**(传 `lambda: False` —— competition 页 reload 在另一张页、
+OE 下单是 page.evaluate 与焦点无关,不冲突;原 `execution.*` ref-count 已退役)。
 
-宿主只需提供:`clock` / `msgbus` / `loop` / `log` + 三个 callable(interval / is_active / run_check)。
-`run_check` 是宿主的真实检查(PM:拉 positions/orders→reports + settlement + leg_settled;
+`health_check.*` 消息已退役(#108:strategy⊥健康检查互斥删除,无消费者),不再 publish;`msgbus`
+入参暂留(将来若加健康检查可观测性复用)。宿主提供:`clock` / `msgbus` / `loop` / `log` + 三个 callable。
+`run_check` 是宿主的真实检查(PM:拉 positions/orders→reports + settlement + liveness;
 OE:页面 reload→reports),async。
 """
 
@@ -77,13 +78,11 @@ class HealthCheckLoop:
             if self._is_execution_active():
                 self._log.debug(f"{self._name}: skipped (execution active)")
                 return
-            self._msgbus.publish(topic="health_check.started", msg={"source": self._name})
+            # #108:不再 publish `health_check.*`(strategy⊥健康检查互斥已退役,无消费者)。
             try:
                 await self._run_check()
             except Exception as e:  # noqa: BLE001 — 单次检查失败不打断循环(下轮重试)
                 self._log.error(f"{self._name}: health check error: {e}")
-            finally:
-                self._msgbus.publish(topic="health_check.finished", msg={"source": self._name})
         finally:
             if self._running:
                 self._schedule_next()  # 异常路径也重排,避免一次失败永久卡死(§6.8.4.5)

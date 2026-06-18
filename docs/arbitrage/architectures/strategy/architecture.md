@@ -398,7 +398,7 @@ elif comp_res.hit: fire(comp_res.pending_action)
 ### 4.5 Q19 互斥 + Q20 快照咬合
 
 - **per-pair 串行闸(§6.10 §7,#84)**:`_route_eval` 在 `create_task` 派发评估**之前同步** `PairInFlightGate.try_enter(pair_id)` —— 同 pair 已在飞(评估中/执行中)→ 直接放弃(不派发)。`_evaluate_and_fire` finally:**未 fire** → `release_eval`;**已 fire** → 不释放(所有权交执行,execution `exec_finished` 在双腿 session 归 0 时清)。**为什么必须同步在 `create_task` 前**:Risk/Execution 的信号都在下游,挡不住同毫秒并发评估;同步 per-pair 闸在单 loop 串行下保证后到的并发评估立刻看到 → 放弃。详见 synchronization.md §7。
-- **健康检查互斥(§6.10 §7.6,#88;#105 ② 后不再清闸)**:`on_start` 订 `health_check.*`,维护**在跑的 source 集合** `_hc_running`(per-venue,非 ref-count;started→add/finished→discard)。`_route_eval` pre-check `if _hc_running: 放弃 fire`(健检 reload 页面期间不下单)。**`finished` 仅移除 source —— 不再 `pair_inflight.clear_all()`**(#105 ②:in-flight 出口靠结构保证 = opportunity barrier 出口 + session `exec_started`↔watchdog 原子;strategy 不再注入 `leg_settled`)。详见 synchronization.md §7.6。
+- **健康检查互斥已退役(#108,2026-06-16)**:strategy 不再订 `health_check.*`、无 `_hc_running`、`_route_eval` 无健检预检。原因:旧理由是"健康检查 reload **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、且 OE 下单是 `page.evaluate`(与焦点无关),不冲突。详见 synchronization.md §8.6 / refactor #108。(in-flight 出口靠结构保证 = opportunity barrier 出口 + session `exec_started`↔watchdog 原子,与本互斥无关。)
 - **VenueExecutionLiveness 不在 Strategy 读(2026-06-15)**:Strategy 计算机会前不看 venue order/position liveness,也不再读 `leg_settled`。Strategy 只负责发现机会、生成带 `arb:expected_legs` 的 order metadata;Risk 从 metadata 推导 required venues 并统一门控。详见 `_cross-cutting/synchronization.md §8.5` 与 risk §3.1/§4.4。
 - evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
 - evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
@@ -485,7 +485,7 @@ sequenceDiagram
 - [ ] 比分 / 比赛开始等自定义 Data 类(`events.py`)+ 来源接入(web / 外部 API,具体到 Step 7 决定)
 
 **集成 + /live-test**:
-- [ ] launcher 接 `StrategyEvaluator` Actor + 注册 `StrategyRegistry`(配置加载)+ 通过 `ArbContext` 共享 PairRegistry / LegSettledRegistry / SignalStore
+- [ ] launcher 接 `StrategyEvaluator` Actor + 注册 `StrategyRegistry`(配置加载)+ 通过 `ArbContext` 共享 PairRegistry / SignalStore / PairInFlightGate
 - [ ] /live-test:小 scope 配置 + 实盘小单跑通 evaluate → submit
 
 > **未决/待 Step 4 启动时讨论**:

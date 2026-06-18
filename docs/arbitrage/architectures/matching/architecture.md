@@ -10,7 +10,7 @@
 | 件 | 基类 | 职责 |
 |---|---|---|
 | `MarketMatchingActor` | NT `Actor` | 订两 venue `InstrumentsRefreshed` → gate by 2×interval(Q5)→ 跑归一+匹配 → publish `MatchedPair` + 注册 `PairRegistry` |
-| `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,同 `LegSettledRegistry` 模式):MatchingActor 写、risk/portfolio/strategy/session 读;`dict[instrument_id, pair_id]` |
+| `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;`dict[instrument_id, pair_id]` |
 | `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue 的多腿(home/draw/away)反推一个事件视图(供算法用) |
 | `MatchEngine` | 普通类(平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 PM↔OE 队名相似度匹配(`get_similar`)+ 贪心 + competition max_matches |
 
@@ -48,7 +48,7 @@ flowchart LR
 
 ### 3.1 `PairRegistry`(`src/arbitrage/common/pair_registry.py`)
 
-横切共享件,launcher 构造一份注入 matching(写)+ risk/portfolio/session(读)。**单进程单 loop,纯内存,无序列化**(同 `LegSettledRegistry`)。
+横切共享件,launcher 构造一份注入 matching(写)+ risk/portfolio/session(读)。**单进程单 loop,纯内存,无序列化**。
 
 ```python
 class PairRegistry:
@@ -171,7 +171,7 @@ def _evict_game(gid):
 | 横切 | 约束 |
 |---|---|
 | `PairRegistry`(P11) | matching 是**唯一写者**;其它只读;launcher 经 `ArbContext` 注入同一实例 |
-| `LegSettledRegistry` | matching 不动 leg_settled;leg_settled 仅在 execution 启动腿时 arm |
+| ~~`LegSettledRegistry`~~ | **#108 退役**:`leg_settled` 已删除;执行健康现由 `VenueExecutionLiveness` 表达(synchronization §8.5),matching 本就不参与,仍不参与 |
 | Q9 6-key | matching 只读 info 6-key + venue type,不依赖具体 instrument 子类(P1) |
 
 ---

@@ -17,8 +17,7 @@
 
 **单一职责契约(Q13)**:execution = **执行 + 追踪**,不做决策。一次 session 单一职责;**移除内部 recovery loop**;补救 / 撤后再下 / 单腿失败补偿 **全归 Strategy**。
 
-**OE 健康检查的宿主**:页面 reload 机制代码住 `OrbitExchDataClient`(它持 page),但本质是**执行完整性**,故在本文档 §4.3 一并描述;data 组件文档只引此处。
-> ⚠️ **失效指针(#105,2026-06-13)**:**reload 宿主将从 `OrbitExchDataClient` 搬到 `OrbitExchExecutionClient` 自己**——迁移到 NT 原生 reconciliation 后,"reload-then-report" 进 OE ExecClient 的 `generate_*_reports`(同对象拥有页 + 报告 + 页锁)。§4.3 的"宿主=DataClient"是迁移前设计;现状真理源见 **§4.3bis**。
+**执行健康归属**:order/position 真相可信度由各 venue ExecutionClient / NT reconciliation 写入 `VenueExecutionLiveness`;Risk 读取并门控。OE DataClient 只负责 competition 页行情健康,不再 reload execution 页。
 
 **不做**:recovery / re-plan / retry;裸单补救;跨腿对冲。
 
@@ -40,20 +39,18 @@ flowchart LR
   WS -->|generate_order_*| EE
   EE --> C[(Cache.orders/positions)]
   EE -->|events.order/position.*| ST
-  WS -->|任一确认事件| LS["leg_settled[pair][dir]=true"]
+  WS -->|真实 order/position response| VL["VenueExecutionLiveness<br/>order_alive / position_alive"]
 ```
 
-### 2.2 健康检查 reconcile(走 NT report 通路,§4.3)
+### 2.2 Reconcile / report(走 NT report 通路,§4.3bis)
 
 ```mermaid
 flowchart LR
-  T["NT clock alert (self-reschedule)"] --> HC{执行在飞?}
-  HC -->|是,跳过| T
-  HC -->|否| PULL["拉 positions/orders<br/>PM: REST / OE: 页面reload+DOM"]
+  T["NT reconciliation / report query"] --> PULL["拉 positions/orders<br/>PM: REST / OE: CURRENT_BETS 快照"]
   PULL -->|generate_position_status_report<br/>generate_order_status_report| RECON[ExecEngine.reconcile]
   RECON --> C[(Cache + Portfolio + events)]
   PULL -.PM 仅.-> SETTLE["PolymarketSettlement.run<br/>merge/redeem"]
-  PULL --> SETTLED["涉及方向 leg_settled=true"]
+  PULL --> VL["VenueExecutionLiveness 写入"]
 ```
 
 ### 2.3 账户状态维护
@@ -91,15 +88,15 @@ WS 接线约束:上游 `PolymarketWebSocketClient` 要求 `base_url_ws=.../ws/`,
 
 **PM 持仓成本映射约束(#100,已落地)**:`generate_position_status_reports` 的数据源是 PM Data API `/positions`。该接口返回的是按 token 聚合后的当前持仓,其中 `size` 是 share 数量,`avgPrice`/`avg_price` 是平均开仓成本。翻译成 NT 通用 `PositionStatusReport` 时必须同时填 `quantity` 与 `avg_px_open`;若 Data API 未返回平均成本,`avg_px_open` 保持 `None`(未知),不得在 strategy/risk 侧用当前盘口估算或把未知成本当 0。这样 `ArbitragePortfolio.way_rebate` 与 `mean_rebate_recovery` 继续只读 NT cache position,成本权威仍在 execution adapter 的 venue report 翻译层。
 
-**子类新增**:
+**套利子类新增**:
 ```python
 class ArbPolymarketExecutionClient(PolymarketExecutionClient):
     def __init__(...):
         self._settlement = PolymarketSettlement(contract_service, ...)   # §4.6
-        self._leg_settled: dict[str, list[bool]] = {}                    # §4.4
-        # 健康检查 NT clock 自重排 alert(§4.3)
-    def _on_health_check_tick(self, event): ...     # reconcile + merge/redeem + leg_settled
-    def _schedule_next_health_check(self): ...      # finally 内重排
+        self._venue_liveness = VenueExecutionLiveness                    # 由 ArbContext 注入
+    async def generate_order_status_reports(...): ...     # super + mark_order_alive/dead
+    async def generate_position_status_reports(...): ...  # super + mark_position_alive/dead
+    async def _run_health_check(...): ...                 # PM positions fetcher + settlement + position_alive
 ```
 
 ### 3.2 OE ExecutionClient(`adapters/orbitexch/execution.py` 自写)
@@ -184,7 +181,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 
 ## 4. 机制
 
-### 4.1 Execution session(Q13)+ leg_settled 触发
+### 4.1 Execution session(Q13)
 
 | Session | 触发 | 动作 | 终点 |
 |---|---|---|---|
@@ -192,20 +189,14 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 | **submit+track** | submit 时无残留 | 下单 → 追踪 | terminal(FILLED/CANCELED/REJECTED/EXPIRED)**或** timeout |
 
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 每轮全量重算(快照 Q20),下轮自行重发。
-- 收到**任一** venue 确认事件(OrderAccepted / partial Fill / 全成 / Canceled / Rejected)→ 对应方向 `leg_settled=true`(§4.4)。
+- session mixin 只维护 `_active_sessions`、tracking timeout、`execution.started/finished` 和 `PairInFlightGate.exec_started/exec_finished`。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
 - **submit 异常收口(PM/OE 对称,#105 ①)**:submit 若在收到 venue ack 前发生本地/传输异常,
   **立刻**生成订单终态 + `_end_session`(收口 session / 释放 pair 闸),不干等 §4.2 watchdog 整个超时:
   - PM:`ArbPolymarketExecutionClient._submit_order` `try/except` → `generate_order_denied` + `_end_session`。
   - OE:`OrbitExchExecutionClient._submit_order` 把 `_place_via_executor` 的 await 包入 `try/except`
     (Playwright 崩 / executor 抛 / 页锁异常)→ `generate_order_rejected` + `_end_session`。
     (`_place_via_executor` **返回 None**(instrument/executor 缺失)走既有 rejected 分支;`try/except` 仅兜**抛异常**。)
-  - `OrderDenied`/异常 `OrderRejected` 只负责收口,不把"未知是否到达 venue"误写成腿已确认;`OrderDenied`
-    非 venue 确认事件,不标 `leg_settled`。
-- **低频验收日志(#85)**:
-  - cancel-only 入口记录 `Execution session cancel-only`,包含新单 `client_order_id` 与残留单
-    `client_order_id/venue_order_id`,用于确认“下一轮先撤旧单”。
-  - `OrderAccepted` 经 `_send_order_event` 漏斗后记录 `Execution session accepted`,包含
-    `client_order_id/venue_order_id/instrument_id`,用于确认 accepted 事件确实进入 session 跟踪。
+  - `OrderDenied`/异常 `OrderRejected` 只负责收口,不把"未知是否到达 venue"误写成 execution liveness。
 
 ### 4.2 Tracking timeout(Q15,NT clock 绝对超时)
 
@@ -226,7 +217,7 @@ def _on_session_timeout(self, event):
 - terminal 与 timeout 都触发 session 结束 → 都 publish `execution.finished` + 清 `_execution_active`。
 - **watchdog 与 per-pair 计数原子(#105 ②,保证置位一定有出口)**:`_begin_session` 顺序固定为
   ① 先 arm watchdog(`set_time_alert_ns`,本块唯一可能抛的操作 —— 若抛则尚未改任何共享态,干净失败)
-  → ② 再做纯 dict 置位(`_active_sessions` / `leg_settled.arm` / `pair_inflight.exec_started`,不会抛)
+  → ② 再做纯 dict 置位(`_active_sessions` / `pair_inflight.exec_started`,不会抛)
   → ③ `_publish_execution` 收尾(非关键:即便抛,watchdog + session 已就位,终会 `_end_session`)。
   这样**只要 `exec_started` 自增了,就一定有人(终态或看门狗)来减**,不会出现"exec_count++ 却无看门狗"的永久泄漏。
   出口对称:`_end_session` 把 `pair_inflight.exec_finished` 提到 `cancel_timer`/`publish` **之前**,
@@ -239,25 +230,25 @@ def _on_session_timeout(self, event):
 
 ### 4.3 健康检查(§6.8.3 / §6.8.4,loop 节奏 §6.8.4.5)
 
-> ⚠️ **失效横幅(#105,2026-06-13,设计/待落地)**:本节(自写 `HealthCheckLoop`)将被 **NT 原生 reconciliation** 取代——现状真理源见 **§4.3bis**。具体失效:**OE reload 宿主 DataClient→ExecClient**;**`HealthCheckLoop` + `trigger_now` + 健康检查⊥执行 `is_execution_active` 让路 + `health_check.*` 退役**(改 NT 持续对账触发 + OE 页锁 + single-flight + 存活闸);**PM 的 `_on_health_check_tick` 拉 report 部分→ NT 原生 `generate_*_status_reports` 经 reconcile**(merge/redeem 仍自写,§4.6 不动)。§4.3 保留为迁移前设计记录;先读 §4.3bis。
+> ⚠️ **失效横幅(#105/#108,2026-06-15 已落地迁移)**:本节(自写 `HealthCheckLoop` + `leg_settled` 状态维度)已不是现状真理源。当前:DataClient 只保留 competition 页时间维度健康检查;execution/order/position 健康由 venue ExecutionClient / NT reconciliation 写 `VenueExecutionLiveness`,Risk 读取门控。OE execution 页 reload Phase 2 与 `health_check_exec_reload_enabled` 已退役。§4.3 保留为迁移前设计记录;先读 §4.3bis 与 synchronization §8.5。
 
 **归属 / 不变量(读这节先读这块;本节是健康检查详细设计的单一真理源,refactor.md §6.8.x 只留决策指针)**:
 - **OE 健康检查宿主 = `OrbitExchDataClient`**(它持 competition 页,且经共享 `PlaywrightBrowserManager` 够到 execution 页);两触发维度都在它(时间维度 reload competition 页 / 状态维度 reload execution 页,见下表 + #68 澄清)。
 - **PM 健康检查宿主 = PM ExecClient 薄子类**(唯一同时具 `generate_*_status_report` + 钱包 creds + tick)。
-- **OE ExecClient 不自跑健康检查**,只在自身 tracking terminal 命中时把对应方向 `leg_settled=true`(§4.4)。(此前这条约束散在 refactor.md 行内,#70 共址到此。)
+- **历史约束(已失效)**:OE ExecClient 不自跑健康检查,只在 tracking terminal 命中时写 `leg_settled`。当前 OE ExecClient 负责 execution 页 / CURRENT_BETS / reports / liveness 写入。
 - 共享节奏 = `HealthCheckLoop`;执行在飞时整 tick 让路(Q19/§6.10)。
 
 **统一 loop 节奏(OE/PM 共用)—— ✅ 已落地 `src/arbitrage/execution/health_check.py:HealthCheckLoop`(10 passed)**:NT `Clock` 自重排 one-shot alert —— sync callback → `loop.create_task(_tick)`;`_tick`(async)`try` 跑检查(`run_check` 失败吞掉不打断)+ `finally` 按**当前** interval 重排下次 alert(异常路径也重排,不永久卡死);`trigger_now()` 立即触发;`stop()` 取消 timer。**无** `asyncio.Event`/`monotonic`/block-unblock。
 - **间隔 OE/PM 分别可设(用户 2026-05-22)**:`interval_secs_provider` 为**每实例独立** callable,每次重排时重读 → PM/OE 各自配置、运行时改值即时生效。配置落位:PM = PM ExecClient config 的 `health_interval_secs`,OE = OE DataClient config 的 `health_interval_secs`(各自字段,随 PM/OE 客户端落地接线)。
 - **执行 ⊥ 健康检查互斥(Q19/§6.10)**:`is_execution_active` callable —— PM 传 `lambda: self._execution_active`(同对象);OE 传 msgbus 订阅 `execution.*` 维护的 ref-count 标志(DataClient 与 ExecClient 不同对象)。执行在飞 → 整 tick 跳过(不 publish `health_check.*`),但仍重排。
-- `run_check` 是宿主真实检查(async):PM 拉 positions/orders→reports + settlement + leg_settled;OE 页面 reload→reports。宿主接线随 PM/OE 客户端落地。
+- `run_check` 是宿主真实检查(async):PM 拉 positions/orders→reports + settlement;OE DataClient 仅处理 competition 页行情健康。
 
 | | OE 健康检查(宿主 `OrbitExchDataClient`) | PM 健康检查(宿主 PM ExecClient 子类) |
 |---|---|---|
-| 触发 | 时间维度(competition 页面 `clock.timestamp_ns()-last_update_ns>阈值`,**仅 tick 评估,不立即刷新**)+ 状态维度(`leg_settled=false`) | 默认周期 + 外部事件可立即触发 |
+| 触发 | 时间维度(competition 页面 `clock.timestamp_ns()-last_update_ns>阈值`,**仅 tick 评估,不立即刷新**);历史状态维度已退役 | 默认周期 + 外部事件可立即触发 |
 | 动作 | 页面 reload → 重订阅 → 拉持仓/挂单(**不拉余额**) | 拉持仓/挂单(**不拉余额**) |
 | 回写 | `generate_position_status_report`/`generate_order_status_report`(NT report 通路) | 同 + **merge/redeem**(§4.6) |
-| 收尾 | 涉及方向 `leg_settled=true` | 同 |
+| 收尾 | DataClient 不写 execution liveness;历史 `leg_settled` 收尾已退役 | reports 成功后写 `VenueExecutionLiveness` |
 
 > ⚠️ **OE「动作」行是 #68 拆页前的概括**(单页同出赔率+持仓的旧心智)。#68 后按触发维度分落点(时间维度→competition 页 / 状态维度→execution 页),恢复机制 = reload→WS 重推(非 DOM 抓)——以下方「#68 拆页带来的数据源澄清」+「落地状态(分期)」为准。
 
@@ -265,14 +256,14 @@ def _on_session_timeout(self, event):
 - 执行在飞时整个 tick 跳过(§3.4 / Q19)。
 - **reload 后无需重挂 WS 监听(#67 实测,关键简化)**:NT 适配器用 Playwright `page.on('websocket')`(非老 odds_client 的 CDP)。实测(`/tmp/ws_reload_probe.py` 等价复现)`page.reload()` 后,页面新建的 WS **被同一监听自动捕获、帧正常收到**——监听挂在 page 对象上,reload 换 WS 不换 page。**对比老 CDP**:CDP session 会被 reload 重置,老代码每轮 reload 必须 detach 旧 CDP→重 setup 拦截→reload→补 `Network.enable`(`odds_client._open_or_reload_page`)。**故本 reload slice 比老代码简单**:reload 动作 = `page.reload()` + 重订阅 instrument(OBD),**WS 层零额外工作**;唯一留意 `handler._websockets` dict 跨 reload 累积(旧 WS close 触发清理,不影响帧处理)。
 
-- **#68 拆页带来的数据源澄清(本节原文写于拆页前)**:§6.8.3 原描述"reload 页面 → 拉持仓/挂单"基于"单页同出赔率 + 持仓/挂单"的旧心智。#68 后页拆两类:**competition(数据)页**(`OrbitExchDataClient` 持有)上是**赔率**;**execution 页**(`OrbitExchExecutionClient` 持有)上才是 `BALANCE`+`CURRENT_BETS`(**持仓/挂单**)。两类页都在共享 `PlaywrightBrowserManager` 上,健康检查宿主(DataClient)经它都够得着。恢复机制 = **reload 页面 → 该页 WS 自然重推帧**(非 DOM 抓取;page-level 监听跨 reload 存活,#67)。故两触发维度的 reload 落点不同:**时间维度(赔率冻结)→ reload competition 页**;**状态维度(`leg_settled=false`)→ reload execution 页**(其 `CURRENT_BETS` WS 重推 → `_on_current_bets` → `generate_order_filled` → leg_settled 标记)。
+- **#68 拆页带来的数据源澄清(本节原文写于拆页前)**:§6.8.3 原描述"reload 页面 → 拉持仓/挂单"基于"单页同出赔率 + 持仓/挂单"的旧心智。#68 后页拆两类:**competition(数据)页**(`OrbitExchDataClient` 持有)上是**赔率**;**execution 页**(`OrbitExchExecutionClient` 持有)上才是 `BALANCE`+`CURRENT_BETS`(**持仓/挂单**)。当前 DataClient 只 reload competition 页;execution 页/`CURRENT_BETS` 属 OE ExecClient。
 - **落地状态(分期)**:
   - **Phase 1 ✅ 已落地**(时间维度 + 连接重试维度,`adapters/orbitexch/data.py`):`_connect` 挂 `HealthCheckLoop`(`interval_secs_provider`=`config.health_interval_secs`;`is_execution_active`= DataClient 订 `execution.started/finished` 的 ref-count,Q19/§6.10);`_on_price_frame` 每帧写 `_comp_last_update_ns[page_key]`;`_run_health_check`:**①时间维度**——扫 competition 页 `now-last_update>config.staleness_timeout_secs` → 走 `_open_or_reload_competition_page` reload 分支;**②连接重试维度**——`set(_market_to_page_key.values()) - set(_comp_pages)`(已订阅但未开:初次 goto 失败/未开)→ 本 tick 补开,**补开失败 try/except 吞掉、不本轮重试,留下一次健康检查**(对齐 PM `_delayed_connect` 连接失败重排)。合起来 = PM 行情 WS 重连的 OE 对等物。测试:`test_data_client_step2.py` data-2.health.{1-5}(时间维度)+ {11-13}(补开)。
-  - **Phase 2 ✅ 代码已接(A 方案)+ ✅ live 验完成(#75,2026-06-08)**(状态维度):`_run_health_check` 加状态分支——`self._leg_settled.has_any_unsettled()` 真 → `_reload_execution_page()`:经共享 `PlaywrightBrowserManager.get_page("execution")` 取 ExecClient 的交易页 reload(page-level 监听跨 reload 存活 #67 → general WS 重推 `CURRENT_BETS` → ExecClient `_on_current_bets` 标 leg_settled)。`leg_settled` 经 DataClient factory 注入(`ctx.leg_settled`,None → 只跑时间维度)。**安全闸 `config.health_check_exec_reload_enabled` #75 默认 True**:曾默认关待验 reload 已登录交易页的弹窗/会话行为;2026-06-08 用户实测——已登录后 reload **不重现登录弹窗**(仅首次登录弹)且 **`CURRENT_BETS` 如期重推** → 隐患消除,默认开。运营可经 `venues.orbitexch.health_check_exec_reload_enabled: false` 显式关回。离线测:`test_data_client_step2.py` data-2.health.{6-10}。**A vs B**:用户 2026-06-07 选 A(守 §6.8.3 单宿主=DataClient,经共享 browser_manager 够到 execution 页),不改宿主归属。
+  - **Phase 2 状态维度已退役(2026-06-15)**:`leg_settled.has_any_unsettled() → reload execution 页` 与 `health_check_exec_reload_enabled` 已从 DataClient/factory/config 移除。CURRENT_BETS 仍是 OE 执行真值来源,但由 `OrbitExchExecutionClient._on_current_bets` 写 `VenueExecutionLiveness`。
   - ✅ **弹窗/CURRENT_BETS 隐患已 live 证伪(2026-06-08,用户实测)**:曾担心 `_reload_execution_page` 只裸 `exec_page.reload(networkidle)`、reload 后不重调 `_dismiss_post_login_popup`(该方法仅 `_login` 路径触发),若 OE 每次加载都弹窗会盖住页面堵死 general WS。**实测:已登录后 reload 不重现登录弹窗**(弹窗仅首次登录出现),且 `CURRENT_BETS` 如期重推 → **无需在 reload 后补 dismiss**,reload 对会话/弹窗/订单快照重推安全。**验证工具**:`scripts/phase2_exec_reload_probe.py`(真账户登录、**零下单**:arm 未结腿 → 驱动真实 `_run_health_check` 触发 reload → 报告登录态/弹窗/CURRENT_BETS 重推)。
-  - **接线**(#74):cadence/闸经 `venues.orbitexch.{health_interval_sec=120,staleness_timeout_sec=300,health_check_exec_reload_enabled}` → dispatcher → `OrbitExchDataClientConfig`(详见 `_cross-cutting/configuration.md §6`)。
+  - **接线**:cadence 经 `venues.orbitexch.{health_interval_sec=120,staleness_timeout_sec=300}` → dispatcher → `OrbitExchDataClientConfig`(详见 `_cross-cutting/configuration.md §6`)。
 
-### 4.3bis OE 接 NT 原生 reconciliation（#105,设计/待落地 as-of 2026-06-13）
+### 4.3bis OE 接 NT 原生 reconciliation / VenueExecutionLiveness（#105/#108,已落地代码路径,2026-06-15）
 
 > **本小节是 OE 健康检查的现状真理源**(取代 §4.3 的 OE 部分)。决策史见 `refactor.md #105`;横切同步部分(页锁层次/状态位迁移/pair_inflight 兜底/NT 不串行化)见 `_cross-cutting/synchronization.md §8`,本节不复述。
 
@@ -285,13 +276,13 @@ def _on_session_timeout(self, event):
 **(2) `_current_bets` 双视图(单一真理源)**
 - `_current_bets`(offerId→全字段 bet 全量快照,`_on_current_bets` 每帧整体替换)是 OE venue 状态的单一真理源。**用户确认 CURRENT_BETS 保留全成交 bet** → 快照 = 完整 venue 真值。
 - **order 视图**:逐条 `_build_order_report`(现有,读 `side/sizeMatched/sizeRemaining/averagePrice`)。
-- **position 视图**(补 Q17 延后,#105;**✅ 已落地 2026-06-13**:`execution.py` 模块级纯函数 `current_bets_to_positions` + `generate_position_status_reports`(`_resolve_oe_instrument` 反查);`test_orbitexch_client.py::test_positions_*`/`test_generate_position_status_reports_aggregates`。⚠️ **当前不被实时调用**——reconciliation=False、position_check 关,仅能力补齐,待协调切换接入):按 `selectionId` 聚合 `_current_bets`(BACK=long、LAY=short,与现有 BACK↔BUY/LAY↔SELL 一致):
+- **position 视图**(补 Q17 延后,#105;**✅ 已落地 2026-06-13**:`execution.py` 模块级纯函数 `current_bets_to_positions` + `generate_position_status_reports`(`_resolve_oe_instrument` 反查);`test_orbitexch_client.py::test_positions_*`/`test_generate_position_status_reports_aggregates`;launcher 已启启动期 `reconciliation=True`,连续 position check 默认关):按 `selectionId` 聚合 `_current_bets`(BACK=long、LAY=short,与现有 BACK↔BUY/LAY↔SELL 一致):
   - `net qty = Σ(BACK sizeMatched) − Σ(LAY sizeMatched)`(signed);`net>0→LONG / <0→SHORT / 0→FLAT`;
   - `avg_px = 主方向(=net 符号侧)的成交量加权 averagePrice`(net>0 → 只用 BACK 的 `Σ(sizeMatched×averagePrice)/Σ sizeMatched`;net<0 → 只用 LAY 的;**反方向当平仓只减 qty、不进 avg_px**,对齐 NT "avg_px_open 只算开仓侧" 语义,且不依赖 fill 时间顺序);`net==0` → FLAT、avg_px N/A;
   - 每 selection 一条 `PositionStatusReport(quantity, position_side, avg_px_open)`。
 - **一次 reload 喂两个视图**:NT 启动后把 order/position 检查分开调度,但都落到"读同一份刚刷新的 `_current_bets`",经下面的 single-flight 合并为一次 reload。
 
-**(3) single-flight + 存活闸:reload 退化为恢复动作**(**✅ A2 已落地 2026-06-13**:`_reload_exec_page`/`_ensure_exec_snapshot_fresh`,`test_orbitexch_client.py::test_ensure_fresh_*`;**flag off 未接入 `generate_*_reports`**——接入是 cutover B1)
+**(3) single-flight + 存活闸:reload 退化为恢复动作**(**✅ A2/B1 已落地 2026-06-15**:`_reload_exec_page`/`_ensure_exec_snapshot_fresh`,且 `generate_order_status_report(s)` / `generate_position_status_reports` 入口已先 `await _ensure_exec_snapshot_fresh()`;`test_orbitexch_client.py::test_ensure_fresh_*` + `test_reconcile_reports_stale_snapshot_*`)
 ```
 async def _ensure_exec_snapshot_fresh():
     if 已有 reload 在跑:  await 那个同一 future        # single-flight
@@ -300,7 +291,7 @@ async def _ensure_exec_snapshot_fresh():
 ```
 - **健康态(WS 活)**:order 检查、position 检查都判"新鲜"→ **零 reload**,只读实时 `_current_bets`。
 - **WS 判死 / 单卡死**:single-flight 守卫起**一次** reload(恢复),order+position 共享。
-- single-flight **不发任何消息**(纯 asyncio 去重),只翻 future;它**不**驱动 strategy 互斥(见下,靠页锁 + leg_settled,不引入 `reconcile_in_progress`,synchronization §8.2)。
+- single-flight **不发任何消息**(纯 asyncio 去重),只翻 future;它**不**驱动 strategy 互斥(见下,靠页锁 + Risk liveness gate,不引入 `reconcile_in_progress`,synchronization §8.2)。
 
 **(4) venue 死活 = reconcile 成败(统一断线保护,#105 已定;OE/PM 同构)**
 死活判据**不是"WS 断线"**,而是 **reconcile(取真值)成败**——同一组真实 response 写入 `VenueExecutionLiveness` 并驱动断线重试:
@@ -314,29 +305,27 @@ async def _ensure_exec_snapshot_fresh():
 - **position reconcile 成功(真实 response)→ `venue_position_alive=true`**。
 - **reconcile 失败 → 对应 order/position alive=false + 持续重试 reconcile 直到成功**(OE 重试 reload / PM 重试 REST;cadence/backoff 实现细节,待 live 调)。这是两 venue **对称**的断线保护,也是 Path B 后的恢复驱动。
 - **何时探(silence 触发)**:平时业务帧(OE `CURRENT_BETS` / PM USER WS)持续到达 = 持续 alive;**帧静默超 `idle_timeout`(#2=300s,对齐 PM 安静的账户频道)→ 触发一次探测 reconcile**,其成败才是死活裁决。
-  - OE 静默锚(**✅ A1 已落地 2026-06-13**):`websocket_handler.on_frame` 回调每帧(含 SockJS 心跳 `'h'`)→ ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)读。**用心跳而非业务帧做锚**(业务帧空闲时本就静默,否则误判)。**`_exec_ws_fresh` 暂未驱动 reload**(A2/flip 接入)。**心跳周期 ≈35s(live 实测,`scripts/oe_heartbeat_probe.py` 2026-06-13:general/orders WS median 35.5s、max 38.8s;prices WS 因常推无心跳)**;**`idle_timeout=300s`**(保守,存活态心跳每 35s 刷锚故永不误触发;≈8 个心跳全丢才判死)。
+  - OE 静默锚(**✅ 已落地 2026-06-15**):`websocket_handler.on_frame` 回调每帧(含 SockJS 心跳 `'h'`)→ ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)读。**用心跳而非业务帧做锚**(业务帧空闲时本就静默,否则误判)。`_exec_ws_fresh` 现在驱动 reports 入口的 reload-then-report。**心跳周期(live 实测,`scripts/oe_heartbeat_probe.py`):general/orders WS ≈35s(2026-06-13:median 35.5s、max 38.8s);prices WS ≈25s(2026-06-16 空闲盘口:median 25.0s、max 35.4s——2026-06-13 那次"无心跳"是活跃盘口假象,空闲时照发)**;**`idle_timeout=300s`**(保守,存活态心跳每 35s 刷锚故永不误触发;≈8 个心跳全丢才判死)。
 - **OE 不能主动心跳**(只读观察口、不能注入 ping)所以走这套被动 silence 触发;**PM 的 NT Rust `WebSocketClient` 自带 WS 层心跳/重连**保数据新鲜,但**venue 死活仍以 reconcile(REST 拉)成败为准**(两层:WS 重连保流、reconcile 成败定死活)。
 
 **(5) VenueExecutionLiveness 写入不变量(2026-06-15 迁移修正,安全关键)**:`venue_order_alive=true ⟺ 拿到过 venue 真实 order response`;`venue_position_alive=true ⟺ 拿到过 venue 真实 position response`。
 
-> ⚠️ **失效指针(2026-06-15)**:以下关于 `leg_settled` 的描述是旧设计,不再作为现状真理源。新真理源见 `_cross-cutting/synchronization.md §8.5`。代码迁移时应删除 `LegSettledRegistry` 写入,改为写 `VenueExecutionLiveness`。
-
-> **统一原则(order/position 解耦,#105)**:`leg_settled` 是**订单确认信号**(§4.4,`true`=至少一次 venue **订单确认**已落 cache),**只挂 order 真值**,**position reconcile 不碰它、也不判 venue 死**。理由:① 持仓本就是 order fills 派生(每笔 fill = 一个 OrderFilled 事件)→ order reconcile 已覆盖 leg_settled 全部所需;② **NT 启动后 order/position 是各自独立的检查**(`_check_inflight_orders`/`_check_orders_consistency` 管 order、`_check_positions_consistency` 管 position,各自 interval;仅启动期 `generate_mass_status` bundle 三者)→ **运行期没有"统一 reconcile 一次覆盖 order+position"的出入口**,所以 leg_settled/liveness 必须挂在**各 venue 的 order 真值点**:OE=`_on_current_bets`(CURRENT_BETS 的 order 面)、PM=order report 拉取成功 / USER WS order 事件。position(OE 同一份 `_current_bets` 派生 / PM 独立 REST)只喂 portfolio。**"order 真值到达"这一件事同时驱动 leg_settled mark + venue-alive**(断线保护,(4)),不必纠结 order/position 是否都对账。
-
-- **只认真值确认才置 true**:① 真实 WS 帧(OE `CURRENT_BETS` / PM USER channel)→ mark 对应腿;② **reconcile 成功**(reload-then-report / PM pull 拿到**真实 response**)→ 该 venue **所有腿**置 true(成功 pull = 完整权威快照,沿用 §4.4 "刷新成功置 true" 语义)。
-- **NT Path B(in-flight check 重试耗尽、无真实 response、本地 `create_order_rejected/canceled_event` fabricate)→ 绝不 mark leg_settled**。**不管重试几次,没拿到正常 response 就不置位。**
-- **实现要点(mark 单点 = `_on_current_bets`)**:mark **不能再挂在通用 `_send_order_event` 漏斗上**(§4.1 现状)——它会捕获 NT fabricate 的事件。OE 的真实 response **只有一种形态 = 一帧 CURRENT_BETS**,无论哪个 reconcile 机制(in-flight/open/position/启动对账)触发,真值都汇聚到 **`_on_current_bets`(`execution.py:413/429`)这一处**:reload → 页面重推 CURRENT_BETS → 落此 handler;或 WS 本就活、快照已被上一帧 `_on_current_bets` mark 过。`generate_*_reports` 只**读**被它刷新的 `_current_bets`,不是 mark 点。**故 leg_settled 的"reconcile 成功置位"= 在 `_on_current_bets` 收到一帧完整快照时 mark 该 venue 所有腿**(不 hook 每个 reconcile,hook 它们共同的数据落点)。NT fabricate 的终态走 `_send_order_event` 漏斗供 NT 收口订单,**不经 `_on_current_bets` → 不触达 leg_settled**,自然实现"无真实 response 不置位"。(PM 对等单点 = PM report-pull 成功 / USER WS 确认路径。)**✅ A3 已落地 2026-06-13**:`_on_current_bets`→`mark_venue(ORBITEXCH)`(`test_on_current_bets_marks_oe_legs_settled`);**但 funnel mark 暂仍并存(幂等)**——删 funnel(强制"Path B 不 mark")是 cutover **B4**,A3 阶段 Q3 不变量尚未完全 enforce。
-- **后果(正是要的安全行为)**:Path B 解掉 NT cache 里那个 SUBMITTED order(NT 停重试),但 **leg_settled 留 false → settled gate 继续安全挡住该 pair**;直到一次**真实 reconcile 成功**(WS 恢复后存活闸 reload / open·position check 拿到真值)才置 true 解封。**venue 真值未知时宁可挡住,绝不靠 NT 猜测解封** —— 直接对冲 `bug_compensating_cancel_missing`。
-- **"超时+从未确认"场景串起来**:一腿从未收 venue 确认 → leg_settled 留 false;tracking watchdog 超时只收 session(`_end_session` 不生成订单终态、不碰 leg_settled),pair_inflight 正常释放,但 NT cache 里 order 卡 SUBMITTED;**NT in-flight check(5s,早于 30s tracking 超时)接手 → reload-then-report**:拿到真值 → mark + 解 order;**拿不到 → 不 mark,pair 安全保持挡住**,等真实 reconcile。
+**(5) VenueExecutionLiveness 写入不变量(已落地,2026-06-15)**:
+- `venue_order_alive=true` 只表示该 venue 的订单真相可信,即拿到真实 order/open-order response。
+- `venue_position_alive=true` 只表示该 venue 的持仓真相可信,即拿到真实 position response。
+- OE 当前 `CURRENT_BETS` 是完整 order/position 快照,所以 `_on_current_bets` 同时标记 OE `order_alive` 与 `position_alive`;`generate_order_status_report(s)` 和 `generate_position_status_reports` 先确认 `_ensure_exec_snapshot_fresh()` 成功且至少收到过 CURRENT_BETS,成功返回才分别标记对应维度,否则标记对应维度 dead。
+- PM 子类包裹上游 `generate_order_status_report(s)` / `generate_position_status_reports`:成功标 alive,异常标 dead 后继续抛给 NT reconciliation;PM health check 的 positions fetch 成功标 `position_alive`。
+- `_send_order_event` 漏斗不再写健康状态。NT fabricate 的本地终态只能推进 NT 状态机,不能把 venue 真相置 alive。
+- Risk 从 opportunity `expected_legs` 推导 required venues;任一 required venue `order_alive && position_alive` 不成立则 deny。Strategy/Portfolio 不读 liveness。
 
 **(5b) in-flight check / reconcile 失败语义(#105 已定)**:
 - **in-flight check 保持开**(全局,PM 需要;不为 OE 单独关)。OE 同步生成终态 + 页锁 → 订单几乎不滞留在飞 → 极少对 OE 触发。
-- **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;与 (4) venue→dead、(5) 不 mark leg_settled 一致)。
-- **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → leg_settled 留 false(strategy 安全),但 NT cache order 错置终态(通道其实在时需人工对账)。
+- **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;并按失败维度置 liveness false)。
+- **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → liveness 保持 false,新 submit 被 Risk 安全挡住,但 NT cache order 错置终态(通道其实在时需人工对账)。
 
 **(6) 互斥**:reload 与 place/cancel 同页冲突由 **OE ExecClient 页锁**串行(NT 不串行化,详见 synchronization §8.1/§8.2);本节只负责"reload-then-report"读写 `_current_bets`,锁的归属与 strategy 侧状态位迁移在横切章。
 
-**(7) NT 开关 / 配置(#105 已定)**:`reconciliation`=True(启动对账,reconcile 时 OE 已登录);**`timeout_connection ≥ 180s**(> OE Playwright 登录最坏 ~150s);**`open_check`/`position_check` 默认关**(in-flight + reconcile 存活探测 + `_on_current_bets` 连续 mark 已够;live 出现持仓漂移再开 position_check);`inflight_check` 默认开。
+**(7) NT 开关 / 配置(#105/#108 已定)**:launcher `LiveExecEngineConfig(reconciliation=True)`。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 `open_check_interval_secs` / `position_check_interval_secs` 默认关,避免 OE execution 页周期 reload churn;`inflight_check` 保持默认开。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
 
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
@@ -349,7 +338,7 @@ async def _ensure_exec_snapshot_fresh():
 - 结构:`dict[pair_id, dict[instrument_id, bool]]` —— **腿键 = `instrument_id`**(一个 instrument = 一条腿,全局唯一,**不需 方向→下标 映射**;2026-05-22 定,取代原 `list[bool]`+整数下标)。**首次 execution 创建,不删,每次新 execution 用本轮提交的腿 instrument_id 集合整组重置 false**;非 execution 触发事件不创建 entry,但命中已有 entry 时也置 true(未知 instrument 忽略)。
 - 写入侧:execution client 覆盖 `generate_order_*`(均 NT `cpdef void`,可子类覆盖)→ 拿 `order.instrument_id` + `info["competition"]` 解析 pair_id → `mark(pair_id, instrument_id)`;`_begin_session` 用本轮腿集合 `reset(pair_id, instrument_ids)`。
 - 消费方:Strategy settled pre-check、ArbitragePortfolio settled gate(见 risk 文档 §4.2),只问 `any_unsettled(pair_id)`,与腿键无关。
-- 共享对象 `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`):`reset(pair_id, instrument_ids)` / `arm(pair_id, instrument_id)` / `mark(pair_id, instrument_id)` / `any_unsettled(pair_id)` / `all_settled(pair_id)` / `has_entry(pair_id)` / `has_any_unsettled()`(全局,§4.3 Phase 2 状态维度触发)。
+- 历史共享对象 `LegSettledRegistry`(原 `src/arbitrage/common/leg_settled.py`,已删除):`reset(pair_id, instrument_ids)` / `arm(pair_id, instrument_id)` / `mark(pair_id, instrument_id)` / `any_unsettled(pair_id)` / `all_settled(pair_id)` / `has_entry(pair_id)` / `has_any_unsettled()`(全局,§4.3 Phase 2 状态维度触发)。
 
 ### 4.5 账户状态维护(Q17)
 
@@ -362,16 +351,20 @@ async def _ensure_exec_snapshot_fresh():
 
 ### 4.6 settlement: merge / claim(§5.8,Q18)
 
-**三层结构(Q18c)**:
+**三层结构(Q18c;#110 触发改为 NT 连续 position 对账,2026-06-16)**:
 ```
-PM ExecClient 子类(宿主+触发:健康检查 tick 内调)
+PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-forget 调)
   └─ PolymarketSettlement(编排:按 condition 分组 / min 取量 / redeemable 门控)
        └─ contract.py:PolymarketContractService(链上 IO:Builder Relayer 调 mergePositions/redeemPositions)
 ```
-> **落地(2026-05-22)**:编排层 = `src/arbitrage/settlement/settlement.py`(app 代码,`run(positions: list[SettlementPosition]) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 留在 adapter 目录。健康检查宿主把 /positions 原始响应映射成 `SettlementPosition(condition_id, size, neg_risk, redeemable)` 传入。已 11 passed(FakeContract,见 settlement README)。
-- **并入 PM 健康检查 tick**,复用其 `/positions` 拉取(**原始响应**含 `redeemable`/`mergeable`/`neg_risk`——NT cache 没有);**无独立 Actor/调度**。
-- **merge**:同 condition ≥2 outcome 持仓 → `merge_positions(condition, min(sizes), neg_risk)`;**redeem**:`redeemable=true` → `redeem_positions(...)`(结算滞后由周期性兜住)。
-- **`TxResult` 不作健康判据**:失败仅 log + 下次 tick 重试(幂等),不影响 `venue_connected`/`leg_settled`。
+> **落地**:编排层 = `src/arbitrage/settlement/settlement.py`(app 代码,`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在 adapter 目录。
+
+- **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。
+- **一次拉喂两用(省一次 REST)**:`generate_position_status_reports` 内上游 `_fetch_user_positions` 全量拉一次 /positions,上游把**原始响应** stash 到 `_last_raw_positions`(含 `redeemable`/`neg_risk`/`condition_id`——NT 规范化 report 丢了这些);override 用 stash 喂 settlement,不再二次拉、不再需要注入 `_positions_fetcher`。
+- **liveness**:拉成功 → `mark_position_alive`;**拉失败(REST 报错/超时)→ `mark_position_dead` 并抛给 NT**(venue dead 逻辑,与 §4.3bis(4) 一致)。
+- **结算 fire-and-forget + single-flight(安全关键)**:settlement 是链上 tx(`contract.wait()` 可能数秒),**绝不能 `await` 在对账方法里**——会卡住 NT 对账循环、拖慢同循环的 inflight check(2s 卡单检测)。故 `_settlement_inflight` 守卫 + `create_task(_run_settlement(raw))` 后台跑;前一次没跑完则本轮跳过(防并发重复提交)。
+- **merge**:同 condition ≥2 outcome 持仓 → `merge_positions(condition, min(sizes), neg_risk)`;**redeem**:`redeemable=true` → `redeem_positions(...)`。
+- **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size)),不影响 `VenueExecutionLiveness`。
 - 结果回流靠下次 reconcile + way_rebate pull,不发事件、不直接改 cache。
 
 ---
@@ -380,8 +373,8 @@ PM ExecClient 子类(宿主+触发:健康检查 tick 内调)
 
 | 横切 | 约束 |
 |---|---|
-| Q19 同步(§6.10) | session 发 `execution.*`;PM 健康检查发 `health_check.*` + 执行在飞跳过;OE 健康检查同理 |
-| Q20 快照 | execution 不读 strategy 快照;leg_settled 是 live 安全信号,strategy pre-check 读 live |
+| Q19 同步(§6.10) | session 发 `execution.*`;pair_inflight 出口由 barrier/session 结构保证 |
+| Q20 快照 | execution 不读 strategy 快照;执行健康写 `VenueExecutionLiveness`,由 Risk 读 live |
 | Q17 余额 | 账户状态本组件维护写 cache;可用余额计算在 Risk |
 | §6.6 Debug | ✅ #40/#93 落地:`SkipExecution{PM,OE}Client`(`src/arbitrage/debug/execution_clients.py`)子类化 `_submit_order`;`is_override_active("skip_execution")` 真时**保留 `_begin_session` / `execution.started/finished` / per-pair gate 生命周期**,只跳真 venue IO,随后 `generate_order_accepted` + `generate_order_filled` mock 全成交(PM=USDC_POS / OE=GBP,commission=0,liquidity=TAKER);`_begin_session` 返回 False(cancel-only)时不 mock fill;否则透传 super。PM/OE exec factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Skip 子类传 `debug=cfg`)。**不实现订单 lifecycle 时序**(Q11.4 `timeline.py` 仅在真需要部分填 / 拒单 / 撤单时序时才做)。`skip_settlement`(健康检查路径不真上链)待后续。详见 `_cross-cutting/debug-injection.md` |
 | §6.7 锁 | 上游 ClobClient 不加外层锁(初版);遇问题再子类化只对写操作加锁 |
@@ -403,7 +396,7 @@ sequenceDiagram
   EC->>CK: set_time_alert exec_timeout_{coid}
   EC->>V: _submit_order
   V-->>EC: OrderAccepted (WS/帧)
-  EC->>EC: leg_settled[dir]=true; generate_order_accepted
+  EC->>EC: generate_order_accepted
   alt 成交 terminal
     V-->>EC: OrderFilled
     EC->>CK: cancel_timer exec_timeout_{coid}
@@ -431,7 +424,7 @@ sequenceDiagram
     HC->>API: 拉 /positions + /orders (原始响应)
     HC->>EE: generate_*_status_report → reconcile
     HC->>SE: run(positions_raw) → merge/redeem (TxResult 仅 log)
-    HC->>HC: 涉及方向 leg_settled=true
+    HC->>HC: 写 VenueExecutionLiveness
     HC->>HC: publish health_check.finished, _schedule_next (finally)
   end
 ```
@@ -442,7 +435,7 @@ sequenceDiagram
 
 **PM(薄子类,上游为主)—— ✅ 子类骨架落地 `nautilus_trader/adapters/polymarket/arb_execution.py:ArbPolymarketExecutionClient`(集成 /live-test 验)**:
 - [x] `class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecutionClient)`(MRO 验过:mixin 在上游前)+ `_init_arb_session` + 建 `HealthCheckLoop`(PM `health_interval_secs`,`lambda: self._execution_active`)+ 持 `PolymarketSettlement`
-- [x] `_submit_order` 接 `_begin_session`;上游 PM submit 异常若发生在 venue ack 前 → `OrderDenied` + 结束 session(不标 `leg_settled`);`_cancel_residual_orders` 建 `CancelOrder`→上游 `_cancel_order`;`_connect/_disconnect` 起停 health loop;`_run_health_check`(positions_fetcher→settlement.run + leg_settled.mark)
+- [x] `_submit_order` 接 `_begin_session`;上游 PM submit 异常若发生在 venue ack 前 → `OrderDenied` + 结束 session(不写 liveness);`_cancel_residual_orders` 建 `CancelOrder`→上游 `_cancel_order`;`_connect/_disconnect` 起停 health loop;`_run_health_check`(positions_fetcher→settlement.run + `position_alive`)
 - [x] 位置:**`nautilus_trader/adapters/polymarket/arb_execution.py`**(P9 唯一例外:venue-coupled 代码住 adapter 目录;**与上游 `execution.py` 同目录但不同文件名**避 upstream merge 冲突;#33 校准,settlement orchestration 仍按 Q18c 在 `src/arbitrage/settlement/`)。Data API /positions 拉取**注入** `positions_fetcher`(launcher 接,复用旧 `odds_client.fetch_positions` 的 `PolymarketPosition`);纯映射 `pm_position_to_settlement` 已单测
 - [ ] **/live-test 验**:真 `ClobClient`/`ws_auth` 构造、`_submit_order`/`_run_health_check` 跑通;`order_version_mismatch` 已消失(memory bug);reconcile 走 NT report 通路(集成点,§4.3)
 - [ ] settlement creds 注入(钱包与 execution config 共享 + builder/relayer);`_execute_with_proxy` monkey-patch 线程安全(单 loop 串行确认)
@@ -451,7 +444,7 @@ sequenceDiagram
 - [x] `class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient)`(离线可构造:super 只需 instrument_provider+标准 NT 依赖,browser 仅 `_connect` 用);`_submit_order` 接 `_begin_session` + 结果映射(成功→`generate_order_accepted`/失败→`rejected`);`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单)
 - [x] **`general` 帧分型 + BALANCE 解析**(`parse_general_frame`,8 passed)+ **`_on_general_frame`:BALANCE→`generate_account_state`**(`oe_balance_to_account_balances`:WS 已净挂单 → total=free,GBP;已测)
 - [x] **Gap C 接线已写(#63)+ 连接路径 live 验证通过(#67/#89)**:`_connect`(共享 BM `create_page("execution")` + 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置 page timeout + 登录 `/customer/` + `OrbitExchExecutor` + general WS `on_order_update(_on_general_frame)` + 初始 account state)、`_login`(+ `_dismiss_post_login_popup` 关登录后弹窗)、`_place_via_executor`(`nt_order_to_legacy_order`:market_id/selection_id 取自 OE instrument)、`_cancel_order`/`_cancel_all_orders`/`_cancel_residual_one`(executor + `generate_order_canceled/_cancel_rejected`)。**登录后弹窗语义(#89)**:不靠固定 sleep,而是在有限 timeout 内等待 `postLoginPopup` 容器可见;出现后点击主页面区域关闭,超时/无弹窗则静默继续,不阻断连接。**#67 关键时序**:`ws_handler.start()`(挂 `page.on('websocket')`)**必须早于 `goto/_login`**,否则错过登录导航期间建立的 general WS → 收不到 BALANCE/CURRENT_BETS。**live 验证**(`launchers/arb_node.py` + skip=true,2026-06-07):登录✓/关弹窗✓/general WS✓/真 BALANCE 帧 `0.00→37.49 GBP`✓。**#77 修正**:`_cancel_order` 传给 `executor.cancel_order` 的 legacy Order 必须带 `market_id`/`selection_id`;若 instrument 不足,从 `_current_bets[venue_order_id]` 回填。**注**:`place_and_cancel` scenario 跑老 `services/` 栈,**不验 NT client**([[gap_c_oe_exec_live_validated]])
-- [x] **`_on_current_bets` → `generate_order_filled`(回执核心已实写)**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 算 `sizeMatched` delta;`test_execution_translation.py` 7 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查 NT order → `generate_order_filled`,last_px=averagePrice,liquidity=MAKER 假设);accepted 由 `_submit_order` 同步发、撤单由 `_cancel_*` 发,此处只补成交;leg_settled 经 mixin `_send_order_event` 漏斗自动标记
+- [x] **`_on_current_bets` → `generate_order_filled` + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 算 `sizeMatched` delta;`test_execution_translation.py` 7 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查 NT order → `generate_order_filled`,last_px=averagePrice,liquidity=MAKER 假设);accepted 由 `_submit_order` 同步发、撤单由 `_cancel_*` 发,此处只补成交;任一完整 CURRENT_BETS 快照同时标记 OE `order_alive`/`position_alive`
 - [x] **#85 live 校准:venue 回执已到;未成交等待 30s timeout 属 Q15 默认语义**。`launchers/arb_node.py`
   真执行复验显示 OE 两笔 `placeBets` 均返回 `status=OK + offerIds`;NT accepted 事件本身无独立日志锚点,
   但下一轮机会先 cancel-only 撤旧 open order(`222032569`/`222032570`)再丢弃当次 submit,说明 cache 中已有
@@ -461,27 +454,27 @@ sequenceDiagram
 - [ ] **Gap C live 验分两档**:
   - **Tier 1(place + cancel,不成交) ✅ live 通过(#78)**:验真 `_submit_order`(Playwright 下单→venue_order_id)+ CURRENT_BETS working 态 + `generate_order_status_reports` 派生 + `_cancel_order` 撤掉。**探针**:`scripts/gapc_place_cancel_probe.py`(真账户、LAY@1.01 + OE 最小 stake 7,默认 dry-run 加 `--confirm` 真下单、撤单兜底;`--cleanup-only` 零下单 cancel/check)。**安全修正**:BACK 方向 odds 越大越好,`BACK@1.01` 是最差价格,不能作为不成交保护。**2026-06-08 live**:首跑 submit/CURRENT_BETS/reconcile 通过但 `_cancel_order` 暴露 `missing market_id` bug;残单清理后修复并补离线单测;修后复跑 offerId=221973242 三项全 ✓,cleanup-only 复查活单数 0。
   - **Tier 2(真成交) ✅ live 验完成(#82,2026-06-09)**:`scripts/gapc_fill_probe.py`(市价 **BACK@1.01** 立即成交 TAKER、最小注、默认 dry-run/`--confirm`、只下单+报告不撤不对冲)真下一笔成交单(offerId=222016509,BACK Roberto Bautista Agut £7)。**抓到真实 matched 帧**(此前只知 unmatched 态):`sizeMatched=7.00`/`averagePrice=2.3`/`sizeRemaining=0.00`/`price=1.01` —— BACK@1.01 限价在最优 back 赔率 **2.3** 成交(价格改善),`bet_order_progress` 正确派生 `status=filled,filled_qty=7.0,avg_px=2.3`。**`generate_order_filled` 探针内 0 次触发是探针局限非 bug**(无 ExecEngine → `OrderAccepted` 未 apply → cache 无 `venue_order_id` 索引 → `_on_current_bets` 的 voi 反查 None → 跳过);事件路径用真实值**离线补验**:`test_on_current_bets_matched_fires_generate_order_filled`(预置 `add_venue_order_id` → `generate_order_filled` 以 last_qty=7/last_px=2.3/liquidity=MAKER 触发)。**MAKER 硬编码已评估无害(#83)**:`_on_current_bets` 无条件 `liquidity_side=MAKER`,曾疑 taker 单不准;核查结论 **OE 无 maker/taker 概念**(博彩交易所,CURRENT_BETS 无该字段;maker/taker 是 PM CLOB 的,见 `services/.../tracker.py:on_polymarket_event`),且 OE fill `commission=0`、套利 rebate(way_rebate)在 strategy/portfolio 层算不读此字段 → 该侧**纯名义、不驱动任何费用/返水**,留 MAKER 即可,不改。
-  - 关联:OE 健康检查页面 reload(Phase 2 已 ✅ #75,reconcile 前刷新 CURRENT_BETS,宿主 DataClient);`place_and_cancel` scenario 跑老栈不验 NT client([[gap_c_oe_exec_live_validated]])
+  - 关联:OE DataClient 不再 reload execution 页;CURRENT_BETS / reports / liveness 属 OE ExecClient。`place_and_cancel` scenario 跑老栈不验 NT client([[gap_c_oe_exec_live_validated]])
 
 **Launcher 接线 —— ✅ ArbContext + 自定义 factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py`,3 passed)**:
 NT `LiveExecClientFactory.create(loop, name, config, msgbus, cache, clock)` 签名固定,**经
-`src.arbitrage.bootstrap.ArbContext` 进程级共享件注入**额外依赖(leg_settled / settlement /
+`src.arbitrage.bootstrap.ArbContext` 进程级共享件注入**额外依赖(venue_liveness / settlement /
 positions_fetcher / 间隔)—— 同 `install_arbitrage_engines` 的 import-替换思路。
 
 启动顺序(launcher):
 1. `install_arbitrage_engines()` —— 替换 kernel.Portfolio / .LiveRiskEngine / .LiveExecutionEngine
 2. `node = TradingNode(config)` —— kernel 原生构造 Arbitrage 子类
-3. `prepare_arb_context(leg_settled=, pm_settlement=, pm_positions_fetcher=, pm_health_interval_secs=, oe_health_interval_secs=, ...)` —— 填好共享件
+3. `prepare_arb_context(venue_liveness=, pm_settlement=, pm_positions_fetcher=, pm_health_interval_secs=, ...)` —— 填好共享件
 4. `node.add_exec_client_factory("POLYMARKET", ArbPolymarketLiveExecClientFactory)`、`("ORBITEXCH", ArbOrbitExchLiveExecClientFactory)`
-5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 leg_settled/settlement/fetcher/间隔);**漏调 prepare 早失败**(`RuntimeError: ArbContext.leg_settled is None`)
-6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 leg_settled 时**复用 context 那份**(execution 与 portfolio/risk 同一对象),并把 `pair_inflight` 注入 `ArbLiveExecutionEngine`
+5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 venue_liveness/settlement/fetcher/间隔);**漏调 prepare 早失败**(`RuntimeError: ArbContext.venue_liveness is None`)
+6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 venue_liveness 时**复用 context 那份**(execution 与 risk 同一对象),并把 `pair_inflight` 注入 `ArbLiveExecutionEngine`
 7. `node.run()`
 
 **共用 —— ✅ session 核心已落地(`src/arbitrage/execution/session.py`,8 passed)**:
-- [x] `ArbExecutionSessionMixin`:`_begin_session`(残留检测 → cancel-only 撤残留+`generate_order_rejected`丢弃 / submit+track)、覆盖**唯一漏斗 `_send_order_event`**(NT cpdef,所有 order event 经此)做 leg_settled 标记 + 终态检测
+- [x] `ArbExecutionSessionMixin`:`_begin_session`(残留检测 → cancel-only 撤残留+`generate_order_rejected`丢弃 / submit+track)、覆盖 `_send_order_event` 做终态检测与 session 收口;不写 execution liveness
 - [x] tracking timeout(NT clock 绝对超时,terminal 抢先 `cancel_timer`;超时即结束不补救)+ `execution.started/finished` publish + `_execution_active` = 在飞 session 数(ref-count,§6.10)
-- [x] leg_settled(§4.4):submit+track `arm(pair,instrument_id)`;venue 确认事件 `mark`;终态 = 全成(累计 fill≥qty)或 Canceled/Rejected/Expired
-- [ ] 宿主接线:PM 子类 / OE 客户端 `_submit_order` 调 `_begin_session`、`__init__` 调 `_init_arb_session`、覆盖 `_cancel_residual_orders`(venue 撤单 IO)
-- 测试:`tests/arbitrage/execution/test_session.py`(8 passed);宿主接线随 PM/OE 客户端落地
+- [x] `VenueExecutionLiveness`:PM report/position health check 与 OE CURRENT_BETS/report 成功路径写入;Risk 读
+- [x] 宿主接线:PM 子类 / OE 客户端 `_submit_order` 调 `_begin_session`、`__init__` 调 `_init_arb_session`、覆盖 `_cancel_residual_orders`(venue 撤单 IO)
+- 测试:`tests/arbitrage/execution/test_session.py`(11 passed);宿主接线随 PM/OE 客户端落地
 
 > **待核实**:~~OE `CURRENT_BETS` 单 bet item 字段~~(2026-06-06 已实测确认,见 §3.2:`offerId` 是订单 join key);**仍待**:matched 态填充值 + liquidity=MAKER 假设(真成交验);merge/redeem 频率是否要低于健康检查 tick。

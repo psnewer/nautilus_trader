@@ -4,6 +4,9 @@
 覆盖:SockJS `a[...]` 解包 → 顶层 key 分型 → BALANCE/CURRENT_BETS/未知。
 """
 
+from nautilus_trader.common.component import TestClock
+from nautilus_trader.core.datetime import secs_to_nanos
+
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 from nautilus_trader.adapters.orbitexch.websocket_handler import OrbitExchWebSocketHandler
 
@@ -110,6 +113,56 @@ def test_first_frame_logs_ws_type_kind_and_size():
     assert logger.info_messages == [
         "OE WS first frame received: type=prices, kind=sockjs_message, bytes=7",
     ]
+
+
+# ── #109:handler 内部存活封装(被动心跳超时 + close → on_disconnect)──────────
+def _liveness_handler(clock, timeout=30.0):
+    h = OrbitExchWebSocketHandler(page=None, clock=clock, liveness_timeout_secs=timeout, liveness_name="t")
+    fired = []
+    h.on_disconnect(lambda reason: fired.append(reason))
+    h._running = True
+    h._last_frame_ns = clock.timestamp_ns()
+    h._schedule_liveness()
+    return h, fired
+
+
+def test_liveness_disabled_without_clock():
+    """oe-ws-liveness.1:不传 clock/timeout → 内部存活关闭,帧不更新锚、不 fire(执行页 general WS 行为不变)。"""
+    h = OrbitExchWebSocketHandler(page=None)
+    assert h._liveness_enabled is False
+    h._on_frame_received("prices", 'a["{}"]')   # 不崩、不动 _last_frame_ns
+    assert h._last_frame_ns == 0
+
+
+def test_liveness_fires_disconnect_on_frame_gap():
+    """oe-ws-liveness.2:无任何帧超 timeout(心跳停=静默死亡)→ fire on_disconnect("liveness_timeout")。"""
+    clock = TestClock()
+    h, fired = _liveness_handler(clock, timeout=30.0)
+    for handler in clock.advance_time(secs_to_nanos(31.0)):
+        handler.handle()
+    assert fired == ["liveness_timeout"]
+
+
+def test_liveness_frame_resets_no_disconnect():
+    """oe-ws-liveness.3:timeout 内有帧(含心跳)→ 重置存活,不 fire(安静市场靠心跳保活)。"""
+    clock = TestClock()
+    h, fired = _liveness_handler(clock, timeout=30.0)
+    for handler in clock.advance_time(secs_to_nanos(20.0)):
+        handler.handle()                          # → t=20s(绝对),alert(30s)未到
+    h._on_frame_received("prices", 'a["{}"]')     # 帧到达 → _last_frame_ns=20s
+    for handler in clock.advance_time(secs_to_nanos(31.0)):
+        handler.handle()                          # → t=31s(绝对),alert 触发但 now-last=11<30 → 活,重排不 fire
+    assert fired == []
+
+
+def test_close_prices_fires_disconnect():
+    """oe-ws-liveness.4:prices WS close → fire on_disconnect("close:prices")(干净关闭快路)。"""
+    h = OrbitExchWebSocketHandler(page=None)
+    fired = []
+    h.on_disconnect(lambda reason: fired.append(reason))
+    h._websockets["url1"] = {"ws": None, "type": "prices", "url": "url1"}
+    h._on_websocket_close("url1")
+    assert fired == ["close:prices"]
 
 
 class _CapturingLogger:

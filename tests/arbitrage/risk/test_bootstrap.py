@@ -12,7 +12,7 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 import src.arbitrage.bootstrap as bootstrap
-from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution import ArbLiveExecutionEngine
 from src.arbitrage.risk import ArbitragePortfolio
 from src.arbitrage.risk import ArbitrageLiveRiskEngine
@@ -39,18 +39,18 @@ def _arb_node():
     return SimpleNamespace(kernel=SimpleNamespace(portfolio=pf, risk_engine=eng))
 
 
-def test_wire_injects_params_and_returns_shared_registry():
+def test_wire_injects_params_and_returns_shared_liveness():
     node = _arb_node()
-    registry = LegSettledRegistry()
+    liveness = VenueExecutionLiveness()
     params = ArbRiskParams(share=200.0, fx=1.3, match_tp=0.07)
 
-    returned = bootstrap.wire_arbitrage_runtime(node, params=params, leg_settled=registry)
+    returned = bootstrap.wire_arbitrage_runtime(node, params=params, venue_liveness=liveness)
 
-    assert returned is registry                          # 返回同一份供 execution 复用
+    assert returned is liveness                          # 返回同一份供 execution/risk 复用
     assert node.kernel.portfolio._share == 200.0
     assert node.kernel.portfolio._fx == 1.3
-    assert node.kernel.portfolio._settled is registry
     assert node.kernel.risk_engine._params.match_tp == 0.07
+    assert node.kernel.risk_engine._arb_venue_liveness is liveness
 
 
 def test_wire_raises_when_install_skipped():
@@ -70,25 +70,25 @@ def test_wire_raises_when_install_skipped():
 # ── ArbContext 注入通道(给自定义 exec factory)──────────────────
 def test_prepare_get_reset_arb_context():
     bootstrap.reset_arb_context()
-    assert bootstrap.get_arb_context().leg_settled is None
-    reg = LegSettledRegistry()
+    assert bootstrap.get_arb_context().venue_liveness is None
+    liveness = VenueExecutionLiveness()
     ctx = bootstrap.prepare_arb_context(
-        leg_settled=reg, pm_health_interval_secs=8.0,
+        venue_liveness=liveness, pm_session_timeout_secs=8.0,
     )
-    assert ctx.leg_settled is reg
+    assert ctx.venue_liveness is liveness
     assert bootstrap.get_arb_context() is ctx                # 进程级单例
-    assert ctx.pm_health_interval_secs == 8.0
+    assert ctx.pm_session_timeout_secs == 8.0
     bootstrap.reset_arb_context()
-    assert bootstrap.get_arb_context().leg_settled is None
+    assert bootstrap.get_arb_context().venue_liveness is None
 
 
-def test_wire_reuses_context_registry_when_none_passed():
-    # launcher 顺序:prepare_arb_context(reg) → factory 用 reg → wire 不传 leg_settled → 用同份
+def test_wire_reuses_context_liveness_when_none_passed():
+    # launcher 顺序:prepare_arb_context(liveness) → factory 用 liveness → wire 不传 → 用同份
     bootstrap.reset_arb_context()
-    reg = LegSettledRegistry()
-    bootstrap.prepare_arb_context(leg_settled=reg)
+    liveness = VenueExecutionLiveness()
+    bootstrap.prepare_arb_context(venue_liveness=liveness)
     node = _arb_node()
-    returned = bootstrap.wire_arbitrage_runtime(node)         # 不传 leg_settled
-    assert returned is reg                                    # 复用 context 那份(execution 也用同份)
-    assert node.kernel.portfolio._settled is reg
+    returned = bootstrap.wire_arbitrage_runtime(node)         # 不传 venue_liveness
+    assert returned is liveness                               # 复用 context 那份(execution/risk 也用同份)
+    assert node.kernel.risk_engine._arb_venue_liveness is liveness
     bootstrap.reset_arb_context()

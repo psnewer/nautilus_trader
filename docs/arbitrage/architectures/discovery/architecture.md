@@ -114,7 +114,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > - **competition**:写 `info` 时经 `oe_competition_aliases` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。**start_ts** 从 market/event `startDate` → ns。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
-> **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 120s(初次 load connect 窗口)。
+> **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
 > **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。
 
 ### 3.3 周期发现:DataClient 原生 `_update_instruments`(#59;替代退役的 `InstrumentRefresher`)

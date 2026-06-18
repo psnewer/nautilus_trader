@@ -53,7 +53,7 @@
 - 期望:`exec_finished` 已先行 → `_exec_count→0` → in-flight 被清(publish 抛之前已落)。
 - 验收:`test_session.py::test_end_session_clears_inflight_even_if_publish_throws`。
 
-## VenueExecutionLiveness 写入(设计待落地,2026-06-15)
+## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + execution §4.3bis/§4.4。
 
@@ -61,13 +61,13 @@
 - 前置:PM 或 OE ExecutionClient 注入共享 `VenueExecutionLiveness`;该 venue `order_alive=false`。
 - 输入:order/open-order reconcile 成功,拿到完整真实 response。
 - 期望:`venue_order_alive[venue]=true`;不写 `venue_position_alive`。
-- 验收:order 与 position 状态拆分;不再调用 `LegSettledRegistry.mark/mark_venue`。
+- 验收:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive`;PM report 包装路径由 execution 文档约束,后续 live/reconcile 测继续补强。
 
 ### execution-4.5.2: position reconcile 成功置 position_alive
 - 前置:该 venue `position_alive=false`。
 - 输入:position reconcile 成功,拿到完整真实 response。
 - 期望:`venue_position_alive[venue]=true`;不写 `venue_order_alive`。
-- 验收:PM order/position 两条路径都成功后,risk 派生 `venue_alive=true`。
+- 验收:`test_venue_liveness.py::test_venue_alive_requires_order_and_position_alive`。
 
 ### execution-4.5.3: reconcile 失败 fail-closed
 - 前置:venue 当前 alive。

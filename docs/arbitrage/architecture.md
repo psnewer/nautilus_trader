@@ -88,7 +88,7 @@ flowchart LR
 - **同步**:健康检查 ⊥ 执行**全局互斥**(msgbus + ref-count + strategy 前置 pre-check,单 loop 无锁)→ `synchronization.md`
 - **Debug 注入**:生产类干净 + Debug 子类覆盖 + 工厂选择,零 `if self._debug` → `debug-injection.md`
 - **健康检查**:OE(页面 staleness)/ PM(report 对账 + merge/redeem),NT clock 自重排,详见 `execution/architecture.md §4.3`
-- **leg_settled**:execution 通讯通道存活信号,被 Strategy/Portfolio 消费 → `execution/architecture.md §4.4`
+- **VenueExecutionLiveness**(#108,取代退役的 `leg_settled`):per-venue `order_alive && position_alive`,execution/reconciliation 写、**Risk 读门控**(Strategy/Portfolio 不读)→ `_cross-cutting/synchronization.md §8.5`
 
 ---
 

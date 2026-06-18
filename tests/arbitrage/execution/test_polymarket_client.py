@@ -19,7 +19,7 @@ from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_cl
 from nautilus_trader.adapters.polymarket.http import transport as pm_transport
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
-from nautilus_trader.adapters.polymarket.arb_execution import pm_position_to_settlement
+from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -143,16 +143,16 @@ def test_mro_mixin_before_upstream():
     assert mro.index(ArbExecutionSessionMixin) < mro.index(PolymarketExecutionClient)
 
 
-def test_position_to_settlement_maps_fields():
-    p = _PMPos(condition_id="0xcond", size=80.0, neg_risk=True, redeemable=True)
-    assert pm_position_to_settlement(p) == SettlementPosition(
+def test_raw_position_to_settlement_maps_fields():
+    """#110:原始 /positions dict(Data API 键:conditionId/size/negativeRisk/redeemable)→ SettlementPosition。"""
+    item = {"conditionId": "0xcond", "size": 80.0, "negativeRisk": True, "redeemable": True}
+    assert pm_raw_position_to_settlement(item) == SettlementPosition(
         condition_id="0xcond", size=80.0, neg_risk=True, redeemable=True,
     )
 
 
-def test_position_to_settlement_defaults():
-    p = _PMPos(condition_id="0xc", size=10.0)
-    s = pm_position_to_settlement(p)
+def test_raw_position_to_settlement_defaults():
+    s = pm_raw_position_to_settlement({"conditionId": "0xc", "size": 10.0})
     assert s.neg_risk is False and s.redeemable is False
 
 

@@ -2,7 +2,7 @@
 Arb OE 执行客户端 factory —— 给 `TradingNode.add_exec_client_factory(...)` 用。
 
 构造同目录 `execution.py:OrbitExchExecutionClient`。NT 的 `LiveExecClientFactory.create` 签名
-固定,套利额外依赖(leg_settled / 间隔)经 `src.arbitrage.bootstrap.ArbContext` 注入。
+固定,套利额外依赖(venue_liveness / 间隔)经 `src.arbitrage.bootstrap.ArbContext` 注入。
 
 **位置(#33 校准)**:OE 适配器全套住 `nautilus_trader/adapters/orbitexch/`(P9 唯一例外);
 本文件 `factories.py` 与上游无冲突(OE 无上游)。
@@ -75,7 +75,6 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         else:
             provider = InstrumentProvider()  # discovery 禁用时占位
         ctx.oe_instrument_provider = provider  # slice 8A 回写,InstrumentRefresher 取同一实例
-        leg_settled = getattr(ctx, "leg_settled", None)  # §6.8.3 状态维度健康检查(Phase 2);None → 只时间维度
         debug = ctx.debug_config
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.data_clients import DebugOrbitExchDataClient
@@ -87,7 +86,6 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
                 clock=clock,
                 instrument_provider=provider,
                 config=config,
-                leg_settled=leg_settled,
                 debug=debug,
             )
         return OrbitExchDataClient(
@@ -98,7 +96,6 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
             clock=clock,
             instrument_provider=provider,
             config=config,
-            leg_settled=leg_settled,
         )
 
 
@@ -115,9 +112,9 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
         clock: LiveClock,
     ) -> OrbitExchExecutionClient:
         ctx = get_arb_context()
-        if ctx.leg_settled is None:
+        if ctx.venue_liveness is None:
             raise RuntimeError(
-                "ArbContext.leg_settled is None —— `prepare_arb_context(leg_settled=...)` "
+                "ArbContext.venue_liveness is None —— `prepare_arb_context(venue_liveness=...)` "
                 "必须在 node.build() 之前调用",
             )
 
@@ -135,7 +132,7 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
             clock=clock,
             instrument_provider=provider,
             config=config,
-            leg_settled=ctx.leg_settled,
+            venue_liveness=ctx.venue_liveness,
             pair_registry=ctx.pair_registry,
             pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             session_timeout_secs=ctx.oe_session_timeout_secs,

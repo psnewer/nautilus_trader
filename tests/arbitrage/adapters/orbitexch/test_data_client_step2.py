@@ -25,6 +25,16 @@ from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
 from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
 
 
+@pytest.fixture(autouse=True)
+def _fresh_ambient_loop():
+    """测试隔离:本文件用 `asyncio.get_event_loop().run_until_complete`;别处用 `asyncio.run` 会清掉
+    current loop(留下关闭/无 loop),跨文件污染本文件。每测设一个新 loop,使本文件自洽不依赖 ambient 状态。"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield
+    loop.close()
+
+
 # ── 纯映射:WS runner → OrderBookDeltas(快照 CLEAR + ADDs)──────
 def _iid(): return InstrumentId(Symbol("1-123-2-None"), Venue("ORBITEXCH"))
 
@@ -247,7 +257,7 @@ class _FailingBM(_FakeBM):
         return p
 
 
-def _client_with_bm(bm, *, leg_settled=None, exec_reload_enabled=False):
+def _client_with_bm(bm):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     c = OrbitExchDataClient(
@@ -255,9 +265,7 @@ def _client_with_bm(bm, *, leg_settled=None, exec_reload_enabled=False):
         cache=TestComponentStubs.cache(), clock=clock,
         instrument_provider=InstrumentProvider(),
         config=OrbitExchDataClientConfig(
-            username="u", password="p", base_url="https://oe.test",
-            health_check_exec_reload_enabled=exec_reload_enabled),
-        leg_settled=leg_settled,
+            username="u", password="p", base_url="https://oe.test"),
     )
     return c
 
@@ -369,166 +377,112 @@ def _open_page(c, page_key="2_999", sport="2", comp="999"):
     return c._comp_pages[page_key]
 
 
-def test_health_check_reloads_stale_page():
-    """data-2.health.1: page `now-last_update>staleness_timeout`(默认 30s)→ reload。"""
-    c = _client_with_bm(_FakeBM())
-    page = _open_page(c)
-    assert len(page.goto_calls) == 1 and page.reload_calls == 0
-    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns() - secs_to_nanos(40)  # stale
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert page.reload_calls == 1
+# ── #109:competition 页存活封装进 WS handler(心跳超时 + close → on_disconnect)。
+#     handler 内部 liveness timer 的单测见 `test_ws_general_frames.py`;此处只测 DataClient 消费侧
+#     (收 on_disconnect → reload)+ 事件化 connect-retry(`_delayed_reopen`)。旧 `_run_health_check`/
+#     staleness poll / `_mark_comp_frame` / `_comp_last_frame_ns` 已退役删除(#109)。
+class _RecordLoop:
+    def __init__(self):
+        self.tasks = []
+
+    def create_task(self, coro):
+        self.tasks.append(coro)
+        return coro
 
 
-def test_health_check_skips_fresh_page():
-    """data-2.health.2: 刚收帧(last_update≈now)→ 不 reload。"""
-    c = _client_with_bm(_FakeBM())
-    page = _open_page(c)
-    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns()
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert page.reload_calls == 0
-
-
-def test_health_check_skips_page_without_update_yet():
-    """data-2.health.3: 刚开页未收帧(无 last_update)→ 不 reload(避免开页即刷)。"""
-    c = _client_with_bm(_FakeBM())
-    page = _open_page(c)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())  # 不设 last_update
-    assert page.reload_calls == 0
-
-
-def test_exec_active_refcount_only_counts_oe_legs():
-    """data-2.health.4(#89 per-venue):OE 健康检查只数 **OE 自己的腿**,PM 腿不计入;ref-count 不负。
-
-    互斥是 venue-local:OE 健检 reload OE 页面只跟 OE 下单冲突,不跟 PM。`execution.*` 是全局 topic,
-    按 msg 的 instrument venue 过滤。"""
-    from nautilus_trader.model.identifiers import InstrumentId
-
-    c = _client_with_bm(_FakeBM())
-    oe = {"instrument_id": InstrumentId.from_str("1-1-1-None.ORBITEXCH"), "pair_id": "P"}
-    pm = {"instrument_id": InstrumentId.from_str("tok.POLYMARKET"), "pair_id": "P"}
-
-    assert c._is_execution_active() is False
-    c._on_execution_started(pm)                  # PM 腿:OE 健检不数
-    assert c._is_execution_active() is False
-    c._on_execution_started(oe)
-    assert c._is_execution_active() is True
-    c._on_execution_started(oe)
-    c._on_execution_finished(oe)
-    assert c._is_execution_active() is True       # 还有一个 OE 在飞
-    c._on_execution_finished(pm)                 # PM finished:不影响 OE 计数
-    assert c._is_execution_active() is True
-    c._on_execution_finished(oe)
-    assert c._is_execution_active() is False
-    c._on_execution_finished(oe)
-    assert c._is_execution_active() is False       # 不负
-
-
-def test_price_frame_stamps_last_update_ns():
-    """data-2.health.5: 收价格帧 → 写该 competition 页 last_update_ns(时间维度判定依据)。"""
-    from tests.arbitrage.risk._factories import oe_instrument
-    c = _client_with_bm(_FakeBM())
-    inst = oe_instrument("EPL", "home", selection_id=42)   # competition_id=1, event_type_id=1, market "1-123"
-    c._cache.add_instrument(inst)
-    c._register_instrument_routing(inst.id)
-    assert c._market_to_page_key["1-123"] == "1_1"
-    c._handle_data = lambda d: None
-    c._on_price_frame({
-        "id": "1-123",
-        "mainEventId": "evt-1", "mainEventName": "A v B", "marketNameWithParents": "Match Odds",
-        "rc": [{"id": 42, "bdatb": [{"index": 0, "odds": 2.0, "amount": 10}],
-                "bdatl": [{"index": 0, "odds": 2.1, "amount": 5}], "tv": 100, "locked": False}],
-        "marketDefinition": {"marketType": "MATCH_ODDS", "status": "OPEN", "inPlay": False},
-    })
-    assert "1_1" in c._comp_last_update_ns
-
-
-# ── §6.8.3 健康检查 Phase 2(状态维度:leg_settled=false → reload execution 页;A 方案,安全闸)──
-from src.arbitrage.common.leg_settled import LegSettledRegistry  # noqa: E402
-
-
-def _reg_with_unsettled():
-    reg = LegSettledRegistry()
-    reg.arm("pair-1", "inst-A")   # arm → false(未结算)
-    return reg
-
-
-def _bm_with_exec_page():
-    bm = _FakeBM()
-    bm._pages["execution"] = _FakePage()   # ExecClient 的页(共享 bm,DataClient 经 get_page 取)
-    return bm
-
-
-def test_health_state_dim_reloads_exec_page_when_enabled():
-    """data-2.health.6: leg_settled 有未结算腿 + 安全闸开 → reload execution 页。"""
-    bm = _bm_with_exec_page()
-    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=True)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert bm._pages["execution"].reload_calls == 1
-
-
-def test_health_state_dim_gated_off_by_default():
-    """data-2.health.7: 安全闸默认关 → 即使有未结算腿也不 reload 交易页(默认安全)。"""
-    bm = _bm_with_exec_page()
-    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=False)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert bm._pages["execution"].reload_calls == 0
-
-
-def test_health_state_dim_skips_when_all_settled():
-    """data-2.health.8: 全部已结算 → 不 reload(即使闸开)。"""
-    reg = LegSettledRegistry(); reg.arm("pair-1", "inst-A"); reg.mark("pair-1", "inst-A")
-    bm = _bm_with_exec_page()
-    c = _client_with_bm(bm, leg_settled=reg, exec_reload_enabled=True)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert bm._pages["execution"].reload_calls == 0
-
-
-def test_health_state_dim_no_legsettled_no_crash():
-    """data-2.health.9: leg_settled=None(data-only 上下文)→ 跳过状态维度,不崩。"""
-    bm = _bm_with_exec_page()
-    c = _client_with_bm(bm, leg_settled=None, exec_reload_enabled=True)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert bm._pages["execution"].reload_calls == 0
-
-
-def test_health_state_dim_exec_page_missing_no_crash():
-    """data-2.health.10: execution 页未开(get_page None)→ warn,不崩。"""
-    bm = _FakeBM()   # 无 execution 页
-    c = _client_with_bm(bm, leg_settled=_reg_with_unsettled(), exec_reload_enabled=True)
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())   # 不抛
-
-
-# ── 连接重试维度:已订阅但未开的 competition 页 → 健康检查补开(对齐 PM `_delayed_connect`)──
-def test_health_check_reopens_missing_subscribed_page():
-    """data-2.health.11: 已订阅(`_market_to_page_key`)但未开 → 健康检查补开。"""
+# ── 事件化 connect-retry(#109,对齐 PM `_delayed_connect`):开页失败 → _delayed_reopen 重试 ──
+def test_delayed_reopen_succeeds_no_further_retry(monkeypatch):
+    """data-2.health.11(#109):`_delayed_reopen` 开成功 → 入册、不再重排。"""
+    import nautilus_trader.adapters.orbitexch.data as data_mod
+    monkeypatch.setattr(data_mod, "_COMP_REOPEN_RETRY_SECS", 0.0)
     bm = _FakeBM()
     c = _client_with_bm(bm)
-    c._market_to_page_key["mkt-1"] = "2_999"   # 订阅了该 competition,但页没开(初次失败/未开)
-    assert "2_999" not in c._comp_pages
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert "comp-2_999" in bm.created and "2_999" in c._comp_pages
+    c._market_to_page_key["mkt-1"] = "2_999"
+    c._loop = _RecordLoop()
+    asyncio.get_event_loop().run_until_complete(c._delayed_reopen("2_999", "2", "999"))
+    assert "2_999" in c._comp_pages          # 开成功
+    assert c._loop.tasks == []               # 不再重排
 
 
-def test_health_check_reopen_failure_swallowed_retries_next_tick():
-    """data-2.health.12: 补开失败不抛、不入册,留到下一次健康检查重试(每 tick 再试一次)。"""
+def test_delayed_reopen_failure_reschedules(monkeypatch):
+    """data-2.health.12(#109):`_delayed_reopen` 仍失败 → 再排一次(直到成功),对齐 PM 重连重试。"""
+    import nautilus_trader.adapters.orbitexch.data as data_mod
+    monkeypatch.setattr(data_mod, "_COMP_REOPEN_RETRY_SECS", 0.0)
     bm = _FailingBM()
     c = _client_with_bm(bm)
     c._market_to_page_key["mkt-1"] = "2_999"
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(c._run_health_check())   # tick1:goto 失败 → 吞掉
-    assert "2_999" not in c._comp_pages
-    assert bm.created.count("comp-2_999") == 1
-    loop.run_until_complete(c._run_health_check())   # tick2:留到下次再试(不本轮重试)
-    assert bm.created.count("comp-2_999") == 2
+    c._loop = _RecordLoop()
+    asyncio.get_event_loop().run_until_complete(c._delayed_reopen("2_999", "2", "999"))
+    assert "2_999" not in c._comp_pages      # 开失败
+    assert bm.created.count("comp-2_999") == 1  # 试开了一次
+    assert len(c._loop.tasks) == 1           # 仍失败 → 再排一次
+    for t in c._loop.tasks:
+        t.close()
 
 
-def test_health_check_no_reopen_when_already_open():
-    """data-2.health.13: 已开且新鲜 → 补开维度不重复开(去重),时间维度也不刷。"""
-    bm = _FakeBM()
+def test_delayed_reopen_aborts_when_disconnecting(monkeypatch):
+    """data-2.health.13(#109):关停中 → `_delayed_reopen` 放弃重试(不试开)。"""
+    import nautilus_trader.adapters.orbitexch.data as data_mod
+    monkeypatch.setattr(data_mod, "_COMP_REOPEN_RETRY_SECS", 0.0)
+    bm = _FailingBM()
     c = _client_with_bm(bm)
-    _open_page(c, "2_999", "2", "999")               # 已开
     c._market_to_page_key["mkt-1"] = "2_999"
-    c._comp_last_update_ns["2_999"] = c._clock.timestamp_ns()  # 新鲜
-    asyncio.get_event_loop().run_until_complete(c._run_health_check())
-    assert bm.created.count("comp-2_999") == 1        # 仅首次 _open_page;health 不再开
-    assert c._comp_pages["2_999"].reload_calls == 0
+    c._disconnecting = True
+    asyncio.get_event_loop().run_until_complete(c._delayed_reopen("2_999", "2", "999"))
+    assert bm.created.count("comp-2_999") == 0  # 放弃,不开
+
+
+# ── on_disconnect(close 或心跳超时)→ reload(对称 PM `_schedule_delayed_connect`)──
+def test_disconnect_prices_close_schedules_reload():
+    """data-2.health.14:prices close → 即时调度 reload;跑完 task 页 reload。"""
+    c = _client_with_bm(_FakeBM())
+    page = _open_page(c)
+    c._loop = _RecordLoop()
+    c._on_comp_disconnect("2_999", "close:prices")
+    assert len(c._loop.tasks) == 1
+    asyncio.get_event_loop().run_until_complete(c._loop.tasks[0])
+    assert page.reload_calls == 1
+
+
+def test_disconnect_liveness_timeout_schedules_reload():
+    """data-2.health.15:心跳超时(静默死亡)→ 调度 reload。"""
+    c = _client_with_bm(_FakeBM())
+    _open_page(c)
+    c._loop = _RecordLoop()
+    c._on_comp_disconnect("2_999", "liveness_timeout")
+    assert len(c._loop.tasks) == 1
+    for t in c._loop.tasks:
+        t.close()
+
+
+def test_disconnect_guards():
+    """data-2.health.16:非 prices/非心跳 reason / 关停 / reload 中 / 页未开 → 不调度。"""
+    c = _client_with_bm(_FakeBM())
+    _open_page(c)
+    c._loop = _RecordLoop()
+
+    c._on_comp_disconnect("2_999", "close:orders")    # 非赔率 feed
+    assert c._loop.tasks == []
+    c._disconnecting = True
+    c._on_comp_disconnect("2_999", "liveness_timeout")  # 关停中
+    assert c._loop.tasks == []
+    c._disconnecting = False
+    c._comp_reloading.add("2_999")
+    c._on_comp_disconnect("2_999", "close:prices")    # 本页正在 reload(自身关旧 WS 不自触发)
+    assert c._loop.tasks == []
+    c._comp_reloading.discard("2_999")
+    c._on_comp_disconnect("nope", "close:prices")     # 页未开
+    assert c._loop.tasks == []
+
+
+def test_disconnect_cooldown_suppresses_storm():
+    """data-2.health.17:冷却窗内重复 disconnect(venue 持续不可用)→ 抑制,防 reload 风暴。"""
+    c = _client_with_bm(_FakeBM())
+    _open_page(c)
+    c._loop = _RecordLoop()
+    c._on_comp_disconnect("2_999", "close:prices")    # 首次:即时
+    assert len(c._loop.tasks) == 1
+    c._on_comp_disconnect("2_999", "liveness_timeout")  # 冷却窗内:抑制
+    assert len(c._loop.tasks) == 1
+    for t in c._loop.tasks:
+        t.close()

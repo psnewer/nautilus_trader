@@ -149,7 +149,7 @@ class ArbitragePortfolio(Portfolio):
     # ── per-pair-per-venue(对应 net_exposures 嵌套风格)──
     def way_rebates_by_venue(self, pair_id: str, account_id=None) -> dict[Venue, dict[str, float]]: ...
     # ── 全账户聚合(对应 equity)──
-    def global_min_rebate_sum(self, account_id=None) -> float | None: ...
+    def global_min_rebate_sum(self, account_id=None) -> float: ...
     # ── 内部 ──
     def _legs_for_pair(self, pair_id, account_id) -> list[_Leg]: ...
     def _resolve_pair_id(self, position) -> str | None:  # PairRegistry.get(instrument_id), #34
@@ -280,7 +280,7 @@ sequenceDiagram
   RE->>C: 读 account_state（venue 分支算可用余额）
   RE->>RE: _check_balance
   RE->>AP: way_rebate / min_way_rebate / global_min_rebate_sum
-  AP->>C: 读 positions（pull 现算 + settled gate）
+  AP->>C: 读 positions（pull 现算）
   RE->>RE: _check_rebate_gates (tp/sl/global)
   alt 全部通过
     RE->>EC: 路由 SubmitOrder
@@ -296,18 +296,18 @@ sequenceDiagram
 - [x] `ArbitrageLiveRiskEngine` 子类(基类 `LiveRiskEngine`)+ `_check_order` 两参签名 + super 先行 + 自 emit `_deny_order`
 - [x] `_check_balance` venue 分支(PM 自扣在途挂单 / OE 信 cache free);无价单交父类
 - [x] `_check_rebate_gates` 三门限
-- [ ] `_check_required_venues_alive`:注入 `VenueExecutionLiveness`,从 `expected_legs` 推导 required venues,任一不 alive 则 deny
+- [x] `_check_required_venues_alive`:注入 `VenueExecutionLiveness`,从 `expected_legs` 推导 required venues,任一不 alive 则 deny
 - [x] `ArbitragePortfolio` 四方法 + `_legs_for_pair` + `_resolve_pair_id` + `_leg_from_position`(从 cache Position 反推)
 - [x] `bootstrap.install_arbitrage_engines`(导入名替换)+ `wire_arbitrage_runtime`(configure_arb 注入)
-- [ ] 移除共享 `LegSettledRegistry` settled gate seam;新增 `VenueExecutionLiveness` 注入 Risk
+- [x] 移除共享 `LegSettledRegistry` settled gate seam;新增 `VenueExecutionLiveness` 注入 Risk
 - [x] **核实 NT cpdef `_check_order` 子类覆盖**:已 end-to-end 验证(`_handle_submit_order` 派发到 Python 覆盖,deny 事件发出,订单不泄漏)
 - [x] **`skip_check_size`** ✅ Q11 Debug slice #38 落地(2026-05-24):`DebugArbitrageLiveRiskEngine._check_order` 子类覆盖,`DebugConfig.is_override_active("skip_check_size")` 时跳过 `super()._check_order`(跳过 NT 父类 price/quantity/GTD 校验),直跑应用层 `_check_balance` + `_check_rebate_gates`。`src/arbitrage/debug/risk.py`,~10 行;`bootstrap.install_arbitrage_engines(debug_config=)` 接线 → kernel 自动装 Debug 子类。tests:`tests/arbitrage/debug/test_debug_risk_engine.py` 5 passed。
-- [ ] 对应测试 .py:`tests/arbitrage/risk/README.md`(risk-6.1~6.7 / 6.9.x)
+- [x] 对应测试 .py:`tests/arbitrage/common/test_venue_liveness.py` / `tests/arbitrage/risk/test_engine.py` / `tests/arbitrage/risk/test_portfolio.py`
 
 > **已闭环**:`_check_rebate_gates` 取 rebate 经 `self._portfolio`(import 替换后即 `ArbitragePortfolio` 实例)调其方法 ✓;cpdef 覆盖可行性 ✓。
 > **仍依赖外部契约**:`instrument.info["competition"]/["market_type"]` 由 discovery 填充(本类只读,单一 seam);OE 腿的 size/price 语义(stake / 十进制赔率)由 OE ExecutionClient 上报时保证。
 
-**#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / 引擎的 `_pair_id_for_order` 原读 `instrument.info["competition"]` 是**错读**——`competition` 是联赛名(EPL/NFL),不是 pair_id;pair_id 由 matching 算出经 `PairRegistry` 暴露。现两处都改读 registry(`ArbitragePortfolio._pair_registry`),`configure_arb` 增 `pair_registry` 参,launcher 经 `ArbContext.pair_registry` 注入(同 leg_settled 模式)。`_leg_from_position` 同时把 `info` 读 key 校正:Q9 标准是 `selection_role`,旧 `market_type` 作 fallback 兼容。
+**#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / 引擎的 `_pair_id_for_order` 原读 `instrument.info["competition"]` 是**错读**——`competition` 是联赛名(EPL/NFL),不是 pair_id;pair_id 由 matching 算出经 `PairRegistry` 暴露。现两处都改读 registry(`ArbitragePortfolio._pair_registry`),`configure_arb` 增 `pair_registry` 参,launcher 经 `ArbContext.pair_registry` 注入(共享 registry 模式)。`_leg_from_position` 同时把 `info` 读 key 校正:Q9 标准是 `selection_role`,旧 `market_type` 作 fallback 兼容。
 
 **NT 子类化两个 cdef 可见性陷阱(写测试时发现,已修;production-affecting)**:
 1. **`Portfolio._cache` 是私有 `cdef`(非 `readonly`)→ Python 子类方法 `self._cache` 抛 AttributeError**(`RiskEngine._cache` 是 `readonly` 故引擎侧无此问题)。`ArbitragePortfolio` 改为**覆盖 `__init__`**(签名 `msgbus/cache/clock/config`,与 kernel 原生构造一致)`super().__init__(...)` 后自存 `self._arb_cache = cache`,所有腿提取走 `_arb_cache`。

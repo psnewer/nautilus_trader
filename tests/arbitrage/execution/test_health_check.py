@@ -1,4 +1,4 @@
-"""HealthCheckLoop —— 自重排节奏 / 每实例可设间隔 / 执行让路 / publish health_check.*。"""
+"""HealthCheckLoop —— 自重排节奏 / 每实例可设间隔 / 执行让路(#108:health_check.* publish 已退役)。"""
 
 import asyncio
 import logging
@@ -103,12 +103,12 @@ def test_stop_marks_not_running():
 
 
 # ── tick 行为 ──────────────────────────────────────────────────────
-def test_tick_runs_check_and_publishes():
+def test_tick_runs_check_and_reschedules():
     hc, clock, msgbus, calls, *_ = _make(interval=5.0, active=False)
     hc._running = True
     _run(hc._tick())
     assert calls["run"] == 1
-    assert msgbus.published == ["health_check.started", "health_check.finished"]
+    assert msgbus.published == []                                        # #108:不再 publish health_check.*
     assert clock.next_time_ns("health_check:TEST") == secs_to_nanos(5.0)  # finally 重排
 
 
@@ -128,8 +128,8 @@ def test_tick_swallows_check_error_and_reschedules():
     hc, clock, msgbus, *_ = _make(run=_boom)
     hc._running = True
     _run(hc._tick())                          # 不抛
-    assert msgbus.published == ["health_check.started", "health_check.finished"]  # finished 仍发
-    assert clock.next_time_ns("health_check:TEST") == secs_to_nanos(5.0)          # 仍重排
+    assert msgbus.published == []                                                 # #108:不再 publish
+    assert clock.next_time_ns("health_check:TEST") == secs_to_nanos(5.0)          # 仍重排(异常路径也重排)
 
 
 def test_tick_no_reschedule_after_stop():

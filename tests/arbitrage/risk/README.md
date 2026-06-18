@@ -212,11 +212,11 @@ ExecutionClient (维护账户)
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
-- 前置: 构造 `TradingNode` **之前**调 `bootstrap.install_arbitrage_engines()`(替换 `nautilus_trader.system.kernel.Portfolio` / `.LiveRiskEngine`);构造后调 `wire_arbitrage_runtime(node, params=, leg_settled=)`
+- 前置: 构造 `TradingNode` **之前**调 `bootstrap.install_arbitrage_engines()`(替换 `nautilus_trader.system.kernel.Portfolio` / `.LiveRiskEngine`);构造后调 `wire_arbitrage_runtime(node, params=, venue_liveness=)`(#108:原 `leg_settled=` 参数退役)
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 fx/leg_settled(portfolio)与三门限 params(engine);share 保留兼容注入,不作 `way_rebate` 分母
+  - `configure_arb` 注入 fx(portfolio)与三门限 params + `venue_liveness`(engine);share 保留兼容注入,不作 `way_rebate` 分母(#108:portfolio 不再注入 `leg_settled`)
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)
@@ -327,7 +327,9 @@ ExecutionClient (维护账户)
 
 > ⚠️ **失效**:`LegSettledRegistry` 退役;新增共享契约见 `VenueExecutionLiveness`。
 
-- 前置: `LegSettledRegistry`(`src/arbitrage/common/leg_settled.py`),execution 写、portfolio/risk/strategy 读。**腿键 = instrument_id**(一个 instrument = 一条腿,不需 方向→下标 映射)
+> ⚠️ **失效**:`LegSettledRegistry` 已删除。当前共享状态见 `VenueExecutionLiveness`。
+
+- 前置: 历史 `LegSettledRegistry`,execution 写、portfolio/risk/strategy 读。**腿键 = instrument_id**(一个 instrument = 一条腿,不需 方向→下标 映射)
 - 输入/期望:
   - 新建 → `has_entry(p)` False、`any_unsettled(p)` False(entry 不存在不触发 gate)
   - `reset(p, ["A.PM","B.OE"])` → `any_unsettled(p)` True(全 false)
@@ -335,7 +337,7 @@ ExecutionClient (维护账户)
   - `mark` 命中不存在的 entry / 不在本轮腿集合的 instrument → 忽略(非 execution 触发不创建,未知腿不崩)
   - **`has_any_unsettled()`(#70 新增,全局)**:无 entry → False;`reset(p,...)` 后 → True;某 pair 全 mark 后若无其它未结算 entry → False;另一 pair `reset` → True(`test_has_any_unsettled_global`)
   - **`mark_venue(venue_value)`(#105 新增)**:某 venue 一次完整 order 真值 → 该 venue 所有 armed 腿置 true(腿键 `instrument_id.venue.value` 命中;缺席快照腿=已澄清没成功亦置;他 venue/已 true/无 `.venue` 的 str 键跳过)→ 返回新置位数。OE `_on_current_bets` 调它(只挂 order 真值,position 解耦;execution §4.3bis(5))(`test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`)
-- 验收: ArbitragePortfolio 的 settled gate 经 `any_unsettled` 读此对象;**OE 健康检查状态维度(#70,execution §4.3 Phase 2)经 `has_any_unsettled()` 读**;registry 为空(execution 未启动)时 gate 不误触发,优雅降级。**已 pytest 验证上述全部语义**
+- 验收:历史用例已删除,不再作为当前验收。
 
 ### risk-6.9.14: ArbitragePortfolio 不读取执行健康状态(2026-06-15)
 
@@ -346,6 +348,16 @@ ExecutionClient (维护账户)
   - `ArbitragePortfolio.configure_arb` 不接受 `leg_settled`。
   - `portfolio.py` 不 import `LegSettledRegistry` / `VenueExecutionLiveness`。
   - 执行健康 fail-closed 只在 `ArbitrageLiveRiskEngine._check_required_venues_alive`。
+
+### risk-6.9.15: VenueExecutionLiveness gate(2026-06-15)
+
+- 前置:order 带 `arb:expected_legs=pm:home:0,oe:away:1`;共享 `VenueExecutionLiveness` 中 PM alive、OE not alive。
+- 输入:Risk 检查 PM leg。
+- 期望:Risk 从 `expected_legs` 推导 required venues `{POLYMARKET, ORBITEXCH}`,因 OE not alive 拒绝整次机会。
+- 验收:
+  - `tests/arbitrage/common/test_venue_liveness.py`
+  - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_checks_all_expected_leg_venues`
+  - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_passes_when_required_venues_alive`
 
 ---
 

@@ -49,7 +49,7 @@ def test_pm_exec_factory_uses_production_when_no_debug(monkeypatch):
     monkeypatch.setattr(pm_factories, "ArbPolymarketExecutionClient", prod)
     monkeypatch.setattr(debug_exec, "SkipExecutionPolymarketClient", dbg)
 
-    bootstrap.prepare_arb_context(leg_settled=MagicMock())  # debug_config=None
+    bootstrap.prepare_arb_context(venue_liveness=MagicMock())  # debug_config=None
     pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
     assert prod.called and not dbg.called
@@ -62,7 +62,7 @@ def test_pm_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
     monkeypatch.setattr(debug_exec, "SkipExecutionPolymarketClient", dbg)
 
     cfg = DebugConfig(enabled=True)
-    bootstrap.prepare_arb_context(leg_settled=MagicMock(), debug_config=cfg)
+    bootstrap.prepare_arb_context(venue_liveness=MagicMock(), debug_config=cfg)
     pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
     assert dbg.called and not prod.called
@@ -77,7 +77,7 @@ def test_oe_exec_factory_uses_production_when_no_debug(monkeypatch):
     monkeypatch.setattr(debug_exec, "SkipExecutionOrbitExchClient", dbg)
     monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
 
-    bootstrap.prepare_arb_context(leg_settled=MagicMock())
+    bootstrap.prepare_arb_context(venue_liveness=MagicMock())
     oe_factories.ArbOrbitExchLiveExecClientFactory.create(**_oe_args())
 
     assert prod.called and not dbg.called
@@ -90,7 +90,7 @@ def test_oe_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
     monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
 
     cfg = DebugConfig(enabled=True)
-    bootstrap.prepare_arb_context(leg_settled=MagicMock(), debug_config=cfg)
+    bootstrap.prepare_arb_context(venue_liveness=MagicMock(), debug_config=cfg)
     oe_factories.ArbOrbitExchLiveExecClientFactory.create(**_oe_args())
 
     assert dbg.called and not prod.called

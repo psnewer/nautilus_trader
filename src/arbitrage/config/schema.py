@@ -83,12 +83,9 @@ class OrbitExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     zoom_level: float = 0.8
     page_load_timeout_sec: float = 120.0
     page_refresh_sec: int = 600
+    # #109:competition 页 WS handler 内部 liveness timeout(超此无任何帧含心跳 → reload)。
+    # 旧 `health_interval_sec`(HealthCheckLoop tick)随 #109 退役删除。
     staleness_timeout_sec: int = 300
-    # NT 健康检查(宿主=DataClient,execution §4.3):tick 间隔 + Phase 2 状态维度安全闸。
-    # cadence 用老栈值(tick=120s / staleness=300s,见 refactor.md 修订 #74)。
-    # Phase 2 闸 #75 默认开:reload 弹窗/会话 + CURRENT_BETS 重推已 live 验(2026-06-08)。
-    health_interval_sec: float = 120.0
-    health_check_exec_reload_enabled: bool = True
     headless: bool = True
     browser_type: str = "chromium"
     user_data_dir: str | None = None
@@ -168,7 +165,8 @@ class ExecutionSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     tracking_timeout_sec: float = 30.0
     tracking_check_interval_sec: float = 5.0
     max_failure_retries: int = 5
-    health_check_interval_sec: float = 120.0
+    # 注(#110):PM merge/redeem 改 NT 连续 position 对账驱动(无 HealthCheckLoop)→ 旧
+    # `health_check_interval_sec`(PM tick 间隔)已删;对账节奏在 launcher `position_check_interval_secs`。
     cleanup_enabled: bool = True
     cleanup_merge_enabled: bool = True
     cleanup_claim_enabled: bool = True

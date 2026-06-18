@@ -3,7 +3,7 @@ OrbitExchExecutionClient —— OE 自写执行客户端(§3.2)。
 
 详细设计:`docs/arbitrage/architectures/execution/architecture.md §3.2 / §4.5`。
 
-= 自写 `LiveExecutionClient` + `ArbExecutionSessionMixin`(session / leg_settled / 超时 / 同步)。
+= 自写 `LiveExecutionClient` + `ArbExecutionSessionMixin`(session / 超时 / 同步)。
 订单 IO 包同目录 `executor.place_order/cancel_order`(Playwright);账户状态走 `general` 频道
 `BALANCE` 帧 → `generate_account_state`(WS 已含挂单占用,Q17)。
 
@@ -37,8 +37,8 @@ from nautilus_trader.model.objects import Money
 
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 ORBITEXCH = "ORBITEXCH"
@@ -237,7 +237,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         instrument_provider,
         config,
         *,
-        leg_settled: LegSettledRegistry,
+        venue_liveness: VenueExecutionLiveness,
         pair_registry: PairRegistry | None = None,
         pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         session_timeout_secs: float = 30.0,
@@ -256,11 +256,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             config=config,
         )
         self._init_arb_session(
-            leg_settled=leg_settled,
             session_timeout_secs=session_timeout_secs,
             pair_registry=pair_registry,
             pair_inflight=pair_inflight,
         )
+        self._venue_liveness = venue_liveness
         self._set_account_id(AccountId(f"{ORBITEXCH}-001"))
         self._browser_manager = browser_manager
         self._config = config
@@ -538,8 +538,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         `current_bets_to_fills` 算新增成交;每条按 `offerId == venue_order_id` 反查 NT order →
         发 `generate_order_filled`(last_qty=delta, last_px=averagePrice)。accepted 已由 `_submit_order`
-        同步生成、撤单由 `_cancel_*` 生成,这里只补成交。leg_settled 由 mixin 的 `_send_order_event`
-        漏斗自动标记。**matched 帧填充值已 live 验**(#82,offerId=222016509:sizeMatched/averagePrice)。
+        同步生成、撤单由 `_cancel_*` 生成,这里只补成交。**matched 帧填充值已 live 验**
+        (#82,offerId=222016509:sizeMatched/averagePrice)。
         `liquidity_side=MAKER` 无条件硬编码:**已评估无害**——OE 是博彩交易所、CURRENT_BETS 无 maker/taker
         字段(maker/taker 是 PM CLOB 概念),且 OE fill `commission=0`、套利 rebate(way_rebate)在
         strategy/portfolio 层算、不读此字段 → 该侧纯名义,留 MAKER 即可(refactor.md #82/#83)。"""
@@ -552,10 +552,9 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._current_bets = {str(b.get("offerId", "")): b for b in (bets or []) if b.get("offerId")}
         # #105 A2:CURRENT_BETS 重推时刻 = reconcile 成功信号(`_reload_exec_page` 等它越过 reload_ts)
         self._last_current_bets_ns = self._clock.timestamp_ns()
-        # #105 A3 §4.3bis(5):完整 order 真值快照 → mark 该 venue 所有 armed 腿(缺席=已澄清没成功,亦置 true)。
-        # 与 `_send_order_event` funnel mark 并存(幂等);flip(B4)删 funnel,只留此处避开 Path B fabricate。
-        if self._leg_settled is not None:
-            self._leg_settled.mark_venue(ORBITEXCH)
+        # CURRENT_BETS 是 OE 执行页的完整 order/position response;收到即认为 OE 执行端可对账。
+        self._venue_liveness.mark_order_alive(ORBITEXCH)
+        self._venue_liveness.mark_position_alive(ORBITEXCH)
 
         for fill in current_bets_to_fills(bets, self._bet_matched):
             offer_id = fill["offer_id"]
@@ -674,16 +673,23 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def generate_order_status_reports(self, command) -> list:
         """reconcile:缓存的 CURRENT_BETS 快照(`_on_current_bets` 维护)→ `OrderStatusReport` 列表。
-        仅为能反查到 NT order 的 bet 构建。宿主健康检查应先 reload 页面刷新 CURRENT_BETS 再调(另落)。"""
+        仅为能反查到 NT order 的 bet 构建。"""
+        if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            self._venue_liveness.mark_order_dead(ORBITEXCH)
+            return []
         reports = []
         for bet in self._current_bets.values():
             report = self._build_order_report(bet)
             if report is not None:
                 reports.append(report)
+        self._venue_liveness.mark_order_alive(ORBITEXCH)
         return reports
 
     async def generate_order_status_report(self, command):
         """单订单 reconcile:按 command 的 `venue_order_id` / `client_order_id` 在快照里定位。"""
+        if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            self._venue_liveness.mark_order_dead(ORBITEXCH)
+            return None
         target_voi = str(command.venue_order_id) if command.venue_order_id is not None else None
         target_coid = command.client_order_id
         for offer_id, bet in self._current_bets.items():
@@ -694,7 +700,9 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 continue
             if target_coid is not None and report.client_order_id != target_coid:
                 continue
+            self._venue_liveness.mark_order_alive(ORBITEXCH)
             return report
+        self._venue_liveness.mark_order_alive(ORBITEXCH)
         return None
 
     async def generate_fill_reports(self, command) -> list:
@@ -707,6 +715,9 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         (BACK=long/LAY=short,net=ΣBACK−ΣLAY,avg_px=主方向成交量加权)。matched=0 / 净 0 跳过;
         instrument 经 market_id+selection_id 反查,反查不到跳过。
         **注**:NT Portfolio 平时由 order fills 自行派生持仓;本 report 仅供 reconcile 对账用。"""
+        if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
+            self._venue_liveness.mark_position_dead(ORBITEXCH)
+            return []
         from decimal import Decimal
 
         from nautilus_trader.core.uuid import UUID4
@@ -732,4 +743,5 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_init=now,
                 avg_px_open=Decimal(str(pos["avg_px"])) if pos["avg_px"] > 0 else None,
             ))
+        self._venue_liveness.mark_position_alive(ORBITEXCH)
         return reports

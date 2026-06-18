@@ -21,7 +21,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positions
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
@@ -30,6 +30,7 @@ from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_b
 def _client():
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
+    liveness = VenueExecutionLiveness()
     return OrbitExchExecutionClient(
         loop=asyncio.new_event_loop(),
         browser_manager=None,
@@ -38,7 +39,7 @@ def _client():
         clock=clock,
         instrument_provider=InstrumentProvider(),
         config=OrbitExchExecClientConfig(username="u", password="p"),
-        leg_settled=LegSettledRegistry(),
+        venue_liveness=liveness,
     )
 
 
@@ -395,6 +396,8 @@ def test_generate_position_status_reports_aggregates():
         "o1": _pos_bet("1.23", "8266", "BACK", 10.0, 2.0),
         "o2": _pos_bet("1.23", "8266", "BACK", 5.0, 2.2),
     }
+    c._last_current_bets_ns = c._clock.timestamp_ns()
+    c._mark_exec_frame()
     fake_inst = SimpleNamespace(
         id=InstrumentId.from_str("1-23-8266-None.ORBITEXCH"),
         make_qty=lambda v: Quantity(v, precision=2),
@@ -478,14 +481,56 @@ def test_ensure_fresh_single_flight_one_reload():
     assert c._page.reload_count == 1                 # single-flight → 只 reload 一次
 
 
-# ── #105 A3 _on_current_bets → mark_venue(leg_settled order 真值)──────
-def test_on_current_bets_marks_oe_legs_settled():
-    oe = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+# ── CURRENT_BETS → OE execution liveness 真值锚点 ─────────────────────
+def test_on_current_bets_marks_oe_liveness_alive():
     c = _client()
-    c._leg_settled.arm("P1", oe)
-    assert c._leg_settled.any_unsettled("P1")        # armed false
     c._on_current_bets([])                            # 任一 CURRENT_BETS 帧(order 真值)
-    assert c._leg_settled.all_settled("P1")           # OE 腿经 mark_venue 置 true(funnel 未触发,纯 A3 路径)
+    assert c._venue_liveness.order_alive("ORBITEXCH")
+    assert c._venue_liveness.position_alive("ORBITEXCH")
+    assert c._venue_liveness.venue_alive("ORBITEXCH")
+
+
+def test_reconcile_reports_without_current_bets_marks_oe_liveness_dead():
+    c = _client()
+    c._venue_liveness.mark_order_alive("ORBITEXCH")
+    c._venue_liveness.mark_position_alive("ORBITEXCH")
+
+    assert _run(c.generate_order_status_reports(SimpleNamespace())) == []
+    assert _run(c.generate_order_status_report(SimpleNamespace(venue_order_id=None, client_order_id=None))) is None
+    assert _run(c.generate_position_status_reports(SimpleNamespace())) == []
+
+    assert not c._venue_liveness.order_alive("ORBITEXCH")
+    assert not c._venue_liveness.position_alive("ORBITEXCH")
+    assert not c._venue_liveness.venue_alive("ORBITEXCH")
+
+
+def test_reconcile_reports_stale_snapshot_reload_failure_marks_dead():
+    c = _client()
+    c._on_current_bets([])                            # 历史快照曾经存在
+    c._reload_bets_wait_ns = 50_000_000
+    c._page = _FakePageReload(on_reload=None)         # stale 后 reload 失败
+
+    assert _run(c.generate_order_status_reports(SimpleNamespace())) == []
+    assert _run(c.generate_position_status_reports(SimpleNamespace())) == []
+
+    assert c._page.reload_count == 2                  # order / position 各探一次,均失败
+    assert not c._venue_liveness.order_alive("ORBITEXCH")
+    assert not c._venue_liveness.position_alive("ORBITEXCH")
+    assert not c._venue_liveness.venue_alive("ORBITEXCH")
+
+
+def test_reconcile_reports_stale_snapshot_reload_success_stays_alive():
+    c = _client()
+    c._on_current_bets([])
+    c._page = _FakePageReload(on_reload=lambda: c._on_current_bets([]))
+
+    assert _run(c.generate_order_status_reports(SimpleNamespace())) == []
+    assert _run(c.generate_position_status_reports(SimpleNamespace())) == []
+
+    assert c._page.reload_count == 2
+    assert c._venue_liveness.order_alive("ORBITEXCH")
+    assert c._venue_liveness.position_alive("ORBITEXCH")
+    assert c._venue_liveness.venue_alive("ORBITEXCH")
 
 
 # ── #105 撤单纳入 exec_count(cancel-only 也由 exec_count→0 兜底,不靠 max-hold)──
@@ -550,3 +595,4 @@ def test_cancel_residual_inflight_held_until_last_cancel():
         await loop.tasks[0]                                    # 只跑完第一个撤单
     _run(_drain_one())
     assert gate.is_in_flight("P1") is True                     # 还有一个撤单没跑完 → in-flight 不清
+    loop.tasks[1].close()                                      # 测试只验证半程,收尾未 await coroutine

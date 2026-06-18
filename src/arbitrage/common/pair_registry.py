@@ -11,7 +11,7 @@ matching 算法产出。本注册表是 matching → 下游的桥。
 P11 归属:有单一自然归属(matching 唯一写、其它只读)→ 放 matching 主方小节 + 交叉引用,
 不单独成横切章节(详细设计 `architectures/matching/architecture.md §3.1`)。
 
-**单进程单 asyncio loop,纯内存,无序列化**(同 `LegSettledRegistry` 模式)。
+**单进程单 asyncio loop,纯内存,无序列化**(同其他套利共享 registry 模式)。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class PairRegistry:
 
     # ── consumers 读取侧 ─────────────────────────────────────────────
     def get(self, instrument_id: Hashable) -> str | None:
-        """返回该 instrument 所属 pair_id;未注册返 None(下游 settled gate 自然不触发)。
+        """返回该 instrument 所属 pair_id;未注册返 None(下游组合指标自然不参与该腿)。
 
         查询侧同样 `str(instrument_id)` 归一 —— 消费者多传 `InstrumentId` 对象,而 key 以 str 存。
         """

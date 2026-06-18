@@ -6,7 +6,8 @@
 
 `launchers/arb_node.py` —— NT 节点 launcher 骨架(无 Actors,留 slice 8 完善)。
 
-- ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返 3 件(LegSettledRegistry / PairRegistry / DebugConfig 可 None)/ `register_factories` 调 4 次 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 leg_settled/pair_registry/debug_config/session/health 字段 / main 调用链路
+- ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session/health 字段 / main 调用链路
+- ✅ `test_arb_node.py`:NT exec config 保持启动期 `reconciliation=True`,连续 `open_check_interval_secs=None` / `position_check_interval_secs=None`,默认 in-flight check 开启,`timeout_connection=180s`。
 
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)

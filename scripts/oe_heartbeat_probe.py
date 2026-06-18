@@ -1,20 +1,27 @@
-"""OE SockJS 心跳周期探针 —— **零下单**(#105 待 live 项:定 exec 页存活 idle_timeout)。
+"""OE 赔率(prices)WS 空闲心跳探针 —— **零下单 / 零 reload**(#109 待决项)。
 
-目的:确认 OrbitExch execution 页 general WS(SockJS)**服务端心跳帧 `'h'`** 的实际周期,
-用来给 #105 的"venue 死活 = reconcile 成败、idle 静默触发探测"里的 `idle_timeout` 定阈值
-(被动存活锚 —— OE 不能主动 ping,只能靠收到的心跳帧刷 `_last_frame_ns`,见 execution `§4.3bis(4)`)。
+目的:确认 **competition 页 prices WS(`multiple-market-prices`,SockJS)在空闲盘口是否发服务端心跳帧 `'h'`**。
+#109 把 OE competition 页存活做成"被动盯帧 gap → disconnect/reload";但被动判活**依赖对端周期发帧**。
+execution `§4.3bis(4)` 的 2026-06-13 probe(那次测的是 exec 页 general WS,median ≈35s)顺带记了
+"prices WS 因常推无心跳" —— 但那是**活跃盘口**的观察。本探针专门挑**空闲盘口**长观测,定论:
+prices WS 空闲时**到底发不发 `'h'`**。
 
-做法(不接 NT TradingNode,直接驱动真实 OrbitExchExecutionClient,stub NT 组件):
-  1. 真账户登录(共享 BrowserManager,user_data_dir 持久化 profile)→ 开 execution 页 + general WS
-  2. 钩住 WS handler 的 `_on_frame_received`,记录每个 `'h'`(心跳)/ `'o'`(open)/ `a[...]`(业务)帧到达时刻
-  3. 静默观测 `--observe-sec`(默认 180s,期间零操作)
-  4. 出报告:各 ws_type 的心跳帧间隔(count / min / median / max),据此定 idle_timeout
+- 发 → #109 被动判活成立(保留帧-gap),只是阈值要 > 心跳周期。
+- 不发 → #109 在空闲盘口会**误判 dead、误 reload**,judging 须改(close 事件即时 reload + 放宽/取消帧-gap)。
 
-**真账户、真登录、零下单、零 reload**。需 `--config <arb_config.json>` + 凭证 env(项目根 `.env`)。
-建议 `--headed` 亲眼看页面。
+做法(不接 NT TradingNode,直接驱动真实 OrbitExchDataClient,stub NT 组件):
+  1. 真账户(共享 BrowserManager,user_data_dir 持久化 profile)→ `bm.start()`(**不跑 instrument 发现**)
+  2. `_open_or_reload_competition_page(sport_id, competition_id)` 开一个 competition 页 + prices WS
+  3. **拆掉该页的 liveness reload**(清 on_disconnect + 停内部存活 timer)→ 纯观测、不 reload
+  4. 钩 handler `_on_frame_received` 记录每帧 (ts, ws_type, kind);静默观测 `--observe-sec`
+  5. 出报告:prices ws_type 的 `'h'` 心跳计数 / 间隔;**重点看挑的空闲盘口有没有 'h'**
+
+**真账户、零下单、零 reload**。需 `--config <arb_config.json>` + 凭证 env(项目根 `.env`)+ 一个**空闲** competition。
+建议挑赛前/休赛的安静盘口 + `--observe-sec 600`(覆盖多个心跳周期才能下"无心跳"的结论)+ `--headed`。
 
 用法:
-  python3 -m scripts.oe_heartbeat_probe --config arb_config.json --headed [--observe-sec 180]
+  python3 -m scripts.oe_heartbeat_probe --config arb_config.json \
+      --sport-id <sport_id> --competition-id <competition_id> --headed --observe-sec 600
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import asyncio
 import statistics
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -37,11 +45,10 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 from nautilus_trader.adapters.orbitexch.browser_manager import PlaywrightBrowserManager
-from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
+from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
 
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.config import load_arb_config
-from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
+from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
 
 
 def _classify(data: str) -> str:
@@ -63,44 +70,50 @@ async def run(args) -> int:
         pass
 
     cfg = load_arb_config(args.config)
-    exec_cfg = to_orbitexch_exec_client_config(cfg)
+    data_cfg = to_orbitexch_data_client_config(cfg)
 
-    headless = exec_cfg.headless and not args.headed
+    headless = getattr(data_cfg, "headless", False) and not args.headed
     bm = PlaywrightBrowserManager(
-        browser_type=exec_cfg.browser_type,
+        browser_type=getattr(data_cfg, "browser_type", "chromium"),
         headless=headless,
-        user_data_dir=exec_cfg.user_data_dir,
+        user_data_dir=getattr(data_cfg, "user_data_dir", None),
     )
     clock = LiveClock()
     loop = asyncio.get_running_loop()
 
-    exec_client = OrbitExchExecutionClient(
+    dc = OrbitExchDataClient(
         loop=loop, browser_manager=bm,
         msgbus=MessageBus(trader_id=TraderId("PROBE-HB-000"), clock=clock),
         cache=TestComponentStubs.cache(), clock=clock,
-        instrument_provider=InstrumentProvider(), config=exec_cfg,
-        leg_settled=LegSettledRegistry(),
+        instrument_provider=InstrumentProvider(), config=data_cfg,
     )
 
-    # ── 观测埋点:记录每帧 (ts, ws_type, kind) ──
     frames: list[tuple[float, str, str]] = []
+    page_key = f"{args.sport_id}_{args.competition_id}"
 
-    print(f"▶ 连接(headless={headless},真账户登录,零下单)…")
+    print(f"▶ 启动浏览器(headless={headless},真账户,零下单/零发现)…")
     try:
-        await exec_client._connect()
+        await bm.start()
+        await dc._open_or_reload_competition_page(page_key, args.sport_id, args.competition_id)
     except Exception as e:  # noqa: BLE001
-        print(f"✗ _connect 失败:{e!r}")
-        await bm.close()
+        print(f"✗ 开 competition 页失败:{e!r}")
+        with suppress(Exception):
+            await bm.close()
         return 1
 
-    handler = exec_client._ws_handler
+    handler = dc._comp_handlers.get(page_key)
     if handler is None:
-        print("✗ exec WS handler 未初始化(_connect 未真接线 / 非 live)")
-        await exec_client._disconnect()
-        await bm.close()
+        print(f"✗ competition 页 {page_key} handler 未建立")
+        with suppress(Exception):
+            await bm.close()
         return 1
 
-    # 钩住 handler 的 _on_frame_received(lambda 在调用时按属性查找,monkeypatch 生效)
+    # 纯观测:拆掉 liveness reload(清 on_disconnect 回调 + 停内部存活 timer),避免观测期误 reload 污染
+    handler._disconnect_callbacks.clear()
+    with suppress(Exception):
+        clock.cancel_timer(handler._liveness_name)
+
+    # 钩 handler 的 _on_frame_received(lambda 调用时按属性查找 → monkeypatch 生效)
     _orig_recv = handler._on_frame_received
 
     def _spy(ws_type: str, data: str):
@@ -109,16 +122,10 @@ async def run(args) -> int:
 
     handler._on_frame_received = _spy
 
-    page = exec_client._page
-    url = page.url if page else "<no page>"
-    print(f"  url={url}")
-    if page is None or "/customer/" not in (url or ""):
-        print("✗ 未进入已登录状态(/customer/),无法观测 execution 页 general WS。")
-        await exec_client._disconnect()
-        await bm.close()
-        return 1
+    page = dc._comp_pages.get(page_key)
+    print(f"  page_key={page_key}  url={page.url if page else '<no page>'}  ws={dc._websocket_summary(handler)}")
 
-    print(f"\n▶ 静默观测 {args.observe_sec}s(零操作,采心跳帧)… Ctrl-C 可提前结束")
+    print(f"\n▶ 静默观测 {args.observe_sec}s(零操作)… 挑的盘口越安静、结论越硬。Ctrl-C 可提前结束")
     try:
         await asyncio.sleep(args.observe_sec)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -126,13 +133,8 @@ async def run(args) -> int:
 
     handler._on_frame_received = _orig_recv  # 摘钩
 
-    # ── 报告:按 (ws_type, kind) 统计心跳间隔 ──
+    # ── 报告 ──
     print("\n══ 观测结论 ══")
-    hb_by_ws: dict[str, list[float]] = {}
-    for ts, ws_type, kind in frames:
-        if kind == "heartbeat":
-            hb_by_ws.setdefault(ws_type, []).append(ts)
-
     all_kinds: dict[tuple[str, str], int] = {}
     for _, ws_type, kind in frames:
         all_kinds[(ws_type, kind)] = all_kinds.get((ws_type, kind), 0) + 1
@@ -140,35 +142,36 @@ async def run(args) -> int:
     for (ws_type, kind), n in sorted(all_kinds.items()):
         print(f"    {ws_type:10s} {kind:10s} {n}")
 
-    if not hb_by_ws:
-        print("\n  ⚠️ 观测期内**未捕获心跳帧 'h'** —— 可能:观测时间短于心跳周期 / 该 WS 无 SockJS 心跳 /")
-        print("     业务帧足够频繁未触发服务端心跳。建议加长 --observe-sec 或核对 ws_type。")
-        ok = False
-    else:
-        print("\n  心跳间隔(ws_type → count / min / median / max,单位秒):")
-        ok = True
-        for ws_type, ts_list in hb_by_ws.items():
-            ts_list.sort()
-            gaps = [b - a for a, b in zip(ts_list, ts_list[1:])]
-            if gaps:
-                print(
-                    f"    {ws_type:10s} n_gap={len(gaps):3d}  "
-                    f"min={min(gaps):.1f}  median={statistics.median(gaps):.1f}  max={max(gaps):.1f}",
-                )
-            else:
-                print(f"    {ws_type:10s} 仅 1 个心跳帧,无法算间隔(加长观测)")
-        print("\n  → 用 median 心跳周期 + 余量定 idle_timeout(#105 暂定 300s;若 median≈25s 可保 300s 或收紧)。")
-
-    await exec_client._disconnect()
-    await bm.close()
-    return 0 if ok else 1
+    prices_hb = sorted(ts for ts, ws_type, kind in frames if ws_type == "prices" and kind == "heartbeat")
+    prices_any = [ts for ts, ws_type, _ in frames if ws_type == "prices"]
+    print("")
+    if not prices_any:
+        print("  ⚠️ 观测期内 prices WS **零帧** —— 该页可能未建 prices WS / page_key 不对 / 该 competition 无行情。")
+        print("     核对 sport_id/competition_id;或换一个有盘口的 competition。")
+        return 1
+    if prices_hb:
+        gaps = [b - a for a, b in zip(prices_hb, prices_hb[1:])]
+        print(f"  ✅ prices WS **有心跳 'h'**:count={len(prices_hb)}", end="")
+        if gaps:
+            print(f"  间隔 min={min(gaps):.1f} median={statistics.median(gaps):.1f} max={max(gaps):.1f}s")
+        else:
+            print("(仅 1 个,加长观测算间隔)")
+        print("  → #109 被动判活成立;idle_timeout 取 > median 心跳周期 + 余量即可。")
+        return 0
+    print(f"  ❌ prices WS **未见心跳 'h'**(只见 {len(prices_any)} 个非心跳帧)。")
+    print("     若该盘口确实安静(无赔率推送)却仍无 'h' → 证实 prices WS 不发心跳:")
+    print("     #109 的帧-gap 判活在空闲盘口会误判 dead,judging 须改(close 即时 reload + 放宽/取消帧-gap)。")
+    print("     建议:加长 --observe-sec、确认盘口真安静(无赔率帧)再下结论。")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="OE SockJS heartbeat-period probe (zero-order)")
+    p = argparse.ArgumentParser(description="OE prices-WS idle-heartbeat probe (#109, zero-order/zero-reload)")
     p.add_argument("--config", required=True, help="path to arb_config.json")
+    p.add_argument("--sport-id", required=True, help="competition 的 sport_id(event_type_id)")
+    p.add_argument("--competition-id", required=True, help="competition_id")
     p.add_argument("--headed", action="store_true", help="强制可见浏览器(亲眼看页面)")
-    p.add_argument("--observe-sec", type=float, default=180.0, help="静默观测秒数(默认 180,建议 ≥ 数个心跳周期)")
+    p.add_argument("--observe-sec", type=float, default=600.0, help="静默观测秒数(默认 600,空闲盘口需覆盖多个心跳周期)")
     args = p.parse_args(argv)
     return asyncio.run(run(args))
 

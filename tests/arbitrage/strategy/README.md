@@ -61,7 +61,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **前置**: strategy 在循环 N 发出 submit A;execution 因残留挂单走 cancel-only session,丢弃 A
 **输入**: 进入循环 N+1
 **期望**:
-- strategy 重新读 cache.order_book / matched_pair / leg_settled
+- strategy 重新读 cache.order_book / matched_pair(#108:不再读 `leg_settled`;执行健康由 Risk liveness gate 统一管,strategy 不读)
 - 重新计算意图(可能是 B,不是 A)
 - 重新调 submit
 **验收**: strategy 内部无"上一轮 A 在等"的状态机;每轮独立决策
@@ -129,7 +129,11 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **期望**: 每次调用都即时算,Strategy 端无中间 cache
 **验收**: Strategy 代码不持有 `_way_rebate_cache` / `_last_rebate` 等字段
 
-### strategy-4.15: 健康检查互斥 pre-check —— 健检期间放弃机会(Q19,2026-05-21)
+### ~~strategy-4.15: 健康检查互斥 pre-check~~ —— 已退役(#108,2026-06-16)
+
+> ⚠️ **失效(#108)**:strategy⊥健康检查互斥退役。strategy 不再订 `health_check.*`、无 `_hc_running`、无 pre-check。
+> 原因:执行页 reload(撞下单的真正理由)已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、OE 下单
+> `page.evaluate` 与焦点无关,不冲突。详见 synchronization §8.6 / refactor #108。以下为迁移前记录。
 
 **前置**: 任一 venue 健康检查 tick 正在跑(strategy 已收到 `health_check.started`,本地 `_health_check_active=true`)
 **输入**: 一个满足阈值的套利机会到达,strategy 进入决策流
@@ -160,7 +164,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - 该次套利结束(双腿 terminal/timeout/放弃)→ 丢弃快照;下一轮重新取**新鲜**快照
 **验收**:
 - way_rebate **不从 cache 读**(cache 没有),是快照里冻结的预算结果
-- **安全闸走 live 不走快照**:Q19 健康检查互斥(4.15,退役中)与 RiskEngine 余额/venue-liveness 门控都读最新 live 状态;Strategy 不读取 venue liveness
+- **安全闸走 live 不走快照**:Q19 健康检查互斥(4.15,**已退役 #108**)与 RiskEngine 余额/venue-liveness 门控都读最新 live 状态;Strategy 不读取 venue liveness
 - 快照不跨轮持久(与 4.9 每轮重算一致);strategy 不持有跨轮快照字段
 - 实现自建(NT 无原生读隔离快照):持仓 `pickle` 深拷贝,订单簿冻取所需值;不依赖 `Cache.snapshot_position`(那是 netting 归档,非读隔离)
 
@@ -327,8 +331,8 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.16**(`test_different_pairs_not_blocked`):不同 pair 各自 `try_enter` 成功 → 各派发各 fire(per-pair 不互相阻塞)。
 - gate 自身单测见 `tests/arbitrage/common/test_pair_inflight.py`(并发放弃 / 不同 pair 独立 / 未 fire 释放 / fire→执行交接持有到 session 归 0 / fire 后 release_eval no-op / 负计数防御)。**#105 ②:无 max-hold、无 `clear_all`**。设计 = synchronization.md §7。
 
-### strategy-4.framework.eval.17:健康检查互斥(§6.10 §7.6,#88;#105 ② 后不再清闸)
-- **.17**(`test_health_check_active_skips_fire`):`_on_health_check_started` 置 `_hc_running` 后 `on_data` → `_route_eval` 见 `_hc_running` 非空 → **不派发评估**(`loop.tasks` 空,arb_action 0 次)。补 §6.10 缺失的 strategy⊥健康检查互斥。`_on_health_check_finished` **仅移除 source**(#105 ② 后不再 `clear_all`、不再依赖 `leg_settled`)。
+### ~~strategy-4.framework.eval.17:健康检查互斥~~ —— 已删除(#108,2026-06-16)
+> 测试 `test_health_check_active_skips_fire` 已删除;strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)退役。详见 synchronization §8.6。
 
 > **已删除(#105 ②,2026-06-15,用户"都撤")**:旧 eval.18/.19(健检 `finished`→`clear_all` 兜底)与 eval.20-22(`try_enter` desync A5 兜底)随 max-hold / clear_all / A5 一并退役。in-flight 出口改由 opportunity barrier 出口 + session `exec_started`↔watchdog 原子保证(synchronization.md §7.3),单测见 `test_session.py`(watchdog 原子 / 出口对称)+ `test_engine_barrier.py`(barrier deny/timeout `release_eval`)。
 

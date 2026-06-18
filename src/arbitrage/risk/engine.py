@@ -24,14 +24,21 @@ from nautilus_trader.model.instruments import BinaryOption
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import order_intent
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
 
 
 class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
     # ── 注入(launcher 在 kernel 原生构造后调用)─────────────────────
-    def configure_arb(self, params: ArbRiskParams) -> None:
+    def configure_arb(
+        self,
+        params: ArbRiskParams,
+        *,
+        venue_liveness: VenueExecutionLiveness | None = None,
+    ) -> None:
         self._arb_params = params
+        self._arb_venue_liveness = venue_liveness
 
     @property
     def _params(self) -> ArbRiskParams:
@@ -40,6 +47,8 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     # ── NT 拦截 hook(覆盖 cpdef,签名须与父类一致:instrument, order)──
     def _check_order(self, instrument, order) -> bool:
         if not super()._check_order(instrument, order):  # NT: price/quantity/GTD
+            return False
+        if not self._check_required_venues_alive(order):
             return False
         if not self._check_balance(instrument, order):
             return False
@@ -108,6 +117,45 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
                 total += o.leaves_qty.as_double() * float(o.price)
         return total
 
+    # ── 应用层:venue execution liveness(跨 venue 同机会 fail-closed)────
+    def _check_required_venues_alive(self, order) -> bool:
+        liveness = getattr(self, "_arb_venue_liveness", None)
+        if liveness is None:
+            return True
+        required = self._required_venues(order)
+        missing = sorted(venue for venue in required if not liveness.venue_alive(venue))
+        if missing:
+            self._deny_order(
+                order=order,
+                reason=f"venue liveness gate: not alive={','.join(missing)}",
+            )
+            return False
+        return True
+
+    def _required_venues(self, order) -> set[str]:
+        meta = meta_from_order(order)
+        if meta is None:
+            return {str(order.instrument_id.venue.value).upper()}
+
+        venues = {
+            venue
+            for leg_key in meta.expected_legs
+            for venue in [self._venue_from_leg_key(leg_key)]
+            if venue is not None
+        }
+        if venues:
+            return venues
+        return {str(order.instrument_id.venue.value).upper()}
+
+    @staticmethod
+    def _venue_from_leg_key(leg_key: str) -> str | None:
+        prefix = str(leg_key).split(":", 1)[0].lower()
+        if prefix in {"pm", "polymarket"}:
+            return "POLYMARKET"
+        if prefix in {"oe", "orbitexch"}:
+            return "ORBITEXCH"
+        return None
+
     # ── 应用层:组合级硬停三门限(Q16)────────────────────────────────
     def _check_rebate_gates(self, order) -> bool:
         if order_intent(order) == "recovery":
@@ -129,12 +177,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
                 self._deny_order(order=order, reason=f"match_sl gate: pair={pair_id} min={min_rebate:.4f}<{params.match_sl}")
                 return False
 
-        # 3. global_sl + settled gate:None(任一 active pair 一腿未结算)→ fail-closed deny
+        # 3. global_sl:执行健康不再借 `global_min_rebate_sum is None` 表达,由 liveness gate 负责。
         global_sum = pf.global_min_rebate_sum(order.account_id)
-        if global_sum is None:
-            self._deny_order(order=order, reason="settled gate: global_min_rebate_sum is None (unsettled leg) → fail-closed")
-            return False
-        if global_sum < params.global_sl:
+        if global_sum is not None and global_sum < params.global_sl:
             self._deny_order(order=order, reason=f"global_sl gate: sum={global_sum:.4f}<{params.global_sl}")
             return False
         return True

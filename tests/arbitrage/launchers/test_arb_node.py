@@ -13,8 +13,8 @@ from py_clob_client_v2.exceptions import PolyApiException
 
 import src.arbitrage.bootstrap as bootstrap
 from launchers import arb_node
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.debug.config import DebugConfig
 
@@ -40,6 +40,11 @@ def test_build_trading_node_config_has_pm_oe_data_exec_clients():
     assert "POLYMARKET" in nc.exec_clients
     assert "ORBITEXCH" in nc.exec_clients
     assert str(nc.trader_id) == "ARBITRAGE-001"
+    assert nc.exec_engine.reconciliation is True
+    assert nc.exec_engine.open_check_interval_secs is None
+    assert nc.exec_engine.position_check_interval_secs == 300.0  # #110:连续 position 对账驱动 PM merge/redeem + OE liveness
+    assert nc.exec_engine.inflight_check_interval_ms == 2_000
+    assert nc.timeout_connection == 180.0
 
 
 def test_build_trading_node_config_includes_credentials_from_cfg():
@@ -53,8 +58,8 @@ def test_build_trading_node_config_includes_credentials_from_cfg():
 
 def test_prepare_runtime_state_no_debug():
     cfg = _cfg()
-    leg, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
-    assert isinstance(leg, LegSettledRegistry)
+    liveness, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
+    assert isinstance(liveness, VenueExecutionLiveness)
     assert isinstance(pair, PairRegistry)
     from src.arbitrage.common.pair_inflight import PairInFlightGate
     assert isinstance(inflight, PairInFlightGate)   # §6.10 §7:per-pair 闸进程级单例
@@ -63,7 +68,7 @@ def test_prepare_runtime_state_no_debug():
 
 def test_prepare_runtime_state_enabled_debug():
     cfg = _cfg(debug={"enabled": True})
-    leg, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
+    liveness, pair, inflight, dbg = arb_node.prepare_runtime_state(cfg)
     assert isinstance(dbg, DebugConfig)
     assert dbg.enabled is True
 
@@ -97,10 +102,10 @@ def test_bootstrap_and_build_full_call_sequence():
 
     with patch.object(arb_node, "install_arbitrage_engines") as install_mock, \
          patch.object(arb_node, "wire_arbitrage_runtime") as wire_mock:
-        node, leg, pair = arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
+        node, liveness, pair = arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
 
     assert node is fake_node
-    assert isinstance(leg, LegSettledRegistry)
+    assert isinstance(liveness, VenueExecutionLiveness)
     assert isinstance(pair, PairRegistry)
 
     install_mock.assert_called_once()
@@ -112,7 +117,7 @@ def test_bootstrap_and_build_full_call_sequence():
     _, kwargs = wire_mock.call_args
     assert kwargs["params"].share == 50.0
     assert kwargs["params"].fx == 1.5
-    assert kwargs["leg_settled"] is leg
+    assert kwargs["venue_liveness"] is liveness
 
 
 def test_bootstrap_populates_arb_context():
@@ -122,18 +127,18 @@ def test_bootstrap_populates_arb_context():
 
     with patch.object(arb_node, "install_arbitrage_engines"), \
          patch.object(arb_node, "wire_arbitrage_runtime"):
-        node, leg, pair = arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
+        node, liveness, pair = arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
 
     ctx = bootstrap.get_arb_context()
-    assert ctx.leg_settled is leg
+    assert ctx.venue_liveness is liveness
     assert ctx.pair_registry is pair
     assert ctx.pm_session_timeout_secs == 45.0
-    assert ctx.pm_health_interval_secs == 90.0
     assert ctx.oe_session_timeout_secs == 45.0
-    # oe_health_interval_secs 死接线已删:OE 健康 cadence 经 OrbitExchDataClientConfig 直传
+    # #109/#110:PM/OE 健康 interval 死接线均已删(HealthCheckLoop 退役)
+    assert not hasattr(ctx, "pm_health_interval_secs")
     assert not hasattr(ctx, "oe_health_interval_secs")
+    assert not hasattr(ctx, "pm_positions_fetcher")
     assert ctx.pm_settlement is None      # slice 6 not yet wired
-    assert ctx.pm_positions_fetcher is None
 
 
 def test_bootstrap_install_invoked_with_debug_config_when_enabled():
@@ -169,7 +174,7 @@ def test_main_parses_config_and_runs(tmp_path, monkeypatch):
 
     fake_node = MagicMock()
     monkeypatch.setattr(arb_node, "bootstrap_and_build",
-                        lambda cfg, **kw: (fake_node, LegSettledRegistry(), PairRegistry()))
+                        lambda cfg, **kw: (fake_node, VenueExecutionLiveness(), PairRegistry()))
 
     rc = arb_node.main(["--config", str(cfg_path)])
     assert rc == 0
@@ -290,7 +295,7 @@ def test_main_disposes_even_on_run_exception(tmp_path, monkeypatch):
     fake_node = MagicMock()
     fake_node.run.side_effect = RuntimeError("boom")
     monkeypatch.setattr(arb_node, "bootstrap_and_build",
-                        lambda cfg, **kw: (fake_node, LegSettledRegistry(), PairRegistry()))
+                        lambda cfg, **kw: (fake_node, VenueExecutionLiveness(), PairRegistry()))
 
     with pytest.raises(RuntimeError, match="boom"):
         arb_node.main(["--config", str(cfg_path)])

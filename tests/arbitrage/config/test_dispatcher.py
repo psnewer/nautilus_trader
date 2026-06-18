@@ -104,32 +104,19 @@ def test_orbitexch_data_client_config_maps_credentials():
     assert cc.page_timeout == 90000
 
 
-def test_orbitexch_data_client_config_maps_health_params():
-    """OE 健康检查 cadence + Phase 2 安全闸经 dispatcher 进 OrbitExchDataClientConfig
-    (宿主=DataClient,config 自包含;异于 PM 走 ArbContext kwarg)。"""
-    cfg = _cfg(venues={"orbitexch": {
-        "health_interval_sec": 120.0,
-        "staleness_timeout_sec": 300,
-        "health_check_exec_reload_enabled": True,
-    }})
+def test_orbitexch_data_client_config_maps_staleness():
+    """#109:OE staleness_timeout(WS handler liveness timeout)经 dispatcher 进 OrbitExchDataClientConfig。
+    旧 `health_interval_sec`(HealthCheckLoop tick)已随 #109 退役删除。"""
+    cfg = _cfg(venues={"orbitexch": {"staleness_timeout_sec": 300}})
     cc = to_orbitexch_data_client_config(cfg)
-    assert cc.health_interval_secs == 120.0
     assert cc.staleness_timeout_secs == 300
-    assert cc.health_check_exec_reload_enabled is True
+    assert not hasattr(cc, "health_interval_secs")   # 已退役
 
 
-def test_orbitexch_data_client_config_health_defaults():
-    """未显式配置时:cadence 取 schema 默认(120/300),Phase 2 闸 #75 默认开(已 live 验)。"""
+def test_orbitexch_data_client_config_staleness_default():
+    """未显式配置时:staleness 取 schema 默认(300)。"""
     cc = to_orbitexch_data_client_config(_cfg())
-    assert cc.health_interval_secs == 120.0
     assert cc.staleness_timeout_secs == 300
-    assert cc.health_check_exec_reload_enabled is True
-
-
-def test_orbitexch_data_client_config_health_gate_can_disable():
-    """可经 venues.orbitexch 显式关回(运营兜底)。"""
-    cfg = _cfg(venues={"orbitexch": {"health_check_exec_reload_enabled": False}})
-    assert to_orbitexch_data_client_config(cfg).health_check_exec_reload_enabled is False
 
 
 def test_orbitexch_credentials_empty_string_fallback():
@@ -198,14 +185,12 @@ def test_arb_risk_params_maps_fields():
 
 
 def test_arb_context_init_kwargs_maps_execution_section():
-    cfg = _cfg(execution={"tracking_timeout_sec": 45.0,
-                          "health_check_interval_sec": 90.0})
+    cfg = _cfg(execution={"tracking_timeout_sec": 45.0})
     kw = to_arb_context_init_kwargs(cfg)
     assert kw["pm_session_timeout_secs"] == 45.0
-    assert kw["pm_health_interval_secs"] == 90.0
     assert kw["oe_session_timeout_secs"] == 45.0
-    # OE 健康 interval 不再走 ArbContext(死接线已删);经 OrbitExchDataClientConfig 直传,见
-    # test_orbitexch_data_client_config_maps_health_params。
+    # #110/#109:PM/OE 健康 interval 均退役 —— 不再进 ArbContext。
+    assert "pm_health_interval_secs" not in kw
     assert "oe_health_interval_secs" not in kw
 
 

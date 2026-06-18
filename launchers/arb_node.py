@@ -6,7 +6,7 @@
 启动顺序(refactor.md #41 + bootstrap.py 注释):
   1. `install_arbitrage_engines(debug_config=...)`  →  替换 kernel.Portfolio / .LiveRiskEngine
   2. `TradingNode(config)`                          →  kernel 原生构造 ArbitragePortfolio / ArbitrageLiveRiskEngine
-  3. `prepare_arb_context(...)`                     →  填好 leg_settled / pair_registry / 间隔等
+  3. `prepare_arb_context(...)`                     →  填好 venue_liveness / pair_registry / 间隔等
   4. `node.add_*_client_factory(...)` × 4           →  PM+OE × data+exec
   5. `node.build()`                                  →  factory.create 读 ArbContext 构造 client
   6. `wire_arbitrage_runtime(node, params=...)`     →  注入 ArbRiskParams 到已构造的 Portfolio/RiskEngine
@@ -51,9 +51,9 @@ from nautilus_trader.model.identifiers import TraderId
 from src.arbitrage.bootstrap import install_arbitrage_engines
 from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import wire_arbitrage_runtime
-from src.arbitrage.common.leg_settled import LegSettledRegistry
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config import ArbConfig
 from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.dispatcher import to_arb_context_init_kwargs
@@ -98,7 +98,12 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
     return TradingNodeConfig(
         trader_id=TraderId("ARBITRAGE-001"),
         logging=LoggingConfig(log_level="INFO"),
-        exec_engine=LiveExecEngineConfig(reconciliation=False),
+        exec_engine=LiveExecEngineConfig(
+            reconciliation=True,
+            # #110:开连续 position 对账(全局)—— 周期调 venue `generate_position_status_reports`:
+            # PM 据此跑 merge/redeem(fire-and-forget),OE 据此刷 venue_position_alive(WS 新鲜则不 reload)。
+            position_check_interval_secs=300.0,
+        ),
         data_clients={
             POLYMARKET: to_polymarket_data_client_config(cfg),
             ORBITEXCH: to_orbitexch_data_client_config(cfg),
@@ -108,20 +113,20 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             POLYMARKET: to_polymarket_exec_client_config(cfg),
             ORBITEXCH: to_orbitexch_exec_client_config(cfg),
         },
-        timeout_connection=120.0,    # slice 7B(#53):PM event_slug_builder + load 100 events ~35s,需要>原 20s
+        timeout_connection=180.0,    # #105:启动对账前需覆盖 OE 登录 + PM 初次 instrument load 最坏耗时
         timeout_disconnection=10.0,
         timeout_post_stop=1.0,
     )
 
 
 def prepare_runtime_state(cfg: ArbConfig):
-    """共享 runtime 件:`(LegSettledRegistry, PairRegistry, PairInFlightGate, DebugConfig | None)`。
+    """共享 runtime 件:`(VenueExecutionLiveness, PairRegistry, PairInFlightGate, DebugConfig | None)`。
 
-    LegSettledRegistry / PairRegistry / PairInFlightGate 是 launcher 持有的进程级单例,经
+    VenueExecutionLiveness / PairRegistry / PairInFlightGate 是 launcher 持有的进程级单例,经
     ArbContext 传给 factory + Actor 装配(slice 8)。`PairInFlightGate`(§6.10 §7)被 strategy
     评估入口 + execution session 共享,做 per-pair 串行。
     """
-    return LegSettledRegistry(), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
+    return VenueExecutionLiveness((POLYMARKET, ORBITEXCH)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
 
 
 def register_factories(node: TradingNode) -> None:
@@ -156,7 +161,6 @@ def add_actors(
     *,
     pair_registry: PairRegistry,
     pair_inflight: PairInFlightGate | None = None,
-    leg_settled: LegSettledRegistry | None = None,
 ) -> None:
     """slice 8A:**必须在 `node.build()` 之后调用**(provider 由 data factory 构造后回写到
     `ArbContext.{pm,oe}_instrument_provider`,Refresher 取同一实例确保 cache add 视图一致)。
@@ -212,13 +216,13 @@ def bootstrap_and_build(
     cfg: ArbConfig,
     *,
     node_factory=TradingNode,
-) -> tuple[TradingNode, LegSettledRegistry, PairRegistry]:
+) -> tuple[TradingNode, VenueExecutionLiveness, PairRegistry]:
     """主 orchestrator(slice 6:不接 Actors,留 slice 8)。
 
     `node_factory` 注入便于 test mock;生产路径走默认 `TradingNode`。
-    返:`(node, leg_settled, pair_registry)` —— 后两个供 slice 8 Actors 装配复用同一对象。
+    返:`(node, venue_liveness, pair_registry)` —— 后两个供 slice 8 Actors 装配复用同一对象。
     """
-    leg_settled, pair_registry, pair_inflight, debug_config = prepare_runtime_state(cfg)
+    venue_liveness, pair_registry, pair_inflight, debug_config = prepare_runtime_state(cfg)
 
     # 1. 替换 kernel 类(必须在 TradingNode 之前)
     install_arbitrage_engines(debug_config=debug_config)
@@ -229,12 +233,11 @@ def bootstrap_and_build(
     # 3. 准备 ArbContext(必须在 node.build 之前;factory.create 读)
     #    `to_arb_context_init_kwargs(cfg)` 自带 oe_scraper_config / aliases(slice 7A)
     prepare_arb_context(
-        leg_settled=leg_settled,
+        venue_liveness=venue_liveness,
         pair_registry=pair_registry,
         pair_inflight=pair_inflight,    # §6.10 §7:strategy + execution 共享同一份 per-pair 闸
         debug_config=debug_config,
-        pm_settlement=None,             # TODO slice 8/9:PolymarketSettlement 接线
-        pm_positions_fetcher=None,      # TODO slice 8:positions_fetcher 接线
+        pm_settlement=None,             # TODO slice 8/9:PolymarketSettlement 接线(#110:用 NT 对账触发)
         **to_arb_context_init_kwargs(cfg),
     )
 
@@ -248,13 +251,13 @@ def bootstrap_and_build(
     wire_arbitrage_runtime(
         node,
         params=to_arb_risk_params(cfg),
-        leg_settled=leg_settled,
+        venue_liveness=venue_liveness,
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
-    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight, leg_settled=leg_settled)
+    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight)
 
-    return node, leg_settled, pair_registry
+    return node, venue_liveness, pair_registry
 
 
 def preflight_polymarket_trading(cfg: ArbConfig) -> None:

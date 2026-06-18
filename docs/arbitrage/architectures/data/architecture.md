@@ -87,7 +87,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
         """**新开/刷新统一入口**(对齐老 odds_client `_open_or_reload_page`;#68)。
         page 不存在 → create_page + 挂 WS 监听(#67 先挂后 goto)+ goto;
         已存在 → reload(page-level 监听跨 reload 存活,#67 实测,无需重挂)。
-        健康检查 §4.3 reload 将来复用本方法的 reload 分支。"""
+        健康检查只复用本方法的 competition 页 reload 分支;execution 页 reload 已迁到
+        OrbitExchExecutionClient 的 reload-then-report。"""
         url = f"{base_url}/customer/sport/{sport_id}/competition/{competition_id}"
         # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),对齐老 odds_client:
         # networkidle + cfg.venues.orbitexch.page_load_timeout_sec → page_timeout,默认 120s。
@@ -127,8 +128,13 @@ class OrbitExchDataClient(LiveMarketDataClient):
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
 - **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
 - **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
-- **健康检查 reload(§4.3,Phase 1 ✅ 已接线 / Phase 2 ✅ live 验完成)**:本 DataClient 是健康检查宿主。`_connect` 挂 `HealthCheckLoop`;Phase 1 两维度:**时间维度** = `_on_price_frame` 写 `_comp_last_update_ns[page_key]`,`_run_health_check` 发现 `now-last_update>config.staleness_timeout_secs` → 复用 `_open_or_reload_competition_page` 的 reload 分支(赔率防冻);**连接重试维度** = `set(_market_to_page_key.values())-set(_comp_pages)`(已订阅未开)→ 本 tick 补开,失败吞掉、留下一次健康检查重试(对等 PM `_delayed_connect`)。Q19 互斥经 DataClient 订 `execution.*` 自维护 ref-count(`_is_execution_active`),**per-venue(#89):按 msg instrument venue 过滤、只数 OE 自己的腿**(OE reload 只跟 OE 下单冲突,不跟 PM;详见 `_cross-cutting/synchronization.md §2.1`)。**Phase 2 ✅ 代码已接(A 方案)+✅ 真实 reload 已验(#75)**:状态维度 `leg_settled.has_any_unsettled()` → `_reload_execution_page()` 经共享 `browser_manager.get_page("execution")` reload 交易页(`leg_settled` 经 factory 注入;安全闸 `config.health_check_exec_reload_enabled` 默认 True,可配置关回)。2026-06-08 真账户零下单探针确认:已登录 execution 页 reload 不重现登录弹窗,且 `CURRENT_BETS` 如期重推。落点/数据源/A vs B 见 execution §4.3。
-  > ⚠️ **失效指针(#105,2026-06-13,设计/待落地)**:迁移到 NT 原生 reconciliation 后,**Phase 2(execution 页 reload `_reload_execution_page` + `leg_settled` 互斥让路 + `_is_execution_active` ref-count)整体迁出本 DataClient**,搬到 `OrbitExchExecutionClient`(reload-then-report,见 execution `§4.3bis`)→ 本 DataClient **不再持 `leg_settled` / 不再订 `execution.*` 让路 / 不再 reload execution 页**。**Phase 1(competition/OBD 页赔率防冻)留在本 DataClient**(它持 competition 页),但**检测维度改为 PM 式 WS 存活**(SockJS 服务端心跳帧做存活锚 + idle 超时,取代 `_comp_last_update_ns` 业务帧 staleness;OE 不能主动 ping,只能被动锚心跳,见 execution `§4.3bis(4)`)——待落地。
+- **competition 页存活 = WS handler 自洽封装(#109,2026-06-16,✅ 已落地代码 + 离线测 + 心跳已 live 验证 prices ~25s 空闲)**:**存活检测封装进 `OrbitExchWebSocketHandler`**(像 PM 把 ping-timeout 藏在 pyo3 WS client 里),DataClient 只收事件、对称 PM。**单一真理源 = 本节**;handler 是契约定义者,DataClient 是消费者(规则 3 主判据:单一自然归属 → 不单独成章)。
+  - **handler 内部(契约定义者)**:可选传 `clock` / `loop` / `liveness_timeout_secs`(传了才开存活;**执行页 general WS 不传 → 行为不变**)。`_on_frame_received` 每帧(含 SockJS 心跳 `'h'`)更新 `_last_frame_ns`(廉价);单个 **lazy self-rescheduling** NT clock alert 到期读它 —— 还活着(`now-last_frame<timeout`)就重排到 `last_frame+timeout`,死了(心跳停=静默死亡)fire `on_disconnect`。**prices WS close** 也 fire `on_disconnect`(干净关闭快路)。**零 per-frame timer churn**(每帧只写 ns,不碰 timer)。暴露 `on_disconnect(callback)`。
+  - **DataClient(消费者,对称 PM)**:开页时 `handler.on_disconnect(lambda pk=page_key: <schedule reload>)`;收到 → reload 该页(`_reload_comp_on_disconnect`,带 `_disconnecting` / `_comp_reloading` / `_COMP_RELOAD_COOLDOWN_SECS` 三重防护防自触发/关停/风暴)。**DataClient 无 HealthCheckLoop、无周期 scan、无自身 watchdog** —— 纯事件驱动(`on_disconnect` 事件 + 开页失败重试),与 PM `_schedule_delayed_connect` 对称。
+  - **connect-retry 事件化**:`_ensure_competition_page` / 开页失败 → `create_task` 延迟重试(像 PM `_delayed_connect`),不再靠 health tick 补开。
+  - **机制差异(诚实记录)**:PM WS client **主动发 ping** → pong 超时 disconnect;OE handler **被动盯入向帧(含心跳)+ close** → fire `on_disconnect`。**接口对称、内脏不同**。
+  - ✅ **前提已验证(2026-06-16 `oe_heartbeat_probe.py` re-probe 空闲盘口)**:被动盯心跳依赖赔率(prices)WS 真发心跳——实测**空闲盘口** 600s 内 prices 仅 5 个 data 帧、却有 **23 个心跳 `'h'`(median 25.0s,max 35.4s)** → prices WS **空闲时照发心跳**,安静市场靠心跳保活、不误判 disconnect;`staleness_timeout=300s`(≈12 个心跳余量)充足。(此前据 2026-06-13 活跃盘口 probe 误以为 prices 无心跳,已证伪。)
+  - **退役**:`HealthCheckLoop`(OE DataClient 不再用;**PM ExecClient 也已删 #110**,merge/redeem 改 NT 连续 position 对账驱动)、`_run_health_check` staleness 维度、DataClient 侧 `_comp_last_frame_ns`/`_mark_comp_frame`/`_on_comp_ws_close`/watchdog(全搬进 handler)。`leg_settled` 状态维度更早已退役(#108);执行真相可信度由 `OrbitExchExecutionClient` 写 `VenueExecutionLiveness`(见 execution §4.3bis / synchronization §8.5)。
 
 **纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。
 
@@ -172,7 +178,7 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 | 横切 | 约束 |
 |---|---|
 | Q9 6-key | OE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider._parse_instrument` 补(seam,本 slice 落地结构,extraction 待实写)|
-| §4.3 OE 健康检查 | 页面 reload 机制宿主 = `OrbitExchDataClient`(它持 page);本文件留 seam,真接线见 execution §4.3 |
+| §4.3 OE 健康检查 | **历史设计已失效**:execution 页 reload 宿主已迁到 `OrbitExchExecutionClient`;本文件只保留 competition 页健康检查,见 execution §4.3bis |
 | 订阅去重 | NT `DataEngine` 引用计数自动,客户端不自管 |
 | **Q11.A Debug 行情掉包**(#39) | `Debug{PM,OE}DataClient`(`src/arbitrage/debug/data_clients.py`)子类化 `_handle_data`,按 `DebugConfig.mock_data(ODDS)` 替换 / 注入;两 factory 读 `ArbContext.debug_config`,`enabled` → 装 Debug 子类,否则装生产。框架只提供 `_maybe_substitute(data) → data|None` 钩子(默认 passthrough),具体替换算法由 user 按 mock_data schema 子类化覆盖。详见 `_cross-cutting/debug-injection.md` |
 | **#49 OE 透 inPlay 到 instrument.info**(slice 9) | `OrbitExchDataClient._on_price_frame` 解析 `marketDefinition.inPlay` 后调 module 级 `write_inplay_to_instrument_info(cache, iid, in_play)` → 写 `cache.instrument(iid).info["in_play"]`(NT cache-resident mutable dict)。Strategy `OpportunitySnapshot` 派生 in_play 从这读,**避走 SignalStore 二跳**;PM-only 事件触发评估时仍能读到 OE 最近一次写入值。Helper 防御:instrument 不在 cache → 跳过不 raise(冷启动场景)。详见 `architectures/strategy/architecture.md §3.8` |
@@ -186,5 +192,5 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 - [x] OE `OrbitExchLiveDataClientFactory`(同目录 `factories.py`)
 - [x] PM `ArbPolymarketInstrumentProvider` + `ArbPolymarketLiveDataClientFactory`(seam,extraction TODO)+ enricher 单测 4 passed
 - [ ] **TODO Step 2 续**:真 PM 6-key extraction(gamma `/events/{id}` 调用 + ticker 拆解);OE scraper DOM 抽 `start_ts`
-- [ ] **TODO**:OE DataClient 接 `HealthCheckLoop`(execution §4.3 页面 reload 机制宿主)
+- [x] OE DataClient 接 `HealthCheckLoop`:仅 competition 页 staleness / 补开;execution 页 reload-then-report 由 OE ExecClient 承担
 - [ ] /live-test:双 venue OrderBookDelta 全链路 → strategy 收
