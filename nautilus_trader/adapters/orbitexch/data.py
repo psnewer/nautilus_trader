@@ -285,6 +285,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 clock=self._clock,
                 liveness_timeout_secs=self._config.staleness_timeout_secs,
                 liveness_name=f"comp_ws_liveness:{page_key}",
+                liveness_ws_type="prices",
             )
             handler.on_price_update(self._on_price_frame)
             handler.on_disconnect(lambda reason, pk=page_key: self._on_comp_disconnect(pk, reason))  # #109:断开 → reload

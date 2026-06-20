@@ -63,6 +63,11 @@ class PolymarketSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     polygon_rpc_url: str = "https://polygon-rpc.com/"
     proxy_url: str | None = None
     signature_type: int = 0
+    # 透传 NT 上游 PolymarketExecClientConfig;默认 None = 上游默认(当前等价不重试)。
+    # 若启用会同时影响 PM CLOB submit/cancel/report,真钱前需显式评估。
+    max_retries: int | None = None
+    retry_delay_initial_ms: int | None = None
+    retry_delay_max_ms: int | None = None
     # 凭证(env-only,见 loader §4)
     clob_api_key: str | None = None
     clob_api_secret: str | None = None

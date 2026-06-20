@@ -83,6 +83,9 @@ def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConf
         base_url_http=pm.clob_url,
         base_url_ws=_polymarket_ws_base_url(pm.ws_url),
         proxy_url=pm.proxy_url,
+        max_retries=pm.max_retries,
+        retry_delay_initial_ms=pm.retry_delay_initial_ms,
+        retry_delay_max_ms=pm.retry_delay_max_ms,
     )
 
 

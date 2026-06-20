@@ -155,6 +155,45 @@ def test_liveness_frame_resets_no_disconnect():
     assert fired == []
 
 
+def test_liveness_filters_by_ws_type():
+    """oe-ws-liveness.6:competition 页只让 prices 帧刷新存活,orders 心跳不能掩盖赔率 feed 缺失。"""
+    clock = TestClock()
+    h = OrbitExchWebSocketHandler(
+        page=None,
+        clock=clock,
+        liveness_timeout_secs=30.0,
+        liveness_name="t",
+        liveness_ws_type="prices",
+    )
+    fired = []
+    h.on_disconnect(lambda reason: fired.append(reason))
+    h._running = True
+    h._last_frame_ns = clock.timestamp_ns()
+    h._schedule_liveness()
+
+    for handler in clock.advance_time(secs_to_nanos(20.0)):
+        handler.handle()
+    h._on_frame_received("orders", "h")
+    for handler in clock.advance_time(secs_to_nanos(31.0)):
+        handler.handle()
+
+    assert fired == ["liveness_timeout"]
+
+
+def test_liveness_reschedule_cancels_existing_timer_name():
+    """oe-ws-liveness.5:LiveClock 在 callback 内仍占用同名 timer,重排前必须先 cancel。"""
+    clock = _StrictNameClock(now_ns=secs_to_nanos(31.0))
+    h = OrbitExchWebSocketHandler(page=None, clock=clock, liveness_timeout_secs=30.0, liveness_name="t")
+    h._running = True
+    h._last_frame_ns = secs_to_nanos(20.0)  # 未超时:触发活路径重排到 last_frame+timeout
+    clock.timer_names.append("t")
+
+    h._on_liveness_alert(None)
+
+    assert clock.cancelled == ["t"]
+    assert clock.scheduled == [("t", secs_to_nanos(50.0))]
+
+
 def test_close_prices_fires_disconnect():
     """oe-ws-liveness.4:prices WS close → fire on_disconnect("close:prices")(干净关闭快路)。"""
     h = OrbitExchWebSocketHandler(page=None)
@@ -177,3 +216,26 @@ class _CapturingLogger:
 
     def error(self, message):
         pass
+
+
+class _StrictNameClock:
+    def __init__(self, now_ns):
+        self._now_ns = now_ns
+        self.timer_names = []
+        self.cancelled = []
+        self.scheduled = []
+
+    def timestamp_ns(self):
+        return self._now_ns
+
+    def cancel_timer(self, name):
+        if name not in self.timer_names:
+            raise KeyError(name)
+        self.timer_names.remove(name)
+        self.cancelled.append(name)
+
+    def set_time_alert_ns(self, *, name, alert_time_ns, callback):
+        if name in self.timer_names:
+            raise KeyError(f"{name} already contained in timer_names")
+        self.timer_names.append(name)
+        self.scheduled.append((name, alert_time_ns))

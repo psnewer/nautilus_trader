@@ -154,6 +154,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
     """
 
     PROCESSED_TRADES_LIMIT = 10_000
+    CANCEL_TERMINAL_DEDUPE_LIMIT = 10_000
 
     def __init__(
         self,
@@ -190,6 +191,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._log.info(f"{config.generate_order_history_from_trades=}", LogColor.BLUE)
         self._log.info(f"{config.log_raw_ws_messages=}", LogColor.BLUE)
         self._log.info(f"{config.ack_timeout_secs=}", LogColor.BLUE)
+        self._cancel_terminal_client_ids: OrderedDict[ClientOrderId, None] = OrderedDict()
 
         account_id = AccountId(f"{name or POLYMARKET_VENUE.value}-001")
         self._set_account_id(account_id)
@@ -218,7 +220,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         # HTTP API
         self._http_client = http_client
-        self._http_client_async = HttpClient(timeout_secs=15)
+        self._http_client_async = HttpClient(timeout_secs=15, proxy_url=config.proxy_url)
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=config.max_retries or 0,
@@ -762,7 +764,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
             instrument = self._cache.instrument(instrument_id)
             if instrument is None:
-                self._log.warning(
+                self._log.debug(
                     f"Cannot handle trade report: instrument {instrument_id} not found "
                     f"(market={polymarket_trade.market}, asset_id={asset_id})",
                 )
@@ -880,12 +882,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         venue_order_id,
         ts_event: int,
     ) -> None:
-        order = self._cache.order(client_order_id) if client_order_id else None
-        if order is not None and getattr(order, "status", None) == OrderStatus.CANCELED:
-            self._log.debug(
-                f"Order {client_order_id!r} already canceled - "
-                "skipping duplicate cancel success event",
-            )
+        if self._cancel_terminal_already_emitted(client_order_id):
             return
 
         self._log.info(
@@ -898,6 +895,38 @@ class PolymarketExecutionClient(LiveExecutionClient):
             venue_order_id=venue_order_id,
             ts_event=ts_event,
         )
+
+    def _cancel_terminal_already_emitted(self, client_order_id) -> bool:
+        if client_order_id is None:
+            return False
+
+        order = self._cache.order(client_order_id)
+        if order is not None and getattr(order, "status", None) == OrderStatus.CANCELED:
+            self._log.debug(
+                f"Order {client_order_id!r} already canceled - "
+                "skipping duplicate cancel terminal event",
+            )
+            return True
+
+        emitted = getattr(self, "_cancel_terminal_client_ids", None)
+        if emitted is None:
+            emitted = OrderedDict()
+            self._cancel_terminal_client_ids = emitted
+
+        if client_order_id in emitted:
+            emitted.move_to_end(client_order_id)
+            self._log.debug(
+                f"Order {client_order_id!r} cancel terminal event already emitted - "
+                "skipping duplicate",
+            )
+            return True
+
+        emitted[client_order_id] = None
+        limit = getattr(self, "CANCEL_TERMINAL_DEDUPE_LIMIT", PolymarketExecutionClient.CANCEL_TERMINAL_DEDUPE_LIMIT)
+        while len(emitted) > limit:
+            emitted.popitem(last=False)
+
+        return False
 
     def _get_neg_risk_for_instrument(self, instrument) -> bool:
         if instrument is None or instrument.info is None:
@@ -1963,13 +1992,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                         "skipping placement event",
                     )
             case PolymarketEventType.CANCELLATION:
-                if order is not None and order.status == OrderStatus.CANCELED:
-                    self._log.debug(
-                        f"Order {client_order_id!r} already canceled - "
-                        "skipping duplicate cancellation event",
-                    )
-                    return
-                self.generate_order_canceled(
+                self._generate_cancel_success_event(
                     strategy_id=strategy_id,
                     instrument_id=instrument_id,
                     client_order_id=client_order_id,

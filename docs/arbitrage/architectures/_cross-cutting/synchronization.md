@@ -263,8 +263,14 @@ Execution barrier 以领域消息为主消费 deny;若需要容错,也可从 `Or
 OPEN
   risk-pass leg 到达 → pending.allowed[leg_key] = SubmitOrder
   risk-denied leg 到达 → DENIED
-  expected_legs 全部 pass → RELEASED
+  expected_legs 全部 pass → CANCEL_ONLY 或 RELEASED
   barrier timeout → TIMED_OUT
+
+CANCEL_ONLY
+  任一 risk-pass leg 的 instrument 有 residual open order
+  且本轮 risk-pass legs 中没有显式撤单腿
+  → 撤 residual,丢弃本轮所有新 submit
+  → 走统一 finish outlet
 
 RELEASED
   release 所有 pending SubmitOrder 到原生 ExecutionEngine._execute_command
@@ -276,10 +282,19 @@ DENIED / TIMED_OUT
   以 zero-session execution 进入统一出口
 ```
 
+**opportunity-level cancel-only(已落地代码 + 离线单测,2026-06-19)**:
+- 归属在 `ArbLiveExecutionEngine` barrier,判定点在 `expected_legs` 全部 Risk pass 之后、release 到任何 venue `ExecutionClient` 之前。
+- 触发条件是:① 任一 risk-pass leg 对应 instrument 在 NT cache 中存在 residual open order;② 本轮 risk-pass legs 中**没有显式撤单腿**。两者同时成立时,整次 opportunity 判定为 cancel-only。
+- “risk-pass legs”指 barrier 已暂存的 `allowed` commands;“撤单腿”必须由 command/metadata 明确表达,当前落地识别 `arb:intent=cancel` / `cancel-only` / `cancel_only`,不能把 barrier 自己即将触发的 residual cancel 反推为撤单腿。当前普通套利 `SubmitOrder` 不带撤单腿,因此 live 验证中“PM residual → PM 撤旧、OE 又开新单”的现象应改为“PM 撤旧、OE 新单也丢弃”。
+- cancel-only 触发后,barrier 不调用 `super()._execute_command` release 任何新 submit;它按 residual 所在 instrument 调用对应 execution client 的 residual cancel 能力,复用 `ArbExecutionSessionMixin._cancel_residual_orders(...)` 的 tracked cancel 与 `PairInFlightGate.exec_count` 生命周期。
+- 对本轮所有新 submit 生成本地 deny/reject 结果,reason 指向 `opportunity cancel-only: residual open orders present`;这些新 submit 不排队、不延后,Strategy 下一轮重新评估后再决定是否重发。
+- 若 residual 存在但 risk-pass legs 中已有显式撤单腿,barrier 不把整次 opportunity 改写为 cancel-only,而按该撤单腿所属语义继续执行;这是为后续显式撤单/补偿动作预留的边界,不是当前普通套利路径。
+- per-client `_begin_session` 的 residual 检查保留为防御性 fallback:无 opportunity metadata、barrier 未接管或非本协议订单仍可在 client 入口退化为单 instrument cancel-only;带完整 metadata 的 opportunity 以 barrier 判定为主,避免跨 venue 半边撤旧半边开新。
+
 **统一出口**:
 - opportunity context 有一个统一 finish outlet,负责清 pending、取消 timer、发布 opportunity finished(若需要)、释放 `PairInFlightGate`。
 - `pair_inflight` **不得**在 Risk deny 分支或 barrier cleanup 分支直接释放;pass / deny / timeout 都必须经该统一出口释放。
-- pass 路径进入 venue 后,现有 per-leg session 的 `_end_session` / cancel-only tracked cancel 仍负责报告 session 完成;最终由 opportunity context 汇总“所有真实 session finished”后走同一 finish outlet。deny / timeout 路径没有 venue session,session 数为 0,立即走同一 outlet。
+- pass 路径进入 venue 后,现有 per-leg session 的 `_end_session` / cancel-only tracked cancel 仍负责报告 session 完成;最终由 opportunity context 汇总“所有真实 session finished”后走同一 finish outlet。deny / timeout 路径没有 venue session,session 数为 0,立即走同一 outlet。opportunity-level cancel-only 若调起 residual cancel,这些 cancel 先进入 `PairInFlightGate.exec_count`;barrier finish outlet 释放 eval 闸时不得绕过 tracked cancel 生命周期。
 
 **timeout**:
 - barrier timeout 使用 NT 原生 clock:`set_time_alert_ns` / `cancel_timer`。
@@ -426,7 +441,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 ### Phase B — 切换(已直接落地,无 flag flip)
 - [x] **B1** `generate_*_reports` 接 `_ensure_exec_snapshot_fresh`(reload-then-report 实时生效)。
 - [x] **B2** DataClient HealthCheckLoop **Phase-2 exec reload 关**:`_reload_execution_page` / `health_check_exec_reload_enabled` 已退役,DataClient 只管 competition 页。
-- [x] **B3** NT reconciliation 配置:`reconciliation=True` + `timeout_connection=180s` + `open/position check 关` + `inflight 开`(`§4.3bis(7)`)。
+- [x] **B3** NT reconciliation 配置:`reconciliation=True` + `timeout_connection=180s` + `open_check_interval_secs=300`(#111:全局连续 order 对账,驱动 order liveness 恢复;OE 健康时只读 `_current_bets` 内存,WS stale 时才 reload) + `position_check_interval_secs=300`(#110:全局连续 position 对账,驱动 PM merge/redeem 与 venue position liveness) + `inflight` 开(`§4.3bis(7)`)。
 - [x] **B4** `leg_settled` 全面退役:删 funnel mark / `_on_current_bets mark_venue` / Portfolio settled gate / strategy settled pre-check。
 - [x] **B5** 退役 `_hc_running` + `health_check.*` + `execution.*` 健康⊥执行互斥(✅ #108,2026-06-16,见 §8.6 同名条)。查证后删:OE 下单 `page.evaluate` 与焦点无关 + competition reload 在另一张页,strategy⊥健康检查 / 健康⊥执行两层互斥的原始理由(执行页 reload 撞下单)已随执行页 reconcile 迁移消失。PM 的 HealthCheckLoop 后来也删了(#110:merge/redeem 改 NT 连续 position 对账驱动、fire-and-forget,不再有执行互斥)。
 - [x] **B6** `PairInFlightGate` **删 max-hold + clear_all + A5**(✅ #105 ②,2026-06-15,独立于 flag 先行)。原"fired 但一腿 session 都没起(全 deny / cancel-only 丢弃)"的漏:全 deny 由 opportunity barrier 出口 `release_eval` 兜(§8.4bis),cancel-only 丢弃由残单 tracked cancel 的 exec_count 兜(§8.4);二者落地后兜底删除安全。(`execution.*` 消息不退役 —— 仍被 OE DataClient 消费,见 §8.6。)

@@ -84,6 +84,25 @@ def test_polymarket_exec_client_config_maps_proxy():
     assert cc.proxy_url == "http://127.0.0.1:7890"
 
 
+def test_polymarket_exec_client_config_maps_retry_params():
+    cfg = _cfg(venues={"polymarket": {
+        "max_retries": 2,
+        "retry_delay_initial_ms": 500,
+        "retry_delay_max_ms": 2_000,
+    }})
+    cc = to_polymarket_exec_client_config(cfg)
+    assert cc.max_retries == 2
+    assert cc.retry_delay_initial_ms == 500
+    assert cc.retry_delay_max_ms == 2_000
+
+
+def test_polymarket_exec_client_config_retry_params_default_none():
+    cc = to_polymarket_exec_client_config(_cfg())
+    assert cc.max_retries is None
+    assert cc.retry_delay_initial_ms is None
+    assert cc.retry_delay_max_ms is None
+
+
 def test_polymarket_credentials_none_passthrough():
     cfg = _cfg()  # 全默认,凭证全 None
     cc = to_polymarket_data_client_config(cfg)

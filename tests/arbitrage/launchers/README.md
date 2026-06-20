@@ -6,14 +6,14 @@
 
 `launchers/arb_node.py` —— NT 节点 launcher 骨架(无 Actors,留 slice 8 完善)。
 
-- ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session/health 字段 / main 调用链路
-- ✅ `test_arb_node.py`:NT exec config 保持启动期 `reconciliation=True`,连续 `open_check_interval_secs=None` / `position_check_interval_secs=None`,默认 in-flight check 开启,`timeout_connection=180s`。
+- ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session 字段,且不再包含 PM/OE health interval 死接线 / main 调用链路
+- ✅ `test_arb_node.py`:NT exec config 保持启动期 `reconciliation=True`;连续 `open_check_interval_secs=300`(#111:驱动 order liveness 恢复);`position_check_interval_secs=300`(#110:驱动 PM merge/redeem + position liveness);默认 in-flight check 开启;`timeout_connection=180s`。
 
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)
 - ✅ OE data factory 真接 scraper(slice 7A,#46)
 - ✅ InstrumentRefresher × 2 + MarketMatchingActor + StrategyEvaluator 接线(slice 8A,#47)
-- ⬜ PolymarketSettlement / positions_fetcher 接线(slice 8B 推迟,`ctx.pm_settlement=None`,`pm_positions_fetcher=None`)
+- ⬜ PolymarketSettlement 接线(slice 8B 推迟,`ctx.pm_settlement=None`;#110 后不再有 `pm_positions_fetcher`)
 - ⬜ `is_execution_active` 真接 in-flight 检测(当前 `lambda: False`,slice 8B/9)
 
 ## Slice 8A 落地(2026-05-29 #47)

@@ -12,8 +12,8 @@ ArbPolymarketExecutionClient —— PM 执行客户端薄子类(Q18c 宿主层)�
 例外:venue 适配器放 `nautilus_trader/adapters/<venue>/`)。**与上游 `execution.py` 同目录但不
 同文件**(`arb_execution.py`)避免 upstream merge 冲突;import 上游类直接子类化。
 
-**集成验证靠实盘**:构造真 client 需 `ClobClient`/`ws_auth`/Data API,离线 unit 测不到;
-本文件可单测的是模块级纯映射 `pm_raw_position_to_settlement`。其余接线经 /live-test 验。
+**验证边界**:真 `ClobClient`/`ws_auth`/Data API 仍靠实盘;离线覆盖纯映射
+`pm_raw_position_to_settlement` 以及 reports override 的 liveness / settlement fire-and-forget 接线。
 """
 
 from __future__ import annotations
@@ -28,6 +28,43 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.settlement.settlement import PolymarketSettlement
 from src.arbitrage.settlement.settlement import SettlementPosition
+
+
+class _RetryFailureRecorder:
+    """记录 PM 上游 RetryManager 吞掉的查询失败。
+
+    NT 上游 `RetryManager.run()` 失败时返回 None,部分 report 方法随后会把 None 当作空结果继续返回。
+    Arb 层需要把这种"无真实 response"重新升级为 report 失败,用于 VenueExecutionLiveness。
+    """
+
+    def __init__(self, pool, names: set[str]) -> None:
+        self._pool = pool
+        self._names = names
+        self.failures: list[tuple[str, str | None]] = []
+
+    async def acquire(self):
+        manager = await self._pool.acquire()
+        original_run = manager.run
+
+        async def run(name, details, func, *args, **kwargs):
+            result = await original_run(name, details, func, *args, **kwargs)
+            if name in self._names and not manager.result:
+                self.failures.append((name, manager.message))
+            return result
+
+        manager._arb_original_run = original_run
+        manager.run = run
+        return manager
+
+    async def release(self, manager) -> None:
+        original_run = getattr(manager, "_arb_original_run", None)
+        if original_run is not None:
+            manager.run = original_run
+            del manager._arb_original_run
+        await self._pool.release(manager)
+
+    def __getattr__(self, name):
+        return getattr(self._pool, name)
 
 
 def pm_raw_position_to_settlement(item: dict) -> SettlementPosition:
@@ -118,20 +155,42 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._settlement_inflight = False
 
     async def generate_order_status_reports(self, command):
+        recorder = _RetryFailureRecorder(
+            self._retry_manager_pool,
+            {"generate_order_status_reports", "generate_fill_reports"},
+        )
+        original_pool = self._retry_manager_pool
+        self._retry_manager_pool = recorder
         try:
             reports = await super().generate_order_status_reports(command)
         except Exception:
             self._venue_liveness.mark_order_dead(POLYMARKET)
             raise
+        finally:
+            self._retry_manager_pool = original_pool
+        if recorder.failures:
+            self._venue_liveness.mark_order_dead(POLYMARKET)
+            raise RuntimeError(f"PM order reports query failed: {recorder.failures!r}")
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return reports
 
     async def generate_order_status_report(self, command):
+        recorder = _RetryFailureRecorder(
+            self._retry_manager_pool,
+            {"generate_order_status_report"},
+        )
+        original_pool = self._retry_manager_pool
+        self._retry_manager_pool = recorder
         try:
             report = await super().generate_order_status_report(command)
         except Exception:
             self._venue_liveness.mark_order_dead(POLYMARKET)
             raise
+        finally:
+            self._retry_manager_pool = original_pool
+        if recorder.failures:
+            self._venue_liveness.mark_order_dead(POLYMARKET)
+            raise RuntimeError(f"PM order report query failed: {recorder.failures!r}")
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return report
 

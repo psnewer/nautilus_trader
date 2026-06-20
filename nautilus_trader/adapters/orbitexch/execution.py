@@ -11,8 +11,8 @@ OrbitExchExecutionClient —— OE 自写执行客户端(§3.2)。
 (browser_manager/executor/scraper/data/websocket_handler/message_parser/providers)均住
 `nautilus_trader/adapters/orbitexch/`(P9 唯一例外);本文件与它们同目录。
 
-**OE 健康检查不在本客户端**:页面 reload 机制宿主是 `OrbitExchDataClient`(它持 page),
-本客户端只做订单 + 账户状态(§4.3)。
+**OE 执行端存活**:本客户端持 execution page;reconcile reports 先用 general WS
+存活锚判定快照新鲜,必要时 reload execution page 并等待 `CURRENT_BETS` 重推。
 
 **离线可测**:`oe_balance_to_account_balances` 纯映射、`_on_general_frame` 路由、`_modify_order`
 拒绝、`_submit_order` session 门控(注入 fake `_place_via_executor`)。
@@ -23,6 +23,7 @@ item→`generate_order_*`/report(item schema 待 populated 抓帧)、reports。
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
@@ -278,8 +279,9 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # `_exec_ws_fresh()` 据此判 idle(reconcile/venue-liveness 用,A2+ 接入)。0 = 还没收过帧。
         self._last_frame_ns = 0
         self._exec_ws_idle_timeout_ns = secs_to_nanos(_EXEC_WS_IDLE_TIMEOUT_SECS)
+        self._first_frame_fut = None
         # #105 A2 §4.3bis(3):reload-then-report 机制(单 flight + 存活闸)。reconcile 成功信号 =
-        # reload 后 CURRENT_BETS 重推(刷 `_last_current_bets_ns`)。**A2 只建方法,flag off 不接入 reports**。
+        # reload 后 CURRENT_BETS 重推(刷 `_last_current_bets_ns`);order/position reports 共用该快照。
         self._last_current_bets_ns = 0
         self._reload_inflight = None
         self._reload_bets_wait_ns = secs_to_nanos(8.0)   # reload 后等 CURRENT_BETS 重推上限
@@ -303,6 +305,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._ws_handler = OrbitExchWebSocketHandler(self._page, logger=self._log)
         self._ws_handler.on_order_update(self._on_general_frame)  # general 频道:余额 + current_bets
         self._ws_handler.on_frame(self._mark_exec_frame)          # #105 A1:每帧(含心跳)刷存活锚
+        self._ws_handler.on_disconnect(self._mark_exec_stale)     # close:orders → 下次 reconcile 触发 reload-then-report
         await self._ws_handler.start()
         await self._page.goto(
             self._config.base_url,
@@ -311,6 +314,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
         if "/customer/" not in (self._page.url or ""):  # 持久化 profile 未登录 → 填表单
             await self._login()
+        self._first_frame_fut = self._loop.create_future()
+        if self._last_frame_ns <= 0:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._first_frame_fut, timeout=15.0)
+        self._first_frame_fut = None
         self._executor = OrbitExchExecutor(config=ExecutionConfig())
         self._executor.set_page("default", self._page)
         # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
@@ -474,6 +482,13 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     def _mark_exec_frame(self) -> None:
         """#105 A1:exec 页 general WS 任一帧(含 SockJS 心跳)→ 刷存活锚 `_last_frame_ns`。"""
         self._last_frame_ns = self._clock.timestamp_ns()
+        if self._first_frame_fut is not None and not self._first_frame_fut.done():
+            self._first_frame_fut.set_result(None)
+
+    def _mark_exec_stale(self, reason: str) -> None:
+        """#105/#109 对齐:general WS close 只置 stale;恢复仍由 reports/reconcile 出口裁决。"""
+        if reason == "close:orders" or reason == "liveness_timeout":
+            self._last_frame_ns = 0
 
     def _exec_ws_fresh(self) -> bool:
         """#105 §4.3bis(4):exec 页 WS 是否新鲜(idle_timeout 内有帧)。
@@ -484,8 +499,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def _reload_exec_page(self) -> bool:
         """#105 §4.3bis:reload exec 页(走页锁)→ 等 CURRENT_BETS 重推。
-        返回 True=拿到真实 response(reconcile 成功),False=reload 失败 / CURRENT_BETS 超时未重推(venue dead)。
-        **A2:已建,flag off 暂不接入 `generate_*_reports`**。"""
+        返回 True=拿到真实 response(reconcile 成功),False=reload 失败 / CURRENT_BETS 超时未重推(venue dead)。"""
         if self._page is None:
             return False
         reload_ts = self._clock.timestamp_ns()
@@ -505,8 +519,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def _ensure_exec_snapshot_fresh(self) -> bool:
         """#105 §4.3bis(3):确保 `_current_bets` 新鲜(reconcile)。WS 活(`_exec_ws_fresh`)→ True 不 reload;
-        否则 single-flight reload 一次(并发调用共享同一 future)。返回 True=快照可信,False=reconcile 失败(venue dead)。
-        **A2:已建,flag off 暂不接入 `generate_*_reports`**。"""
+        否则 single-flight reload 一次(并发调用共享同一 future)。返回 True=快照可信,False=reconcile 失败(venue dead)。"""
         if self._exec_ws_fresh():
             return True
         if self._reload_inflight is not None:

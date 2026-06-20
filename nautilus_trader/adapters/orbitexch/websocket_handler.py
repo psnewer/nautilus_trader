@@ -38,6 +38,7 @@ class OrbitExchWebSocketHandler:
         clock: Any | None = None,
         liveness_timeout_secs: float | None = None,
         liveness_name: str | None = None,
+        liveness_ws_type: str | None = None,
     ):
         self.page = page
         self._log = logger
@@ -59,6 +60,7 @@ class OrbitExchWebSocketHandler:
         self._clock = clock
         self._liveness_timeout_secs = liveness_timeout_secs
         self._liveness_name = liveness_name or f"oe_ws_liveness:{id(self)}"
+        self._liveness_ws_type = liveness_ws_type
         self._liveness_enabled = clock is not None and liveness_timeout_secs is not None
         self._last_frame_ns = 0
 
@@ -85,10 +87,7 @@ class OrbitExchWebSocketHandler:
         self.page.remove_listener('websocket', self._on_websocket)
 
         if self._liveness_enabled:
-            try:
-                self._clock.cancel_timer(self._liveness_name)
-            except (KeyError, ValueError):
-                pass
+            self._cancel_liveness()
 
         self._log_info('OE WS listener stopped')
 
@@ -106,11 +105,18 @@ class OrbitExchWebSocketHandler:
                 self._log_debug(f"OE WS disconnect callback error: {e}")
 
     def _schedule_liveness(self) -> None:
+        self._cancel_liveness()
         self._clock.set_time_alert_ns(
             name=self._liveness_name,
             alert_time_ns=self._last_frame_ns + secs_to_nanos(self._liveness_timeout_secs),
             callback=self._on_liveness_alert,
         )
+
+    def _cancel_liveness(self) -> None:
+        try:
+            self._clock.cancel_timer(self._liveness_name)
+        except (KeyError, ValueError):
+            pass
 
     def _on_liveness_alert(self, event) -> None:
         if not self._running:
@@ -123,6 +129,7 @@ class OrbitExchWebSocketHandler:
             next_at = now + timeout_ns                    # 死:整 timeout 后再查(宿主已去重 reload),避免过去时间紧循环
         else:
             next_at = self._last_frame_ns + timeout_ns    # 活:重排到将 stale 的未来点
+        self._cancel_liveness()
         self._clock.set_time_alert_ns(name=self._liveness_name, alert_time_ns=next_at, callback=self._on_liveness_alert)
     
     def _on_websocket(self, ws) -> None:
@@ -157,9 +164,11 @@ class OrbitExchWebSocketHandler:
             if not data:
                 return
 
-            # #105/#109:任一非空帧(含心跳 'h')→ 刷存活(在心跳/业务分型前)。
-            # 内部存活锚(#109,liveness 开时)+ 外部 on_frame 回调(exec 用)。
-            if self._liveness_enabled:
+            # #105/#109/#111:命中存活 feed 的非空帧(含心跳 'h')→ 刷内部存活锚。
+            # 外部 on_frame 回调(exec 用)仍接收任一非空帧,在心跳/业务分型前触发。
+            if self._liveness_enabled and (
+                self._liveness_ws_type is None or ws_type == self._liveness_ws_type
+            ):
                 self._last_frame_ns = self._clock.timestamp_ns()
             for cb in self._frame_callbacks:
                 try:

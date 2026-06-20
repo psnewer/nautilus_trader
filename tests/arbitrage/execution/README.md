@@ -28,6 +28,20 @@
 - 期望:pending leg 不进 ExecutionClient,本地发 `OrderDenied`,pair gate 释放。
 - 验收:`test_barrier_timeout_blocks_pending_leg_and_releases_pair_gate` 覆盖。
 
+### execution-3.5.5: all risk-pass 后若有 residual 且无撤单腿,整次 opportunity cancel-only
+- 前置:两条 `SubmitOrder` 带同一 `opportunity_id`;PM leg 对应 instrument 有 residual open order,OE leg 无 residual;本轮 risk-pass legs 不含显式撤单腿。
+- 输入:两条订单均经 Risk pass 回到 barrier。
+- 期望:barrier 不 release 任一新 submit 到 PM/OE ExecutionClient;PM residual 进入 tracked cancel;PM/OE 两条新 submit 都收到本地 deny/reject。
+- 验收:不会出现“PM 撤旧、OE 同轮又开新单”的半边执行;live 验收锚点为 `Opportunity cancel-only: residual open orders present`。
+- 状态:✅ `test_engine_barrier.py::test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_leg`
+
+### execution-3.5.6: residual 存在但 risk-pass legs 含显式撤单腿时不改写为整次 cancel-only
+- 前置:同一 opportunity 已收齐 risk-pass legs,其中至少一条 leg 由 metadata/command 明确标记为撤单腿。
+- 输入:某 instrument 仍存在 residual open order。
+- 期望:barrier 不按普通 residual 规则丢弃整次 opportunity;后续按显式撤单腿语义执行。
+- 验收:撤单腿必须显式表达,不能由 residual cancel-only 内部动作反推。
+- 状态:✅ `test_engine_barrier.py::test_barrier_residual_with_explicit_cancel_leg_releases_normally`
+
 ## 异常路径置位保证(#105 ①②,已落地代码)
 
 对应设计:execution §4.1(submit 异常收口 PM/OE 对称)+ §4.2(watchdog 与 per-pair 计数原子)。

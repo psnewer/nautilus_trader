@@ -124,8 +124,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 §6.8.3 原文写于 #68 拆页前("单页同出赔率 + 持仓/挂单")。#68 后页拆两类:**competition 页**(DataClient,赔率)/ **execution 页**(ExecClient,`CURRENT_BETS`=持仓/挂单)。恢复机制 = **reload 页 → 该页 WS 自然重推**(非 DOM 抓;监听跨 reload 存活 #67)。故:
 
-- **competition 页存活 ✅ 已落地(#109,2026-06-16,封装进 WS handler,对称 PM)**:`adapters/orbitexch/data.py` —— **无 `HealthCheckLoop` / 无周期 scan**。存活检测封装进 `OrbitExchWebSocketHandler`(传 `clock`/`loop`/`liveness_timeout_secs=staleness_timeout_secs`):handler 每帧(含 SockJS 心跳)更新内部 `_last_frame_ns`,lazy self-rescheduling NT clock alert 心跳停 → fire `on_disconnect("liveness_timeout")`;prices WS close → `on_disconnect("close:prices")`。DataClient `handler.on_disconnect(...)` → `_on_comp_disconnect` → `_reload_comp_on_disconnect`(冷却 + reload-in-flight + disconnecting 三重防护),**对称 PM `_schedule_delayed_connect`**。connect-retry 事件化:开页失败 → `_delayed_reopen` 延迟重试。**机制差异**:PM 主动 ping、OE 被动盯心跳(接口对称内脏不同)。⚠️ **前提**:prices WS 真发心跳(未实测,上 live 前 `oe_heartbeat_probe.py` 扩 prices 验)。详细设计 = data §4.3。
-- **退役(#109)**:`HealthCheckLoop`(OE data 不再用;PM exec 保留)、`_run_health_check` staleness poll、`_mark_comp_frame`/`_comp_last_frame_ns`/`_on_comp_ws_close`(全搬进 handler)。⚠️ `config.health_interval_secs`(OE)**现已孤儿**(HealthCheckLoop 没了),待 config 层清理;`staleness_timeout_secs` 改作 handler liveness timeout。
+- **competition 页存活 ✅ 已落地(#109,2026-06-16;#111 feed-specific 修正,2026-06-19,封装进 WS handler,对称 PM)**:`adapters/orbitexch/data.py` —— **无 `HealthCheckLoop` / 无周期 scan**。存活检测封装进 `OrbitExchWebSocketHandler`(传 `clock`/`loop`/`liveness_timeout_secs=staleness_timeout_secs`/`liveness_ws_type="prices"`):只有 prices feed 的数据/心跳更新内部 `_last_frame_ns`,orders/general 心跳不能掩盖 prices WS 未出现或不下发;lazy self-rescheduling NT clock alert 心跳停 → fire `on_disconnect("liveness_timeout")`;prices WS close → `on_disconnect("close:prices")`。DataClient `handler.on_disconnect(...)` → `_on_comp_disconnect` → `_reload_comp_on_disconnect`(冷却 + reload-in-flight + disconnecting 三重防护),**对称 PM `_schedule_delayed_connect`**。connect-retry 事件化:开页失败 → `_delayed_reopen` 延迟重试。**机制差异**:PM 主动 ping、OE 被动盯 prices 入向心跳(接口对称内脏不同)。prices WS 心跳已 live 验证(空闲盘口约 25s,见 data §4.3)。
+- **退役(#109/#110)**:`HealthCheckLoop`(OE data 与 PM exec 均不再用)、`_run_health_check` staleness poll、`_mark_comp_frame`/`_comp_last_frame_ns`/`_on_comp_ws_close`(全搬进 handler)。`health_interval_secs` 已从 OE config 接线清理;`staleness_timeout_secs` 改作 handler liveness timeout。
 - **Phase 2 状态维度更早已退役(#108)**:`leg_settled` → `VenueExecutionLiveness`(见 oe-adapter-5.liveness)。
 
 **离线用例(#109 WS 存活封装)**:
@@ -134,7 +134,10 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
   - **oe-ws-liveness.2**:无帧超 timeout(心跳停=静默死亡)→ fire `on_disconnect("liveness_timeout")`(`test_liveness_fires_disconnect_on_frame_gap`)
   - **oe-ws-liveness.3**:timeout 内有帧 → 重置存活,不 fire(安静市场靠心跳保活)(`test_liveness_frame_resets_no_disconnect`)
   - **oe-ws-liveness.4**:prices close → fire `on_disconnect("close:prices")`(`test_close_prices_fires_disconnect`)
+  - **oe-ws-liveness.5**:LiveClock callback 内同名 timer 仍占用 name 时,重排前先 cancel,避免 `timer_names` 冲突(`test_liveness_reschedule_cancels_existing_timer_name`)
+  - **oe-ws-liveness.6**:指定 `liveness_ws_type="prices"` 后,orders 心跳不刷新存活锚,prices feed 缺失仍会 timeout(`test_liveness_filters_by_ws_type`)
 - DataClient 消费侧(`test_data_client_step2.py`):
+  - **data-2.page.8**:competition 页 handler 接线 `liveness_ws_type="prices"`(`test_open_page_liveness_tracks_prices_feed_only`)
   - **data-2.health.11/12/13**:事件化 connect-retry —— `_delayed_reopen` 开成功不再重排 / 仍失败再排 / 关停放弃(`test_delayed_reopen_*`)
   - **data-2.health.14/15**:`on_disconnect`(close:prices / liveness_timeout)→ 调度 reload,跑完页 reload(`test_disconnect_prices_close_schedules_reload` / `_liveness_timeout_schedules_reload`)
   - **data-2.health.16/17**:防护(非 prices/非心跳 reason / 关停 / reload 中 / 页未开 → 不调度)+ 冷却抑制风暴(`test_disconnect_guards` / `_cooldown_suppresses_storm`)
@@ -213,14 +216,14 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
 **输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
 **期望**: `oe_order_alive=true`;`_on_current_bets` 因 CURRENT_BETS 同时是 position 真值来源,也会写 `oe_position_alive=true`。
-**验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。
+**验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 OE order reports;WS 新鲜时只读 `_current_bets` 内存,WS stale 时才经 `_ensure_exec_snapshot_fresh` reload execution 页。
 
 ### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)
 
 **前置**: OE `position_alive=false`。
 **输入**: position reconcile 成功,从 `CURRENT_BETS`/position 视图拿到完整真实 response。
-**期望**: `oe_position_alive=true`;不写 `oe_order_alive`。
-**验收**: order/position 两个事实位拆分;即使当前来源同为 `CURRENT_BETS`,接口也保持拆分。
+**期望**: `oe_position_alive=true`;若该成功来自新的 `CURRENT_BETS` 快照,`_on_current_bets` 同时恢复 `oe_order_alive=true`。
+**验收**: order/position 两个事实位拆分;即使当前来源同为 `CURRENT_BETS`,PM/OE 接口仍保持拆分。
 
 ### oe-adapter-5.live.3: OE reconcile 失败置对应 alive=false
 
@@ -298,7 +301,10 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
 
 ### oe-adapter-5.liveness(#105 A1):exec 页 WS 存活锚(§4.3bis(4))
-**✅ 已落地 2026-06-13**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle`。reports 入口已由 reload-then-report 用例消费该锚点。
+**✅ 已落地 2026-06-13;close stale 已落地 2026-06-18**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。新增 close 语义:`close:orders`(general WS)只把 exec freshness 置 stale,不主动 reload / 不直接 mark dead;execution 页 `close:prices` 不影响 exec freshness。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle` / `test_exec_ws_orders_close_marks_stale` / `test_exec_ws_prices_close_does_not_mark_stale`。reports 入口已由 reload-then-report 用例消费该锚点。
+
+### oe-adapter-5.connect-first-frame(#105/#110 startup)
+**✅ 已落地 2026-06-18**。前置:ExecClient `_connect` 已注册 `OrbitExchWebSocketHandler.on_frame`;输入:execution 页导航后 WS 首个非空帧到达。步骤:`_mark_exec_frame` 刷 `_last_frame_ns` 并唤醒 `_connect` 的有限等待;期望:`_connect` 返回前 exec WS 至少开始流动,避免 NT startup reconciliation 在 DOM ready 但 WS 首帧未到时误触发 reload-then-report。该等待不写 `VenueExecutionLiveness`;`CURRENT_BETS` 真值仍由 reports/reconciliation 判定。**验收**:`test_exec_first_frame_resolves_connect_waiter`。
 
 ### oe-adapter-5.liveness-current-bets(#108):_on_current_bets → VenueExecutionLiveness
 **✅ 已落地 2026-06-15**。前置:`OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` 缓存完整快照并标记 `ORBITEXCH` 的 `order_alive=true` 与 `position_alive=true`;期望:`venue_alive("ORBITEXCH")` 为 true。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive`。
@@ -307,7 +313,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **✅ 已接入 reports 2026-06-15**。前置:`_FakePageReload`(记 reload 次数 + 可选 on_reload 模拟 CURRENT_BETS 重推)。用例:① WS 新鲜(`_mark_exec_frame` 后)→ `_ensure_exec_snapshot_fresh` 不 reload(reload_count==0);② 陈旧 → reload + CURRENT_BETS 重推 → True(reload_count==1);③ reload 后 CURRENT_BETS 不重推 → `_reload_exec_page` 超时(`_reload_bets_wait_ns` 调小)→ False(reconcile 失败=venue dead);④ 两并发 `_ensure_exec_snapshot_fresh` → single-flight 只 reload 一次;⑤ 历史 `_current_bets` 存在但 WS stale 且 reload 失败 → `generate_order_status_report(s)` / `generate_position_status_reports` 不再沿用陈旧快照,按维度 mark dead;⑥ reload 成功 → reports 继续保持 alive。**验收**:`test_orbitexch_client.py::test_ensure_fresh_skips_reload_when_ws_fresh` / `_reloads_when_stale_and_succeeds` / `test_reload_exec_page_timeout_returns_false` / `test_ensure_fresh_single_flight_one_reload` / `test_reconcile_reports_stale_snapshot_reload_failure_marks_dead` / `test_reconcile_reports_stale_snapshot_reload_success_stays_alive`。
 
 ### oe-adapter-5.position(#105):CURRENT_BETS → 持仓聚合(§4.3bis(2))
-**✅ 已落地 2026-06-13**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`);算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;`generate_position_status_reports` 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`。**验收**:`test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates`(7 case,513 passed)。⚠️ **当前不被实时调用**(reconciliation=False、position_check 关),仅能力补齐,待协调切换接入。
+**✅ 已落地并接入 reconciliation(2026-06-15/#108,2026-06-16/#110/#111)**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`);算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;`generate_position_status_reports` 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`。**验收**:`test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates`;reports 入口另由 reload-then-report 用例覆盖。launcher 当前 `reconciliation=True` 且 `open_check_interval_secs=300` / `position_check_interval_secs=300` 全局开启。
 
 **`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` 覆盖):
 - `{"BALANCE":{"balance":"37.49","avBalance":null}}` —— `balance` 是**字符串**,WS 已含挂单占用。
@@ -348,6 +354,8 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - OE 余额经 WS 被动维护(对齐 §5.5/§5.6 "被动 WS" + Q17);cache 余额 = WS 上报值,`_check_balance` 直接信不再减;`get_balance()` 页面抓取作过渡兜底,权威源是 WS 帧
 
 ---
+
+> **2026-06-19 协调修正**:带完整 opportunity metadata 的多腿套利,跨 venue cancel-only 归 `ArbLiveExecutionEngine` barrier 统一判定(见 synchronization §8.4bis / execution §3.5)。本节 OE per-client cancel-only 只验无 metadata / fallback 的单 instrument 行为。
 
 ### oe-adapter-5.session.1: cancel-only session(残留挂单)(Q13)
 

@@ -74,8 +74,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: 当前网络访问 PM CLOB WS 需要 HTTP(S) proxy;进程 env 中存在 `POLYMARKET_PROXY_URL` 或 `https_proxy` / `http_proxy`
 **输入**: `load_arb_config` + `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`
-**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env。#98 起同一个 `proxy_url` 也必须配置到 `py_clob_client_v2` CLOB REST transport,显式代理存在时关闭环境代理继承,确保 WS/REST 同路由。
-**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`、`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_factory_configures_v2_http_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`,PM CLOB REST 也走同一配置路由。
+**期望**: `cfg.venues.polymarket.proxy_url` 被注入并透传到 PM Data/Exec config;JSON 显式 `proxy_url` 优先于 env。#98 起同一个 `proxy_url` 也必须配置到 `py_clob_client_v2` CLOB REST transport,显式代理存在时关闭环境代理继承,确保 WS/REST 同路由。#111 起 PM ExecClient 内部 Data API async `HttpClient`(`/positions`)也必须传同一个 `proxy_url`,避免周期 position 对账直连。
+**验收**: `tests/arbitrage/config/test_loader.py::test_env_injects_polymarket_proxy_when_json_missing`、`test_json_polymarket_proxy_wins_over_env`、`tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_proxy`、`tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_factory_configures_v2_http_proxy`、`test_polymarket_data_api_http_client_uses_proxy`;live 诊断中 NT pyo3 `WebSocketClient` 显式 `proxy_url=http://127.0.0.1:7890` 可连接 `wss://ws-subscriptions-clob.polymarket.com/ws/market`,PM CLOB REST 与 Data API `/positions` 也走同一配置路由。
 
 ### pm-adapter-2.3c: PM proxy 钱包 signature_type 透传
 
@@ -144,8 +144,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: 已下一笔挂单
 **输入**: `Strategy.cancel_order(...)`
-**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)` → 响应 `canceled[]` 中的订单立即 `generate_order_canceled` 回写;`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态。
-**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
+**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)` → 响应 `canceled[]` 中的订单立即 `generate_order_canceled` 回写;`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态;若第一条 cancel terminal 已发出但 cache 尚未 apply,也必须用 client 侧有界去重窗口跳过重复终态。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
 
 ### pm-adapter-5.3: Reconciliation(启动重连对账)
 
@@ -173,10 +173,17 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - PM order/open-order reconcile 成功并拿到完整真实 response → `pm_order_alive=true`
 - PM position reconcile 成功并拿到完整真实 response → `pm_position_alive=true`
 - 任一路径失败/超时/response 不完整 → 对应 alive 置 false,另一维不被误改
+- PM 上游 RetryManager 若因网络/SSL 失败返回 `None` 而非抛异常,Arb 子类必须把 `generate_order_status_report(s)` / `generate_fill_reports` 的失败重新升级为 query failure,并 `pm_order_alive=false`;不能把空 reports 当成真实空响应。
+- PM `generate_fill_reports` 扫用户历史 trades 时,遇到当前未加载/未匹配的 instrument 属于目标市场外历史成交,应 DEBUG 跳过、不刷 WARN、不影响 liveness;open-order report 的未知 instrument 仍保留 WARNING。
+- `venues.polymarket.max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 只做显式透传,默认 None,避免无意改变真钱 submit/cancel 语义;若为周期 order 对账抗瞬时 SSL/proxy timeout 显式开启,需知道上游同一 retry pool 也覆盖 PM submit/cancel/report。
 **验收**:
 - PM `venue_alive` 只由 `pm_order_alive && pm_position_alive` 派生,不存第三份状态。
 - 不再调用旧 leg 状态;PM liveness 只由 report/position health check 成功路径写入。
 - Risk 在 PM-only 或 PM+OE opportunity 中读到 PM 任一维 false 时 fail-closed deny。
+- launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 PM order reports;若前一轮 retry failure 置 `pm_order_alive=false`,后续真实拿到 open-order response(即使真实空 `[]`)会恢复 `pm_order_alive=true`。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_fill_history_unknown_instrument_is_debug_noise` 覆盖历史 fill 中未知 instrument 只打 DEBUG 并跳过。
+- `tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_retry_params` / `test_polymarket_exec_client_config_retry_params_default_none` 覆盖 PM retry 参数显式透传与默认不变。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_order_reports_retry_failure_marks_dead` / `test_arb_generate_single_order_report_retry_failure_marks_dead` / `test_arb_generate_order_reports_fill_retry_failure_marks_dead` 覆盖上游吞掉 retry failure 的 order-liveness fail-closed 行为。
 
 ### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
 
@@ -232,6 +239,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
 **验收**:
 - **无 `HealthCheckLoop`/`_run_health_check`/独立调度**(静态检查);链上编排在 `PolymarketSettlement`,不内联进 ExecutionClient
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement`:证明 PM override 成功路径会 `mark_position_alive` 并用同一次 `_last_raw_positions` fire-and-forget 触发 settlement。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_failure_marks_dead`:证明 `/positions` report 失败会 `mark_position_dead` 并抛给 NT 对账。
 - merge/redeem `TxResult` 失败:**仅 log,不判 `VenueExecutionLiveness` dead**;下个对账周期幂等重试(min(size))
 
 ### ~~pm-adapter-5.health.5: 执行在飞时健康检查 tick 跳过~~ —— 已退役(#110)
@@ -310,13 +319,15 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 > ⚠️ **失效横幅(#108,2026-06-15):以下 5.session.1 ~ 5.timeout.4 中所有 `leg_settled` 置位 / 状态机语义(尤其 5.health.2~5 整节)退役** —— `LegSettledRegistry` 已删除,执行健康真相改由 `ArbPolymarketExecutionClient` reconcile 写 `VenueExecutionLiveness`(order/position alive),现行验收见 **pm-adapter-5.3c**。**注意**:cancel-only / submit+track 的 session 入口与超时 watchdog 机制**本身仍有效**(见 synchronization §8.4 + execution §4.2),只是不再写 `leg_settled`。
 
+> **2026-06-19 协调修正**:带完整 opportunity metadata 的多腿套利,跨 venue cancel-only 归 `ArbLiveExecutionEngine` barrier 统一判定(见 synchronization §8.4bis / execution §3.5)。本节 PM per-client cancel-only 只验无 metadata / fallback 的单 instrument 行为。
+
 ### pm-adapter-5.session.1: cancel-only session(残留挂单)(Q13)
 
 **前置**: PM 上 token T 有未成交残留挂单
 **输入**: strategy 调 `submit_order(new_order)`,execution 入口检查到残留
 **期望**:
 - session 退化为 cancel-only,**丢弃 `new_order`**
-- 撤单 → track 到 CANCELED → 对应方向 `leg_settled=true`
+- 撤单 → track 到 CANCELED(#108 后不再写 `leg_settled`)
 **验收**: cancel session 单一职责,submit 被显式丢弃
 
 ### pm-adapter-5.session.2: submit+track session(Q13)

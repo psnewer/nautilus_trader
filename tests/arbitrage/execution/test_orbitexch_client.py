@@ -434,6 +434,37 @@ def test_exec_ws_fresh_lifecycle():
     assert c._exec_ws_fresh() is False            # 超 idle_timeout → 不新鲜
 
 
+def test_exec_ws_orders_close_marks_stale():
+    c = _client()
+    c._mark_exec_frame()
+    assert c._exec_ws_fresh() is True
+
+    c._mark_exec_stale("close:orders")
+
+    assert c._exec_ws_fresh() is False
+
+
+def test_exec_ws_prices_close_does_not_mark_stale():
+    c = _client()
+    c._mark_exec_frame()
+    assert c._exec_ws_fresh() is True
+
+    c._mark_exec_stale("close:prices")
+
+    assert c._exec_ws_fresh() is True
+
+
+def test_exec_first_frame_resolves_connect_waiter():
+    c = _client()
+    fut = c._loop.create_future()
+    c._first_frame_fut = fut
+
+    c._mark_exec_frame()
+
+    assert fut.done()
+    assert c._exec_ws_fresh() is True
+
+
 # ── #105 A2 reload-then-report 机制(_reload_exec_page / _ensure_exec_snapshot_fresh)──
 class _FakePageReload:
     def __init__(self, on_reload=None):

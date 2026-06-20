@@ -83,6 +83,9 @@ class PolymarketSectionConfig(Struct, kw_only=True):
     polygon_rpc_url:          str = "https://polygon-rpc.com/"
     proxy_url:                str | None = None  # PM HTTP/WS 代理;loader 可从 env 注入
     signature_type:           int = 0            # EOA=0;Polymarket proxy/funder 钱包通常为 2
+    max_retries:              int | None = None  # 透传 PM ExecClient;默认不改上游 retry 语义
+    retry_delay_initial_ms:   int | None = None
+    retry_delay_max_ms:       int | None = None
     # 凭证字段(loader 阶段从 env 注入,不入 JSON;详见 §4)
     clob_api_key:             str | None = None
     clob_api_secret:          str | None = None
@@ -317,6 +320,11 @@ Polymarket `proxy_url` 传给 NT 上游 `PolymarketDataClientConfig` / `Polymark
 若 JSON 未显式配置,loader 按 `POLYMARKET_PROXY_URL` → `https_proxy` / `HTTPS_PROXY` →
 `http_proxy` / `HTTP_PROXY` 顺序兜底注入。原因:NT pyo3 `WebSocketClient` 不自动读取系统代理;
 PM CLOB market WS 在部分网络下直连会 `Operation timed out`,显式 `proxy_url` 后可正常握手。
+
+Polymarket `max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 透传给
+NT 上游 `PolymarketExecClientConfig` 的共享 `RetryManagerPool`。默认仍为 `None`
+(当前等价不重试),避免无意改变真钱 submit/cancel 语义;若为周期 order/position 对账测试显式开启,
+必须同时意识到同一 upstream retry pool 也覆盖 PM CLOB submit/cancel/report。
 
 ---
 

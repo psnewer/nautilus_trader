@@ -15,6 +15,7 @@ from src.arbitrage.common.opportunity import meta_from_order
 
 
 _TIMEOUT_PREFIX = "arb_opp_timeout:"
+_CANCEL_LEG_INTENTS = {"cancel", "cancel-only", "cancel_only"}
 
 
 @dataclass(slots=True)
@@ -97,6 +98,11 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             self._finish(ctx, terminal="timeout", reason="opportunity barrier timeout")
 
     def _release(self, ctx: _OpportunityContext) -> None:
+        residuals = self._opportunity_residuals(ctx)
+        if residuals and not self._has_cancel_leg(ctx):
+            self._cancel_only(ctx, residuals)
+            return
+
         ctx.terminal = "released"
         self._cancel_timer(ctx)
         self._arb_opportunities.pop(ctx.meta.opportunity_id, None)
@@ -104,6 +110,84 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             command = ctx.allowed.get(leg_key)
             if command is not None:
                 super()._execute_command(command)
+
+    def _cancel_only(
+        self,
+        ctx: _OpportunityContext,
+        residuals: list[tuple[object | None, object, list]],
+    ) -> None:
+        ctx.terminal = "cancel-only"
+        self._cancel_timer(ctx)
+        self._arb_opportunities.pop(ctx.meta.opportunity_id, None)
+
+        reason = "opportunity cancel-only: residual open orders present"
+        self._log.info(
+            "Opportunity cancel-only: residual open orders present "
+            f"opportunity_id={ctx.meta.opportunity_id}, pair_id={ctx.meta.pair_id}, "
+            f"new_client_order_ids={[str(c.order.client_order_id) for c in ctx.allowed.values()]}, "
+            f"residuals={self._format_residuals_for_log(residuals)}",
+        )
+        for client, instrument_id, orders in residuals:
+            cancel_residual_orders = getattr(client, "_cancel_residual_orders", None)
+            if cancel_residual_orders is None:
+                self._log.warning(
+                    "Opportunity cancel-only cannot cancel residual orders: "
+                    f"client={client}, instrument_id={instrument_id}",
+                )
+                continue
+            cancel_residual_orders(instrument_id, orders)
+
+        for command in list(ctx.allowed.values()):
+            self._deny_order(command.order, reason)
+        if self._arb_pair_inflight is not None and ctx.meta.pair_id:
+            self._arb_pair_inflight.release_eval(ctx.meta.pair_id)
+
+    def _opportunity_residuals(self, ctx: _OpportunityContext) -> list[tuple[object | None, object, list]]:
+        residuals: list[tuple[object | None, object, list]] = []
+        seen_instruments = set()
+        for leg_key in ctx.meta.expected_legs:
+            command = ctx.allowed.get(leg_key)
+            if command is None:
+                continue
+            instrument_id = command.order.instrument_id
+            if instrument_id in seen_instruments:
+                continue
+            seen_instruments.add(instrument_id)
+            open_orders = list(self._cache.orders_open(instrument_id=instrument_id) or [])
+            if not open_orders:
+                continue
+            client = self._find_client_for_command(command)
+            if client is None:
+                self._log.error(
+                    "Opportunity cancel-only found residual orders but no execution client: "
+                    f"instrument_id={instrument_id}",
+                )
+            residuals.append((client, instrument_id, open_orders))
+        return residuals
+
+    @staticmethod
+    def _has_cancel_leg(ctx: _OpportunityContext) -> bool:
+        for command in ctx.allowed.values():
+            meta = meta_from_order(command.order)
+            if meta is not None and meta.intent in _CANCEL_LEG_INTENTS:
+                return True
+        return False
+
+    @staticmethod
+    def _format_residuals_for_log(residuals: list[tuple[object | None, object, list]]) -> list[dict]:
+        out = []
+        for _client, instrument_id, orders in residuals:
+            out.append({
+                "instrument_id": str(instrument_id),
+                "orders": [
+                    {
+                        "client_order_id": str(getattr(order, "client_order_id", "")),
+                        "venue_order_id": str(getattr(order, "venue_order_id", "")),
+                    }
+                    for order in orders
+                ],
+            })
+        return out
 
     def _finish(self, ctx: _OpportunityContext, *, terminal: str, reason: str | None = None) -> None:
         ctx.terminal = terminal

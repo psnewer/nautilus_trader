@@ -5,18 +5,23 @@
 
 import inspect
 import asyncio
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
 from types import SimpleNamespace
 
+import msgspec
+import pytest
 from py_clob_client_v2 import ClobClient
 from py_clob_client_v2 import PostOrdersArgs as TopLevelPostOrdersArgs
 from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 
+from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.http import transport as pm_transport
+from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeReport
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
@@ -25,6 +30,7 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from src.arbitrage.settlement.settlement import SettlementPosition
 
@@ -72,6 +78,18 @@ class _Log:
         return None
 
 
+class _TrackingLog(_Log):
+    def __init__(self):
+        self.debugs = []
+        self.warnings = []
+
+    def debug(self, *args, **_kwargs):
+        self.debugs.append(args)
+
+    def warning(self, *args, **_kwargs):
+        self.warnings.append(args)
+
+
 def _cancel_test_client(response):
     client = SimpleNamespace()
     client._retry_manager_pool = _RetryPool()
@@ -96,6 +114,9 @@ def _cancel_test_client(response):
     client._generate_cancel_event = PolymarketExecutionClient._generate_cancel_event.__get__(client)
     client._generate_cancel_success_event = (
         PolymarketExecutionClient._generate_cancel_success_event.__get__(client)
+    )
+    client._cancel_terminal_already_emitted = (
+        PolymarketExecutionClient._cancel_terminal_already_emitted.__get__(client)
     )
     client._cancel_order = PolymarketExecutionClient._cancel_order.__get__(client)
     command = SimpleNamespace(
@@ -214,10 +235,14 @@ def test_polymarket_cancel_success_skips_duplicate_canceled_order():
     client._cache = SimpleNamespace(
         order=lambda _coid: SimpleNamespace(status=OrderStatus.CANCELED),
     )
+    client._cancel_terminal_client_ids = OrderedDict()
     captured = {}
     client.generate_order_canceled = lambda **kwargs: captured.update(canceled=kwargs)
     client._generate_cancel_success_event = (
         PolymarketExecutionClient._generate_cancel_success_event.__get__(client)
+    )
+    client._cancel_terminal_already_emitted = (
+        PolymarketExecutionClient._cancel_terminal_already_emitted.__get__(client)
     )
 
     client._generate_cancel_success_event(
@@ -229,6 +254,37 @@ def test_polymarket_cancel_success_skips_duplicate_canceled_order():
     )
 
     assert captured == {}
+
+
+def test_polymarket_cancel_success_skips_duplicate_before_cache_updates():
+    venue_order_id = VenueOrderId("0x" + "a" * 64)
+    client = SimpleNamespace()
+    client._clock = _Clock()
+    client._log = _Log()
+    client._cache = SimpleNamespace(
+        order=lambda _coid: SimpleNamespace(status=OrderStatus.ACCEPTED),
+    )
+    client._cancel_terminal_client_ids = OrderedDict()
+    captured = []
+    client.generate_order_canceled = lambda **kwargs: captured.append(kwargs)
+    client._generate_cancel_success_event = (
+        PolymarketExecutionClient._generate_cancel_success_event.__get__(client)
+    )
+    client._cancel_terminal_already_emitted = (
+        PolymarketExecutionClient._cancel_terminal_already_emitted.__get__(client)
+    )
+
+    kwargs = dict(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=venue_order_id,
+        ts_event=123,
+    )
+    client._generate_cancel_success_event(**kwargs)
+    client._generate_cancel_success_event(**kwargs)
+
+    assert len(captured) == 1
 
 
 def test_polymarket_cancel_order_reject_generates_cancel_rejected_event():
@@ -296,6 +352,220 @@ def test_polymarket_position_report_keeps_quantity_when_avg_price_unknown():
     assert reports[0].avg_px_open is None
 
 
+def test_polymarket_fill_history_unknown_instrument_is_debug_noise():
+    """PM 历史成交可包含当前未加载 market;跳过即可,不应在 live 中刷 WARN。"""
+    log = _TrackingLog()
+    client = SimpleNamespace(
+        _decoder_trade_report=msgspec.json.Decoder(PolymarketTradeReport),
+        _wallet_address="0xmaker",
+        _api_key="api-key",
+        _cache=SimpleNamespace(instrument=lambda _instrument_id: None),
+        _log=log,
+    )
+    reports = []
+    trade_payload = {
+        "id": "trade-abc",
+        "taker_order_id": "0xtaker",
+        "market": "0xmarket",
+        "asset_id": "123",
+        "side": "BUY",
+        "size": "5",
+        "fee_rate_bps": "0",
+        "price": "0.55",
+        "status": "CONFIRMED",
+        "match_time": "1710000000",
+        "last_update": "1710000001",
+        "outcome": "Yes",
+        "bucket_index": 0,
+        "owner": "api-key",
+        "maker_address": "0xmaker",
+        "transaction_hash": "0xdeadbeef",
+        "maker_orders": [],
+        "trader_side": "TAKER",
+    }
+
+    PolymarketExecutionClient._parse_trades_response_object(
+        client,
+        command=SimpleNamespace(instrument_id=None, venue_order_id=None),
+        json_obj=trade_payload,
+        parsed_fill_keys=set(),
+        reports=reports,
+    )
+
+    assert reports == []
+    assert log.warnings == []
+    assert len(log.debugs) == 1
+
+
+def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(monkeypatch):
+    """#110:连续 position 对账进入 PM override 后,一次拉喂 report + settlement。"""
+    calls = []
+
+    async def fake_super(self, command):
+        self._last_raw_positions = [
+            {"conditionId": "cond1", "size": "10", "negativeRisk": True, "redeemable": False},
+        ]
+        return ["report"]
+
+    class _Settlement:
+        async def run(self, positions):
+            calls.append(positions)
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._settlement = _Settlement()
+        client._settlement_inflight = False
+        client._loop = asyncio.get_running_loop()
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+        assert reports == ["report"]
+        assert client._venue_liveness.position_alive(POLYMARKET)
+        assert client._settlement_inflight is True
+
+        await asyncio.sleep(0)
+        assert client._settlement_inflight is False
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+
+    _run(scenario())
+
+    assert calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
+
+
+def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
+    async def fake_super(self, command):
+        raise RuntimeError("positions unavailable")
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+
+        client._venue_liveness.mark_position_alive(POLYMARKET)
+        with pytest.raises(RuntimeError, match="positions unavailable"):
+            await client.generate_position_status_reports(SimpleNamespace())
+
+        assert not client._venue_liveness.position_alive(POLYMARKET)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+
+    _run(scenario())
+
+
+class _FailingRetryManager:
+    def __init__(self, fail_name: str):
+        self.fail_name = fail_name
+        self.result = True
+        self.message = None
+        self.run_calls = []
+
+    async def run(self, name, details, func, *args, **kwargs):
+        self.run_calls.append(name)
+        if name == self.fail_name:
+            self.result = False
+            self.message = "transport unavailable"
+            return None
+        self.result = True
+        return []
+
+
+class _FailingRetryPool:
+    def __init__(self, fail_name: str):
+        self.manager = _FailingRetryManager(fail_name)
+
+    async def acquire(self):
+        return self.manager
+
+    async def release(self, _manager):
+        return None
+
+
+def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
+    """PM RetryManager 返回 None 时,不能把空 reports 当作 order liveness alive。"""
+
+    async def fake_super(self, command):
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run("generate_order_status_reports", [], None)
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
+        return []
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._retry_manager_pool = _FailingRetryPool("generate_order_status_reports")
+        client._venue_liveness.mark_order_alive(POLYMARKET)
+
+        with pytest.raises(RuntimeError, match="PM order reports query failed"):
+            await client.generate_order_status_reports(SimpleNamespace())
+
+        assert not client._venue_liveness.order_alive(POLYMARKET)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
+
+    _run(scenario())
+
+
+def test_arb_generate_single_order_report_retry_failure_marks_dead(monkeypatch):
+    """single order report 查询失败也必须使 order liveness dead。"""
+
+    async def fake_super(self, command):
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run("generate_order_status_report", [], None)
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
+        return None
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._retry_manager_pool = _FailingRetryPool("generate_order_status_report")
+        client._venue_liveness.mark_order_alive(POLYMARKET)
+
+        with pytest.raises(RuntimeError, match="PM order report query failed"):
+            await client.generate_order_status_report(SimpleNamespace())
+
+        assert not client._venue_liveness.order_alive(POLYMARKET)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
+
+    _run(scenario())
+
+
+def test_arb_generate_order_reports_fill_retry_failure_marks_dead(monkeypatch):
+    """bulk order reports 内部 fill report 查询失败也必须使 order liveness dead。"""
+
+    async def fake_super(self, command):
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run("generate_order_status_reports", [], None)
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run("generate_fill_reports", [], None)
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
+        return []
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._retry_manager_pool = _FailingRetryPool("generate_fill_reports")
+        client._venue_liveness.mark_order_alive(POLYMARKET)
+
+        with pytest.raises(RuntimeError, match="PM order reports query failed"):
+            await client.generate_order_status_reports(SimpleNamespace())
+
+        assert not client._venue_liveness.order_alive(POLYMARKET)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
+
+    _run(scenario())
+
+
 def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
     """PM CLOB REST 必须吃项目 proxy_url,避免 WS/REST 走不同出口。"""
     get_polymarket_http_client.cache_clear()
@@ -338,6 +608,12 @@ def test_polymarket_factory_configures_v2_http_proxy(monkeypatch):
 
     assert created == [{"http2": True, "proxy": "http://127.0.0.1:7890", "trust_env": False}]
     assert old_client.closed
+
+
+def test_polymarket_data_api_http_client_uses_proxy(monkeypatch):
+    """PM Data API(`/positions`) 必须吃同一个 proxy_url,避免周期 position 对账直连。"""
+    source = inspect.getsource(PolymarketExecutionClient.__init__)
+    assert "HttpClient(timeout_secs=15, proxy_url=config.proxy_url)" in source
 
 
 def test_polymarket_geoblock_preflight_rejects_blocked_route(monkeypatch):

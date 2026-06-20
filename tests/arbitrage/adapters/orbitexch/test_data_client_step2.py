@@ -358,6 +358,17 @@ def test_open_page_registers_playwright_ws_handler_before_navigation():
     assert page.context.sessions == []
 
 
+def test_open_page_liveness_tracks_prices_feed_only():
+    """data-2.page.8(#109):competition 页存活只盯 prices feed,orders 心跳不算盘口存活。"""
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+
+    asyncio.get_event_loop().run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+
+    handler = c._comp_handlers["2_999"]
+    assert handler._liveness_ws_type == "prices"
+
+
 def test_ensure_page_skips_when_instrument_not_in_cache():
     """data-2.page.4(#68): instrument 不在 cache → 不开页,不崩(routing 注册时已 warn)。"""
     bm = _FakeBM()

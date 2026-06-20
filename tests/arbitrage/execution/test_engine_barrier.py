@@ -27,6 +27,15 @@ from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from tests.arbitrage.risk._factories import pm_instrument
 
 
+class _RecordingExecutionClient(MockExecutionClient):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.residual_cancels = []
+
+    def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
+        self.residual_cancels.append((instrument_id, list(residual)))
+
+
 class _Ctx:
     def __init__(self) -> None:
         self.clock = LiveClock()
@@ -36,7 +45,7 @@ class _Ctx:
         self.cache = TestComponentStubs.cache()
         self.instrument = pm_instrument("match_X", "home")
         self.cache.add_instrument(self.instrument)
-        self.client = MockExecutionClient(
+        self.client = _RecordingExecutionClient(
             client_id=ClientId("POLYMARKET"),
             venue=Venue("POLYMARKET"),
             account_type=AccountType.CASH,
@@ -65,7 +74,12 @@ class _Ctx:
             clock=self.clock,
         )
 
-    def submit_cmd(self, leg_key: str, expected=("pm:home:0", "oe:away:1")) -> SubmitOrder:
+    def submit_cmd(
+        self,
+        leg_key: str,
+        expected=("pm:home:0", "oe:away:1"),
+        intent: str = "arbitrage",
+    ) -> SubmitOrder:
         order = self.strategy.order_factory.limit(
             self.instrument.id,
             OrderSide.BUY,
@@ -76,7 +90,7 @@ class _Ctx:
                 "arb:pair_id=pair-1",
                 f"arb:leg_key={leg_key}",
                 f"arb:expected_legs={','.join(expected)}",
-                "arb:intent=arbitrage",
+                f"arb:intent={intent}",
             ],
         )
         return SubmitOrder(
@@ -135,3 +149,40 @@ def test_barrier_timeout_blocks_pending_leg_and_releases_pair_gate():
     assert len(ctx.client.commands) == 0
     assert denied
     assert not ctx.gate.is_in_flight("pair-1")
+
+
+def test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_leg():
+    ctx = _Ctx()
+    ctx.gate.try_enter("pair-1")
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+    first = ctx.submit_cmd("pm:home:0")
+    second = ctx.submit_cmd("oe:away:1")
+    residual = ctx.submit_cmd("pm:home:0").order
+    ctx.engine._opportunity_residuals = (
+        lambda barrier_ctx: [(ctx.client, ctx.instrument.id, [residual])]
+    )
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 0
+    assert ctx.client.residual_cancels == [(ctx.instrument.id, [residual])]
+    assert len(denied) == 2
+    assert not ctx.gate.is_in_flight("pair-1")
+
+
+def test_barrier_residual_with_explicit_cancel_leg_releases_normally():
+    ctx = _Ctx()
+    first = ctx.submit_cmd("pm:home:0", intent="cancel")
+    second = ctx.submit_cmd("oe:away:1")
+    residual = ctx.submit_cmd("pm:home:0").order
+    ctx.engine._opportunity_residuals = (
+        lambda barrier_ctx: [(ctx.client, ctx.instrument.id, [residual])]
+    )
+
+    ctx.engine._execute_command(first)
+    ctx.engine._execute_command(second)
+
+    assert len(ctx.client.commands) == 2
+    assert ctx.client.residual_cancels == []
