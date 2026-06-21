@@ -888,6 +888,8 @@ def get_orbitexch_exec_client(...):  # Step 5
 
 Manager 的 `start()` / `close()` 由 NT TradingNode 生命周期触发(通过 NT 自身的 connect/disconnect 钩子),**三方组件都不调**,只调 `create_page(name)` / `get_page(name)`。
 
+> **⚠️ `start()` 并发安全(2026-06-21 live SIGABRT 修)**:实际实现中 OE Data/Exec 各自 `_connect` 都会 `await browser_manager.start()`(幂等保护:`if _context is not None: return`)。但 NT **并发**连两个 client → 两个 `start()` 协程在第一个 `await launch()` 完成置 `_context` **之前**都越过守卫 → **并发双开 Chromium** → macOS crashpad 竞争 → SIGABRT(`TargetClosedError`,OE Data+Exec `_connect` 同时挂)。修:`start()` 加 `asyncio.Lock` 串行首次启动 + 进锁后 double-check。测试 `tests/arbitrage/adapters/orbitexch/test_browser_manager_sharing.py::test_concurrent_start_launches_browser_once`(3 并发 start → 仅 launch 1 次)。**注:此 SIGABRT 若 lock 后仍偶发,则属 macOS/Playwright 环境问题,非本竞态。**
+
 #### Page 命名约定
 
 | 消费者 | Page name | 用途 |

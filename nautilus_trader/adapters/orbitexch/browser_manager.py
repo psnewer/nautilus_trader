@@ -57,15 +57,27 @@ class PlaywrightBrowserManager:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._pages: Dict[str, Page] = {}
-        
+        self._start_lock = asyncio.Lock()  # 防并发首次 start 双开浏览器(见 start 注释)
+
         self._log = logging.getLogger(self.__class__.__name__)
-    
+
     async def start(self) -> None:
-        """Start the browser. Idempotent — 已 start 时 no-op(slice 10c smoke 发现:
-        OE Data/Exec 共享 BrowserManager,先连的会 start;后连的 start 应不重复)。"""
+        """Start the browser. Idempotent + **并发安全** —— 已 start 时 no-op(slice 10c smoke 发现:
+        OE Data/Exec 共享 BrowserManager,先连的会 start;后连的 start 应不重复)。
+
+        ⚠️ 并发锁(2026-06-21):`_context` 只在 `await launch()` **完成后**才置位;NT 同时连
+        OE Data + Exec → 两个 `start()` 协程都能越过 `if _context is not None` 守卫(此刻仍 None)
+        → **并发双开 Chromium**,macOS 上 crashpad 竞争 → SIGABRT(`TargetClosedError`)。用 lock
+        串行首次 start,第二个进锁后 double-check 见 `_context` 已置位即返回。"""
         if self._context is not None:
-            return  # 已起
-        self._log.info('🚀 Starting Playwright browser...')
+            return  # 已起(快路径,无需取锁)
+        async with self._start_lock:
+            if self._context is not None:
+                return  # 进锁后复检:前一个 start 已完成
+            self._log.info('🚀 Starting Playwright browser...')
+            await self._do_start()
+
+    async def _do_start(self) -> None:
 
         # Start Playwright
         self._playwright = await async_playwright().start()
