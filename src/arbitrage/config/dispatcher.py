@@ -29,6 +29,7 @@ from src.arbitrage.debug.config import MockDataItem
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
+from src.arbitrage.web.actor import WebGatewayConfig
 from src.arbitrage.strategy.json_loader import build_strategy_registry
 from src.arbitrage.strategy.registry import StrategyRegistry
 
@@ -143,6 +144,12 @@ def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig:
     return StrategyEvaluatorConfig(log_evaluations=cfg.strategy.log_evaluations)
 
 
+def to_web_gateway_config(cfg: ArbConfig) -> WebGatewayConfig:
+    """WebGatewayConfig 只有 enabled/host/port;portfolio / loop 经 `WebGatewayDeps` 注入,launcher 装配。"""
+    w = cfg.web
+    return WebGatewayConfig(enabled=w.enabled, host=w.host, port=w.port)
+
+
 def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
     """JSON `strategies` + `bindings` → `StrategyRegistry`。
 
@@ -167,6 +174,7 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
     r = cfg.risk
     return ArbRiskParams(
         share=r.share,
+        max_leg_share=r.max_leg_share,
         fx=r.fx,
         match_tp=r.match_tp,
         match_sl=r.match_sl,

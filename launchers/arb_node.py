@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -40,6 +42,7 @@ from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveE
 from nautilus_trader.adapters.polymarket.arb_factories import PolymarketSportsLiveDataClientFactory
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
+from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
 from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.config import LiveExecEngineConfig
@@ -53,6 +56,7 @@ from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import wire_arbitrage_runtime
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config import ArbConfig
 from src.arbitrage.config import load_arb_config
@@ -67,10 +71,13 @@ from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
 from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
+from src.arbitrage.config.dispatcher import to_web_gateway_config
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import _RuntimeDeps as MatchingDeps
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import _RuntimeDeps as StrategyDeps
+from src.arbitrage.web.actor import WebGatewayActor
+from src.arbitrage.web.actor import WebGatewayDeps
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
@@ -78,7 +85,11 @@ from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.signals import SignalStore
+from src.arbitrage.settlement.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def register_builtin_checks_and_actions() -> None:
@@ -130,6 +141,42 @@ def prepare_runtime_state(cfg: ArbConfig):
     评估入口 + execution session 共享,做 per-pair 串行。
     """
     return VenueExecutionLiveness((POLYMARKET, ORBITEXCH)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
+
+
+def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
+    """构造 PM merge/redeem 编排器。
+
+    只在 cleanup 开启且链上操作所需基础凭证存在时初始化;初始化失败时返回 None,
+    让交易节点继续启动,由后续 position reconcile 只做对账不做链上 settlement。
+    """
+    if not cfg.execution.cleanup_enabled:
+        return None
+
+    pm = cfg.venues.polymarket
+    if not pm.private_key or not pm.funder:
+        _LOG.warning("PM settlement disabled: missing POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER")
+        return None
+
+    contract_config = OddsSubscriptionConfig(
+        polymarket_private_key=pm.private_key or "",
+        polymarket_funder=pm.funder or "",
+        polymarket_builder_api_key=pm.builder_api_key or "",
+        polymarket_builder_api_secret=pm.builder_api_secret or "",
+        polymarket_builder_passphrase=pm.builder_passphrase or "",
+        polymarket_relayer_url=pm.relayer_url,
+        polygon_rpc_url=pm.polygon_rpc_url,
+    )
+    contract = PolymarketContractService(contract_config, logger=_LOG)
+    if not asyncio.run(contract.initialize()):
+        _LOG.warning("PM settlement disabled: PolymarketContractService initialize failed")
+        return None
+
+    return PolymarketSettlement(
+        contract,
+        merge_enabled=cfg.execution.cleanup_merge_enabled,
+        claim_enabled=cfg.execution.cleanup_claim_enabled,
+        logger=_LOG,
+    )
 
 
 def register_factories(node: TradingNode) -> None:
@@ -214,6 +261,15 @@ def add_actors(
         ),
     )
 
+    # WebGatewayActor(Step 7):只读监控网关。默认关闭 → enabled=false 时根本不构造/不占端口。
+    if cfg.web.enabled:
+        node.trader.add_actor(
+            WebGatewayActor(
+                config=to_web_gateway_config(cfg),
+                deps=WebGatewayDeps(portfolio=node.kernel.portfolio, loop=loop),
+            ),
+        )
+
 
 def bootstrap_and_build(
     cfg: ArbConfig,
@@ -240,7 +296,7 @@ def bootstrap_and_build(
         pair_registry=pair_registry,
         pair_inflight=pair_inflight,    # §6.10 §7:strategy + execution 共享同一份 per-pair 闸
         debug_config=debug_config,
-        pm_settlement=None,             # TODO slice 8/9:PolymarketSettlement 接线(#110:用 NT 对账触发)
+        pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem
         **to_arb_context_init_kwargs(cfg),
     )
 

@@ -1,4 +1,4 @@
-"""ArbitrageLiveRiskEngine 拦截:cpdef 覆盖派发 + 自 emit deny + 三门限 + 余额(risk-6.3b / 6.7.x)。"""
+"""ArbitrageLiveRiskEngine 拦截:cpdef 覆盖派发 + 自 emit deny + 单场 profit gates + 余额。"""
 
 import asyncio
 
@@ -25,8 +25,10 @@ from nautilus_trader.trading.strategy import Strategy
 
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
+from src.arbitrage.risk.portfolio import OutcomeExposure
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
@@ -71,18 +73,16 @@ class _DuckOrder:
         return self._price is not None
 
 
-# ── 三门限(risk-6.7.2 / 6.7.3 / 6.7.4 / 6.7.8）──────────────────────
-def _gate_ctx(params, *, way_rebate=None, global_sum=0.0):
+# ── 单场 profit gates(risk-6.7.2 / 6.7.3 / 6.7.4）────────────────────
+def _gate_ctx(params, *, exposures=None):
     ctx = _Ctx(params)
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
     # #34:pair_id 来自 PairRegistry,非 info["competition"]。模拟 matching 已注册。
-    from src.arbitrage.common.pair_registry import PairRegistry
     registry = PairRegistry()
     registry.register("match_X", [pm.id])
     ctx.portfolio.configure_arb(pair_registry=registry)
-    ctx.portfolio.way_rebate = lambda pair_id, account_id=None: way_rebate or {}
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: global_sum
+    ctx.portfolio.outcome_exposures = lambda pair_id, account_id=None: exposures or {}
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
     order = _DuckOrder(pm.id, AccountId("POLYMARKET-001"))
@@ -90,30 +90,75 @@ def _gate_ctx(params, *, way_rebate=None, global_sum=0.0):
 
 
 def test_match_tp_gate_denies():
-    ctx, order, denials = _gate_ctx(ArbRiskParams(match_tp=0.05), way_rebate={"home": 0.06, "away": 0.01})
-    assert ctx.engine._check_rebate_gates(order) is False
+    ctx, order, denials = _gate_ctx(
+        ArbRiskParams(share=22.5, match_tp=0.05),
+        exposures={
+            "home": OutcomeExposure(net_profit=1.20, liability=0.0),
+            "away": OutcomeExposure(net_profit=1.30, liability=0.0),
+        },
+    )
+    assert ctx.engine._check_profit_gates(order) is False
     assert any("match_tp" in d for d in denials)
 
 
+def test_match_tp_gate_passes_when_any_outcome_not_above_threshold():
+    ctx, order, denials = _gate_ctx(
+        ArbRiskParams(share=22.5, match_tp=0.05),
+        exposures={
+            "home": OutcomeExposure(net_profit=1.20, liability=0.0),
+            "away": OutcomeExposure(net_profit=1.00, liability=0.0),
+        },
+    )
+    assert ctx.engine._check_profit_gates(order) is True
+    assert denials == []
+
+
 def test_match_sl_gate_denies():
-    ctx, order, denials = _gate_ctx(ArbRiskParams(match_sl=-0.05), way_rebate={"home": 0.02, "away": -0.10})
-    assert ctx.engine._check_rebate_gates(order) is False
+    ctx, order, denials = _gate_ctx(
+        ArbRiskParams(share=22.5, match_sl=-0.05),
+        exposures={
+            "home": OutcomeExposure(net_profit=-1.20, liability=2.0),
+            "away": OutcomeExposure(net_profit=-1.30, liability=2.0),
+        },
+    )
+    assert ctx.engine._check_profit_gates(order) is False
     assert any("match_sl" in d for d in denials)
 
 
-def test_global_sl_gate_denies():
-    ctx, order, denials = _gate_ctx(ArbRiskParams(global_sl=-0.10), global_sum=-0.20)
-    assert ctx.engine._check_rebate_gates(order) is False
-    assert any("global_sl" in d for d in denials)
+def test_match_sl_gate_passes_when_any_outcome_not_below_threshold():
+    ctx, order, denials = _gate_ctx(
+        ArbRiskParams(share=22.5, match_sl=-0.05),
+        exposures={
+            "home": OutcomeExposure(net_profit=-1.20, liability=2.0),
+            "away": OutcomeExposure(net_profit=-1.00, liability=2.0),
+        },
+    )
+    assert ctx.engine._check_profit_gates(order) is True
+    assert denials == []
+
+
+def test_global_sl_no_longer_blocks():
+    ctx, order, denials = _gate_ctx(
+        ArbRiskParams(share=22.5, global_sl=-0.10),
+        exposures={
+            "home": OutcomeExposure(net_profit=0.0, liability=0.0),
+            "away": OutcomeExposure(net_profit=0.0, liability=0.0),
+        },
+    )
+    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -999.0
+    assert ctx.engine._check_profit_gates(order) is True
+    assert denials == []
 
 
 def test_gates_pass_when_within_thresholds():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
-        way_rebate={"home": 0.02, "away": 0.01},
-        global_sum=0.0,
+        ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
+        exposures={
+            "home": OutcomeExposure(net_profit=0.50, liability=1.0),
+            "away": OutcomeExposure(net_profit=-0.50, liability=1.0),
+        },
     )
-    assert ctx.engine._check_rebate_gates(order) is True
+    assert ctx.engine._check_profit_gates(order) is True
     assert denials == []
 
 
@@ -206,6 +251,12 @@ def _oe_account(ctx, total, free):
     return AccountFactory.create(oe_account_state(total, free))
 
 
+def _register_pair(ctx, pair_id, instruments):
+    registry = PairRegistry()
+    registry.register(pair_id, [instrument.id for instrument in instruments])
+    ctx.portfolio.configure_arb(pair_registry=registry)
+
+
 # ── cpdef 覆盖派发 + 自 emit deny + 不泄漏(risk-6.7.1）──────────────
 def test_check_order_override_dispatched_and_denies_on_real_submit_path():
     ctx = _Ctx()
@@ -225,8 +276,13 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
 
-    # 强制 global_sl deny(只有我们的覆盖会这样拒)
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
+    # 强制 profit gate deny(只有我们的覆盖会这样拒)
+    _register_pair(ctx, "match_X", [pm])
+    ctx.portfolio.outcome_exposures = lambda pair_id, account_id=None: {
+        "home": OutcomeExposure(net_profit=-2.0, liability=2.0),
+        "away": OutcomeExposure(net_profit=-2.0, liability=2.0),
+    }
+    ctx.engine.configure_arb(ArbRiskParams(share=22.5, match_sl=-0.05), venue_liveness=None)
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -240,7 +296,7 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
     assert exec_engine.command_count == 0, "deny 后订单仍泄漏到 execution"
 
 
-def test_recovery_intent_skips_rebate_gates_on_real_submit_path():
+def test_recovery_intent_skips_profit_gates_on_real_submit_path():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
@@ -255,8 +311,13 @@ def test_recovery_intent_skips_rebate_gates_on_real_submit_path():
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
 
-    # 普通套利会被 global_sl 拦;recovery intent 只跳过 rebate gates,应继续路由到 execution。
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
+    # 普通套利会被 profit gate 拦;recovery intent 只跳过 profit gates,应继续路由到 execution。
+    _register_pair(ctx, "match_X", [pm])
+    ctx.portfolio.outcome_exposures = lambda pair_id, account_id=None: {
+        "home": OutcomeExposure(net_profit=-2.0, liability=2.0),
+        "away": OutcomeExposure(net_profit=-2.0, liability=2.0),
+    }
+    ctx.engine.configure_arb(ArbRiskParams(share=22.5, match_sl=-0.05), venue_liveness=None)
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -287,7 +348,6 @@ def test_recovery_intent_still_checks_balance():
     exec_engine.register_client(exec_client)
     denied = []
     ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -1.0
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -302,6 +362,109 @@ def test_recovery_intent_still_checks_balance():
 
     assert len(denied) >= 1
     assert exec_engine.command_count == 0
+
+
+def test_share_limit_adjusts_pm_size_before_execution():
+    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0))
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=100))
+    _register_pair(ctx, "match_X", [pm])
+    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 15.0, "away": 0.0}
+
+    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    exec_client = MockExecutionClient(
+        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
+        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
+    )
+    exec_engine.register_client(exec_client)
+
+    strategy = Strategy()
+    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
+    order = strategy.order_factory.limit(
+        pm.id,
+        OrderSide.BUY,
+        Quantity.from_int(10),
+        pm.make_price(0.4),
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=match_X",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,oe:away:1",
+        ],
+    )
+    cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
+                      order=order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
+
+    ctx.engine._handle_submit_order(cmd)
+
+    assert exec_engine.command_count == 1
+    routed = exec_client.commands[0]
+    assert routed.order.quantity.as_double() == 5.0
+    assert "arb:opportunity_id=opp-1" in routed.order.tags
+
+
+def test_share_limit_adjusted_pm_size_then_native_min_size_denies():
+    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0))
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=100))
+    _register_pair(ctx, "match_X", [pm])
+    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 16.0, "away": 0.0}
+
+    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    exec_client = MockExecutionClient(
+        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
+        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
+    )
+    exec_engine.register_client(exec_client)
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
+
+    strategy = Strategy()
+    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
+    order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4))
+    cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
+                      order=order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
+
+    ctx.engine._handle_submit_order(cmd)
+
+    assert len(denied) >= 1
+    assert exec_engine.command_count == 0
+    assert exec_client.commands == []
+
+
+def test_share_limit_uses_same_multilateral_scale_for_pm_and_oe():
+    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0, fx=1.0))
+    pm = pm_instrument("match_X", "home")
+    oe = oe_instrument("match_X", "away", 2)
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_instrument(oe)
+    _register_pair(ctx, "match_X", [pm, oe])
+    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 15.0, "away": 15.0}
+
+    strategy = Strategy()
+    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
+    tags = [
+        "arb:opportunity_id=opp-1",
+        "arb:pair_id=match_X",
+        "arb:leg_key=pm:home:0",
+        "arb:expected_legs=pm:home:0,oe:away:1",
+    ]
+    pm_order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4), tags=tags)
+    oe_order = strategy.order_factory.limit(oe.id, OrderSide.BUY, Quantity.from_int(4), oe.make_price(2.5), tags=tags)
+    pm_cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
+                         order=pm_order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
+    oe_cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
+                         order=oe_order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
+
+    adjusted_pm = ctx.engine._adjust_submit_order_for_share_limit(pm_cmd)
+    adjusted_oe = ctx.engine._adjust_submit_order_for_share_limit(oe_cmd)
+
+    assert adjusted_pm.order.quantity.as_double() == 5.0
+    assert adjusted_oe.order.quantity.as_double() == 2.0
+    assert adjusted_pm.order.tags == tags
+    assert adjusted_oe.order.tags == tags
 
 
 def test_opportunity_deny_publishes_domain_message():

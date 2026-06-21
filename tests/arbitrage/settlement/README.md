@@ -63,6 +63,12 @@
 - 期望: 持仓经 report 通路更新 cache → `portfolio.way_rebate` 调用即反映新持仓
 - 验收: merge/redeem 路径不调 `msgbus.publish` / 不写 cache;不主动触发 way_rebate 重算
 
+### settlement-8.9: 链上调用不阻塞 event loop(2026-06-21)
+- 前置: `contract.py` 的 `RelayClient.execute` / `resp.wait()` 是**同步阻塞**调用(提交 tx + 等链上确认数秒);settlement 经 `create_task` 跑在 NT event loop 上
+- 输入: `merge_positions` / `redeem_positions` 跑期间,并发一个每 10ms tick 的心跳协程
+- 期望: 阻塞调用经 `loop.run_in_executor(None, ...)` 丢线程池;阻塞那 ~0.6s 里心跳持续推进(>10 次)
+- 验收: 心跳计数远超 1(loop 未被冻);若退回直接同步调用,心跳会被饿死。文件 `test_contract_offload.py`(2 passed)。注:`create_task` 只解耦调度,**不**让同步调用变非阻塞,两层防阻塞缺一不可(execution §4.6)
+
 ## Debug 相关
 
 Debug `skip_settlement`(§6.6,P10):健康检查路径不真正上链 / mock `TxResult`。归 `tests/arbitrage/debug/`。

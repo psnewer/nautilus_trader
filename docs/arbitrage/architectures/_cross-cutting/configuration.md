@@ -43,6 +43,7 @@ class ArbConfig(Struct, kw_only=True):
     strategy:   StrategySectionConfig
     risk:       RiskSectionConfig
     execution:  ExecutionSectionConfig
+    web:        WebSectionConfig          # Step 7 只读监控网关(默认 enabled=false)
     debug:      DebugSectionConfig | None = None
 
 
@@ -141,10 +142,11 @@ class RiskSectionConfig(Struct, kw_only=True):
     enabled:           bool = True
     execution_enabled: bool = True
     share:             float = 22.5
+    max_leg_share:     float | None = None  # 单 outcome 最大 share;None=关闭 adjusted-size gate
     fx:                float = 1.33
     match_tp:          float = 0.05
     match_sl:          float = -0.05
-    global_sl:         float = -0.10
+    global_sl:         float = -0.10  # 旧配置兼容字段;Risk 不再执行全局止盈/止损
     health_check_interval_sec: float = 120.0
     match_overrides:   dict = {}
 
@@ -197,7 +199,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "polymarket": {"clob_url": "https://clob.polymarket.com", "...": "其他非凭证字段"},
     "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true}
   },
-  "risk": {"share": 22.5, "fx": 1.33, "match_tp": 0.05, "match_sl": -0.05, "global_sl": -0.10},
+  "risk": {"share": 22.5, "max_leg_share": null, "fx": 1.33, "match_tp": 0.05, "match_sl": -0.05},
   "execution": {"tracking_timeout_sec": 30, "...": "..."},
   "strategy": {
     "enabled": true,
@@ -276,6 +278,7 @@ def to_orbitexch_exec_client_config(cfg: ArbConfig) -> OrbitExchExecClientConfig
 def to_instrument_refresher_configs(cfg: ArbConfig) -> tuple[InstrumentRefresherConfig, InstrumentRefresherConfig]: ...
 def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingActorConfig: ...
 def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig: ...
+def to_web_gateway_config(cfg: ArbConfig) -> WebGatewayConfig: ...   # Step 7 只读监控(portfolio/loop 经 deps 注入)
 def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams: ...
 def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict: ...     # prepare_arb_context(**dict)
 def to_debug_config(cfg: ArbConfig) -> DebugConfig | None: ...
@@ -404,8 +407,9 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 | `InstrumentRefresher`(PM / OE) | `to_instrument_refresher_configs(cfg)` × 2 |
 | `MarketMatchingActor` | `to_market_matching_actor_config(cfg)`(含 aliases / max_matches)|
 | `StrategyEvaluator` | `to_strategy_evaluator_config(cfg)` + `to_strategy_registry(cfg)` |
+| `WebGatewayActor`(Step 7,只读监控)| `to_web_gateway_config(cfg)`;`enabled=false` 时 launcher 不构造;`portfolio`/`loop` 经 `WebGatewayDeps` 注入 |
 | `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg))` |
-| `ArbitragePortfolio` | `fx` 经 `wire_arbitrage_runtime`;`share` 保留配置兼容,`way_rebate` 分母取最大实际腿 share |
+| `ArbitragePortfolio` | `fx` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`way_rebate` 分母取按 outcome 聚合后的最大实际 share |
 | `ArbContext`(session / debug / pair_registry / settlement) | `prepare_arb_context(**to_arb_context_init_kwargs(cfg))` |
 | `DebugConfig`(Q11) | `to_debug_config(cfg)`(`enabled=False` → None)|
 
@@ -431,7 +435,7 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 - [x] **slice 6**:`launchers/arb_node.py` 骨架(`build_trading_node_config` / `prepare_runtime_state` / `register_factories` / `bootstrap_and_build` / `main`)+ 单测 ✅ #45(11 passed);**不含 Actors**(留 slice 8)
 - [x] **slice 7A**:OE data factory 真接 scraper + Provider aliases 注入 ✅ #46(+9 passed);PM enricher 真写 + PM 按 sport 过滤留 7B/7C 或 slice 9 一并;**known divergence**:`OrbitExchScraper` 自管 browser 不走 BrowserManager(Q2 原意只覆盖 Data+Exec,discovery 是第三方 + unauthenticated 够用)
 - [x] **slice 8A**:Actors 接线(InstrumentRefresher × 2 + MarketMatchingActor + StrategyEvaluator)✅ #47 + #48 Q19 真接修正(+10 passed 累计);Provider 经 ArbContext 共享(data factory 回写 + launcher post-build 读 + Refresher 装入同一实例);**Q19 `is_execution_active` 已真接**(`_make_is_execution_active(node)` 遍历 `node.kernel.exec_engine._clients`,任一 client `_execution_active=True` → True;`ArbExecutionSessionMixin` 维护的 ref-count `len(_active_sessions) > 0`)
-- [ ] **slice 8B**(推迟):PolymarketSettlement / positions_fetcher 接线(skip_execution smoke 不需要)
+- [x] **slice 8B / #110 settlement 接线(2026-06-21)**:launcher 构造 `PolymarketContractService` + `PolymarketSettlement` 注入 `ArbContext.pm_settlement`;`positions_fetcher` 已随 #110 退役(同一次 NT position reconcile 的 `_last_raw_positions` 喂 settlement)。cleanup 关闭/缺 PM 链上凭证/contract 初始化失败 → settlement=None,节点继续启动;凭证齐全且初始化成功 → PM 连续 position 对账可 fire-and-forget 触发 merge/redeem。
 - [x] **slice 10a**:`EvalContext.submitter` + 真出单链路 ✅ #50(+6 passed)— `make_submitter(cache, msgbus, clock, trader_id, log)` module-level 工厂构 NT LimitOrder + SubmitOrder cmd → `msgbus.send("ExecEngine.execute", cmd)`,经 NT ExecEngine 路由到 venue ExecClient(debug.skip_execution=true 时 SkipExecutionClient 兜底 mock 全成);`PlaceBetsAction` 双路径(submitter 注入→真出单 / submitter None→log-only)。**#106 目标设计已改为 submitter 发送 `RiskEngine.execute`,由 Execution opportunity barrier 收齐同机会 risk-pass legs 后再 release**;落地时以 `architectures/_cross-cutting/synchronization.md §8.4bis` 和 strategy §3.9 为准。
 - [x] **slice 7B PM enricher 真写 + event_slug_builder filter**(#53):**Gap D 修**(PM 端 6-key enricher 占位)+ **Gap B 修**(PM 全量 crawl 无 sport filter):① PM enricher 真写(`nautilus_trader/adapters/polymarket/arb_provider.py:enrich_pm_six_key_info`):market_info["events"][0].ticker 嵌入无需另调 gamma,ticker 解析 `{comp}-{home}-{away}-YYYY-MM-DD` + selection_role 由 market_slug 推 + sub-markets 返空 → matching 跳;② `build_pm_event_slugs_from_arb_context` callable + `PolymarketInstrumentProviderConfig.event_slug_builder` 配置;**关键 audit**:`tag_slug=atp` 错配(返 outright winners),**`series_slug=atp`** 才返 match-level events;③ ArbContext.pm_event_slug_tags + dispatcher to_pm_event_slug_tags 派生自 `cfg.discovery.polymarket.sports[].competitions`;④ launcher timeout_connection 当时 20→120s,现随 #105 启动对账统一为 180s。**14 单测** + **live smoke 验**:0 ERROR,PM 35s load 2026 instruments from 100 events(原 50K+ crawl 5 分钟未完);4 Actors RUNNING,Refresher 双 venue 各 1+ tick。**MatchedPair 不 fire 符合市场逻辑**:PM `series_slug=atp` 100 events 多为 Roland Garros JUNIORS / 次级赛(`atp-matisse-thomas-2026-06-01` = "Roland Garros Juniors, Boys: Matisse Martin vs Flynn Thomas"),OE config 锁的"Men's Roland Garros 2026"是主赛 — 不同赛事不可匹。详见 `discovery/architecture.md §3.2`(PM 端 6-key 真写段)
 - [x] **slice 10d 修 Gap A + E**(#52):**Gap A** `MarketMatchingActor` + `StrategyEvaluator` `Actor.subscribe_data` 强制路由 SubscribeData cmd 经 DataEngine 需 client_id/instrument_id 报 ERROR × 3 — **改 `self._msgbus.subscribe(topic=f"data.{TypeName}", handler=self.on_data)` 直订**(NT `publish_data` 内部正是 publish 到 `data.<TypeName>` topic);**MVP 不预订 OrderBookDeltas**(strategy 端 MatchedPair 触发即够,OBD-driven 重评待 slice 10e per-iid 接);**Gap E** `InstrumentRefresher._on_alert` 创建 task 未跟踪 → dispose 时 "Task was destroyed but it is pending" warning × 1 — **改存 `self._tick_task` + on_stop cancel**。**live smoke 验**:subscribe_data ERROR 3→**0**,pending task warning 1→**0**,OE refresh 3 次推进正常;仅剩 1 PM PolyApi 网络异常(无关本 slice,与 [[bug_polymarket_order_version_mismatch]] 同 PM 上游类问题)。`MatchedPair` 仍 0 fire 符合 slice 7B PM enricher 未写预期(`_both_recent()` 闸 Q5 守门)。详见 `matching/architecture.md §3.3` + `strategy/architecture.md §3.5` + `discovery/architecture.md §3.3`

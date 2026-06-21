@@ -39,15 +39,22 @@
 
   "risk": {
     "share": 22.5,
+    "max_leg_share": null,
     "fx": 1.33,
     "match_tp": 0.05,
-    "match_sl": -0.05,
-    "global_sl": -0.10
+    "match_sl": -0.05
   },
 
   "execution": {
     "tracking_timeout_sec": 30,
     "health_check_interval_sec": 120
+  },
+
+  "web": {
+    "_doc": "Step 7 只读监控网关(architectures/web/architecture.md)。默认关闭;host 默认 127.0.0.1 只绑本机,暴露公网需显式改",
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8080
   },
 
   "strategy": {

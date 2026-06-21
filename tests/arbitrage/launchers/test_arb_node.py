@@ -73,6 +73,87 @@ def test_prepare_runtime_state_enabled_debug():
     assert dbg.enabled is True
 
 
+def test_make_pm_settlement_skips_when_cleanup_disabled():
+    cfg = _cfg(execution={"cleanup_enabled": False})
+
+    assert arb_node._make_pm_settlement(cfg) is None
+
+
+def test_make_pm_settlement_skips_without_chain_credentials():
+    cfg = _cfg()
+
+    assert arb_node._make_pm_settlement(cfg) is None
+
+
+def test_make_pm_settlement_initializes_contract_and_flags(monkeypatch):
+    cfg = _cfg(
+        venues={
+            "polymarket": {
+                "private_key": "0xpk",
+                "funder": "0xfunder",
+                "builder_api_key": "BK",
+                "builder_api_secret": "BS",
+                "builder_passphrase": "BP",
+                "relayer_url": "https://relayer.example/",
+                "polygon_rpc_url": "https://polygon.example/",
+            },
+        },
+        execution={"cleanup_merge_enabled": False, "cleanup_claim_enabled": True},
+    )
+    created = {}
+
+    class _Contract:
+        def __init__(self, config, logger=None):
+            created["contract_config"] = config
+            created["contract_logger"] = logger
+
+        async def initialize(self):
+            created["initialized"] = True
+            return True
+
+    class _Settlement:
+        def __init__(self, contract, *, merge_enabled, claim_enabled, logger=None):
+            created["settlement"] = self
+            created["contract"] = contract
+            created["merge_enabled"] = merge_enabled
+            created["claim_enabled"] = claim_enabled
+            created["settlement_logger"] = logger
+
+    monkeypatch.setattr(arb_node, "PolymarketContractService", _Contract)
+    monkeypatch.setattr(arb_node, "PolymarketSettlement", _Settlement)
+
+    settlement = arb_node._make_pm_settlement(cfg)
+
+    assert settlement is created["settlement"]
+    assert created["initialized"] is True
+    assert created["merge_enabled"] is False
+    assert created["claim_enabled"] is True
+    contract_config = created["contract_config"]
+    assert contract_config.polymarket_private_key == "0xpk"
+    assert contract_config.polymarket_funder == "0xfunder"
+    assert contract_config.polymarket_builder_api_key == "BK"
+    assert contract_config.polymarket_relayer_url == "https://relayer.example/"
+    assert contract_config.polygon_rpc_url == "https://polygon.example/"
+
+
+def test_make_pm_settlement_returns_none_when_contract_init_fails(monkeypatch):
+    cfg = _cfg(venues={"polymarket": {"private_key": "0xpk", "funder": "0xfunder"}})
+
+    class _Contract:
+        def __init__(self, config, logger=None):
+            pass
+
+        async def initialize(self):
+            return False
+
+    settlement_ctor = MagicMock()
+    monkeypatch.setattr(arb_node, "PolymarketContractService", _Contract)
+    monkeypatch.setattr(arb_node, "PolymarketSettlement", settlement_ctor)
+
+    assert arb_node._make_pm_settlement(cfg) is None
+    settlement_ctor.assert_not_called()
+
+
 # ─── register_factories(verifies 4 add_*_factory calls)────────
 
 def test_register_factories_registers_pm_oe_data_exec():
@@ -124,9 +205,11 @@ def test_bootstrap_populates_arb_context():
     """`prepare_arb_context` 是 module-global 状态修改;验证 ArbContext 被填满。"""
     cfg = _cfg(execution={"tracking_timeout_sec": 45.0, "health_check_interval_sec": 90.0})
     fake_node = MagicMock()
+    settlement = object()
 
     with patch.object(arb_node, "install_arbitrage_engines"), \
-         patch.object(arb_node, "wire_arbitrage_runtime"):
+         patch.object(arb_node, "wire_arbitrage_runtime"), \
+         patch.object(arb_node, "_make_pm_settlement", return_value=settlement):
         node, liveness, pair = arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
 
     ctx = bootstrap.get_arb_context()
@@ -138,7 +221,7 @@ def test_bootstrap_populates_arb_context():
     assert not hasattr(ctx, "pm_health_interval_secs")
     assert not hasattr(ctx, "oe_health_interval_secs")
     assert not hasattr(ctx, "pm_positions_fetcher")
-    assert ctx.pm_settlement is None      # slice 6 not yet wired
+    assert ctx.pm_settlement is settlement
 
 
 def test_bootstrap_install_invoked_with_debug_config_when_enabled():
@@ -328,6 +411,34 @@ def test_add_actors_2_total_matching_and_strategy(monkeypatch):
     arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
 
     assert node.trader.add_actor.call_count == 2
+
+
+def test_add_actors_skips_web_gateway_when_disabled(monkeypatch):
+    """web.enabled=false(默认)→ 不构造 WebGatewayActor,仍只 2 个 actor。"""
+    _add_actors_setup(monkeypatch)
+    node = MagicMock()
+    node.kernel.portfolio = MagicMock(name="portfolio")
+
+    arb_node.add_actors(node, _cfg(), pair_registry=PairRegistry())
+
+    assert node.trader.add_actor.call_count == 2
+
+
+def test_add_actors_wires_web_gateway_when_enabled(monkeypatch):
+    """web.enabled=true → 多装 WebGatewayActor(注入 kernel.portfolio)。"""
+    from src.arbitrage.web.actor import WebGatewayActor
+
+    _add_actors_setup(monkeypatch)
+    node = MagicMock()
+    portfolio_sentinel = MagicMock(name="portfolio_sentinel")
+    node.kernel.portfolio = portfolio_sentinel
+
+    arb_node.add_actors(node, _cfg(web={"enabled": True}), pair_registry=PairRegistry())
+
+    assert node.trader.add_actor.call_count == 3
+    web_actor = node.trader.add_actor.call_args_list[-1].args[0]
+    assert isinstance(web_actor, WebGatewayActor)
+    assert web_actor._portfolio is portfolio_sentinel
 
 
 def test_add_actors_strategy_evaluator_receives_portfolio_from_kernel(monkeypatch):

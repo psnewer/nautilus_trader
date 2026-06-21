@@ -370,10 +370,13 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 - **一次拉喂两用(省一次 REST)**:`generate_position_status_reports` 内上游 `_fetch_user_positions` 全量拉一次 /positions,上游把**原始响应** stash 到 `_last_raw_positions`(含 `redeemable`/`neg_risk`/`condition_id`——NT 规范化 report 丢了这些);override 用 stash 喂 settlement,不再二次拉、不再需要注入 `_positions_fetcher`。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
 - **liveness**:拉成功 → `mark_position_alive`;**拉失败(REST 报错/超时)→ `mark_position_dead` 并抛给 NT**(venue dead 逻辑,与 §4.3bis(4) 一致)。
-- **结算 fire-and-forget + single-flight(安全关键)**:settlement 是链上 tx(`contract.wait()` 可能数秒),**绝不能 `await` 在对账方法里**——会卡住 NT 对账循环、拖慢同循环的 inflight check(2s 卡单检测)。故 `_settlement_inflight` 守卫 + `create_task(_run_settlement(raw))` 后台跑;前一次没跑完则本轮跳过(防并发重复提交)。
+- **结算 fire-and-forget + single-flight(安全关键)**:settlement 是链上 tx(提交 + `contract.wait()` 可能数秒)。两层防阻塞缺一不可:(1)`create_task(_run_settlement(raw))` 把派发从对账方法返回路径上解耦,`_settlement_inflight` 守卫前一次没跑完则本轮跳过(防并发重复提交);(2)**`contract.py` 的 `RelayClient.execute` / `resp.wait()` 是同步阻塞调用**,必须在 `merge_positions`/`redeem_positions` 内经 `loop.run_in_executor(None, ...)` 丢线程池——否则即便 `create_task`,协程跑起来仍会在同步 `.wait()` 处卡死整个 NT loop(data/exec WS + inflight 2s 检测全停)。`create_task` 只解耦调度,不让同步调用变非阻塞;两者都要(2026-06-21 修)。线程池里 `_execute_with_proxy` 对 `derive` 做全局 monkeypatch,由 single-flight + `_run_merges/_run_redeems` 顺序 await 保证同一时刻仅一个在跑,不自相竞争。
+- **launcher 接线(2026-06-21 已落地)**:`launchers/arb_node.py` 在 `prepare_arb_context` 前构造 `PolymarketContractService` + `PolymarketSettlement` 并注入 `ctx.pm_settlement`。`execution.cleanup_enabled=false` 或缺 `POLYMARKET_PRIVATE_KEY` / `POLYMARKET_FUNDER` 时跳过 settlement;`PolymarketContractService.initialize()` 失败也只 warning + 注入 None,不阻塞节点启动。`cleanup_merge_enabled` / `cleanup_claim_enabled` 透传给 `PolymarketSettlement`。
 - **merge**:同 condition ≥2 outcome 持仓 → `merge_positions(condition, min(sizes), neg_risk)`;**redeem**:`redeemable=true` → `redeem_positions(...)`。
 - **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size)),不影响 `VenueExecutionLiveness`。
 - 结果回流靠下次 reconcile + way_rebate pull,不发事件、不直接改 cache。
+- **验收锚点(低噪声)**:override 每轮对账打一条 INFO `PM position reconcile OK: N report(s), settlement dispatched/skipped (M raw positions)`(生产约 5 分钟一条),作"对账+结算子系统心跳"+ 可见暴露 settlement 是否真接线。
+- ⚠️ **验证边界(2026-06-21)**:live 节点(skip_execution,interval 临时 60s)已实测 NT 连续 position 对账**周期触发 → 调到 override → `mark_position_alive` → dispatch 判定**,锚点稳定每周期一条 ✅。本次补齐 launcher settlement 对象接线与离线单测;**真实链上 merge/redeem 尚未 live 验证**(需要具备可 merge/redeem 持仓 + 用户明确授权,因为会提交 Builder Relayer 链上 tx)。
 
 ---
 

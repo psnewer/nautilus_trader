@@ -38,3 +38,20 @@
 - 不存第三份 `venue_alive`;它始终由 order/position 两位派生。
 - registry 不在每次 submit 前翻 false。只有执行端明确进入 stuck/reconcile 失败等“真相不可信”路径时写 dead。
 - key 统一为 venue 大写字符串;可传 `Venue` 对象或字符串。
+
+## 3. PairRegistry(已落地,#34 / #116 补充)
+
+`src/arbitrage/common/pair_registry.py` 是 matching 写、risk/portfolio/strategy/session 读的 pair 映射 registry。语义归属在 matching 组件,common 只承载共享实现。
+
+| API | 用途 |
+|---|---|
+| `register(pair_id, instrument_ids)` | matching 成功后注册该 pair 的全部 leg instrument id |
+| `get(instrument_id)` | 下游从任一 instrument id 反查 pair_id |
+| `instrument_ids_for_pair(pair_id)` | Portfolio 反查该 pair 的全部 instrument id,用于从 cache instrument.info 得到完整 outcome 集合 |
+| `unregister_pair(pair_id)` | 结束/eviction 时清理该 pair 的映射 |
+| `all_pair_ids()` | 低频观测 / 扫描用 |
+
+**约束**:
+- register/get 两侧都用 `str(instrument_id)` 归一,避免 matching 写字符串、consumer 传 `InstrumentId` 对象导致 miss。
+- `instrument_ids_for_pair` 返回字符串集合;读取 instrument 详情的一方负责转回 `InstrumentId` 并从 NT Cache 取 instrument。
+- MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。

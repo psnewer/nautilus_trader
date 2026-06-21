@@ -6,7 +6,7 @@
 
 **落地状态(2026-05-24 #38 + 2026-05-26 #39,更新至 2026-06-10 #93)**:
 - ✅ `DebugConfig`(`src/arbitrage/debug/config.py`)— 普通对象,DI 注入,**去 `DebugManager` 单例**(撤销 `services/debug/`,Q11.5)
-- ✅ `DebugArbitrageLiveRiskEngine.skip_check_size`(`src/arbitrage/debug/risk.py`)— Q11.2 落地;`_check_order` 跳 NT 父类、只跑应用层 `_check_balance` + `_check_rebate_gates`(用户审问后撤"粒度"伪问题:就是 `super` 不调,~10 行)
+- ✅ `DebugArbitrageLiveRiskEngine.skip_check_size`(`src/arbitrage/debug/risk.py`)— Q11.2 落地;`_check_order` 跳 NT 父类、只跑应用层 `_check_balance` + `_check_profit_gates`(用户审问后撤"粒度"伪问题:就是 `super` 不调,~10 行)
 - ✅ `bootstrap.install_arbitrage_engines(debug_config=...)`— `enabled` 时装 `_KernelInjectedDebugEngine` 闭包包装类(kernel 不传 `debug=`,从闭包注入);`enabled=False` 或 None → 装生产
 - ✅ `ArbContext.debug_config` 字段(launcher → factory DI)
 - ✅ **#39/#91 `Debug{PM,OE}DataClient`(Q11.A)**(`src/arbitrage/debug/data_clients.py`)— `_DebugDataClientMixin` 拦 `_handle_data`,`_maybe_substitute(data) → data|None`;PM/OE data factory 读 `ArbContext.debug_config` 分支(`enabled` → 装 Debug 子类)。#91 起内置最小 `MockCategory.ODDS` → NT `OrderBookDeltas` 替换:conditions 可按 `instrument_id` / `venue` / `market_type` / `selection_role` 匹配;`data.bid|back` 生成 BUY 档,`data.ask|lay` 生成 SELL 档,输出 snapshot `CLEAR + ADD`。更复杂场景仍通过用户子类化覆盖 `_maybe_substitute`。

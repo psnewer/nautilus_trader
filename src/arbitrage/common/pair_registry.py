@@ -60,5 +60,9 @@ class PairRegistry:
     def all_pair_ids(self) -> set[str]:
         return set(self._by_instrument.values())
 
+    def instrument_ids_for_pair(self, pair_id: str) -> set[str]:
+        """返回该 pair 当前注册的全部 instrument_id 字符串。"""
+        return {iid for iid, pid in self._by_instrument.items() if pid == pair_id}
+
     def __len__(self) -> int:
         return len(self._by_instrument)

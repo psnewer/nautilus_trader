@@ -227,7 +227,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 ### pm-adapter-5.health.4: NT 连续 position 对账内 merge/redeem(#110,2026-06-16;取代旧"健康检查 tick")
 
-> **触发改了**:不再有 PM `HealthCheckLoop`/`_run_health_check`。merge/redeem 由 **NT 连续 position 对账**(`position_check_interval_secs=300`)周期调 `generate_position_status_reports(None)` 时触发。**集成路径(真 client)经 /live-test 验**;纯映射 `pm_raw_position_to_settlement` 离线测见 `test_polymarket_client.py`。
+> **触发改了**:不再有 PM `HealthCheckLoop`/`_run_health_check`。merge/redeem 由 **NT 连续 position 对账**(`position_check_interval_secs=300`)周期调 `generate_position_status_reports(None)` 时触发。触发路径经 /live-test 验到 position reconcile override;真实链上 merge/redeem 需在具备 settlement 持仓且用户授权后另验。纯映射 `pm_raw_position_to_settlement` 离线测见 `test_polymarket_client.py`。
 
 **前置**: 对账那次 `/positions` 原始响应里:condition A 两 outcome 都持仓(可 merge);condition B `redeemable=true`(可 redeem)
 **输入**: NT 连续 position 对账周期到 → `generate_position_status_reports(None)`
@@ -238,9 +238,11 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:`conditionId`/`size`/`negativeRisk`/`redeemable`)→ `PolymarketSettlement.run` → merge/redeem
 - 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
 **验收**:
+- launcher 构造并注入 `PolymarketSettlement`:cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 `PolymarketContractService.initialize()` 成功时接线;失败不阻塞节点启动。
 - **无 `HealthCheckLoop`/`_run_health_check`/独立调度**(静态检查);链上编排在 `PolymarketSettlement`,不内联进 ExecutionClient
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement`:证明 PM override 成功路径会 `mark_position_alive` 并用同一次 `_last_raw_positions` fire-and-forget 触发 settlement。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_failure_marks_dead`:证明 `/positions` report 失败会 `mark_position_dead` 并抛给 NT 对账。
+- `tests/arbitrage/launchers/test_arb_node.py::test_make_pm_settlement_initializes_contract_and_flags`:证明 launcher 将 PM 链上凭证 / relayer 配置映射到 `PolymarketContractService`,并把 cleanup flags 传给 `PolymarketSettlement`。
 - merge/redeem `TxResult` 失败:**仅 log,不判 `VenueExecutionLiveness` dead**;下个对账周期幂等重试(min(size))
 
 ### ~~pm-adapter-5.health.5: 执行在飞时健康检查 tick 跳过~~ —— 已退役(#110)

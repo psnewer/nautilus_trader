@@ -1,4 +1,4 @@
-"""ArbitragePortfolio way_rebate + 全局聚合(risk-6.9.x)。
+"""ArbitragePortfolio outcome exposure / way_rebate + 全局聚合(risk-6.9.x)。
 
 腿提取(`_legs_for_pair` / `_active_pair_ids`)依赖 cache 中的真实 NT Position;为隔离
 聚合/公式逻辑,这些方法在相关用例里被 monkeypatch 成受控返回。腿提取本身经
@@ -42,14 +42,28 @@ def test_compute_way_rebate_equal_share_matches_mean_rebate_shape():
     assert min(r.values()) == pytest.approx(0.20)  # min_way_rebate 等价
 
 
-def test_compute_way_rebate_uses_largest_actual_leg_share():
-    # PM 实际 share=100;OE 实际 share=50*2.5=125 → 用最大腿 share=125 归一化
+def test_compute_way_rebate_uses_largest_outcome_share():
+    # PM 实际 share=100;OE 实际 share=50*2.5=125 → 用最大 outcome share=125 归一化
     pf = _portfolio()
     legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 50, 2.5, 1.0)]
     r = pf._compute_way_rebate(legs)
     assert r["home"] == pytest.approx(0.08)
     assert r["away"] == pytest.approx(0.28)
     assert min(r.values()) == pytest.approx(0.08)
+
+
+def test_compute_way_rebate_aggregates_same_outcome_share_for_denominator():
+    # home outcome 同时有 PM 5 share + OE gross 6 share → 分母必须用 home 聚合 share=11,
+    # 不能用旧的单腿 max=6,否则会把所有 outcome rebate 放大。
+    pf = _portfolio()
+    legs = [
+        _Leg("polymarket", "home", 5, 0.4, 1.0),
+        _Leg("orbitexch", "home", 3, 2.0, 1.0),
+        _Leg("polymarket", "away", 10, 0.5, 1.0),
+    ]
+    r = pf._compute_way_rebate(legs)
+    assert r["home"] == pytest.approx(1.0 / 11.0)
+    assert r["away"] == pytest.approx(0.0)
 
 
 def test_compute_way_rebate_three_way_adds_draw():
@@ -61,6 +75,75 @@ def test_compute_way_rebate_three_way_adds_draw():
 
 def test_empty_legs_returns_empty():
     assert _portfolio()._compute_way_rebate([]) == {}
+
+
+def test_compute_outcome_exposures_net_profit_and_liability():
+    pf = _portfolio()
+    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 40, 2.5, 1.0)]
+    exposures = pf._compute_outcome_exposures(legs)
+    assert exposures["home"].net_profit == pytest.approx(20.0)
+    assert exposures["home"].liability == pytest.approx(40.0)
+    assert exposures["away"].net_profit == pytest.approx(20.0)
+    assert exposures["away"].liability == pytest.approx(40.0)
+
+
+def test_compute_outcome_exposures_three_way_adds_draw():
+    pf = _portfolio()
+    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("polymarket", "draw", 50, 0.3, 1.0)]
+    exposures = pf._compute_outcome_exposures(legs)
+    assert set(exposures.keys()) == {"home", "draw", "away"}
+    assert exposures["away"].net_profit == pytest.approx(-55.0)
+    assert exposures["away"].liability == pytest.approx(55.0)
+
+
+def test_empty_legs_returns_empty_outcome_exposures():
+    assert _portfolio()._compute_outcome_exposures([]) == {}
+
+
+def test_outcome_exposures_uses_registered_outcomes_even_without_position():
+    from src.arbitrage.common.pair_registry import PairRegistry
+
+    cache = TestComponentStubs.cache()
+    home = pm_instrument("match_1", "home", token="home")
+    draw = pm_instrument("match_1", "draw", token="draw")
+    away = pm_instrument("match_1", "away", token="away")
+    cache.add_instrument(home)
+    cache.add_instrument(draw)
+    cache.add_instrument(away)
+
+    pf = _portfolio(cache=cache)
+    registry = PairRegistry()
+    registry.register("match_1", [home.id, draw.id, away.id])
+    pf.configure_arb(pair_registry=registry)
+    _stub_legs(
+        pf,
+        [
+            _Leg("polymarket", "home", 100, 0.4, 1.0),
+            _Leg("polymarket", "away", 100, 0.4, 1.0),
+        ],
+    )
+
+    exposures = pf.outcome_exposures("match_1")
+    assert set(exposures.keys()) == {"home", "draw", "away"}
+    assert exposures["draw"].net_profit == pytest.approx(-80.0)
+    assert exposures["draw"].liability == pytest.approx(80.0)
+
+
+def test_outcome_shares_aggregates_by_outcome():
+    pf = _portfolio()
+    _stub_legs(
+        pf,
+        [
+            _Leg("polymarket", "home", 5, 0.4, 1.0),
+            _Leg("orbitexch", "home", 3, 2.0, 1.0),
+            _Leg("orbitexch", "away", 4, 2.5, 1.0),
+        ],
+    )
+
+    shares = pf.outcome_shares("match_1")
+
+    assert shares["home"] == pytest.approx(11.0)
+    assert shares["away"] == pytest.approx(10.0)
 
 
 # ── 腿提取 seam(risk-6.9.6)──────────────────────────────────────────

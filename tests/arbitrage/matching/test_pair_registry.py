@@ -40,6 +40,16 @@ def test_register_drops_stale_legs_for_same_pair():
     r.register(pid, ["L1", "L2"])           # L3 不再属此 pair
     assert r.get("L3") is None
     assert r.get("L1") == pid and r.get("L2") == pid
+    assert r.instrument_ids_for_pair(pid) == {"L1", "L2"}
+
+
+def test_instrument_ids_for_pair_returns_registered_legs():
+    """matching-3.pair.4b: pair→legs 反查供 Portfolio 读取完整 outcome 集合。"""
+    r = PairRegistry()
+    r.register("p1", ["L1", "L2"])
+    r.register("p2", ["L3"])
+    assert r.instrument_ids_for_pair("p1") == {"L1", "L2"}
+    assert r.instrument_ids_for_pair("unknown") == set()
 
 
 def test_unregister_pair_clears_all_legs():

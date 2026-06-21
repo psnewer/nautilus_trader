@@ -1,5 +1,5 @@
 """
-ArbitragePortfolio —— NT Portfolio 子类,扩展领域指标 way_rebate(pull-based 纯函数)。
+ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / way_rebate 等持仓指标。
 
 详细设计:`docs/arbitrage/architectures/risk/architecture.md §3.2 / §4.1 / §4.2`。
 公式平移自旧 `services/risk/position.py`,但**腿来源改为从 NT Cache 的 Position 反推**
@@ -18,8 +18,11 @@ NT `Portfolio` 是 cdef class,子类**只能加纯 Python 方法**(不能加 cpd
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.portfolio.portfolio import Portfolio
 
 from src.arbitrage.common.pair_registry import PairRegistry
@@ -51,6 +54,14 @@ class _Leg:
         if self.venue == "polymarket":
             return self.size
         return self.size * self.price * self.fx  # orbitexch gross payout
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeExposure:
+    """某个 outcome 发生时的绝对金额风险/收益。"""
+
+    net_profit: float
+    liability: float
 
 
 class ArbitragePortfolio(Portfolio):
@@ -89,8 +100,22 @@ class ArbitragePortfolio(Portfolio):
         return getattr(self, "_arb_pair_registry", None)
 
     # ── per-pair 指标 ────────────────────────────────────────────────
+    def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]:
+        """各 outcome 的绝对金额净利润与 liability。Risk 门控只读这个接口。"""
+        legs = self._legs_for_pair(pair_id, account_id)
+        return self._compute_outcome_exposures(legs, outcomes=self._outcomes_for_pair(pair_id, legs))
+
+    def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]:
+        """各 outcome 当前持仓 share。Adjusted size gate 用于计算剩余额度。"""
+        legs = self._legs_for_pair(pair_id, account_id)
+        outcomes = self._outcomes_for_pair(pair_id, legs)
+        return {
+            outcome: sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
+            for outcome in outcomes
+        }
+
     def way_rebate(self, pair_id: str, account_id=None) -> dict[str, float]:
-        """各方向持仓返水率。只读 NT Cache position,不承载 execution liveness 门控。"""
+        """各方向持仓返水率。兼容 Strategy/Web 展示面;Risk 不再读此接口。"""
         return self._compute_way_rebate(self._legs_for_pair(pair_id, account_id))
 
     def min_way_rebate(self, pair_id: str, account_id=None) -> float | None:
@@ -117,13 +142,55 @@ class ArbitragePortfolio(Portfolio):
         return total
 
     # ── 内部 ─────────────────────────────────────────────────────────
-    def _compute_way_rebate(self, legs: list[_Leg]) -> dict[str, float]:
+    def _compute_outcome_exposures(
+        self,
+        legs: list[_Leg],
+        *,
+        outcomes: set[str] | None = None,
+    ) -> dict[str, OutcomeExposure]:
         if not legs:
             return {}
+        outcomes = outcomes or self._outcomes_from_legs(legs)
+
+        result: dict[str, OutcomeExposure] = {}
+        for outcome in outcomes:
+            profit = sum(leg.profit_if_wins() for leg in legs if leg.market_type == outcome)
+            liability = sum(leg.loss_if_loses() for leg in legs if leg.market_type != outcome)
+            result[outcome] = OutcomeExposure(net_profit=profit - liability, liability=liability)
+        return result
+
+    def _outcomes_for_pair(self, pair_id: str, legs: list[_Leg]) -> set[str]:
+        outcomes = self._outcomes_from_registry(pair_id)
+        if outcomes:
+            return outcomes
+        return self._outcomes_from_legs(legs)
+
+    @staticmethod
+    def _outcomes_from_legs(legs: list[_Leg]) -> set[str]:
         outcomes = {"home", "away"}
         if any(leg.market_type == "draw" for leg in legs):
             outcomes.add("draw")
-        share = max(leg.share_if_wins() for leg in legs)
+        return outcomes
+
+    def _outcomes_from_registry(self, pair_id: str) -> set[str]:
+        registry = self._pair_registry
+        if registry is None or not hasattr(registry, "instrument_ids_for_pair"):
+            return set()
+        outcomes: set[str] = set()
+        for instrument_id in registry.instrument_ids_for_pair(pair_id):
+            instrument = self._arb_cache.instrument(InstrumentId.from_str(str(instrument_id)))
+            if instrument is None or not instrument.info:
+                continue
+            market_type = instrument.info.get("selection_role") or instrument.info.get("market_type")
+            if market_type:
+                outcomes.add(str(market_type))
+        return outcomes
+
+    def _compute_way_rebate(self, legs: list[_Leg]) -> dict[str, float]:
+        if not legs:
+            return {}
+        outcomes = self._outcomes_from_legs(legs)
+        share = self._max_outcome_share(legs, outcomes)
         result: dict[str, float] = {}
         for outcome in outcomes:
             net = 0.0
@@ -134,6 +201,13 @@ class ArbitragePortfolio(Portfolio):
                     net -= leg.loss_if_loses()
             result[outcome] = net / share if share > 0 else 0.0
         return result
+
+    @staticmethod
+    def _max_outcome_share(legs: list[_Leg], outcomes: set[str]) -> float:
+        return max(
+            sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
+            for outcome in outcomes
+        )
 
     def _active_pair_ids(self, account_id=None) -> set[str]:
         pair_ids: set[str] = set()

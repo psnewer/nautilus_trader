@@ -35,6 +35,11 @@ class _RetryFailureRecorder:
 
     NT 上游 `RetryManager.run()` 失败时返回 None,部分 report 方法随后会把 None 当作空结果继续返回。
     Arb 层需要把这种"无真实 response"重新升级为 report 失败,用于 VenueExecutionLiveness。
+
+    ⚠️ 脆弱点:本类经"实例级替换 `self._retry_manager_pool` + monkeypatch 每个 acquired manager 的 `.run`、
+    `finally` 还原"实现。**依赖 order-report 调用与其它走同 pool 的 report 调用不并发重叠**——重叠时
+    全局替换/还原会互相覆盖。当前安全:NT 连续对账循环里同一 client 的各项 check 是同一 loop 迭代内串行
+    `await`。改 NT 上游/引入并发前需复核;更稳的做法是 per-call 传 recorder 而非替换实例属性。
     """
 
     def __init__(self, pool, names: set[str]) -> None:
@@ -202,7 +207,16 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             raise
         self._venue_liveness.mark_position_alive(POLYMARKET)
         # #110:同一次拉的原始 /positions 跑 merge/redeem —— fire-and-forget + single-flight,不阻塞 NT 对账循环。
-        if self._settlement is not None and not self._settlement_inflight:
+        raw = list(getattr(self, "_last_raw_positions", []))
+        dispatch = self._settlement is not None and not self._settlement_inflight
+        if dispatch:
             self._settlement_inflight = True
-            self._loop.create_task(self._run_settlement(list(getattr(self, "_last_raw_positions", []))))
+            self._loop.create_task(self._run_settlement(raw))
+        # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + venue 标活 + 结算派发决策。
+        # 守卫 `_log`:离线单测经 `__new__` 绕过 NT init,`_log` 未初始化为 None;生产恒已注入。
+        if self._log is not None:
+            self._log.info(
+                f"PM position reconcile OK: {len(reports)} report(s), "
+                f"settlement {'dispatched' if dispatch else 'skipped'} ({len(raw)} raw positions)",
+            )
         return reports

@@ -149,12 +149,13 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         return instrument
 ```
 
-`enrich_pm_six_key_info(market_info, outcome) -> dict` 模块函数,**best-effort seam**:
-- `sport` ← `market_info.get("category")`(PM gamma 给的最接近字段)
-- `competition` / `home_team` / `away_team` / `selection_role` 暂空字符串(**TODO**:实写需 PM gamma `/events/{event_id}` 调用 + ticker 拆解,参旧 `odds_client.py:255+`)
-- `start_ts` 暂置 0(同 TODO)
+> **实写已落地(superseded,2026-06-21 核实)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构占位。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events?series_id=`(内嵌 teams),`_build_instrument` 直接把完整 6-key(含 `start_ts` ← `_parse_start_ts(startDate)`、`selection_role` ← slug+ordering、`competition` 经 aliases 标准化)写入 `info`(`arb_provider.py:330-335`)。下面的 seam 版仅作历史参照,extraction 不再是 TODO。
 
-matching `events_from_instruments` 见 4-key 任一空就跳过该 instrument → **目前 PM 侧不参与匹配**;但**结构完整**:真正 extraction 实写时,下游一行不动。
+`enrich_pm_six_key_info(market_info, outcome) -> dict`(历史 seam,已被 arb_provider 取代):
+- `sport` ← `market_info.get("category")`(PM gamma 给的最接近字段)
+- `competition` / `home_team` / `away_team` / `selection_role` / `start_ts` 当时占位(seam 阶段空串/0)
+
+PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_from_instruments` 见 4-key 任一空才跳过该 instrument。
 
 ### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py`)
 
@@ -177,7 +178,7 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 
 | 横切 | 约束 |
 |---|---|
-| Q9 6-key | OE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider._parse_instrument` 补(seam,本 slice 落地结构,extraction 待实写)|
+| Q9 6-key | OE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider`(`arb_provider.py`)`load_async` 走 gamma `/sports`+`/events` 填全 6-key(extraction 已实写,2026-06-21 核实)|
 | §4.3 OE 健康检查 | **历史设计已失效**:execution 页 reload 宿主已迁到 `OrbitExchExecutionClient`;本文件只保留 competition 页健康检查,见 execution §4.3bis |
 | 订阅去重 | NT `DataEngine` 引用计数自动,客户端不自管 |
 | **Q11.A Debug 行情掉包**(#39) | `Debug{PM,OE}DataClient`(`src/arbitrage/debug/data_clients.py`)子类化 `_handle_data`,按 `DebugConfig.mock_data(ODDS)` 替换 / 注入;两 factory 读 `ArbContext.debug_config`,`enabled` → 装 Debug 子类,否则装生产。框架只提供 `_maybe_substitute(data) → data|None` 钩子(默认 passthrough),具体替换算法由 user 按 mock_data schema 子类化覆盖。详见 `_cross-cutting/debug-injection.md` |
@@ -190,7 +191,7 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 
 - [x] OE `LiveMarketDataClient` 子类(整体重写,`data.py`)+ `oe_runner_to_book_deltas` 纯映射 + routing(`tests/arbitrage/adapters/orbitexch/test_data_client_step2.py` 10 passed)
 - [x] OE `OrbitExchLiveDataClientFactory`(同目录 `factories.py`)
-- [x] PM `ArbPolymarketInstrumentProvider` + `ArbPolymarketLiveDataClientFactory`(seam,extraction TODO)+ enricher 单测 4 passed
-- [ ] **TODO Step 2 续**:真 PM 6-key extraction(gamma `/events/{id}` 调用 + ticker 拆解);OE scraper DOM 抽 `start_ts`
+- [x] PM `ArbPolymarketInstrumentProvider`(`arb_provider.py`)+ `ArbPolymarketLiveDataClientFactory`:真 6-key extraction 已实写(gamma `/sports`+`/events` → home/away/selection_role/competition/start_ts),实盘 discovery/matching 已跑
+- [x] ~~真 PM 6-key extraction~~ 已落地(见上)。**OE scraper DOM 抽 `start_ts`:不做** —— `start_ts` 当前无任何 consumer(matching 按 (sport,competition)+队名相似度配对,eviction 由 sports `ended` 比分信号驱动,#60 已取代时间窗 reaper);需要时再补
 - [x] OE competition 页存活封装进 `OrbitExchWebSocketHandler` + `on_disconnect` 事件化 reload;旧 `HealthCheckLoop` staleness / 补开已退役
 - [ ] /live-test:双 venue OrderBookDelta 全链路 → strategy 收

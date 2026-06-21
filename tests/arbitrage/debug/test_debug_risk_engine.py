@@ -1,5 +1,5 @@
 """DebugArbitrageLiveRiskEngine —— Q11.2:`skip_check_size` 跳过 NT 父类 `_check_order`,
-只跑应用层 `_check_balance` + `_check_rebate_gates`。
+只跑应用层 `_check_balance` + `_check_profit_gates`。
 
 对应用例:debug-risk.{1-4}
 """
@@ -54,10 +54,10 @@ def test_skip_inactive_delegates_to_super():
         return True
 
     # 偷换 super._check_order(直接 patch 实例)
-    # 这里更可靠的方式:验证调用流向 —— 把 _check_balance + _check_rebate_gates 也 patch,
+    # 这里更可靠的方式:验证调用流向 —— 把 _check_balance + _check_profit_gates 也 patch,
     # 看在 skip 未激活时 super 路径会跑(它内部不调本类 _check_balance)
     engine._check_balance = lambda *a, **k: (calls.__setitem__("balance", calls["balance"] + 1) or True)
-    engine._check_rebate_gates = lambda *a, **k: (calls.__setitem__("gates", calls["gates"] + 1) or True)
+    engine._check_profit_gates = lambda *a, **k: (calls.__setitem__("gates", calls["gates"] + 1) or True)
     # 用 patch ArbitrageLiveRiskEngine._check_order(super 类方法)
     from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
     import unittest.mock as _mock
@@ -77,7 +77,7 @@ def test_skip_active_runs_app_layer_only_and_returns_true():
     import unittest.mock as _mock
 
     engine._check_balance = lambda *a, **k: True
-    engine._check_rebate_gates = lambda *a, **k: True
+    engine._check_profit_gates = lambda *a, **k: True
     with _mock.patch.object(ArbitrageLiveRiskEngine, "_check_order",
                             side_effect=lambda *a, **k: super_called.__setitem__("v", super_called["v"] + 1) or True):
         assert engine._check_order(instrument=object(), order=object()) is True
@@ -89,7 +89,7 @@ def test_skip_active_balance_fails_short_circuits():
     engine, _ = _engine(_debug_with_skip(active=True))
     calls = {"balance": 0, "gates": 0}
     engine._check_balance = lambda *a, **k: (calls.__setitem__("balance", calls["balance"] + 1) or False)
-    engine._check_rebate_gates = lambda *a, **k: (calls.__setitem__("gates", calls["gates"] + 1) or True)
+    engine._check_profit_gates = lambda *a, **k: (calls.__setitem__("gates", calls["gates"] + 1) or True)
     assert engine._check_order(instrument=object(), order=object()) is False
     assert calls["balance"] == 1 and calls["gates"] == 0  # gates 短路未跑
 
@@ -98,7 +98,7 @@ def test_skip_active_balance_fails_short_circuits():
 def test_skip_active_gates_fail_returns_false():
     engine, _ = _engine(_debug_with_skip(active=True))
     engine._check_balance = lambda *a, **k: True
-    engine._check_rebate_gates = lambda *a, **k: False
+    engine._check_profit_gates = lambda *a, **k: False
     assert engine._check_order(instrument=object(), order=object()) is False
 
 

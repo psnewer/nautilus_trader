@@ -157,6 +157,7 @@ class RiskSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     enabled: bool = True
     execution_enabled: bool = True
     share: float = 22.5
+    max_leg_share: float | None = None
     fx: float = 1.33
     match_tp: float = 0.05
     match_sl: float = -0.05
@@ -186,6 +187,15 @@ class DebugSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     mock_data: dict = msgspec.field(default_factory=dict)
 
 
+class WebSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
+    """Step 7 只读监控 WebGatewayActor(详细设计 architectures/web/architecture.md)。
+    默认关闭;`host` 默认只绑本机,暴露公网需用户显式改。"""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8080
+
+
 # ─── 顶层 ArbConfig ───────────────────────────────────────────────────────
 
 
@@ -196,4 +206,5 @@ class ArbConfig(msgspec.Struct, frozen=True, kw_only=True):
     strategy: StrategySectionConfig = msgspec.field(default_factory=StrategySectionConfig)
     risk: RiskSectionConfig = msgspec.field(default_factory=RiskSectionConfig)
     execution: ExecutionSectionConfig = msgspec.field(default_factory=ExecutionSectionConfig)
+    web: WebSectionConfig = msgspec.field(default_factory=WebSectionConfig)
     debug: DebugSectionConfig | None = None

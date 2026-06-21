@@ -14,6 +14,7 @@ Polymarket 链上操作封装
 - https://github.com/Polymarket/py-builder-relayer-client
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -322,11 +323,15 @@ class PolymarketContractService:
                 operation=OperationType.Call,
             )
 
-            resp = self._execute_with_proxy([txn], desc)
+            # RelayClient.execute / resp.wait() 是同步阻塞调用(提交 + 等链上确认数秒)。
+            # 本方法跑在 NT event loop 上(PM 对账 fire-and-forget create_task),直接调会卡死整个
+            # loop(data/exec WS + inflight 2s 检测全停),故丢到默认线程池。
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, self._execute_with_proxy, [txn], desc)
             self._log.info(f"Merge submitted: {resp}")
 
             # 等待确认
-            awaited = resp.wait()
+            awaited = await loop.run_in_executor(None, resp.wait)
             self._log.info(f"Merge confirmed: {awaited}")
 
             return TxResult(
@@ -385,10 +390,12 @@ class PolymarketContractService:
                 operation=OperationType.Call,
             )
 
-            resp = self._execute_with_proxy([txn], desc)
+            # 同 merge:同步阻塞调用丢线程池,避免卡死跑在 event loop 上的 settlement task。
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, self._execute_with_proxy, [txn], desc)
             self._log.info(f"Redeem submitted: {resp}")
 
-            awaited = resp.wait()
+            awaited = await loop.run_in_executor(None, resp.wait)
             self._log.info(f"Redeem confirmed: {awaited}")
 
             return TxResult(

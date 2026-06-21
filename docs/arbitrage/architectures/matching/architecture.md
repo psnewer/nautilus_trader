@@ -58,9 +58,11 @@ class PairRegistry:
     def unregister_pair(self, pair_id: str) -> None: ...
     # consumers 读
     def get(self, instrument_id) -> str | None: ...                # 查询亦 str() 归一
+    def instrument_ids_for_pair(self, pair_id: str) -> set[str]: ...
     def all_pair_ids(self) -> set[str]: ...
 ```
 > **#58 key 归一 str**:matching 写 `str(leg.id)`,消费者(risk/portfolio/session)用 `InstrumentId` 对象查 → `register`/`get` 两侧 `str()` 归一才命中(否则 dict 恒 miss)。snapshot 反查后在 cache 边界转回 `InstrumentId`(`strategy/snapshot.py:_as_instrument_id`)。
+> **#116 pair→instrument 反查**:`instrument_ids_for_pair(pair_id)` 供 Portfolio 从 cache instrument.info 读取该 pair 的完整 outcome 集合,避免三元盘某 outcome 暂无持仓时被 Risk profit gate 漏算。
 
 ### 3.2 `MatchedPair`(`src/arbitrage/matching/events.py`)
 
