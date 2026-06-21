@@ -11,6 +11,7 @@ WebGatewayActor —— Step 7 只读监控网关(NT `Actor` 子类,与 TradingNo
 from __future__ import annotations
 
 import asyncio
+import socket
 from dataclasses import dataclass
 
 import uvicorn
@@ -48,6 +49,18 @@ class _NoSignalServer(uvicorn.Server):
         pass
 
 
+def _port_bindable(host: str, port: int) -> bool:
+    """同步预检端口能否绑定(uvicorn serve() 在 task 内 bind 失败会被吞,故先探一次)。"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 def _matched_pair_to_json(data: MatchedPair) -> dict:
     return {
         "pair_id": data.pair_id,
@@ -81,11 +94,32 @@ class WebGatewayActor(Actor):
     def on_start(self) -> None:
         self._msgbus.subscribe(topic="events.account.*", handler=self._on_account_state)
         self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}*", handler=self._on_matched_pair)
+        # 端口预检:uvicorn `serve()` 在 task 里跑,bind 失败(端口被占)会被 task 吞掉、不抛到节点,
+        # 误导性的 "listening" 日志照样打。预检后端口被占就明确 error 并放弃启动(不订阅已完成,无害)。
+        if not _port_bindable(self._host, self._port):
+            self.log.error(
+                f"WebGateway NOT started: {self._host}:{self._port} already in use "
+                f"(改 config web.port 或释放该端口)",
+            )
+            return
         app = build_app(self)
         config = uvicorn.Config(app, host=self._host, port=self._port, log_level="warning", loop="none")
         self._server = _NoSignalServer(config)
+        # 用**当前正在跑的** loop,而非注入的 `self._loop`:后者在 `add_actors`(node.run() 之前)捕获,
+        # 可能不是节点实际运行的 loop,create_task 会落到一个永不运行的 loop 上 → serve() 不执行、
+        # 不绑端口、也不报错("listening" 仍打,误导)。on_start 必在节点真 loop 上跑,get_running_loop 才对。
+        self._loop = asyncio.get_running_loop()
         self._serve_task = self._loop.create_task(self._server.serve())
+        self._serve_task.add_done_callback(self._on_serve_done)
         self.log.info(f"WebGateway listening on http://{self._host}:{self._port}")
+
+    def _on_serve_done(self, task) -> None:
+        """uvicorn serve() task 结束:正常停机静默,异常退出则 error(避免 bind 等失败被吞)。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.log.error(f"WebGateway server stopped with error: {exc!r}")
 
     def on_stop(self) -> None:
         if self._server is not None:

@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import socket
 
 from fastapi.testclient import TestClient
 
@@ -21,6 +22,7 @@ from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.risk.portfolio import OutcomeExposure
 from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import _account_state_to_json
+from src.arbitrage.web.actor import _port_bindable
 from src.arbitrage.web.app import build_app
 
 
@@ -96,6 +98,19 @@ def test_unregister_stops_broadcast():
 def test_account_state_serialization_roundtrip():
     d = _account_state_to_json(_account_state())
     assert d["account_id"] == "POLYMARKET-001" and "balances" in d
+
+
+def test_port_bindable_detects_free_and_occupied():
+    # 占一个端口,_port_bindable 应判其不可绑;关闭后恢复可绑(端口被占预检,避免静默 bind 失败)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    port = sock.getsockname()[1]
+    try:
+        assert _port_bindable("127.0.0.1", port) is False
+    finally:
+        sock.close()
+    assert _port_bindable("127.0.0.1", port) is True
 
 
 # ── App 层:HTTP 路由(stub actor)────────────────────────────────────

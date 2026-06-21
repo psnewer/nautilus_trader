@@ -86,7 +86,9 @@ class WebGatewayActor(Actor):
 
 ## 4. 关键机制
 
-- **uvicorn 嵌入同 loop**:`on_start` 内 `uvicorn.Server(Config(app, host, port, log_level="warning"))`,`self._loop.create_task(server.serve())`。**子类化 Server 把 `install_signal_handlers` no-op**——避免抢 NT 节点的信号处理(NT 自管 SIGINT/SIGTERM)。
+- **uvicorn 嵌入同 loop**:`on_start` 内 `uvicorn.Server(Config(app, host, port, log_level="warning", loop="none"))`,`self._loop.create_task(server.serve())`。**子类化 Server 把 `install_signal_handlers` no-op**——避免抢 NT 节点的信号处理(NT 自管 SIGINT/SIGTERM)。
+- **端口预检 + 失败可见(2026-06-21 live 修)**:`serve()` 跑在 task 里,**bind 失败(端口被占)会被 task 吞掉、不抛到节点**,误导性的 "listening" 日志照样打(live 验证时撞到:8080 被本机 Java 占用,uvicorn 静默失败,curl 命中了那个 Java 服务)。修法两层:① `on_start` 先 `_port_bindable(host, port)` 同步探一次,占用则明确 `log.error` 并放弃启动(不打 "listening");② serve task `add_done_callback(_on_serve_done)`,异常退出则 `log.error`(兜住运行期崩溃)。
+- **loop 必须用 `asyncio.get_running_loop()`(2026-06-21 live 修)**:`create_task(serve())` 必须落在节点**实际运行**的 loop 上。`WebGatewayDeps.loop` 是 `add_actors`(node.run() 之前)捕获的,可能不是真运行 loop —— 用它会把 serve task 排到一个永不运行的 loop 上,serve() 不执行、不绑端口、也不报错("listening" 照打,curl 连接被拒)。`on_start` 必在节点真 loop 上被调,故在 `on_start` 内 `self._loop = asyncio.get_running_loop()` 重取。
 - **优雅停机**:`on_stop` 置 `server.should_exit = True`;uvicorn `serve()` 自然返回。同时给所有 WS client queue 投毒丸(`None`)让其协程退出。
 - **WS 背压**:每 client 一个 `asyncio.Queue(maxsize=N)`;`_broadcast` 用 `put_nowait`,满则丢弃该 client 最旧一条(监控面允许丢帧,绝不能反压阻塞 NT 事件回调)。
 - **只读安全**:Actor 只调 `cache` 读方法 + `portfolio` 的 pull 纯函数;无任何 NT 命令/写操作 → 不可能影响交易。即便 FastAPI 抛异常也被 uvicorn 吞在自己的 task 里,不波及 NT loop 上的交易回调。

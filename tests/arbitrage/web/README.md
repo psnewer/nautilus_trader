@@ -2,9 +2,14 @@
 
 对应章节: `refactor.md §5.7`;详细设计 `architectures/web/architecture.md`
 
-**落地状态(2026-06-21)**:Step 7 **只读监控 MVP** 已实现(`src/arbitrage/web/actor.py` + `app.py`)。
-`tests/arbitrage/web/test_web_gateway.py` **12 passed**。范围:只读后端 JSON/WS,不碰交易路径;
+**落地状态(2026-06-21)**:Step 7 **只读监控 MVP** 已实现(`src/arbitrage/web/actor.py` + `app.py`)+ **live 验证通过**。
+`tests/arbitrage/web/test_web_gateway.py` **13 passed**。范围:只读后端 JSON/WS,不碰交易路径;
 config-write / OrderBookDelta firehose / request-response 桥**延后**(见 web/architecture.md §7)。
+
+**live 验证(2026-06-21,skip_execution 节点)**:`/health`✓、`/accounts` 返真实余额(PM 65.02 USDC.e / OE 37.49 GBP)✓、
+`/positions/global_min_rebate_sum`✓、`/ws` 收到真 `matched_pair` 推送(ATP Fritz vs Tiafoe)✓。
+验证中修了两个 live-only bug:① 端口被占(8080 被本机 Java 占用)uvicorn 静默失败 → 加 `_port_bindable` 预检 + serve-done error 回调;
+② `create_task` 用了 `add_actors` 期捕获的 loop(非真运行 loop)→ serve 不执行不报错 → 改 `on_start` 内 `asyncio.get_running_loop()`。
 
 ## 锁定的关键性约束
 
