@@ -269,7 +269,6 @@ def add_actors(
             WebGatewayActor(
                 config=to_web_gateway_config(cfg),
                 deps=WebGatewayDeps(
-                    portfolio=node.kernel.portfolio,
                     loop=loop,
                     risk_engine=node.kernel.risk_engine,   # 读 trading_state / live risk params
                     config_path=config_path,                # PUT 写回 arb_config.json

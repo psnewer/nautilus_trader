@@ -425,20 +425,20 @@ def test_add_actors_skips_web_gateway_when_disabled(monkeypatch):
 
 
 def test_add_actors_wires_web_gateway_when_enabled(monkeypatch):
-    """web.enabled=true → 多装 WebGatewayActor(注入 kernel.portfolio)。"""
+    """web.enabled=true → 多装 WebGatewayActor(注入 kernel.risk_engine 供控制台读写)。"""
     from src.arbitrage.web.actor import WebGatewayActor
 
     _add_actors_setup(monkeypatch)
     node = MagicMock()
-    portfolio_sentinel = MagicMock(name="portfolio_sentinel")
-    node.kernel.portfolio = portfolio_sentinel
+    risk_sentinel = MagicMock(name="risk_engine_sentinel")
+    node.kernel.risk_engine = risk_sentinel
 
     arb_node.add_actors(node, _cfg(web={"enabled": True}), pair_registry=PairRegistry())
 
     assert node.trader.add_actor.call_count == 3
     web_actor = node.trader.add_actor.call_args_list[-1].args[0]
     assert isinstance(web_actor, WebGatewayActor)
-    assert web_actor._portfolio is portfolio_sentinel
+    assert web_actor._risk_engine is risk_sentinel
 
 
 def test_add_actors_strategy_evaluator_receives_portfolio_from_kernel(monkeypatch):

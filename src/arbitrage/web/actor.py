@@ -1,11 +1,11 @@
 """
-WebGatewayActor —— Step 7 只读监控网关(NT `Actor` 子类,与 TradingNode 同进程同 loop)。
+WebGatewayActor —— Step 7 控制台网关(NT `Actor` 子类,与 TradingNode 同进程同 loop)。
 
-`on_start` 内拉起 FastAPI/uvicorn 协程(`build_app` 路由),订阅 `events.account.*` +
-`data.MatchedPair*` 转 JSON 经 WS 推浏览器;HTTP GET 现读 `cache` / `portfolio`(pull)。
-**纯观测面:只读,不发命令、不 publish、不写 cache** —— 对交易路径透明。
+`on_start` 内拉起 FastAPI/uvicorn 协程(`build_app` 路由)。**控制面**:TradingState 启停 +
+配置编辑(写经 MessageBus 命令,方案乙;读经 risk_engine 引用)+ `/ws` 推 TradingState 变更。
+纯只读监控 endpoint(余额/matched_pairs/way_rebate)已按用户要求移除(2026-06-21)。
 
-详细设计:`docs/arbitrage/architectures/web/architecture.md`。
+详细设计:`docs/arbitrage/architectures/web/architecture.md §8`。
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import uvicorn
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.model.enums import trading_state_to_str
-from nautilus_trader.model.events import AccountState
 
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
@@ -29,12 +28,10 @@ from src.arbitrage.common.control import TOPIC_TRADING_STATE
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
-from src.arbitrage.matching.events import MatchedPair
-from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.web.app import build_app
 
 
-_WS_QUEUE_MAXSIZE = 256  # 每 client 队列上限;满则丢最旧(监控面允许丢帧,绝不反压交易回调)
+_WS_QUEUE_MAXSIZE = 256  # 每 client 队列上限;满则丢最旧(绝不反压交易回调)
 
 
 class WebGatewayConfig(ActorConfig, frozen=True, kw_only=True):
@@ -45,13 +42,11 @@ class WebGatewayConfig(ActorConfig, frozen=True, kw_only=True):
 
 @dataclass(slots=True)
 class WebGatewayDeps:
-    """非 msgspec 对象经 deps 注入(同 matching/strategy 模式)。
+    """非 msgspec 对象经 deps 注入。读经引用(risk_engine),**写经 MessageBus 命令**(方案乙;web §8.3)。
 
-    读经引用(portfolio/risk_engine,同 MVP 风格),**写经 MessageBus 命令**(方案乙;web §8.3)。
     `config_path` = `arb_config.json` 路径,PUT 配置写回它(对齐 legacy `_save_config`)。
     """
 
-    portfolio: ArbitragePortfolio
     loop: asyncio.AbstractEventLoop
     risk_engine: object | None = None        # 读 trading_state / live risk params(写走命令)
     config_path: str | None = None           # arb_config.json,PUT 写回
@@ -76,44 +71,23 @@ def _port_bindable(host: str, port: int) -> bool:
         sock.close()
 
 
-def _matched_pair_to_json(data: MatchedPair) -> dict:
-    return {
-        "pair_id": data.pair_id,
-        "sport": data.sport,
-        "competition": data.competition,
-        "pm_instrument_ids": list(data.pm_instrument_ids),
-        "oe_instrument_ids": list(data.oe_instrument_ids),
-        "confidence": data.confidence,
-        "ts_event": data.ts_event,
-    }
-
-
-def _account_state_to_json(event: AccountState) -> dict:
-    return AccountState.to_dict(event)  # NT 原生 JSON-safe 序列化
-
-
 class WebGatewayActor(Actor):
     def __init__(self, config: WebGatewayConfig, deps: WebGatewayDeps) -> None:
         super().__init__(config=config)
         self._host = config.host
         self._port = config.port
-        # NT `Actor.portfolio` 是只读 property → 用 `_portfolio`(对齐 StrategyEvaluator 约定);app 路由读它。
-        self._portfolio = deps.portfolio
         self._loop = deps.loop
         self._risk_engine = deps.risk_engine          # 读 trading_state / live risk params
         self._config_path = deps.config_path           # PUT 写回 arb_config.json
-        self._matched_pairs: dict[str, dict] = {}
         self._ws_clients: set[asyncio.Queue] = set()
         self._server: _NoSignalServer | None = None
         self._serve_task: asyncio.Task | None = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────
     def on_start(self) -> None:
-        self._msgbus.subscribe(topic="events.account.*", handler=self._on_account_state)
-        self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}*", handler=self._on_matched_pair)
         self._msgbus.subscribe(topic="events.risk", handler=self._on_risk_event)  # TradingStateChanged → WS 推
         # 端口预检:uvicorn `serve()` 在 task 里跑,bind 失败(端口被占)会被 task 吞掉、不抛到节点,
-        # 误导性的 "listening" 日志照样打。预检后端口被占就明确 error 并放弃启动(不订阅已完成,无害)。
+        # 误导性的 "listening" 日志照样打。预检后端口被占就明确 error 并放弃启动。
         if not _port_bindable(self._host, self._port):
             self.log.error(
                 f"WebGateway NOT started: {self._host}:{self._port} already in use "
@@ -146,19 +120,7 @@ class WebGatewayActor(Actor):
             self._enqueue(queue, None)
         self._ws_clients.clear()
 
-    # ── 事件回调 → 广播 ───────────────────────────────────────────────
-    def _on_account_state(self, event) -> None:
-        if not isinstance(event, AccountState):
-            return
-        self._broadcast({"type": "account", "data": _account_state_to_json(event)})
-
-    def _on_matched_pair(self, data) -> None:
-        if not isinstance(data, MatchedPair):
-            return
-        payload = _matched_pair_to_json(data)
-        self._matched_pairs[data.pair_id] = payload
-        self._broadcast({"type": "matched_pair", "data": payload})
-
+    # ── WS 广播 ───────────────────────────────────────────────────────
     def _broadcast(self, msg: dict) -> None:
         for queue in list(self._ws_clients):
             self._enqueue(queue, msg)
@@ -174,7 +136,6 @@ class WebGatewayActor(Actor):
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 pass
 
-    # ── WS client 注册(app 调用)─────────────────────────────────────
     def register_ws(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=_WS_QUEUE_MAXSIZE)
         self._ws_clients.add(queue)
@@ -182,18 +143,6 @@ class WebGatewayActor(Actor):
 
     def unregister_ws(self, queue: asyncio.Queue) -> None:
         self._ws_clients.discard(queue)
-
-    # ── 快照(app GET 路由读)─────────────────────────────────────────
-    def matched_pairs(self) -> list[dict]:
-        return list(self._matched_pairs.values())
-
-    def accounts_snapshot(self) -> list[dict]:
-        snapshot: list[dict] = []
-        for account in self.cache.accounts():
-            event = account.last_event
-            if event is not None:
-                snapshot.append(_account_state_to_json(event))
-        return snapshot
 
     # ── 控制台:TradingState 启停(读经引用,写经命令;web §8.1/§8.3)──────
     def _on_risk_event(self, event) -> None:
