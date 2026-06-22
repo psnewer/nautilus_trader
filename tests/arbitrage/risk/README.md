@@ -421,3 +421,6 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - `skip_check_size` 跳过 NT 父类的最小限额检查(测试小单可下)
 
 不在本目录。
+
+## 控制台命令 consumer(#119)
+- `command.arb.trading_state` / `command.arb.risk_params`:`ArbitrageLiveRiskEngine.configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params`。用例 `test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored` / `test_risk_params_command_hot_updates_only_given_fields`。契约 + 完整控制台用例见 web §8 / `tests/arbitrage/web/README.md` web-7.8~7.12。

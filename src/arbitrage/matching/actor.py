@@ -21,6 +21,8 @@ from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.identifiers import Venue
 
+from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
+from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
@@ -71,6 +73,15 @@ class MarketMatchingActor(Actor):
         self._schedule_next()
         # #60:订 sports 比分信号(NT publish_data 无 metadata topic 带尾 `*`,#58)→ ended 驱动 eviction。
         self._msgbus.subscribe(topic=f"data.{SportsGameUpdate.__name__}*", handler=self.on_data)
+        # #119:控制台热改周期(方案乙;web §8.3)。
+        self._msgbus.subscribe(topic=TOPIC_REFRESH_INTERVAL, handler=self._on_set_refresh_interval_cmd)
+
+    def _on_set_refresh_interval_cmd(self, cmd) -> None:
+        if not isinstance(cmd, SetRefreshIntervalCommand) or cmd.secs <= 0:
+            return
+        self._refresh_interval_secs = cmd.secs  # 下次 _schedule_next 用新值
+        if self._log is not None:  # 守卫:离线 __new__ 单测未注册 logger(同 #110 PM 守卫)
+            self.log.info(f"matching refresh_interval hot-updated: {cmd.secs}s")
 
     # ── sports 信号入口(#60:ended → eviction;替 #59 expiration reaper)────────
     def on_data(self, data) -> None:

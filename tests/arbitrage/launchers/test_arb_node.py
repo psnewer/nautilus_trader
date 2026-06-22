@@ -522,3 +522,27 @@ def test_bootstrap_and_build_invokes_add_actors(monkeypatch):
     add_actors_mock.assert_called_once()
     _, kwargs = add_actors_mock.call_args
     assert "pair_registry" in kwargs
+
+
+# ── 控制台 boot HALTED(#119)──────────────────────────────────────────
+from nautilus_trader.model.enums import TradingState as _TradingState
+
+
+def test_boot_halted_when_web_enabled_and_start_halted():
+    fake_node = MagicMock()
+    cfg = _cfg(web={"enabled": True, "start_halted": True})
+    with patch.object(arb_node, "install_arbitrage_engines"), \
+         patch.object(arb_node, "wire_arbitrage_runtime"), \
+         patch.object(arb_node, "add_actors"):
+        arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
+    fake_node.kernel.risk_engine.set_trading_state.assert_called_once_with(_TradingState.HALTED)
+
+
+def test_no_boot_halt_when_web_disabled():
+    fake_node = MagicMock()
+    cfg = _cfg()  # web 默认 disabled
+    with patch.object(arb_node, "install_arbitrage_engines"), \
+         patch.object(arb_node, "wire_arbitrage_runtime"), \
+         patch.object(arb_node, "add_actors"):
+        arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
+    fake_node.kernel.risk_engine.set_trading_state.assert_not_called()

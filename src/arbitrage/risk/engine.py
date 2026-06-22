@@ -18,8 +18,11 @@ notional/submit_rate/TradingState/native 余额)+ 应用层余额检查 + 单场
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.risk_engine import LiveRiskEngine
+from nautilus_trader.model.enums import TradingState
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Quantity
@@ -27,6 +30,10 @@ from nautilus_trader.model.orders import LimitOrder
 
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.control import TOPIC_RISK_PARAMS
+from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetRiskParamsCommand
+from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
@@ -43,6 +50,39 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     ) -> None:
         self._arb_params = params
         self._arb_venue_liveness = venue_liveness
+        # 控制台命令订阅(方案乙;web §8.3)——幂等:configure_arb 可能被多次调用。
+        if self._msgbus is not None and not getattr(self, "_arb_control_subscribed", False):
+            self._msgbus.subscribe(topic=TOPIC_TRADING_STATE, handler=self._on_set_trading_state_cmd)
+            self._msgbus.subscribe(topic=TOPIC_RISK_PARAMS, handler=self._on_set_risk_params_cmd)
+            self._arb_control_subscribed = True
+
+    # ── 控制台命令 handler(web publish → 本引擎 apply)─────────────────
+    def _on_set_trading_state_cmd(self, cmd) -> None:
+        if not isinstance(cmd, SetTradingStateCommand):
+            return
+        state = {"ACTIVE": TradingState.ACTIVE, "HALTED": TradingState.HALTED}.get(cmd.state)
+        if state is None:
+            self._log.error(f"invalid trading_state command: {cmd.state!r}")
+            return
+        self.set_trading_state(state)  # NT 原生:发 TradingStateChanged + 后续 HALTED 拦 submit
+
+    def _on_set_risk_params_cmd(self, cmd) -> None:
+        if not isinstance(cmd, SetRiskParamsCommand):
+            return
+        overrides = {
+            k: v
+            for k, v in (
+                ("share", cmd.share),
+                ("match_tp", cmd.match_tp),
+                ("match_sl", cmd.match_sl),
+                ("max_leg_share", cmd.max_leg_share),
+            )
+            if v is not None
+        }
+        if not overrides:
+            return
+        self._arb_params = replace(self._params, **overrides)
+        self._log.info(f"risk params hot-updated: {overrides}")
 
     @property
     def _params(self) -> ArbRiskParams:

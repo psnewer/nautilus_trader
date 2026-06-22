@@ -114,7 +114,68 @@ class WebGatewayActor(Actor):
 
 ## 7. 延后项(下一轮再议)
 
-- **config-write**:HTTP POST `/config/refresh_interval` → publish `config.{venue}.refresh_interval` → Refresher 运行时生效(web-7.4,Q3)。需先定 Refresher 的命令订阅契约。
 - **OrderBookDelta firehose**:订 `data.OrderBookDelta*` 转 JSON 推前端(web-7.2)。量大,需先定节流/采样策略。
 - **MessageBus request/response 桥**:web-7.1 原设想经 request/response 拿数据;MVP 简化为 Actor 直接订阅 + 持 portfolio 引用,够用则不引入该桥。
-- **前端**:静态 HTML/JS 面板(本 MVP 只出 JSON/WS)。
+- **前端**:静态 HTML/JS 面板(本 MVP / 控制台只出 JSON/WS)。
+
+---
+
+## 8. 控制台 —— TradingState 启停 + 配置编辑(Step 7 控制面,2026-06-21 定)
+
+> **范围裁定(用户 2026-06-21)**:legacy 控制台的 pipeline start/stop、discovery/matching `run`、odds subscribe 等**在 NT 里无意义**(发现/匹配/订阅均连续自动),全部**不做**。控制台只做两件 NT 里成立的事:**① TradingState 启停**、**② 配置编辑(C 混合:热改 + 重启)**。决策史见 refactor.md 修订记录 #119。
+
+### 8.1 启停按钮 = NT 原生 TradingState
+
+- **复用 NT 原生 `RiskEngine.set_trading_state(ACTIVE/HALTED)`**(`risk/engine.pyx:229`),**不用 REDUCING**。HALTED 在 egress `_execution_gateway`→`_deny_command`→`_deny_order` 拦所有新 submit(`risk/engine.pyx:1124`)。**barrier 安全**:`_deny_command(SubmitOrder)` 走 `_deny_order`,而 `ArbitrageLiveRiskEngine._deny_order` 已重写(发 `risk.opportunity.leg_denied`)→ HALTED 时 opportunity barrier 正常释放 `pair_inflight`,不泄漏。
+- **boot 默认 HALTED**:NT `RiskEngine.__init__` 默认 ACTIVE(`engine.pyx:133`);本系统 launcher 在 `node.build()` 后、`node.run()` 前对 `node.kernel.risk_engine.set_trading_state(HALTED)`。**仅当 `web.enabled` 且 `web.start_halted`(默认 true)时生效** —— web 关闭时无按钮可解除,保持 NT 原生 ACTIVE,否则节点永不交易。
+- **不联动 strategy 评估(用户 2026-06-21)**:Stop 只切 HALTED,strategy 继续评估、submit 在 egress 被拒。**已知取舍**:HALTED 期间若有机会信号会刷 `DENIED: TradingState.HALTED` 警告(churn)。接受;若日后噪声大再议联动。
+- ⚠️ **对 Q16「不主动改 TradingState」的修订**:risk §4.3/§4.4 锁定的是**自动门控**(profit gates / venue liveness)不用 TradingState、走逐 submit deny;**本节是人工操作员熔断**,二者正交并存——自动门控仍不碰 TradingState,只有控制台启停按钮显式 set。
+
+### 8.2 配置编辑(C 混合:热改 + 重启)
+
+每次保存都**写回 `arb_config.json`**(对齐 legacy `_save_config`,重启不丢);其中"热字段"额外推命令给活节点即时生效,"重启字段"只落文件 + 页面标"需重启"。
+
+| 段 | 字段 | 生效方式 |
+|---|---|---|
+| risk | `share` / `match_tp` / `match_sl` / `max_leg_share` | **热改** → `command.arb.risk_params` |
+| matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
+| venues | 凭证 / URL | **重启**(连接态,结构性) |
+| discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
+| web / execution | host/port / 超时 | **重启** |
+
+### 8.3 接线 seam = MessageBus 命令(方案乙,解耦)
+
+WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owner 组件订阅自行 apply**(producer=web 定义契约,consumer=risk/matching;P11 单一生产者归属 → 契约住 web 组件,consumer 交叉引用)。
+
+| 命令 topic | payload | 消费者 | apply |
+|---|---|---|---|
+| `command.arb.trading_state` | `{"state": "ACTIVE"\|"HALTED"}` | `ArbitrageLiveRiskEngine`(`configure_arb` 内 subscribe)| `self.set_trading_state(...)` |
+| `command.arb.risk_params` | risk 字段 dict | `ArbitrageLiveRiskEngine` | 重置 `self._arb_params`(+ portfolio fx)|
+| `command.arb.refresh_interval` | `{"secs": float}` | `MarketMatchingActor`(`on_start` 内 subscribe)| 更新 `self._refresh_interval_secs` |
+
+命令消息类型 + topic 常量住 `src/arbitrage/common/control.py`(轻 frozen dataclass)。
+
+### 8.4 路由(扩 `app.py`)
+
+| 方法 | 路径 | 处理 |
+|---|---|---|
+| GET | `/control/trading_state` | 当前 TradingState(读 risk_engine,经注入只读快照或 actor 缓存最近一次 `events.risk`)|
+| POST | `/control/trading_state` | body `{state}` → publish `command.arb.trading_state`;Halt→Active 前端二次确认 |
+| GET | `/config` | 当前生效配置快照(启动 `ArbConfig` + 热改后的活值)|
+| PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
+
+### 8.5 安全
+
+- `host` 默认 `127.0.0.1` 本机;**boot 默认 HALTED** 兜底(误暴露也 boot 即停)。
+- 写操作 MVP 不加鉴权(靠 localhost 绑定);Start(Halt→Active)UI 二次确认。
+- 真金边界:所有热改写的是活节点真账户;`command.arb.*` 仅 web→组件单向,组件侧校验 payload(非法值拒绝并 log,不 apply)。
+
+### 8.6 落地清单(控制台)
+
+- [ ] `src/arbitrage/common/control.py`:命令类型 + topic 常量
+- [ ] `ArbitrageLiveRiskEngine.configure_arb`:subscribe `command.arb.trading_state` + `command.arb.risk_params`
+- [ ] `MarketMatchingActor.on_start`:subscribe `command.arb.refresh_interval`
+- [ ] launcher:`web.enabled && web.start_halted` → build 后 `risk_engine.set_trading_state(HALTED)`;`WebSectionConfig` 加 `start_halted`
+- [ ] `app.py` 路由 + `actor.py` publish 命令 / 写 `arb_config.json`(注入 cfg 快照 + 配置文件路径)
+- [ ] 测试:命令 publish/consume apply、boot HALTED、PUT 写文件 + 热段发命令、HALTED deny 经 barrier 释放
+- [ ] **live 验证**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 risk 参数热生效

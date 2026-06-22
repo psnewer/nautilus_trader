@@ -89,6 +89,7 @@ class MarketMatchingActor(Actor):
     def on_start(self):
         self._schedule_next()                                  # 排首次 _MATCH_ALERT
         msgbus.subscribe(f"data.{SportsGameUpdate.__name__}*", self.on_data)  # #60 ended → eviction
+        msgbus.subscribe("command.arb.refresh_interval", self._on_set_refresh_interval_cmd)  # #119 控制台热改(consumer;契约见 web §8.3)
     def on_stop(self):  self._cancel_alert()
     def on_data(self, data):                                   # #60
         if isinstance(data, SportsGameUpdate) and data.ended:

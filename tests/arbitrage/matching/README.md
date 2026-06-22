@@ -75,3 +75,6 @@
 期望: 没有 `isinstance(inst, BinaryOption)` / `isinstance(inst, BettingInstrument)` 的代码路径
 
 验收(代码扫描): `MatchEngine` / `EventNormalizer` 中不出现具体类型 import,只 import `Instrument` 抽象类(供类型注解)
+
+## 控制台命令 consumer(#119)
+- `command.arb.refresh_interval`:`MarketMatchingActor.on_start` 内 subscribe → 热改 `_refresh_interval_secs`。用例 `test_pair_registry.py::test_refresh_interval_command_hot_updates` / `test_refresh_interval_command_rejects_nonpositive`。契约见 web §8.3。

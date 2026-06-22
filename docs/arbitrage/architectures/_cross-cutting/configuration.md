@@ -43,7 +43,7 @@ class ArbConfig(Struct, kw_only=True):
     strategy:   StrategySectionConfig
     risk:       RiskSectionConfig
     execution:  ExecutionSectionConfig
-    web:        WebSectionConfig          # Step 7 只读监控网关(默认 enabled=false)
+    web:        WebSectionConfig          # Step 7 监控 + 控制台(enabled/host/port/start_halted;默认 enabled=false)
     debug:      DebugSectionConfig | None = None
 
 

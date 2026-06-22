@@ -46,6 +46,7 @@ from nautilus_trader.adapters.polymarket.contract import PolymarketContractServi
 from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
 from nautilus_trader.config import LiveExecEngineConfig
+from nautilus_trader.model.enums import TradingState
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.live.node import TradingNode
@@ -211,6 +212,7 @@ def add_actors(
     *,
     pair_registry: PairRegistry,
     pair_inflight: PairInFlightGate | None = None,
+    config_path: str | None = None,
 ) -> None:
     """slice 8A:**必须在 `node.build()` 之后调用**(provider 由 data factory 构造后回写到
     `ArbContext.{pm,oe}_instrument_provider`,Refresher 取同一实例确保 cache add 视图一致)。
@@ -266,7 +268,12 @@ def add_actors(
         node.trader.add_actor(
             WebGatewayActor(
                 config=to_web_gateway_config(cfg),
-                deps=WebGatewayDeps(portfolio=node.kernel.portfolio, loop=loop),
+                deps=WebGatewayDeps(
+                    portfolio=node.kernel.portfolio,
+                    loop=loop,
+                    risk_engine=node.kernel.risk_engine,   # 读 trading_state / live risk params
+                    config_path=config_path,                # PUT 写回 arb_config.json
+                ),
             ),
         )
 
@@ -275,6 +282,7 @@ def bootstrap_and_build(
     cfg: ArbConfig,
     *,
     node_factory=TradingNode,
+    config_path: str | None = None,
 ) -> tuple[TradingNode, VenueExecutionLiveness, PairRegistry]:
     """主 orchestrator(slice 6:不接 Actors,留 slice 8)。
 
@@ -314,7 +322,12 @@ def bootstrap_and_build(
     )
 
     # 7. (slice 8A)接 4 个 Actor:provider 由 data factory 回写到 ArbContext 后可用
-    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight)
+    add_actors(node, cfg, pair_registry=pair_registry, pair_inflight=pair_inflight, config_path=config_path)
+
+    # 8. (#119)控制台启用时 boot 即 HALTED:真金安全默认,操作员经 web 点 Start 才放行。
+    #    web 关闭则无按钮可解除 → 保持 NT 原生 ACTIVE,否则节点永不交易。
+    if cfg.web.enabled and cfg.web.start_halted:
+        node.kernel.risk_engine.set_trading_state(TradingState.HALTED)
 
     return node, venue_liveness, pair_registry
 
@@ -385,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
 
-    node, _, _ = bootstrap_and_build(cfg)
+    node, _, _ = bootstrap_and_build(cfg, config_path=args.config)
 
     try:
         node.run()

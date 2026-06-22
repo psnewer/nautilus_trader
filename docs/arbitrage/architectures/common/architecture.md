@@ -55,3 +55,8 @@
 - register/get 两侧都用 `str(instrument_id)` 归一,避免 matching 写字符串、consumer 传 `InstrumentId` 对象导致 miss。
 - `instrument_ids_for_pair` 返回字符串集合;读取 instrument 详情的一方负责转回 `InstrumentId` 并从 NT Cache 取 instrument。
 - MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。
+
+## 4. 控制台命令(`control.py`,#119)
+
+`src/arbitrage/common/control.py` = Web 控制台 → 组件的运行时控制命令(topic 常量 + frozen dataclass):
+`SetTradingStateCommand` / `SetRiskParamsCommand` / `SetRefreshIntervalCommand`。**契约真理源在 web §8.3**(WebGatewayActor 单一生产者 publish,risk/matching 订阅 apply);本目录只承载共享类型定义。

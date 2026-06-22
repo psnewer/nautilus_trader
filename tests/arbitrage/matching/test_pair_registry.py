@@ -68,3 +68,27 @@ def test_multiple_pairs_isolated():
     r.register("p1", ["L1", "L2"])
     r.register("p2", ["L3"])
     assert r.all_pair_ids() == {"p1", "p2"} and len(r) == 3
+
+
+# ── 控制台热改 refresh_interval(#119,方案乙 consumer)──────────────────
+from src.arbitrage.matching.actor import MarketMatchingActor
+from src.arbitrage.common.control import SetRefreshIntervalCommand
+
+
+def _bare_matching_actor(interval=30.0):
+    a = MarketMatchingActor.__new__(MarketMatchingActor)
+    a._refresh_interval_secs = interval
+    return a
+
+
+def test_refresh_interval_command_hot_updates():
+    a = _bare_matching_actor(30.0)
+    a._on_set_refresh_interval_cmd(SetRefreshIntervalCommand(secs=15.0))
+    assert a._refresh_interval_secs == 15.0
+
+
+def test_refresh_interval_command_rejects_nonpositive():
+    a = _bare_matching_actor(30.0)
+    a._on_set_refresh_interval_cmd(SetRefreshIntervalCommand(secs=0.0))
+    a._on_set_refresh_interval_cmd(SetRefreshIntervalCommand(secs=-5.0))
+    assert a._refresh_interval_secs == 30.0  # 非正值不 apply

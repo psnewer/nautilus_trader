@@ -515,3 +515,38 @@ def test_non_opportunity_deny_does_not_publish_domain_message():
     ctx.engine._deny_order(order, "blocked")
 
     assert domain_msgs == []
+
+
+# ── 控制台命令(#119:web publish → 引擎 apply,方案乙)─────────────────
+from nautilus_trader.model.enums import TradingState  # noqa: E402
+from src.arbitrage.common.control import TOPIC_RISK_PARAMS  # noqa: E402
+from src.arbitrage.common.control import TOPIC_TRADING_STATE  # noqa: E402
+from src.arbitrage.common.control import SetRiskParamsCommand  # noqa: E402
+from src.arbitrage.common.control import SetTradingStateCommand  # noqa: E402
+
+
+def test_trading_state_command_halts_and_resumes():
+    ctx = _Ctx()
+    assert ctx.engine.trading_state == TradingState.ACTIVE  # NT 默认
+    ctx.msgbus.publish(topic=TOPIC_TRADING_STATE, msg=SetTradingStateCommand("HALTED"))
+    assert ctx.engine.trading_state == TradingState.HALTED
+    ctx.msgbus.publish(topic=TOPIC_TRADING_STATE, msg=SetTradingStateCommand("ACTIVE"))
+    assert ctx.engine.trading_state == TradingState.ACTIVE
+
+
+def test_invalid_trading_state_command_ignored():
+    ctx = _Ctx()
+    ctx.msgbus.publish(topic=TOPIC_TRADING_STATE, msg=SetTradingStateCommand("BOGUS"))
+    assert ctx.engine.trading_state == TradingState.ACTIVE  # 非法值不 apply
+
+
+def test_risk_params_command_hot_updates_only_given_fields():
+    ctx = _Ctx(ArbRiskParams(share=100.0, match_tp=0.05, match_sl=-0.05, max_leg_share=None))
+    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(share=50.0, max_leg_share=20.0))
+    p = ctx.engine._params
+    assert p.share == 50.0 and p.max_leg_share == 20.0   # 覆盖
+    assert p.match_tp == 0.05 and p.match_sl == -0.05    # 未给的不动
+
+
+# 注:HALTED 经 NT 原生 egress(_execution_gateway→_deny_command→_deny_order)拦 submit,
+# 是 NT 框架行为,代码核实(risk/engine.pyx:1124)即可,不在此处做脆弱集成测试。

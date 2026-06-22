@@ -186,3 +186,130 @@ def test_ws_sends_queued_message_then_closes_on_poison():
     actor._ws_queue = q
     with _client(actor).websocket_connect("/ws") as ws:
         assert ws.receive_json() == {"type": "matched_pair", "data": {"pair_id": "x"}}
+
+
+# ── 控制台:TradingState 启停 + 配置编辑(#119)────────────────────────
+import json as _json
+
+from nautilus_trader.model.enums import TradingState
+
+from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
+from src.arbitrage.common.control import TOPIC_RISK_PARAMS
+from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetTradingStateCommand
+from src.arbitrage.risk.config import ArbRiskParams
+
+
+class _StubRisk:
+    def __init__(self, state):
+        self.trading_state = state
+        self._params = ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05, max_leg_share=None)
+
+
+def _control_actor(tmp_path, *, risk_state=TradingState.HALTED):
+    actor = WebGatewayActor.__new__(WebGatewayActor)
+    actor._matched_pairs = {}
+    actor._ws_clients = set()
+    actor._risk_engine = _StubRisk(risk_state)
+    actor._config_path = str(tmp_path / "arb_config.json")
+    # `_msgbus` 是只读 cdef 属性,改覆盖 `_publish` 间接层记录 publish。
+    actor.published = []
+    actor._publish = lambda topic, msg: actor.published.append((topic, msg))
+    return actor
+
+
+def test_set_trading_state_publishes_command(tmp_path):
+    actor = _control_actor(tmp_path)
+    actor.set_trading_state("ACTIVE")
+    assert actor.published == [(TOPIC_TRADING_STATE, SetTradingStateCommand("ACTIVE"))]
+
+
+def test_trading_state_reads_risk_engine(tmp_path):
+    actor = _control_actor(tmp_path, risk_state=TradingState.HALTED)
+    assert actor.trading_state() == "HALTED"
+
+
+def test_update_risk_config_writes_file_and_publishes_command(tmp_path):
+    actor = _control_actor(tmp_path)
+    _json_path = tmp_path / "arb_config.json"
+    _json_path.write_text(_json.dumps({"risk": {"share": 22.5}}))
+    result = actor.update_config_section("risk", {"share": 50.0, "match_tp": 0.1})
+    assert result["applied"] == "live"
+    # 写回文件
+    assert _json.loads(_json_path.read_text())["risk"]["share"] == 50.0
+    # 发热改命令
+    topic, cmd = actor.published[-1]
+    assert topic == TOPIC_RISK_PARAMS and cmd.share == 50.0 and cmd.match_tp == 0.1
+
+
+def test_update_restart_section_writes_file_no_command(tmp_path):
+    actor = _control_actor(tmp_path)
+    (tmp_path / "arb_config.json").write_text(_json.dumps({"venues": {}}))
+    result = actor.update_config_section("venues", {"polymarket": {"funder": "0xabc"}})
+    assert result["applied"] == "on_restart"
+    assert actor.published == []   # 重启段不发命令
+
+
+def test_update_matching_refresh_interval_publishes(tmp_path):
+    actor = _control_actor(tmp_path)
+    (tmp_path / "arb_config.json").write_text(_json.dumps({"matching": {}}))
+    result = actor.update_config_section("matching", {"refresh_interval_secs": 15.0})
+    assert result["applied"] == "live"
+    topic, cmd = actor.published[-1]
+    assert topic == TOPIC_REFRESH_INTERVAL and cmd.secs == 15.0
+
+
+def test_config_snapshot_returns_file_and_live(tmp_path):
+    actor = _control_actor(tmp_path, risk_state=TradingState.HALTED)
+    (tmp_path / "arb_config.json").write_text(_json.dumps({"risk": {"share": 22.5}}))
+    snap = actor.config_snapshot()
+    assert snap["file"]["risk"]["share"] == 22.5
+    assert snap["live"]["trading_state"] == "HALTED"
+    assert snap["live"]["risk"]["share"] == 22.5
+
+
+# ── App 层控制路由(stub actor)────────────────────────────────────────
+class _ControlStubActor(_StubActor):
+    def __init__(self):
+        super().__init__()
+        self.set_calls = []
+        self.put_calls = []
+
+    def trading_state(self):
+        return "HALTED"
+
+    def set_trading_state(self, state):
+        self.set_calls.append(state)
+
+    def config_snapshot(self):
+        return {"file": {}, "live": {"trading_state": "HALTED", "risk": {}}}
+
+    def update_config_section(self, section, fields):
+        self.put_calls.append((section, fields))
+        return {"status": "ok", "section": section, "applied": "live"}
+
+
+def test_post_trading_state_ok():
+    actor = _ControlStubActor()
+    r = TestClient(build_app(actor)).post("/control/trading_state", json={"state": "active"})
+    assert r.status_code == 200 and actor.set_calls == ["ACTIVE"]
+
+
+def test_post_trading_state_invalid_400():
+    actor = _ControlStubActor()
+    r = TestClient(build_app(actor)).post("/control/trading_state", json={"state": "REDUCING"})
+    assert r.status_code == 400 and actor.set_calls == []
+
+
+def test_get_trading_state():
+    assert _client(_ControlStubActor()).get("/control/trading_state").json() == {"trading_state": "HALTED"}
+
+
+def test_get_config():
+    assert _client(_ControlStubActor()).get("/config").json()["live"]["trading_state"] == "HALTED"
+
+
+def test_put_config_section():
+    actor = _ControlStubActor()
+    r = TestClient(build_app(actor)).put("/config/risk", json={"share": 30.0})
+    assert r.status_code == 200 and actor.put_calls == [("risk", {"share": 30.0})]

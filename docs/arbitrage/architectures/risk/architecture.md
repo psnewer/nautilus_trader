@@ -197,7 +197,7 @@ Risk 是 **submit 管道拦截 + P2P endpoint** 型,**不是 topic pub/sub 重�
 
 | 类 | 接收 | 发布 | 不订阅 |
 |---|---|---|---|
-| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/profit gate deny | 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
+| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/profit gate deny;**`command.arb.trading_state` / `command.arb.risk_params`**(#119,`configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params`;契约见 web §8.3)| 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
 | `ArbitragePortfolio` | P2P endpoint(基类 `__init__` 注册;import 替换后 kernel 原生构造即注册):`Portfolio.update_account` / `update_order` / `update_position` | **无**(way_rebate pull-based,不发事件、不写 cache) | 任何 topic(纯函数式) |
 
 > NT 父类 `RiskEngine` 在 `set_trading_state` 时会发 `events.risk`(`TradingStateChanged`);本系统**不主动改 TradingState**(Q16 profit gates 走逐 submit deny),故该 topic 不被触发。
@@ -271,6 +271,8 @@ way_rebate[outcome] = ( Σ profit_if_wins(leg)   for leg.market_type == outcome
 ### 4.3 为什么 profit gates 不用 NT `TradingState`(Q16)
 
 NT `TradingState`(HALTED/REDUCING)是原生熔断,但本系统 profit gates 的**唯一动作是"挡新开仓"**,而挡单正是 `_check_order` 本职;故单场止盈/止损统一逐 submit deny,**不翻 TradingState、不起监测 Actor、无频率**(执行靠 NT 逐 command 拦截本就 per-submit)。全局止盈/止损已撤掉。
+
+> **⚠️ 部分修订(2026-06-21,#119)**:本节(及 §4.4 / §3.3「不主动改 TradingState」)只对**自动门控**(profit gates / venue liveness)成立——它们仍走逐 submit deny、不碰 TradingState。但 **Web 控制台新增了"人工操作员启停按钮",会显式 `set_trading_state(ACTIVE/HALTED)`**(boot 默认 HALTED),属人工熔断,与自动门控正交并存。即"本系统不主动改 TradingState"现仅限自动门控,人工控制面会改。详见 web §8.1。
 
 ### 4.4 为什么 venue liveness 也不用 NT `TradingState`
 

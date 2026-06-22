@@ -11,15 +11,24 @@ WebGatewayActor —— Step 7 只读监控网关(NT `Actor` 子类,与 TradingNo
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 
 import uvicorn
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
+from nautilus_trader.model.enums import trading_state_to_str
 from nautilus_trader.model.events import AccountState
 
+from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
+from src.arbitrage.common.control import TOPIC_RISK_PARAMS
+from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetRefreshIntervalCommand
+from src.arbitrage.common.control import SetRiskParamsCommand
+from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.web.app import build_app
@@ -36,10 +45,16 @@ class WebGatewayConfig(ActorConfig, frozen=True, kw_only=True):
 
 @dataclass(slots=True)
 class WebGatewayDeps:
-    """非 msgspec 对象经 deps 注入(同 matching/strategy 模式)。"""
+    """非 msgspec 对象经 deps 注入(同 matching/strategy 模式)。
+
+    读经引用(portfolio/risk_engine,同 MVP 风格),**写经 MessageBus 命令**(方案乙;web §8.3)。
+    `config_path` = `arb_config.json` 路径,PUT 配置写回它(对齐 legacy `_save_config`)。
+    """
 
     portfolio: ArbitragePortfolio
     loop: asyncio.AbstractEventLoop
+    risk_engine: object | None = None        # 读 trading_state / live risk params(写走命令)
+    config_path: str | None = None           # arb_config.json,PUT 写回
 
 
 class _NoSignalServer(uvicorn.Server):
@@ -85,6 +100,8 @@ class WebGatewayActor(Actor):
         # NT `Actor.portfolio` 是只读 property → 用 `_portfolio`(对齐 StrategyEvaluator 约定);app 路由读它。
         self._portfolio = deps.portfolio
         self._loop = deps.loop
+        self._risk_engine = deps.risk_engine          # 读 trading_state / live risk params
+        self._config_path = deps.config_path           # PUT 写回 arb_config.json
         self._matched_pairs: dict[str, dict] = {}
         self._ws_clients: set[asyncio.Queue] = set()
         self._server: _NoSignalServer | None = None
@@ -94,6 +111,7 @@ class WebGatewayActor(Actor):
     def on_start(self) -> None:
         self._msgbus.subscribe(topic="events.account.*", handler=self._on_account_state)
         self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}*", handler=self._on_matched_pair)
+        self._msgbus.subscribe(topic="events.risk", handler=self._on_risk_event)  # TradingStateChanged → WS 推
         # 端口预检:uvicorn `serve()` 在 task 里跑,bind 失败(端口被占)会被 task 吞掉、不抛到节点,
         # 误导性的 "listening" 日志照样打。预检后端口被占就明确 error 并放弃启动(不订阅已完成,无害)。
         if not _port_bindable(self._host, self._port):
@@ -176,3 +194,69 @@ class WebGatewayActor(Actor):
             if event is not None:
                 snapshot.append(_account_state_to_json(event))
         return snapshot
+
+    # ── 控制台:TradingState 启停(读经引用,写经命令;web §8.1/§8.3)──────
+    def _on_risk_event(self, event) -> None:
+        state = getattr(event, "trading_state", None)  # TradingStateChanged
+        if state is not None:
+            self._broadcast({"type": "trading_state", "data": {"state": trading_state_to_str(state)}})
+
+    def trading_state(self) -> str:
+        """当前 TradingState 字符串(读 risk_engine 引用,始终准)。"""
+        state = getattr(self._risk_engine, "trading_state", None)
+        return trading_state_to_str(state) if state is not None else "UNKNOWN"
+
+    def _publish(self, topic: str, msg) -> None:
+        """publish 间接层(测试可在 bare 实例覆盖;NT `_msgbus` 是只读 cdef 属性不可在测试里替换)。"""
+        self._msgbus.publish(topic=topic, msg=msg)
+
+    def set_trading_state(self, state: str) -> None:
+        """publish 启停命令(方案乙)。state ∈ {ACTIVE, HALTED}。"""
+        self._publish(TOPIC_TRADING_STATE, SetTradingStateCommand(state=state))
+
+    # ── 控制台:配置编辑(写回 arb_config.json + 热段发命令;web §8.2)──────
+    def live_risk_params(self) -> dict:
+        params = getattr(self._risk_engine, "_params", None)
+        if params is None:
+            return {}
+        return {
+            "share": params.share, "match_tp": params.match_tp,
+            "match_sl": params.match_sl, "max_leg_share": params.max_leg_share, "fx": params.fx,
+        }
+
+    def config_snapshot(self) -> dict:
+        """当前生效配置:落盘文件内容 + 活值(trading_state + live risk params)。"""
+        file_cfg: dict = {}
+        if self._config_path is not None and Path(self._config_path).exists():
+            file_cfg = json.loads(Path(self._config_path).read_text())
+        return {"file": file_cfg, "live": {"trading_state": self.trading_state(), "risk": self.live_risk_params()}}
+
+    def update_config_section(self, section: str, fields: dict) -> dict:
+        """写回 `arb_config.json` 的某段 + 热段额外 publish 命令。返回 {applied: live|on_restart}。
+
+        热段:risk(share/tp/sl/max_leg_share)、matching/discovery(refresh_interval)。其余只落盘、需重启。
+        """
+        if self._config_path is None:
+            raise RuntimeError("config_path 未注入,无法写配置")
+        path = Path(self._config_path)
+        cfg = json.loads(path.read_text()) if path.exists() else {}
+        cfg.setdefault(section, {})
+        if not isinstance(cfg[section], dict):
+            raise ValueError(f"config section {section!r} 不是对象")
+        cfg[section].update(fields)
+        path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+
+        applied = "on_restart"
+        if section == "risk":
+            self._publish(
+                TOPIC_RISK_PARAMS,
+                SetRiskParamsCommand(
+                    share=fields.get("share"), match_tp=fields.get("match_tp"),
+                    match_sl=fields.get("match_sl"), max_leg_share=fields.get("max_leg_share"),
+                ),
+            )
+            applied = "live"
+        elif section in ("matching", "discovery") and "refresh_interval_secs" in fields:
+            self._publish(TOPIC_REFRESH_INTERVAL, SetRefreshIntervalCommand(secs=float(fields["refresh_interval_secs"])))
+            applied = "live"
+        return {"status": "ok", "section": section, "applied": applied}

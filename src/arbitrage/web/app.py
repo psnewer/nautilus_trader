@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi import Body
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
 
@@ -51,6 +53,31 @@ def build_app(actor: "WebGatewayActor") -> FastAPI:
                 for outcome, exp in pf.outcome_exposures(pair_id).items()
             },
         }
+
+    # ── 控制台:TradingState 启停(§8.1)──────────────────────────────
+    @app.get("/control/trading_state")
+    async def get_trading_state() -> dict:
+        return {"trading_state": actor.trading_state()}
+
+    @app.post("/control/trading_state")
+    async def post_trading_state(body: dict = Body(...)) -> dict:
+        state = str(body.get("state", "")).upper()
+        if state not in ("ACTIVE", "HALTED"):
+            raise HTTPException(status_code=400, detail="state must be ACTIVE or HALTED")
+        actor.set_trading_state(state)  # publish 命令(方案乙);risk engine 异步 apply
+        return {"status": "ok", "requested": state}
+
+    # ── 控制台:配置编辑(§8.2)────────────────────────────────────────
+    @app.get("/config")
+    async def get_config() -> dict:
+        return actor.config_snapshot()
+
+    @app.put("/config/{section}")
+    async def put_config(section: str, body: dict = Body(...)) -> dict:
+        try:
+            return actor.update_config_section(section, body)
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

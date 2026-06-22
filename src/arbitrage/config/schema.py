@@ -194,6 +194,7 @@ class WebSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
+    start_halted: bool = True  # #119:web 开启时 boot 即 HALTED,操作员点 Start 才放行(真金安全默认)
 
 
 # ─── 顶层 ArbConfig ───────────────────────────────────────────────────────

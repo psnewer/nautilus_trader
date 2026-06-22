@@ -46,6 +46,34 @@ config-write / OrderBookDelta firehose / request-response 桥**延后**(见 web/
 - `test_enqueue_drops_oldest_when_full`(满丢最旧)、`test_unregister_stops_broadcast`、
   `test_ws_sends_queued_message_then_closes_on_poison`(on_stop 毒丸优雅关 WS)、`test_non_matching_event_ignored`
 
+## 控制台(#119,详细设计 web §8)
+
+### web-7.8: TradingState 启停(POST/GET /control/trading_state)
+- 前置: 控制台启用,boot 默认 HALTED
+- 期望: `POST /control/trading_state {state:ACTIVE|HALTED}` → publish `command.arb.trading_state`(方案乙);非法 state → 400;`GET` 读 risk_engine 当前 state
+- 验收: web 端 `test_set_trading_state_publishes_command` / `test_post_trading_state_ok` / `test_post_trading_state_invalid_400` / `test_get_trading_state` / `test_trading_state_reads_risk_engine`;risk 端 end-to-end `tests/arbitrage/risk/test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored`
+
+### web-7.9: 配置热改(PUT /config/risk,C 混合热段)
+- 前置: `arb_config.json` 存在
+- 期望: `PUT /config/risk {share,...}` → 写回文件 + publish `command.arb.risk_params` + `applied:live`;risk 引擎只覆盖给定字段
+- 验收: `test_update_risk_config_writes_file_and_publishes_command` / `test_put_config_section`;risk 端 `test_risk_params_command_hot_updates_only_given_fields`
+
+### web-7.10: 配置重启段(PUT /config/venues)
+- 期望: 只写回文件、不发命令、`applied:on_restart`
+- 验收: `test_update_restart_section_writes_file_no_command`
+
+### web-7.11: refresh_interval 热改 + GET /config 快照
+- 期望: `PUT /config/matching {refresh_interval_secs}` → publish `command.arb.refresh_interval` + `applied:live`;`GET /config` 返回 file + live(trading_state + risk params)
+- 验收: web 端 `test_update_matching_refresh_interval_publishes` / `test_config_snapshot_returns_file_and_live` / `test_get_config`;matching 端 consumer `tests/arbitrage/matching/test_pair_registry.py::test_refresh_interval_command_hot_updates` / `test_refresh_interval_command_rejects_nonpositive`
+
+### web-7.12: boot 默认 HALTED(launcher)
+- 期望: `web.enabled && web.start_halted` → launcher build 后 `risk_engine.set_trading_state(HALTED)`;web 关则不动(保持 NT ACTIVE)
+- 验收: `tests/arbitrage/launchers/test_arb_node.py::test_boot_halted_when_web_enabled_and_start_halted` / `test_no_boot_halt_when_web_disabled`
+
+### 已知取舍 / 待 live
+- HALTED 期间 strategy 仍评估、submit 在 egress 被拒 → churn(用户 2026-06-21 定:不联动 strategy)
+- **live 验证待跑**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 risk 参数热生效
+
 ## 延后用例(未实现,见 web/architecture.md §7)
 
 - web-7.2: WebSocket 推送 `OrderBookDelta`(行情 firehose,量大需节流)
