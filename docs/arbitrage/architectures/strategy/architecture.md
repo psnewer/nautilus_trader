@@ -17,7 +17,7 @@
 | `Check` / `Action` | abstract | `Check.passes(ctx) -> bool`;`Action.execute(ctx)`(fire-and-forget,不阻塞 evaluate 返回) |
 | `SignalStore` | 普通类 | **双状态**:`persistent[key]=value`(写后保留,如 `live=True`)/ `transient[key]=value`(读取消费一次即清,如 `rebate`)|
 | `SignalCollector` | 普通类 | event → signal 加工(由 evaluator 持有,每个触发事件调一次)|
-| `OpportunitySnapshot` | dataclass | Q20 快照:`{ order_book, positions, way_rebate }`,evaluate 开跑时一次性冻,整轮评估+下单复用 |
+| `OpportunitySnapshot` | dataclass | Q20 快照:`{ order_book, positions, instrument_info }`,evaluate 开跑时一次性冻,整轮评估+下单复用 |
 
 **职责边界(继承自前期锁定)**:
 - ❌ **不引用 Risk**:透明拦截,strategy 只通过 `on_order_denied` 感知结果(§5.4)
@@ -346,7 +346,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 语义:
 - `mean_rebate_recovery` 只负责判断并生成补缺口 legs:目标 `target_share = max(actual_share_by_outcome)`,只对 `missing_share > 0` 的 outcome 写 leg。实际 share 计算:PM=`position.quantity`,OE=`position.quantity * avg_px_open * fx`;OE 补救 qty=`missing_share / (price * fx)`。
 - Recovery 依赖已有持仓的真实 `avg_px_open`。若 reconciliation 导入的外部持仓缺少真实成本(`avg_px_open<=0`),本轮 recovery 不触发;不使用当前盘口估算历史成本。PM 成本缺失应回到 PM adapter / trade history 归因路径解决。
-- `min_repaired_rebate` 是补齐到最大实际 share 后允许的最差 `way_rebate` 阈值;例如 `-0.05` 表示只允许修到不低于 -5%。
+- `min_repaired_rebate` 是补齐到最大实际 share 后允许的最差 outcome return rate 阈值;例如 `-0.05` 表示只允许修到不低于 -5%。
 - 补救 legs 必须带最终 `qty`,由 `place_bets` 直接提交;不新增 `repair_mean_rebate` Action。
 - `arb_config.example.json` 不默认启用 recovery,避免 smoke 默认产生补救真钱路径;需要 live 验证时用临时配置打开 `compensation_tree`。
 
@@ -401,7 +401,7 @@ elif comp_res.hit: fire(comp_res.pending_action)
 - **健康检查互斥已退役(#108,2026-06-16)**:strategy 不再订 `health_check.*`、无 `_hc_running`、`_route_eval` 无健检预检。原因:旧理由是"健康检查 reload **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、且 OE 下单是 `page.evaluate`(与焦点无关),不冲突。详见 synchronization.md §8.6 / refactor #108。(in-flight 出口靠结构保证 = opportunity barrier 出口 + session `exec_started`↔watchdog 原子,与本互斥无关。)
 - **VenueExecutionLiveness 不在 Strategy 读(2026-06-15)**:Strategy 计算机会前不看 venue order/position liveness,也不再读 `leg_settled`。Strategy 只负责发现机会、生成带 `arb:expected_legs` 的 order metadata;Risk 从 metadata 推导 required venues 并统一门控。详见 `_cross-cutting/synchronization.md §8.5` 与 risk §3.1/§4.4。
 - evaluate 开跑前查 `_execution_active`(全局,Q19/§6.10 健康检查⊥执行 + ≤1 全局执行),在飞就 skip(让路)
-- evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, way_rebate }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
+- evaluate 开跑取一次 `OpportunitySnapshot { order_book, positions, instrument_info }`,整轮决策用;safety gate(settled/risk)RiskEngine 端走 live
 - 回收:绑 per-evaluation 上下文,evaluate + fire 结束 GC
 
 ---
@@ -447,7 +447,7 @@ sequenceDiagram
     alt 执行在飞
       Q19-->>EV: active → skip
     else 闲
-      EV->>CA: snapshot(orderbook + positions + way_rebate)
+      EV->>CA: snapshot(orderbook + positions + instrument_info)
       par 并行 evaluate
         EV->>EV: arb_tree.evaluate(ctx)
       and

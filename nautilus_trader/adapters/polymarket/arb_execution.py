@@ -34,7 +34,8 @@ class _RetryFailureRecorder:
     """记录 PM 上游 RetryManager 吞掉的查询失败。
 
     NT 上游 `RetryManager.run()` 失败时返回 None,部分 report 方法随后会把 None 当作空结果继续返回。
-    Arb 层需要把这种"无真实 response"重新升级为 report 失败,用于 VenueExecutionLiveness。
+    Arb 层需要把这种"无真实 response"识别为 report 失败 → `mark_*_dead` + 返空(#122 对齐 OE;
+    不再 raise,避免 startup reconciliation 被瞬时失败卡死)。
 
     ⚠️ 脆弱点:本类经"实例级替换 `self._retry_manager_pool` + monkeypatch 每个 acquired manager 的 `.run`、
     `finally` 还原"实现。**依赖 order-report 调用与其它走同 pool 的 report 调用不并发重叠**——重叠时
@@ -168,14 +169,20 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._retry_manager_pool = recorder
         try:
             reports = await super().generate_order_status_reports(command)
-        except Exception:
+        except Exception as e:
+            # #122:对齐 OE —— 失败 mark_dead + 返空(不 raise)。raise 会让 startup reconciliation 失败
+            # → trader 不启 → 全 actor 卡 READY;mark_dead 已达成 fail-closed(Risk 拦 PM 腿,靠后续成功对账自愈)。
             self._venue_liveness.mark_order_dead(POLYMARKET)
-            raise
+            if self._log is not None:
+                self._log.warning(f"PM order reports query failed (mark dead, empty): {e!r}")
+            return []
         finally:
             self._retry_manager_pool = original_pool
         if recorder.failures:
             self._venue_liveness.mark_order_dead(POLYMARKET)
-            raise RuntimeError(f"PM order reports query failed: {recorder.failures!r}")
+            if self._log is not None:
+                self._log.warning(f"PM order reports query failed (mark dead, empty): {recorder.failures!r}")
+            return []
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return reports
 
@@ -188,23 +195,30 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._retry_manager_pool = recorder
         try:
             report = await super().generate_order_status_report(command)
-        except Exception:
-            self._venue_liveness.mark_order_dead(POLYMARKET)
-            raise
+        except Exception as e:
+            self._venue_liveness.mark_order_dead(POLYMARKET)  # #122:对齐 OE,失败返 None 不 raise
+            if self._log is not None:
+                self._log.warning(f"PM order report query failed (mark dead, None): {e!r}")
+            return None
         finally:
             self._retry_manager_pool = original_pool
         if recorder.failures:
             self._venue_liveness.mark_order_dead(POLYMARKET)
-            raise RuntimeError(f"PM order report query failed: {recorder.failures!r}")
+            if self._log is not None:
+                self._log.warning(f"PM order report query failed (mark dead, None): {recorder.failures!r}")
+            return None
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return report
 
     async def generate_position_status_reports(self, command):
         try:
             reports = await super().generate_position_status_reports(command)  # 单次拉 /positions,上游 stash raw
-        except Exception:
+        except Exception as e:
+            # #122:对齐 OE —— 失败 mark_dead + 返空(不 raise),否则 startup reconciliation 失败卡死启动。
             self._venue_liveness.mark_position_dead(POLYMARKET)
-            raise
+            if self._log is not None:
+                self._log.warning(f"PM position reports query failed (mark dead, empty): {e!r}")
+            return []
         self._venue_liveness.mark_position_alive(POLYMARKET)
         # #110:同一次拉的原始 /positions 跑 merge/redeem —— fire-and-forget + single-flight,不阻塞 NT 对账循环。
         raw = list(getattr(self, "_last_raw_positions", []))

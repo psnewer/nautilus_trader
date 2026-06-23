@@ -13,7 +13,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 | 类 | 基类 | 职责 |
 |---|---|---|
 | `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:share limit adjusted-size gate + NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
-| `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `way_rebate` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
+| `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `outcome_shares` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
 
 > **基类必须是 `LiveRiskEngine`(非基类 `RiskEngine`)**:实盘环境 kernel 实例化 `LiveRiskEngine`(`system/kernel.py:407`);基类 `RiskEngine` 仅 backtest 用。两者 `_handle_submit_order → _check_order` 派发链一致。(Step 6 核实修正,见 refactor.md 修订记录)
 
@@ -65,9 +65,7 @@ flowchart LR
 
 | 调用方 | 时机 | 用途 |
 |---|---|---|
-| `ArbitrageStrategy` | 评估机会(取快照那刻冻结果,Q20) | `min_way_rebate` 与阈值比较 + 默认方向选择 |
 | `ArbitrageRiskEngine._check_profit_gates` | 每次 submit 拦截 | 单场止盈/止损硬停 |
-| `WebGatewayActor` | 前端 HTTP GET | 序列化推前端 |
 
 ---
 
@@ -161,12 +159,6 @@ class ArbitragePortfolio(Portfolio):
     # ── per-pair(对应 unrealized_pnl 单数风格)──
     def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]: ...
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]: ...
-    def way_rebate(self, pair_id: str, account_id=None) -> dict[str, float]: ...
-    def min_way_rebate(self, pair_id: str, account_id=None) -> float | None: ...
-    # ── per-pair-per-venue(对应 net_exposures 嵌套风格)──
-    def way_rebates_by_venue(self, pair_id: str, account_id=None) -> dict[Venue, dict[str, float]]: ...
-    # ── 全账户聚合(对应 equity)──
-    def global_min_rebate_sum(self, account_id=None) -> float: ...
     # ── 内部 ──
     def _legs_for_pair(self, pair_id, account_id) -> list[_Leg]: ...
     def _resolve_pair_id(self, position) -> str | None:  # PairRegistry.get(instrument_id), #34
@@ -189,7 +181,7 @@ def install_arbitrage_engines():       # 构造 TradingNode 之前调用,幂等
     _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 ```
 
-领域参数(fx/单场 profit gates,以及保留兼容的 share)在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, pair_registry=)` / `risk_engine.configure_arb(params, venue_liveness=...)`(`wire_arbitrage_runtime(node, ...)`)。Risk 使用 `share * match_tp/match_sl` 得到绝对金额阈值;`way_rebate` 的分母仍由实际持仓 legs 决定(见 §4.1)。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
+领域参数(fx/单场 profit gates,以及保留兼容的 share)在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, pair_registry=)` / `risk_engine.configure_arb(params, venue_liveness=...)`(`wire_arbitrage_runtime(node, ...)`)。Risk 使用 `share * match_tp/match_sl` 得到绝对金额阈值。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 ### 3.3 消息接线(订阅 / 发布)
 
@@ -198,7 +190,7 @@ Risk 是 **submit 管道拦截 + P2P endpoint** 型,**不是 topic pub/sub 重�
 | 类 | 接收 | 发布 | 不订阅 |
 |---|---|---|---|
 | `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/profit gate deny;**`command.arb.trading_state` / `command.arb.risk_params`**(#119,`configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params`;契约见 web §8.3)| 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
-| `ArbitragePortfolio` | P2P endpoint(基类 `__init__` 注册;import 替换后 kernel 原生构造即注册):`Portfolio.update_account` / `update_order` / `update_position` | **无**(way_rebate pull-based,不发事件、不写 cache) | 任何 topic(纯函数式) |
+| `ArbitragePortfolio` | P2P endpoint(基类 `__init__` 注册;import 替换后 kernel 原生构造即注册):`Portfolio.update_account` / `update_order` / `update_position` | **无**(outcome 指标 pull-based,不发事件、不写 cache) | 任何 topic(纯函数式) |
 
 > NT 父类 `RiskEngine` 在 `set_trading_state` 时会发 `events.risk`(`TradingStateChanged`);本系统**不主动改 TradingState**(Q16 profit gates 走逐 submit deny),故该 topic 不被触发。
 
@@ -229,7 +221,7 @@ Risk **不参与**健康检查 ⊥ 执行全局互斥:它是 submit 管道上的
 
 ## 4. 算法
 
-### 4.1 outcome_exposures 与 way_rebate
+### 4.1 outcome_exposures 与 outcome_shares
 
 Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额:
 
@@ -241,31 +233,28 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 
 - `match_tp`:若所有 outcome 的 `net_profit > share * match_tp`,deny 新开仓。
 - `match_sl`:若所有 outcome 的 `net_profit < share * match_sl`,deny 新开仓。
-- 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数,**不使用** `way_rebate` 分母。
+- 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数。
 - outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,保证三元盘某 outcome 暂无持仓时仍参与“所有 outcome”判断;无 registry 时回退到持仓腿中的 `home/away/draw`。
-- 全局止盈/止损已撤掉;Risk 不再调用 `global_min_rebate_sum` 做门控。
+- 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
 
-`way_rebate` 作为 Strategy/Web 兼容展示指标保留,公式平移自旧 `position.py`:
+`outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share,供 adjusted-size gate 计算剩余额度:
 
 ```
-way_rebate[outcome] = ( Σ profit_if_wins(leg)   for leg.market_type == outcome
-                       − Σ loss_if_loses(leg)    for leg.market_type != outcome ) / share
+outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome
 ```
+
 - `profit_if_wins`:PM = `size*(1-price)`;OE = `size*(price-1)*fx`
 - `loss_if_loses`:PM = `size*price`;OE = `size*fx`
-- `share` 取 **按 outcome 聚合后的最大实际 share**:`max(Σ share_if_wins(leg) for same outcome)`;单腿 `share_if_wins`:PM=`size`;OE=`size*price*fx`(stake×odds×fx 的 gross payout)。同一 outcome 若同时有 PM/OE 持仓,必须先相加再参与分母,避免 numerator 已聚合但 denominator 只取单腿 max 导致 rebate 被放大。`mean_rebate` 正常下单会让各 outcome share 相同;若 live probe / 手动仓位造成 outcome share 不同,用最大 outcome share 归一化,避免配置 share 与真实持仓脱节。
-- `outcome ∈ {home, draw, away}`,draw 仅当有腿 `market_type=="draw"`
+- `share_if_wins`:PM=`size`;OE=`size*price*fx`(stake×odds×fx 的 gross payout)
+- `outcome ∈ {home, draw, away}`,draw 由 PairRegistry/instrument info 或已有腿推导
 - 不依赖 mark price,只依赖成交落库的 `size/price/fx`
-
-`global_min_rebate_sum` **只遍历有 open position 的 active pair**(对应旧 `_positions.values()`);**未交易比赛不进遍历、不致 None**。它不再被 Risk 门控消费,仅作为旧展示/兼容指标。
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 
-`leg_settled` gate 退役。`ArbitragePortfolio` 是持仓指标计算器,只根据 NT Cache positions 计算 `outcome_exposures` / `way_rebate` / `global_min_rebate_sum`;执行真相是否可信由 `ArbitrageLiveRiskEngine._check_required_venues_alive` 统一门控。
+`leg_settled` gate 退役。`ArbitragePortfolio` 是持仓指标计算器,只根据 NT Cache positions 计算 `outcome_exposures` / `outcome_shares`;执行真相是否可信由 `ArbitrageLiveRiskEngine._check_required_venues_alive` 统一门控。
 
 因此:
-- `outcome_exposures` / `way_rebate` 不因执行健康状态返回 `{}`。
-- `global_min_rebate_sum` 不因执行健康状态返回 `None`。
+- `outcome_exposures` / `outcome_shares` 不因执行健康状态返回 `{}`。
 - `None` 只表达“没有可计算的持仓/数据不足以形成该指标”的数据语义,不再承载 settled fail-closed。
 
 ### 4.3 为什么 profit gates 不用 NT `TradingState`(Q16)

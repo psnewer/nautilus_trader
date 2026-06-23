@@ -120,7 +120,7 @@ class _RuntimeDeps:
 
     pair_registry: PairRegistry
     strategy_registry: StrategyRegistry
-    portfolio: object                      # ArbitragePortfolio(有 way_rebate)
+    portfolio: object                      # ArbitragePortfolio
     signal_store: SignalStore
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
     loop: object                            # asyncio.AbstractEventLoop

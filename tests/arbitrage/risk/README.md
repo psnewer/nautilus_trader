@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-21)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness、share limit adjusted-size gate、单场 profit gates(6.7.2/3/4)、余额 venue 非对称(6.3b)、outcome_exposures/way_rebate 公式(6.9.x)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate 与全局止盈/止损已退役。
+**Step 6 落地状态(2026-06-22)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness、share limit adjusted-size gate、单场 profit gates(6.7.2/3/4)、余额 venue 非对称(6.3b)、outcome_exposures/outcome_shares 公式(6.9.x)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口与全局止盈/止损已退役。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -133,9 +133,9 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 验收: 必须所有 outcome 都低于阈值才 deny;任一 outcome 未跌破阈值则放行
 
 ### risk-6.7.4: global_sl 不再阻断(全局止盈/止损退役)
-- 前置: 旧配置仍带 `global_sl`;测试中将 `portfolio.global_min_rebate_sum()` 强制为极低值
+- 前置: 旧配置仍带 `global_sl`
 - 输入: 对任意 pair submit,且该 pair 的 `outcome_exposures` 未触发 match_tp/match_sl
-- 期望: `_check_profit_gates` 放行,不读取/不消费 `global_min_rebate_sum`
+- 期望: `_check_profit_gates` 放行,不读取任何全局 profit/rebate 聚合指标
 - 验收: `global_sl` 仅为旧配置兼容字段;Risk 不再执行全局止盈/止损
 
 ### risk-6.7.5: 撤单不受 profit gates 影响(只挡开仓)
@@ -164,16 +164,16 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ### risk-6.7.7: settled entry 不存在 → 放行(Q-G1,2026-05-19,已失效)
 
-> ⚠️ **失效**:`leg_settled` gate 退役;用 risk-6.7.1b~1d 覆盖新 liveness 行为。
+> ⚠️ **失效**:`leg_settled` gate 退役;用 risk-6.7.1b~1d 覆盖新 liveness 行为。本用例仅记录历史,不作为当前验收。
 - 前置: pair_id="match_X" 从没下过单 → `leg_settled` 无此 entry
 - 输入: 对 match_X submit,旧 `_check_rebate_gates` 检查 settled
-- 期望: entry 不存在 = 无结算风险 → **本 pair 的 tp/sl 门限放行**(way_rebate 本就 `{}`,tp/sl 无从触发)
+- 期望(旧行为): entry 不存在 = 无结算风险 → 放行
 - 验收: absent ≠ false;absent 一律放行,不与 fail-closed 混淆
 
 ### risk-6.7.8: global_min_rebate_sum 返回 None → fail-closed deny(2026-05-19,已失效)
 
-> ⚠️ **失效**:`global_min_rebate_sum` 不再承载执行健康 fail-closed;venue 执行健康由 `_check_required_venues_alive` 拦截。
-- 前置: **别的某个 pair** 有腿 `leg_settled=false` → `portfolio.global_min_rebate_sum()` 返回 `None`
+> ⚠️ **失效**:`global_min_rebate_sum` 接口已退役;venue 执行健康由 `_check_required_venues_alive` 拦截。本用例仅记录历史,不作为当前验收。
+- 前置(旧行为): **别的某个 pair** 有腿 `leg_settled=false`
 - 输入: 对**任意** pair(含 settled 干净的 pair)submit
 - 期望(旧行为):`_check_rebate_gates` 读到 global `None` → **deny(拦截新开仓)**;全局图景不全时一律挡
 - 验收:
@@ -228,9 +228,9 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ---
 
-## ArbitragePortfolio: outcome_exposures / way_rebate 等领域指标(Q14,§6.9)
+## ArbitragePortfolio: outcome_exposures / outcome_shares 领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 作为 Strategy/Web 兼容展示指标保留。`way_rebate` 算法来源于 `services/risk/position.py`,分母口径已按 NT `mean_rebate` 下单语义校准为按 outcome 聚合后的最大实际 share。
+子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;share limit gate 读取 `outcome_shares(pair_id)` 的当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
@@ -238,18 +238,10 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 fx(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数,不作 `way_rebate` 分母(#108:portfolio 不再注入 `leg_settled`)
+  - `configure_arb` 注入 fx(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`)
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)
-
-### risk-6.9.2: way_rebate 算法使用最大 outcome share 归一化
-
-- 前置: cache 中 PM token A `BUY 100 @ 0.4`,OE selection X `BACK 50 @ 2.5`;两者属于 `pair_id="match_1"`;PM 实际 share=100,OE 实际 share=`50*2.5=125`
-- 输入: `portfolio.way_rebate("match_1")`
-- 期望: `{"home": 0.08, "away": 0.28}`(net payoff 分别为 10/35,统一除以最大 outcome share=125)
-- 同一 outcome 同时有 PM/OE 持仓时,先聚合该 outcome 的 `share_if_wins` 再参与分母,避免只取单腿 max 放大 rebate
-- 验收: 不使用配置里的固定 share 做分母;`mean_rebate` 正常下单产生的等 outcome share 仍按共同 share 归一化
 
 ### risk-6.9.2b: outcome_exposures 返回每个 outcome 的 net_profit/liability
 
@@ -274,101 +266,6 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望:返回 `home=11, away=10`。
 - 验收:share limit adjusted-size gate 用该接口计算每个 outcome 的剩余额度,而不是逐 leg 单独看。
 
-### risk-6.9.3: way_rebates_by_venue 按 venue 拆分
-
-- 前置: 同 6.9.2
-- 输入: `portfolio.way_rebates_by_venue("match_1")`
-- 期望: `{POLYMARKET: {...}, ORBITEXCH: {...}}`,每个 venue 单独算
-- 验收: 与 `MatchPosition.calculate_way_rebate_by_venue()` 输出一致
-
-### risk-6.9.4: min_way_rebate
-
-- 前置: 同 6.9.2
-- 输入: `portfolio.min_way_rebate("match_1")`
-- 期望: `0.10`(home/away 中较小者)
-- 验收: 等价于 `min(way_rebate.values())`
-
-### risk-6.9.5: global_min_rebate_sum
-
-- 前置: cache 中两场比赛都有持仓,min_way_rebate 分别 0.10 / 0.05
-- 输入: `portfolio.global_min_rebate_sum()`
-- 期望: `0.15`
-- 验收: 等价于现 `PositionManager.get_global_min_rebate_sum()`;**只遍历有 open position 的 pair**(对应旧 `position.py:382` 遍历 `self._positions.values()`)
-
-### risk-6.9.5b: 未交易比赛不进遍历,不触发 None
-
-- 前置: cache 中 match_X 有持仓且 settled 全 true(min_rebate=0.10);同时存在一场 match_Z **从没下过单 / 无持仓**(仅日程表/instrument 存在)
-- 输入: `portfolio.global_min_rebate_sum()`
-- 期望: 返回 `0.10`(只计 match_X);**match_Z 不进遍历、不致 None**
-- 验收: 扫描范围 = active pair(有持仓);"无持仓比赛 → None" 是**错误**实现(否则日程表有未交易比赛就恒 None,系统焊死)。None 仅来自"有持仓 pair 的腿 false"(见 risk-6.9.12)
-
-### risk-6.9.6: pair_id 解析(instrument.info["competition"])
-
-- 前置: 一笔持仓的 instrument 缺 `info["competition"]` 字段
-- 输入: `portfolio.way_rebate(pair_id)` 内部解析时遇到该 instrument
-- 期望: 该 leg 被跳过,不进入聚合;不抛异常
-- 验收: 防御性,缺字段 instrument 不污染聚合结果
-
-### risk-6.9.7: 空 pair / 无持仓
-
-- 前置: 一个未持仓的 `pair_id`
-- 输入: `portfolio.way_rebate("unknown_pair")`
-- 期望: 返回 `{}`(不返回 None / 不抛异常)
-- 验收: 与 NT `unrealized_pnls(...)` 空账户时返回 `{}` 一致
-
-### risk-6.9.8: 不订阅事件,纯 pull(无独立触发器)
-
-- 前置: cache 中持仓刚因 fill 更新过
-- 输入: 立即调 `portfolio.way_rebate(pair_id)`
-- 期望: 算出的结果反映最新 fill;无中间缓存层延迟
-- 验收: 静态搜索 ArbitragePortfolio 代码无 `msgbus.subscribe` 调用;纯函数式
-
----
-
-### risk-6.9.9: settled gate — entry 不存在通过(Q-G1,已失效)
-
-> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;本用例迁移时删除。
-
-- 前置: pair_id="match_X" 从未发起过 execution → `leg_settled` entry 不存在;但 cache 中有该 pair 的非 execution 触发持仓(如历史导入)
-- 输入: `portfolio.way_rebate("match_X")`
-- 期望: 正常计算返回 dict(无 execution-staleness 风险时不阻塞)
-- 验收: gate 失败时 entry 必须存在;不存在 entry 不触发 gate
-
-### risk-6.9.10: settled gate — entry 全 true 通过(已失效)
-
-> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;本用例迁移时删除。
-
-- 前置: `leg_settled["match_X"] = [true, true]`
-- 输入: `portfolio.way_rebate("match_X")` / `min_way_rebate("match_X")` / `way_rebates_by_venue("match_X")`
-- 期望: 三个方法都正常返回结果
-- 验收: 与现有 risk-6.9.{2,3,4} 行为一致
-
-### risk-6.9.11: settled gate — entry 任一 false 阻塞(Q-G2,已失效)
-
-> ⚠️ **失效**:`ArbitragePortfolio` 不再读取 `LegSettledRegistry`;执行健康阻塞由 Risk `VenueExecutionLiveness` gate 承担。
-
-- 前置: `leg_settled["match_X"] = [true, false]`(away 方向 settled=false)
-- 输入:
-  - `portfolio.way_rebate("match_X")`
-  - `portfolio.min_way_rebate("match_X")`
-  - `portfolio.way_rebates_by_venue("match_X")`
-- 期望:
-  - `way_rebate` 返回 `{}`
-  - `min_way_rebate` 返回 `None`
-  - `way_rebates_by_venue` 返回 `{}`
-- 验收:
-  - 即使 cache 中有持仓数据,只要 gate 失败就阻塞计算
-  - 不抛异常,不返回 sentinel,只返回空值让调用方自然处理
-
-### risk-6.9.12: global_min_rebate_sum fail-closed(Q-G3,已失效)
-
-> ⚠️ **失效**:`global_min_rebate_sum` 不再因执行健康返回 `None`;本用例迁移时删除或改为纯持仓聚合测试。
-
-- 前置: 多场比赛,X / Y 都有持仓;`leg_settled["match_X"] = [true, true]`,`leg_settled["match_Y"] = [false, true]`
-- 输入: `portfolio.global_min_rebate_sum()`
-- 期望: 返回 `None`(整个全局判断作废,**不返回 X 的部分和**)
-- 验收(旧行为):fail-closed —— 任何 pair 任何方向 false 就让全局判断作废返回 `None`;**消费方 `_check_rebate_gates` 读到 `None` → deny(拦截新开仓)**(2026-05-19 锁定,见 risk-6.7.8)。当前已退役,由 VenueExecutionLiveness + `_check_profit_gates` 替代。
-
 ### risk-6.9.13: LegSettledRegistry 共享对象语义(✅ 已验证;已失效)
 
 > ⚠️ **失效**:`LegSettledRegistry` 退役;新增共享契约见 `VenueExecutionLiveness`。
@@ -385,11 +282,11 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   - **`mark_venue(venue_value)`(#105 新增)**:某 venue 一次完整 order 真值 → 该 venue 所有 armed 腿置 true(腿键 `instrument_id.venue.value` 命中;缺席快照腿=已澄清没成功亦置;他 venue/已 true/无 `.venue` 的 str 键跳过)→ 返回新置位数。OE `_on_current_bets` 调它(只挂 order 真值,position 解耦;execution §4.3bis(5))(`test_mark_venue_marks_all_that_venue_legs` / `_ignores_string_keys_without_venue`)
 - 验收:历史用例已删除,不再作为当前验收。
 
-### risk-6.9.14: ArbitragePortfolio 不读取执行健康状态(2026-06-15)
+### risk-6.9.14: ArbitragePortfolio 不读取执行健康状态(2026-06-15 / 2026-06-22 更新)
 
 - 前置: cache 中存在可计算的 PM/OE positions;`VenueExecutionLiveness` 中某 venue not alive。
-- 输入: 调 `portfolio.way_rebate(pair_id)` / `portfolio.global_min_rebate_sum()`。
-- 期望: Portfolio 按 positions 正常计算;不因 liveness 返回 `{}` 或 `None`。
+- 输入: 调 `portfolio.outcome_exposures(pair_id)` / `portfolio.outcome_shares(pair_id)`。
+- 期望: Portfolio 按 positions 正常计算;不因 liveness 返回空或 `None`。
 - 验收:
   - `ArbitragePortfolio.configure_arb` 不接受 `leg_settled`。
   - `portfolio.py` 不 import `LegSettledRegistry` / `VenueExecutionLiveness`。

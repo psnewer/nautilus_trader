@@ -105,13 +105,13 @@
 | Q11 ✅ | Debug 全走子类化 + 工厂层选择,生产代码零 `if debug` | §6.6 |
 | Q12 ✅ | 无 LiquidityRiskActor;深度缩放归 Strategy、最小限额用 NT 自带、余额归 RiskEngine | §5.6 |
 | Q13 ✅ | 健康检查下沉各 adapter;execution 退化为单一职责 session,移除 recovery。⚠️ `leg_settled`/状态维度部分已被 #108 `VenueExecutionLiveness` 取代 | §6.8 / synchronization §8.5 |
-| Q14 ✅ | way_rebate 等 → `ArbitragePortfolio` 子类(kernel swap)。⚠️ settled gate 已被 #108 退役,Portfolio 纯算指标 | §6.9 / risk §4.2 |
+| Q14 ✅ | `outcome_exposures` / `outcome_shares` 等持仓领域指标 → `ArbitragePortfolio` 子类(kernel swap)。⚠️ settled gate 已被 #108 退役,`way_rebate` 系列接口已被 #121 退役 | §6.9 / risk §4.2 |
 | Q15 ✅ | execution tracking 绝对超时(NT clock 一次性 alert),超时即停不补救 | §6.8.5 |
 | Q16 ✅ | 单场 profit gates → `ArbitrageRiskEngine._check_profit_gates` 逐 submit deny(别开新仓):所有 outcome `net_profit > share*match_tp` 止盈拦,所有 outcome `net_profit < share*match_sl` 止损拦;全局止盈/止损退役 | §5.6 |
 | Q17 ✅ | PM 余额事件驱动(连接+链上成交确认)、健康检查不拉余额;可用余额按 venue 非对称(PM 自扣挂单 / OE 信 WS) | §5.5 §5.6 |
 | Q18 ✅ | merge/claim 保留自研;**Q18b** 并入 PM 健康检查 tick(非独立 Actor)、结果不作健康判据;**Q18c** 宿主 = PM ExecutionClient 薄子类(三层:宿主/`PolymarketSettlement` 编排/`contract.py` IO) | §5.8 §6.8.4 |
 | Q19 ✅ | 健康检查 ⊥ 执行互斥历史设计。⚠️ #105/#108 后 `health_check.*`/strategy 健检前置与 strategy liveness pre-check 退役,页锁 + Risk liveness gate 接管 | §6.10 / synchronization §8 |
-| Q20 ✅ | strategy 机会快照隔离:开跑时冻该 pair 的订单簿+持仓+way_rebate(预算冻结),全程用拷贝免受新成交扰动;安全闸走 live;NT 无原生快照故自建;strategy 内部不单独成章。⚠️ venue liveness 安全闸由 Risk 读,Strategy 不读 | §5.4 |
+| Q20 ✅ | strategy 机会快照隔离:开跑时冻该 pair 的订单簿+持仓+instrument_info,全程用拷贝免受新成交扰动;安全闸走 live;NT 无原生快照故自建;strategy 内部不单独成章。⚠️ venue liveness 安全闸由 Risk 读,Strategy 不读 | §5.4 |
 | Q21 ✅ | **strategy 框架锁定(2026-05-24)**: scope-priority(pair_id > comp > sport,**挂载存在锁定不降级**)+ 每 scope 单策略(不并行)+ 策略 = 套利树 + 补救树(asyncio.gather 并行;套利 hit 阻断补救 fire)+ condition 嵌套树(self_hits 信号量布尔表达式 → sub_conditions 互斥 / 叶子 checktion list AND + action 1 个)+ evaluate 无副作用(返 EvalResult,fire 由顶层做)+ SignalStore 双状态(persistent 写后保留 / transient 用后即清)+ BoolExpr AND/OR/NOT 表达式树 + scope-priority 自建(NT 无原生)。详细设计 `architectures/strategy/architecture.md` | §5.4 / Step 4 |
 
 ---
@@ -414,7 +414,7 @@ PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。Matchin
 
 | 行为 | 归属 | 触发 |
 |---|---|---|
-| **机会评估**(这个套利机会够不够赚才开,`min_rebate_rate`) | **Strategy 内部职责** | Strategy 读 `portfolio.min_way_rebate` 与 `_get_min_rebate_rate()` 比较;不够就不 submit |
+| **机会评估**(这个套利机会够不够赚才开,`min_rebate_rate`) | **Strategy 内部职责** | Strategy 从订单簿/快照持仓计算策略自己的机会收益;不读 Portfolio `way_rebate` 系列接口 |
 | **深度缩放**(根据流动性算应该下多少 share) | **Strategy 内部职责** | `_adjust_share_by_liquidity` hook,Strategy 算订单参数时自己处理 |
 | **最小限额检查**(`size ≥ instrument.min_quantity`) | **NT RiskEngine 自动** | NT 自带,无需扩展(应用层不更严,删除 `MIN_SIZE_*` 常量) |
 | **余额检查**(够不够下单) | **`ArbitrageRiskEngine`(NT RiskEngine 子类)** | NT 自动拦截 `submit_order` 管道 |
@@ -495,7 +495,7 @@ def _adjust_share_by_liquidity(self, ctx, best) -> Decimal | None: ...  # 深度
 - **冻什么(只冻机会计算输入)**:
   - 订单簿所需值(最优价 / 深度,供定价 + `_adjust_share_by_liquidity`)
   - 该 pair 持仓
-  - **way_rebate**:**不在 cache**(纯 pull,§6.9)→ strategy 在取快照那刻**调一次 `portfolio.way_rebate(pair)` 把结果冻进快照**,下游规划/深度缩放复用冻结值,不重算(冻输入 ≡ 冻输出,way_rebate 是持仓纯函数)
+  - instrument_info(含 outcome role / in_play 等策略计算所需元数据)
 - **不冻什么(走 live)—— 安全闸要最新信号**(用户拍板,选项 1):
   - settled pre-check(strategy-4.14)、Q19 健康检查互斥 pre-check(§6.10)、RiskEngine 余额检查(§5.6)**全读 live**。
   - RiskEngine 本就是独立组件读 live cache,天然如此;strategy 快照是规划私有,不传给 RiskEngine。
@@ -518,11 +518,11 @@ def _adjust_share_by_liquidity(self, ctx, best) -> Decimal | None: ...  # 深度
 
 | 横切章节 | 本步要落地什么 |
 |---|---|
-| §6.8.2 | strategy 调 way_rebate / submit 前读 `leg_settled[pair_id]` 做 settled pre-check(三分支:entry 不存在/全 true → 通过;任一 false → abort) |
-| §6.10 | **健康检查互斥 pre-check(Q19)**:submit 前 `if _health_check_active: 放弃机会 early return`(订阅 `health_check.*` 维护镜像);执行 session submit 时 publish `execution.started`、terminal/timeout publish `execution.finished`。与 settled pre-check 并列,均在首个 await 前同步判 |
+| §6.8.2 | 已失效:#108 后 Strategy 不读 `leg_settled` / liveness;venue 执行健康由 Risk gate 统一拦截 |
+| §6.10 | 已失效:#108 后 Strategy 不维护 `health_check.*` 镜像;全局执行兜底改为直读 `is_execution_active` callable + per-pair in-flight gate |
 | §6.8.5 | 接受 execution 的 cancel-only/submit+track session 语义:strategy **每轮全量重算**,不假设上轮 submit 还在排队;残留挂单时当次 submit 被丢弃,下轮重发(可能是另一意图) |
 | §6.8.6 | 补偿撤单 / 撤后再下 / 单腿失败 / 裸单窗口(Q-F)**全归 strategy**,execution 不再 recovery —— 此为 Step 4 核心待设计项 |
-| §6.9.3 / §6.9.6 | 调 `portfolio.min_way_rebate(pair_id)` 判机会;调用前 settled pre-check(与 Portfolio 内部 gate 双重防御) |
+| §6.9.3 / §6.9.6 | 已被 #121 取代:Strategy 不调 Portfolio `way_rebate` 系列接口;机会收益由策略树基于快照订单簿/持仓自行计算 |
 | §6.6 | 生产 Strategy 的 hook 必须可被 `DebugArbitrageStrategy` 子类覆盖(price/size/min_rebate override) |
 
 | 测试用例文件 | 覆盖范围 |
@@ -728,16 +728,16 @@ class ArbitrageRiskEngine(RiskEngine):
 
 | 横切章节 | 本步要落地什么 |
 |---|---|
-| §6.9.1~6.9.5 | `ArbitragePortfolio(Portfolio)` 子类:`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 四个 Python 方法;算法平移自 `services/risk/position.py`;`launcher.py` 里 `kernel._portfolio` swap;pull-based 无 cache;pair_id 由 `instrument.info["competition"]` 解析 |
-| §6.9.3 settled gate | way_rebate 内部 gate(Q-G):entry 不存在 → 通过;全 true → 通过;任一 false → 返回空(`{}` / `None`);`global_min_rebate_sum` fail-closed 返回 `None` |
+| §6.9.1~6.9.5 | `ArbitragePortfolio(Portfolio)` 子类:当前保留 `outcome_exposures(pair_id)` / `outcome_shares(pair_id)` 两个 Python 方法;`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已被 #121 退役 |
+| §6.9.3 settled gate | 已失效:#108 退役 settled gate,#121 退役 `way_rebate` 系列接口;venue 执行健康统一由 Risk `VenueExecutionLiveness` gate 负责 |
 | §6.6 | `DebugArbitrageRiskEngine._check_order` 子类覆盖 `skip_check_size`(跳过 NT 父类最小限额检查) |
 | §5.6 正文 | `ArbitrageRiskEngine._check_balance` 读 cache.account_state 做余额检查;`_check_profit_gates` 做单场 match_tp/match_sl(逐 submit deny,Q16 #116);`_check_order` 签名两参 `(instrument, order)`;NT 父类自动管 min/max_quantity;**无 BalanceMonitorActor**、**无熔断 Actor / TradingState 翻闸** |
 
 | 测试用例文件 | 覆盖范围 |
 |---|---|
-| `tests/arbitrage/risk/README.md` | risk-6.1~6.7(透明拦截/min_quantity/余额检查/venue liveness/profit gates/账户维护)+ risk-6.9.1~6.9.12(ArbitragePortfolio swap / outcome_exposures / way_rebate 算法 / 旧 settled gate 退役记录) |
+| `tests/arbitrage/risk/README.md` | risk-6.1~6.7(透明拦截/min_quantity/余额检查/venue liveness/profit gates/share limit/账户维护)+ risk-6.9.x(ArbitragePortfolio swap / outcome_exposures / outcome_shares / 旧 settled gate 退役记录) |
 | `tests/arbitrage/debug/README.md` | `DebugArbitrageRiskEngine` skip_check_size |
-| `tests/arbitrage/web/README.md` | web-7.{6,7}(HTTP GET positions → portfolio.way_rebate) |
+| `tests/arbitrage/web/README.md` | web 控制台用例;只读 positions 监控 endpoint 已由 #120 移除 |
 
 ---
 
@@ -782,7 +782,7 @@ class ArbitrageRiskEngine(RiskEngine):
 
 **merge/redeem 结果不作为健康判定依据(Q18b,用户拍板)**: `TxResult` 失败**只 log + 下次 tick 重试**(幂等:merge amount 按当时持仓重算、redeem 由 redeemable 门控),**不影响** `venue_connected` / `leg_settled`。健康检查的"健康"只看通讯/对账,不看链上结算成败。
 
-**结果回流(无需显式 publish 事件)**: merge/redeem 成功后链上持仓变化 → 同一/下次 PM 健康检查的 position report 通路自然反映 → `way_rebate` pull-based 调用即重算。不发事件、不直接改 cache。
+**结果回流(无需显式 publish 事件)**: merge/redeem 成功后链上持仓变化 → 同一/下次 PM 健康检查的 position report 通路自然反映 → Portfolio outcome 指标 pull-based 调用即重算。不发事件、不直接改 cache。
 
 **与执行互斥**: merge/redeem 在健康检查 tick 内跑,自动受 §6.10 全局互斥保护(执行在飞时整个健康检查 tick 跳过,merge/redeem 也不会在执行期改链上持仓)。
 
@@ -1452,14 +1452,16 @@ def _on_session_timeout(self, event: TimeEvent):
 | 事项 | 关联 | 状态 |
 |---|---|---|
 | 非执行期间收到的 WS 消息怎么入 cache | Step 2 / Step 5 | ✅ **NT 原生路径解决**: WS 监听完全在 adapter 内部,无论执行期 / 非执行期收到的帧都走 `_handle_data` / `generate_*` 接口入 NT 标准管道,不分阶段 |
-| `way_rebate` 计算的触发时机 | Strategy 设计 / Portfolio | ✅ **§6.9 解决**: 由 `ArbitragePortfolio.way_rebate(pair_id)` 提供 pull-based 查询(对应 NT `unrealized_pnl(instrument_id)` 风格),strategy 决策点 / WebGateway HTTP 请求按需调用;无独立触发器,无需订阅事件 |
+| `way_rebate` 计算的触发时机 | Strategy 设计 / Portfolio | ✅ **历史已解决,现被 #121 取代**:当前 `way_rebate` 系列接口退役;Portfolio 只保留 `outcome_exposures/outcome_shares` pull-based 指标 |
 | Strategy 端补救 / 撤后再下 / 跨腿对冲 | Step 4 | ⏳ defer 到 Step 4 |
 | 裸单飘着的窗口(Q-F) | Step 4 strategy 设计 | ⏳ defer 到 Step 4 |
 | `bug_compensating_cancel_missing` 闭环 | Step 4 strategy 设计 | ⏳ defer 到 Step 4 |
 
 ---
 
-### 6.9 ArbitragePortfolio: way_rebate 等领域指标(Q14,2026-05-19 锁定)
+### 6.9 ArbitragePortfolio: way_rebate 等领域指标(Q14,2026-05-19 锁定;#121 后部分失效)
+
+> ⚠️ **现状覆盖(2026-06-22 #121)**:本节最初设计的 `way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 当前接口已退役。现行代码只保留 `outcome_exposures(pair_id)` 与 `outcome_shares(pair_id)`;Risk 分别用于单场 profit gates 与 share limit adjusted-size gate。以下 `way_rebate` 设计内容保留为历史决策记录,不作为当前实现依据。
 
 #### 6.9.1 背景与定位
 
@@ -1714,9 +1716,9 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 | **Q11** | **Debug 注入框架的迁移设计** | ✅ **已锁定(P10 / §6.6)**: 所有 debug 行为变化通过子类化 + 工厂层选择;生产代码零 `if self._debug` 分支。子问题 Q11.1-Q11.5 已逐项锁定。**关联边界修正(Q12)**: `_check_and_adjust_size` 拆解 —— Step 1 深度缩放归 Strategy 内部 hook,Step 2 最小限额由 NT `instrument.min_quantity` 自动处理(应用层删除);Strategy 不引用 Risk;skip_check_size 落点是 `DebugArbitrageRiskEngine` | Step 4-7 |
 | **Q12** | **Risk 层架构: LiquidityRiskActor 是否需要** | ✅ **已锁定: 不需要**。深度缩放归 Strategy 内部职责(算应该下多少 share);最小限额检查由 NT RiskEngine 自动处理(`instrument.min_quantity`);余额检查由 `ArbitrageRiskEngine`(NT RiskEngine 子类)在 `submit_order` 管道上透明拦截。Strategy 不引用 Risk。venue 偶发拒绝(cache stale)由 NT 标准 `on_order_rejected` 处理,不是设计层"双兜底" | Step 4-6 |
 | **Q13** | **健康检查归属 + execution 简化** | ✅ **已锁定(§6.8)**: 健康检查下沉到各 adapter;execution 退化为单一职责 session(cancel-only 或 submit+track)。⚠️ **#108 修正**:旧 `leg_settled=false` 状态维度/两层状态不再作为现状安全闸,改为 `VenueExecutionLiveness` order/position alive,由 Risk 统一门控;旧文字保留历史。 | Step 2 / Step 4 / Step 5 |
-| **Q14** | **way_rebate / outcome_exposure 等领域指标归属** | ✅ **已锁定(§6.9)**: 子类化 `ArbitragePortfolio(Portfolio)` 加 Python 方法(`outcome_exposures(pair_id)` / `way_rebate(pair_id)` / `way_rebates_by_venue(pair_id)` / `min_way_rebate(pair_id)` / `global_min_rebate_sum()`),与 NT `unrealized_pnl` 并列扩展。⚠️ **#108 修正**:settled gate 退役,Portfolio 纯算 positions 指标;执行健康 fail-closed 只在 Risk 的 `VenueExecutionLiveness` gate。⚠️ **#116 修正**:Risk 门控只读 `outcome_exposures`,不读 `way_rebate`。 | Step 4 / Step 6 / Step 7 |
+| **Q14** | **Portfolio outcome 领域指标归属** | ✅ **已锁定(§6.9,#121 修正)**: 子类化 `ArbitragePortfolio(Portfolio)` 加 Python 方法;当前只保留 `outcome_exposures(pair_id)` / `outcome_shares(pair_id)`。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。执行健康 fail-closed 只在 Risk 的 `VenueExecutionLiveness` gate。 | Step 4 / Step 6 |
 | **Q18** | **merge / claim(链上结算)集成进 NT** | ✅ **已锁定(2026-05-19,§5.8)**: merge/claim 是链上 CTF 操作,**上游 PM ExecutionClient 无对应物**(只包 CLOB),本工程自研保留。数据源 = **PM Data API `/positions` 原始**(NT cache 丢了 redeemable/mergeable)。merge=同 condition≥2 outcome 持仓合并(amount=min);redeem=redeemable 门控。`contract.py` 保留作 IO。**归属 Q18b 修正(2026-05-21)**:**不设独立 Actor**,merge/redeem **并入 PM 健康检查 tick**(§6.8.4,复用其 `/positions` 拉取避免双拉);`TxResult` **不作健康判据**(失败 log+下次重试);redeem 结算滞后由健康检查周期性兜住;`cleanup.py` 编排平移进健康检查路径。**Q18c 钉死宿主(2026-05-21)**:三层 = 宿主/触发 **PM `ExecutionClient` 薄子类**(唯一同时有 `generate_*_status_report`+钱包 creds+健康检查 tick)→ 编排 `PolymarketSettlement` 普通类(组合,非内联)→ IO `contract.py`;纯度取舍已知,用组合缓解 | Step 5 / §6.8.4 |
-| **Q20** | **strategy 机会快照隔离** | ✅ **已锁定(2026-05-21,§5.4)**: 为避免订单规划+执行被新成交扰动,strategy 在机会评估开跑时取 **per-pair 快照**(冻订单簿所需值 + 持仓 + **way_rebate**——因不在 cache,取快照那刻调一次 `portfolio.way_rebate(pair)` 冻结果),全程用拷贝直到该次套利结束(双腿 terminal/timeout/放弃)再丢弃,下一轮重取新鲜快照。**安全闸走 live 不冻**;⚠️ #108 后 venue liveness 由 Risk 读取,Strategy 不读 `leg_settled`/liveness。 | Step 4 |
+| **Q20** | **strategy 机会快照隔离** | ✅ **已锁定(2026-05-21,§5.4;#121 修正)**: 为避免订单规划+执行被新成交扰动,strategy 在机会评估开跑时取 **per-pair 快照**(冻订单簿所需值 + 持仓 + instrument_info),全程用拷贝直到该次套利结束(双腿 terminal/timeout/放弃)再丢弃,下一轮重取新鲜快照。**安全闸走 live 不冻**;⚠️ #108 后 venue liveness 由 Risk 读取,Strategy 不读 `leg_settled`/liveness。 | Step 4 |
 | **Q19** | **健康检查 ⊥ 执行 互斥粒度 + 机制** | ✅ **历史锁定(2026-05-21,§6.10)**。⚠️ **#105/#108 后现状修正**:`health_check.*` / strategy `_hc_running` / strategy 健检前置随 NT reconciliation + OE 页锁迁移退役;strategy 不看 venue liveness,统一由 Risk gate 拦。旧机制保留为迁移前记录。 | Step 4 / Step 5 |
 | **Q17** | **PM 余额刷新机制 + 挂单占用** | ✅ **已锁定(2026-05-19,§5.5 / §5.6)**: (1) **刷新机制**:上游 `_update_account_state` 是**事件驱动**(连接时 + 链上成交确认 `POLYMARKET_FINALIZED_TRADE_STATUSES`),**无周期 timer**;NT 也无默认 `QueryAccount` 轮询(全库仅反序列化处实例化);周期兜底归 §6.8.4 健康检查 tick。原文档"PM 主动周期 timer"措辞已纠正。(2) **挂单占用(按 venue 非对称)**:**PM** 上报 `reported=True/locked=0/free=total`(链上不托管未成交单),`CashAccount.apply()` 见 reported 清空 NT 自算 locked(cash.pyx:178-179)→ cache `free` 恒 total → `_check_balance` 自算 `total − Σ(PM cache.orders_open 在途名义额)`;**OE** WS 上报**已含挂单占用**(用户确认 2026-05-19)→ `_check_balance` **直接信 cache 余额不再减**(否则双重扣减)。`_check_balance` 内按 `order.instrument_id.venue` 分支。(3) **健康检查不碰余额**:PM 完全靠事件、OE 完全靠 WS;§6.8.3/§6.8.4 健康检查动作里余额已移除 | Step 5 / Step 6 |
 | **Q16** | **单场止盈/止损 profit gates 归属** | ✅ **#116 修订(§5.4 / §5.6 / §6.9.6)**: `match_tp/match_sl` 进 `ArbitrageRiskEngine._check_profit_gates`,**逐 submit deny = 别开新仓**;判定看所有 outcome 的绝对 `net_profit` 是否跨过 `share*threshold`;**不**翻 NT `TradingState`、**不**起监测 Actor、**无频率**。全局止盈/止损退役,`global_sl` 仅为旧配置兼容字段。venue 执行健康由 `_check_required_venues_alive` 独立门控,且仍不翻 NT `TradingState`。 | Step 4 / Step 6 |
@@ -1762,6 +1764,7 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 
 | 日期 | 变更 |
 |---|---|
+| 2026-06-22 (#121) | **退役 `way_rebate` 系列当前接口,Portfolio 只保留 outcome 指标**。用户重申 Risk 不需要类似 recovery 的归一化比率,只需要每个 outcome 的 `net_profit/liability`,以及 share limit 所需的 outcome share。落地:删除 `ArbitragePortfolio.way_rebate/min_way_rebate/way_rebates_by_venue/global_min_rebate_sum` 与内部 `_compute_way_rebate/_max_outcome_share`;`OpportunitySnapshot` 不再包含 `way_rebate`,Strategy 不再从 Portfolio 拉该指标;`mean_rebate_recovery` 内部 helper 从 `_way_rebate` 改名为 `_outcome_return_rates`,仍只在 recovery 树内按 outcome return rate 判断补救机会。Risk 当前只读 `outcome_exposures(pair_id)` 做单场 profit gates,读 `outcome_shares(pair_id)` 做 share limit adjusted-size gate。文档同步 risk/strategy/architecture/README;旧 `src/arbitrage/services/**` 中的 `way_rebate` 属 legacy 微服务栈,本轮不迁移不改。 |
 | 2026-06-21 (#120) | **移除 web 只读监控 endpoint,web 收敛为纯控制台**。用户审视 #118 只读监控 MVP(余额/matched_pairs/way_rebate)后裁定:监控回归看日志,web 只留 #119 控制台(TradingState 启停 + 配置编辑)。移除 `/accounts`、`/matched_pairs`、`/positions/{pair_id}`、`/positions/global_min_rebate_sum` 路由 + `events.account.*` / `data.MatchedPair*` 订阅 + `_matched_pairs` 缓存 + account/matched_pair WS 推送 + `portfolio` 依赖 + 序列化 helper;`WebGatewayActor` 只剩 `events.risk`→WS 推 TradingState + 控制方法。`WebGatewayDeps` 去 `portfolio`(剩 loop/risk_engine/config_path)。**保留**:`/health`、`/ws`(推 trading_state)、控制台全部、scaffolding(uvicorn 同 loop / 端口预检 / get_running_loop / 优雅停机)。测试相应删 web-7.1/7.3/7.6/7.7,web 套件全绿。详细设计 web §1-7 重写为控制台 scaffolding(§8 控制语义不变);监控代码可从 git `ae1d397b18` 找回。**保留 SIGABRT 修(c6b1e36b,与 web 无关)+ settlement offload + codex #114-117(ae1d 内非 web 部分)。** |
 | 2026-06-21 (#119) | **Step 7 控制台设计定档(配置编辑 + TradingState 启停;实现进行中)**。用户要求把 legacy 配置/监控页"迁"过来;核对 legacy `services/web_gateway/`(1968 行 index.html + ~30 `/api/*`)后定论:**pipeline start/stop、discovery/matching `run`、odds subscribe 在 NT 里无意义**(发现/匹配/订阅均连续自动)→ **全不做**;控制台只做两件 NT 成立的事。决策:**① 启停按钮 = NT 原生 `RiskEngine.set_trading_state(ACTIVE/HALTED)`**(不用 REDUCING),**boot 默认 HALTED**(仅 `web.enabled && web.start_halted` 时,launcher build 后 set;web 关则保持 NT 原生 ACTIVE 否则永不交易),**不联动 strategy 评估**(用户定;HALTED churn 接受);**② 配置编辑 = C 混合**(每次写回 `arb_config.json`;热字段 share/tp/sl/max_leg_share/refresh_interval 额外推命令即时生效,其余标"需重启");**③ seam = 方案乙 MessageBus 命令**(`command.arb.{trading_state,risk_params,refresh_interval}`,web 单一生产者 publish、risk/matching 订阅 apply,契约住 web 组件)。**对 Q16「不主动改 TradingState」的修订**:Q16 锁的是**自动门控**(profit gates/venue liveness)不碰 TradingState、走逐 submit deny;本控制台是**人工操作员熔断**显式 set TradingState,二者正交并存(risk §4.3/§4.4 已挂前向指针)。详细设计=web §8;测试 README=`web-7.8~7.11`。**实现进行中**,真金 live 验证(boot HALTED→点 Start 放行)待接线完成后单独跑。 |
 | 2026-06-21 (#118) | **Step 7 WebGatewayActor 只读监控 MVP 落地(占位→实现)**。原 `web/architecture.md` 是占位(用户 2026-05-21 判暂不迁移),本轮用户拍 scope=**只读监控 + 后端 JSON/WS**(不碰交易路径;config-write / OrderBookDelta firehose / request-response 桥延后)。落地:`src/arbitrage/web/{actor,app}.py` —— `WebGatewayActor(Actor)` 与 TradingNode 同进程同 loop,`on_start` 经 `_NoSignalServer`(不抢 NT 信号)拉起 uvicorn 协程;订阅 `events.account.*`(NT Portfolio 发)+ `data.MatchedPair*`(MatchingActor 发)转 JSON 经 `/ws` 推前端(每 client `asyncio.Queue(maxsize=256)`,满丢最旧、绝不反压交易回调);HTTP GET `/accounts`、`/matched_pairs`、`/positions/{pair_id}`(way_rebate+by_venue+outcome_exposures)、`/positions/global_min_rebate_sum`(路由先于 `{pair_id}` 注册防吞)。**纯只读**:只调 cache 读 + portfolio pull,不发命令/不 publish/不写 cache。配置 `web.{enabled(默认 false),host(默认 127.0.0.1),port(默认 8080)}` 入 `ArbConfig` + `to_web_gateway_config`;launcher `add_actors` 仅 `cfg.web.enabled` 时构造(注入 `node.kernel.portfolio`+loop),关闭则零开销/不占端口。**替代旧 BalanceMonitorActor**:推余额给前端,余额低/熔断由用户看着判断。不搬 legacy `services/web_gateway/`(3353 行绑老 pipeline)。测试:`tests/arbitrage/web/test_web_gateway.py` 12 passed(Actor 广播/背压/序列化 + FastAPI TestClient HTTP/WS)。详细设计=web §1-7;测试 README=`web-7.1/7.3/7.6/7.7`。**未 live 验证**:真节点起 + 浏览器/curl 看 endpoint 待用户某次 live 跑顺带验。 |

@@ -52,9 +52,9 @@
 
   "web": {
     "_doc": "Step 7 控制台(architectures/web/architecture.md §8):TradingState 启停 + 配置编辑,后端 JSON/WS。默认关闭;host 默认 127.0.0.1 只绑本机,暴露公网需显式改。start_halted: 控制台启用时 boot 即 HALTED(真金安全默认,操作员点 Start 才放行)",
-    "enabled": false,
+    "enabled": true,
     "host": "127.0.0.1",
-    "port": 8080,
+    "port": 3001,
     "start_halted": true
   },
 

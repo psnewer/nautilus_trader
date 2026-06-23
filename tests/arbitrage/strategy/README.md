@@ -80,17 +80,16 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **占位**: 单腿失败 / 裸单飘着 / 撤后再下等场景的状态机,等 Step 4 启动时展开
 **关联**: `bug_compensating_cancel_missing`,Q-F 裸单窗口
 
-### strategy-4.12: Strategy 调 `portfolio.min_way_rebate(pair_id)` 判断机会(Q14,§6.9)
+### strategy-4.12: Strategy 不再调 Portfolio way_rebate 系列接口(2026-06-22)
 
-**前置**: `ArbitragePortfolio` 已 swap 到 `kernel._portfolio`;某 MatchedPair 事件到达
-**输入**: Strategy.on_data(matched_pair) → **先 settled pre-check**(见 4.14)→ 通过则调 `min_way_rebate(pair_id)`
+**前置**: `ArbitragePortfolio` 已 swap 到 `kernel._portfolio`;某 MatchedPair/OBD 事件到达
+**输入**: Strategy 评估当前 `mean_rebate`/`mean_rebate_recovery` 树
 **期望**:
-- 拿到当前所有 pair 持仓的最低方向 rebate
-- 与 `self._get_min_rebate_rate()` hook(`config.min_rebate_rate` 或 Debug override)比较
-- 不满足阈值 → 放弃机会(不发订单);满足 → 继续决策流
+- `mean_rebate` 主策略只从快照订单簿计算机会 rate,不读 `portfolio.way_rebate/min_way_rebate`
+- `mean_rebate_recovery` 从快照持仓 + instrument_info + 订单簿计算补齐后的 outcome return rate,不读 Portfolio way_rebate
 **验收**:
-- Strategy 通过 NT 标准 `self.portfolio` 接口拿数据,不引用其它组件
-- way_rebate 计算是 pull-based,Strategy 调用即重算
+- `src/arbitrage/strategy/**` 无 `portfolio.way_rebate` / `portfolio.min_way_rebate` 调用
+- `OpportunitySnapshot` 不含 `way_rebate` 字段
 
 ### strategy-4.14: Strategy 调用 way_rebate 前的 settled pre-check(已失效,2026-06-15)
 
@@ -122,12 +121,12 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - Strategy deps 中无 `leg_settled` / `venue_liveness` 注入。
 - 测试可用 fake Risk 接收路径验证 submitter 仍写完整 opportunity metadata。
 
-### strategy-4.13: Strategy 不缓存 way_rebate(Q14)
+### strategy-4.13: Strategy 不缓存 Portfolio 持仓收益指标(Q14,2026-06-22 修订)
 
 **前置**: 同 4.12
-**输入**: 同一轮 loop 中多次调用 `portfolio.way_rebate(pair_id)`
-**期望**: 每次调用都即时算,Strategy 端无中间 cache
-**验收**: Strategy 代码不持有 `_way_rebate_cache` / `_last_rebate` 等字段
+**输入**: 同一轮 loop 中多次 evaluate
+**期望**: Strategy 不缓存 Portfolio 派生收益指标;机会值来自当前快照订单簿/持仓计算
+**验收**: Strategy 代码不持有 `_way_rebate_cache` / `_last_rebate` 等字段,也不从 Portfolio 拉 way_rebate
 
 ### ~~strategy-4.15: 健康检查互斥 pre-check~~ —— 已退役(#108,2026-06-16)
 
@@ -158,21 +157,20 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **前置**: MatchedPair 事件到达,strategy 准备评估某 pair 的机会
 **输入**: strategy 在评估开跑时取快照,随后规划 + submit + tracking
 **期望**:
-- 取 per-pair 快照(该 competition 所有腿):冻 **订单簿所需值 + 持仓 + way_rebate(取快照那刻调一次 `portfolio.way_rebate(pair)` 冻结果)**
+- 取 per-pair 快照(该 competition 所有腿):冻 **订单簿所需值 + 持仓 + instrument_info**
 - 规划 / `_adjust_share_by_liquidity` / 后续(含 deferred 的补偿逻辑)**全读快照**,不读 live cache
 - 期间 live cache 被新成交/新 tick 更新(包括本次执行自己的腿成交),**机会计算/执行不受影响**
 - 该次套利结束(双腿 terminal/timeout/放弃)→ 丢弃快照;下一轮重新取**新鲜**快照
 **验收**:
-- way_rebate **不从 cache 读**(cache 没有),是快照里冻结的预算结果
 - **安全闸走 live 不走快照**:Q19 健康检查互斥(4.15,**已退役 #108**)与 RiskEngine 余额/venue-liveness 门控都读最新 live 状态;Strategy 不读取 venue liveness
 - 快照不跨轮持久(与 4.9 每轮重算一致);strategy 不持有跨轮快照字段
 - 实现自建(NT 无原生读隔离快照):持仓 `pickle` 深拷贝,订单簿冻取所需值;不依赖 `Cache.snapshot_position`(那是 netting 归档,非读隔离)
 
 ### strategy-4.18: 快照期间本腿成交不扰动机会计算(Q20 关键场景)
 
-**前置**: strategy 已取快照、submit 双腿;PM 腿先成交 → live cache 持仓变化 → live way_rebate 会变
+**前置**: strategy 已取快照、submit 双腿;PM 腿先成交 → live cache 持仓变化
 **输入**: 在该次套利仍进行中,strategy 若有 deferred 的补偿/再评估逻辑触发
-**期望**: 补偿/再评估读**快照**的持仓 + way_rebate(开跑那刻的值),**不**因本腿刚成交而用变化后的 live 值
+**期望**: 补偿/再评估读**快照**的持仓/订单簿/instrument_info,**不**因本腿刚成交而用变化后的 live 值
 **验收**: 验证快照"全程一致"语义;live 持仓的变化由下一轮新快照才纳入
 
 ### strategy-4.19: 快照回收 —— 所有出口确定性释放,无泄漏(Q20)

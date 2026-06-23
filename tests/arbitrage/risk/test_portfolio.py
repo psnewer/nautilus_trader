@@ -1,4 +1,4 @@
-"""ArbitragePortfolio outcome exposure / way_rebate + 全局聚合(risk-6.9.x)。
+"""ArbitragePortfolio outcome exposure / outcome share 聚合(risk-6.9.x)。
 
 腿提取(`_legs_for_pair` / `_active_pair_ids`)依赖 cache 中的真实 NT Position;为隔离
 聚合/公式逻辑,这些方法在相关用例里被 monkeypatch 成受控返回。腿提取本身经
@@ -31,52 +31,7 @@ def _portfolio(cache=None) -> ArbitragePortfolio:
     return pf
 
 
-# ── 公式(risk-6.9.2 / 6.9.4 / 6.9.7)─────────────────────────────────
-def test_compute_way_rebate_equal_share_matches_mean_rebate_shape():
-    # mean_rebate 下单形态:PM share=100;OE stake=100/2.5=40 → 两腿赢时 share 都是 100
-    pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 40, 2.5, 1.0)]
-    r = pf._compute_way_rebate(legs)
-    assert r["home"] == pytest.approx(0.20)
-    assert r["away"] == pytest.approx(0.20)
-    assert min(r.values()) == pytest.approx(0.20)  # min_way_rebate 等价
-
-
-def test_compute_way_rebate_uses_largest_outcome_share():
-    # PM 实际 share=100;OE 实际 share=50*2.5=125 → 用最大 outcome share=125 归一化
-    pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 50, 2.5, 1.0)]
-    r = pf._compute_way_rebate(legs)
-    assert r["home"] == pytest.approx(0.08)
-    assert r["away"] == pytest.approx(0.28)
-    assert min(r.values()) == pytest.approx(0.08)
-
-
-def test_compute_way_rebate_aggregates_same_outcome_share_for_denominator():
-    # home outcome 同时有 PM 5 share + OE gross 6 share → 分母必须用 home 聚合 share=11,
-    # 不能用旧的单腿 max=6,否则会把所有 outcome rebate 放大。
-    pf = _portfolio()
-    legs = [
-        _Leg("polymarket", "home", 5, 0.4, 1.0),
-        _Leg("orbitexch", "home", 3, 2.0, 1.0),
-        _Leg("polymarket", "away", 10, 0.5, 1.0),
-    ]
-    r = pf._compute_way_rebate(legs)
-    assert r["home"] == pytest.approx(1.0 / 11.0)
-    assert r["away"] == pytest.approx(0.0)
-
-
-def test_compute_way_rebate_three_way_adds_draw():
-    pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("polymarket", "draw", 50, 0.3, 1.0)]
-    r = pf._compute_way_rebate(legs)
-    assert set(r.keys()) == {"home", "draw", "away"}
-
-
-def test_empty_legs_returns_empty():
-    assert _portfolio()._compute_way_rebate([]) == {}
-
-
+# ── 公式(risk-6.9.2b / 6.9.2c / 6.9.2d)──────────────────────────────
 def test_compute_outcome_exposures_net_profit_and_liability():
     pf = _portfolio()
     legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 40, 2.5, 1.0)]
@@ -213,34 +168,3 @@ def test_resolve_pair_id_reads_from_pair_registry():
 def _stub_legs(pf, legs):
     pf._legs_for_pair = lambda pair_id, account_id=None: legs
 
-
-def test_way_rebate_always_computes_from_positions_without_liveness_gate():
-    pf = _portfolio()
-    _stub_legs(pf, [_Leg("polymarket", "home", 100, 0.4, 1.0)])
-    assert pf.way_rebate("match_X") != {}
-    assert pf.min_way_rebate("match_X") is not None
-    assert pf.way_rebates_by_venue("match_X") != {}
-
-
-# ── 全局聚合(risk-6.9.5 / 6.9.5b / 6.9.12)──────────────────────────
-def test_global_min_rebate_sum_only_active_pairs():
-    pf = _portfolio()
-    pf._active_pair_ids = lambda account_id=None: {"match_X", "match_Y"}
-    mins = {"match_X": 0.10, "match_Y": 0.05}
-    pf.min_way_rebate = lambda pair_id, account_id=None: mins[pair_id]
-    assert pf.global_min_rebate_sum() == pytest.approx(0.15)
-
-
-def test_global_min_rebate_sum_untraded_match_not_in_scan():
-    # active scan 只含有持仓的 pair;未交易比赛压根不在 _active_pair_ids → 不致 None
-    pf = _portfolio()
-    pf._active_pair_ids = lambda account_id=None: {"match_X"}
-    pf.min_way_rebate = lambda pair_id, account_id=None: 0.10
-    assert pf.global_min_rebate_sum() == pytest.approx(0.10)
-
-
-def test_global_min_rebate_sum_does_not_carry_liveness_gate():
-    pf = _portfolio()
-    pf._active_pair_ids = lambda account_id=None: {"match_X", "match_Y"}
-    pf.min_way_rebate = lambda pair_id, account_id=None: 0.10
-    assert pf.global_min_rebate_sum() == pytest.approx(0.20)

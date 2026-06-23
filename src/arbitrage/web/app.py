@@ -7,6 +7,7 @@ TradingState 变更。纯只读监控 endpoint(余额/matched_pairs/way_rebate)�
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import Body
@@ -14,9 +15,12 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 
 if TYPE_CHECKING:
     from src.arbitrage.web.actor import WebGatewayActor
+
+_CONSOLE_HTML = (Path(__file__).parent / "static" / "console.html").read_text(encoding="utf-8")
 
 
 def build_app(actor: "WebGatewayActor") -> FastAPI:
@@ -25,9 +29,30 @@ def build_app(actor: "WebGatewayActor") -> FastAPI:
     (便于测试用 stub 替身)。"""
     app = FastAPI(title="arb-web-gateway", docs_url=None, redoc_url=None)
 
+    @app.get("/", response_class=HTMLResponse)
+    async def index() -> str:
+        return _CONSOLE_HTML
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    # ── 只读快照:余额 + 赔率(周期 GET)──────────────────────────────
+    @app.get("/accounts")
+    async def accounts() -> list:
+        return actor.accounts_snapshot()
+
+    @app.get("/odds")
+    async def odds() -> list:
+        return actor.odds_snapshot()
+
+    @app.get("/matched_pairs")
+    async def matched_pairs() -> list:
+        return actor.matched_pairs()
+
+    @app.get("/instruments")
+    async def instruments() -> list:
+        return actor.instruments_snapshot()
 
     # ── 控制台:TradingState 启停(§8.1)──────────────────────────────
     @app.get("/control/trading_state")

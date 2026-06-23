@@ -162,6 +162,19 @@ class _ControlStubActor:
     def unregister_ws(self, q):
         pass
 
+    def accounts_snapshot(self):
+        return [{"account_id": "POLYMARKET-001", "balances": [{"total": "65.0", "currency": "USDC.e"}]}]
+
+    def odds_snapshot(self):
+        return [{"pair_id": "ATP|a|b", "legs": [{"venue": "POLYMARKET", "role": "home", "bid": 0.4, "ask": 0.42}]}]
+
+    def matched_pairs(self):
+        return [{"pair_id": "ATP|a|b", "sport": "Tennis", "competition": "ATP",
+                 "pm_instrument_ids": ["p1", "p2"], "oe_instrument_ids": ["o1", "o2"], "confidence": 0.9}]
+
+    def instruments_snapshot(self):
+        return [{"venue": "POLYMARKET", "sport": "Tennis", "competition": "ATP", "home": "A", "away": "B"}]
+
 
 def _client(actor=None) -> TestClient:
     return TestClient(build_app(actor or _ControlStubActor()))
@@ -195,6 +208,30 @@ def test_put_config_section():
     actor = _ControlStubActor()
     r = TestClient(build_app(actor)).put("/config/risk", json={"share": 30.0})
     assert r.status_code == 200 and actor.put_calls == [("risk", {"share": 30.0})]
+
+
+def test_index_serves_html():
+    r = _client().get("/")
+    assert r.status_code == 200 and "Arbitrage Dashboard" in r.text and "text/html" in r.headers["content-type"]
+
+
+def test_get_accounts():
+    assert _client().get("/accounts").json()[0]["account_id"] == "POLYMARKET-001"
+
+
+def test_get_odds():
+    odds = _client().get("/odds").json()
+    assert odds[0]["pair_id"] == "ATP|a|b" and odds[0]["legs"][0]["ask"] == 0.42
+
+
+def test_get_matched_pairs():
+    mp = _client().get("/matched_pairs").json()
+    assert mp[0]["competition"] == "ATP" and mp[0]["confidence"] == 0.9
+
+
+def test_get_instruments():
+    inst = _client().get("/instruments").json()
+    assert inst[0]["venue"] == "POLYMARKET" and inst[0]["home"] == "A"
 
 
 def test_ws_sends_queued_message_then_closes_on_poison():

@@ -442,9 +442,10 @@ def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):
         client._venue_liveness = VenueExecutionLiveness()
 
         client._venue_liveness.mark_position_alive(POLYMARKET)
-        with pytest.raises(RuntimeError, match="positions unavailable"):
-            await client.generate_position_status_reports(SimpleNamespace())
+        # #122:失败 mark_dead + 返空(不 raise,对齐 OE;避免 startup reconciliation 卡死)
+        reports = await client.generate_position_status_reports(SimpleNamespace())
 
+        assert reports == []
         assert not client._venue_liveness.position_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
@@ -497,9 +498,10 @@ def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_order_status_reports")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        with pytest.raises(RuntimeError, match="PM order reports query failed"):
-            await client.generate_order_status_reports(SimpleNamespace())
+        # #122:retry failure → mark_dead + 返空(不 raise,对齐 OE)
+        reports = await client.generate_order_status_reports(SimpleNamespace())
 
+        assert reports == []
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)
@@ -524,9 +526,10 @@ def test_arb_generate_single_order_report_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_order_status_report")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        with pytest.raises(RuntimeError, match="PM order report query failed"):
-            await client.generate_order_status_report(SimpleNamespace())
+        # #122:single report retry failure → mark_dead + 返 None(不 raise)
+        report = await client.generate_order_status_report(SimpleNamespace())
 
+        assert report is None
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_report", fake_super)
@@ -556,9 +559,10 @@ def test_arb_generate_order_reports_fill_retry_failure_marks_dead(monkeypatch):
         client._retry_manager_pool = _FailingRetryPool("generate_fill_reports")
         client._venue_liveness.mark_order_alive(POLYMARKET)
 
-        with pytest.raises(RuntimeError, match="PM order reports query failed"):
-            await client.generate_order_status_reports(SimpleNamespace())
+        # #122:retry failure → mark_dead + 返空(不 raise,对齐 OE)
+        reports = await client.generate_order_status_reports(SimpleNamespace())
 
+        assert reports == []
         assert not client._venue_liveness.order_alive(POLYMARKET)
 
     monkeypatch.setattr(PolymarketExecutionClient, "generate_order_status_reports", fake_super)

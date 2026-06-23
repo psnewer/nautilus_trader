@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arbitrage Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .navbar { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card { border: none; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .card-header { background-color: #fff; border-bottom: 2px solid #667eea; font-weight: 600; }
+        .nav-pills .nav-link.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .nav-pills .nav-link { color: #667eea; }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; }
+        .table th { background-color: #f8f9fa; }
+        .config-editor { font-family: monospace; font-size: 0.9em; }
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+        .hot { color:#198754; font-size:.78em; } .restart { color:#fd7e14; font-size:.78em; }
+    </style>
+</head>
+<body>
+    <!-- Navbar:启停(TradingState)+ 状态 + 余额(替 legacy pipeline 按钮)-->
+    <nav class="navbar navbar-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1"><i class="bi bi-graph-up-arrow me-2"></i>Arbitrage Dashboard</span>
+            <span class="d-flex align-items-center gap-3">
+                <span id="balances" class="text-white small"></span>
+                <span class="badge bg-secondary" id="state" style="font-size:.9em;padding:6px 12px;">…</span>
+                <button class="btn btn-sm btn-success" onclick="setState('ACTIVE')"><i class="bi bi-play-fill"></i> Start</button>
+                <button class="btn btn-sm btn-danger" onclick="setState('HALTED')"><i class="bi bi-stop-fill"></i> Halt</button>
+                <span class="text-white small"><i class="bi bi-clock me-1"></i><span id="current-time"></span></span>
+            </span>
+        </div>
+    </nav>
+    <div id="toast-container"></div>
+
+    <div class="container">
+        <ul class="nav nav-pills mb-4" id="mainTabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#discovery" type="button"><i class="bi bi-search me-1"></i>Market Discovery</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#matching" type="button"><i class="bi bi-link-45deg me-1"></i>Market Matching</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#odds" type="button"><i class="bi bi-graph-up me-1"></i>Odds Monitor</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#strategy" type="button"><i class="bi bi-bullseye me-1"></i>Strategy</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#config" type="button"><i class="bi bi-gear me-1"></i>Configuration</button></li>
+        </ul>
+
+        <div class="tab-content" id="mainTabContent">
+            <!-- Market Discovery -->
+            <div class="tab-pane fade show active" id="discovery" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-4"><div class="card"><div class="card-header"><i class="bi bi-lightning me-1"></i>Actions</div>
+                        <div class="card-body"><div class="d-grid gap-2">
+                            <button class="btn btn-outline-secondary" onclick="refreshDiscovery()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Results</button>
+                        </div><hr>
+                        <p class="mb-1"><strong>Polymarket:</strong> <span id="poly-count">0</span> events</p>
+                        <p class="mb-0"><strong>OrbitExch:</strong> <span id="orbit-count">0</span> events</p>
+                        <div class="text-muted small mt-2">发现连续自动(无手动 Run);此处只读 cache instruments</div>
+                    </div></div></div>
+                    <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-table me-1"></i>Discovery Results</span>
+                        <select class="form-select form-select-sm w-auto" id="discovery-venue-filter" onchange="renderDiscovery()">
+                            <option value="all">All Venues</option><option value="POLYMARKET">Polymarket</option><option value="ORBITEXCH">OrbitExch</option></select>
+                    </div><div class="card-body" style="max-height:520px;overflow-y:auto">
+                        <table class="table table-sm table-hover"><thead><tr><th>Venue</th><th>Sport</th><th>Competition</th><th>Home</th><th>Away</th></tr></thead>
+                        <tbody id="discovery-results-table"><tr><td colspan="5" class="text-center text-muted">加载中…</td></tr></tbody></table>
+                    </div></div></div>
+                </div>
+            </div>
+
+            <!-- Market Matching -->
+            <div class="tab-pane fade" id="matching" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-4"><div class="card"><div class="card-header"><i class="bi bi-lightning me-1"></i>Actions</div>
+                        <div class="card-body"><div class="d-grid gap-2">
+                            <button class="btn btn-outline-secondary" onclick="refreshMatching()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Results</button>
+                        </div><hr><p class="mb-0"><strong>Matched Pairs:</strong> <span id="pairs-count">0</span></p>
+                        <div class="text-muted small mt-2">匹配连续自动(无手动 Run)</div>
+                    </div></div></div>
+                    <div class="col-md-8"><div class="card"><div class="card-header"><i class="bi bi-table me-1"></i>Matched Pairs</div>
+                        <div class="card-body" style="max-height:520px;overflow-y:auto">
+                        <table class="table table-sm table-hover"><thead><tr><th>Sport</th><th>Competition</th><th>Polymarket</th><th>OrbitExch</th><th>Confidence</th></tr></thead>
+                        <tbody id="matching-results-table"><tr><td colspan="5" class="text-center text-muted">加载中…</td></tr></tbody></table>
+                    </div></div></div>
+                </div>
+            </div>
+
+            <!-- Odds Monitor -->
+            <div class="tab-pane fade" id="odds" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-4"><div class="card"><div class="card-header"><i class="bi bi-lightning me-1"></i>Actions</div>
+                        <div class="card-body">
+                            <div class="form-check"><input class="form-check-input" type="checkbox" id="auto-refresh-odds" checked>
+                                <label class="form-check-label" for="auto-refresh-odds">Auto-refresh (2s)</label></div>
+                            <div class="text-muted small mt-2">订阅由 DataEngine 自动管(无手动 Subscribe);读 cache 盘口</div>
+                        </div></div></div>
+                    <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
+                        <div class="card-body" style="max-height:600px;overflow-y:auto">
+                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Team</th><th>Polymarket (bid/ask)</th><th>OrbitExch (bid/ask)</th></tr></thead>
+                        <tbody id="odds-data-table"><tr><td colspan="4" class="text-center text-muted">加载中…</td></tr></tbody></table>
+                    </div></div></div>
+                </div>
+            </div>
+
+            <!-- Strategy(简化:NT 是 JSON 配置树,删 legacy 的 signals/strategies/competition/match CRUD)-->
+            <div class="tab-pane fade" id="strategy" role="tabpanel">
+                <div class="card"><div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-bullseye me-1"></i>Strategy Config(JSON;NT Q21 配置树)</span>
+                    <button class="btn btn-sm btn-primary" onclick="saveStrategy()"><i class="bi bi-save me-1"></i>Save</button></div>
+                    <div class="card-body"><textarea class="form-control config-editor" id="strategy-json" rows="18"></textarea>
+                    <div class="text-muted small mt-2"><span class="restart">改后需重启</span></div></div></div>
+            </div>
+
+            <!-- Configuration:子标签(只留 NT 有对应的字段)-->
+            <div class="tab-pane fade" id="config" role="tabpanel">
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#cfg-discovery" type="button">Market Discovery</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfg-matching" type="button">Market Matching</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfg-arbitrage" type="button">Arbitrage</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfg-execution" type="button">Execution</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfg-risk" type="button">Risk</button></li>
+                    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cfg-oe" type="button">OrbitExch</button></li>
+                </ul>
+                <div class="tab-content">
+                    <!-- Discovery config -->
+                    <div class="tab-pane fade show active" id="cfg-discovery"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>Discovery Config <span class="hot">refresh 热改</span></span>
+                            <button class="btn btn-sm btn-primary" onclick="saveDiscovery()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row">
+                            <div class="col-md-3 mb-2"><label class="form-label">refresh_interval_secs</label><input type="number" step="any" class="form-control" id="d-refresh"></div></div>
+                            <div class="row"><div class="col-md-6"><label class="form-label">Polymarket Sports (JSON)</label><textarea class="form-control config-editor" id="d-poly" rows="6"></textarea></div>
+                            <div class="col-md-6"><label class="form-label">OrbitExch Sports (JSON)<span class="restart"> 需重启</span></label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div></div>
+                        </div></div></div>
+                    <!-- Matching config -->
+                    <div class="tab-pane fade" id="cfg-matching"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>Matching Config <span class="restart">需重启</span></span>
+                            <button class="btn btn-sm btn-primary" onclick="saveMatching()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row"><div class="col-md-3 mb-2"><label class="form-label">min_similarity</label><input type="number" step="any" class="form-control" id="m-sim"></div></div>
+                            <div class="row"><div class="col-md-4"><label class="form-label">sport_aliases (JSON)</label><textarea class="form-control config-editor" id="m-sa" rows="3"></textarea></div>
+                            <div class="col-md-4"><label class="form-label">competition_aliases (JSON)</label><textarea class="form-control config-editor" id="m-ca" rows="3"></textarea></div>
+                            <div class="col-md-4"><label class="form-label">competition_max_matches (JSON)</label><textarea class="form-control config-editor" id="m-mm" rows="3"></textarea></div></div>
+                        </div></div></div>
+                    <!-- Arbitrage config(Share/FX = risk.share/risk.fx)-->
+                    <div class="tab-pane fade" id="cfg-arbitrage"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>Arbitrage Config</span>
+                            <button class="btn btn-sm btn-primary" onclick="saveArbitrage()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row">
+                            <div class="col-md-3 mb-2"><label class="form-label">share (USDC) <span class="hot">热改</span></label><input type="number" step="any" class="form-control" id="a-share"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">fx (GBP/USD) <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="a-fx"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">max_leg_share <span class="hot">热改</span></label><input type="number" step="any" class="form-control" id="a-mls"></div>
+                        </div></div></div></div>
+                    <!-- Execution config(删 market-order/discount/take-off 死字段)-->
+                    <div class="tab-pane fade" id="cfg-execution"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>Execution Config <span class="restart">需重启</span></span>
+                            <button class="btn btn-sm btn-primary" onclick="saveExecution()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row" id="exec-form"></div></div></div></div>
+                    <!-- Risk config(删 global_sl/health/返水率面板/持仓 死面板)-->
+                    <div class="tab-pane fade" id="cfg-risk"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>Risk Config <span class="hot">tp/sl 热改</span></span>
+                            <button class="btn btn-sm btn-primary" onclick="saveRisk()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row" id="risk-form"></div>
+                        <div class="text-muted small mt-2">match_tp/match_sl 是 outcome 绝对利润门控(deny 新开仓);单场 SL 覆盖 / 全局止损 / 返水率面板已退役删除</div></div></div></div>
+                    <!-- OrbitExch config(连接 + 下单,只留活字段)-->
+                    <div class="tab-pane fade" id="cfg-oe"><div class="card">
+                        <div class="card-header d-flex justify-content-between"><span>OrbitExch Config <span class="restart">需重启</span></span>
+                            <button class="btn btn-sm btn-primary" onclick="saveOE()"><i class="bi bi-save me-1"></i>Save</button></div>
+                        <div class="card-body"><div class="row" id="oe-form"></div>
+                        <div class="text-muted small mt-2">凭证 env-only 不在此;market_order/discount/take_off/zoom 等 NT 死字段已删</div></div></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    const $ = id => document.getElementById(id);
+    const state = { cfg: {}, live: {}, discovery: [], matching: [] };
+
+    function toast(msg, kind='info'){
+      const id='t'+Date.now(), bg={success:'bg-success',error:'bg-danger',info:'bg-primary'}[kind];
+      $('toast-container').insertAdjacentHTML('beforeend',
+        `<div id="${id}" class="toast align-items-center text-white ${bg} border-0 show"><div class="d-flex"><div class="toast-body">${msg}</div><button class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div></div>`);
+      new bootstrap.Toast($(id),{delay:3500}).show(); $(id).addEventListener('hidden.bs.toast',()=>$(id).remove());
+    }
+    async function api(method, path, body){
+      const o={method,headers:body!==undefined?{'Content-Type':'application/json'}:{}}; if(body!==undefined)o.body=JSON.stringify(body);
+      const r=await fetch(path,o); const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail||r.status); return j;
+    }
+    const num = v => v===''?undefined:parseFloat(v);
+    const fmt = v => v===null||v===undefined?'<span class="text-muted">—</span>':v;
+
+    // ── 启停 ──
+    function renderState(s){ const e=$('state'); e.textContent=s; e.className='badge '+(s==='ACTIVE'?'bg-success':s==='HALTED'?'bg-danger':'bg-secondary'); e.style.padding='6px 12px'; }
+    async function setState(s){ if(s==='ACTIVE'&&!confirm('确认放行下单(ACTIVE)?'))return;
+      try{ await api('POST','/control/trading_state',{state:s}); toast('已请求 '+s,'success'); refreshState(); }catch(e){ toast('启停失败: '+e.message,'error'); } }
+    async function refreshState(){ try{ renderState((await api('GET','/control/trading_state')).trading_state); }catch(e){} }
+
+    // ── Discovery / Matching / Odds ──
+    async function refreshDiscovery(){ try{ state.discovery=await api('GET','/instruments'); renderDiscovery();
+      $('poly-count').textContent=state.discovery.filter(x=>x.venue==='POLYMARKET').length;
+      $('orbit-count').textContent=state.discovery.filter(x=>x.venue==='ORBITEXCH').length; }catch(e){} }
+    function renderDiscovery(){ const f=$('discovery-venue-filter').value;
+      const rows=state.discovery.filter(x=>f==='all'||x.venue===f).map(x=>`<tr><td>${x.venue}</td><td>${fmt(x.sport)}</td><td>${fmt(x.competition)}</td><td>${fmt(x.home)}</td><td>${fmt(x.away)}</td></tr>`).join('');
+      $('discovery-results-table').innerHTML=rows||'<tr><td colspan="5" class="text-center text-muted">无</td></tr>'; }
+    async function refreshMatching(){ try{ const ps=await api('GET','/matched_pairs');
+      $('pairs-count').textContent=ps.length;
+      $('matching-results-table').innerHTML=ps.length?ps.map(p=>`<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td><td>${p.pm_instrument_ids.length} legs</td><td>${p.oe_instrument_ids.length} legs</td><td>${p.confidence}</td></tr>`).join(''):'<tr><td colspan="5" class="text-center text-muted">暂无匹配</td></tr>'; }catch(e){} }
+    async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
+      if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="4" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
+      let rows='';
+      for(const p of pairs){ const byRole={};
+        for(const l of p.legs){ (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
+        const roles=Object.keys(byRole); let first=true;
+        for(const role of roles){ const pm=byRole[role].POLYMARKET||{}, oe=byRole[role].ORBITEXCH||{};
+          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${role}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${fmt(oe.bid)} / ${fmt(oe.ask)}</td></tr>`; first=false; } }
+      $('odds-data-table').innerHTML=rows; }catch(e){} }
+
+    // ── Config:读 /config 填表 + 按段保存 ──
+    function jset(id,obj){ $(id).value=JSON.stringify(obj,null,2); }
+    function jget(id){ try{ return JSON.parse($(id).value); }catch(e){ throw new Error(id+' JSON 非法'); } }
+    const EXEC=[['enabled','bool'],['tracking_timeout_sec','num'],['tracking_check_interval_sec','num'],['max_failure_retries','num'],['cleanup_enabled','bool'],['cleanup_merge_enabled','bool'],['cleanup_claim_enabled','bool'],['staleness_timeout_sec','num'],['open_check_interval_secs','num'],['position_check_interval_secs','num']];
+    const RISK=[['enabled','bool'],['execution_enabled','bool'],['match_tp','num'],['match_sl','num']];
+    const OE=[['default_persistence','txt'],['page_load_timeout_sec','num'],['staleness_timeout_sec','num'],['headless','bool']];
+    function renderForm(host, fields, obj){ $(host).innerHTML=fields.map(([k,t])=>{ const v=obj[k];
+      const inp=t==='bool'?`<input class="form-check-input" type="checkbox" id="f-${host}-${k}" ${v?'checked':''}>`:`<input class="form-control form-control-sm" id="f-${host}-${k}" type="${t==='num'?'number':'text'}" step="any" value="${v??''}">`;
+      return `<div class="col-md-4 mb-2"><label class="form-label small mb-0">${k}</label>${inp}</div>`; }).join(''); }
+    function collect(host, fields){ const o={}; for(const [k,t] of fields){ const el=$(`f-${host}-${k}`); if(!el)continue;
+      if(t==='bool')o[k]=el.checked; else if(t==='num'){ if(el.value!=='')o[k]=parseFloat(el.value);} else if(el.value!=='')o[k]=el.value; } return o; }
+
+    async function loadConfig(){ const c=await api('GET','/config'); state.cfg=c.file||{}; state.live=c.live||{}; renderState(state.live.trading_state||'UNKNOWN');
+      const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
+      const m=state.cfg.matching||{}; $('m-sim').value=m.min_similarity??''; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
+      const r={...(state.cfg.risk||{}),...(state.live.risk||{})}; $('a-share').value=r.share??''; $('a-fx').value=r.fx??''; $('a-mls').value=r.max_leg_share??'';
+      renderForm('exec-form',EXEC,state.cfg.execution||{}); renderForm('risk-form',RISK,r);
+      renderForm('oe-form',OE,(state.cfg.venues||{}).orbitexch||{});
+      jset('strategy-json',state.cfg.strategy||{});
+    }
+    async function put(section,obj,label){ try{ const res=await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}（${res.applied==='live'?'即时生效':'需重启'}）`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
+    function saveDiscovery(){ const d={...(state.cfg.discovery||{})}; if($('d-refresh').value!=='')d.refresh_interval_secs=num($('d-refresh').value);
+      try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; }catch(e){ return toast(e.message,'error'); } put('discovery',d); }
+    function saveMatching(){ const m={...(state.cfg.matching||{})}; if($('m-sim').value!=='')m.min_similarity=num($('m-sim').value);
+      try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }
+    function saveArbitrage(){ const r={...(state.cfg.risk||{})}; for(const [id,k] of [['a-share','share'],['a-fx','fx'],['a-mls','max_leg_share']]) if($(id).value!=='')r[k]=num($(id).value); put('risk',r,'arbitrage(share/fx)'); }
+    function saveExecution(){ put('execution',{...(state.cfg.execution||{}),...collect('exec-form',EXEC)}); }
+    function saveRisk(){ put('risk',{...(state.cfg.risk||{}),...collect('risk-form',RISK)}); }
+    function saveOE(){ const v={...(state.cfg.venues||{})}; v.orbitexch={...(v.orbitexch||{}),...collect('oe-form',OE)}; put('venues',v,'orbitexch'); }
+    function saveStrategy(){ try{ put('strategy',jget('strategy-json')); }catch(e){ toast(e.message,'error'); } }
+
+    async function refreshBalances(){ try{ const a=await api('GET','/accounts');
+      $('balances').innerHTML=a.map(x=>{const b=(x.balances||[])[0]||{};return `${x.account_id}: <b>${b.total||'?'} ${b.currency||''}</b>`;}).join(' &nbsp;|&nbsp; '); }catch(e){} }
+    function connectWS(){ const ws=new WebSocket(`ws://${location.host}/ws`);
+      ws.onmessage=ev=>{ const m=JSON.parse(ev.data); if(m.type==='trading_state'){ renderState(m.data.state); toast('state → '+m.data.state,'info'); } };
+      ws.onclose=()=>setTimeout(connectWS,3000); }
+
+    setInterval(()=>{ $('current-time').textContent=new Date().toLocaleTimeString(); },1000);
+    refreshState(); loadConfig().catch(e=>toast('读配置失败: '+e.message,'error')); refreshDiscovery(); refreshMatching(); refreshOdds(); refreshBalances(); connectWS();
+    setInterval(()=>{ if($('auto-refresh-odds').checked) refreshOdds(); },2000);
+    setInterval(refreshMatching,5000); setInterval(refreshBalances,5000); setInterval(refreshDiscovery,15000);
+    </script>
+</body>
+</html>

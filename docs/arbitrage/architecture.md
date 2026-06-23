@@ -10,7 +10,7 @@
 
 基于 NautilusTrader 的跨市场体育赛事套利:**Polymarket**(CLOB / `BinaryOption` / `py_clob_client` / WS)与 **OrbitExch**(Playwright 浏览器 / `BettingInstrument` / DOM+WS 帧)双边对冲。
 
-核心思路:**最大化复用 NT 原语**(P1),仅领域 IP(跨场馆事件匹配、way_rebate、链上 merge/claim)保留自研(P2)。设计原则 P1–P11 见 `refactor.md §2`。
+核心思路:**最大化复用 NT 原语**(P1),仅领域 IP(跨场馆事件匹配、outcome exposure/share、链上 merge/claim)保留自研(P2)。设计原则 P1–P11 见 `refactor.md §2`。
 
 ---
 
@@ -56,13 +56,13 @@ flowchart LR
   RE -->|pass| EC[ExecutionClient → venue]
   RE -->|deny| ST
   EC -.generate_order/account.-> CA[(Cache)]
-  ST -.pull.-> PF["ArbitragePortfolio.way_rebate"]
+  RE -.pull.-> PF["ArbitragePortfolio.outcome_exposures / outcome_shares"]
   PF -.读.-> CA
   HC["健康检查(OE/PM)"] -.report 对账 + merge/redeem.-> CA
 ```
 
 主链:发现 → 匹配 → 策略(快照+信号决策)→ 风控拦截 → 执行 → venue。
-旁路:健康检查(对账 + PM merge/redeem)、way_rebate pull、账户状态维护。
+旁路:健康检查(对账 + PM merge/redeem)、Portfolio outcome 指标 pull、账户状态维护。
 
 ---
 

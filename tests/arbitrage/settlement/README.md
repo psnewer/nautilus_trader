@@ -60,8 +60,8 @@
 ### settlement-8.8: 结果回流不显式 publish
 - 前置: 一次 merge 成功,链上持仓减少
 - 输入: 下一个 PM 健康检查 tick / Data API 拉取
-- 期望: 持仓经 report 通路更新 cache → `portfolio.way_rebate` 调用即反映新持仓
-- 验收: merge/redeem 路径不调 `msgbus.publish` / 不写 cache;不主动触发 way_rebate 重算
+- 期望: 持仓经 report 通路更新 cache → `portfolio.outcome_exposures/outcome_shares` 调用即反映新持仓
+- 验收: merge/redeem 路径不调 `msgbus.publish` / 不写 cache;不主动触发 Portfolio 指标重算
 
 ### settlement-8.9: 链上调用不阻塞 event loop(2026-06-21)
 - 前置: `contract.py` 的 `RelayClient.execute` / `resp.wait()` 是**同步阻塞**调用(提交 tx + 等链上确认数秒);settlement 经 `create_task` 跑在 NT event loop 上

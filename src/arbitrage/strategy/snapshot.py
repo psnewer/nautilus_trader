@@ -5,7 +5,6 @@ OpportunitySnapshot —— Q20 机会快照:evaluate 开跑时一次性冻 per-p
 冻什么(Q20 锁定):
 - `order_books` per instrument(避免评估期间行情变动扰乱机会计算)
 - `positions` per instrument
-- `way_rebate`(portfolio.way_rebate 不在 cache,取那一刻调一次冻结果)
 
 **不冻什么**(走 live):
 - `_execution_active`(Q19 同步;每次查必须最新)
@@ -34,7 +33,6 @@ class OpportunitySnapshot:
     instrument_ids: list = field(default_factory=list)
     order_books: dict = field(default_factory=dict)         # instrument_id → OrderBook 视图(builder 决定具体形态)
     positions: list = field(default_factory=list)           # 该 pair 所有腿的 cache Position 引用 / 拷贝
-    way_rebate: dict = field(default_factory=dict)          # portfolio.way_rebate(pair_id) 那一刻的返水率
     # slice 9(#49):比赛进行中标志,从 OE leg `instrument.info["in_play"]` 派生(OE WS 帧带 inPlay,
     # 由 OE DataClient 写入 cache.instrument.info)。任一 OE leg in_play=True → pair in_play。
     in_play: bool = False
@@ -55,7 +53,6 @@ def build_snapshot(
     `cache` / `portfolio` 必须支持:
     - `cache.order_book(instrument_id)` → OrderBook(或 None)
     - `cache.positions_open(...)` → list[Position]
-    - `portfolio.way_rebate(pair_id)` → dict[direction, rebate](已 settled-gate'd)
 
     `pair_registry` 给 instrument_ids ← pair_id(matching 注册的;PairRegistry 反查实现)。
 
@@ -70,7 +67,6 @@ def build_snapshot(
     # position.instrument_id 是 InstrumentId(live);经 str() 归一与 registry str id 比对。
     id_set = set(instrument_ids)
     positions = [p for p in cache.positions_open() if str(getattr(p, "instrument_id", None)) in id_set]
-    way_rebate = portfolio.way_rebate(pair_id) if hasattr(portfolio, "way_rebate") else {}
     # in_play 派生 + instrument_info 冻结(slice 9 / #49):一次遍历搞两件
     in_play = False
     instrument_info: dict = {}
@@ -88,7 +84,6 @@ def build_snapshot(
         instrument_ids=list(instrument_ids),
         order_books=order_books,
         positions=positions,
-        way_rebate=way_rebate,
         in_play=in_play,
         instrument_info=instrument_info,
     )

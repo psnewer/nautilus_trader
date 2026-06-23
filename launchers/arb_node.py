@@ -114,10 +114,10 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             reconciliation=True,
             # #111:开连续 open/order 对账(全局)—— 周期调 venue `generate_order_status_reports`:
             # PM 用于 order liveness 失败后的自动恢复;OE 健康时只读 CURRENT_BETS 内存,WS stale 时才 reload。
-            open_check_interval_secs=300.0,
+            open_check_interval_secs=cfg.execution.open_check_interval_secs,
             # #110:开连续 position 对账(全局)—— 周期调 venue `generate_position_status_reports`:
             # PM 据此跑 merge/redeem(fire-and-forget),OE 据此刷 venue_position_alive(WS 新鲜则不 reload)。
-            position_check_interval_secs=300.0,
+            position_check_interval_secs=cfg.execution.position_check_interval_secs,
         ),
         data_clients={
             POLYMARKET: to_polymarket_data_client_config(cfg),
@@ -272,6 +272,7 @@ def add_actors(
                     loop=loop,
                     risk_engine=node.kernel.risk_engine,   # 读 trading_state / live risk params
                     config_path=config_path,                # PUT 写回 arb_config.json
+                    pair_registry=pair_registry,            # /odds 遍历 matched pair 腿
                 ),
             ),
         )

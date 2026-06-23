@@ -1,5 +1,5 @@
 """
-ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / way_rebate 等持仓指标。
+ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / outcome share 等持仓指标。
 
 详细设计:`docs/arbitrage/architectures/risk/architecture.md §3.2 / §4.1 / §4.2`。
 公式平移自旧 `services/risk/position.py`,但**腿来源改为从 NT Cache 的 Position 反推**
@@ -10,7 +10,7 @@ ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / way_reba
 
 instrument.info 契约(由 discovery 组件填充,本类只读;单一 seam 见 `_leg_from_position`):
 - info["sport"] / info["competition"](联赛名)/ info["home_team"] / info["away_team"] / info["start_ts"] —— **matching 输入**
-- info["selection_role"]("home"/"draw"/"away")—— way_rebate 算法用("market_type" 同义)
+- info["selection_role"]("home"/"draw"/"away")—— outcome 指标计算用("market_type" 同义)
 venue / 公式分支由 instrument 类型判定(BinaryOption=PM,BettingInstrument=OE),不靠字符串。
 
 NT `Portfolio` 是 cdef class,子类**只能加纯 Python 方法**(不能加 cpdef/cdef)。
@@ -29,7 +29,7 @@ from src.arbitrage.common.pair_registry import PairRegistry
 
 
 class _Leg:
-    """从 NT Position 反推的单腿(way_rebate 计算用)。"""
+    """从 NT Position 反推的单腿(outcome 指标计算用)。"""
 
     __slots__ = ("venue", "market_type", "size", "price", "fx")
 
@@ -65,8 +65,7 @@ class OutcomeExposure:
 
 
 class ArbitragePortfolio(Portfolio):
-    """way_rebate 等领域指标。fx 由 launcher 经 `configure_arb` 注入
-    (NT 构造时实参表固定,见 bootstrap.py);share 保留配置兼容,不再作 way_rebate 分母。"""
+    """outcome exposure / share 领域指标。fx 由 launcher 经 `configure_arb` 注入。"""
 
     def __init__(self, msgbus, cache, clock, config=None) -> None:
         super().__init__(msgbus=msgbus, cache=cache, clock=clock, config=config)
@@ -114,33 +113,6 @@ class ArbitragePortfolio(Portfolio):
             for outcome in outcomes
         }
 
-    def way_rebate(self, pair_id: str, account_id=None) -> dict[str, float]:
-        """各方向持仓返水率。兼容 Strategy/Web 展示面;Risk 不再读此接口。"""
-        return self._compute_way_rebate(self._legs_for_pair(pair_id, account_id))
-
-    def min_way_rebate(self, pair_id: str, account_id=None) -> float | None:
-        rebate = self.way_rebate(pair_id, account_id)
-        if not rebate:
-            return None
-        return min(rebate.values())
-
-    def way_rebates_by_venue(self, pair_id: str, account_id=None) -> dict[str, dict[str, float]]:
-        legs = self._legs_for_pair(pair_id, account_id)
-        result: dict[str, dict[str, float]] = {}
-        for venue in {leg.venue for leg in legs}:
-            result[venue] = self._compute_way_rebate([leg for leg in legs if leg.venue == venue])
-        return result
-
-    # ── 全账户聚合(只遍历有 open position 的 active pair)──────────────
-    def global_min_rebate_sum(self, account_id=None) -> float:
-        """∑ 各 active pair 的 min_way_rebate。执行健康门控在 RiskEngine 独立完成。"""
-        total = 0.0
-        for pair_id in self._active_pair_ids(account_id):
-            m = self.min_way_rebate(pair_id, account_id)
-            if m is not None:
-                total += m
-        return total
-
     # ── 内部 ─────────────────────────────────────────────────────────
     def _compute_outcome_exposures(
         self,
@@ -185,29 +157,6 @@ class ArbitragePortfolio(Portfolio):
             if market_type:
                 outcomes.add(str(market_type))
         return outcomes
-
-    def _compute_way_rebate(self, legs: list[_Leg]) -> dict[str, float]:
-        if not legs:
-            return {}
-        outcomes = self._outcomes_from_legs(legs)
-        share = self._max_outcome_share(legs, outcomes)
-        result: dict[str, float] = {}
-        for outcome in outcomes:
-            net = 0.0
-            for leg in legs:
-                if leg.market_type == outcome:
-                    net += leg.profit_if_wins()
-                else:
-                    net -= leg.loss_if_loses()
-            result[outcome] = net / share if share > 0 else 0.0
-        return result
-
-    @staticmethod
-    def _max_outcome_share(legs: list[_Leg], outcomes: set[str]) -> float:
-        return max(
-            sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
-            for outcome in outcomes
-        )
 
     def _active_pair_ids(self, account_id=None) -> set[str]:
         pair_ids: set[str] = set()

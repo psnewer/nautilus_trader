@@ -554,8 +554,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         同步生成、撤单由 `_cancel_*` 生成,这里只补成交。**matched 帧填充值已 live 验**
         (#82,offerId=222016509:sizeMatched/averagePrice)。
         `liquidity_side=MAKER` 无条件硬编码:**已评估无害**——OE 是博彩交易所、CURRENT_BETS 无 maker/taker
-        字段(maker/taker 是 PM CLOB 概念),且 OE fill `commission=0`、套利 rebate(way_rebate)在
-        strategy/portfolio 层算、不读此字段 → 该侧纯名义,留 MAKER 即可(refactor.md #82/#83)。"""
+        字段(maker/taker 是 PM CLOB 概念),且 OE fill `commission=0`、套利 outcome 指标在
+        strategy/risk/portfolio 层算、不读此字段 → 该侧纯名义,留 MAKER 即可(refactor.md #82/#83)。"""
         from nautilus_trader.model.enums import LiquiditySide
         from nautilus_trader.model.identifiers import TradeId
         from nautilus_trader.model.identifiers import VenueOrderId

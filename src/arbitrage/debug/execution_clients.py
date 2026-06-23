@@ -100,12 +100,14 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
         try:
             await super()._connect()
         except (PolyApiException, RuntimeError) as e:
+            # skip_execution 模式容忍 PM 连接瞬时失败:mock 订单 IO 不需要真连接,返回即视为已连接。
+            # (#109/#110 退役 PM HealthCheckLoop 后,原 `self._health.start()` 是 stale 引用 → 删;
+            #  否则瞬时 RuntimeError 进此分支会因 Attribute('_health') 反而让 _connect 真失败,卡住启动。)
             if isinstance(e, RuntimeError):
                 self._log.warning(
                     f"skip_execution: PM execution connect tolerated preflight failure: {e!r}; "
                     "mock order IO remains enabled, true PM orders are not allowed in this mode",
                 )
-                self._health.start()
                 return
             if getattr(e, "status_code", None) is not None:
                 raise
@@ -113,7 +115,6 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
                 f"skip_execution: PM execution connect tolerated transport failure: {e!r}; "
                 "mock order IO remains enabled, true PM orders are not allowed in this mode",
             )
-            self._health.start()
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
@@ -130,6 +131,9 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
         if self._mock_orders():
             return
         await super()._cancel_all_orders(command)
+
+    # 注(#122):PM report 失败容忍已下沉到 base `ArbPolymarketExecutionClient`(mark_dead + 返空,对齐 OE),
+    # 故此处不再需要 skip-only 的 report override。`_connect` 的瞬时失败容忍仍保留(见上)。
 
 
 class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):

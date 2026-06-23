@@ -51,11 +51,6 @@ class _StubCheck(Check):
         return self._returns
 
 
-class _FakePortfolio:
-    def way_rebate(self, pair_id, account_id=None):
-        return {}
-
-
 def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) -> Strategy:
     """构造一个策略,arb/comp 树各一叶子,通过 self_hits 信号控制命中。"""
     arb_tree = Condition(
@@ -90,7 +85,7 @@ def _harness(
     deps = _RuntimeDeps(
         pair_registry=pair_reg,
         strategy_registry=strat_reg,
-        portfolio=_FakePortfolio(),                # 不需要全 ArbitragePortfolio,只要 way_rebate 方法
+        portfolio=object(),
         signal_store=store,
         is_execution_active=lambda: active_flag["v"],
         loop=loop,

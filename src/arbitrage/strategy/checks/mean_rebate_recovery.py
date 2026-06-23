@@ -94,7 +94,7 @@ class MeanRebateRecoveryCheck(Check):
         if not recovery_specs:
             return False
 
-        repaired = _way_rebate(repaired_legs, roles_present, target_share)
+        repaired = _outcome_return_rates(repaired_legs, roles_present, target_share)
         if not repaired or min(repaired.values()) < self._min_repaired_rebate:
             return False
 
@@ -162,7 +162,7 @@ def _best_candidates_by_role(snap) -> dict[str, dict]:
     }
 
 
-def _way_rebate(legs: list[_CalcLeg], roles: list[str], share: float) -> dict[str, float]:
+def _outcome_return_rates(legs: list[_CalcLeg], roles: list[str], share: float) -> dict[str, float]:
     result: dict[str, float] = {}
     for outcome in roles:
         net = 0.0

@@ -124,7 +124,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 - strategy 评估是 `create_task` **并发**派发(`actor.py:_route_eval`),`leg_settled`(`_begin_session` arm)/ `execution.started`(`_begin_session` publish)都在异步执行链才置;
 - **同一 OBD 突发的多个评估,在任何在飞信号置位之前就已各自决策并下单** → 同一 pair 重复 fire(实测:一批 OBD → 4 笔 OE 单同毫秒,见 refactor.md #82 复盘);
-- settled gate(Portfolio way_rebate / RiskEngine,§6.8.2)、cancel-only(§6.8.5)同样读这些下游信号 → 对同毫秒并发**全部漏过**(串行轮次有效,并发突发无效)。
+- 旧 settled gate(Portfolio 指标 / RiskEngine,§6.8.2)、cancel-only(§6.8.5)同样读这些下游信号 → 对同毫秒并发**全部漏过**(串行轮次有效,并发突发无效)。
 
 **结论**:全局互斥 + settled gate 解决「健康检查 ⊥ 执行」「跨轮重入」,但**结构上拦不住同一 pair 同一瞬间的并发评估/fire**(信号永远在异步下游)。需要一道**同步**的 per-pair 闸。
 
@@ -388,7 +388,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 
 #### 8.5.5 Portfolio 纯化
 
-`ArbitragePortfolio` 移除 `LegSettledRegistry` 依赖。`way_rebate` / `global_min_rebate_sum` 只根据当前 NT Cache positions 计算领域指标,不再承担执行健康判断。是否允许用这些指标触发新 submit,由 Risk 的 liveness/rebate gates 决定。
+`ArbitragePortfolio` 移除 `LegSettledRegistry` 依赖。当前只保留 `outcome_exposures` / `outcome_shares` 这类 position 派生指标,不承担执行健康判断。是否允许触发新 submit,由 Risk 的 liveness / profit / share-limit gates 决定。
 
 #### 8.5.6 迁移后状态位表
 
@@ -417,7 +417,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 - [x] launcher 注入全局 `is_execution_active` callable(OR PM/OE `_execution_active`)给 strategy(Q19 旧接线复用,见 A4)。`execution.*` 消息**已退役(✅ #108)**:唯一消费者(OE DataClient 健康⊥执行 ref-count)已删,session 不再 publish;strategy 的全局 `is_execution_active` 本就直读 ExecClient `_execution_active`,与该消息无关。
 - [x] `VenueExecutionLiveness`:新增共享对象;order/position alive 默认 false;reconcile 成功/失败写入
 - [x] Risk 注入 liveness;从 `expected_legs` 推导 required venues;任一 required venue 不 alive → `_deny_order` + `risk.opportunity.leg_denied`
-- [x] Portfolio 移除 `LegSettledRegistry` 依赖;`way_rebate/global_min_rebate_sum` 不再 settled gate
+- [x] Portfolio 移除 `LegSettledRegistry` 依赖;Portfolio 指标不再承担 settled gate
 - [x] Execution/adapter 移除 `leg_settled.arm/mark` 写入;PM/OE reconcile 写 `VenueExecutionLiveness`
 - [x] 测试:synchronization / risk / strategy / execution README 已补设计用例;核心 py 已落地
 

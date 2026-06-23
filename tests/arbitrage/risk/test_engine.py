@@ -145,7 +145,6 @@ def test_global_sl_no_longer_blocks():
             "away": OutcomeExposure(net_profit=0.0, liability=0.0),
         },
     )
-    ctx.portfolio.global_min_rebate_sum = lambda account_id=None: -999.0
     assert ctx.engine._check_profit_gates(order) is True
     assert denials == []
 

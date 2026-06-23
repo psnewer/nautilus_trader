@@ -177,6 +177,10 @@ class ExecutionSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     cleanup_merge_enabled: bool = True
     cleanup_claim_enabled: bool = True
     staleness_timeout_sec: int = 300
+    # NT 连续对账周期(原硬编码在 launcher,#121 提出来可配):open=order/挂单对账(#111),
+    # position=持仓对账(#110,驱动 PM merge/redeem)。改后需重启(LiveExecEngineConfig build 时定)。
+    open_check_interval_secs: float = 300.0
+    position_check_interval_secs: float = 300.0
 
 
 class DebugSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
