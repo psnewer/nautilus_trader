@@ -237,8 +237,23 @@ class WebGatewayActor(Actor):
         }
 
     def matched_pairs(self) -> list[dict]:
-        """Matching tab:已匹配对(MatchedPair 累积)。"""
-        return list(self._matched_pairs.values())
+        """Matching tab:已匹配对(MatchedPair 累积);各 venue 的队名经 cache instrument.info 解析。"""
+        out: list[dict] = []
+        for p in self._matched_pairs.values():
+            out.append({**p,
+                        "pm_teams": self._venue_teams(p["pm_instrument_ids"]),
+                        "oe_teams": self._venue_teams(p["oe_instrument_ids"])})
+        return out
+
+    def _venue_teams(self, iids: list[str]) -> str:
+        """从该 venue 任一腿的 instrument.info 取 `home_team vs away_team`(各 venue 命名可能不同)。"""
+        for iid_str in iids:
+            inst = self.cache.instrument(InstrumentId.from_str(iid_str))
+            info = getattr(inst, "info", None) or {}
+            h, a = info.get("home_team"), info.get("away_team")
+            if h and a:
+                return f"{h} vs {a}"
+        return ""
 
     def instruments_snapshot(self) -> list[dict]:
         """Discovery tab:cache instruments 按 (venue, 赛事) 去重的事件视图。"""
