@@ -97,8 +97,8 @@
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
                         <div class="card-body" style="max-height:600px;overflow-y:auto">
-                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Team</th><th>Polymarket 概率 (bid/ask)</th><th>OrbitExch 概率 (bid/ask)</th></tr></thead>
-                        <tbody id="odds-data-table"><tr><td colspan="4" class="text-center text-muted">加载中…</td></tr></tbody></table>
+                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Polymarket 概率 (bid/ask)</th><th>OrbitExch 概率 (bid/ask)</th></tr></thead>
+                        <tbody id="odds-data-table"><tr><td colspan="3" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
             </div>
@@ -209,15 +209,16 @@
         `<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td><td>${p.pm_teams||fmt(null)}</td><td>${p.oe_teams||fmt(null)}</td><td>${p.confidence}</td></tr>`
       ).join(''):'<tr><td colspan="5" class="text-center text-muted">暂无匹配</td></tr>'; }catch(e){} }
     async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
-      if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="4" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
+      if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="3" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
       let rows='';
       for(const p of pairs){ const byRole={};
         for(const l of p.legs){ (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
-        const roles=Object.keys(byRole); let first=true;
+        // home 在上,away 在下
+        const roles=Object.keys(byRole).sort((a,b)=>a==='home'?-1:b==='home'?1:0); let first=true;
         for(const role of roles){ const pm=byRole[role].POLYMARKET||{}, oe=byRole[role].ORBITEXCH||{};
           // 统一成隐含概率:PM 价本来就是概率;OE 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask。
           const oeProb = o => o ? (1/o).toFixed(3) : null;
-          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${role}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${fmt(oeProb(oe.ask))} / ${fmt(oeProb(oe.bid))}</td></tr>`; first=false; } }
+          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${fmt(oeProb(oe.ask))} / ${fmt(oeProb(oe.bid))}</td></tr>`; first=false; } }
       $('odds-data-table').innerHTML=rows; }catch(e){} }
 
     // ── Config:读 /config 填表 + 按段保存 ──
