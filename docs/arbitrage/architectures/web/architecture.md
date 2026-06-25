@@ -1,8 +1,7 @@
 # Web 组件详细设计(Step 7 —— 控制台)
 
-> **状态**:**控制台**(TradingState 启停 + 配置编辑)已落地(2026-06-21),详见 §8。对应初设 `refactor.md §5.7`。
-> **范围演进**:① 先做"只读监控 MVP"(余额/matched_pairs/way_rebate 经 JSON/WS,#118);② 加控制台(#119);
-> ③ **用户裁定移除只读监控 endpoint(#120,2026-06-21)** —— 监控回归看日志,web 只留控制面。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
+> **状态**:**完整控制台页面**(忠实照搬 legacy Bootstrap 5 标签页:Market Discovery / Market Matching / Odds Monitor / Strategy / Configuration)已落地,详见 §8。对应初设 `refactor.md §5.7`。
+> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,OE 赔率前端换算成隐含概率与 PM 统一)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、market_order/discount/global_sl/返水率面板)按用户裁定**删除**。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
 
 ---
 
@@ -12,11 +11,12 @@
 `on_start` 内拉起 FastAPI/uvicorn 协程。**控制面**:TradingState 启停 + 配置编辑(写经 MessageBus 命令、读经 `risk_engine` 引用)+ `/ws` 推 TradingState 变更。控制语义见 §8。
 
 **边界**:
-- ✅ 写经 MessageBus 命令(方案乙,§8.3);读经 `risk_engine` 引用(trading_state / live risk params)+ 直接写 `arb_config.json`。
-- ❌ **不做只读监控 endpoint**(余额/matched_pairs/way_rebate;#120 移除,监控看日志)。
-- ❌ 不订 `OrderBookDelta`/`events.account`/`MatchedPair`(行情/监控,已移除/延后)。
-- ❌ 不 serve 前端 HTML/JS;只出 JSON/WS,前端/curl/浏览器自行消费。
-- ❌ 不搬 legacy `services/web_gateway/`(3353 行,大部分绑老 pipeline 栈;pipeline start/stop、run、subscribe 在 NT 无意义)。
+- ✅ **serve HTML 页面**(`GET /` 返 `static/console.html`,忠实照搬 legacy Bootstrap 标签页结构)。
+- ✅ **只读监控**(纯读 cache/registry,周期 GET):`/accounts`(余额,读 `cache.accounts()`)、`/instruments`(读 `cache.instruments()` 去重事件视图)、`/matched_pairs`(订 `data.MatchedPair*` 累积)、`/odds`(读 `PairRegistry` + `cache.order_book` 最优价;无 firehose)。
+- ✅ 控制:写经 MessageBus 命令(方案乙,§8.3);读经 `risk_engine` 引用 + 直接写 `arb_config.json`。
+- ❌ **不订 `OrderBookDelta` firehose**(量大;`/odds` 用周期快照读 cache 盘口代替)。
+- ❌ 不搬 legacy `services/web_gateway/` 代码(只照搬其 HTML 结构);pipeline start/stop、discovery/matching run、odds subscribe 在 NT 无意义 → 删。
+- ❌ 不显示 legacy 死字段/死面板(market_order/discount/take_off/global_sl、返水率/持仓返水面板 —— NT 已退役 way_rebate)。
 
 **位置(P9)**:本类不 venue-coupled,住 `src/arbitrage/web/`(非 adapter 目录)。
 
@@ -76,7 +76,7 @@ class WebGatewayActor(Actor):
 | 横切 | 约束 |
 |---|---|
 | Q16 TradingState(修订)| 控制台启停显式 `set_trading_state`(人工熔断);自动门控仍不碰 TradingState(risk §4.3 前向指针)。详见 §8.1 |
-| Q17 账户状态 | 余额真相仍由各 ExecutionClient 写 NT Cache;**控制台不再读/推余额**(#120 移除监控),要看余额查日志 |
+| Q17 账户状态 | 余额真相仍由各 ExecutionClient 写 NT Cache;`/accounts`(#123)只读 `cache.accounts()` 序列化,navbar 显示余额数字,余额低/熔断由用户看着判断(替代旧 BalanceMonitorActor)|
 | §6.10 同步 | 本 Actor 不参与健康检查 ⊥ 执行互斥;无 await 循环阻塞交易 loop(WS 用非阻塞 queue) |
 
 ## 6. 落地清单(scaffolding;控制台清单见 §8.6)
@@ -87,10 +87,11 @@ class WebGatewayActor(Actor):
 - [x] launcher `add_actors`:`cfg.web.enabled` 时构造(注入 risk_engine + loop + config_path)
 - [x] uvicorn 嵌入 / 端口预检 / get_running_loop / 优雅停机(§4)+ 测试
 
-## 7. 延后 / 已移除
+## 7. 演进 / 延后
 
-- **已移除(#120)**:只读监控 endpoint(`/accounts`、`/matched_pairs`、`/positions/*`)+ account/MatchedPair 订阅与 WS 推送。监控回归看日志;如需再加,重新引入订阅 + GET 路由即可(代码见 git `ae1d397b18`)。
-- **延后**:OrderBookDelta firehose(量大需节流);静态 HTML/JS 前端(只出 JSON/WS);MessageBus request/response 桥。
+- **#120 一度移除、#123 又加回**:监控 endpoint 在 #120 被裁掉(web 只留控制面),#123 用户要求照搬 legacy 完整页面时**重新加入**:`/accounts`(余额)、`/instruments`(发现)、`/matched_pairs`(匹配)、`/odds`(盘口)+ `GET /` serve HTML。`/positions/{pair_id}` way_rebate 端点**不恢复**(way_rebate 已 #121 退役)。
+- **删除(NT 无对应)**:legacy 的 Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution 的 market_order/discount/take_off;Risk 的 global_sl、健康检查间隔、返水率/持仓返水状态面板。
+- **延后**:OrderBookDelta firehose 实时推(量大;现用 `/odds` 周期快照);strategy 的可视化 Condition 树编辑(现走 strategy JSON 原始编辑)。
 
 ---
 
@@ -133,10 +134,17 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 
 | 方法 | 路径 | 处理 |
 |---|---|---|
-| GET | `/control/trading_state` | 当前 TradingState(读 risk_engine,经注入只读快照或 actor 缓存最近一次 `events.risk`)|
+| GET | `/` | serve `static/console.html`(legacy 风格标签页)|
+| GET | `/health` | `{"status":"ok"}` —— **web server 存活探针,非交易健康检查**(#109/#110 退役的 PM/OE HealthCheckLoop 与此无关)|
+| GET | `/control/trading_state` | 当前 TradingState(读 `risk_engine.trading_state`)|
 | POST | `/control/trading_state` | body `{state}` → publish `command.arb.trading_state`;Halt→Active 前端二次确认 |
-| GET | `/config` | 当前生效配置快照(启动 `ArbConfig` + 热改后的活值)|
+| GET | `/config` | 当前生效配置快照(file `arb_config.json` + live risk params)|
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
+| GET | `/accounts` | `cache.accounts()` 序列化(余额)|
+| GET | `/instruments` | cache instruments 去重事件视图(发现表)|
+| GET | `/matched_pairs` | MatchedPair 累积(匹配表)|
+| GET | `/odds` | PairRegistry + `cache.order_book` 最优价(OE 赔率前端 1/odds 换算成隐含概率与 PM 统一)|
+| WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 
 ### 8.5 安全
 

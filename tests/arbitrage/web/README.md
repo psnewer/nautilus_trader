@@ -2,10 +2,9 @@
 
 对应章节: `refactor.md §5.7`;详细设计 `architectures/web/architecture.md §8`
 
-**落地状态(2026-06-21)**:Step 7 **控制台**(TradingState 启停 + 配置编辑)已实现(`src/arbitrage/web/actor.py` + `app.py`)。
-`tests/arbitrage/web/test_web_gateway.py` 通过。范围:控制面后端 JSON/WS。
+**落地状态(2026-06-23)**:Step 7 **完整控制台页面**(忠实照搬 legacy Bootstrap 标签页 + 控制 + 只读监控)已实现(`src/arbitrage/web/{actor,app}.py` + `static/console.html`)。`tests/arbitrage/web/test_web_gateway.py` 通过。
 
-**演进**:#118 只读监控 MVP(余额/matched_pairs/way_rebate)→ #119 加控制台 → **#120 移除只读监控 endpoint**(用户裁定,监控看日志,web 只留控制面)。
+**演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,OE 1/odds 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
 
 ## 锁定的关键性约束
 
@@ -38,14 +37,19 @@
 - 期望: `web.enabled && web.start_halted` → launcher build 后 `risk_engine.set_trading_state(HALTED)`;web 关则不动(保持 NT ACTIVE)
 - 验收: `tests/arbitrage/launchers/test_arb_node.py::test_boot_halted_when_web_enabled_and_start_halted` / `test_no_boot_halt_when_web_disabled`
 
+### web-7.13: 完整页面 + 只读监控端点(#123,照搬 legacy)
+- 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;`/odds` 的 OE 腿前端按 `1/赔率` 换算成隐含概率(bid/ask 互换使 bid≤ask)与 PM 统一,原赔率括号留存
+- 验收: `test_index_serves_html` / `test_get_accounts` / `test_get_instruments` / `test_get_matched_pairs` / `test_get_odds`
+- 注: Market Matching 表 PM/OE 列显示腿数(二元盘=2 legs=home+away)
+
 ### web-7.x: scaffolding(端口预检 / WS 背压 / 退订 / 优雅停机)
 - `test_port_bindable_detects_free_and_occupied`、`test_enqueue_drops_oldest_when_full`、`test_unregister_stops_broadcast`、`test_ws_sends_queued_message_then_closes_on_poison`(on_stop 毒丸优雅关 WS)
 
 ### 已知取舍 / 待 live
 - HALTED 期间 strategy 仍评估、submit 在 egress 被拒 → churn(用户 2026-06-21 定:不联动 strategy)
-- **live 验证待跑**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 risk 参数热生效
+- **live 验证已跑(2026-06-23)**:boot HALTED → POST ACTIVE 翻 ACTIVE → POST HALTED 翻回;PM geoblock 时(#122)节点仍正常起、web 绑;OE odds 换算概率展示
 
-## 已移除 / 延后(见 web/architecture.md §7)
+## 删除 / 延后(见 web/architecture.md §7)
 
-- **已移除(#120)**:web-7.1(`GET /matched_pairs`)、web-7.3(`/accounts` + 余额 WS)、web-7.6/7.7(`/positions/*`)及 account/MatchedPair 订阅/推送。监控看日志;代码可从 git `ae1d397b18` 找回。
-- **延后**:web-7.2 OrderBookDelta firehose;web-7.4 已并入控制台(refresh_interval 热改);静态 HTML/JS 前端。
+- **删除(NT 无对应)**:legacy Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution market_order/discount/take_off;Risk global_sl/健康检查间隔/返水率面板。`/positions/{pair_id}` way_rebate 端点不恢复(way_rebate #121 退役)。
+- **延后**:OrderBookDelta firehose 实时推(现用 /odds 周期快照);strategy 可视化 Condition 树编辑(现 JSON 原始编辑)。

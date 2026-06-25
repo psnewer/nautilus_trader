@@ -134,14 +134,6 @@ def _skip_debug(active=True):
     return cfg
 
 
-class _HealthRecorder:
-    def __init__(self):
-        self.started = False
-
-    def start(self):
-        self.started = True
-
-
 class _LogRecorder:
     def __init__(self):
         self.warnings = []
@@ -153,7 +145,6 @@ class _LogRecorder:
 def _skip_pm_client(debug):
     client = SkipExecutionPolymarketClient.__new__(SkipExecutionPolymarketClient)
     client._debug = debug
-    client._health = _HealthRecorder()
     client._log_rec = _LogRecorder()
     return client
 
@@ -166,9 +157,8 @@ def test_skip_pm_connect_tolerates_transport_polyapi_exception(monkeypatch):
     monkeypatch.setattr(SkipExecutionPolymarketClient, "_log", property(lambda self: self._log_rec))
     client = _skip_pm_client(_skip_debug(active=True))
 
-    _run(client._connect())
+    _run(client._connect())  # 容忍:不抛(_health.start() 已随 PM HealthCheckLoop 退役删除)
 
-    assert client._health.started
     assert "tolerated transport failure" in client._log_rec.warnings[0]
 
 
@@ -180,9 +170,8 @@ def test_skip_pm_connect_tolerates_geoblock_preflight_failure(monkeypatch):
     monkeypatch.setattr(SkipExecutionPolymarketClient, "_log", property(lambda self: self._log_rec))
     client = _skip_pm_client(_skip_debug(active=True))
 
-    _run(client._connect())
+    _run(client._connect())  # 容忍:不抛
 
-    assert client._health.started
     assert "tolerated preflight failure" in client._log_rec.warnings[0]
 
 
@@ -202,8 +191,7 @@ def test_skip_pm_connect_rethrows_api_level_polyapi_exception(monkeypatch):
     client = _skip_pm_client(_skip_debug(active=True))
 
     with pytest.raises(PolyApiException):
-        _run(client._connect())
-    assert not client._health.started
+        _run(client._connect())  # api-level(有 status_code)仍 re-raise,不容忍
 
 
 # ── _submit_order 分支(模拟 super,验证调用路径)──────────────

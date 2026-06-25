@@ -97,7 +97,7 @@
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
                         <div class="card-body" style="max-height:600px;overflow-y:auto">
-                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Team</th><th>Polymarket (bid/ask)</th><th>OrbitExch (bid/ask)</th></tr></thead>
+                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Team</th><th>Polymarket 概率 (bid/ask)</th><th>OrbitExch 概率 (bid/ask, 原赔率)</th></tr></thead>
                         <tbody id="odds-data-table"><tr><td colspan="4" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
@@ -213,7 +213,10 @@
         for(const l of p.legs){ (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
         const roles=Object.keys(byRole); let first=true;
         for(const role of roles){ const pm=byRole[role].POLYMARKET||{}, oe=byRole[role].ORBITEXCH||{};
-          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${role}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${fmt(oe.bid)} / ${fmt(oe.ask)}</td></tr>`; first=false; } }
+          // 统一成隐含概率:PM 价本来就是概率;OE 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask;原赔率括号里留存。
+          const oeProb = o => o ? (1/o).toFixed(3) : null;
+          const oeRaw = (oe.bid!=null||oe.ask!=null) ? `<small class="text-muted">(${fmt(oe.bid)}/${fmt(oe.ask)})</small>` : '';
+          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${role}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${fmt(oeProb(oe.ask))} / ${fmt(oeProb(oe.bid))} ${oeRaw}</td></tr>`; first=false; } }
       $('odds-data-table').innerHTML=rows; }catch(e){} }
 
     // ── Config:读 /config 填表 + 按段保存 ──

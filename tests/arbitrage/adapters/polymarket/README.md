@@ -173,7 +173,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - PM order/open-order reconcile 成功并拿到完整真实 response → `pm_order_alive=true`
 - PM position reconcile 成功并拿到完整真实 response → `pm_position_alive=true`
 - 任一路径失败/超时/response 不完整 → 对应 alive 置 false,另一维不被误改
-- PM 上游 RetryManager 若因网络/SSL 失败返回 `None` 而非抛异常,Arb 子类必须把 `generate_order_status_report(s)` / `generate_fill_reports` 的失败重新升级为 query failure,并 `pm_order_alive=false`;不能把空 reports 当成真实空响应。
+- **(#122 改)PM report 失败 = `mark_*_dead + 返空`(不再 raise)**:PM 上游 RetryManager 因网络/SSL 失败返回 `None` 而非抛异常时,Arb 子类仍须识别为 query failure 并 `pm_order_alive=false`(不能把空 reports 当真实空响应),但**处理改为 `mark_dead` 后 `return []`/`None`,不再 `raise`**——对齐 OE base(`orbitexch/execution.py:691/733`),避免 startup reconciliation 因 PM 瞬时失败抛异常 →「Execution state could not be reconciled」→ kernel 跳过 `trader.start()` → actors 卡 READY、web 不绑。venue 仍 fail-closed(标 dead),靠后续成功对账自愈;**不**在容忍时 mark_alive。用例:`test_polymarket_client.py::test_arb_generate_position_reports_failure_marks_dead` / `test_arb_generate_order_reports_retry_failure_marks_dead` / `test_arb_generate_single_order_report_retry_failure_marks_dead` / `test_arb_generate_order_reports_fill_retry_failure_marks_dead` 改断言 `reports==[]`/`report is None` + `not *_alive`(不再 `pytest.raises`)。
 - PM `generate_fill_reports` 扫用户历史 trades 时,遇到当前未加载/未匹配的 instrument 属于目标市场外历史成交,应 DEBUG 跳过、不刷 WARN、不影响 liveness;open-order report 的未知 instrument 仍保留 WARNING。
 - `venues.polymarket.max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 只做显式透传,默认 None,避免无意改变真钱 submit/cancel 语义;若为周期 order 对账抗瞬时 SSL/proxy timeout 显式开启,需知道上游同一 retry pool 也覆盖 PM submit/cancel/report。
 **验收**:
