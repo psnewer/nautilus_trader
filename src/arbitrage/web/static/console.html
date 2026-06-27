@@ -137,8 +137,7 @@
                     <div class="tab-pane fade" id="cfg-matching"><div class="card">
                         <div class="card-header d-flex justify-content-between"><span>Matching Config <span class="restart">需重启</span></span>
                             <button class="btn btn-sm btn-primary" onclick="saveMatching()"><i class="bi bi-save me-1"></i>Save</button></div>
-                        <div class="card-body"><div class="row"><div class="col-md-3 mb-2"><label class="form-label">min_similarity</label><input type="number" step="any" class="form-control" id="m-sim"></div></div>
-                            <div class="row"><div class="col-md-4"><label class="form-label">sport_aliases (JSON)</label><textarea class="form-control config-editor" id="m-sa" rows="3"></textarea></div>
+                        <div class="card-body"><div class="row"><div class="col-md-4"><label class="form-label">sport_aliases (JSON)</label><textarea class="form-control config-editor" id="m-sa" rows="3"></textarea></div>
                             <div class="col-md-4"><label class="form-label">competition_aliases (JSON)</label><textarea class="form-control config-editor" id="m-ca" rows="3"></textarea></div>
                             <div class="col-md-4"><label class="form-label">competition_max_matches (JSON)</label><textarea class="form-control config-editor" id="m-mm" rows="3"></textarea></div></div>
                         </div></div></div>
@@ -247,7 +246,7 @@
     async function loadConfig(){ const c=await api('GET','/config'); state.cfg=c.file||{}; state.live=c.live||{}; renderState(state.live.trading_state||'UNKNOWN');
       const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
       const oe=(state.cfg.venues||{}).orbitexch||{}; $('d-plt').value=oe.page_load_timeout_sec??120; $('d-stale').value=oe.staleness_timeout_sec??300;
-      const m=state.cfg.matching||{}; $('m-sim').value=m.min_similarity??''; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
+      const m=state.cfg.matching||{}; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
       const r={...(state.cfg.risk||{}),...(state.live.risk||{})}; $('a-share').value=r.share??''; $('a-fx').value=r.fx??''; $('a-mls').value=r.max_leg_share??'';
       // Execution: 填入值或默认值
       const ex={...EXEC_DEFAULTS,...(state.cfg.execution||{})};
@@ -263,7 +262,7 @@
       const plt=$('d-plt').value, stale=$('d-stale').value;
       if(plt!==''||stale!==''){ const v={...(state.cfg.venues||{})}; v.orbitexch={...(v.orbitexch||{})}; if(plt!=='')v.orbitexch.page_load_timeout_sec=num(plt); if(stale!=='')v.orbitexch.staleness_timeout_sec=num(stale); put('venues',v,'orbitexch'); }
       put('discovery',d); }
-    function saveMatching(){ const m={...(state.cfg.matching||{})}; if($('m-sim').value!=='')m.min_similarity=num($('m-sim').value);
+    function saveMatching(){ const m={...(state.cfg.matching||{})};
       try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }
     function saveArbitrage(){ const r={...(state.cfg.risk||{})}; for(const [id,k] of [['a-share','share'],['a-fx','fx'],['a-mls','max_leg_share']]) if($(id).value!=='')r[k]=num($(id).value); put('risk',r,'arbitrage(share/fx)'); }
     function saveExecution(){ put('execution',{...(state.cfg.execution||{}),
