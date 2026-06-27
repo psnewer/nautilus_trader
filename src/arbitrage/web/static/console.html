@@ -128,7 +128,8 @@
                         <div class="card-header d-flex justify-content-between"><span>Discovery Config <span class="hot">refresh 热改</span></span>
                             <button class="btn btn-sm btn-primary" onclick="saveDiscovery()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row">
-                            <div class="col-md-3 mb-2"><label class="form-label">refresh_interval_secs</label><input type="number" step="any" class="form-control" id="d-refresh"></div></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">refresh_interval_secs</label><input type="number" step="any" class="form-control" id="d-refresh"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">page_load_timeout_sec <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="d-plt"></div></div>
                             <div class="row"><div class="col-md-6"><label class="form-label">Polymarket Sports (JSON)</label><textarea class="form-control config-editor" id="d-poly" rows="6"></textarea></div>
                             <div class="col-md-6"><label class="form-label">OrbitExch Sports (JSON)<span class="restart"> 需重启</span></label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div></div>
                         </div></div></div>
@@ -224,9 +225,9 @@
     // ── Config:读 /config 填表 + 按段保存 ──
     function jset(id,obj){ $(id).value=JSON.stringify(obj,null,2); }
     function jget(id){ try{ return JSON.parse($(id).value); }catch(e){ throw new Error(id+' JSON 非法'); } }
-    const EXEC=[['enabled','bool'],['tracking_timeout_sec','num'],['tracking_check_interval_sec','num'],['max_failure_retries','num'],['cleanup_enabled','bool'],['cleanup_merge_enabled','bool'],['cleanup_claim_enabled','bool'],['staleness_timeout_sec','num'],['open_check_interval_secs','num'],['position_check_interval_secs','num']];
-    const RISK=[['enabled','bool'],['execution_enabled','bool'],['match_tp','num'],['match_sl','num']];
-    const OE=[['default_persistence','txt'],['page_load_timeout_sec','num'],['staleness_timeout_sec','num'],['headless','bool']];
+    const EXEC=[['tracking_timeout_sec','num'],['tracking_check_interval_sec','num'],['max_failure_retries','num'],['cleanup_enabled','bool'],['cleanup_merge_enabled','bool'],['cleanup_claim_enabled','bool'],['open_check_interval_secs','num'],['position_check_interval_secs','num']];
+    const RISK=[['match_tp','num'],['match_sl','num']];
+    const OE=[['staleness_timeout_sec','num'],['headless','bool']];
     function renderForm(host, fields, obj){ $(host).innerHTML=fields.map(([k,t])=>{ const v=obj[k];
       const inp=t==='bool'?`<input class="form-check-input" type="checkbox" id="f-${host}-${k}" ${v?'checked':''}>`:`<input class="form-control form-control-sm" id="f-${host}-${k}" type="${t==='num'?'number':'text'}" step="any" value="${v??''}">`;
       return `<div class="col-md-4 mb-2"><label class="form-label small mb-0">${k}</label>${inp}</div>`; }).join(''); }
@@ -235,6 +236,7 @@
 
     async function loadConfig(){ const c=await api('GET','/config'); state.cfg=c.file||{}; state.live=c.live||{}; renderState(state.live.trading_state||'UNKNOWN');
       const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
+      $('d-plt').value=((state.cfg.venues||{}).orbitexch||{}).page_load_timeout_sec??'';
       const m=state.cfg.matching||{}; $('m-sim').value=m.min_similarity??''; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
       const r={...(state.cfg.risk||{}),...(state.live.risk||{})}; $('a-share').value=r.share??''; $('a-fx').value=r.fx??''; $('a-mls').value=r.max_leg_share??'';
       renderForm('exec-form',EXEC,state.cfg.execution||{}); renderForm('risk-form',RISK,r);
@@ -243,7 +245,10 @@
     }
     async function put(section,obj,label){ try{ const res=await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}（${res.applied==='live'?'即时生效':'需重启'}）`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
     function saveDiscovery(){ const d={...(state.cfg.discovery||{})}; if($('d-refresh').value!=='')d.refresh_interval_secs=num($('d-refresh').value);
-      try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; }catch(e){ return toast(e.message,'error'); } put('discovery',d); }
+      try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; }catch(e){ return toast(e.message,'error'); }
+      // page_load_timeout_sec 存 venues.orbitexch
+      if($('d-plt').value!==''){ const v={...(state.cfg.venues||{})}; v.orbitexch={...(v.orbitexch||{}),page_load_timeout_sec:num($('d-plt').value)}; put('venues',v,'orbitexch(page_load)'); }
+      put('discovery',d); }
     function saveMatching(){ const m={...(state.cfg.matching||{})}; if($('m-sim').value!=='')m.min_similarity=num($('m-sim').value);
       try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }
     function saveArbitrage(){ const r={...(state.cfg.risk||{})}; for(const [id,k] of [['a-share','share'],['a-fx','fx'],['a-mls','max_leg_share']]) if($(id).value!=='')r[k]=num($(id).value); put('risk',r,'arbitrage(share/fx)'); }
