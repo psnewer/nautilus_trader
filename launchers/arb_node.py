@@ -372,7 +372,11 @@ def preflight_polymarket_trading(cfg: ArbConfig) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Arbitrage NT live node launcher")
-    parser.add_argument("--config", required=True, help="path to arb_config.json")
+    parser.add_argument(
+        "--config",
+        default=str(_PROJECT_ROOT / "arb_config.json"),
+        help="path to arb_config.json (default: project root arb_config.json)",
+    )
     parser.add_argument(
         "--preflight-polymarket",
         action="store_true",

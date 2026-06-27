@@ -109,7 +109,7 @@
                     <span><i class="bi bi-bullseye me-1"></i>Strategy Config(JSON;NT Q21 配置树)</span>
                     <button class="btn btn-sm btn-primary" onclick="saveStrategy()"><i class="bi bi-save me-1"></i>Save</button></div>
                     <div class="card-body"><textarea class="form-control config-editor" id="strategy-json" rows="18"></textarea>
-                    <div class="text-muted small mt-2"><span class="restart">改后需重启</span></div></div></div>
+                    </div></div>
             </div>
 
             <!-- Configuration:子标签(只留 NT 有对应的字段)-->
@@ -124,18 +124,18 @@
                 <div class="tab-content">
                     <!-- Discovery config -->
                     <div class="tab-pane fade show active" id="cfg-discovery"><div class="card">
-                        <div class="card-header d-flex justify-content-between"><span>Discovery Config <span class="hot">refresh 热改</span></span>
+                        <div class="card-header d-flex justify-content-between"><span>Discovery Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveDiscovery()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row">
                             <div class="col-md-3 mb-2"><label class="form-label">refresh_interval_secs</label><input type="number" step="any" class="form-control" id="d-refresh"></div>
-                            <div class="col-md-3 mb-2"><label class="form-label">page_load_timeout_sec <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="d-plt"></div>
-                            <div class="col-md-3 mb-2"><label class="form-label">staleness_timeout_sec <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="d-stale"></div></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">page_load_timeout_sec</label><input type="number" step="any" class="form-control" id="d-plt"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">staleness_timeout_sec</label><input type="number" step="any" class="form-control" id="d-stale"></div></div>
                             <div class="row"><div class="col-md-6"><label class="form-label">Polymarket Sports (JSON)</label><textarea class="form-control config-editor" id="d-poly" rows="6"></textarea></div>
-                            <div class="col-md-6"><label class="form-label">OrbitExch Sports (JSON)<span class="restart"> 需重启</span></label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div></div>
+                            <div class="col-md-6"><label class="form-label">OrbitExch Sports (JSON)</label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div></div>
                         </div></div></div>
                     <!-- Matching config -->
                     <div class="tab-pane fade" id="cfg-matching"><div class="card">
-                        <div class="card-header d-flex justify-content-between"><span>Matching Config <span class="restart">需重启</span></span>
+                        <div class="card-header d-flex justify-content-between"><span>Matching Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveMatching()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row"><div class="col-md-4"><label class="form-label">sport_aliases (JSON)</label><textarea class="form-control config-editor" id="m-sa" rows="3"></textarea></div>
                             <div class="col-md-4"><label class="form-label">competition_aliases (JSON)</label><textarea class="form-control config-editor" id="m-ca" rows="3"></textarea></div>
@@ -146,13 +146,13 @@
                         <div class="card-header d-flex justify-content-between"><span>Arbitrage Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveArbitrage()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row">
-                            <div class="col-md-3 mb-2"><label class="form-label">share (USDC) <span class="hot">热改</span></label><input type="number" step="any" class="form-control" id="a-share"></div>
-                            <div class="col-md-3 mb-2"><label class="form-label">fx (GBP/USD) <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="a-fx"></div>
-                            <div class="col-md-3 mb-2"><label class="form-label">max_leg_share <span class="hot">热改</span></label><input type="number" step="any" class="form-control" id="a-mls"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">share (USDC)</label><input type="number" step="any" class="form-control" id="a-share"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">fx (GBP/USD)</label><input type="number" step="any" class="form-control" id="a-fx"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">max_leg_share</label><input type="number" step="any" class="form-control" id="a-mls"></div>
                         </div></div></div></div>
                     <!-- Execution config -->
                     <div class="tab-pane fade" id="cfg-execution"><div class="card">
-                        <div class="card-header d-flex justify-content-between"><span>Execution Config <span class="restart">需重启</span></span>
+                        <div class="card-header d-flex justify-content-between"><span>Execution Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveExecution()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body">
                             <div class="row mb-3">
@@ -173,7 +173,7 @@
                         </div></div></div>
                     <!-- Risk config(删 global_sl/health/返水率面板/持仓 死面板)-->
                     <div class="tab-pane fade" id="cfg-risk"><div class="card">
-                        <div class="card-header d-flex justify-content-between"><span>Risk Config <span class="hot">tp/sl 热改</span></span>
+                        <div class="card-header d-flex justify-content-between"><span>Risk Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveRisk()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row" id="risk-form"></div>
                         <div class="text-muted small mt-2">match_tp/match_sl 是 outcome 绝对利润门控(deny 新开仓);单场 SL 覆盖 / 全局止损 / 返水率面板已退役删除</div></div></div></div>
@@ -255,7 +255,7 @@
       renderForm('risk-form',RISK,r);
       jset('strategy-json',state.cfg.strategy||{});
     }
-    async function put(section,obj,label){ try{ const res=await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}（${res.applied==='live'?'即时生效':'需重启'}）`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
+    async function put(section,obj,label){ try{ await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
     function saveDiscovery(){ const d={...(state.cfg.discovery||{})}; if($('d-refresh').value!=='')d.refresh_interval_secs=num($('d-refresh').value);
       try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; }catch(e){ return toast(e.message,'error'); }
       // OE 参数存 venues.orbitexch
