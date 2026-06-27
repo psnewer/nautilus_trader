@@ -151,11 +151,27 @@
                             <div class="col-md-3 mb-2"><label class="form-label">fx (GBP/USD) <span class="restart">需重启</span></label><input type="number" step="any" class="form-control" id="a-fx"></div>
                             <div class="col-md-3 mb-2"><label class="form-label">max_leg_share <span class="hot">热改</span></label><input type="number" step="any" class="form-control" id="a-mls"></div>
                         </div></div></div></div>
-                    <!-- Execution config(删 market-order/discount/take-off 死字段)-->
+                    <!-- Execution config -->
                     <div class="tab-pane fade" id="cfg-execution"><div class="card">
                         <div class="card-header d-flex justify-content-between"><span>Execution Config <span class="restart">需重启</span></span>
                             <button class="btn btn-sm btn-primary" onclick="saveExecution()"><i class="bi bi-save me-1"></i>Save</button></div>
-                        <div class="card-body"><div class="row" id="exec-form"></div></div></div></div>
+                        <div class="card-body">
+                            <div class="row mb-3">
+                                <div class="col-12"><small class="text-muted fw-bold">订单追踪</small></div>
+                                <div class="col-md-4"><label class="form-label small">tracking_timeout_sec</label><input type="number" step="any" class="form-control form-control-sm" id="e-track-timeout" placeholder="30"></div>
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col-12"><small class="text-muted fw-bold">清算(Merge/Redeem)</small></div>
+                                <div class="col-md-3"><label class="form-label small">cleanup_enabled</label><div class="form-check"><input type="checkbox" class="form-check-input" id="e-cleanup"></div></div>
+                                <div class="col-md-3"><label class="form-label small">cleanup_merge_enabled</label><div class="form-check"><input type="checkbox" class="form-check-input" id="e-merge"></div></div>
+                                <div class="col-md-3"><label class="form-label small">cleanup_claim_enabled</label><div class="form-check"><input type="checkbox" class="form-check-input" id="e-claim"></div></div>
+                            </div>
+                            <div class="row">
+                                <div class="col-12"><small class="text-muted fw-bold">对账间隔 (秒)</small></div>
+                                <div class="col-md-4"><label class="form-label small">open_check_interval_secs</label><input type="number" step="any" class="form-control form-control-sm" id="e-open-int" placeholder="300"></div>
+                                <div class="col-md-4"><label class="form-label small">position_check_interval_secs</label><input type="number" step="any" class="form-control form-control-sm" id="e-pos-int" placeholder="300"></div>
+                            </div>
+                        </div></div></div>
                     <!-- Risk config(删 global_sl/health/返水率面板/持仓 死面板)-->
                     <div class="tab-pane fade" id="cfg-risk"><div class="card">
                         <div class="card-header d-flex justify-content-between"><span>Risk Config <span class="hot">tp/sl 热改</span></span>
@@ -219,8 +235,9 @@
     // ── Config:读 /config 填表 + 按段保存 ──
     function jset(id,obj){ $(id).value=JSON.stringify(obj,null,2); }
     function jget(id){ try{ return JSON.parse($(id).value); }catch(e){ throw new Error(id+' JSON 非法'); } }
-    const EXEC=[['tracking_timeout_sec','num'],['cleanup_enabled','bool'],['cleanup_merge_enabled','bool'],['cleanup_claim_enabled','bool'],['open_check_interval_secs','num'],['position_check_interval_secs','num']];
     const RISK=[['match_tp','num'],['match_sl','num']];
+    // Execution 默认值
+    const EXEC_DEFAULTS={tracking_timeout_sec:30,cleanup_enabled:true,cleanup_merge_enabled:true,cleanup_claim_enabled:true,open_check_interval_secs:300,position_check_interval_secs:300};
     function renderForm(host, fields, obj){ $(host).innerHTML=fields.map(([k,t])=>{ const v=obj[k];
       const inp=t==='bool'?`<input class="form-check-input" type="checkbox" id="f-${host}-${k}" ${v?'checked':''}>`:`<input class="form-control form-control-sm" id="f-${host}-${k}" type="${t==='num'?'number':'text'}" step="any" value="${v??''}">`;
       return `<div class="col-md-4 mb-2"><label class="form-label small mb-0">${k}</label>${inp}</div>`; }).join(''); }
@@ -229,10 +246,14 @@
 
     async function loadConfig(){ const c=await api('GET','/config'); state.cfg=c.file||{}; state.live=c.live||{}; renderState(state.live.trading_state||'UNKNOWN');
       const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
-      const oe=(state.cfg.venues||{}).orbitexch||{}; $('d-plt').value=oe.page_load_timeout_sec??''; $('d-stale').value=oe.staleness_timeout_sec??'';
+      const oe=(state.cfg.venues||{}).orbitexch||{}; $('d-plt').value=oe.page_load_timeout_sec??120; $('d-stale').value=oe.staleness_timeout_sec??300;
       const m=state.cfg.matching||{}; $('m-sim').value=m.min_similarity??''; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
       const r={...(state.cfg.risk||{}),...(state.live.risk||{})}; $('a-share').value=r.share??''; $('a-fx').value=r.fx??''; $('a-mls').value=r.max_leg_share??'';
-      renderForm('exec-form',EXEC,state.cfg.execution||{}); renderForm('risk-form',RISK,r);
+      // Execution: 填入值或默认值
+      const ex={...EXEC_DEFAULTS,...(state.cfg.execution||{})};
+      $('e-track-timeout').value=ex.tracking_timeout_sec; $('e-cleanup').checked=ex.cleanup_enabled; $('e-merge').checked=ex.cleanup_merge_enabled; $('e-claim').checked=ex.cleanup_claim_enabled;
+      $('e-open-int').value=ex.open_check_interval_secs; $('e-pos-int').value=ex.position_check_interval_secs;
+      renderForm('risk-form',RISK,r);
       jset('strategy-json',state.cfg.strategy||{});
     }
     async function put(section,obj,label){ try{ const res=await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}（${res.applied==='live'?'即时生效':'需重启'}）`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
@@ -245,7 +266,9 @@
     function saveMatching(){ const m={...(state.cfg.matching||{})}; if($('m-sim').value!=='')m.min_similarity=num($('m-sim').value);
       try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }
     function saveArbitrage(){ const r={...(state.cfg.risk||{})}; for(const [id,k] of [['a-share','share'],['a-fx','fx'],['a-mls','max_leg_share']]) if($(id).value!=='')r[k]=num($(id).value); put('risk',r,'arbitrage(share/fx)'); }
-    function saveExecution(){ put('execution',{...(state.cfg.execution||{}),...collect('exec-form',EXEC)}); }
+    function saveExecution(){ put('execution',{...(state.cfg.execution||{}),
+      tracking_timeout_sec:num($('e-track-timeout').value),cleanup_enabled:$('e-cleanup').checked,cleanup_merge_enabled:$('e-merge').checked,cleanup_claim_enabled:$('e-claim').checked,
+      open_check_interval_secs:num($('e-open-int').value),position_check_interval_secs:num($('e-pos-int').value)}); }
     function saveRisk(){ put('risk',{...(state.cfg.risk||{}),...collect('risk-form',RISK)}); }
     function saveStrategy(){ try{ put('strategy',jget('strategy-json')); }catch(e){ toast(e.message,'error'); } }
 
