@@ -123,6 +123,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 
 - **PM**(上游 `PolymarketDataClient` 已自带 `_update_instruments`):`_connect` → `initialize()` + `_send_all_instruments_to_data_engine()`;周期 task `initialize(reload=True)` + `_send_all`。**前提**:arb factory 强制 `instrument_config.load_all=True`(否则 `initialize` 走 "No loading configured" 加载 0;Gap α,refactor.md #59)。
 - **OE**(`adapters/orbitexch/data.py`,#59 新增):`_send_all_instruments_to_data_engine()`(`provider.get_all()`→`_handle_data`)+ `_update_instruments(interval)` task(**直调 `load_all_async`**,Gap-α-proof)+ `_connect` 首抓 + `_disconnect` cancel;config `update_instruments_interval_mins`(默认 60)。
+- **单轮失败语义(2026-06-29 overnight 修)**:周期发现 task 每轮单独 catch 普通异常并继续下一轮;断网 / DNS / Playwright `goto` 临时失败只损失本轮 rediscovery,不得杀死整个 `_update_instruments` task。`CancelledError` 仍表示组件 stop,正常退出。这个容错只覆盖 instrument rediscovery;行情 WS/competition 页恢复仍归 data §3.1 的 WS handler/reload 机制。
 - **灌 cache 路径**:`_handle_data(inst)` → DataEngine `_handle_instrument` → `cache.add_instrument` **且** 通知 `on_instrument` 订阅者(原生,替代旧 refresher 裸 `cache.add_instrument`)。
 - `InstrumentsRefreshed` 事件 + matching 的事件触发**一并退役**(matching 改自 timer,§matching §3.3/§4.4)。Q3/Q6 的运行时改 interval + 持久化**迁移中降级**(按需经 client config 恢复)。
 

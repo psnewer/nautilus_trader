@@ -168,6 +168,43 @@ def test_on_price_frame_unsubscribed_market_dropped():
     assert c._price_deltas_published == 0
 
 
+def test_update_instruments_continues_after_provider_error(monkeypatch):
+    """data-2.client.7: 周期发现单轮网络异常只跳过本轮,下一轮继续。"""
+    _run_update_instruments_continues_after_provider_error(monkeypatch)
+
+
+def _run_update_instruments_continues_after_provider_error(monkeypatch):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        c = _client()
+        c._loop = loop
+        calls = {"sleep": 0, "load": 0, "send": 0}
+
+        async def fake_sleep(_seconds):
+            calls["sleep"] += 1
+            if calls["sleep"] >= 3:
+                raise asyncio.CancelledError
+
+        class Provider:
+            async def load_all_async(self):
+                calls["load"] += 1
+                if calls["load"] == 1:
+                    raise RuntimeError("temporary network outage")
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        c._instrument_provider = Provider()
+        c._send_all_instruments_to_data_engine = lambda: calls.__setitem__("send", calls["send"] + 1)
+
+        loop.run_until_complete(c._update_instruments(1))
+
+        assert calls["load"] == 2
+        assert calls["send"] == 1
+    finally:
+        loop.close()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
 class _FakeWebSocket:
     def __init__(self, url):

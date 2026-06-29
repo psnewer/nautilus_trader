@@ -20,13 +20,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.enums import TradingState
-from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
-from nautilus_trader.model.objects import Quantity
-from nautilus_trader.model.orders import LimitOrder
 
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import meta_from_order
@@ -75,7 +71,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
                 ("share", cmd.share),
                 ("match_tp", cmd.match_tp),
                 ("match_sl", cmd.match_sl),
-                ("max_leg_share", cmd.max_leg_share),
             )
             if v is not None
         }
@@ -87,151 +82,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     @property
     def _params(self) -> ArbRiskParams:
         return getattr(self, "_arb_params", None) or ArbRiskParams()
-
-    # ── Submit 入口:share limit + adjusted size gate──────────────────
-    def _handle_submit_order(self, command) -> None:
-        adjusted = self._adjust_submit_order_for_share_limit(command)
-        if adjusted is None:
-            return
-        super()._handle_submit_order(adjusted)
-
-    def _adjust_submit_order_for_share_limit(self, command):
-        params = self._params
-        if not isinstance(command, SubmitOrder) or params.max_leg_share is None:
-            return command
-        if params.max_leg_share <= 0:
-            self._deny_order(command.order, f"max_leg_share gate: invalid max={params.max_leg_share:.4f}")
-            return None
-
-        order = command.order
-        if not isinstance(order, LimitOrder):
-            return command
-
-        instrument = self._cache.instrument(order.instrument_id)
-        if instrument is None:
-            return command
-
-        pair_id = self._pair_id_for_order(order)
-        if pair_id is None:
-            return command
-
-        requested_share = self._order_share_if_wins(instrument, order)
-        if requested_share <= 0:
-            self._deny_order(order, f"max_leg_share gate: non-positive requested_share={requested_share:.4f}")
-            return None
-
-        roles = self._expected_outcome_roles(order)
-        if not roles:
-            role = self._outcome_role_from_instrument(instrument)
-            roles = {role} if role else set()
-        if not roles:
-            return command
-
-        current_shares = self._portfolio.outcome_shares(pair_id, order.account_id)
-        remaining_by_role = {
-            role: params.max_leg_share - float(current_shares.get(role, 0.0))
-            for role in roles
-        }
-        min_remaining = min(remaining_by_role.values())
-        if min_remaining <= 0:
-            self._deny_order(
-                order,
-                f"max_leg_share gate: pair={pair_id} remaining={min_remaining:.4f} max={params.max_leg_share:.4f}",
-            )
-            return None
-
-        scale = min(1.0, min_remaining / requested_share)
-        adjusted_size = order.quantity.as_double() * scale
-        adjusted_qty = Quantity(adjusted_size, precision=instrument.size_precision)
-        if adjusted_qty.as_double() <= 0:
-            self._deny_order(
-                order,
-                f"max_leg_share gate: adjusted_size={adjusted_size:.8f} precision={instrument.size_precision}",
-            )
-            return None
-        if scale >= 1.0:
-            return command
-
-        adjusted_order = self._copy_limit_order_with_quantity(
-            order=order,
-            quantity=adjusted_qty,
-        )
-        return SubmitOrder(
-            trader_id=command.trader_id,
-            strategy_id=command.strategy_id,
-            order=adjusted_order,
-            command_id=command.id,
-            ts_init=command.ts_init,
-            position_id=command.position_id,
-            client_id=command.client_id,
-            params=command.params,
-            correlation_id=command.correlation_id,
-        )
-
-    def _order_share_if_wins(self, instrument, order) -> float:
-        size = order.quantity.as_double()
-        if isinstance(instrument, BinaryOption):
-            return size
-        if isinstance(instrument, BettingInstrument):
-            return size * float(order.price) * self._params.fx
-        return size
-
-    def _expected_outcome_roles(self, order) -> set[str]:
-        meta = meta_from_order(order)
-        if meta is None:
-            return set()
-        return {
-            role
-            for leg_key in meta.expected_legs
-            for role in [self._outcome_role_from_leg_key(leg_key)]
-            if role is not None
-        }
-
-    @staticmethod
-    def _outcome_role_from_leg_key(leg_key: str) -> str | None:
-        parts = str(leg_key).split(":")
-        if len(parts) >= 2 and parts[1]:
-            return parts[1]
-        return None
-
-    @staticmethod
-    def _outcome_role_from_instrument(instrument) -> str | None:
-        info = getattr(instrument, "info", None) or {}
-        role = info.get("selection_role") or info.get("market_type")
-        return str(role) if role else None
-
-    @staticmethod
-    def _copy_limit_order_with_quantity(*, order, quantity):
-        display_qty = order.display_qty
-        if display_qty is not None and display_qty > quantity:
-            display_qty = quantity
-        return LimitOrder(
-            trader_id=order.trader_id,
-            strategy_id=order.strategy_id,
-            instrument_id=order.instrument_id,
-            client_order_id=order.client_order_id,
-            order_side=order.side,
-            quantity=quantity,
-            price=order.price,
-            init_id=order.init_id,
-            ts_init=order.ts_init,
-            time_in_force=order.time_in_force,
-            expire_time_ns=order.expire_time_ns,
-            post_only=order.is_post_only,
-            reduce_only=order.is_reduce_only,
-            quote_quantity=order.is_quote_quantity,
-            display_qty=display_qty,
-            emulation_trigger=order.emulation_trigger,
-            trigger_instrument_id=order.trigger_instrument_id,
-            contingency_type=order.contingency_type,
-            order_list_id=order.order_list_id,
-            linked_order_ids=order.linked_order_ids,
-            parent_order_id=order.parent_order_id,
-            exec_algorithm_id=order.exec_algorithm_id,
-            exec_algorithm_params=order.exec_algorithm_params,
-            exec_spawn_id=order.exec_spawn_id,
-            tags=order.tags,
-        )
 
     # ── NT 拦截 hook(覆盖 cpdef,签名须与父类一致:instrument, order)──
     def _check_order(self, instrument, order) -> bool:

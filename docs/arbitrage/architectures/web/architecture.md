@@ -112,7 +112,7 @@ class WebGatewayActor(Actor):
 
 | 段 | 字段 | 生效方式 |
 |---|---|---|
-| risk | `share` / `match_tp` / `match_sl` / `max_leg_share` | **热改** → `command.arb.risk_params` |
+| risk | `share` / `match_tp` / `match_sl` | **热改** → `command.arb.risk_params` |
 | matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
 | venues | 凭证 / URL | **重启**(连接态,结构性) |
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |

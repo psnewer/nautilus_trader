@@ -31,7 +31,6 @@ class SetRiskParamsCommand:
     share: float | None = None
     match_tp: float | None = None
     match_sl: float | None = None
-    max_leg_share: float | None = None
 
 
 @dataclass(frozen=True)

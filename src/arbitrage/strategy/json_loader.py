@@ -83,7 +83,8 @@ def condition_from_json(spec) -> Condition:
         "self_hits":      <bool_expr_spec> | None,
         "sub_conditions": [<condition_spec>, ...],
         "checktion":      [{"type": ..., "params": {...}}, ...],
-        "action":         {"type": ..., "params": {...}} | None,
+        "actions":        [{"type": ..., "params": {...}}, ...],  # 依次执行
+        "action":         {"type": ..., "params": {...}} | None,  # 兼容旧格式(转 actions=[action])
       }
     """
     if not isinstance(spec, dict):
@@ -101,14 +102,19 @@ def condition_from_json(spec) -> Condition:
         raise StrategyConfigError(f"checktion must be list, got {check_specs!r}")
     checktion = [build_check(c) for c in check_specs]
 
-    action_spec = spec.get("action")
-    action = build_action(action_spec) if action_spec else None
+    # 兼容两种格式: "actions": [...] (新) 或 "action": {...} (旧)
+    actions_spec = spec.get("actions") or []
+    if not actions_spec and spec.get("action"):  # 兼容旧格式
+        actions_spec = [spec.get("action")]
+    if not isinstance(actions_spec, list):
+        raise StrategyConfigError(f"actions must be list, got {actions_spec!r}")
+    actions = [build_action(a) for a in actions_spec]
 
     return Condition(
         self_hits=self_hits,
         sub_conditions=sub_conditions,
         checktion=checktion,
-        action=action,
+        actions=actions,
     )
 
 

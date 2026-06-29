@@ -105,9 +105,21 @@ class ArbitragePortfolio(Portfolio):
         return self._compute_outcome_exposures(legs, outcomes=self._outcomes_for_pair(pair_id, legs))
 
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]:
-        """各 outcome 当前持仓 share。Adjusted size gate 用于计算剩余额度。"""
+        """各 outcome 当前持仓 share。Strategy share_limit action 用于计算剩余额度。"""
         legs = self._legs_for_pair(pair_id, account_id)
         outcomes = self._outcomes_for_pair(pair_id, legs)
+        return {
+            outcome: sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
+            for outcome in outcomes
+        }
+
+    def outcome_shares_for_venue(
+        self, pair_id: str, venue: str, account_id=None
+    ) -> dict[str, float]:
+        """某 venue 各 outcome 的 share。PM 按单腿门控用。"""
+        venue_lower = venue.lower()
+        legs = [leg for leg in self._legs_for_pair(pair_id, account_id) if leg.venue == venue_lower]
+        outcomes = self._outcomes_from_legs(legs) or {"home", "away"}
         return {
             outcome: sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
             for outcome in outcomes

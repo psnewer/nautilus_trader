@@ -1,7 +1,7 @@
 """Slice 9.5(#49 in-process smoke):mean_rebate 全链路验证。
 
 不依赖真 NT TradingNode / Cache,直接喂 hand-crafted snapshot + 经 JSON loader 拿 Strategy,
-跑 `evaluate_tree` + `pending_action.execute(ctx)` —— 验证:
+跑 `evaluate_tree` + `pending_actions[0].execute(ctx)` —— 验证:
   1. JSON config → JSON loader → Strategy(Check/Action 经 registry 装入)
   2. evaluate_tree:PreMatchCheck pass + MeanRebateCheck pass + 写 scratch["legs"]
   3. PlaceBetsAction consume scratch + log 每 leg(Q-D1=A smoke)
@@ -122,7 +122,8 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     # 1. evaluate(纯求值,无副作用)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
     assert res.hit is True
-    assert isinstance(res.pending_action, PlaceBetsAction)
+    assert len(res.pending_actions) == 1
+    assert isinstance(res.pending_actions[0], PlaceBetsAction)
 
     # 2. Check 写 scratch
     assert "legs" in ctx.scratch
@@ -131,7 +132,7 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
 
     # 3. fire action(log-only smoke)
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(res.pending_action.execute(ctx))
+        _run(res.pending_actions[0].execute(ctx))
 
     msgs = [r.message for r in caplog.records]
     # header log
@@ -223,4 +224,4 @@ def test_recovery_tree_config_builds_with_recovery_intent():
     strategy = registry.get_for(None, "ATP", None)
 
     assert strategy is not None
-    assert isinstance(strategy.compensation_tree.action, PlaceBetsAction)
+    assert isinstance(strategy.compensation_tree.actions[0], PlaceBetsAction)

@@ -157,7 +157,7 @@ class RiskSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     enabled: bool = True
     execution_enabled: bool = True
     share: float = 22.5
-    max_leg_share: float | None = None
+    max_leg_share: float | None = None  # legacy ignored;share limit 已迁至 strategy.actions.share_limit
     fx: float = 1.33
     match_tp: float = 0.05
     match_sl: float = -0.05

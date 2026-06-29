@@ -20,7 +20,7 @@
         {
           "sport": "Tennis",
           "competitions": [
-            "Men's Wimbledon 2026"
+            "ATP Stuttgart 2026"
           ]
         }
       ]
@@ -32,7 +32,7 @@
     "sport_aliases": {},
     "competition_aliases": {
       "atp": "ATP",
-      "Men's Wimbledon 2026": "ATP"
+      "ATP Stuttgart 2026": "ATP"
     },
     "competition_max_matches": {
       "ATP": 1
@@ -94,6 +94,9 @@
               }
             },
             {
+              "type": "candi_select"
+            },
+            {
               "type": "place_bets",
               "params": {
                 "share": 40
@@ -125,6 +128,9 @@
               }
             },
             {
+              "type": "candi_select"
+            },
+            {
               "type": "place_bets",
               "params": {
                 "share": 40
@@ -143,7 +149,7 @@
   },
   "debug": {
     "_doc": "smoke 用:skip_execution=true 时 SkipExecution{PM,OE}Client 拦 _submit_order 直接 mock 全成,不真上链。生产跑改 enabled=false 或整段删",
-    "enabled": false,
+    "enabled": true,
     "overrides": {
       "skip_execution": {
         "enabled": true,

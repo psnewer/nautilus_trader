@@ -4,10 +4,10 @@ Condition / Check / Action / EvalResult —— condition 嵌套树的核心类�
 evaluate 流程(`StrategyEvaluator._evaluate_tree`):
   1. `self_hits.eval(store)` False → 返 EvalResult(hit=False)
   2. sub_conditions 非空 → 递归求值(互斥,命中即停);全没命中返 False
-  3. 叶子(sub_conditions 空)→ all(checktion).passes → 返 (hit=True, pending_action=action)
+  3. 叶子(sub_conditions 空)→ all(checktion).passes → 返 (hit=True, pending_actions=actions)
 
-**evaluate 无副作用**:返 `EvalResult { hit, pending_action }`,**fire 由顶层做**(让套利/补救
-并行 evaluate 后,套利结果决定补救是否 fire)。
+**evaluate 无副作用**:返 `EvalResult { hit, pending_actions }`,**fire 由顶层做**(让套利/补救
+并行 evaluate 后,套利结果决定补救是否 fire)。actions 依次串行执行(如 ShareLimitModification → PlaceBetsAction)。
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ class EvalContext:
     # `await ctx.submitter(spec)` 提交;`None` 时 Action 应 log-only fallback。
     # `spec` schema:{instrument_id, side: "BUY"|"SELL", qty: float, price: float}
     submitter: object | None = None  # Callable[[dict], Awaitable[None]] | None;运行时类型避循环 import
+    # ShareLimitModification 等 Action 需要读取持仓数据计算 remaining
+    portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
 
 
 class Check(ABC):
@@ -60,13 +62,13 @@ class Action(ABC):
 class Condition:
     """condition 嵌套树节点。
 
-    评估顺序:`self_hits` → `sub_conditions`(若非空,互斥)/ 叶子的 `checktion`(AND)→ `action`。
+    评估顺序:`self_hits` → `sub_conditions`(若非空,互斥)/ 叶子的 `checktion`(AND)→ `actions`。
     """
 
     self_hits: BoolExpr
     sub_conditions: list["Condition"] = field(default_factory=list)
     checktion: list[Check] = field(default_factory=list)     # 空 list = 默认通过
-    action: Action | None = None                              # None = no-op(仍 hit=True)
+    actions: list[Action] = field(default_factory=list)       # 依次执行; 空 list = no-op(仍 hit=True)
 
 
 @dataclass
@@ -74,7 +76,7 @@ class EvalResult:
     """evaluate 返回(无副作用,fire 由顶层做)。"""
 
     hit: bool
-    pending_action: Action | None = None    # hit=True 且非 sub_conditions 路径时才非空
+    pending_actions: list[Action] = field(default_factory=list)  # hit=True 且非 sub_conditions 路径时才非空
 
 
 def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
@@ -99,5 +101,5 @@ def evaluate_tree(cond: Condition, ctx: EvalContext) -> EvalResult:
         return EvalResult(hit=False)
 
     if all(check.passes(ctx) for check in cond.checktion):
-        return EvalResult(hit=True, pending_action=cond.action)
+        return EvalResult(hit=True, pending_actions=cond.actions)
     return EvalResult(hit=False)

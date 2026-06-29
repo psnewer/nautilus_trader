@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-22)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness、share limit adjusted-size gate、单场 profit gates(6.7.2/3/4)、余额 venue 非对称(6.3b)、outcome_exposures/outcome_shares 公式(6.9.x)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口与全局止盈/止损已退役。
+**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness、单场 profit gates(6.7.2/3/4)、余额 venue 非对称(6.3b)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(6.9.x)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -204,33 +204,15 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 验收: 非套利/外部订单不被 opportunity barrier 协议污染。
 - 状态:✅ `test_engine.py::test_non_opportunity_deny_does_not_publish_domain_message`
 
-### risk-6.7.12: share limit 先缩放,再进入 NT 原生 min size gate
-- 前置:`risk.max_leg_share=20`;PM 当前 `home` outcome 已有 share=15;本次 PM 原始订单 quantity=10,PM instrument `min_quantity=5`。
-- 输入: PM `SubmitOrder` 进入 `ArbitrageLiveRiskEngine._handle_submit_order`。
-- 步骤:Risk 从 `outcome_shares(pair_id)` 算剩余额度 5,得到 `scale=0.5`,构造 adjusted `LimitOrder(quantity=5)` 后交给父类 `_handle_submit_order`。
-- 期望:adjusted PM order 通过 NT min_quantity gate 并进入 ExecutionClient;原 opportunity metadata tags 保留,不新增 size 诊断 tags。
-- 验收:ExecutionClient 收到的不是原始 quantity=10,而是 adjusted quantity=5。
-- 状态:✅ `test_engine.py::test_share_limit_adjusts_pm_size_before_execution`
-
-### risk-6.7.13: adjusted size 低于 PM 最小下单额时由 NT 原生 gate 拒绝
-- 前置:`risk.max_leg_share=20`;PM 当前 `home` outcome 已有 share=16;本次 PM 原始订单 quantity=10,缩放后 quantity=4;PM instrument `min_quantity=5`。
-- 输入: PM `SubmitOrder` 进入 `_handle_submit_order`。
-- 期望:Risk 先生成 adjusted quantity=4,随后 NT 父类 `_check_order_quantity` 按 PM `min_quantity=5` 拒绝。
-- 验收:有原生 `OrderDenied`,订单不泄漏到 ExecutionClient;应用层不维护 PM `MIN_SIZE` 常量。
-- 状态:✅ `test_engine.py::test_share_limit_adjusted_pm_size_then_native_min_size_denies`
-
-### risk-6.7.14: PM/OE share limit 使用同一段多边逻辑
-- 前置:`risk.max_leg_share=20`;`expected_legs=("pm:home:0","oe:away:1")`;当前 outcome shares 为 `home=15, away=15`。
-- 输入:PM 原始 `quantity=10` 与 OE 原始 `stake=4, price=2.5` 分别进入 adjusted-size gate。
-- 期望:两条 venue 线路均读取同一组 expected outcomes,最小剩余额度均为 5,得到同一 `scale=0.5`;PM adjusted quantity=5,OE adjusted stake=2。
-- 验收:PM/OE 不走两份 risk 代码;差异只在 requested share 换算(PM=`quantity`,OE=`quantity*price*fx`)。
-- 状态:✅ `test_engine.py::test_share_limit_uses_same_multilateral_scale_for_pm_and_oe`
+### risk-6.7.12~15: share limit gate 已迁至 Strategy Action(2026-06-28)
+- 状态:已失效。Risk 不再在 `_handle_submit_order` 中缩量,不再维护 share-limit gate。
+- 新归属: `src/arbitrage/strategy/actions/share_limit.py`,测试见 `tests/arbitrage/strategy/test_action_share_limit.py`。
 
 ---
 
 ## ArbitragePortfolio: outcome_exposures / outcome_shares 领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;share limit gate 读取 `outcome_shares(pair_id)` 的当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。
+子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
@@ -264,7 +246,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 前置:同一 outcome 同时有 PM/OE 持仓,例如 home 有 PM 5 share + OE gross 6 share,away 有 OE gross 10 share。
 - 输入:`portfolio.outcome_shares("match_1")`
 - 期望:返回 `home=11, away=10`。
-- 验收:share limit adjusted-size gate 用该接口计算每个 outcome 的剩余额度,而不是逐 leg 单独看。
+- 验收:Strategy share_limit action 用该接口计算每个 outcome 的剩余额度,而不是逐 leg 单独看。
 
 ### risk-6.9.13: LegSettledRegistry 共享对象语义(✅ 已验证;已失效)
 

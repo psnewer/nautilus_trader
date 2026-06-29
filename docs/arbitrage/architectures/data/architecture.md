@@ -126,6 +126,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
 - **routing 表**:`dict[market_id_str, dict[selection_id_str, InstrumentId]]`,订阅时从 `cache.instrument(id)` 读 `BettingInstrument.market_id` / `.selection_id` 建。**全局**(跨所有 competition 页),price 帧自带 market_id 直接分流。
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
+- **周期发现容错(2026-06-29 overnight 修)**:`_update_instruments(interval)` 是 60min 级别的 instrument rediscovery,不是行情 WS 恢复路径。每轮 `provider.load_all_async()` / `initialize(reload=True)` 的普通异常只记录 warning 并等下一轮继续;只有 `CancelledError` 退出 task。否则一次 `ERR_NAME_NOT_RESOLVED` / `ERR_INTERNET_DISCONNECTED` 会让 NT `create_task` 记录 `Error running '_update_instruments'` 后整个周期发现永久停止。
 - **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
 - **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
 - **competition 页存活 = WS handler 自洽封装(#109,2026-06-16;#111 feed-specific 修正,2026-06-19,✅ 已落地代码 + 离线测 + 心跳已 live 验证 prices ~25s 空闲)**:**存活检测封装进 `OrbitExchWebSocketHandler`**(像 PM 把 ping-timeout 藏在 pyo3 WS client 里),DataClient 只收事件、对称 PM。**单一真理源 = 本节**;handler 是契约定义者,DataClient 是消费者(规则 3 主判据:单一自然归属 → 不单独成章)。

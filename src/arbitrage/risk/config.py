@@ -15,7 +15,6 @@ class ArbRiskParams:
 
     # share 是 Risk profit gates 的目标规模基数:profit threshold = share * match_{tp,sl}。
     share: float = 100.0
-    max_leg_share: float | None = None  # 单腿最大 share;None 表示不启用 adjusted size gate
     fx: float = 1.0  # OrbitExch 货币换算汇率(USD↔下注币种)
 
     # 单场硬停(逐 submit deny = "别开新仓")

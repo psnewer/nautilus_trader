@@ -272,6 +272,8 @@ def _on_session_timeout(self, event):
 
 **总体**:OE 不再自跑 `HealthCheckLoop`;改由 **NT 原生 reconciliation** 调 OE ExecClient 的 `generate_*_status_reports` 拉对账。PM 同理(merge/redeem 仍自写,§4.6)。`reconciliation`(engine 级)开关 + kernel 时序见 `refactor.md #105`(reconcile 时 OE 已登录;`timeout_connection` 须 > OE 登录最坏耗时)。
 
+**边界(2026-06-29 overnight 诊断)**:DataClient 的 `_update_instruments` 是 instrument rediscovery,不属于 execution/reconciliation。它的单轮网络异常容错见 data §3.1 / discovery §3.3;不要把 `Error running '_update_instruments'` 当成 order/position liveness 或 execution 页 reload 失败。执行真相仍只由本节的 report/reconciliation 路径写入 `VenueExecutionLiveness`。
+
 **(1) reload 抽成接口,"reload-then-report" 进 OE ExecClient**
 - reload 宿主从 DataClient 搬到 **`OrbitExchExecutionClient` 自己**(同对象拥有 execution 页 + 报告方法 + 页锁,消掉跨对象 hack)。
 - `generate_order_status_reports` / `generate_position_status_reports` 进来先 `await _ensure_exec_snapshot_fresh()`(见下),再读 `_current_bets` 出报告。

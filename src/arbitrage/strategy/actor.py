@@ -246,6 +246,7 @@ class StrategyEvaluator(Actor):
                 snapshot=snapshot,
                 store=self._signal_store.view(pair_id),
                 submitter=self._make_submitter(),
+                portfolio=self._portfolio,
             )
             # 并行 evaluate(纯求值,无副作用);asyncio.gather 让 evaluator 顶层能等两树都返才决定 fire
             arb_res, comp_res = await asyncio.gather(
@@ -253,25 +254,27 @@ class StrategyEvaluator(Actor):
                 self._aevaluate(strategy.compensation_tree, ctx),
             )
             if self._log_evaluations:
+                arb_actions_str = [type(a).__name__ for a in arb_res.pending_actions] if arb_res.pending_actions else None
+                comp_actions_str = [type(a).__name__ for a in comp_res.pending_actions] if comp_res.pending_actions else None
                 self._log.info(
                     f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
-                    f"arb_action={type(arb_res.pending_action).__name__ if arb_res.pending_action else None}, "
+                    f"arb_actions={arb_actions_str}, "
                     f"comp_hit={comp_res.hit}, "
-                    f"comp_action={type(comp_res.pending_action).__name__ if comp_res.pending_action else None}",
+                    f"comp_actions={comp_actions_str}",
                 )
-            # Q21:套利优先 — 套利命中 → fire 套利 action;否则 → 补救 action(如命中)
-            if arb_res.hit and arb_res.pending_action is not None:
+            # Q21:套利优先 — 套利命中 → fire 套利 actions;否则 → 补救 actions(如命中)
+            if arb_res.hit and arb_res.pending_actions:
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-                self._loop.create_task(arb_res.pending_action.execute(ctx))
-            elif comp_res.hit and comp_res.pending_action is not None:
+                self._loop.create_task(self._execute_actions(arb_res.pending_actions, ctx))
+            elif comp_res.hit and comp_res.pending_actions:
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-                self._loop.create_task(comp_res.pending_action.execute(ctx))
+                self._loop.create_task(self._execute_actions(comp_res.pending_actions, ctx))
             elif self._log_evaluations:
-                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_action")
+                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
         finally:
             if not fired and self._pair_inflight is not None:
                 self._pair_inflight.release_eval(pair_id)
@@ -280,6 +283,11 @@ class StrategyEvaluator(Actor):
         """async 包 sync 的 `evaluate_tree`,使 `asyncio.gather` 模式可用。
         Check 实现层若需要 async I/O(查外部服务),可演进为真正 async 求值;现框架是 sync。"""
         return evaluate_tree(tree, ctx)
+
+    async def _execute_actions(self, actions: list, ctx) -> None:
+        """依次执行 actions(串行,保证顺序;如 ShareLimitModification → PlaceBetsAction)。"""
+        for action in actions:
+            await action.execute(ctx)
 
     # ── slice 10a(#50):submitter 工厂 ───────────────────────────────
     def _make_submitter(self):

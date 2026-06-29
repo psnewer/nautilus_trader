@@ -56,12 +56,12 @@ def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) 
     arb_tree = Condition(
         self_hits=SignalRef("arb_on"),
         checktion=[_StubCheck(True)],
-        action=arb_action,
+        actions=[arb_action] if arb_action else [],
     )
     comp_tree = Condition(
         self_hits=SignalRef("comp_on"),
         checktion=[_StubCheck(True)],
-        action=comp_action,
+        actions=[comp_action] if comp_action else [],
     )
     return Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree)
 

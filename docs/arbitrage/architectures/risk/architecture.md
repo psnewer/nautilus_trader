@@ -12,7 +12,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 | 类 | 基类 | 职责 |
 |---|---|---|
-| `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:share limit adjusted-size gate + NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
+| `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
 | `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `outcome_shares` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
 
 > **基类必须是 `LiveRiskEngine`(非基类 `RiskEngine`)**:实盘环境 kernel 实例化 `LiveRiskEngine`(`system/kernel.py:407`);基类 `RiskEngine` 仅 backtest 用。两者 `_handle_submit_order → _check_order` 派发链一致。(Step 6 核实修正,见 refactor.md 修订记录)
@@ -77,13 +77,6 @@ flowchart LR
 class ArbitrageLiveRiskEngine(LiveRiskEngine):
     """扩展 NT LiveRiskEngine:余额检查 + 单场 profit gates。"""
 
-    def _handle_submit_order(self, command: SubmitOrder) -> None:
-        # 若 max_leg_share 启用,先把 order 替换为 adjusted order,再交给 NT 父类管道。
-        command = self._adjust_submit_order_for_share_limit(command)
-        if command is None:
-            return
-        super()._handle_submit_order(command)
-
     # ⚠️ 签名必须与 NT 父类一致(engine.pyx:571 cpdef bint,两参 instrument/order)
     def _check_order(self, instrument: Instrument, order: Order) -> bool:
         if not super()._check_order(instrument, order):   # NT: price/quantity/GTD
@@ -102,13 +95,10 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _check_profit_gates(self, order: Order) -> bool: ...
 ```
 
-**share limit adjusted-size gate(2026-06-21)**:
-- 配置 `risk.max_leg_share` 为单个 outcome 允许的最大 share,`None` 表示关闭。所有腿共用一个上限,不做 per-leg 配置。
-- 该 gate 在 `_handle_submit_order` 入口执行,先从 `PairRegistry` 取得 `pair_id`,再从 order tags 的 `arb:expected_legs` 解析本次机会所有 outcome role,读取 `ArbitragePortfolio.outcome_shares(pair_id)` 计算每个 outcome 剩余额度。
-- 缩放比例 `scale = min(1, min_remaining / requested_share)`。PM 的 `requested_share = quantity`;OE 的 `requested_share = quantity * price * fx`(gross payout share)。PM/OE 走同一段多边逻辑,只在 share 换算公式上分支。
-- 若 `scale < 1`,Risk 构造一个同 `client_order_id` 的 adjusted `LimitOrder` 替换进 `SubmitOrder`,保留原有 opportunity metadata tags。原始 order 的 `quantity` 是 NT readonly 字段,不原地改。
-- adjusted order 随后进入父类 `_handle_submit_order`,所以 NT 原生 PM `min_quantity=5` / OE `min_notional=7` 检查看到的是**缩放后的 size**,不是原始 size。若缩放后低于最小下单限制,由 NT 原生 gate deny。
-- Execution opportunity barrier 不参与缩放、不需要改;它只接收 risk pass 后的 adjusted command。
+**share limit 已迁移至 Strategy Action(2026-06-28)**:
+- share limit 门控从 RiskEngine 移至 Strategy 层的 `ShareLimitModification` Action,在 `PlaceBetsAction` 之前执行。
+- 配置方式:`strategy.strategies.<id>.arbitrage_tree.actions` 数组中添加 `{"type": "share_limit", "params": {"max_leg_share": 100}}`。
+- 详见 `docs/arbitrage/architectures/strategy/architecture.md`。
 
 **NT 检查分两步,本类只覆盖第一步**(Step 6 核实修正):
 - `_check_order`(本类覆盖点):仅 **price / quantity / GTD**。
@@ -117,7 +107,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 **venue 最小下单门控来源**:
 - PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
 - OE:最小值是 stake,由 OE Provider 写入 `BettingInstrument.min_notional=7 GBP`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦 `notional < 7 GBP`。
-- Risk 组件不再维护 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量;若 adjusted-size gate 后的最小下单门控失效,优先检查 instrument 元数据是否正确进入 cache。
+- Risk 组件不再维护 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量;最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 
@@ -159,6 +149,9 @@ class ArbitragePortfolio(Portfolio):
     # ── per-pair(对应 unrealized_pnl 单数风格)──
     def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]: ...
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]: ...
+    def outcome_shares_for_venue(self, pair_id: str, venue: str, account_id=None) -> dict[str, float]:
+        """某 venue 各 outcome 的 share。PM 单腿门控 / OE 净敞口门控用。"""
+        ...
     # ── 内部 ──
     def _legs_for_pair(self, pair_id, account_id) -> list[_Leg]: ...
     def _resolve_pair_id(self, position) -> str | None:  # PairRegistry.get(instrument_id), #34
@@ -237,10 +230,12 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 - outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,保证三元盘某 outcome 暂无持仓时仍参与“所有 outcome”判断;无 registry 时回退到持仓腿中的 `home/away/draw`。
 - 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
 
-`outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share,供 adjusted-size gate 计算剩余额度:
+`outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share(所有 venue 合并),供止盈止损门控参考。
+
+`outcome_shares_for_venue(pair_id, venue)` 返回某 venue 各 outcome 的 share,供 Strategy `share_limit` action 计算剩余额度:
 
 ```
-outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome
+outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AND leg.venue == venue
 ```
 
 - `profit_if_wins`:PM = `size*(1-price)`;OE = `size*(price-1)*fx`
@@ -282,7 +277,7 @@ NT `TradingState` 是全局互斥状态:
 | Q19 同步(§6.10) | RiskEngine 读 **live** cache;不参与健康检查 ⊥ 执行互斥(它是 submit 管道上的同步拦截,无自身 await 循环) |
 | Q20 快照 | Risk **不读** Strategy 快照(快照是规划私有);余额/profit 门限都用 live 最新值 |
 | VenueExecutionLiveness | Risk 从 opportunity `expected_legs` 推导 required venues 并 fail-closed;Strategy/Portfolio 不读 |
-| Execution barrier | Risk 在进入 barrier 前完成 adjusted-size gate;barrier 不缩放、不维护 share limit |
+| Execution barrier | Strategy 在 submit 前完成 share_limit 缩量;Risk 不缩放;barrier 不缩放、不维护 share limit |
 | §6.6 Debug | `DebugArbitrageRiskEngine`:`skip_check_size`(子类覆盖,跳过 NT 父类 min_quantity 便于小单测试);粒度待 Step 6 核实 NT API |
 
 ---
@@ -320,7 +315,6 @@ sequenceDiagram
 
 - [x] `ArbitrageLiveRiskEngine` 子类(基类 `LiveRiskEngine`)+ `_check_order` 两参签名 + super 先行 + 自 emit `_deny_order`
 - [x] `_check_balance` venue 分支(PM 自扣在途挂单 / OE 信 cache free);无价单交父类
-- [x] `_handle_submit_order` share limit adjusted-size gate:`max_leg_share` 先缩放,再交 NT 原生 PM/OE min size gate 检查 adjusted size
 - [x] `_check_profit_gates` 单场止盈/止损;Risk 不再执行全局止盈/止损
 - [x] `_check_required_venues_alive`:注入 `VenueExecutionLiveness`,从 `expected_legs` 推导 required venues,任一不 alive 则 deny
 - [x] `ArbitragePortfolio` 四方法 + `_legs_for_pair` + `_resolve_pair_id` + `_leg_from_position`(从 cache Position 反推)

@@ -142,7 +142,7 @@ class RiskSectionConfig(Struct, kw_only=True):
     enabled:           bool = True
     execution_enabled: bool = True
     share:             float = 22.5
-    max_leg_share:     float | None = None  # 单 outcome 最大 share;None=关闭 adjusted-size gate
+    max_leg_share:     float | None = None  # legacy ignored;share limit 在 strategy.actions.share_limit
     fx:                float = 1.33
     match_tp:          float = 0.05
     match_sl:          float = -0.05
@@ -199,7 +199,7 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "polymarket": {"clob_url": "https://clob.polymarket.com", "...": "其他非凭证字段"},
     "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true}
   },
-  "risk": {"share": 22.5, "max_leg_share": null, "fx": 1.33, "match_tp": 0.05, "match_sl": -0.05},
+  "risk": {"share": 22.5, "fx": 1.33, "match_tp": 0.05, "match_sl": -0.05},
   "execution": {"tracking_timeout_sec": 30, "...": "..."},
   "strategy": {
     "enabled": true,

@@ -109,12 +109,12 @@ def test_signal_value_must_be_str():
 # ─── condition_from_json ──────────────────────────────────────────
 
 def test_empty_condition_defaults_to_truthy_pass():
-    """全空 spec → self_hits=AndExpr() True / 空 checktion 默认 hit=True / action=None。"""
+    """全空 spec → self_hits=AndExpr() True / 空 checktion 默认 hit=True / actions=[]。"""
     c = condition_from_json({})
     store = SignalStore()
     res = evaluate_tree(c, _ctx(store))
     assert res.hit is True
-    assert res.pending_action is None
+    assert res.pending_actions == []
 
 
 def test_self_hits_false_blocks_evaluation():
@@ -131,14 +131,15 @@ def test_self_hits_true_with_passing_check_fires_action():
     c = condition_from_json({
         "self_hits": {"signal": "live"},
         "checktion": [{"type": "pass"}],
-        "action": {"type": "noop", "params": {"label": "fire"}},
+        "action": {"type": "noop", "params": {"label": "fire"}},  # 兼容旧格式
     })
     store = SignalStore()
     store.set_persistent("live", True)
     res = evaluate_tree(c, _ctx(store))
     assert res.hit is True
-    assert isinstance(res.pending_action, _NoopAction)
-    assert res.pending_action.label == "fire"
+    assert len(res.pending_actions) == 1
+    assert isinstance(res.pending_actions[0], _NoopAction)
+    assert res.pending_actions[0].label == "fire"
 
 
 def test_failing_check_short_circuits():
@@ -161,7 +162,7 @@ def test_recursive_sub_conditions():
     store = SignalStore()
     store.set_persistent("branch_b", True)
     res = evaluate_tree(c, _ctx(store))
-    assert res.hit and res.pending_action.label == "B"
+    assert res.hit and res.pending_actions[0].label == "B"
 
 
 def test_sub_conditions_all_miss():
@@ -180,6 +181,24 @@ def test_unknown_check_type_in_condition_raises():
 def test_unknown_action_type_in_condition_raises():
     with pytest.raises(StrategyConfigError, match="unknown action type"):
         condition_from_json({"action": {"type": "nope"}})
+
+
+def test_actions_array_format():
+    """新 actions 数组格式:多个 action 依次执行。"""
+    c = condition_from_json({
+        "self_hits": {"signal": "live"},
+        "actions": [
+            {"type": "noop", "params": {"label": "first"}},
+            {"type": "noop", "params": {"label": "second"}},
+        ],
+    })
+    store = SignalStore()
+    store.set_persistent("live", True)
+    res = evaluate_tree(c, _ctx(store))
+    assert res.hit is True
+    assert len(res.pending_actions) == 2
+    assert res.pending_actions[0].label == "first"
+    assert res.pending_actions[1].label == "second"
 
 
 # ─── strategy_from_json ───────────────────────────────────────────

@@ -158,3 +158,35 @@ def test_publish_deltas_records_first_pm_obd() -> None:
         assert emitted == [deltas, deltas]
     finally:
         loop.close()
+
+
+def test_update_instruments_continues_after_provider_error(monkeypatch) -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        c = _client(loop)
+        calls = {"sleep": 0, "init": 0, "send": 0}
+
+        async def fake_sleep(_seconds):
+            calls["sleep"] += 1
+            if calls["sleep"] >= 3:
+                raise asyncio.CancelledError
+
+        class Provider:
+            async def initialize(self, reload: bool = False):
+                assert reload is True
+                calls["init"] += 1
+                if calls["init"] == 1:
+                    raise RuntimeError("temporary network outage")
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        c._instrument_provider = Provider()  # type: ignore[assignment]
+        c._send_all_instruments_to_data_engine = lambda: calls.__setitem__("send", calls["send"] + 1)  # type: ignore[method-assign]
+
+        loop.run_until_complete(c._update_instruments(1))
+
+        assert calls["init"] == 2
+        assert calls["send"] == 1
+    finally:
+        loop.close()
+        asyncio.set_event_loop(asyncio.new_event_loop())

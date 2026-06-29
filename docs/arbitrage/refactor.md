@@ -1461,7 +1461,7 @@ def _on_session_timeout(self, event: TimeEvent):
 
 ### 6.9 ArbitragePortfolio: way_rebate 等领域指标(Q14,2026-05-19 锁定;#121 后部分失效)
 
-> ⚠️ **现状覆盖(2026-06-22 #121)**:本节最初设计的 `way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 当前接口已退役。现行代码只保留 `outcome_exposures(pair_id)` 与 `outcome_shares(pair_id)`;Risk 分别用于单场 profit gates 与 share limit adjusted-size gate。以下 `way_rebate` 设计内容保留为历史决策记录,不作为当前实现依据。
+> ⚠️ **现状覆盖(2026-06-22 #121;2026-06-28 更新)**:本节最初设计的 `way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 当前接口已退役。现行代码保留 `outcome_exposures(pair_id)` 供 Risk 单场 profit gates 使用,保留 `outcome_shares(pair_id)` / `outcome_shares_for_venue(pair_id, venue)` 供 Strategy `share_limit` action 使用。Risk 不再执行 share limit adjusted-size gate。以下 `way_rebate` 设计内容保留为历史决策记录,不作为当前实现依据。
 
 #### 6.9.1 背景与定位
 

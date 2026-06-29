@@ -74,7 +74,7 @@ def test_on_risk_event_broadcasts_trading_state():
 class _StubRisk:
     def __init__(self, state):
         self.trading_state = state
-        self._params = ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05, max_leg_share=None)
+        self._params = ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05)
 
 
 def _control_actor(tmp_path, *, risk_state=TradingState.HALTED):

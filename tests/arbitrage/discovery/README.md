@@ -6,6 +6,7 @@
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
 > **#59(slice A)架构反转**:`InstrumentRefresher` Actor **已退役** —— 周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE `adapters/orbitexch/data.py` 新增 `_send_all_instruments_to_data_engine` + `_update_instruments` task)。Q8"调度归 Refresher"被验证为重造 NT 原生而反转(refactor.md §5.2.3/#59)。下方 `test_instrument_refresher.py` / `test_instruments_refreshed_event.py` 现测 **dead code**(refresher.py/events.py 暂留,smoke 验后删);新增「DataClient 周期发现 + on_instrument 灌 cache」用例**待补**(#59 已 live smoke10 验:PM `initialize` Loaded 114 + matching timer 出 MatchedPair,refresher 未参与)。
+> **2026-06-29 overnight 修**:PM/OE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` 失败杀死整个 60min 周期 discovery task。验收落在 PM/OE adapter 测试: `test_update_instruments_continues_after_provider_error`。
 
 **落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
 - ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)

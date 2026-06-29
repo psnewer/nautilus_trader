@@ -208,8 +208,13 @@ class OrbitExchDataClient(LiveMarketDataClient):
         try:
             while True:
                 await asyncio.sleep(interval_mins * 60)
-                await self._instrument_provider.load_all_async()
-                self._send_all_instruments_to_data_engine()
+                try:
+                    await self._instrument_provider.load_all_async()
+                    self._send_all_instruments_to_data_engine()
+                except Exception as e:
+                    self._log.warning(
+                        f"OE update_instruments failed: {e!r}; retrying next cycle",
+                    )
         except asyncio.CancelledError:
             self._log.debug("Canceled task 'update_instruments'")
 

@@ -297,8 +297,23 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 |---|---|---|
 | `PreMatchCheck()` | `src/arbitrage/strategy/checks/pre_match.py` | 无参;`passes = not ctx.snapshot.in_play`;放 `checktion` 列表前位,利用 `all` 短路避免后续 Check 跑空 |
 | `MeanRebateCheck(min_rate)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写 `ctx.scratch["legs"]` + return True |
+| `OneSideRebateCheck(min_rate, share=22.5, fx=1.0)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 定向返水候选生成:按 `selection_role` 收集所有可买 PM/OE leg(同 outcome 多 venue 都保留)→ 枚举每个 outcome 选一条 leg 的笛卡尔积 → 对每个组合枚举 target outcome → `rate=(1-total_prob)/target_prob`;达阈值时写 `ctx.scratch["candidates"]`,每个 candidate 的 legs 已带 `qty/share_if_wins/cost` |
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, fx=1.0)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | mean_rebate 补救检查:从 `snapshot.positions` 计算每个 outcome 的实际 share,目标 `target_share=max(actual_share_by_outcome)`;对缺口 outcome 取当前 best ask 最便宜 venue,写只包含缺口的 `ctx.scratch["legs"]` 且每 leg 带最终 `qty`;补齐后的最差 rebate 必须 `>= min_repaired_rebate` |
+| `ShareLimitModification(max_leg_share, share=None, fx=1.0)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时按配置 `share` 或 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 PM/OE remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share` |
+| `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 放在 `share_limit` 与 `place_bets` 之间;对每个 candidate 取其 legs 中最大的 `share_if_wins`,再选择该最大值最高的 candidate,写 `ctx.scratch["selected_candidate"]` 和 `ctx.scratch["legs"]`,后续 `PlaceBetsAction` 只提交被选 candidate |
 | `PlaceBetsAction(share, price_overrides=None, qty_overrides=None, intent="arbitrage")` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;默认 PM=`size=share` / OE=`size=share/price`(stake);若 leg 已带 `qty`,优先用该 qty(供 compensation/recovery Check 写补缺口订单量,复用本 Action);`price_overrides` / `qty_overrides` 是 venue-keyed Action 参数,只改最终 submit spec,不改 mean_rebate 用真实 order book 选腿;qty 优先级为 `qty_overrides` > `leg["qty"]` > share 公式;`intent` 写入最终 submit spec,submitter 转成 NT `Order.tags=["arb:intent=<intent>"]`,供 Risk 区分普通套利与补救单;`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
+
+**candidate action 链(2026-06-28)**:`one_side_rebate` 等 Check 统一写
+`ctx.scratch["candidates"]`。推荐链路:
+`share_limit -> candi_select -> place_bets`。`share_limit` 不丢弃 candidate 集合语义,而是逐个 candidate
+输出调整结果;`candi_select` 再按 candidate 内最大 `share_if_wins` 选择一个 candidate 写回 `legs`。`PlaceBetsAction`
+继续只认 `legs`,不再做 share-limit 缩量,因此不需要改 submitter / opportunity barrier。
+
+`one_side_rebate` candidate 的 share 语义:非 target outcome 的 `share_if_wins=share`;target outcome
+使用非 target 买完后的剩余预算全部买入,因此 `target_share_if_wins = target_cost / target_prob`。
+例如 home=0.45、away=0.50、share=100 时,target=home → away 买到 100 share,home 用剩余 50
+买到 111.11 share,rate=11.11%。`candi_select` 后续只看 share-limit 调整后的 candidate 内最大
+`share_if_wins`,不依赖 `target_role`。
 
 **OE DataClient `_on_price_frame` 透 inPlay**:每帧调 `write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper;helper 防御性 — instrument 不在 cache 不 raise(冷启动场景)。
 

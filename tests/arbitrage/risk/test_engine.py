@@ -363,109 +363,6 @@ def test_recovery_intent_still_checks_balance():
     assert exec_engine.command_count == 0
 
 
-def test_share_limit_adjusts_pm_size_before_execution():
-    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0))
-    pm = pm_instrument("match_X", "home")
-    ctx.cache.add_instrument(pm)
-    ctx.cache.add_account(_pm_account(ctx, total=100))
-    _register_pair(ctx, "match_X", [pm])
-    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 15.0, "away": 0.0}
-
-    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
-    exec_client = MockExecutionClient(
-        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
-        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
-    )
-    exec_engine.register_client(exec_client)
-
-    strategy = Strategy()
-    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
-    order = strategy.order_factory.limit(
-        pm.id,
-        OrderSide.BUY,
-        Quantity.from_int(10),
-        pm.make_price(0.4),
-        tags=[
-            "arb:opportunity_id=opp-1",
-            "arb:pair_id=match_X",
-            "arb:leg_key=pm:home:0",
-            "arb:expected_legs=pm:home:0,oe:away:1",
-        ],
-    )
-    cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
-                      order=order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
-
-    ctx.engine._handle_submit_order(cmd)
-
-    assert exec_engine.command_count == 1
-    routed = exec_client.commands[0]
-    assert routed.order.quantity.as_double() == 5.0
-    assert "arb:opportunity_id=opp-1" in routed.order.tags
-
-
-def test_share_limit_adjusted_pm_size_then_native_min_size_denies():
-    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0))
-    pm = pm_instrument("match_X", "home")
-    ctx.cache.add_instrument(pm)
-    ctx.cache.add_account(_pm_account(ctx, total=100))
-    _register_pair(ctx, "match_X", [pm])
-    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 16.0, "away": 0.0}
-
-    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
-    exec_client = MockExecutionClient(
-        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
-        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
-    )
-    exec_engine.register_client(exec_client)
-    denied = []
-    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda e: denied.append(e))
-
-    strategy = Strategy()
-    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
-    order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4))
-    cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
-                      order=order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
-
-    ctx.engine._handle_submit_order(cmd)
-
-    assert len(denied) >= 1
-    assert exec_engine.command_count == 0
-    assert exec_client.commands == []
-
-
-def test_share_limit_uses_same_multilateral_scale_for_pm_and_oe():
-    ctx = _Ctx(ArbRiskParams(max_leg_share=20.0, fx=1.0))
-    pm = pm_instrument("match_X", "home")
-    oe = oe_instrument("match_X", "away", 2)
-    ctx.cache.add_instrument(pm)
-    ctx.cache.add_instrument(oe)
-    _register_pair(ctx, "match_X", [pm, oe])
-    ctx.portfolio.outcome_shares = lambda pair_id, account_id=None: {"home": 15.0, "away": 15.0}
-
-    strategy = Strategy()
-    strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
-    tags = [
-        "arb:opportunity_id=opp-1",
-        "arb:pair_id=match_X",
-        "arb:leg_key=pm:home:0",
-        "arb:expected_legs=pm:home:0,oe:away:1",
-    ]
-    pm_order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(10), pm.make_price(0.4), tags=tags)
-    oe_order = strategy.order_factory.limit(oe.id, OrderSide.BUY, Quantity.from_int(4), oe.make_price(2.5), tags=tags)
-    pm_cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
-                         order=pm_order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
-    oe_cmd = SubmitOrder(trader_id=ctx.trader_id, strategy_id=strategy.id, position_id=None,
-                         order=oe_order, command_id=UUID4(), ts_init=ctx.clock.timestamp_ns())
-
-    adjusted_pm = ctx.engine._adjust_submit_order_for_share_limit(pm_cmd)
-    adjusted_oe = ctx.engine._adjust_submit_order_for_share_limit(oe_cmd)
-
-    assert adjusted_pm.order.quantity.as_double() == 5.0
-    assert adjusted_oe.order.quantity.as_double() == 2.0
-    assert adjusted_pm.order.tags == tags
-    assert adjusted_oe.order.tags == tags
-
-
 def test_opportunity_deny_publishes_domain_message():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
@@ -540,10 +437,10 @@ def test_invalid_trading_state_command_ignored():
 
 
 def test_risk_params_command_hot_updates_only_given_fields():
-    ctx = _Ctx(ArbRiskParams(share=100.0, match_tp=0.05, match_sl=-0.05, max_leg_share=None))
-    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(share=50.0, max_leg_share=20.0))
+    ctx = _Ctx(ArbRiskParams(share=100.0, match_tp=0.05, match_sl=-0.05))
+    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(share=50.0))
     p = ctx.engine._params
-    assert p.share == 50.0 and p.max_leg_share == 20.0   # 覆盖
+    assert p.share == 50.0   # 覆盖
     assert p.match_tp == 0.05 and p.match_sl == -0.05    # 未给的不动
 
 

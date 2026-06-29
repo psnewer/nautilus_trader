@@ -197,7 +197,6 @@ def test_arb_risk_params_maps_fields():
                      "match_sl": -0.06, "global_sl": -0.20})
     rp = to_arb_risk_params(cfg)
     assert rp.share == 50.0
-    assert rp.max_leg_share == 75.0
     assert rp.fx == 1.5
     assert rp.match_tp == 0.08
     assert rp.match_sl == -0.06

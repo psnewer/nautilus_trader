@@ -174,7 +174,6 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
     r = cfg.risk
     return ArbRiskParams(
         share=r.share,
-        max_leg_share=r.max_leg_share,
         fx=r.fx,
         match_tp=r.match_tp,
         match_sl=r.match_sl,

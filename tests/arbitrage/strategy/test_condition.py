@@ -38,10 +38,11 @@ def _ctx(store=None) -> EvalContext:
 
 
 def _leaf(self_true: bool, checks: list[Check] | None = None, action: Action | None = None) -> Condition:
-    """叶子 condition 工厂:固定 self_hits 真假 + checktion + action。"""
+    """叶子 condition 工厂:固定 self_hits 真假 + checktion + actions。"""
     store_key = "x_true" if self_true else "x_false"
     expr = SignalRef(store_key)
-    return Condition(self_hits=expr, checktion=checks or [], action=action)
+    actions = [action] if action else []
+    return Condition(self_hits=expr, checktion=checks or [], actions=actions)
 
 
 def _store_with(key, val=True) -> SignalStore:
@@ -50,12 +51,12 @@ def _store_with(key, val=True) -> SignalStore:
 
 # ── cond.1: self_hits=False → 直接 hit=False ────────────────────
 def test_self_hits_false_returns_no_hit():
-    """cond.1: self_hits 不通过 → hit=False,即使 checktion/action 都设了也不跑。"""
+    """cond.1: self_hits 不通过 → hit=False,即使 checktion/actions 都设了也不跑。"""
     check = _RecordingCheck(returns=True)
     action = _NeverExecutedAction()
     cond = _leaf(self_true=False, checks=[check], action=action)
     res = evaluate_tree(cond, _ctx())                       # store 里没设 x_false → SignalRef False
-    assert res == EvalResult(hit=False, pending_action=None)
+    assert res == EvalResult(hit=False, pending_actions=[])
     assert check.calls == 0 and action.calls == 0           # 没下沉到 checktion
 
 
@@ -75,30 +76,30 @@ def test_sub_conditions_first_hit_returns_immediately():
         sub_conditions=[first, second],
     )
     res = evaluate_tree(root, _ctx(s))
-    assert res.hit and res.pending_action is action_first   # 第一个的 action
-    assert second_check_spy.calls == 0                      # 后续 sub 没跑(互斥)
+    assert res.hit and res.pending_actions == [action_first]   # 第一个的 actions
+    assert second_check_spy.calls == 0                         # 后续 sub 没跑(互斥)
     assert action_first.calls == 0 and action_second.calls == 0  # evaluate 不 fire
 
 
 # ── cond.3: sub_conditions 全 miss → hit=False ──────────────────
 def test_sub_conditions_all_miss_returns_no_hit():
-    """cond.3: 自身命中但子组合全 miss → hit=False(`pending_action=None`)。"""
+    """cond.3: 自身命中但子组合全 miss → hit=False(`pending_actions=[]`)。"""
     s = _store_with("x_true")
     miss1 = _leaf(self_true=False)
     miss2 = _leaf(self_true=False)
     root = Condition(self_hits=SignalRef("x_true"), sub_conditions=[miss1, miss2])
     res = evaluate_tree(root, _ctx(s))
-    assert res == EvalResult(hit=False, pending_action=None)
+    assert res == EvalResult(hit=False, pending_actions=[])
 
 
-# ── cond.4: 叶子 checktion 全过 → 待 fire action ────────────────
-def test_leaf_checktion_all_pass_returns_pending_action():
-    """cond.4: 叶子节点 checktion(AND)全过 + action 非 None → (hit=True, pending=action)。"""
+# ── cond.4: 叶子 checktion 全过 → 待 fire actions ────────────────
+def test_leaf_checktion_all_pass_returns_pending_actions():
+    """cond.4: 叶子节点 checktion(AND)全过 + actions 非空 → (hit=True, pending=actions)。"""
     s = _store_with("x_true")
     action = _NeverExecutedAction()
     cond = _leaf(self_true=True, checks=[_RecordingCheck(True), _RecordingCheck(True)], action=action)
     res = evaluate_tree(cond, _ctx(s))
-    assert res == EvalResult(hit=True, pending_action=action)
+    assert res == EvalResult(hit=True, pending_actions=[action])
     assert action.calls == 0                                # evaluate 不 fire
 
 
@@ -109,16 +110,16 @@ def test_leaf_empty_checktion_default_pass():
     action = _NeverExecutedAction()
     cond = _leaf(self_true=True, checks=[], action=action)
     res = evaluate_tree(cond, _ctx(s))
-    assert res.hit and res.pending_action is action
+    assert res.hit and res.pending_actions == [action]
 
 
-# ── cond.6: action=None → 仍 hit=True,pending_action=None ─────
+# ── cond.6: actions=[] → 仍 hit=True,pending_actions=[] ─────
 def test_leaf_no_action_still_hits():
-    """cond.6: 叶子 action=None → hit=True 但 pending=None(上层无事可 fire)。"""
+    """cond.6: 叶子 actions=[] → hit=True 但 pending=[](上层无事可 fire)。"""
     s = _store_with("x_true")
     cond = _leaf(self_true=True, checks=[], action=None)
     res = evaluate_tree(cond, _ctx(s))
-    assert res == EvalResult(hit=True, pending_action=None)
+    assert res == EvalResult(hit=True, pending_actions=[])
 
 
 # ── 补充:叶子 checktion 任一 fail → hit=False ──────────────────
@@ -128,7 +129,7 @@ def test_leaf_one_check_fails_returns_no_hit():
     action = _NeverExecutedAction()
     cond = _leaf(self_true=True, checks=[_RecordingCheck(True), _RecordingCheck(False)], action=action)
     res = evaluate_tree(cond, _ctx(s))
-    assert not res.hit and res.pending_action is None
+    assert not res.hit and res.pending_actions == []
     assert action.calls == 0
 
 
@@ -141,7 +142,7 @@ def test_nested_two_levels_inner_sub_hits():
     inner = Condition(self_hits=SignalRef("x_true"), sub_conditions=[leaf])
     root = Condition(self_hits=SignalRef("x_true"), sub_conditions=[inner])
     res = evaluate_tree(root, _ctx(s))
-    assert res.hit and res.pending_action is action
+    assert res.hit and res.pending_actions == [action]
 
 
 # ── 补充:BoolExpr 求值不消费 transient(关键不变量)─────────

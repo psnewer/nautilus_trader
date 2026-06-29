@@ -178,7 +178,7 @@ class WebGatewayActor(Actor):
             return {}
         return {
             "share": params.share, "match_tp": params.match_tp,
-            "match_sl": params.match_sl, "max_leg_share": params.max_leg_share, "fx": params.fx,
+            "match_sl": params.match_sl, "fx": params.fx,
         }
 
     def config_snapshot(self) -> dict:
@@ -191,7 +191,7 @@ class WebGatewayActor(Actor):
     def update_config_section(self, section: str, fields: dict) -> dict:
         """写回 `arb_config.json` 的某段 + 热段额外 publish 命令。返回 {applied: live|on_restart}。
 
-        热段:risk(share/tp/sl/max_leg_share)、matching/discovery(refresh_interval)。其余只落盘、需重启。
+        热段:risk(share/tp/sl)、matching/discovery(refresh_interval)。其余只落盘、需重启。
         """
         if self._config_path is None:
             raise RuntimeError("config_path 未注入,无法写配置")
@@ -209,7 +209,7 @@ class WebGatewayActor(Actor):
                 TOPIC_RISK_PARAMS,
                 SetRiskParamsCommand(
                     share=fields.get("share"), match_tp=fields.get("match_tp"),
-                    match_sl=fields.get("match_sl"), max_leg_share=fields.get("max_leg_share"),
+                    match_sl=fields.get("match_sl"),
                 ),
             )
             applied = "live"
