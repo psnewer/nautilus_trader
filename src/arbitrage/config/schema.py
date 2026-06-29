@@ -150,18 +150,28 @@ class StrategySectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     bindings: list[StrategyBindingConfig] = msgspec.field(default_factory=list)
 
 
-# ─── Risk / Execution / Debug ─────────────────────────────────────────────
+# ─── Arbitrage / Risk / Execution / Debug ─────────────────────────────────
+
+
+class ArbitrageSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
+    """套利运行默认值。strategy params 显式配置时覆盖这些默认值。"""
+
+    share: float = 22.5
+    max_leg_share: float | None = None
+    fx: float = 1.33
 
 
 class RiskSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     enabled: bool = True
     execution_enabled: bool = True
-    share: float = 22.5
-    max_leg_share: float | None = None  # legacy ignored;share limit 已迁至 strategy.actions.share_limit
-    fx: float = 1.33
+    share: float | None = None  # legacy fallback;新配置用顶层 arbitrage.share
+    max_leg_share: float | None = None  # legacy fallback;新配置用顶层 arbitrage.max_leg_share
+    fx: float | None = None  # legacy fallback;新配置用顶层 arbitrage.fx
     match_tp: float = 0.05
     match_sl: float = -0.05
     global_sl: float = -0.10
+    min_probability: float = 0.03
+    max_probability: float = 0.97
     health_check_interval_sec: float = 120.0
     match_overrides: dict = msgspec.field(default_factory=dict)
 
@@ -205,6 +215,7 @@ class WebSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
 
 
 class ArbConfig(msgspec.Struct, frozen=True, kw_only=True):
+    arbitrage: ArbitrageSectionConfig = msgspec.field(default_factory=ArbitrageSectionConfig)
     discovery: DiscoveryConfig = msgspec.field(default_factory=DiscoveryConfig)
     matching: MatchingConfig = msgspec.field(default_factory=MatchingConfig)
     venues: VenuesConfig = msgspec.field(default_factory=VenuesConfig)

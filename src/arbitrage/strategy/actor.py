@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Callable
 
 from nautilus_trader.common.actor import Actor
@@ -26,6 +27,9 @@ from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import OrderBookDeltas
 
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
+from src.arbitrage.common.control import SetArbitrageParamsCommand
+from src.arbitrage.common.params import ArbitrageParams
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.condition import EvalContext
@@ -124,6 +128,7 @@ class _RuntimeDeps:
     signal_store: SignalStore
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
     loop: object                            # asyncio.AbstractEventLoop
+    arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share/fx
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
     pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
 
@@ -136,6 +141,7 @@ class StrategyEvaluator(Actor):
         self._portfolio = deps.portfolio
         self._signal_store = deps.signal_store
         self._is_execution_active = deps.is_execution_active
+        self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
         self._signal_collector = deps.signal_collector
         self._loop = deps.loop
         self._log_evaluations = config.log_evaluations
@@ -159,6 +165,7 @@ class StrategyEvaluator(Actor):
             topic=f"data.{SportsGameUpdate.__name__}*",
             handler=self.on_data,
         )
+        self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
         # #108:strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)已退役 —— 旧理由是"健康检查 reload
         # **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、
         # 且 OE 下单是 page.evaluate(与焦点无关),不冲突。详见 synchronization §8.6 / refactor #108。
@@ -239,14 +246,17 @@ class StrategyEvaluator(Actor):
             snapshot = build_snapshot(
                 pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
             )
+            store = self._signal_store.view(pair_id)
+            store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
             # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建(per-eval 自动隔离 Check→Action 传值)
             # slice 10a(#50):submitter 注入 — Action 经 `await ctx.submitter(spec)` 真出单
             ctx = EvalContext(
                 pair_id=pair_id,
                 snapshot=snapshot,
-                store=self._signal_store.view(pair_id),
+                store=store,
                 submitter=self._make_submitter(),
                 portfolio=self._portfolio,
+                strategy_defaults=self._strategy_defaults(),
             )
             # 并行 evaluate(纯求值,无副作用);asyncio.gather 让 evaluator 顶层能等两树都返才决定 fire
             arb_res, comp_res = await asyncio.gather(
@@ -288,6 +298,29 @@ class StrategyEvaluator(Actor):
         """依次执行 actions(串行,保证顺序;如 ShareLimitModification → PlaceBetsAction)。"""
         for action in actions:
             await action.execute(ctx)
+
+    def _strategy_defaults(self) -> dict:
+        params = self._arbitrage_params
+        return {
+            "share": params.share,
+            "max_leg_share": params.max_leg_share,
+            "fx": params.fx,
+        }
+
+    def _on_set_arbitrage_params_cmd(self, cmd) -> None:
+        if not isinstance(cmd, SetArbitrageParamsCommand):
+            return
+        overrides = {
+            k: v
+            for k, v in (
+                ("share", cmd.share),
+                ("max_leg_share", cmd.max_leg_share),
+                ("fx", cmd.fx),
+            )
+            if v is not None
+        }
+        if overrides:
+            self._arbitrage_params = replace(self._arbitrage_params, **overrides)
 
     # ── slice 10a(#50):submitter 工厂 ───────────────────────────────
     def _make_submitter(self):

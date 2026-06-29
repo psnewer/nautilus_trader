@@ -12,10 +12,13 @@ from fastapi.testclient import TestClient
 
 from nautilus_trader.model.enums import TradingState
 
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
 from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import _port_bindable
@@ -74,13 +77,19 @@ def test_on_risk_event_broadcasts_trading_state():
 class _StubRisk:
     def __init__(self, state):
         self.trading_state = state
-        self._params = ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05)
+        self._params = ArbRiskParams(
+            match_tp=0.05,
+            match_sl=-0.05,
+            min_probability=0.03,
+            max_probability=0.97,
+        )
 
 
 def _control_actor(tmp_path, *, risk_state=TradingState.HALTED):
     actor = WebGatewayActor.__new__(WebGatewayActor)
     actor._ws_clients = set()
     actor._risk_engine = _StubRisk(risk_state)
+    actor._arbitrage_params = ArbitrageParams(share=22.5, max_leg_share=100.0, fx=1.33)
     actor._config_path = str(tmp_path / "arb_config.json")
     # `_msgbus` 是只读 cdef 属性,改覆盖 `_publish` 间接层记录 publish。
     actor.published = []
@@ -102,12 +111,37 @@ def test_trading_state_reads_risk_engine(tmp_path):
 def test_update_risk_config_writes_file_and_publishes_command(tmp_path):
     actor = _control_actor(tmp_path)
     path = tmp_path / "arb_config.json"
-    path.write_text(_json.dumps({"risk": {"share": 22.5}}))
-    result = actor.update_config_section("risk", {"share": 50.0, "match_tp": 0.1})
+    path.write_text(_json.dumps({"risk": {"match_tp": 0.05}}))
+    result = actor.update_config_section(
+        "risk",
+        {
+            "match_tp": 0.1,
+            "min_probability": 0.04,
+            "max_probability": 0.96,
+        },
+    )
     assert result["applied"] == "live"
-    assert _json.loads(path.read_text())["risk"]["share"] == 50.0
+    assert _json.loads(path.read_text())["risk"]["match_tp"] == 0.1
     topic, cmd = actor.published[-1]
-    assert topic == TOPIC_RISK_PARAMS and cmd.share == 50.0 and cmd.match_tp == 0.1
+    assert topic == TOPIC_RISK_PARAMS
+    assert cmd.match_tp == 0.1
+    assert cmd.min_probability == 0.04 and cmd.max_probability == 0.96
+
+
+def test_update_arbitrage_config_writes_file_and_publishes_command(tmp_path):
+    actor = _control_actor(tmp_path)
+    path = tmp_path / "arb_config.json"
+    path.write_text(_json.dumps({"arbitrage": {"share": 22.5}}))
+    result = actor.update_config_section(
+        "arbitrage",
+        {"share": 50.0, "max_leg_share": 100.0, "fx": 1.33},
+    )
+    assert result["applied"] == "live"
+    assert _json.loads(path.read_text())["arbitrage"]["share"] == 50.0
+    topic, cmd = actor.published[-1]
+    assert topic == TOPIC_ARBITRAGE_PARAMS
+    assert cmd == SetArbitrageParamsCommand(share=50.0, max_leg_share=100.0, fx=1.33)
+    assert actor.live_arbitrage_params() == {"share": 50.0, "max_leg_share": 100.0, "fx": 1.33}
 
 
 def test_update_restart_section_writes_file_no_command(tmp_path):
@@ -129,11 +163,12 @@ def test_update_matching_refresh_interval_publishes(tmp_path):
 
 def test_config_snapshot_returns_file_and_live(tmp_path):
     actor = _control_actor(tmp_path, risk_state=TradingState.HALTED)
-    (tmp_path / "arb_config.json").write_text(_json.dumps({"risk": {"share": 22.5}}))
+    (tmp_path / "arb_config.json").write_text(_json.dumps({"arbitrage": {"share": 22.5}, "risk": {}}))
     snap = actor.config_snapshot()
-    assert snap["file"]["risk"]["share"] == 22.5
+    assert snap["file"]["arbitrage"]["share"] == 22.5
     assert snap["live"]["trading_state"] == "HALTED"
-    assert snap["live"]["risk"]["share"] == 22.5
+    assert snap["live"]["risk"]["min_probability"] == 0.03
+    assert snap["live"]["arbitrage"]["max_leg_share"] == 100.0
 
 
 # ── App 层控制路由(stub actor)────────────────────────────────────────
@@ -150,7 +185,7 @@ class _ControlStubActor:
         self.set_calls.append(state)
 
     def config_snapshot(self):
-        return {"file": {}, "live": {"trading_state": "HALTED", "risk": {}}}
+        return {"file": {}, "live": {"trading_state": "HALTED", "risk": {}, "arbitrage": {}}}
 
     def update_config_section(self, section, fields):
         self.put_calls.append((section, fields))
@@ -206,8 +241,8 @@ def test_get_config():
 
 def test_put_config_section():
     actor = _ControlStubActor()
-    r = TestClient(build_app(actor)).put("/config/risk", json={"share": 30.0})
-    assert r.status_code == 200 and actor.put_calls == [("risk", {"share": 30.0})]
+    r = TestClient(build_app(actor)).put("/config/arbitrage", json={"share": 30.0})
+    assert r.status_code == 200 and actor.put_calls == [("arbitrage", {"share": 30.0})]
 
 
 def test_index_serves_html():

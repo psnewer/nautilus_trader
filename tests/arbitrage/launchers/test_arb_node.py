@@ -178,7 +178,7 @@ def test_bootstrap_and_build_full_call_sequence():
     `wire_arbitrage_runtime` 依赖 portfolio/risk_engine 是 ArbitragePortfolio/ArbitrageLiveRiskEngine
     isinstance 检查 — 用 spec MagicMock 兼容性差,直接 patch wire。
     """
-    cfg = _cfg(risk={"share": 50.0, "fx": 1.5})
+    cfg = _cfg(arbitrage={"share": 50.0, "fx": 1.5})
     fake_node = MagicMock()
 
     with patch.object(arb_node, "install_arbitrage_engines") as install_mock, \
@@ -194,10 +194,10 @@ def test_bootstrap_and_build_full_call_sequence():
     fake_node.add_exec_client_factory.assert_called()
     fake_node.build.assert_called_once()
     wire_mock.assert_called_once()
-    # wire_mock 收到 params 自 cfg.risk
+    # wire_mock 收到 risk params 与 arbitrage params 两组运行参数
     _, kwargs = wire_mock.call_args
-    assert kwargs["params"].share == 50.0
-    assert kwargs["params"].fx == 1.5
+    assert kwargs["arbitrage_params"].share == 50.0
+    assert kwargs["arbitrage_params"].fx == 1.5
     assert kwargs["venue_liveness"] is liveness
 
 

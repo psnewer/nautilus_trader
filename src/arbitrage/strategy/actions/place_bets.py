@@ -1,10 +1,10 @@
 """
 PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 
-Action 通用 — 读 `ctx.scratch["legs"]`(由 Check 算好,如 MeanRebateCheck),按 venue 算 size:
+Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好),按 venue 算 size:
   - POLYMARKET: size = share(PM 单位是 shares,1 share = $1 win)
   - ORBITEXCH: size = share / price(stake = share / odds,确保 win = share)
-  - 若 leg 已带 `qty`,优先使用该值(给 compensation/recovery Check 写入补缺口订单量)
+  - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
 """
 
@@ -26,12 +26,12 @@ class PlaceBetsAction(Action):
 
     def __init__(
         self,
-        share: float = 22.5,
+        share: float | None = None,
         price_overrides: dict[str, float] | None = None,
         qty_overrides: dict[str, float] | None = None,
         intent: str = "arbitrage",
     ) -> None:
-        self._share = float(share)
+        self._share = float(share) if share is not None else None
         self._price_overrides = _normalize_venue_overrides(price_overrides)
         self._qty_overrides = _normalize_venue_overrides(qty_overrides)
         self._intent = str(intent)
@@ -46,7 +46,7 @@ class PlaceBetsAction(Action):
         submitter = ctx.submitter      # slice 10a:None → log-only fallback;否则真出单
         mode = "submit" if submitter is not None else "smoke"
         _LOG.info(
-            f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} share={self._share} "
+            f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} "
             f"mean_rebate_rate={rate}",
         )
         expected_legs = tuple(_leg_key(leg, idx) for idx, leg in enumerate(legs))
@@ -55,7 +55,7 @@ class PlaceBetsAction(Action):
         for idx, leg in enumerate(legs):
             venue = leg["venue"]
             price = self._price_overrides.get(venue, leg["price"])
-            size = _compute_leg_size(leg, venue, self._share, price, self._qty_overrides)
+            size = _compute_leg_size(leg, venue, self._configured_share(ctx), price, self._qty_overrides)
             spec = {
                 "instrument_id": leg["instrument_id"],
                 "side": leg["side"],
@@ -82,6 +82,11 @@ class PlaceBetsAction(Action):
                     f"role={leg['role']} venue={venue} qty={size:.4f} price={price}",
                 )
 
+    def _configured_share(self, ctx: EvalContext) -> float:
+        if self._share is not None:
+            return self._share
+        return float((ctx.strategy_defaults or {}).get("share") or 0.0)
+
 
 def _compute_size(venue: str, share: float, price: float) -> float:
     """PM=share;OE=share/price(stake)。Mean rebate 数学:确保 win 一致。"""
@@ -101,11 +106,14 @@ def _compute_leg_size(
     price: float,
     qty_overrides: dict[str, float],
 ) -> float:
-    """按优先级决定最终 qty:显式 override > leg 自带 qty > share 公式。"""
+    """按优先级决定最终 qty:显式 override > leg qty > leg share_if_wins > fallback share。"""
     if venue in qty_overrides:
         return qty_overrides[venue]
     if "qty" in leg:
         return float(leg["qty"])
+    leg_share = leg.get("share_if_wins")
+    if leg_share is not None:
+        return _compute_size(venue, float(leg_share), price)
     return _compute_size(venue, share, price)
 
 

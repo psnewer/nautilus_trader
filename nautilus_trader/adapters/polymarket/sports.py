@@ -163,7 +163,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
     """PM Sports WS firehose → publish `SportsGameUpdate`(#60)。
 
     无 instrument 订阅:`_connect` 即开 WS 流式收;消费者经 `subscribe_data(DataType(SportsGameUpdate))`。
-    WS 协议层 keepalive;另兼容偶发 app-level text `"ping"`(回 `"pong"`)。
+    服务端协议层 ping 由 websockets 自动回 pong;另兼容偶发 app-level text `"ping"`(回 `"pong"`)。
     """
 
     def __init__(self, loop, msgbus, cache, clock, instrument_provider, config) -> None:
@@ -199,7 +199,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
 
         while True:  # 断线重连(外层 cancel 退出)
             try:
-                async with websockets.connect(self._ws_url, ping_interval=20, max_size=None) as ws:
+                async with websockets.connect(self._ws_url, ping_interval=None, max_size=None) as ws:
                     self._log.info("Sports WS connected")
                     while True:
                         raw = await ws.recv()

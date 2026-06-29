@@ -210,7 +210,9 @@ class StrategyEvaluator(Actor):
         if self._is_execution_active(): return    # Q19:让路
         snap = build_snapshot(pair_id, cache=self.cache, portfolio=self._portfolio,
                               pair_registry=self._pair_registry)            # Q20
-        ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=self._signal_store)
+        store = self._signal_store.view(pair_id)
+        store.set_transient("pre_match", not snap.in_play)  # snapshot 派生 signal,供 self_hits 门控
+        ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=store)
         arb_res, comp_res = await asyncio.gather(                # 并行(_aevaluate 是 sync evaluate 的 async 包)
             self._aevaluate(strategy.arbitrage_tree, ctx),
             self._aevaluate(strategy.compensation_tree, ctx),
@@ -291,17 +293,19 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 
 **`EvalContext.scratch: dict`**:per-eval 自动隔离的 mutable scratch space。Check 算的 derived 数据(如 `ctx.scratch["legs"]`)给同 condition 树内 Action 用;Action consume 不需考虑跨 pair race(EvalContext 是 per-evaluate 新建,natural lifecycle)。
 
+**运行时默认规模参数(2026-06-29)**:`EvalContext.strategy_defaults` 每轮由 `StrategyEvaluator` 从 live `ArbitrageParams` 读取,当前包含 `share` / `max_leg_share` / `fx`。这些值来自顶层 `arbitrage` 配置段,Web Arbitrage 标签页热改时通过 `command.arb.arbitrage_params` 同步到 StrategyEvaluator;strategy JSON 中各 Check/Action 的 `params` 若显式给同名字段,优先级高于 Web 默认。边界原则:Condition/Checktion 发现机会时应产出带 `share_if_wins` 或 `qty` 的完整计划腿;Action 只做缩放、选择、提交,不负责决定原始 share。
+
 **用户域子类(slice 9 #49 落地)**:
 
 | 类 | 文件 | 用 |
 |---|---|---|
-| `PreMatchCheck()` | `src/arbitrage/strategy/checks/pre_match.py` | 无参;`passes = not ctx.snapshot.in_play`;放 `checktion` 列表前位,利用 `all` 短路避免后续 Check 跑空 |
-| `MeanRebateCheck(min_rate)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写 `ctx.scratch["legs"]` + return True |
-| `OneSideRebateCheck(min_rate, share=22.5, fx=1.0)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 定向返水候选生成:按 `selection_role` 收集所有可买 PM/OE leg(同 outcome 多 venue 都保留)→ 枚举每个 outcome 选一条 leg 的笛卡尔积 → 对每个组合枚举 target outcome → `rate=(1-total_prob)/target_prob`;达阈值时写 `ctx.scratch["candidates"]`,每个 candidate 的 legs 已带 `qty/share_if_wins/cost` |
+| `pre_match` self_hits signal / `PreMatchCheck()` | `StrategyEvaluator` / `src/arbitrage/strategy/checks/pre_match.py` | 推荐用法:Evaluator 每轮从 snapshot 写 `ctx.store["pre_match"] = not snapshot.in_play`,strategy JSON 用 `"self_hits": {"signal": "pre_match"}` 做 condition 级门控。`PreMatchCheck` 类仍保留为兼容/单测用的 Check 形式,但 example 不再把它放进套利 `checktion` |
+| `MeanRebateCheck(min_rate, share=None)` | `src/arbitrage/strategy/checks/mean_rebate.py` | 平均返水套利算法:按 `selection_role` 分组 → PM/OE 各取 best_ask → 转 prob(PM=`polymarket_price_to_probability`,OE=`orbitexch_odds_to_probability`)→ 取 min → sum → `rate = 1 - sum`;`>= min_rate` 时写带 `share_if_wins` 的 `ctx.scratch["legs"]` + return True。`share` 未显式配置时读 `ctx.strategy_defaults["share"]` |
+| `OneSideRebateCheck(min_rate, share=None, fx=None)` | `src/arbitrage/strategy/checks/one_side_rebate.py` | 定向返水候选生成:按 `selection_role` 收集所有可买 PM/OE leg(同 outcome 多 venue 都保留)→ 枚举每个 outcome 选一条 leg 的笛卡尔积 → 对每个组合枚举 target outcome → `rate=(1-total_prob)/target_prob`;达阈值时写 `ctx.scratch["candidates"]`,每个 candidate 的 legs 已带 `qty/share_if_wins/cost`。`share/fx` 未显式配置时读 Web 默认 |
 | `MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, fx=1.0)` | `src/arbitrage/strategy/checks/mean_rebate_recovery.py` | mean_rebate 补救检查:从 `snapshot.positions` 计算每个 outcome 的实际 share,目标 `target_share=max(actual_share_by_outcome)`;对缺口 outcome 取当前 best ask 最便宜 venue,写只包含缺口的 `ctx.scratch["legs"]` 且每 leg 带最终 `qty`;补齐后的最差 rebate 必须 `>= min_repaired_rebate` |
-| `ShareLimitModification(max_leg_share, share=None, fx=1.0)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时按配置 `share` 或 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 PM/OE remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share` |
+| `ShareLimitModification(max_leg_share=None, share=None, fx=None)` | `src/arbitrage/strategy/actions/share_limit.py` | strategy 层 share limit 调整。单一 `ctx.scratch["legs"]` 时优先按 leg 自带 `share_if_wins/qty` 计算目标 share,直接写回调整后的 `qty/share_if_wins/cost`;candidate 输入只认 `ctx.scratch["candidates"]`,对每个 candidate 独立按 PM/OE remaining 计算 scale,复制并缩放该 candidate 的 `qty/share_if_wins/cost`,输出调整后的 candidate 数组和 `adjusted_share`。`max_leg_share/fx` 未显式配置时读 Web 默认;`share` 仅保留为旧 leg 缺 share/qty 时的 fallback |
 | `CandiSelectAction()` | `src/arbitrage/strategy/actions/candi_select.py` | 放在 `share_limit` 与 `place_bets` 之间;对每个 candidate 取其 legs 中最大的 `share_if_wins`,再选择该最大值最高的 candidate,写 `ctx.scratch["selected_candidate"]` 和 `ctx.scratch["legs"]`,后续 `PlaceBetsAction` 只提交被选 candidate |
-| `PlaceBetsAction(share, price_overrides=None, qty_overrides=None, intent="arbitrage")` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;默认 PM=`size=share` / OE=`size=share/price`(stake);若 leg 已带 `qty`,优先用该 qty(供 compensation/recovery Check 写补缺口订单量,复用本 Action);`price_overrides` / `qty_overrides` 是 venue-keyed Action 参数,只改最终 submit spec,不改 mean_rebate 用真实 order book 选腿;qty 优先级为 `qty_overrides` > `leg["qty"]` > share 公式;`intent` 写入最终 submit spec,submitter 转成 NT `Order.tags=["arb:intent=<intent>"]`,供 Risk 区分普通套利与补救单;`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
+| `PlaceBetsAction(share=None, price_overrides=None, qty_overrides=None, intent="arbitrage")` | `src/arbitrage/strategy/actions/place_bets.py` | 通用下单:consume `ctx.scratch["legs"]`;不决定原始 share。qty 优先级为 `qty_overrides` > `leg["qty"]` > `leg["share_if_wins"]` 推导(PM=`size=share`,OE=`share/price`) > action 显式 `share`/Web 默认 share fallback;`price_overrides` / `qty_overrides` 是 venue-keyed Action 参数,只改最终 submit spec,不改 Check 用真实 order book 选腿;`intent` 写入最终 submit spec,submitter 转成 NT `Order.tags=["arb:intent=<intent>"]`,供 Risk 区分普通套利与补救单;`ctx.submitter` 存在时提交 NT `SubmitOrder`,否则 log-only fallback |
 
 **candidate action 链(2026-06-28)**:`one_side_rebate` 等 Check 统一写
 `ctx.scratch["candidates"]`。推荐链路:
@@ -340,7 +344,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 **PlaceBetsAction.execute 双路径**(slice 10a):
 - `ctx.submitter` 非 None → `await submitter(spec)` 真出单(log `PlaceBets[submit]`)
 - `ctx.submitter` None → log-only fallback(log `PlaceBets[smoke]` + `would submit: ...`)
-- size 计算优先级:`qty_overrides[venue]` > `leg["qty"]` > 默认 share 公式。这样 `mean_rebate_recovery` 这类 compensation Check 可直接把缺口 `qty` 写入 `ctx.scratch["legs"]`,继续复用 `place_bets`,不另起 `repair_mean_rebate` Action。
+- size 计算优先级:`qty_overrides[venue]` > `leg["qty"]` > `leg["share_if_wins"]` 推导 > fallback share 公式。这样 `mean_rebate`/`one_side_rebate`/`mean_rebate_recovery` 这类 Check 均可产出完整计划腿,继续复用 `place_bets`,不另起专用 Action。
 - Action 参数覆盖(#88):`price_overrides={"ORBITEXCH": 1000.0}` / `qty_overrides={"ORBITEXCH": 7.0}` 只用于构造最终 submit spec,适合 live 验证“不成交挂单 → 下一轮 cancel-only”这类执行路径;`MeanRebateCheck` 仍用真实 OBD 的 best ask 计算机会与选择 venue,execution 仍透明执行传入订单内容。
 - `intent` 默认 `"arbitrage"`;compensation/recovery tree 应显式配置 `"recovery"`。submitter 将其写入 `Order.tags` 的 `arb:intent=<intent>` 标签。该标签是 Strategy → Risk 的跨组件契约:Risk 对 `recovery` 仍执行 NT 基础检查 + 余额检查,但跳过 rebate gates(`match_tp/match_sl/global_sl`),详见 risk 详设 §3.1。
 - **opportunity metadata(已落地代码,待 live 验证,2026-06-14)**:`PlaceBetsAction` 在同一次 `execute(ctx)` 内为所有真实 legs 生成同一个 `opportunity_id`,并为每条 spec 写 `pair_id=ctx.pair_id`、稳定 `leg_key`、`expected_legs`(所有真实腿 key,包含自己)。submitter 把这些字段写入 `Order.tags`:`arb:opportunity_id` / `arb:pair_id` / `arb:leg_key` / `arb:expected_legs`。不发送 0 qty 空单;没有真实下单的 outcome 不进 `expected_legs`。tag 构造/解析复用 `src/arbitrage/common/opportunity.py`。
@@ -353,7 +357,9 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
     "checktion": [
       {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}}
     ],
-    "action": {"type": "place_bets", "params": {"intent": "recovery"}}
+    "actions": [
+      {"type": "place_bets", "params": {"intent": "recovery"}}
+    ]
   }
 }
 ```
@@ -363,7 +369,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 - Recovery 依赖已有持仓的真实 `avg_px_open`。若 reconciliation 导入的外部持仓缺少真实成本(`avg_px_open<=0`),本轮 recovery 不触发;不使用当前盘口估算历史成本。PM 成本缺失应回到 PM adapter / trade history 归因路径解决。
 - `min_repaired_rebate` 是补齐到最大实际 share 后允许的最差 outcome return rate 阈值;例如 `-0.05` 表示只允许修到不低于 -5%。
 - 补救 legs 必须带最终 `qty`,由 `place_bets` 直接提交;不新增 `repair_mean_rebate` Action。
-- `arb_config.example.json` 不默认启用 recovery,避免 smoke 默认产生补救真钱路径;需要 live 验证时用临时配置打开 `compensation_tree`。
+- `arb_config.example.json` 的 `mean_rebate` 已默认启用该 `compensation_tree`;生产启动前需确认 `debug.skip_execution` 与真金开关符合预期。
 
 **配合 Q11.3 SkipExecutionClient**:`debug.skip_execution=true` 时 SkipExecutionClient 拦 ExecClient `_submit_order` mock 全成,**Action→submitter→真 SubmitOrder→SkipExecution 兜底**完整链路安全可跑(不上链)。
 

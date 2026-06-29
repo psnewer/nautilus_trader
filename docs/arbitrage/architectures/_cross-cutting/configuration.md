@@ -41,6 +41,7 @@ class ArbConfig(Struct, kw_only=True):
     matching:   MatchingConfig
     venues:     VenuesConfig
     strategy:   StrategySectionConfig
+    arbitrage:  ArbitrageSectionConfig
     risk:       RiskSectionConfig
     execution:  ExecutionSectionConfig
     web:        WebSectionConfig          # Step 7 控制台(enabled/host/port/start_halted;默认 enabled=false)
@@ -138,12 +139,15 @@ class StrategyBindingConfig(Struct, kw_only=True):
     strategy_id: str          # 引用 strategies.<id>
 
 
+class ArbitrageSectionConfig(Struct, kw_only=True):
+    share:             float = 22.5
+    max_leg_share:     float | None = None  # Web 默认单腿上限;Strategy share_limit 可读取/覆盖
+    fx:                float = 1.33
+
+
 class RiskSectionConfig(Struct, kw_only=True):
     enabled:           bool = True
     execution_enabled: bool = True
-    share:             float = 22.5
-    max_leg_share:     float | None = None  # legacy ignored;share limit 在 strategy.actions.share_limit
-    fx:                float = 1.33
     match_tp:          float = 0.05
     match_sl:          float = -0.05
     global_sl:         float = -0.10  # 旧配置兼容字段;Risk 不再执行全局止盈/止损
@@ -199,7 +203,8 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "polymarket": {"clob_url": "https://clob.polymarket.com", "...": "其他非凭证字段"},
     "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true}
   },
-  "risk": {"share": 22.5, "fx": 1.33, "match_tp": 0.05, "match_sl": -0.05},
+  "arbitrage": {"share": 22.5, "max_leg_share": 100, "fx": 1.33},
+  "risk": {"match_tp": 0.05, "match_sl": -0.05},
   "execution": {"tracking_timeout_sec": 30, "...": "..."},
   "strategy": {
     "enabled": true,
@@ -264,6 +269,8 @@ def load_arb_config(path: str | Path) -> ArbConfig:
 
 **错误路径**:JSON 解析失败 / schema 不匹配 → `ConfigError`;启用了 venue 但凭证缺 → `ConfigError(missing env: ...)`。
 
+**旧字段兼容(2026-06-29)**:loader 仍兼容旧配置里的 `risk.share` / `risk.max_leg_share` / `risk.fx`;若顶层 `arbitrage` 段未显式给同名字段,加载时迁移为 `cfg.arbitrage.*`。新配置与 Web 写回均使用顶层 `arbitrage` 段,`RiskSectionConfig` 只保留真正风控字段。
+
 ---
 
 ## 6. Dispatcher 接口(`src/arbitrage/config/dispatcher.py`)
@@ -280,6 +287,7 @@ def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingActorConfig
 def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig: ...
 def to_web_gateway_config(cfg: ArbConfig) -> WebGatewayConfig: ...   # Step 7 只读监控(portfolio/loop 经 deps 注入)
 def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams: ...
+def to_arbitrage_params(cfg: ArbConfig) -> ArbitrageParams: ...
 def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict: ...     # prepare_arb_context(**dict)
 def to_debug_config(cfg: ArbConfig) -> DebugConfig | None: ...
 ```
@@ -408,8 +416,8 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 | `MarketMatchingActor` | `to_market_matching_actor_config(cfg)`(含 aliases / max_matches)|
 | `StrategyEvaluator` | `to_strategy_evaluator_config(cfg)` + `to_strategy_registry(cfg)` |
 | `WebGatewayActor`(Step 7,只读监控)| `to_web_gateway_config(cfg)`;`enabled=false` 时 launcher 不构造;`portfolio`/`loop` 经 `WebGatewayDeps` 注入 |
-| `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg))` |
-| `ArbitragePortfolio` | `fx` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`outcome_shares` 输出每个 outcome 已占用 share |
+| `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg), arbitrage_params=to_arbitrage_params(cfg))` |
+| `ArbitragePortfolio` | `arbitrage.share/fx` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`outcome_shares` 输出每个 outcome 已占用 share |
 | `ArbContext`(session / debug / pair_registry / settlement) | `prepare_arb_context(**to_arb_context_init_kwargs(cfg))` |
 | `DebugConfig`(Q11) | `to_debug_config(cfg)`(`enabled=False` → None)|
 

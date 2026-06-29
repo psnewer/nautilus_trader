@@ -14,6 +14,7 @@ import asyncio
 import json
 import socket
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 
 import uvicorn
@@ -26,12 +27,15 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 from src.arbitrage.matching.events import MatchedPair
 
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
 from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.web.app import build_app
 
 
@@ -53,6 +57,7 @@ class WebGatewayDeps:
 
     loop: asyncio.AbstractEventLoop
     risk_engine: object | None = None        # 读 trading_state / live risk params(写走命令)
+    arbitrage_params: ArbitrageParams | None = None  # 读/热改 Web Arbitrage 默认值
     config_path: str | None = None           # arb_config.json,PUT 写回
     pair_registry: object | None = None      # /odds:遍历 matched pair 的腿读 cache 盘口
 
@@ -83,6 +88,7 @@ class WebGatewayActor(Actor):
         self._port = config.port
         self._loop = deps.loop
         self._risk_engine = deps.risk_engine          # 读 trading_state / live risk params
+        self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
         self._config_path = deps.config_path           # PUT 写回 arb_config.json
         self._pair_registry = deps.pair_registry       # /odds 遍历用
         self._ws_clients: set[asyncio.Queue] = set()
@@ -177,21 +183,35 @@ class WebGatewayActor(Actor):
         if params is None:
             return {}
         return {
-            "share": params.share, "match_tp": params.match_tp,
-            "match_sl": params.match_sl, "fx": params.fx,
+            "match_tp": params.match_tp,
+            "match_sl": params.match_sl,
+            "min_probability": params.min_probability,
+            "max_probability": params.max_probability,
         }
 
+    def live_arbitrage_params(self) -> dict:
+        params = self._arbitrage_params
+        return {"share": params.share, "max_leg_share": params.max_leg_share, "fx": params.fx}
+
     def config_snapshot(self) -> dict:
-        """当前生效配置:落盘文件内容 + 活值(trading_state + live risk params)。"""
+        """当前生效配置:落盘文件内容 + 活值(trading_state + live risk/arbitrage params)。"""
         file_cfg: dict = {}
         if self._config_path is not None and Path(self._config_path).exists():
             file_cfg = json.loads(Path(self._config_path).read_text())
-        return {"file": file_cfg, "live": {"trading_state": self.trading_state(), "risk": self.live_risk_params()}}
+        return {
+            "file": file_cfg,
+            "live": {
+                "trading_state": self.trading_state(),
+                "risk": self.live_risk_params(),
+                "arbitrage": self.live_arbitrage_params(),
+            },
+        }
 
     def update_config_section(self, section: str, fields: dict) -> dict:
         """写回 `arb_config.json` 的某段 + 热段额外 publish 命令。返回 {applied: live|on_restart}。
 
-        热段:risk(share/tp/sl)、matching/discovery(refresh_interval)。其余只落盘、需重启。
+        热段:arbitrage(share/max_leg_share/fx)、risk(tp/sl/probability bounds)、
+        matching/discovery(refresh_interval)。其余只落盘、需重启。
         """
         if self._config_path is None:
             raise RuntimeError("config_path 未注入,无法写配置")
@@ -208,10 +228,23 @@ class WebGatewayActor(Actor):
             self._publish(
                 TOPIC_RISK_PARAMS,
                 SetRiskParamsCommand(
-                    share=fields.get("share"), match_tp=fields.get("match_tp"),
+                    match_tp=fields.get("match_tp"),
                     match_sl=fields.get("match_sl"),
+                    min_probability=fields.get("min_probability"),
+                    max_probability=fields.get("max_probability"),
                 ),
             )
+            applied = "live"
+        elif section == "arbitrage":
+            cmd = SetArbitrageParamsCommand(
+                share=fields.get("share"),
+                max_leg_share=fields.get("max_leg_share"),
+                fx=fields.get("fx"),
+            )
+            self._publish(TOPIC_ARBITRAGE_PARAMS, cmd)
+            overrides = {k: v for k, v in fields.items() if k in {"share", "max_leg_share", "fx"} and v is not None}
+            if overrides:
+                self._arbitrage_params = replace(self._arbitrage_params, **overrides)
             applied = "live"
         elif section in ("matching", "discovery") and "refresh_interval_secs" in fields:
             self._publish(TOPIC_REFRESH_INTERVAL, SetRefreshIntervalCommand(secs=float(fields["refresh_interval_secs"])))

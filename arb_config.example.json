@@ -35,7 +35,7 @@
       "Men's Wimbledon 2026": "ATP"
     },
     "competition_max_matches": {
-      "ATP": 1
+      "ATP": 5
     }
   },
   "venues": {
@@ -49,9 +49,12 @@
       "page_load_timeout_sec": 120
     }
   },
-  "risk": {
+  "arbitrage": {
     "share": 40,
-    "fx": 1.33,
+    "max_leg_share": 100,
+    "fx": 1.33
+  },
+  "risk": {
     "match_tp": 0.05,
     "match_sl": -0.05
   },
@@ -67,17 +70,17 @@
     "start_halted": true
   },
   "strategy": {
-    "_doc": "slice 9(#49)落 mean_rebate 策略:checktion 短路 AND(pre_match → mean_rebate);actions 数组依次执行(share_limit 缩量/调整 candidates → candi_select 选择内部最大 share_if_wins 最高的 candidate → place_bets 下单)",
+    "_doc": "slice 9(#49)落 mean_rebate 策略:pre_match 作为 self_hits signal 门控;actions 数组依次执行(share_limit 缩量/调整 candidates → candi_select 选择内部最大 share_if_wins 最高的 candidate → place_bets 下单)",
     "enabled": true,
     "log_evaluations": false,
     "signals": {},
     "strategies": {
       "mean_rebate": {
         "arbitrage_tree": {
+          "self_hits": {
+            "signal": "pre_match"
+          },
           "checktion": [
-            {
-              "type": "pre_match"
-            },
             {
               "type": "mean_rebate",
               "params": {
@@ -87,16 +90,27 @@
           ],
           "actions": [
             {
-              "type": "share_limit",
-              "params": {
-                "max_leg_share": 100,
-                "share": 40
-              }
+              "type": "share_limit"
             },
+            {
+              "type": "place_bets"
+            }
+          ]
+        },
+        "compensation_tree": {
+          "checktion": [
+            {
+              "type": "mean_rebate_recovery",
+              "params": {
+                "min_repaired_rebate": -0.05
+              }
+            }
+          ],
+          "actions": [
             {
               "type": "place_bets",
               "params": {
-                "share": 40
+                "intent": "recovery"
               }
             }
           ]
@@ -104,31 +118,23 @@
       },
       "one_side_rebate": {
         "arbitrage_tree": {
+          "self_hits": {
+            "signal": "pre_match"
+          },
           "checktion": [
-            {
-              "type": "pre_match"
-            },
             {
               "type": "one_side_rebate",
               "params": {
-                "min_rate": 0.01,
-                "share": 40
+                "min_rate": 0.01
               }
             }
           ],
           "actions": [
             {
-              "type": "share_limit",
-              "params": {
-                "max_leg_share": 40,
-                "share": 40
-              }
+              "type": "share_limit"
             },
             {
-              "type": "place_bets",
-              "params": {
-                "share": 40
-              }
+              "type": "place_bets"
             }
           ]
         }

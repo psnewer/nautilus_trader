@@ -63,8 +63,8 @@ def _build_mean_rebate_strategy():
             "strategies": {
                 "mean_rebate": {
                     "arbitrage_tree": {
+                        "self_hits": {"signal": "pre_match"},
                         "checktion": [
-                            {"type": "pre_match"},
                             {"type": "mean_rebate", "params": {"min_rate": 0.05}},
                         ],
                         "action": {"type": "place_bets", "params": {"share": 22.5}},
@@ -113,11 +113,17 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     """**核心 e2e**:JSON 配置 → JSON loader → Strategy → evaluate_tree 命中 → PlaceBetsAction.execute → log 3 leg。
 
     `min(prob) × 3 = 0.25 × 3 = 0.75 → rate = 0.25 > 0.05` → mean_rebate 命中。
-    pre_match True(snapshot.in_play=False)→ checktion AND 全过。
+    pre_match signal True(snapshot.in_play=False)→ self_hits 通过。
     """
     strategy = _build_mean_rebate_strategy()
     snap = _3way_arbitrage_snapshot(in_play=False)
-    ctx = EvalContext(pair_id="pair_X", snapshot=snap, store=SignalStore().view("pair_X"))
+    ctx = EvalContext(
+        pair_id="pair_X",
+        snapshot=snap,
+        store=SignalStore().view("pair_X"),
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+    )
+    ctx.store.set_transient("pre_match", True)
 
     # 1. evaluate(纯求值,无副作用)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
@@ -142,10 +148,16 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
 
 
 def test_in_play_blocks_mean_rebate(caplog):
-    """**门控 smoke**:snapshot.in_play=True → PreMatchCheck False → AND 短路 → MeanRebateCheck 不跑 → 无 action fire。"""
+    """**门控 smoke**:snapshot.in_play=True → pre_match signal False → MeanRebateCheck 不跑 → 无 action fire。"""
     strategy = _build_mean_rebate_strategy()
     snap = _3way_arbitrage_snapshot(in_play=True)
-    ctx = EvalContext(pair_id="pair_X", snapshot=snap, store=SignalStore().view("pair_X"))
+    ctx = EvalContext(
+        pair_id="pair_X",
+        snapshot=snap,
+        store=SignalStore().view("pair_X"),
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+    )
+    ctx.store.set_transient("pre_match", False)
 
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
     assert res.hit is False
@@ -174,8 +186,8 @@ def test_no_arb_below_threshold_no_action(caplog):
             "strategies": {
                 "mr_strict": {
                     "arbitrage_tree": {
+                        "self_hits": {"signal": "pre_match"},
                         "checktion": [
-                            {"type": "pre_match"},
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],
                         "action": {"type": "place_bets", "params": {"share": 22.5}},
@@ -191,7 +203,13 @@ def test_no_arb_below_threshold_no_action(caplog):
         pair_id="pair_X", instrument_ids=list(books.keys()),
         order_books=books, instrument_info=infos, in_play=False,
     )
-    ctx = EvalContext(pair_id="pair_X", snapshot=snap, store=SignalStore().view("pair_X"))
+    ctx = EvalContext(
+        pair_id="pair_X",
+        snapshot=snap,
+        store=SignalStore().view("pair_X"),
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+    )
+    ctx.store.set_transient("pre_match", True)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
     assert res.hit is False
 
@@ -202,8 +220,8 @@ def test_recovery_tree_config_builds_with_recovery_intent():
             "strategies": {
                 "mr_recovery": {
                     "arbitrage_tree": {
+                        "self_hits": {"signal": "pre_match"},
                         "checktion": [
-                            {"type": "pre_match"},
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],
                         "action": {"type": "place_bets", "params": {"share": 5.0}},

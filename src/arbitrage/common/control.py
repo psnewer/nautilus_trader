@@ -14,6 +14,7 @@ from dataclasses import dataclass
 # ── topic 常量 ────────────────────────────────────────────────────────
 TOPIC_TRADING_STATE = "command.arb.trading_state"
 TOPIC_RISK_PARAMS = "command.arb.risk_params"
+TOPIC_ARBITRAGE_PARAMS = "command.arb.arbitrage_params"
 TOPIC_REFRESH_INTERVAL = "command.arb.refresh_interval"
 
 
@@ -28,9 +29,19 @@ class SetTradingStateCommand:
 class SetRiskParamsCommand:
     """热改风控参数;None 字段 = 不动(只覆盖给定项)。consumer=ArbitrageLiveRiskEngine。"""
 
-    share: float | None = None
     match_tp: float | None = None
     match_sl: float | None = None
+    min_probability: float | None = None
+    max_probability: float | None = None
+
+
+@dataclass(frozen=True)
+class SetArbitrageParamsCommand:
+    """热改套利运行默认值;None 字段 = 不动。consumer=RiskEngine/StrategyEvaluator。"""
+
+    share: float | None = None
+    max_leg_share: float | None = None
+    fx: float | None = None
 
 
 @dataclass(frozen=True)

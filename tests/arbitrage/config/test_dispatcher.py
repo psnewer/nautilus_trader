@@ -8,6 +8,7 @@ import pytest
 
 from src.arbitrage.config.dispatcher import to_arb_context_init_kwargs
 from src.arbitrage.config.dispatcher import to_arb_risk_params
+from src.arbitrage.config.dispatcher import to_arbitrage_params
 from src.arbitrage.config.dispatcher import to_debug_config
 from src.arbitrage.config.dispatcher import to_market_matching_actor_config
 from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
@@ -193,14 +194,22 @@ def test_strategy_evaluator_config_log_evaluations_maps_strategy_section():
 # ─── Risk / Context / Debug ───────────────────────────────────────────
 
 def test_arb_risk_params_maps_fields():
-    cfg = _cfg(risk={"share": 50.0, "max_leg_share": 75.0, "fx": 1.5, "match_tp": 0.08,
-                     "match_sl": -0.06, "global_sl": -0.20})
+    cfg = _cfg(risk={"match_tp": 0.08, "match_sl": -0.06, "global_sl": -0.20,
+                     "min_probability": 0.04, "max_probability": 0.96})
     rp = to_arb_risk_params(cfg)
-    assert rp.share == 50.0
-    assert rp.fx == 1.5
     assert rp.match_tp == 0.08
     assert rp.match_sl == -0.06
     assert rp.global_sl == -0.20
+    assert rp.min_probability == 0.04
+    assert rp.max_probability == 0.96
+
+
+def test_arbitrage_params_maps_fields():
+    cfg = _cfg(arbitrage={"share": 50.0, "max_leg_share": 75.0, "fx": 1.5})
+    params = to_arbitrage_params(cfg)
+    assert params.share == 50.0
+    assert params.max_leg_share == 75.0
+    assert params.fx == 1.5
 
 
 def test_arb_context_init_kwargs_maps_execution_section():

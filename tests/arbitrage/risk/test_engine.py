@@ -28,6 +28,7 @@ from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
 from src.arbitrage.risk.portfolio import OutcomeExposure
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from tests.arbitrage.risk._factories import oe_account_state
@@ -39,14 +40,21 @@ from tests.arbitrage.risk._factories import pm_instrument
 class _Ctx:
     """共享构造:cache + portfolio + ArbitrageLiveRiskEngine。"""
 
-    def __init__(self, params: ArbRiskParams | None = None, *, venue_liveness=None):
+    def __init__(
+        self,
+        params: ArbRiskParams | None = None,
+        *,
+        arbitrage_params: ArbitrageParams | None = None,
+        venue_liveness=None,
+    ):
+        arbitrage_params = arbitrage_params or ArbitrageParams(share=100.0, fx=1.0)
         self.clock = LiveClock()
         self.trader_id = TraderId("TESTER-000")
         self.loop = asyncio.new_event_loop()
         self.msgbus = MessageBus(trader_id=self.trader_id, clock=self.clock)
         self.cache = TestComponentStubs.cache()
         self.portfolio = ArbitragePortfolio(msgbus=self.msgbus, cache=self.cache, clock=self.clock)
-        self.portfolio.configure_arb(share=100.0, fx=1.0)
+        self.portfolio.configure_arb(share=arbitrage_params.share, fx=arbitrage_params.fx)
         self.engine = ArbitrageLiveRiskEngine(
             loop=self.loop,
             portfolio=self.portfolio,
@@ -55,7 +63,11 @@ class _Ctx:
             clock=self.clock,
             config=LiveRiskEngineConfig(),
         )
-        self.engine.configure_arb(params or ArbRiskParams(), venue_liveness=venue_liveness)
+        self.engine.configure_arb(
+            params or ArbRiskParams(),
+            venue_liveness=venue_liveness,
+            arbitrage_params=arbitrage_params,
+        )
 
 
 class _DuckOrder:
@@ -74,8 +86,8 @@ class _DuckOrder:
 
 
 # ── 单场 profit gates(risk-6.7.2 / 6.7.3 / 6.7.4）────────────────────
-def _gate_ctx(params, *, exposures=None):
-    ctx = _Ctx(params)
+def _gate_ctx(params, *, exposures=None, share=22.5):
+    ctx = _Ctx(params, arbitrage_params=ArbitrageParams(share=share, fx=1.0))
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
     # #34:pair_id 来自 PairRegistry,非 info["competition"]。模拟 matching 已注册。
@@ -91,7 +103,7 @@ def _gate_ctx(params, *, exposures=None):
 
 def test_match_tp_gate_denies():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, match_tp=0.05),
+        ArbRiskParams(match_tp=0.05),
         exposures={
             "home": OutcomeExposure(net_profit=1.20, liability=0.0),
             "away": OutcomeExposure(net_profit=1.30, liability=0.0),
@@ -103,7 +115,7 @@ def test_match_tp_gate_denies():
 
 def test_match_tp_gate_passes_when_any_outcome_not_above_threshold():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, match_tp=0.05),
+        ArbRiskParams(match_tp=0.05),
         exposures={
             "home": OutcomeExposure(net_profit=1.20, liability=0.0),
             "away": OutcomeExposure(net_profit=1.00, liability=0.0),
@@ -115,7 +127,7 @@ def test_match_tp_gate_passes_when_any_outcome_not_above_threshold():
 
 def test_match_sl_gate_denies():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, match_sl=-0.05),
+        ArbRiskParams(match_sl=-0.05),
         exposures={
             "home": OutcomeExposure(net_profit=-1.20, liability=2.0),
             "away": OutcomeExposure(net_profit=-1.30, liability=2.0),
@@ -127,7 +139,7 @@ def test_match_sl_gate_denies():
 
 def test_match_sl_gate_passes_when_any_outcome_not_below_threshold():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, match_sl=-0.05),
+        ArbRiskParams(match_sl=-0.05),
         exposures={
             "home": OutcomeExposure(net_profit=-1.20, liability=2.0),
             "away": OutcomeExposure(net_profit=-1.00, liability=2.0),
@@ -139,7 +151,7 @@ def test_match_sl_gate_passes_when_any_outcome_not_below_threshold():
 
 def test_global_sl_no_longer_blocks():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, global_sl=-0.10),
+        ArbRiskParams(global_sl=-0.10),
         exposures={
             "home": OutcomeExposure(net_profit=0.0, liability=0.0),
             "away": OutcomeExposure(net_profit=0.0, liability=0.0),
@@ -151,7 +163,7 @@ def test_global_sl_no_longer_blocks():
 
 def test_gates_pass_when_within_thresholds():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(share=22.5, match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
+        ArbRiskParams(match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
         exposures={
             "home": OutcomeExposure(net_profit=0.50, liability=1.0),
             "away": OutcomeExposure(net_profit=-0.50, liability=1.0),
@@ -201,6 +213,49 @@ def test_liveness_gate_passes_when_required_venues_alive():
     )
 
     assert ctx.engine._check_required_venues_alive(order) is True
+
+
+# ── 赔率/概率门控(risk-6.7.1e)───────────────────────────────────
+def test_probability_gate_denies_pm_price_outside_bounds():
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    pm = pm_instrument("match_X", "home")
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    low = _DuckOrder(pm.id, price=0.02)
+    high = _DuckOrder(pm.id, price=0.98)
+
+    assert ctx.engine._check_probability_gate(pm, low) is False
+    assert ctx.engine._check_probability_gate(pm, high) is False
+    assert len(denials) == 2
+    assert all("probability gate" in reason for reason in denials)
+
+
+def test_probability_gate_allows_inclusive_pm_bounds():
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    pm = pm_instrument("match_X", "home")
+
+    assert ctx.engine._check_probability_gate(pm, _DuckOrder(pm.id, price=0.03)) is True
+    assert ctx.engine._check_probability_gate(pm, _DuckOrder(pm.id, price=0.97)) is True
+
+
+def test_probability_gate_converts_oe_decimal_odds_to_probability():
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    oe = oe_instrument("match_X", "away", 2)
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=2.0)) is True
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=40.0)) is False
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=1.02)) is False
+    assert len(denials) == 2
+
+
+def test_probability_bounds_hot_update_rejects_invalid_interval():
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(min_probability=0.98))
+    assert ctx.engine._params.min_probability == 0.03
+    assert ctx.engine._params.max_probability == 0.97
 
 
 # ── 余额 venue 非对称(risk-6.3b）──────────────────────────────────
@@ -281,7 +336,11 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
         "home": OutcomeExposure(net_profit=-2.0, liability=2.0),
         "away": OutcomeExposure(net_profit=-2.0, liability=2.0),
     }
-    ctx.engine.configure_arb(ArbRiskParams(share=22.5, match_sl=-0.05), venue_liveness=None)
+    ctx.engine.configure_arb(
+        ArbRiskParams(match_sl=-0.05),
+        venue_liveness=None,
+        arbitrage_params=ArbitrageParams(share=22.5, fx=1.0),
+    )
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -316,7 +375,11 @@ def test_recovery_intent_skips_profit_gates_on_real_submit_path():
         "home": OutcomeExposure(net_profit=-2.0, liability=2.0),
         "away": OutcomeExposure(net_profit=-2.0, liability=2.0),
     }
-    ctx.engine.configure_arb(ArbRiskParams(share=22.5, match_sl=-0.05), venue_liveness=None)
+    ctx.engine.configure_arb(
+        ArbRiskParams(match_sl=-0.05),
+        venue_liveness=None,
+        arbitrage_params=ArbitrageParams(share=22.5, fx=1.0),
+    )
 
     strategy = Strategy()
     strategy.register(trader_id=ctx.trader_id, portfolio=ctx.portfolio, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock)
@@ -415,8 +478,10 @@ def test_non_opportunity_deny_does_not_publish_domain_message():
 
 # ── 控制台命令(#119:web publish → 引擎 apply,方案乙)─────────────────
 from nautilus_trader.model.enums import TradingState  # noqa: E402
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS  # noqa: E402
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS  # noqa: E402
 from src.arbitrage.common.control import TOPIC_TRADING_STATE  # noqa: E402
+from src.arbitrage.common.control import SetArbitrageParamsCommand  # noqa: E402
 from src.arbitrage.common.control import SetRiskParamsCommand  # noqa: E402
 from src.arbitrage.common.control import SetTradingStateCommand  # noqa: E402
 
@@ -437,11 +502,26 @@ def test_invalid_trading_state_command_ignored():
 
 
 def test_risk_params_command_hot_updates_only_given_fields():
-    ctx = _Ctx(ArbRiskParams(share=100.0, match_tp=0.05, match_sl=-0.05))
-    ctx.msgbus.publish(topic=TOPIC_RISK_PARAMS, msg=SetRiskParamsCommand(share=50.0))
+    ctx = _Ctx(ArbRiskParams(match_tp=0.05, match_sl=-0.05))
+    ctx.msgbus.publish(
+        topic=TOPIC_RISK_PARAMS,
+        msg=SetRiskParamsCommand(min_probability=0.04),
+    )
     p = ctx.engine._params
-    assert p.share == 50.0   # 覆盖
     assert p.match_tp == 0.05 and p.match_sl == -0.05    # 未给的不动
+    assert p.min_probability == 0.04 and p.max_probability == 0.97
+
+
+def test_arbitrage_params_command_hot_updates_only_given_fields():
+    ctx = _Ctx(arbitrage_params=ArbitrageParams(share=100.0, max_leg_share=90.0, fx=1.0))
+    ctx.msgbus.publish(
+        topic=TOPIC_ARBITRAGE_PARAMS,
+        msg=SetArbitrageParamsCommand(share=50.0, max_leg_share=80.0),
+    )
+    p = ctx.engine._arbitrage_params
+    assert p.share == 50.0
+    assert p.max_leg_share == 80.0
+    assert p.fx == 1.0
 
 
 # 注:HALTED 经 NT 原生 egress(_execution_gateway→_deny_command→_deny_order)拦 submit,

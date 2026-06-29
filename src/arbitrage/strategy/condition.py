@@ -37,6 +37,8 @@ class EvalContext:
     submitter: object | None = None  # Callable[[dict], Awaitable[None]] | None;运行时类型避循环 import
     # ShareLimitModification 等 Action 需要读取持仓数据计算 remaining
     portfolio: object | None = None  # ArbitragePortfolio;运行时类型避循环 import
+    # Web Arbitrage 配置提供的运行时默认值;strategy JSON params 显式配置时覆盖这些默认值。
+    strategy_defaults: dict = field(default_factory=dict)
 
 
 class Check(ABC):

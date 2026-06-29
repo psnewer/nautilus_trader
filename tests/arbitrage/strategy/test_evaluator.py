@@ -13,6 +13,7 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.actor import StrategyEvaluator
 from src.arbitrage.strategy.actor import StrategyEvaluatorConfig
@@ -44,6 +45,23 @@ class _RecordingAction(Action):
         self.calls += 1
 
 
+class _CaptureDefaultsAction(Action):
+    def __init__(self):
+        self.defaults = None
+
+    async def execute(self, ctx):
+        self.defaults = dict(ctx.strategy_defaults)
+
+
+class _CaptureSignalAction(Action):
+    def __init__(self, key: str):
+        self.key = key
+        self.value = None
+
+    async def execute(self, ctx):
+        self.value = ctx.store.peek(self.key)
+
+
 class _StubCheck(Check):
     def __init__(self, returns: bool):
         self._returns = returns
@@ -70,6 +88,7 @@ def _harness(
     execution_active: bool = False,
     log_evaluations: bool = False,
     pair_inflight=None,
+    arbitrage_params=None,
 ):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
@@ -89,6 +108,7 @@ def _harness(
         signal_store=store,
         is_execution_active=lambda: active_flag["v"],
         loop=loop,
+        arbitrage_params=arbitrage_params,
         signal_collector=None,
         pair_inflight=pair_inflight,               # §6.10 §7:per-pair 串行闸(默认 None=不串行)
     )
@@ -127,6 +147,43 @@ def test_matched_pair_routes_directly_with_embedded_pair_id():
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 1
+
+
+def test_eval_context_strategy_defaults_read_arbitrage_params():
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(
+        arbitrage_params=ArbitrageParams(share=40.0, max_leg_share=100.0, fx=1.33),
+    )
+    action = _CaptureDefaultsAction()
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    store.view("match_X").set_persistent("arb_on", True)
+
+    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
+                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    actor.on_data(mp)
+    _run(_drain(loop))
+
+    assert action.defaults == {"share": 40.0, "max_leg_share": 100.0, "fx": 1.33}
+
+
+def test_evaluator_sets_pre_match_signal_from_snapshot():
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    action = _CaptureSignalAction("pre_match")
+    arb_tree = Condition(
+        self_hits=SignalRef("pre_match"),
+        checktion=[_StubCheck(True)],
+        actions=[action],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=Condition(self_hits=SignalRef("never"))),
+    )
+
+    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
+                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    actor.on_data(mp)
+    _run(_drain(loop))
+
+    assert action.value is True
 
 
 # ── eval.2: 无挂载 → no-op,不 fire ───────────────────────────────

@@ -6,13 +6,12 @@ Passes True ⇔ pair 未开赛(`snapshot.in_play=False`)。
 `snapshot.in_play` 由 `build_snapshot` 从 OE leg 的 `cache.instrument.info["in_play"]` 派生
 (OE WS `marketDefinition.inPlay` → `OrbitExchDataClient._on_price_frame` 写入)。
 
-**用法**(放在 checktion 列表前位,利用 Python `all` 短路):
+**推荐用法**:生产配置用 `StrategyEvaluator` 派生的 `pre_match` signal 做 condition 级门控:
 ```json
-"checktion": [
-  {"type": "pre_match"},
-  {"type": "mean_rebate", "params": {"min_rate": 0.01}}
-]
+"self_hits": {"signal": "pre_match"}
 ```
+
+本 Check 类保留给兼容配置 / 单元测试,需要时仍可放在 `checktion` 前位。
 """
 
 from __future__ import annotations

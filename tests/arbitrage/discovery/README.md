@@ -11,6 +11,7 @@
 **落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
 - ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
+- ✅ `test_orbitexch_discovery_scraper.py`(1.4.i:discovery 独立浏览器注入 document visibility + IntersectionObserver spoof,避免 OE competition 页懒加载只发现首屏 20 场)
 - ✅ `test_instrument_refresher.py`(2.1-2.11:on_start 调度、on_stop 取消、on_save/on_load 持久化 + 损坏值/<min 夹下界、msgbus 命令运行时改值、tick 成功 publish / 0 不 publish / 异常静默不卡死)
 - ⬜ `test_polymarket_provider.py`(1.1/1.2/1.3 上游构造需链上 creds,/live-test 验)
 - ⬜ 浏览器抓取失败处理(1.7)、双 venue Refresher 隔离(2.7 整端到端,要起 node)、`InstrumentsRefreshed` msgbus 全链路(3.2)—— 经 /live-test 或上层 e2e 验
@@ -92,6 +93,23 @@
 - `cache.instruments(venue=POLYMARKET)` 返回上次成功的快照
 
 **验收标准**: API 异常不污染 Cache 状态
+
+### discovery-1.4.i:OE competition 页懒加载禁用
+
+**前置**:`OrbitExchScraper` 使用独立 Playwright browser 做 discovery,不复用 Data/Exec 登录浏览器。
+
+**输入**: 调 `_setup_stealth()` 初始化 browser context。
+
+**步骤**:
+1. 向 context 注入反检测脚本。
+2. 同时注入可见性欺骗:固定 `document.hidden=false`、`visibilityState="visible"`、`document.hasFocus()=true`。
+3. 拦截 `IntersectionObserver`,让被观察元素立即以 `isIntersecting=true` / `intersectionRatio=1.0` 回调。
+
+**期望**:
+- OE competition 页不再只渲染首屏约 20 个 `role="row"`。
+- `extract_matches()` 仍沿用原 selector,不新增滚动/分页采集逻辑。
+
+**验收标准**:`test_orbitexch_discovery_scraper.py::test_setup_stealth_installs_visibility_spoof_for_lazy_loaded_rows` 通过;live probe 对 Wimbledon competition 直达页从 20 rows/events 提升到 96 rows/events。
 
 ---
 

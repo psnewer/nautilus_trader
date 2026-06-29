@@ -26,11 +26,16 @@ from nautilus_trader.model.instruments import BinaryOption
 
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import meta_from_order
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
 from src.arbitrage.common.control import TOPIC_TRADING_STATE
+from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.opportunity import order_intent
+from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.utils import orbitexch_odds_to_probability
+from src.arbitrage.common.utils import polymarket_price_to_probability
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
 
@@ -43,13 +48,16 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         params: ArbRiskParams,
         *,
         venue_liveness: VenueExecutionLiveness | None = None,
+        arbitrage_params: ArbitrageParams | None = None,
     ) -> None:
         self._arb_params = params
+        self._arb_arbitrage_params = arbitrage_params or ArbitrageParams()
         self._arb_venue_liveness = venue_liveness
         # 控制台命令订阅(方案乙;web §8.3)——幂等:configure_arb 可能被多次调用。
         if self._msgbus is not None and not getattr(self, "_arb_control_subscribed", False):
             self._msgbus.subscribe(topic=TOPIC_TRADING_STATE, handler=self._on_set_trading_state_cmd)
             self._msgbus.subscribe(topic=TOPIC_RISK_PARAMS, handler=self._on_set_risk_params_cmd)
+            self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
             self._arb_control_subscribed = True
 
     # ── 控制台命令 handler(web publish → 本引擎 apply)─────────────────
@@ -68,24 +76,55 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         overrides = {
             k: v
             for k, v in (
-                ("share", cmd.share),
                 ("match_tp", cmd.match_tp),
                 ("match_sl", cmd.match_sl),
+                ("min_probability", cmd.min_probability),
+                ("max_probability", cmd.max_probability),
             )
             if v is not None
         }
         if not overrides:
             return
-        self._arb_params = replace(self._params, **overrides)
+        next_params = replace(self._params, **overrides)
+        if not self._valid_probability_bounds(next_params):
+            self._log.error(
+                "invalid risk params hot-update: "
+                f"min_probability={next_params.min_probability}, max_probability={next_params.max_probability}"
+            )
+            return
+        self._arb_params = next_params
         self._log.info(f"risk params hot-updated: {overrides}")
+
+    def _on_set_arbitrage_params_cmd(self, cmd) -> None:
+        if not isinstance(cmd, SetArbitrageParamsCommand):
+            return
+        overrides = {
+            k: v
+            for k, v in (
+                ("share", cmd.share),
+                ("max_leg_share", cmd.max_leg_share),
+                ("fx", cmd.fx),
+            )
+            if v is not None
+        }
+        if not overrides:
+            return
+        self._arb_arbitrage_params = replace(self._arbitrage_params, **overrides)
+        self._log.info(f"arbitrage params hot-updated: {overrides}")
 
     @property
     def _params(self) -> ArbRiskParams:
         return getattr(self, "_arb_params", None) or ArbRiskParams()
 
+    @property
+    def _arbitrage_params(self) -> ArbitrageParams:
+        return getattr(self, "_arb_arbitrage_params", None) or ArbitrageParams()
+
     # ── NT 拦截 hook(覆盖 cpdef,签名须与父类一致:instrument, order)──
     def _check_order(self, instrument, order) -> bool:
         if not super()._check_order(instrument, order):  # NT: price/quantity/GTD
+            return False
+        if not self._check_probability_gate(instrument, order):
             return False
         if not self._check_required_venues_alive(order):
             return False
@@ -147,7 +186,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         size = order.leaves_qty.as_double()
         if isinstance(instrument, BinaryOption):
             return size * float(order.price)          # PM: size * price
-        return size * self._params.fx                 # OE: size * fx
+        return size * self._arbitrage_params.fx       # OE: size * fx
 
     def _pm_open_notional(self, venue, currency) -> float:
         total = 0.0
@@ -155,6 +194,44 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             if o.has_price:
                 total += o.leaves_qty.as_double() * float(o.price)
         return total
+
+    # ── 应用层:赔率/概率门控───────────────────────────────────────
+    def _check_probability_gate(self, instrument, order) -> bool:
+        """PM price 即概率;OE 十进制赔率换算为隐含概率 1/price。"""
+        if not order.has_price:
+            return True
+
+        params = self._params
+        if not self._valid_probability_bounds(params):
+            self._deny_order(
+                order=order,
+                reason=(
+                    "probability gate config invalid: "
+                    f"min={params.min_probability:.4f}, max={params.max_probability:.4f}"
+                ),
+            )
+            return False
+
+        if isinstance(instrument, BinaryOption):
+            probability = polymarket_price_to_probability(order.price)
+        else:
+            probability = orbitexch_odds_to_probability(order.price)
+
+        if probability < params.min_probability or probability > params.max_probability:
+            self._deny_order(
+                order=order,
+                reason=(
+                    "probability gate: "
+                    f"probability={probability:.4f} outside "
+                    f"[{params.min_probability:.4f}, {params.max_probability:.4f}]"
+                ),
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _valid_probability_bounds(params: ArbRiskParams) -> bool:
+        return 0.0 <= params.min_probability < params.max_probability <= 1.0
 
     # ── 应用层:venue execution liveness(跨 venue 同机会 fail-closed)────
     def _check_required_venues_alive(self, order) -> bool:
@@ -212,8 +289,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return True
 
         profits = [exposure.net_profit for exposure in exposures.values()]
-        tp_amount = params.share * params.match_tp
-        sl_amount = params.share * params.match_sl
+        share = self._arbitrage_params.share
+        tp_amount = share * params.match_tp
+        sl_amount = share * params.match_sl
 
         # 1. match_tp:所有 outcome 绝对利润都超过目标 share*tp → 已赚够别加
         if all(profit > tp_amount for profit in profits):

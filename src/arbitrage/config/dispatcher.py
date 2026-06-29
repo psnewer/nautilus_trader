@@ -22,6 +22,7 @@ from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfi
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
 
 from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
 from src.arbitrage.debug.config import MockCategory
@@ -173,11 +174,20 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
     r = cfg.risk
     return ArbRiskParams(
-        share=r.share,
-        fx=r.fx,
         match_tp=r.match_tp,
         match_sl=r.match_sl,
         global_sl=r.global_sl,
+        min_probability=r.min_probability,
+        max_probability=r.max_probability,
+    )
+
+
+def to_arbitrage_params(cfg: ArbConfig) -> ArbitrageParams:
+    a = cfg.arbitrage
+    return ArbitrageParams(
+        share=a.share,
+        max_leg_share=a.max_leg_share,
+        fx=a.fx,
     )
 
 

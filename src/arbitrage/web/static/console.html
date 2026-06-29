@@ -141,12 +141,13 @@
                             <div class="col-md-4"><label class="form-label">competition_aliases (JSON)</label><textarea class="form-control config-editor" id="m-ca" rows="3"></textarea></div>
                             <div class="col-md-4"><label class="form-label">competition_max_matches (JSON)</label><textarea class="form-control config-editor" id="m-mm" rows="3"></textarea></div></div>
                         </div></div></div>
-                    <!-- Arbitrage config(Share/FX = risk.share/risk.fx)-->
+                    <!-- Arbitrage config(Share/Max leg share/FX = strategy defaults)-->
                     <div class="tab-pane fade" id="cfg-arbitrage"><div class="card">
                         <div class="card-header d-flex justify-content-between"><span>Arbitrage Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveArbitrage()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row">
                             <div class="col-md-3 mb-2"><label class="form-label">share (USDC)</label><input type="number" step="any" class="form-control" id="a-share"></div>
+                            <div class="col-md-3 mb-2"><label class="form-label">max_leg_share</label><input type="number" step="any" class="form-control" id="a-max-leg-share"></div>
                             <div class="col-md-3 mb-2"><label class="form-label">fx (GBP/USD)</label><input type="number" step="any" class="form-control" id="a-fx"></div>
                         </div></div></div></div>
                     <!-- Execution config -->
@@ -175,7 +176,7 @@
                         <div class="card-header d-flex justify-content-between"><span>Risk Config</span>
                             <button class="btn btn-sm btn-primary" onclick="saveRisk()"><i class="bi bi-save me-1"></i>Save</button></div>
                         <div class="card-body"><div class="row" id="risk-form"></div>
-                        <div class="text-muted small mt-2">match_tp/match_sl 是 outcome 绝对利润门控(deny 新开仓);单场 SL 覆盖 / 全局止损 / 返水率面板已退役删除</div></div></div></div>
+                        <div class="text-muted small mt-2">match_tp/match_sl 是 outcome 绝对利润门控;min_probability/max_probability 是订单隐含概率闭区间;单场 SL 覆盖 / 全局止损 / 返水率面板已退役删除</div></div></div></div>
                 </div>
             </div>
         </div>
@@ -233,7 +234,7 @@
     // ── Config:读 /config 填表 + 按段保存 ──
     function jset(id,obj){ $(id).value=JSON.stringify(obj,null,2); }
     function jget(id){ try{ return JSON.parse($(id).value); }catch(e){ throw new Error(id+' JSON 非法'); } }
-    const RISK=[['match_tp','num'],['match_sl','num']];
+    const RISK=[['match_tp','num'],['match_sl','num'],['min_probability','num'],['max_probability','num']];
     // Execution 默认值
     const EXEC_DEFAULTS={tracking_timeout_sec:30,cleanup_enabled:true,cleanup_merge_enabled:true,cleanup_claim_enabled:true,open_check_interval_secs:300,position_check_interval_secs:300};
     function renderForm(host, fields, obj){ $(host).innerHTML=fields.map(([k,t])=>{ const v=obj[k];
@@ -246,7 +247,8 @@
       const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
       const oe=(state.cfg.venues||{}).orbitexch||{}; $('d-plt').value=oe.page_load_timeout_sec??120; $('d-stale').value=oe.staleness_timeout_sec??300;
       const m=state.cfg.matching||{}; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
-      const r={...(state.cfg.risk||{}),...(state.live.risk||{})}; $('a-share').value=r.share??''; $('a-fx').value=r.fx??'';
+      const a={...(state.cfg.arbitrage||{}),...(state.live.arbitrage||{})}; $('a-share').value=a.share??''; $('a-max-leg-share').value=a.max_leg_share??''; $('a-fx').value=a.fx??'';
+      const r={...(state.cfg.risk||{}),...(state.live.risk||{})};
       // Execution: 填入值或默认值
       const ex={...EXEC_DEFAULTS,...(state.cfg.execution||{})};
       $('e-track-timeout').value=ex.tracking_timeout_sec; $('e-cleanup').checked=ex.cleanup_enabled; $('e-merge').checked=ex.cleanup_merge_enabled; $('e-claim').checked=ex.cleanup_claim_enabled;
@@ -263,7 +265,7 @@
       put('discovery',d); }
     function saveMatching(){ const m={...(state.cfg.matching||{})};
       try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }
-    function saveArbitrage(){ const r={...(state.cfg.risk||{})}; for(const [id,k] of [['a-share','share'],['a-fx','fx']]) if($(id).value!=='')r[k]=num($(id).value); put('risk',r,'arbitrage(share/fx)'); }
+    function saveArbitrage(){ const a={...(state.cfg.arbitrage||{})}; for(const [id,k] of [['a-share','share'],['a-max-leg-share','max_leg_share'],['a-fx','fx']]) if($(id).value!=='')a[k]=num($(id).value); put('arbitrage',a,'arbitrage(share/max_leg_share/fx)'); }
     function saveExecution(){ put('execution',{...(state.cfg.execution||{}),
       tracking_timeout_sec:num($('e-track-timeout').value),cleanup_enabled:$('e-cleanup').checked,cleanup_merge_enabled:$('e-merge').checked,cleanup_claim_enabled:$('e-claim').checked,
       open_check_interval_secs:num($('e-open-int').value),position_check_interval_secs:num($('e-pos-int').value)}); }

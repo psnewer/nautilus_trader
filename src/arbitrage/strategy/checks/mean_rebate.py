@@ -5,7 +5,8 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
   1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取 PM/OE 两 venue 中
      概率最小者(即 best_ask 最便宜方)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
-  3. >= `min_rate` 阈值 → True;同时写 `ctx.scratch["legs"]` 供 Action 消费
+  3. >= `min_rate` 阈值 → True;同时写带 `share_if_wins` 的 `ctx.scratch["legs"]`
+     供 Action 消费。`share` 可在本 Check params 中显式配置;未配置则读 Web Arbitrage 默认。
 
 输出 legs 形态(每方向一条):
   {
@@ -15,9 +16,10 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
     "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds),
     "prob": float,
     "role": "home" | "draw" | "away",
+    "share_if_wins": float,
   }
 
-PlaceBetsAction 拿 share 后:PM size=share,OE size=share/price(stake)。
+PlaceBetsAction 用 leg 自带 `share_if_wins` 推 qty:PM size=share,OE size=share/price(stake)。
 """
 
 from __future__ import annotations
@@ -34,8 +36,9 @@ _VALID_ROLES = ("home", "draw", "away")
 class MeanRebateCheck(Check):
     """平均返水检查。"""
 
-    def __init__(self, min_rate: float = 0.01) -> None:
+    def __init__(self, min_rate: float = 0.01, share: float | None = None) -> None:
         self._min_rate = float(min_rate)
+        self._share = float(share) if share is not None else None
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
@@ -89,9 +92,21 @@ class MeanRebateCheck(Check):
         if mean_rebate_rate < self._min_rate:
             return False
 
+        share = self._configured_share(ctx)
+        if share <= 0:
+            return False
+
+        for leg in chosen_legs:
+            leg["share_if_wins"] = share
+
         ctx.scratch["legs"] = chosen_legs
         ctx.scratch["mean_rebate_rate"] = mean_rebate_rate
         return True
+
+    def _configured_share(self, ctx: EvalContext) -> float:
+        if self._share is not None:
+            return self._share
+        return float((ctx.strategy_defaults or {}).get("share") or 0.0)
 
 
 # ─── 辅助 ──────────────────────────────────────────────────────────

@@ -196,10 +196,66 @@ class OrbitExchScraper:
         self._log.info("Browser started successfully")
 
     async def _setup_stealth(self) -> None:
-        """设置反检测措施"""
+        """设置反检测措施,并让 OE competition 页一次渲染所有可见性驱动的比赛行。"""
         await self._context.add_init_script("""
+            if (window.__orbitexchDiscoveryStealthInstalled) return;
+            window.__orbitexchDiscoveryStealthInstalled = true;
+
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+
+            try {
+                Object.defineProperty(document, 'hidden', {
+                    get: () => false,
+                    configurable: true
+                });
+            } catch (e) {}
+            try {
+                Object.defineProperty(document, 'visibilityState', {
+                    get: () => 'visible',
+                    configurable: true
+                });
+            } catch (e) {}
+            try {
+                document.hasFocus = () => true;
+            } catch (e) {}
+
+            const OriginalIntersectionObserver = window.IntersectionObserver;
+            if (OriginalIntersectionObserver) {
+                window.IntersectionObserver = function(callback, options) {
+                    const observer = new OriginalIntersectionObserver((entries, obs) => {
+                        callback(entries.map(entry => ({
+                            boundingClientRect: entry.boundingClientRect,
+                            intersectionRatio: 1.0,
+                            intersectionRect: entry.boundingClientRect,
+                            isIntersecting: true,
+                            isVisible: true,
+                            rootBounds: entry.rootBounds,
+                            target: entry.target,
+                            time: entry.time
+                        })), obs);
+                    }, options);
+                    const originalObserve = observer.observe.bind(observer);
+                    observer.observe = function(target) {
+                        originalObserve(target);
+                        setTimeout(() => {
+                            const rect = target.getBoundingClientRect();
+                            callback([{
+                                boundingClientRect: rect,
+                                intersectionRatio: 1.0,
+                                intersectionRect: rect,
+                                isIntersecting: true,
+                                isVisible: true,
+                                rootBounds: null,
+                                target,
+                                time: performance.now()
+                            }], observer);
+                        }, 10);
+                    };
+                    return observer;
+                };
+                window.IntersectionObserver.prototype = OriginalIntersectionObserver.prototype;
+            }
         """)
 
     async def close_browser(self) -> None:

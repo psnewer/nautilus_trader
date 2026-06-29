@@ -91,7 +91,9 @@ ExecutionClient (维护账户)
 
 ## 单场 profit gates: match_tp / match_sl(Q16 修订,§5.6 `_check_profit_gates`)
 
-Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`ArbitrageLiveRiskEngine._check_profit_gates` 每次 submit 从 `ArbitragePortfolio.outcome_exposures(pair_id)` 读取所有 outcome 的绝对金额 `net_profit/liability`,用配置 `share` 计算阈值:止盈阈值 `share*match_tp`,止损阈值 `share*match_sl`。逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。Venue liveness 是另一道 Risk gate,位于 NT 父类检查之后、余额/profit gates 之前。
+Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`ArbitrageLiveRiskEngine._check_profit_gates` 每次 submit 从 `ArbitragePortfolio.outcome_exposures(pair_id)` 读取所有 outcome 的绝对金额 `net_profit/liability`,用 `ArbitrageParams.share` 计算阈值:止盈阈值 `share*match_tp`,止损阈值 `share*match_sl`。逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。概率门控位于 NT 父类检查之后、venue liveness/余额/profit gates 之前;PM price 直接当概率,OE 十进制赔率换算为 `1/price`。
+
+`ArbitrageParams.max_leg_share` 只作为 Web Arbitrage → StrategyEvaluator 的默认规模参数,供 strategy `share_limit` action 未显式配置时读取;RiskEngine 不执行 share-limit 缩放/门控。
 
 ### risk-6.7.1: `_check_order` 签名与父类一致 + super 先行(✅ 已 e2e 验证)
 - 前置: `ArbitrageLiveRiskEngine` 已装入管道
@@ -119,6 +121,12 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 输入: 普通 PM SubmitOrder。
 - 期望: Risk 只检查 PM liveness 并 deny。
 - 验收: 非套利订单不被 partner 协议污染。
+
+### risk-6.7.1e: 概率门控拒绝极端概率/赔率
+- 前置: `min_probability=0.03`,`max_probability=0.97`。
+- 输入: PM order price=0.02/0.98;OE order price=40.0(隐含概率 0.025)/1.02(隐含概率约 0.98)。
+- 期望: `_check_probability_gate` deny;price=0.03/0.97 或 OE price=2.0 放行。
+- 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability`;非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
 
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,`share=22.5`,`match_tp=0.05`;所有 outcome 的 `net_profit > 1.125`
@@ -220,7 +228,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 fx(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`)
+  - `configure_arb` 注入 `ArbitrageParams.share/fx`(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`)
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)

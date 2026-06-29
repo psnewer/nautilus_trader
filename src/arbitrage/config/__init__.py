@@ -7,6 +7,7 @@ Arbitrage 配置面(Q22-Q27 锁定 / #41):msgspec schema + JSON loader + env 凭
 """
 
 from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.config.schema import ArbitrageSectionConfig
 from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.config.schema import DebugSectionConfig
 from src.arbitrage.config.schema import DiscoveryConfig
@@ -23,6 +24,7 @@ from src.arbitrage.config.schema import VenuesConfig
 
 __all__ = [
     "ArbConfig",
+    "ArbitrageSectionConfig",
     "ConfigError",
     "DebugSectionConfig",
     "DiscoveryConfig",

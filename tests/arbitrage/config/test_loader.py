@@ -41,7 +41,7 @@ def test_default_empty_json(cfg_path):
     cfg = load_arb_config(cfg_path)
     assert isinstance(cfg, ArbConfig)
     assert cfg.discovery.enabled is True
-    assert cfg.risk.share == 22.5
+    assert cfg.arbitrage.share == 22.5
     assert cfg.venues.polymarket.clob_url == "https://clob.polymarket.com"
     assert cfg.venues.orbitexch.headless is True
     assert cfg.debug is None
@@ -60,7 +60,8 @@ def test_full_json_parses(cfg_path):
             "min_similarity": 1,
             "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
         },
-        "risk": {"share": 50.0, "fx": 1.5, "match_tp": 0.08},
+        "arbitrage": {"share": 50.0, "fx": 1.5, "max_leg_share": 75.0},
+        "risk": {"match_tp": 0.08, "min_probability": 0.04},
         "strategy": {
             "strategies": {
                 "tennis_prematch": {
@@ -75,9 +76,22 @@ def test_full_json_parses(cfg_path):
     assert cfg.discovery.polymarket.sports[0].sport == "Tennis"
     assert cfg.discovery.orbitexch.sports[0].competitions == ["Men's Roland Garros 2026"]
     assert cfg.matching.competition_aliases["atp"] == "ATP"
-    assert cfg.risk.share == 50.0
+    assert cfg.arbitrage.share == 50.0
+    assert cfg.arbitrage.fx == 1.5
+    assert cfg.arbitrage.max_leg_share == 75.0
+    assert cfg.risk.min_probability == 0.04
     assert cfg.strategy.bindings[0].scope == "competition:ATP"
     assert cfg.strategy.strategies["tennis_prematch"].arbitrage_tree is not None
+
+
+def test_legacy_risk_arbitrage_fields_migrate_to_arbitrage_section(cfg_path):
+    cfg_path.write_text(json.dumps({
+        "risk": {"share": 50.0, "max_leg_share": 100.0, "fx": 1.5},
+    }))
+    cfg = load_arb_config(cfg_path)
+    assert cfg.arbitrage.share == 50.0
+    assert cfg.arbitrage.max_leg_share == 100.0
+    assert cfg.arbitrage.fx == 1.5
 
 
 # ── .3 env 凭证注入 PM ──────────────────────────────────────────

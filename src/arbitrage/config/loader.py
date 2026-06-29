@@ -72,6 +72,7 @@ def load_arb_config(path: str | Path) -> ArbConfig:
         raise ConfigError(f"config root must be JSON object, got {type(raw).__name__}")
 
     _warn_credentials_in_json(raw)
+    _migrate_legacy_arbitrage_fields(raw)
     _inject_env_credentials(raw)
     _inject_env_proxy(raw)
 
@@ -79,6 +80,22 @@ def load_arb_config(path: str | Path) -> ArbConfig:
         return msgspec.convert(raw, type=ArbConfig)
     except msgspec.ValidationError as e:
         raise ConfigError(f"schema mismatch in {path}: {e}") from e
+
+
+def _migrate_legacy_arbitrage_fields(raw: dict) -> None:
+    """兼容旧配置:`risk.share/max_leg_share/fx` → 顶层 `arbitrage` 默认值。
+
+    新 `arbitrage` 段显式字段优先;旧字段只在新字段缺失时补齐。
+    """
+    risk = raw.get("risk") or {}
+    if not isinstance(risk, dict):
+        return
+    arb = raw.setdefault("arbitrage", {})
+    if not isinstance(arb, dict):
+        return
+    for key in ("share", "max_leg_share", "fx"):
+        if key not in arb and risk.get(key) is not None:
+            arb[key] = risk[key]
 
 
 def _warn_credentials_in_json(raw: dict) -> None:

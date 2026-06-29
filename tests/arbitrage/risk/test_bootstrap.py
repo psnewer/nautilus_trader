@@ -13,6 +13,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 import src.arbitrage.bootstrap as bootstrap
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.execution import ArbLiveExecutionEngine
 from src.arbitrage.risk import ArbitragePortfolio
 from src.arbitrage.risk import ArbitrageLiveRiskEngine
@@ -42,9 +43,15 @@ def _arb_node():
 def test_wire_injects_params_and_returns_shared_liveness():
     node = _arb_node()
     liveness = VenueExecutionLiveness()
-    params = ArbRiskParams(share=200.0, fx=1.3, match_tp=0.07)
+    params = ArbRiskParams(match_tp=0.07)
+    arbitrage_params = ArbitrageParams(share=200.0, fx=1.3)
 
-    returned = bootstrap.wire_arbitrage_runtime(node, params=params, venue_liveness=liveness)
+    returned = bootstrap.wire_arbitrage_runtime(
+        node,
+        params=params,
+        arbitrage_params=arbitrage_params,
+        venue_liveness=liveness,
+    )
 
     assert returned is liveness                          # 返回同一份供 execution/risk 复用
     assert node.kernel.portfolio._share == 200.0

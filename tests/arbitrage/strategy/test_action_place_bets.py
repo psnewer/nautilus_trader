@@ -128,6 +128,26 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
     }]
 
 
+def test_action_uses_leg_share_if_wins_without_action_share():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 40.0},
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 40.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["qty"] == 40.0
+    assert calls[1]["qty"] == 16.0
+
+
 def test_action_can_override_venue_price_and_qty_for_live_probe():
     """临时 live 验证可覆盖 OE 下单价/量,但不影响 Check 使用真实 order book 算机会。"""
     calls = []

@@ -29,10 +29,10 @@ _ROLE_ORDER = ("home", "draw", "away")
 class OneSideRebateCheck(Check):
     """枚举所有定向返水 candidate。"""
 
-    def __init__(self, min_rate: float = 0.01, share: float = 22.5, fx: float = 1.0) -> None:
+    def __init__(self, min_rate: float = 0.01, share: float | None = None, fx: float | None = None) -> None:
         self._min_rate = float(min_rate)
-        self._share = float(share)
-        self._fx = float(fx)
+        self._share = float(share) if share is not None else None
+        self._fx = float(fx) if fx is not None else None
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
@@ -42,6 +42,10 @@ class OneSideRebateCheck(Check):
         legs_by_role = _legs_by_role(snap)
         roles = _roles_present(legs_by_role)
         if roles is None:
+            return False
+        share = self._configured_share(ctx)
+        fx = self._configured_fx(ctx)
+        if share <= 0 or fx <= 0:
             return False
 
         candidates = []
@@ -58,6 +62,8 @@ class OneSideRebateCheck(Check):
                     combo=combo,
                     roles=roles,
                     target_role=target_role,
+                    share=share,
+                    fx=fx,
                     total_prob=total_prob,
                     rate=rate,
                 )
@@ -80,11 +86,13 @@ class OneSideRebateCheck(Check):
         combo: tuple[dict, ...],
         roles: tuple[str, ...],
         target_role: str,
+        share: float,
+        fx: float,
         total_prob: float,
         rate: float,
     ) -> dict | None:
         non_target_prob = sum(leg["prob"] for leg in combo if leg["role"] != target_role)
-        target_cost = self._share * (1.0 - non_target_prob)
+        target_cost = share * (1.0 - non_target_prob)
         if target_cost <= 0:
             return None
 
@@ -95,15 +103,15 @@ class OneSideRebateCheck(Check):
                 cost = target_cost
                 share_if_wins = cost / leg["prob"]
             else:
-                share_if_wins = self._share
-                cost = self._share * leg["prob"]
+                share_if_wins = share
+                cost = share * leg["prob"]
 
             qty = _qty_for_share_and_cost(
                 venue=leg["venue"],
                 price=leg["price"],
                 share_if_wins=share_if_wins,
                 cost=cost,
-                fx=self._fx,
+                fx=fx,
             )
             candidate_legs.append({
                 "instrument_id": leg["instrument_id"],
@@ -125,9 +133,19 @@ class OneSideRebateCheck(Check):
             "roles": roles,
             "rate": rate,
             "total_prob": total_prob,
-            "base_share": self._share,
+            "base_share": share,
             "legs": candidate_legs,
         }
+
+    def _configured_share(self, ctx: EvalContext) -> float:
+        if self._share is not None:
+            return self._share
+        return float((ctx.strategy_defaults or {}).get("share") or 0.0)
+
+    def _configured_fx(self, ctx: EvalContext) -> float:
+        if self._fx is not None:
+            return self._fx
+        return float((ctx.strategy_defaults or {}).get("fx") or 1.0)
 
 
 def _legs_by_role(snap) -> dict[str, list[dict]]:

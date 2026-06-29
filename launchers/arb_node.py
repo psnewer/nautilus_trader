@@ -63,6 +63,7 @@ from src.arbitrage.config import ArbConfig
 from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.dispatcher import to_arb_context_init_kwargs
 from src.arbitrage.config.dispatcher import to_arb_risk_params
+from src.arbitrage.config.dispatcher import to_arbitrage_params
 from src.arbitrage.config.dispatcher import to_debug_config
 from src.arbitrage.config.dispatcher import to_market_matching_actor_config
 from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
@@ -263,6 +264,7 @@ def add_actors(
                 signal_store=SignalStore(),
                 is_execution_active=_make_is_execution_active(node),  # Q19:桥到 exec client `_execution_active`
                 loop=loop,
+                arbitrage_params=to_arbitrage_params(cfg),  # Web Arbitrage 运行时默认 share/max_leg_share/fx
                 signal_collector=None,              # 用户域(slice 9 起)
                 pair_inflight=pair_inflight,        # §6.10 §7:per-pair 串行(与 execution 共享同一份)
             ),
@@ -277,6 +279,7 @@ def add_actors(
                 deps=WebGatewayDeps(
                     loop=loop,
                     risk_engine=node.kernel.risk_engine,   # 读 trading_state / live risk params
+                    arbitrage_params=to_arbitrage_params(cfg),  # 读/热改 Web Arbitrage 参数
                     config_path=config_path,                # PUT 写回 arb_config.json
                     pair_registry=pair_registry,            # /odds 遍历 matched pair 腿
                 ),
@@ -324,6 +327,7 @@ def bootstrap_and_build(
     wire_arbitrage_runtime(
         node,
         params=to_arb_risk_params(cfg),
+        arbitrage_params=to_arbitrage_params(cfg),
         venue_liveness=venue_liveness,
     )
 

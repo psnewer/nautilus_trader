@@ -20,7 +20,7 @@ def _ctx(*, books: dict, infos: dict) -> EvalContext:
         order_books=books,
         instrument_info=infos,
     )
-    return EvalContext(pair_id="p", snapshot=snap)
+    return EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0, "fx": 1.0})
 
 
 def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():
@@ -87,3 +87,20 @@ def test_rate_below_threshold_does_not_write_candidates():
 
     assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
     assert "candidates" not in ctx.scratch
+
+
+def test_uses_strategy_default_share_when_param_absent():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+    ctx.strategy_defaults["share"] = 40.0
+
+    assert OneSideRebateCheck(min_rate=0.10).passes(ctx) is True
+    candidate = ctx.scratch["candidates"][0]
+    assert candidate["base_share"] == 40.0

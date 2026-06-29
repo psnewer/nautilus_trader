@@ -168,7 +168,7 @@ PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_f
 
 PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/无鉴权/事件驱动稀疏)→ 实时赛事状态。**P11:`SportsGameUpdate` 事件的单一自然归属 = 本生产者**(消费者 matching/strategy 只读)。
 
-- `_connect` 即开 WS firehose(无 instrument 订阅);协议层 keepalive + 兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
+- `_connect` 即开 WS firehose(无 instrument 订阅);服务端协议层 ping 由 `websockets` 自动回 pong,客户端主动 keepalive ping 关闭(`ping_interval=None`),避免 PM Sports / 代理链路不回客户端 ping 时被本地 `keepalive ping timeout` 误杀;仍兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
 - 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate` → **`msgbus.publish` 裸发到 `data.SportsGameUpdate*`**(同 MatchedPair/InstrumentsRefreshed 的 publish_data 风格;消费者 `msgbus.subscribe("data.{Type}*")` 带 #58 的 `*` 通配)。**注**:`_handle_data` 走 DataEngine.process 只认内置/CustomData,裸自定义 Data 报 "unrecognized type"(#60 smoke 抓出 → 改裸 publish)。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
 - 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 经 `signal_collector` seam(strategy)。详见 refactor.md §5.9 / #60。

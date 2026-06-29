@@ -20,7 +20,7 @@ def _ctx(*, books: dict, infos: dict, instrument_ids: list | None = None) -> Eva
         order_books=books,
         instrument_info=infos,
     )
-    ctx = EvalContext(pair_id="p", snapshot=snap)
+    ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 40.0})
     return ctx
 
 
@@ -50,6 +50,7 @@ def test_3way_arb_triggers_above_threshold():
     legs = ctx.scratch["legs"]
     assert len(legs) == 3
     assert {l["role"] for l in legs} == {"home", "draw", "away"}
+    assert {l["share_if_wins"] for l in legs} == {40.0}
     rate = ctx.scratch["mean_rebate_rate"]
     assert rate > 0.05
 
@@ -112,3 +113,23 @@ def test_2way_arb_works():
     # total = 0.40 + 0.40 = 0.80 → rate = 0.20
     assert ok is True
     assert len(ctx.scratch["legs"]) == 2
+
+
+def test_explicit_share_overrides_strategy_default():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.45),
+        "H.ORBITEXCH":  _fake_book(2.5),
+        "A.ORBITEXCH":  _fake_book(2.5),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+        "H.ORBITEXCH":  {"selection_role": "home"},
+        "A.ORBITEXCH":  {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+    ctx.strategy_defaults["share"] = 40.0
+
+    assert MeanRebateCheck(min_rate=0.05, share=25.0).passes(ctx) is True
+    assert {leg["share_if_wins"] for leg in ctx.scratch["legs"]} == {25.0}

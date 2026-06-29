@@ -89,3 +89,35 @@ def test_candidates_with_no_remaining_are_removed():
     _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
 
     assert ctx.scratch["candidates"] == []
+
+
+def test_share_limit_uses_strategy_default_max_leg_share_when_param_absent():
+    ctx = EvalContext(
+        pair_id="p",
+        portfolio=_Portfolio(pm={"home": 60.0}),
+        strategy_defaults={"share": 50.0, "max_leg_share": 100.0, "fx": 1.0},
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "home", "price": 0.4, "share_if_wins": 50.0},
+    ]
+
+    _run(ShareLimitModification().execute(ctx))
+
+    assert ctx.scratch["share_limit_scale"] == 0.8
+    assert ctx.scratch["legs"][0]["qty"] == 40.0
+
+
+def test_share_limit_param_max_leg_share_overrides_strategy_default():
+    ctx = EvalContext(
+        pair_id="p",
+        portfolio=_Portfolio(pm={"home": 60.0}),
+        strategy_defaults={"share": 50.0, "max_leg_share": 100.0, "fx": 1.0},
+    )
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "home", "price": 0.4, "share_if_wins": 50.0},
+    ]
+
+    _run(ShareLimitModification(max_leg_share=80.0).execute(ctx))
+
+    assert ctx.scratch["share_limit_scale"] == 0.4
+    assert ctx.scratch["legs"][0]["qty"] == 20.0

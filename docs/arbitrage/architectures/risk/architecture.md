@@ -12,7 +12,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 | 类 | 基类 | 职责 |
 |---|---|---|
-| `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
+| `ArbitrageLiveRiskEngine` | NT `LiveRiskEngine` | 在 `submit_order` 管道上**透明拦截**:NT 父类自动检查(price/quantity/GTD + notional/submit_rate/`TradingState`/native 余额)+ 应用层 **概率/赔率门控** + **VenueExecutionLiveness 门控** + **余额检查** + **单场 profit gates**(match_tp/match_sl) |
 | `ArbitragePortfolio` | NT `Portfolio` | 领域指标 `outcome_exposures` / `outcome_shares` 等(pull-based 纯函数),与 NT `unrealized_pnl` 并列扩展;**不读取执行健康状态** |
 
 > **基类必须是 `LiveRiskEngine`(非基类 `RiskEngine`)**:实盘环境 kernel 实例化 `LiveRiskEngine`(`system/kernel.py:407`);基类 `RiskEngine` 仅 backtest 用。两者 `_handle_submit_order → _check_order` 派发链一致。(Step 6 核实修正,见 refactor.md 修订记录)
@@ -75,11 +75,13 @@ flowchart LR
 
 ```python
 class ArbitrageLiveRiskEngine(LiveRiskEngine):
-    """扩展 NT LiveRiskEngine:余额检查 + 单场 profit gates。"""
+    """扩展 NT LiveRiskEngine:概率门控 + 余额检查 + 单场 profit gates。"""
 
     # ⚠️ 签名必须与 NT 父类一致(engine.pyx:571 cpdef bint,两参 instrument/order)
     def _check_order(self, instrument: Instrument, order: Order) -> bool:
         if not super()._check_order(instrument, order):   # NT: price/quantity/GTD
+            return False
+        if not self._check_probability_gate(instrument, order):  # 应用层:PM 概率 / OE 十进制赔率
             return False
         if not self._check_required_venues_alive(order):  # 应用层:venue 执行真相可信
             return False
@@ -97,7 +99,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **share limit 已迁移至 Strategy Action(2026-06-28)**:
 - share limit 门控从 RiskEngine 移至 Strategy 层的 `ShareLimitModification` Action,在 `PlaceBetsAction` 之前执行。
-- 配置方式:`strategy.strategies.<id>.arbitrage_tree.actions` 数组中添加 `{"type": "share_limit", "params": {"max_leg_share": 100}}`。
+- 默认配置来自顶层 `arbitrage.max_leg_share`;`strategy.strategies.<id>.arbitrage_tree.actions` 中的 `share_limit.params.max_leg_share` 仅作为局部 override,优先级高于 Web 默认。
 - 详见 `docs/arbitrage/architectures/strategy/architecture.md`。
 
 **NT 检查分两步,本类只覆盖第一步**(Step 6 核实修正):
@@ -130,6 +132,13 @@ def _check_profit_gates(self, order: Order) -> bool:
     # 2. match_sl:所有 outcome net_profit < share*match_sl → deny(该场恶化别加)
     ...
 ```
+
+**`_check_probability_gate` —— 概率/赔率上下界门控(2026-06-29)**:逐 submit deny,用于过滤极端概率/赔率订单。配置字段为 `min_probability` / `max_probability`,默认 `0.03 / 0.97`,闭区间放行:概率 `< min_probability` 或 `> max_probability` 才 deny。
+
+- PM `BinaryOption` 的 `order.price` 本身就是概率。
+- OE `BettingInstrument` 的 `order.price` 是十进制赔率,先换算为隐含概率 `1 / price`。
+- Web 可热改上下界,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1`,非法区间不 apply。
+- recovery 下单不跳过该门控:极端赔率/概率属于订单本身风险,不是 profit gate。
 
 `_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。
 
@@ -174,7 +183,7 @@ def install_arbitrage_engines():       # 构造 TradingNode 之前调用,幂等
     _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 ```
 
-领域参数(fx/单场 profit gates,以及保留兼容的 share)在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, pair_registry=)` / `risk_engine.configure_arb(params, venue_liveness=...)`(`wire_arbitrage_runtime(node, ...)`)。Risk 使用 `share * match_tp/match_sl` 得到绝对金额阈值。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
+领域参数在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, pair_registry=)` 使用顶层 `arbitrage.share/fx`;`risk_engine.configure_arb(params, venue_liveness=..., arbitrage_params=...)` 同时接收真正风控参数(`ArbRiskParams`)和普通套利运行参数(`ArbitrageParams`)。Risk 的 profit gates 使用 `ArbitrageParams.share * match_tp/match_sl` 得到绝对金额阈值,但 `share/max_leg_share/fx` 不属于 Risk 配置所有权。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 ### 3.3 消息接线(订阅 / 发布)
 
@@ -182,7 +191,7 @@ Risk 是 **submit 管道拦截 + P2P endpoint** 型,**不是 topic pub/sub 重�
 
 | 类 | 接收 | 发布 | 不订阅 |
 |---|---|---|---|
-| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/profit gate deny;**`command.arb.trading_state` / `command.arb.risk_params`**(#119,`configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params`;契约见 web §8.3)| 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
+| `ArbitrageLiveRiskEngine` | NT 管道路由的 `TradingCommand`(`SubmitOrder`/`SubmitOrderList`/`ModifyOrder`)进 `_check_order`;`CancelOrder` 也过但不被 balance/profit gate deny;**`command.arb.trading_state` / `command.arb.risk_params` / `command.arb.arbitrage_params`**(#119,`configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params` / 热改 `_arb_arbitrage_params`;契约见 web §8.3)| 拒绝 → `_deny_order` → `events.order.{strategy_id}`;若 order 带 opportunity metadata,额外 publish `risk.opportunity.leg_denied`(见 `_cross-cutting/synchronization.md §8.4bis`) | `health_check.*` / `execution.*`(Q19 不参与,§3.4);不订 opportunity barrier topic |
 | `ArbitragePortfolio` | P2P endpoint(基类 `__init__` 注册;import 替换后 kernel 原生构造即注册):`Portfolio.update_account` / `update_order` / `update_position` | **无**(outcome 指标 pull-based,不发事件、不写 cache) | 任何 topic(纯函数式) |
 
 > NT 父类 `RiskEngine` 在 `set_trading_state` 时会发 `events.risk`(`TradingStateChanged`);本系统**不主动改 TradingState**(Q16 profit gates 走逐 submit deny),故该 topic 不被触发。
@@ -229,6 +238,17 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 - 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数。
 - outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,保证三元盘某 outcome 暂无持仓时仍参与“所有 outcome”判断;无 registry 时回退到持仓腿中的 `home/away/draw`。
 - 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
+
+### 4.1b 概率/赔率门控
+
+Risk 在 NT 父类基础检查之后、venue liveness/余额/profit gates 之前检查订单隐含概率:
+
+```
+probability = order.price              # PM BinaryOption
+probability = 1 / order.price          # OE BettingInstrument 十进制赔率
+```
+
+若 `probability < min_probability` 或 `probability > max_probability`,调用 `_deny_order` 并阻止订单继续进入 execution。默认闭区间为 `[0.03, 0.97]`,等于边界允许通过。
 
 `outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share(所有 venue 合并),供止盈止损门控参考。
 
@@ -296,6 +316,7 @@ sequenceDiagram
   ST->>EE: submit_order(order)
   EE->>RE: _check_order(instrument, order)
   RE->>RE: super()._check_order  (min/max qty, notional, rate, TradingState)
+  RE->>RE: _check_probability_gate (PM price / OE 1/odds)
   RE->>RE: _check_required_venues_alive(expected_legs → venues)
   RE->>C: 读 account_state（venue 分支算可用余额）
   RE->>RE: _check_balance

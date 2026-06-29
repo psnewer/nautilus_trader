@@ -21,16 +21,17 @@
 - 期望: `POST /control/trading_state {state:ACTIVE|HALTED}` → publish `command.arb.trading_state`(方案乙);非法 state → 400;`GET` 读 risk_engine 当前 state;WS 推 `{type:trading_state}`
 - 验收: web 端 `test_set_trading_state_publishes_command` / `test_post_trading_state_ok` / `test_post_trading_state_invalid_400` / `test_get_trading_state` / `test_trading_state_reads_risk_engine` / `test_on_risk_event_broadcasts_trading_state`;risk 端 end-to-end `tests/arbitrage/risk/test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored`
 
-### web-7.9: 配置热改(PUT /config/risk,C 混合热段)
-- 期望: `PUT /config/risk {share,...}` → 写回文件 + publish `command.arb.risk_params` + `applied:live`;risk 引擎只覆盖给定字段
-- 验收: `test_update_risk_config_writes_file_and_publishes_command` / `test_put_config_section`;risk 端 `test_risk_params_command_hot_updates_only_given_fields`
+### web-7.9: 配置热改(PUT /config/arbitrage 与 /config/risk,C 混合热段)
+- 期望: `PUT /config/arbitrage {share,max_leg_share,fx}` → 写回文件 + publish `command.arb.arbitrage_params` + `applied:live`;RiskEngine 后续 profit/balance 读取 live `ArbitrageParams`,StrategyEvaluator 后续评估读取 live `ArbitrageParams` 作为默认 `share/max_leg_share/fx`
+- 期望: `PUT /config/risk {match_tp,match_sl,min_probability,max_probability,...}` → 写回文件 + publish `command.arb.risk_params` + `applied:live`;risk 引擎只覆盖给定字段,概率上下界由 risk 组件侧校验
+- 验收: `test_update_arbitrage_config_writes_file_and_publishes_command` / `test_update_risk_config_writes_file_and_publishes_command` / `test_put_config_section`;risk 端 `test_arbitrage_params_command_hot_updates_only_given_fields` / `test_risk_params_command_hot_updates_only_given_fields` / `test_probability_bounds_hot_update_rejects_invalid_interval`;strategy 端 `test_eval_context_strategy_defaults_read_arbitrage_params`
 
 ### web-7.10: 配置重启段(PUT /config/venues)
 - 期望: 只写回文件、不发命令、`applied:on_restart`
 - 验收: `test_update_restart_section_writes_file_no_command`
 
 ### web-7.11: refresh_interval 热改 + GET /config 快照
-- 期望: `PUT /config/matching {refresh_interval_secs}` → publish `command.arb.refresh_interval` + `applied:live`;`GET /config` 返回 file + live(trading_state + risk params)
+- 期望: `PUT /config/matching {refresh_interval_secs}` → publish `command.arb.refresh_interval` + `applied:live`;`GET /config` 返回 file + live(trading_state + risk params + arbitrage params)
 - 验收: web 端 `test_update_matching_refresh_interval_publishes` / `test_config_snapshot_returns_file_and_live` / `test_get_config`;matching 端 consumer `tests/arbitrage/matching/test_pair_registry.py::test_refresh_interval_command_hot_updates` / `test_refresh_interval_command_rejects_nonpositive`
 
 ### web-7.12: boot 默认 HALTED(launcher)

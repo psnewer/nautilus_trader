@@ -27,12 +27,16 @@ _LOG = logging.getLogger(__name__)
 class ShareLimitModification(Action):
     """按 share limit 直接调整 legs 或 candidates。"""
 
-    def __init__(self, max_leg_share: float, share: float | None = None, fx: float = 1.0) -> None:
-        self._max_leg_share = float(max_leg_share)
+    def __init__(self, max_leg_share: float | None = None, share: float | None = None, fx: float | None = None) -> None:
+        self._max_leg_share = float(max_leg_share) if max_leg_share is not None else None
         self._share = float(share) if share is not None else None
-        self._fx = float(fx)
+        self._fx = float(fx) if fx is not None else None
 
     async def execute(self, ctx: EvalContext) -> None:
+        max_leg_share = self._configured_max_leg_share(ctx)
+        if max_leg_share is None:
+            return
+        fx = self._configured_fx(ctx)
         if self._adjust_candidates(ctx):
             return
 
@@ -53,13 +57,13 @@ class ShareLimitModification(Action):
             role = str(leg.get("role", ""))
             if not venue or not role:
                 continue
-            requested_share = _leg_share_if_wins(leg, venue, self._fx, self._share or 0.0)
+            requested_share = _leg_share_if_wins(leg, venue, fx, self._configured_share(ctx))
             if requested_share <= 0:
                 continue
             if venue == "ORBITEXCH":
-                remaining = self._oe_remaining(portfolio, ctx.pair_id, role)
+                remaining = self._oe_remaining(portfolio, ctx.pair_id, role, max_leg_share)
             else:
-                remaining = self._pm_remaining(portfolio, ctx.pair_id, role)
+                remaining = self._pm_remaining(portfolio, ctx.pair_id, role, max_leg_share)
             if remaining <= 0:
                 _LOG.info(
                     f"ShareLimitModification: pair={ctx.pair_id} remaining={remaining:.4f} "
@@ -86,6 +90,10 @@ class ShareLimitModification(Action):
         if "candidates" not in ctx.scratch:
             return False
 
+        max_leg_share = self._configured_max_leg_share(ctx)
+        if max_leg_share is None:
+            return True
+        fx = self._configured_fx(ctx)
         candidates = ctx.scratch.get("candidates") or []
         if not isinstance(candidates, list):
             _LOG.warning(f"ShareLimitModification: pair={ctx.pair_id} candidates is not list, skip")
@@ -99,7 +107,7 @@ class ShareLimitModification(Action):
 
         adjusted_candidates = []
         for idx, candidate in enumerate(candidates):
-            adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx)
+            adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx, max_leg_share, fx)
             if adjusted is not None:
                 adjusted_candidates.append(adjusted)
 
@@ -110,7 +118,15 @@ class ShareLimitModification(Action):
         )
         return True
 
-    def _adjust_candidate(self, portfolio, pair_id: str, candidate: dict, idx: int) -> dict | None:
+    def _adjust_candidate(
+        self,
+        portfolio,
+        pair_id: str,
+        candidate: dict,
+        idx: int,
+        max_leg_share: float,
+        fx: float,
+    ) -> dict | None:
         legs = candidate.get("legs") or []
         if not legs:
             return None
@@ -125,14 +141,14 @@ class ShareLimitModification(Action):
             if not venue or not role:
                 return None
 
-            requested_share = _leg_share_if_wins(leg, venue, self._fx, base_share)
+            requested_share = _leg_share_if_wins(leg, venue, fx, base_share)
             if requested_share <= 0:
                 return None
 
             if venue == "ORBITEXCH":
-                remaining = self._oe_remaining(portfolio, pair_id, role)
+                remaining = self._oe_remaining(portfolio, pair_id, role, max_leg_share)
             else:
-                remaining = self._pm_remaining(portfolio, pair_id, role)
+                remaining = self._pm_remaining(portfolio, pair_id, role, max_leg_share)
             if remaining <= 0:
                 return None
             scale = min(scale, remaining / requested_share)
@@ -153,13 +169,13 @@ class ShareLimitModification(Action):
         adjusted.setdefault("candidate_index", idx)
         return adjusted
 
-    def _pm_remaining(self, portfolio, pair_id: str, role: str) -> float:
+    def _pm_remaining(self, portfolio, pair_id: str, role: str, max_leg_share: float) -> float:
         """PM: 单腿独立检查。"""
         shares = portfolio.outcome_shares_for_venue(pair_id, "polymarket", None)
         current = shares.get(role, 0.0)
-        return self._max_leg_share - current
+        return max_leg_share - current
 
-    def _oe_remaining(self, portfolio, pair_id: str, role: str) -> float:
+    def _oe_remaining(self, portfolio, pair_id: str, role: str, max_leg_share: float) -> float:
         """OE: 按 merge 后的单腿 share 计算 remaining。
 
         OE 平台自动对冲，margin 按净敞口计算。remaining 基于 merge 后的 share:
@@ -180,9 +196,25 @@ class ShareLimitModification(Action):
             merged_away = away - home
 
         if role == "home":
-            return self._max_leg_share - merged_home
+            return max_leg_share - merged_home
         else:  # away
-            return self._max_leg_share - merged_away
+            return max_leg_share - merged_away
+
+    def _configured_max_leg_share(self, ctx: EvalContext) -> float | None:
+        if self._max_leg_share is not None:
+            return self._max_leg_share
+        value = (ctx.strategy_defaults or {}).get("max_leg_share")
+        return float(value) if value is not None else None
+
+    def _configured_share(self, ctx: EvalContext) -> float:
+        if self._share is not None:
+            return self._share
+        return float((ctx.strategy_defaults or {}).get("share") or 0.0)
+
+    def _configured_fx(self, ctx: EvalContext) -> float:
+        if self._fx is not None:
+            return self._fx
+        return float((ctx.strategy_defaults or {}).get("fx") or 1.0)
 
 
 def _candidate_base_share(candidate: dict) -> float:

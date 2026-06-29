@@ -20,6 +20,7 @@ from dataclasses import field
 import nautilus_trader.system.kernel as _kernel
 
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
 from src.arbitrage.risk.config import ArbRiskParams
@@ -128,6 +129,7 @@ def wire_arbitrage_runtime(
     node,
     *,
     params: ArbRiskParams | None = None,
+    arbitrage_params: ArbitrageParams | None = None,
     venue_liveness: VenueExecutionLiveness | None = None,
 ) -> VenueExecutionLiveness:
     """TradingNode 构造后、run 之前调用:把领域参数注入已原生构造的子类实例。
@@ -135,6 +137,7 @@ def wire_arbitrage_runtime(
     返回共享的 VenueExecutionLiveness(execution/risk 接线时复用同一份)。
     """
     params = params or ArbRiskParams()
+    arbitrage_params = arbitrage_params or ArbitrageParams()
     # 优先用 launcher 已经 prepare 进 ArbContext 的那份(execution factory / matching actor / runtime 共享同一对象)
     venue_liveness = venue_liveness or _arb_context.venue_liveness or VenueExecutionLiveness()
     pair_registry = _arb_context.pair_registry or PairRegistry()
@@ -146,7 +149,7 @@ def wire_arbitrage_runtime(
             "必须在构造 TradingNode 之前调用",
         )
     portfolio.configure_arb(
-        share=params.share, fx=params.fx,
+        share=arbitrage_params.share, fx=arbitrage_params.fx,
         pair_registry=pair_registry,
     )
 
@@ -156,7 +159,7 @@ def wire_arbitrage_runtime(
             "kernel.risk_engine 不是 ArbitrageLiveRiskEngine —— install_arbitrage_engines() "
             "必须在构造 TradingNode 之前调用",
         )
-    risk_engine.configure_arb(params, venue_liveness=venue_liveness)
+    risk_engine.configure_arb(params, venue_liveness=venue_liveness, arbitrage_params=arbitrage_params)
 
     exec_engine = getattr(node.kernel, "exec_engine", None)
     if isinstance(exec_engine, ArbLiveExecutionEngine):

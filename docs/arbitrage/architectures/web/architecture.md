@@ -32,8 +32,8 @@
 ```
 
 - **推送面(WS)**:只订 `events.risk`(`TradingStateChanged`)→ `put_nowait` 到每个 WS client `asyncio.Queue` → client 协程 `get` 后 `send_json`。同 loop,无锁。
-- **控制写**:HTTP → `_publish` 到 `command.arb.*`,owner 组件(risk/matching)订阅 apply(§8.3)。
-- **读**:`/control/trading_state` 读 `risk_engine.trading_state`;`/config` 读 `arb_config.json` 文件 + live risk params(`risk_engine._params`)。
+- **控制写**:HTTP → `_publish` 到 `command.arb.*`,owner 组件(risk/strategy/matching)订阅 apply(§8.3)。
+- **读**:`/control/trading_state` 读 `risk_engine.trading_state`;`/config` 读 `arb_config.json` 文件 + live risk params(`risk_engine._params`) + live arbitrage params(`WebGatewayActor._arbitrage_params`)。
 
 ## 3. 接口骨架
 
@@ -48,6 +48,7 @@ class WebGatewayConfig(ActorConfig, frozen=True, kw_only=True):
 class WebGatewayDeps:                   # 非 msgspec 对象经 deps 注入
     loop: asyncio.AbstractEventLoop
     risk_engine: object | None = None   # 读 trading_state / live risk params(写走命令)
+    arbitrage_params: ArbitrageParams | None = None  # 读/热改 share/max_leg_share/fx
     config_path: str | None = None      # arb_config.json,PUT 写回
 
 class WebGatewayActor(Actor):
@@ -59,7 +60,7 @@ class WebGatewayActor(Actor):
 
 **路由**:`GET /health` + 控制台路由(`/control/trading_state`、`/config`、`/ws`)见 §8.4。
 
-**消息接线**:接收 `events.risk`(NT RiskEngine set_trading_state 时发);发布 `command.arb.{trading_state,risk_params,refresh_interval}`(§8.3);不订任何监控/行情 topic。
+**消息接线**:接收 `events.risk`(NT RiskEngine set_trading_state 时发);发布 `command.arb.{trading_state,risk_params,arbitrage_params,refresh_interval}`(§8.3);不订任何监控/行情 topic。
 
 ## 4. 关键机制(scaffolding)
 
@@ -112,7 +113,8 @@ class WebGatewayActor(Actor):
 
 | 段 | 字段 | 生效方式 |
 |---|---|---|
-| risk | `share` / `match_tp` / `match_sl` | **热改** → `command.arb.risk_params` |
+| arbitrage | `share` / `max_leg_share` / `fx` | **热改** → `command.arb.arbitrage_params` |
+| risk | `match_tp` / `match_sl` / `min_probability` / `max_probability` | **热改** → `command.arb.risk_params` |
 | matching/discovery | `refresh_interval` | **热改** → `command.arb.refresh_interval` |
 | venues | 凭证 / URL | **重启**(连接态,结构性) |
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
@@ -125,7 +127,8 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | 命令 topic | payload | 消费者 | apply |
 |---|---|---|---|
 | `command.arb.trading_state` | `{"state": "ACTIVE"\|"HALTED"}` | `ArbitrageLiveRiskEngine`(`configure_arb` 内 subscribe)| `self.set_trading_state(...)` |
-| `command.arb.risk_params` | risk 字段 dict | `ArbitrageLiveRiskEngine` | 重置 `self._arb_params`(+ portfolio fx)|
+| `command.arb.risk_params` | risk 字段 dict(`match_tp`/`match_sl`/概率上下界;None=不动) | `ArbitrageLiveRiskEngine` | 校验并覆盖给定 `self._arb_params` 字段 |
+| `command.arb.arbitrage_params` | arbitrage 字段 dict(`share`/`max_leg_share`/`fx`;None=不动) | `ArbitrageLiveRiskEngine` / `StrategyEvaluator` | Risk 覆盖 `_arb_arbitrage_params` 供 profit/balance 使用;StrategyEvaluator 覆盖 `_arbitrage_params` 供 `EvalContext.strategy_defaults` 使用 |
 | `command.arb.refresh_interval` | `{"secs": float}` | `MarketMatchingActor`(`on_start` 内 subscribe)| 更新 `self._refresh_interval_secs` |
 
 命令消息类型 + topic 常量住 `src/arbitrage/common/control.py`(轻 frozen dataclass)。
@@ -138,7 +141,7 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | GET | `/health` | `{"status":"ok"}` —— **web server 存活探针,非交易健康检查**(#109/#110 退役的 PM/OE HealthCheckLoop 与此无关)|
 | GET | `/control/trading_state` | 当前 TradingState(读 `risk_engine.trading_state`)|
 | POST | `/control/trading_state` | body `{state}` → publish `command.arb.trading_state`;Halt→Active 前端二次确认 |
-| GET | `/config` | 当前生效配置快照(file `arb_config.json` + live risk params)|
+| GET | `/config` | 当前生效配置快照(file `arb_config.json` + live risk params + live arbitrage params)|
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
@@ -155,9 +158,10 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 ### 8.6 落地清单(控制台)
 
 - [ ] `src/arbitrage/common/control.py`:命令类型 + topic 常量
-- [ ] `ArbitrageLiveRiskEngine.configure_arb`:subscribe `command.arb.trading_state` + `command.arb.risk_params`
+- [ ] `ArbitrageLiveRiskEngine.configure_arb`:subscribe `command.arb.trading_state` + `command.arb.risk_params` + `command.arb.arbitrage_params`
+- [ ] `StrategyEvaluator.on_start`:subscribe `command.arb.arbitrage_params`
 - [ ] `MarketMatchingActor.on_start`:subscribe `command.arb.refresh_interval`
 - [ ] launcher:`web.enabled && web.start_halted` → build 后 `risk_engine.set_trading_state(HALTED)`;`WebSectionConfig` 加 `start_halted`
 - [ ] `app.py` 路由 + `actor.py` publish 命令 / 写 `arb_config.json`(注入 cfg 快照 + 配置文件路径)
 - [ ] 测试:命令 publish/consume apply、boot HALTED、PUT 写文件 + 热段发命令、HALTED deny 经 barrier 释放
-- [ ] **live 验证**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 risk 参数热生效
+- [ ] **live 验证**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 arbitrage/risk 参数热生效

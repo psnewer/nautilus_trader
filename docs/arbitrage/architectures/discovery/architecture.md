@@ -90,6 +90,12 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > 但旧 Provider 不查 aliases。slice 7A 加 `sport_aliases` / `competition_aliases` 构造参,
 > launcher 经 `ArbContext.oe_sport_aliases` / `oe_competition_aliases` 注入(由 `ArbConfig.matching` 派生)。
 
+**OE competition 页懒加载处理(2026-06-29)**:`OrbitExchScraper` discovery 浏览器独立于 Data/Exec 登录浏览器,仍需在 `add_init_script`
+中注入与赔率页一致的可见性欺骗:固定 `document.hidden=false` / `visibilityState="visible"` / `hasFocus()=true`,
+并拦截 `IntersectionObserver` 让被观察元素立即以 `isIntersecting=true` 上报。否则 OE 未登录 competition 页首屏只渲染约 20 个
+`role="row"`;注入后 Wimbledon competition live probe 从 20 行提升到 96 行。该逻辑只影响 discovery 页面渲染,不改变后续
+`extract_matches()` 的 selector/字段提取规则。
+
 > **PM 端市场发现 + 6-key(slice 7B → #55 series-based → #57 修发现链路)**:`ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider)`
 > **整体 override `load_all_async`**。撤掉 #53/#54 的 `_parse_instrument` enricher + upstream `event_slug_builder` 路径
 > (ticker 拆队名对 3-way Yes/No 市场不成立);#55 改 series-based;#57 修"发现链路漏主赛事"。
