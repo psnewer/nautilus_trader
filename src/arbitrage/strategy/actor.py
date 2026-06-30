@@ -127,7 +127,7 @@ class _RuntimeDeps:
     portfolio: object                      # ArbitragePortfolio
     signal_store: SignalStore
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
-    loop: object                            # asyncio.AbstractEventLoop
+    loop: object                            # 单测兜底 loop;生产调度使用 NT register_executor 注入的 ActorExecutor loop
     arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share/fx
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
     pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
@@ -143,12 +143,17 @@ class StrategyEvaluator(Actor):
         self._is_execution_active = deps.is_execution_active
         self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
         self._signal_collector = deps.signal_collector
-        self._loop = deps.loop
+        self._test_loop = deps.loop
+        self._registered_task_loop = None
         self._log_evaluations = config.log_evaluations
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
         self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
 
     # ── 生命周期 ─────────────────────────────────────────────────────
+    def register_executor(self, loop, executor) -> None:
+        super().register_executor(loop, executor)
+        self._registered_task_loop = loop
+
     def on_start(self) -> None:
         # slice 10d(#52)修 Gap A:`subscribe_data` 强制 SubscribeData cmd 路由,需 client_id/instrument_id;
         # custom Actor-to-Actor 事件用 `msgbus.subscribe(topic)` 直订。
@@ -215,7 +220,7 @@ class StrategyEvaluator(Actor):
                 self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
             return
         # sync 入口 → async evaluate
-        self._loop.create_task(self._evaluate_and_fire(strategy, pair_id))
+        self._create_task(self._evaluate_and_fire(strategy, pair_id))
 
     def _ensure_obd_subscribed(self, mp: MatchedPair) -> None:
         """slice 10e:MatchedPair 的两边各腿首次见到时订阅 OrderBookDeltas(去重)。
@@ -277,17 +282,38 @@ class StrategyEvaluator(Actor):
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-                self._loop.create_task(self._execute_actions(arb_res.pending_actions, ctx))
+                self._create_task(self._execute_actions(arb_res.pending_actions, ctx))
             elif comp_res.hit and comp_res.pending_actions:
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-                self._loop.create_task(self._execute_actions(comp_res.pending_actions, ctx))
+                self._create_task(self._execute_actions(comp_res.pending_actions, ctx))
             elif self._log_evaluations:
                 self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
         finally:
             if not fired and self._pair_inflight is not None:
                 self._pair_inflight.release_eval(pair_id)
+
+    def _create_task(self, coro):
+        """把 coroutine 投递到 NT kernel 为 Actor 注册的运行 loop。
+
+        NT msgbus handler 是同步调用,`on_data` 不保证处于 asyncio task 内;因此生产路径不能依赖
+        `asyncio.get_running_loop()`。`_test_loop` 只用于未注册 executor 的单测 harness。
+        """
+        loop = self._registered_executor_loop()
+        if loop is None:
+            return self._test_loop.create_task(coro)
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            return loop.create_task(coro)
+        return loop.call_soon_threadsafe(loop.create_task, coro)
+
+    def _registered_executor_loop(self):
+        return self._registered_task_loop
 
     async def _aevaluate(self, tree, ctx):
         """async 包 sync 的 `evaluate_tree`,使 `asyncio.gather` 模式可用。

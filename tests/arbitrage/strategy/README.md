@@ -221,6 +221,13 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 默认值仍为 `False`,不改变生产运行行为。
 
 - ✅ `test_evaluator.py` +2:启用 `log_evaluations` 后套利优先语义不变;无策略 / execution_active skip 路径保持 no-op。
+- ✅ `test_evaluator.py::test_running_loop_task_dispatch_uses_current_loop`:已注册 NT executor 且回调处于同一
+  running loop 内时,`StrategyEvaluator` 必须把 evaluate/action task 派发到 `register_executor` 注入的 loop;
+  注入 fake loop 只作为未注册 executor 的单测 fallback。验收:触发 `MatchedPair` 后 fake loop 无挂起 task,
+  action 在注册 loop 执行 1 次。
+- ✅ `test_evaluator.py::test_registered_executor_loop_used_without_running_loop`:NT msgbus 同步回调无 running loop
+  时,`StrategyEvaluator` 必须通过注册 loop 的 `call_soon_threadsafe` 投递 task,不能落到 launcher/deps fake
+  loop。验收:触发 `MatchedPair` 后 fake loop 无挂起 task,action 在注册 loop 执行 1 次。
 
 ## Slice 10d(2026-05-31 #52):msgbus 直订替代 subscribe_data
 

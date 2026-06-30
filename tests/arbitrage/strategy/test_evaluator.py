@@ -4,6 +4,7 @@
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from nautilus_trader.common.component import MessageBus
@@ -409,6 +410,53 @@ def test_different_pairs_not_blocked():
     assert len(loop.tasks) == 2                        # 不同 pair 各派发
     _run(_drain(loop))
     assert a1.calls == 1 and a2.calls == 1
+
+
+def test_running_loop_task_dispatch_uses_current_loop():
+    """已注册 NT executor 时,当前 loop 内的回调直接在注册 loop 创建 task。"""
+    async def scenario():
+        actor, store, pair_reg, strat_reg, loop, _ = _harness(log_evaluations=True)
+        executor = ThreadPoolExecutor(max_workers=1)
+        actor.register_executor(asyncio.get_running_loop(), executor)
+        action = _RecordingAction("arb")
+        strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+        store.view("match_X").set_persistent("arb_on", True)
+
+        try:
+            actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
+                                      pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
+            for _ in range(5):
+                await asyncio.sleep(0)
+        finally:
+            executor.shutdown(wait=True)
+
+        assert loop.tasks == []
+        assert action.calls == 1
+
+    _run(scenario())
+
+
+def test_registered_executor_loop_used_without_running_loop():
+    """NT msgbus 同步回调无 running loop 时,仍投递到 register_executor 注入的 loop。"""
+    actor, store, pair_reg, strat_reg, fallback_loop, _ = _harness(log_evaluations=True)
+    action = _RecordingAction("arb")
+    strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
+    store.view("match_X").set_persistent("arb_on", True)
+
+    nt_loop = asyncio.new_event_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        actor.register_executor(nt_loop, executor)
+        actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
+                                  pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
+        for _ in range(5):
+            nt_loop.run_until_complete(asyncio.sleep(0))
+
+        assert fallback_loop.tasks == []
+        assert action.calls == 1
+    finally:
+        executor.shutdown(wait=True)
+        nt_loop.close()
 
 
 # ── eval.17 已删除(#108):strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)退役 ——

@@ -204,7 +204,7 @@ class StrategyEvaluator(Actor):
         # 1. SignalCollector 先消化 event → 写 SignalStore(可选)
         # 2. _extract_evaluation_target(data) → (pair_id, sport, competition);MatchedPair 直读,
         #    其它 event 经 PairRegistry + instrument.info 反查
-        # 3. 查 StrategyRegistry,有则 self._loop.create_task(self._evaluate_and_fire(strategy, pair_id))
+        # 3. 查 StrategyRegistry,有则 _create_task(self._evaluate_and_fire(strategy, pair_id))
 
     async def _evaluate_and_fire(self, strategy, pair_id):
         if self._is_execution_active(): return    # Q19:让路
@@ -219,15 +219,26 @@ class StrategyEvaluator(Actor):
         )
         # 套利 > 补救;fire-and-forget(不阻塞)
         if arb_res.hit and arb_res.pending_action is not None:
-            self._loop.create_task(arb_res.pending_action.execute(ctx))
+            self._create_task(arb_res.pending_action.execute(ctx))
         elif comp_res.hit and comp_res.pending_action is not None:
-            self._loop.create_task(comp_res.pending_action.execute(ctx))
+            self._create_task(comp_res.pending_action.execute(ctx))
 
     async def _aevaluate(self, tree, ctx):
         return evaluate_tree(tree, ctx)         # sync evaluate 包成 coroutine 供 gather;
                                                 # Check 演进到 async I/O 时本层无需改动
         return EvalResult(hit=False)
 ```
+
+`StrategyEvaluator` 的异步派发通过 `_create_task(...)` 统一处理:生产路径使用 NT kernel
+`Actor.register_executor(...)` 注入的运行 loop;`StrategyEvaluator.register_executor(...)` 先调用
+NT 原生注册,再把同一个 loop 保存为 Python 侧调度指针。NT `MessageBus` handler 是同步调用,
+`on_data` 不保证处于 asyncio task 内,所以不能把 `asyncio.get_running_loop()` 当作调度入口;若当前
+running loop 正是注册 loop,直接 `create_task`,否则通过 `registered_loop.call_soon_threadsafe(...)`
+投递。deps 注入的 `loop` 只作为未注册 executor 的单测 fallback。
+
+`add_actors()` 在 `node.run()` 前装配 actor,不能把当时通过 `asyncio.get_event_loop()` 取得的 loop
+当作 NT 实际运行 loop,否则会出现只打印 `Strategy evaluate scheduled`、但无
+`Strategy evaluate result` 且 `PairInFlightGate` 一直占用的症状。
 
 `StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加低噪声运行锚点日志,不改变决策语义:
 `Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /
