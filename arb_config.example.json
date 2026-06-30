@@ -70,7 +70,7 @@
     "start_halted": true
   },
   "strategy": {
-    "_doc": "slice 9(#49)落 mean_rebate 策略:pre_match 作为 self_hits signal 门控;actions 数组依次执行(share_limit 缩量/调整 candidates → candi_select 选择内部最大 share_if_wins 最高的 candidate → place_bets 下单)",
+    "_doc": "slice 9(#49)落 mean_rebate 策略:pre_match 作为 self_hits signal 门控;套利树 checktion 用 require_cross_venue 过滤单 venue 覆盖全部腿的机会;actions 数组依次执行(share_limit 缩量/调整 candidates → candi_select 选择内部最大 share_if_wins 最高的 candidate → place_bets 下单)",
     "enabled": true,
     "log_evaluations": false,
     "signals": {},
@@ -86,6 +86,9 @@
               "params": {
                 "min_rate": 0.01
               }
+            },
+            {
+              "type": "require_cross_venue"
             }
           ],
           "actions": [
@@ -127,6 +130,9 @@
               "params": {
                 "min_rate": 0.01
               }
+            },
+            {
+              "type": "require_cross_venue"
             }
           ],
           "actions": [
