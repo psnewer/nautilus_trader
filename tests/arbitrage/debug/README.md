@@ -12,11 +12,11 @@
 - ✅ `test_debug_data_factories.py`(6:PM 无 debug / PM disabled / PM enabled 装 Debug 子类 + 传 debug=cfg / OE 无 debug / **OE disabled**(#69 补,对齐 PM) / OE enabled 装 Debug 子类 + 传 debug=cfg)
 
 **Q11.3 SkipExecutionClient 落地(2026-05-26 #40,2026-06-10 #93 校准 session/gate 生命周期)**:跳真 venue IO + mock 全成交已落;skip submit 仍进入 `_begin_session`,保留 `execution.started/finished` 与 per-pair gate 释放。
-- ✅ `test_debug_execution_clients.py`(21:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE GBP / market 单 0.5 兜底 / limit 用 order.price / `_mock_submit` 先 begin session 再 mock fill / cancel-only begin=False 时不 mock fill / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super / PM skip connect transport 容错 / OE+PM cancel no-op 对齐等)
+- ✅ `test_debug_execution_clients.py`(21:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE USD / market 单 0.5 兜底 / limit 用 order.price / `_mock_submit` 先 begin session 再 mock fill / cancel-only begin=False 时不 mock fill / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super / PM skip connect transport 容错 / OE+PM cancel no-op 对齐等)
 - ✅ `test_debug_exec_factories.py`(4:PM 无 debug 装 prod / PM enabled 装 Skip + 传 debug=cfg / OE 无 debug / OE enabled 装 Skip + 传 debug=cfg)
 
 **#69:mock 层 PM/OE 测试对齐**:此前 `test_debug_execution_clients.py` 只有 `_FakeSkipPM`、且只测 `_submit_order` 一条分支;OE skip 客户端的真分支与 cancel 系列均无测。补 +9(真类 `__new__` + monkeypatch 基类 async 当 super 探针,测真实 `SkipExecution{PM,OE}Client`,非复制逻辑):
-- OE `_submit_order`:skip 激活走 `_begin_session`→`_mock_fill(GBP)`、不调 super / cancel-only begin=False 不 mock fill / skip 未激活调 super(3)
+- OE `_submit_order`:skip 激活走 `_begin_session`→`_mock_fill(USD)`、不调 super / cancel-only begin=False 不 mock fill / skip 未激活调 super(3)
 - OE `_cancel_order`+`_cancel_all_orders`:skip 激活 no-op / 未激活调 super(2)
 - OE 专属 `_cancel_residual_one`(PM 无):skip 激活 no-op / 未激活调 super(2)
 - PM `_cancel_order`+`_cancel_all_orders`:skip 激活 no-op / 未激活调 super(2,补此前缺的 cancel 分支)

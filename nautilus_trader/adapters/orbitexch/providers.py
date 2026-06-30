@@ -19,7 +19,7 @@ import pandas as pd
 
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments.betting import null_handicap
 from nautilus_trader.model.objects import Money
@@ -42,11 +42,13 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
         *,
         sport_aliases: dict[str, str] | None = None,
         competition_aliases: dict[str, str] | None = None,
+        fx: float = 1.0,
     ) -> None:
         super().__init__(config=config)
         self._scraper = scraper
         self._sport_aliases = sport_aliases or {}
         self._competition_aliases = competition_aliases or {}
+        self._fx = float(fx) if fx > 0 else 1.0
 
     async def load_all_async(self, filters: dict | None = None) -> None:
         """一轮发现:scraper → MatchEvent[] → 每场 ≥1 条 BettingInstrument 入基类。"""
@@ -74,10 +76,17 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
             if not sel_id:
                 continue
             info = dict(info_base, selection_role=role)
-            yield self._betting_instrument(event, role, sel_id, info)
+            yield self._betting_instrument(event, role, sel_id, info, self._fx)
 
     @staticmethod
-    def _betting_instrument(event: MatchEvent, role: str, selection_id: str, info: dict) -> BettingInstrument:
+    def _betting_instrument(
+        event: MatchEvent,
+        role: str,
+        selection_id: str,
+        info: dict,
+        fx: float,
+    ) -> BettingInstrument:
+        min_stake_usd = Decimal("7") * Decimal(str(fx))
         return BettingInstrument(
             venue_name="ORBITEXCH",
             betting_type="ODDS",
@@ -96,10 +105,10 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
             selection_handicap=null_handicap(),
             selection_id=int(selection_id),
             selection_name=role,
-            currency="GBP",
+            currency="USD",
             price_precision=2,
             size_precision=2,
-            min_notional=Money(Decimal("7"), GBP),
+            min_notional=Money(min_stake_usd, USD),
             ts_event=0,
             ts_init=0,
             info=info,

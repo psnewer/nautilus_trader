@@ -12,7 +12,7 @@ import pytest
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
@@ -22,6 +22,8 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.common.control import SetArbitrageParamsCommand
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positions
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
@@ -59,7 +61,7 @@ def test_balance_mapping_total_equals_free():
     b = bals[0]
     assert b.total == b.free                       # WS 已净挂单 → total=free
     assert b.total.as_double() == pytest.approx(37.49)
-    assert b.currency == GBP
+    assert b.currency == USD
     assert b.locked.as_double() == 0.0
 
 
@@ -73,6 +75,17 @@ def test_on_general_frame_balance_generates_account_state():
     c._on_general_frame({"BALANCE": {"balance": "37.49", "avBalance": None}})
     assert captured["reported"] is True
     assert captured["balances"][0].total.as_double() == pytest.approx(37.49)
+
+
+def test_on_general_frame_balance_normalized_to_usd():
+    c = _client()
+    c._fx = 1.3
+    captured = {}
+    c.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
+        balances=balances, reported=reported,
+    )
+    c._on_general_frame({"BALANCE": {"balance": "37.49", "avBalance": None}})
+    assert captured["balances"][0].total.as_double() == pytest.approx(48.74)
 
 
 def test_on_general_frame_unknown_ignored():
@@ -89,6 +102,12 @@ def test_on_general_frame_null_balance_no_account_state():
     c.generate_account_state = lambda **k: calls.append(k)
     c._on_general_frame({"BALANCE": {"balance": None}})
     assert calls == []
+
+
+def test_arbitrage_fx_command_updates_oe_client():
+    c = _client()
+    c._msgbus.publish(topic=TOPIC_ARBITRAGE_PARAMS, msg=SetArbitrageParamsCommand(fx=1.31))
+    assert c._current_fx() == pytest.approx(1.31)
 
 
 # ── 登录后弹窗 ────────────────────────────────────────────────────
@@ -331,6 +350,40 @@ def test_on_current_bets_matched_fires_generate_order_filled():
     assert f["last_qty"].as_double() == 7.0       # delta = sizeMatched - prev(0)
     assert f["last_px"].as_double() == 2.3        # averagePrice(成交均价,非 1.01 限价)
     assert f["liquidity_side"] == LiquiditySide.MAKER    # 硬编码假设
+
+
+def test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes():
+    """成交 delta 用 OE 原始 GBP 累积值算;fx 热改不应制造虚假新增成交。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    c._fx = 1.3
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=4290403)
+    c._cache.add_instrument(inst)
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(9.1), inst.make_price(1.01))
+    c._cache.add_order(order)
+    voi = VenueOrderId("222016509")
+    c._cache.add_venue_order_id(order.client_order_id, voi)
+
+    captured: list = []
+    c.generate_order_filled = lambda **kw: captured.append(kw)
+    bet = {
+        "offerId": "222016509", "marketId": inst.market_id, "selectionId": "4290403",
+        "side": "BACK", "sizePlaced": "7.00", "sizeMatched": "7.00",
+        "sizeRemaining": "0.00", "averagePrice": "2.3", "price": "1.01",
+    }
+
+    c._on_current_bets([bet])
+    c._fx = 1.4
+    c._on_current_bets([bet])
+
+    assert len(captured) == 1
+    assert captured[0]["last_qty"].as_double() == pytest.approx(9.1)
 
 
 # ── #105 持仓聚合 current_bets_to_positions(纯函数,§4.3bis(2))──────

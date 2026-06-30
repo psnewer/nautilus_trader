@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 from py_clob_client_v2.exceptions import PolyApiException
 
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC_POS
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
@@ -79,11 +79,11 @@ def test_mock_fill_pm_uses_usdc():
     assert rec.filled[0]["commission"].as_decimal() == Decimal("0")
 
 
-def test_mock_fill_oe_uses_gbp():
+def test_mock_fill_oe_uses_usd():
     rec = _Recorder()
     cmd = MagicMock(); cmd.order = _make_order()
-    _mock_fill(rec, cmd, GBP)
-    assert rec.filled[0]["quote_currency"] is GBP
+    _mock_fill(rec, cmd, USD)
+    assert rec.filled[0]["quote_currency"] is USD
 
 
 def test_mock_fill_market_order_uses_fallback_price():
@@ -275,8 +275,8 @@ def _bare(cls, *, active: bool):
     return c
 
 
-# ── OE: _submit_order 走 _mock_fill(GBP)/ 透传 ──────────────
-def test_oe_skip_submit_active_uses_mock_fill_gbp(monkeypatch):
+# ── OE: _submit_order 走 _mock_fill(USD)/ 透传 ──────────────
+def test_oe_skip_submit_active_uses_mock_fill_usd(monkeypatch):
     c = _bare(SkipExecutionOrbitExchClient, active=True)
     ccys, super_called = [], []
     begins = []
@@ -287,7 +287,7 @@ def test_oe_skip_submit_active_uses_mock_fill_gbp(monkeypatch):
     cmd = MagicMock()
     _run(c._submit_order(cmd))
     assert begins == [cmd]
-    assert ccys == [GBP] and super_called == []  # OE mock 用 GBP,不碰真 venue
+    assert ccys == [USD] and super_called == []  # OE mock 用 USD,不碰真 venue
 
 
 def test_oe_skip_submit_cancel_only_skips_mock_fill(monkeypatch):

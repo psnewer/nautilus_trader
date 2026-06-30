@@ -28,7 +28,7 @@ ExecutionClient (维护账户)
 ```
 
 **唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
-- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE:`instrument.min_notional=7 GBP stake`)
+- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE:`instrument.min_notional=Money(7 * fx, USD)`)
 - 子类加 `_check_balance` hook 做余额检查
 
 **删除**:
@@ -47,7 +47,7 @@ ExecutionClient (维护账户)
 ### risk-6.2: NT 自动处理 venue 最小下单额
 - 输入:
   - PM:提交一个 `quantity < instrument.min_quantity(5 shares)` 的订单
-  - OE:提交一个 `stake/notional < instrument.min_notional(7 GBP)` 的订单
+  - OE:提交一个 USD stake/notional `< instrument.min_notional(7 * fx)` 的订单
 - 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
 - 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测
 
@@ -63,11 +63,11 @@ ExecutionClient (维护账户)
   - 输入: 再提交名义额 `50` 的开仓单
   - 期望: `_check_balance` 算可用 = `100 − 60 = 40 < 50` → **拒绝**(误读 `free=100` 则误放行)
   - 验收: PM 可用 = `total − Σ(PM cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
-- **OE —— 直接信 WS 余额(已含占用,不再减)**
-  - 前置: OE WS 上报余额 `40`(**已扣**挂单占用);该值即可用
+- **OE —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
+  - 前置: OE WS 上报余额 `40 GBP`(**已扣**挂单占用),ExecutionClient 入站按 `fx` 写成 `Money(40 * fx, USD)`;该值即可用
   - 输入: 提交名义额 `50` 的单
   - 期望: `_check_balance` 用 `40 < 50` → 拒绝;**不再额外扣挂单**(否则双重扣减低估)
-  - 验收: OE 可用 = cache 余额直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM/OE 不同处理
+  - 验收: OE 可用 = cache 余额 USD 数值直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM/OE 不同处理
 
 ### risk-6.4: cache stale 时由 venue 拒绝兜底
 - 前置: cache 余额过期,venue 真实余额已不够
@@ -84,7 +84,7 @@ ExecutionClient (维护账户)
 ### risk-6.6: OE ExecutionClient 被动维护账户状态(WS)
 - 前置: OrbitExchExecutionClient 启动,WS 已连接
 - 输入: 模拟 OE WS 推送一条余额变化帧
-- 期望: ExecutionClient 解析后调 `generate_account_state` 写 Cache
+- 期望: ExecutionClient 解析后乘 `arbitrage.fx`,再调 `generate_account_state` 写 Cache
 - 验收: 被动路径,无 timer,完全反应式
 
 ---
@@ -220,7 +220,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ## ArbitragePortfolio: outcome_exposures / outcome_shares 领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。
+子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。OE position quantity 由 adapter 入站时归一为 USD stake,Portfolio/Risk 不再乘 fx。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
@@ -228,7 +228,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 `ArbitrageParams.share/fx`(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`)
+  - `configure_arb` 注入 `ArbitrageParams.share`(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`;2026-06-30:fx 只在 OE adapter 边界使用)
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)

@@ -32,7 +32,7 @@ class OneSideRebateCheck(Check):
     def __init__(self, min_rate: float = 0.01, share: float | None = None, fx: float | None = None) -> None:
         self._min_rate = float(min_rate)
         self._share = float(share) if share is not None else None
-        self._fx = float(fx) if fx is not None else None
+        self._fx = float(fx) if fx is not None else None  # 兼容旧配置,当前中间层不再使用 fx
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
@@ -44,8 +44,7 @@ class OneSideRebateCheck(Check):
         if roles is None:
             return False
         share = self._configured_share(ctx)
-        fx = self._configured_fx(ctx)
-        if share <= 0 or fx <= 0:
+        if share <= 0:
             return False
 
         candidates = []
@@ -63,7 +62,6 @@ class OneSideRebateCheck(Check):
                     roles=roles,
                     target_role=target_role,
                     share=share,
-                    fx=fx,
                     total_prob=total_prob,
                     rate=rate,
                 )
@@ -87,7 +85,6 @@ class OneSideRebateCheck(Check):
         roles: tuple[str, ...],
         target_role: str,
         share: float,
-        fx: float,
         total_prob: float,
         rate: float,
     ) -> dict | None:
@@ -111,7 +108,6 @@ class OneSideRebateCheck(Check):
                 price=leg["price"],
                 share_if_wins=share_if_wins,
                 cost=cost,
-                fx=fx,
             )
             candidate_legs.append({
                 "instrument_id": leg["instrument_id"],
@@ -141,11 +137,6 @@ class OneSideRebateCheck(Check):
         if self._share is not None:
             return self._share
         return float((ctx.strategy_defaults or {}).get("share") or 0.0)
-
-    def _configured_fx(self, ctx: EvalContext) -> float:
-        if self._fx is not None:
-            return self._fx
-        return float((ctx.strategy_defaults or {}).get("fx") or 1.0)
 
 
 def _legs_by_role(snap) -> dict[str, list[dict]]:
@@ -198,10 +189,9 @@ def _qty_for_share_and_cost(
     price: float,
     share_if_wins: float,
     cost: float,
-    fx: float,
 ) -> float:
     if venue == "POLYMARKET":
         return share_if_wins
     if venue == "ORBITEXCH":
-        return cost / fx if fx > 0 else 0.0
+        return cost
     return 0.0

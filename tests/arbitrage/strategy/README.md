@@ -197,9 +197,9 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 - ✅ `test_check_pre_match.py`(3):兼容 Check 形态 not in_play → True / in_play → False / snapshot=None → True 不阻塞;生产 example 推荐用 `self_hits: {"signal": "pre_match"}`
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / strategy params.share 覆盖 Web 默认 share
 - ✅ `test_check_one_side_rebate.py`:2-way PM/OE 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / target outcome 用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share
-- ✅ `test_check_mean_rebate_recovery.py`(6):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE 缺口 qty 按 gross payout 反算 / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
+- ✅ `test_check_mean_rebate_recovery.py`(6):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE 缺口 qty 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
 - ✅ `test_action_place_bets.py`:PM size=share / OE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / 无 action share 时用 `leg["share_if_wins"]` 推 qty / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
-- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 `qty/share_if_wins` / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 的 candidate 被移除 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认
+- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 的 candidate 被移除 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认
 - ✅ `test_action_candi_select.py`(2):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs
 
 **OE inplay 写入**:

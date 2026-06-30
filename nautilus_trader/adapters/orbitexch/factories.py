@@ -71,6 +71,7 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
                 scraper=scraper,
                 sport_aliases=dict(getattr(ctx, "oe_sport_aliases", {})),
                 competition_aliases=dict(getattr(ctx, "oe_competition_aliases", {})),
+                fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             )
         else:
             provider = InstrumentProvider()  # discovery 禁用时占位
@@ -136,6 +137,7 @@ class ArbOrbitExchLiveExecClientFactory(LiveExecClientFactory):
             pair_registry=ctx.pair_registry,
             pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             session_timeout_secs=ctx.oe_session_timeout_secs,
+            fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
         )
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.execution_clients import SkipExecutionOrbitExchClient

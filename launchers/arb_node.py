@@ -313,6 +313,7 @@ def bootstrap_and_build(
         pair_registry=pair_registry,
         pair_inflight=pair_inflight,    # §6.10 §7:strategy + execution 共享同一份 per-pair 闸
         debug_config=debug_config,
+        arbitrage_params=to_arbitrage_params(cfg),
         pm_settlement=_make_pm_settlement(cfg),  # #110:NT 连续 position 对账触发 merge/redeem
         **to_arb_context_init_kwargs(cfg),
     )

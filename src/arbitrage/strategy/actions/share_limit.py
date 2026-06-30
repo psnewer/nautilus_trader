@@ -30,13 +30,12 @@ class ShareLimitModification(Action):
     def __init__(self, max_leg_share: float | None = None, share: float | None = None, fx: float | None = None) -> None:
         self._max_leg_share = float(max_leg_share) if max_leg_share is not None else None
         self._share = float(share) if share is not None else None
-        self._fx = float(fx) if fx is not None else None
+        self._fx = float(fx) if fx is not None else None  # 兼容旧配置,当前中间层不再使用 fx
 
     async def execute(self, ctx: EvalContext) -> None:
         max_leg_share = self._configured_max_leg_share(ctx)
         if max_leg_share is None:
             return
-        fx = self._configured_fx(ctx)
         if self._adjust_candidates(ctx):
             return
 
@@ -57,7 +56,7 @@ class ShareLimitModification(Action):
             role = str(leg.get("role", ""))
             if not venue or not role:
                 continue
-            requested_share = _leg_share_if_wins(leg, venue, fx, self._configured_share(ctx))
+            requested_share = _leg_share_if_wins(leg, venue, self._configured_share(ctx))
             if requested_share <= 0:
                 continue
             if venue == "ORBITEXCH":
@@ -93,7 +92,6 @@ class ShareLimitModification(Action):
         max_leg_share = self._configured_max_leg_share(ctx)
         if max_leg_share is None:
             return True
-        fx = self._configured_fx(ctx)
         candidates = ctx.scratch.get("candidates") or []
         if not isinstance(candidates, list):
             _LOG.warning(f"ShareLimitModification: pair={ctx.pair_id} candidates is not list, skip")
@@ -107,7 +105,7 @@ class ShareLimitModification(Action):
 
         adjusted_candidates = []
         for idx, candidate in enumerate(candidates):
-            adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx, max_leg_share, fx)
+            adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx, max_leg_share)
             if adjusted is not None:
                 adjusted_candidates.append(adjusted)
 
@@ -125,7 +123,6 @@ class ShareLimitModification(Action):
         candidate: dict,
         idx: int,
         max_leg_share: float,
-        fx: float,
     ) -> dict | None:
         legs = candidate.get("legs") or []
         if not legs:
@@ -141,7 +138,7 @@ class ShareLimitModification(Action):
             if not venue or not role:
                 return None
 
-            requested_share = _leg_share_if_wins(leg, venue, fx, base_share)
+            requested_share = _leg_share_if_wins(leg, venue, base_share)
             if requested_share <= 0:
                 return None
 
@@ -211,11 +208,6 @@ class ShareLimitModification(Action):
             return self._share
         return float((ctx.strategy_defaults or {}).get("share") or 0.0)
 
-    def _configured_fx(self, ctx: EvalContext) -> float:
-        if self._fx is not None:
-            return self._fx
-        return float((ctx.strategy_defaults or {}).get("fx") or 1.0)
-
 
 def _candidate_base_share(candidate: dict) -> float:
     for key in ("base_share", "share", "target_share"):
@@ -230,13 +222,13 @@ def _candidate_base_share(candidate: dict) -> float:
     return min(shares) if shares else 0.0
 
 
-def _leg_share_if_wins(leg: dict, venue: str, fx: float, fallback_share: float) -> float:
+def _leg_share_if_wins(leg: dict, venue: str, fallback_share: float) -> float:
     if leg.get("share_if_wins") is not None:
         return float(leg["share_if_wins"])
     if leg.get("qty") is not None:
         qty = float(leg["qty"])
         if venue == "ORBITEXCH":
-            return qty * float(leg.get("price", 0.0)) * fx
+            return qty * float(leg.get("price", 0.0))
         return qty
     return fallback_share
 

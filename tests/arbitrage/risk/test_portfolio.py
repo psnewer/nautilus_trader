@@ -27,14 +27,14 @@ def _portfolio(cache=None) -> ArbitragePortfolio:
         cache=cache,
         clock=clock,
     )
-    pf.configure_arb(share=100.0, fx=1.0)
+    pf.configure_arb(share=100.0)
     return pf
 
 
 # ── 公式(risk-6.9.2b / 6.9.2c / 6.9.2d)──────────────────────────────
 def test_compute_outcome_exposures_net_profit_and_liability():
     pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("orbitexch", "away", 40, 2.5, 1.0)]
+    legs = [_Leg("polymarket", "home", 100, 0.4), _Leg("orbitexch", "away", 40, 2.5)]
     exposures = pf._compute_outcome_exposures(legs)
     assert exposures["home"].net_profit == pytest.approx(20.0)
     assert exposures["home"].liability == pytest.approx(40.0)
@@ -44,7 +44,7 @@ def test_compute_outcome_exposures_net_profit_and_liability():
 
 def test_compute_outcome_exposures_three_way_adds_draw():
     pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4, 1.0), _Leg("polymarket", "draw", 50, 0.3, 1.0)]
+    legs = [_Leg("polymarket", "home", 100, 0.4), _Leg("polymarket", "draw", 50, 0.3)]
     exposures = pf._compute_outcome_exposures(legs)
     assert set(exposures.keys()) == {"home", "draw", "away"}
     assert exposures["away"].net_profit == pytest.approx(-55.0)
@@ -73,8 +73,8 @@ def test_outcome_exposures_uses_registered_outcomes_even_without_position():
     _stub_legs(
         pf,
         [
-            _Leg("polymarket", "home", 100, 0.4, 1.0),
-            _Leg("polymarket", "away", 100, 0.4, 1.0),
+            _Leg("polymarket", "home", 100, 0.4),
+            _Leg("polymarket", "away", 100, 0.4),
         ],
     )
 
@@ -89,9 +89,9 @@ def test_outcome_shares_aggregates_by_outcome():
     _stub_legs(
         pf,
         [
-            _Leg("polymarket", "home", 5, 0.4, 1.0),
-            _Leg("orbitexch", "home", 3, 2.0, 1.0),
-            _Leg("orbitexch", "away", 4, 2.5, 1.0),
+            _Leg("polymarket", "home", 5, 0.4),
+            _Leg("orbitexch", "home", 3, 2.0),
+            _Leg("orbitexch", "away", 4, 2.5),
         ],
     )
 
@@ -115,7 +115,7 @@ def test_leg_from_position_pm_and_oe():
     assert leg_pm.size == pytest.approx(100.0) and leg_pm.price == pytest.approx(0.4)
 
     leg_oe = pf._leg_from_position(DuckPosition(oe.id, 50.0, 2.5))
-    assert leg_oe.venue == "orbitexch" and leg_oe.market_type == "away" and leg_oe.fx == 1.0
+    assert leg_oe.venue == "orbitexch" and leg_oe.market_type == "away"
 
 
 def test_leg_from_position_missing_info_returns_none():
@@ -167,4 +167,3 @@ def test_resolve_pair_id_reads_from_pair_registry():
 
 def _stub_legs(pf, legs):
     pf._legs_for_pair = lambda pair_id, account_id=None: legs
-

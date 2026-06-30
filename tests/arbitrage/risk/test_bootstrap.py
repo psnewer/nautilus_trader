@@ -55,7 +55,6 @@ def test_wire_injects_params_and_returns_shared_liveness():
 
     assert returned is liveness                          # 返回同一份供 execution/risk 复用
     assert node.kernel.portfolio._share == 200.0
-    assert node.kernel.portfolio._fx == 1.3
     assert node.kernel.risk_engine._params.match_tp == 0.07
     assert node.kernel.risk_engine._arb_venue_liveness is liveness
 

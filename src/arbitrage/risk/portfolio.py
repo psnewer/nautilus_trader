@@ -29,31 +29,30 @@ from src.arbitrage.common.pair_registry import PairRegistry
 
 
 class _Leg:
-    """从 NT Position 反推的单腿(outcome 指标计算用)。"""
+    """从 NT Position 反推的单腿(outcome 指标计算用,size 已是 USD 口径)。"""
 
-    __slots__ = ("venue", "market_type", "size", "price", "fx")
+    __slots__ = ("venue", "market_type", "size", "price")
 
-    def __init__(self, venue: str, market_type: str, size: float, price: float, fx: float) -> None:
+    def __init__(self, venue: str, market_type: str, size: float, price: float) -> None:
         self.venue = venue
         self.market_type = market_type
         self.size = size
         self.price = price
-        self.fx = fx
 
     def profit_if_wins(self) -> float:
         if self.venue == "polymarket":
             return self.size * (1.0 - self.price)
-        return self.size * (self.price - 1.0) * self.fx  # orbitexch
+        return self.size * (self.price - 1.0)  # orbitexch
 
     def loss_if_loses(self) -> float:
         if self.venue == "polymarket":
             return self.size * self.price
-        return self.size * self.fx  # orbitexch
+        return self.size  # orbitexch
 
     def share_if_wins(self) -> float:
         if self.venue == "polymarket":
             return self.size
-        return self.size * self.price * self.fx  # orbitexch gross payout
+        return self.size * self.price  # orbitexch gross payout
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +64,7 @@ class OutcomeExposure:
 
 
 class ArbitragePortfolio(Portfolio):
-    """outcome exposure / share 领域指标。fx 由 launcher 经 `configure_arb` 注入。"""
+    """outcome exposure / share 领域指标。OE position size 已由 adapter 归一到 USD。"""
 
     def __init__(self, msgbus, cache, clock, config=None) -> None:
         super().__init__(msgbus=msgbus, cache=cache, clock=clock, config=config)
@@ -78,21 +77,15 @@ class ArbitragePortfolio(Portfolio):
         self,
         *,
         share: float = 100.0,
-        fx: float = 1.0,
         pair_registry: PairRegistry | None = None,
     ) -> None:
         self._arb_share = share
-        self._arb_fx = fx
         self._arb_pair_registry = pair_registry  # #34: matching 写,本类读;`_resolve_pair_id` 用
 
     # 兜底默认(configure_arb 未调用时)
     @property
     def _share(self) -> float:
         return getattr(self, "_arb_share", 100.0)
-
-    @property
-    def _fx(self) -> float:
-        return getattr(self, "_arb_fx", 1.0)
 
     @property
     def _pair_registry(self) -> PairRegistry | None:
@@ -214,5 +207,4 @@ class ArbitragePortfolio(Portfolio):
             market_type=market_type,
             size=abs(position.quantity.as_double()),
             price=position.avg_px_open,
-            fx=self._fx if venue == "orbitexch" else 1.0,
         )

@@ -76,6 +76,9 @@ class ArbContext:
     # Debug 注入(Q11 / §6.6;`enabled=False` 或 None → 全套生产路径)
     debug_config: object | None = None  # `DebugConfig | None`;运行时类型,避免 bootstrap import debug 模块循环
 
+    # Web Arbitrage 运行时默认值:share/max_leg_share/fx。OE adapter 用 fx 做边界换汇。
+    arbitrage_params: ArbitrageParams | None = None
+
 
 _arb_context: ArbContext = ArbContext()
 
@@ -149,7 +152,7 @@ def wire_arbitrage_runtime(
             "必须在构造 TradingNode 之前调用",
         )
     portfolio.configure_arb(
-        share=arbitrage_params.share, fx=arbitrage_params.fx,
+        share=arbitrage_params.share,
         pair_registry=pair_registry,
     )
 

@@ -27,22 +27,21 @@ class _CalcLeg:
     role: str
     qty: float
     price: float
-    fx: float
 
     def profit_if_wins(self) -> float:
         if self.venue == "POLYMARKET":
             return self.qty * (1.0 - self.price)
-        return self.qty * (self.price - 1.0) * self.fx
+        return self.qty * (self.price - 1.0)
 
     def loss_if_loses(self) -> float:
         if self.venue == "POLYMARKET":
             return self.qty * self.price
-        return self.qty * self.fx
+        return self.qty
 
     def share_if_wins(self) -> float:
         if self.venue == "POLYMARKET":
             return self.qty
-        return self.qty * self.price * self.fx
+        return self.qty * self.price
 
 
 class MeanRebateRecoveryCheck(Check):
@@ -50,14 +49,14 @@ class MeanRebateRecoveryCheck(Check):
 
     def __init__(self, min_repaired_rebate: float = -0.05, fx: float = 1.0) -> None:
         self._min_repaired_rebate = float(min_repaired_rebate)
-        self._fx = float(fx)
+        self._fx = float(fx)  # 兼容旧配置,当前中间层 size 已是 USD 口径
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
         if snap is None:
             return False
 
-        existing = _existing_legs(snap, self._fx)
+        existing = _existing_legs(snap)
         if not existing:
             return False
         actual_by_role = _actual_share_by_role(existing)
@@ -79,7 +78,7 @@ class MeanRebateRecoveryCheck(Check):
             cand = candidates.get(role)
             if cand is None:
                 return False
-            qty = missing if cand["venue"] == "POLYMARKET" else missing / (cand["price"] * self._fx)
+            qty = missing if cand["venue"] == "POLYMARKET" else missing / cand["price"]
             recovery_specs.append({
                 "instrument_id": cand["instrument_id"],
                 "venue": cand["venue"],
@@ -89,7 +88,7 @@ class MeanRebateRecoveryCheck(Check):
                 "role": role,
                 "qty": qty,
             })
-            repaired_legs.append(_CalcLeg(cand["venue"], role, qty, cand["price"], self._fx))
+            repaired_legs.append(_CalcLeg(cand["venue"], role, qty, cand["price"]))
 
         if not recovery_specs:
             return False
@@ -107,7 +106,7 @@ class MeanRebateRecoveryCheck(Check):
         return True
 
 
-def _existing_legs(snap, fx: float) -> list[_CalcLeg]:
+def _existing_legs(snap) -> list[_CalcLeg]:
     result: list[_CalcLeg] = []
     for position in snap.positions:
         iid = getattr(position, "instrument_id", None)
@@ -122,7 +121,7 @@ def _existing_legs(snap, fx: float) -> list[_CalcLeg]:
         price = float(position.avg_px_open)
         if qty <= 0 or price <= 0:
             continue
-        result.append(_CalcLeg(venue=venue, role=role, qty=qty, price=price, fx=fx))
+        result.append(_CalcLeg(venue=venue, role=role, qty=qty, price=price))
     return result
 
 

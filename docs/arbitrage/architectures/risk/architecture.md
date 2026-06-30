@@ -19,7 +19,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 **明确不做**(对照旧微服务架构,全部砍掉):
 
-- ❌ 无 `LiquidityRiskActor` / `check_min_size`(最小限额由 NT instrument 元数据自动管:PM `min_quantity=5 shares`,OE `min_notional=7 GBP stake`)
+- ❌ 无 `LiquidityRiskActor` / `check_min_size`(最小限额由 NT instrument 元数据自动管:PM `min_quantity=5 shares`,OE `min_notional=Money(7 * fx, USD)`)
 - ❌ 无 `BalanceMonitorActor` / 余额阈值告警 publish(告警让前端订阅 `AccountState` 自己看)
 - ❌ 无独立熔断 Actor / 不翻 `TradingState`(单场 profit gates 与 venue liveness = 逐 submit deny,见 §4.3/§4.4)
 - ❌ Strategy **不引用** Risk —— 透明拦截,Strategy 只通过 `on_order_denied` 感知结果
@@ -108,7 +108,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **venue 最小下单门控来源**:
 - PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
-- OE:最小值是 stake,由 OE Provider 写入 `BettingInstrument.min_notional=7 GBP`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦 `notional < 7 GBP`。
+- OE:最小值是 stake。OE adapter 外部的 order quantity 是 USD stake,所以 OE Provider 写入 `BettingInstrument.currency="USD"` 与 `min_notional=Money(7 * arbitrage.fx, USD)`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦 `notional < 7 * fx`。
 - Risk 组件不再维护 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 常量;最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
@@ -118,7 +118,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 | Venue | 可用余额 | 理由 |
 |---|---|---|
 | PM | `account.balance_total − Σ(PM cache.orders_open 在途名义额)` 自扣 | PM 上报 `reported=True/locked=0/free=total`,`CashAccount.apply` 清空 NT 自算 locked → cache `free` 恒 total,不能信 |
-| OE | 直接信 cache 余额(WS 已含挂单占用,不再减) | 再减会双重扣减低估 |
+| OE | 直接信 cache 余额(WS 已含挂单占用,不再减);BALANCE 入站已乘 fx,cache 数值按 USD 解释;订单 size 在 adapter 外为 USD stake | 再减会双重扣减低估;OE adapter 只在出站 placeBets payload 前转 GBP |
 
 → 实现内按 `order.instrument_id.venue` 分支。读 **live** cache(非快照)。
 
@@ -183,7 +183,7 @@ def install_arbitrage_engines():       # 构造 TradingNode 之前调用,幂等
     _kernel.LiveRiskEngine = ArbitrageLiveRiskEngine
 ```
 
-领域参数在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, fx=, pair_registry=)` 使用顶层 `arbitrage.share/fx`;`risk_engine.configure_arb(params, venue_liveness=..., arbitrage_params=...)` 同时接收真正风控参数(`ArbRiskParams`)和普通套利运行参数(`ArbitrageParams`)。Risk 的 profit gates 使用 `ArbitrageParams.share * match_tp/match_sl` 得到绝对金额阈值,但 `share/max_leg_share/fx` 不属于 Risk 配置所有权。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
+领域参数在 NT 固定实参表外,由 launcher 构造后经 setter 注入:`portfolio.configure_arb(share=, pair_registry=)` 使用顶层 `arbitrage.share`;`risk_engine.configure_arb(params, venue_liveness=..., arbitrage_params=...)` 同时接收真正风控参数(`ArbRiskParams`)和普通套利运行参数(`ArbitrageParams`)。Risk 的 profit gates 使用 `ArbitrageParams.share * match_tp/match_sl` 得到绝对金额阈值,但 `share/max_leg_share/fx` 不属于 Risk 配置所有权;`fx` 只在 OE adapter 的入站/出站边界换汇。代价:依赖 kernel 模块结构(模块级 import 名),NT 升级时需复核。
 
 ### 3.3 消息接线(订阅 / 发布)
 
@@ -258,11 +258,11 @@ probability = 1 / order.price          # OE BettingInstrument 十进制赔率
 outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AND leg.venue == venue
 ```
 
-- `profit_if_wins`:PM = `size*(1-price)`;OE = `size*(price-1)*fx`
-- `loss_if_loses`:PM = `size*price`;OE = `size*fx`
-- `share_if_wins`:PM=`size`;OE=`size*price*fx`(stake×odds×fx 的 gross payout)
+- `profit_if_wins`:PM = `size*(1-price)`;OE = `size*(price-1)`
+- `loss_if_loses`:PM = `size*price`;OE = `size`
+- `share_if_wins`:PM=`size`;OE=`size*price`(adapter 外 OE size 已是 USD stake)
 - `outcome ∈ {home, draw, away}`,draw 由 PairRegistry/instrument info 或已有腿推导
-- 不依赖 mark price,只依赖成交落库的 `size/price/fx`
+- 不依赖 mark price,只依赖成交落库的 `size/price`;OE `CURRENT_BETS` 的 `size*`/`liability`/`profit*` 字段由 OE adapter 入站时乘 `fx` 归一为 USD
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 
@@ -346,7 +346,7 @@ sequenceDiagram
 - [x] 对应测试 .py:`tests/arbitrage/common/test_venue_liveness.py` / `tests/arbitrage/risk/test_engine.py` / `tests/arbitrage/risk/test_portfolio.py`
 
 > **已闭环**:`_check_profit_gates` 取 `outcome_exposures` 经 `self._portfolio`(import 替换后即 `ArbitragePortfolio` 实例)调其方法 ✓;cpdef 覆盖可行性 ✓。
-> **仍依赖外部契约**:`instrument.info["selection_role"]` 由 discovery 填充(旧 `market_type` 兼容读取,本类只读,单一 seam);OE 腿的 size/price 语义(stake / 十进制赔率)由 OE ExecutionClient 上报时保证。
+> **仍依赖外部契约**:`instrument.info["selection_role"]` 由 discovery 填充(旧 `market_type` 兼容读取,本类只读,单一 seam);OE 腿的 size/price 语义(USD stake / 十进制赔率)由 OE ExecutionClient 入站归一与出站换汇保证。
 
 **#34(2026-05-24)pair_id 来源校准**:`_resolve_pair_id` / 引擎的 `_pair_id_for_order` 原读 `instrument.info["competition"]` 是**错读**——`competition` 是联赛名(EPL/NFL),不是 pair_id;pair_id 由 matching 算出经 `PairRegistry` 暴露。现两处都改读 registry(`ArbitragePortfolio._pair_registry`),`configure_arb` 增 `pair_registry` 参,launcher 经 `ArbContext.pair_registry` 注入(共享 registry 模式)。`_leg_from_position` 同时把 `info` 读 key 校正:Q9 标准是 `selection_role`,旧 `market_type` 作 fallback 兼容。
 

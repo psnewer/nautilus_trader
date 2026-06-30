@@ -186,7 +186,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         size = order.leaves_qty.as_double()
         if isinstance(instrument, BinaryOption):
             return size * float(order.price)          # PM: size * price
-        return size * self._arbitrage_params.fx       # OE: size * fx
+        return size                                  # OE: adapter 外部 size 已是 USD stake
 
     def _pm_open_notional(self, venue, currency) -> float:
         total = 0.0

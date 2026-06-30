@@ -16,7 +16,7 @@
 - ⬜ `test_polymarket_provider.py`(1.1/1.2/1.3 上游构造需链上 creds,/live-test 验)
 - ⬜ 浏览器抓取失败处理(1.7)、双 venue Refresher 隔离(2.7 整端到端,要起 node)、`InstrumentsRefreshed` msgbus 全链路(3.2)—— 经 /live-test 或上层 e2e 验
 
-**2026-06-14 最小下单元数据修正**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake,Provider 产物 `BettingInstrument.min_notional=7 GBP`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
+**2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
 **仍待 Step 1**:scraper DOM 抽 `start_ts`(现 Provider 暂置 0);PM info 6-key 真 extraction(`#35` 已落 seam:`adapters/polymarket/arb_provider.py:enrich_pm_six_key_info`,**TODO** 实写需 gamma `/events/{id}` 调用 + ticker 拆解;参旧 `odds_client.py:255+`)。
 
@@ -203,7 +203,7 @@
 - `cache.instruments(venue=ORBITEXCH)` 返回非空 `BettingInstrument` 列表
 - InstrumentId 格式严格匹配 `{market_id}-{selection_id}.ORBITEXCH`
 - 配套 helper `get_orbitexch_market_id(inst.id)` / `get_orbitexch_selection_id(inst.id)` 可逆解析
-- `min_notional=7 GBP`,表达 OE 最小 stake,由 `test_build_legs_sets_orbitexch_min_stake` 锁定
+- 默认 `fx=1` 时 `min_notional=7 USD`;非默认 fx 时为 `Money(7 * fx, USD)`(例如 `fx=1.3` → `9.1 USD`),表达 OE 最小 stake 的 USD 口径门控。由 `test_build_legs_sets_orbitexch_min_stake` / `test_build_legs_sets_orbitexch_min_stake_with_fx` 锁定
 
 **验收标准**: instrument 列表非空 AND helper 可逆 AND page name 是 `"discovery"`(不是 `"data"` / `"execution"`)
 

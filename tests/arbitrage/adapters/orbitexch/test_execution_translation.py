@@ -6,11 +6,20 @@ skip_execution=false);本文件只测无 Playwright 的翻译逻辑。
 
 from types import SimpleNamespace
 
+import pytest
+
 from nautilus_trader.adapters.orbitexch.execution import bet_order_progress
 from nautilus_trader.adapters.orbitexch.execution import current_bets_to_fills
+from nautilus_trader.adapters.orbitexch.execution import normalize_current_bets_to_usd
 from nautilus_trader.adapters.orbitexch.execution import nt_order_to_legacy_order
+from nautilus_trader.adapters.orbitexch.executor import OrbitExchExecutor
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.instruments.betting import null_handicap
+
+from src.arbitrage.common.execution_config import ExecutionConfig
+from src.arbitrage.common.order_models import Order
+from src.arbitrage.common.order_models import OrderSide as ArbOrderSide
+from src.arbitrage.common.order_models import Venue
 
 
 def _inst(market_id="1-258848983", selection_id="39835947", handicap=None):
@@ -50,6 +59,58 @@ def test_real_handicap_preserved():
 def test_missing_market_or_selection_returns_none():
     assert nt_order_to_legacy_order(_nt(), _inst(market_id="")) is None
     assert nt_order_to_legacy_order(_nt(), _inst(selection_id="")) is None
+
+
+def test_oe_executor_converts_usd_size_to_gbp_payload():
+    """adapter 外部 order.size 是 USD stake;OE placeBets payload size 是 GBP stake。"""
+    import asyncio
+
+    captured = {}
+
+    class _Page:
+        async def evaluate(self, _script, payload):
+            captured["payload"] = payload
+            bet_uuid = payload["1.23"][0]["betUuid"]
+            return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
+
+    order = Order(
+        venue=Venue.ORBITEXCH,
+        market_id="1.23",
+        selection_id="456",
+        side=ArbOrderSide.BACK,
+        price=2.5,
+        size=20.0,
+    )
+    executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=lambda: 1.25)
+
+    result = asyncio.run(executor.place_order(order, _Page()))
+
+    assert result.success is True
+    assert captured["payload"]["1.23"][0]["size"] == 16.0
+
+
+def test_current_bets_amount_fields_normalized_to_usd():
+    bets = [{
+        "offerId": "1",
+        "selectionId": "2",
+        "sizeMatched": "7.00",
+        "sizeRemaining": "3.00",
+        "sizePlaced": "10.00",
+        "liability": "7.00",
+        "profitNet": "9.10",
+        "averagePrice": "2.30",
+        "price": "2.30",
+    }]
+
+    out = normalize_current_bets_to_usd(bets, fx=1.3)[0]
+
+    assert out["sizeMatched"] == pytest.approx(9.1)
+    assert out["sizeRemaining"] == pytest.approx(3.9)
+    assert out["sizePlaced"] == pytest.approx(13.0)
+    assert out["liability"] == pytest.approx(9.1)
+    assert out["profitNet"] == pytest.approx(11.83)
+    assert out["averagePrice"] == "2.30"
+    assert out["price"] == "2.30"
 
 
 # ─── current_bets_to_fills:CURRENT_BETS 快照 → 成交 delta(回执核心)─────────────

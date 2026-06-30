@@ -77,6 +77,34 @@
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + execution §4.3bis/§4.4。
 
+## OE fx 边界(已落地代码路径,2026-06-30)
+
+对应设计:execution §4.3bis(5c)。adapter 外部统一 USD 口径,OE adapter 自己负责 BALANCE/CURRENT_BETS 入站乘 fx、placeBets 出站除 fx。
+
+### execution-5.fx.1: factory 注入启动 fx
+- 前置:`prepare_arb_context(..., arbitrage_params=ArbitrageParams(fx=1.25))`。
+- 输入:`ArbOrbitExchLiveExecClientFactory.create(...)`。
+- 期望:构造出的 `OrbitExchExecutionClient._current_fx()==1.25`。
+- 验收:`tests/arbitrage/execution/test_factories.py::test_oe_factory_create_with_context_returns_arb_client`。
+
+### execution-5.fx.2: Web 热改 fx 同步到 OE client
+- 前置:OE execution client 已订阅 `command.arb.arbitrage_params`。
+- 输入:publish `SetArbitrageParamsCommand(fx=1.31)`。
+- 期望:`_current_fx()` 更新为 1.31,后续 executor payload 使用新 fx。
+- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_arbitrage_fx_command_updates_oe_client`。
+
+### execution-5.fx.3: fill delta 不受 fx 热改误触发
+- 前置:OE `CURRENT_BETS.sizeMatched=7.00` 已产生一次 fill;随后 web 把 fx 从 1.3 改为 1.4。
+- 输入:同一个 `sizeMatched=7.00` 快照再次到达。
+- 期望:不产生第二个 fill;第一次 fill quantity = `7 * 1.3` USD。
+- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes`。
+
+### execution-5.fx.4: BALANCE 入站归一为 USD
+- 前置:OE execution client 当前 `fx=1.3`。
+- 输入:general WS 推送 `BALANCE.balance=37.49`。
+- 期望:写入 NT account cache 的余额数值为 `37.49 * 1.3` 后按 Money 精度取整;Risk 后续直接比较 USD stake。
+- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_on_general_frame_balance_normalized_to_usd`。
+
 ### execution-4.5.1: order reconcile 成功置 order_alive
 - 前置:PM 或 OE ExecutionClient 注入共享 `VenueExecutionLiveness`;该 venue `order_alive=false`。
 - 输入:order/open-order reconcile 成功,拿到完整真实 response。

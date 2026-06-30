@@ -17,7 +17,7 @@
 
 PM WS 配置约束:`ArbConfig.venues.polymarket.ws_url` 的推荐值是上游 base URL `.../ws/`。为兼容旧 discovery / odds 订阅配置,dispatcher 接受旧 full endpoint `.../ws/market` / `.../ws/user` 并归一化后再交给 PM Data/Exec client。
 
-最小下单元数据契约:PM 的 venue 最小值是 **share 数量 5**,写入 `BinaryOption.min_quantity`;OE 的 venue 最小值是 **stake 7 GBP**,写入 `BettingInstrument.min_notional`。Risk 不另维护 venue 常量,只经 NT 父类读取 instrument 元数据。
+最小下单元数据契约:PM 的 venue 最小值是 **share 数量 5**,写入 `BinaryOption.min_quantity`;OE 的 venue 最小值是 **stake 7 GBP**,但 adapter 外部 OE `quantity` 统一按 USD stake 解释,因此 Provider 写入 `BettingInstrument.min_notional = Money(7 * arbitrage.fx, USD)`。Risk 不另维护 venue 常量,只经 NT 父类读取 instrument 元数据。
 
 **明确不做**:
 - ⚠️ ~~DataClient 不拥有调度(归 Refresher,Q8)~~ **#59 反转**:Q8 的"调度归 Refresher"被验证为重造 NT 原生(refresher 3 个 bug 都是脱离原生路径的症状)→ **调度迁回 DataClient 原生**(refactor.md #58/#59)。
@@ -183,13 +183,14 @@ for role, sel_id in [("home", event.home_selection_id),
             market_id=event.market_id,
             selection_id=int(sel_id),
             ...上游必填字段...,
-            min_notional=Money(Decimal("7"), GBP),  # OE 最小 stake
+            currency="USD",
+            min_notional=Money(Decimal("7") * Decimal(str(fx)), USD),  # OE 最小 stake 的 USD 数值
             info={"sport": ..., "competition": ..., "home_team": ..., "away_team": ...,
                   "start_ts": 0, "selection_role": role},
         )
 ```
 
-OE 的 `quantity` 表示 stake,`BettingInstrument.notional_value(quantity, price)` 返回 stake notional。因此最小 stake 7 GBP 用 `min_notional=7 GBP` 表达,由 NT `_check_orders_risk_for_account` 拦截;不额外在 Risk 组件维护 `MIN_SIZE_ORBITEXCH`。
+OE 的 `quantity` 在 adapter 外部表示 **USD stake**;`BettingInstrument.notional_value(quantity, price)` 只做数值比较,不会做货币换算。因此最小 stake 7 GBP 在 provider 中按当前 `arbitrage.fx` 写成 `min_notional = Money(7 * fx, USD)`,由 NT `_check_orders_risk_for_account` 拦截;不额外在 Risk 组件维护 `MIN_SIZE_ORBITEXCH`。若 Web 热改 `fx`,执行/余额边界会即时生效;已入 cache 的 instrument 最小值随下一轮 OE discovery 重建刷新。
 
 ### 4.2 周期循环(对齐 §6.8.4.5 同节奏)
 

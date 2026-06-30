@@ -26,7 +26,7 @@ def _engine(debug: DebugConfig):
     msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
     cache = TestComponentStubs.cache()
     portfolio = ArbitragePortfolio(msgbus=msgbus, cache=cache, clock=clock)
-    portfolio.configure_arb(share=100.0, fx=1.0)
+    portfolio.configure_arb(share=100.0)
     engine = DebugArbitrageLiveRiskEngine(
         loop=asyncio.new_event_loop(),
         portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock,

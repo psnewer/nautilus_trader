@@ -19,6 +19,7 @@ from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 from src.arbitrage.bootstrap import ArbContext
 from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import reset_arb_context
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.factories import ArbOrbitExchLiveExecClientFactory
@@ -59,7 +60,11 @@ def test_oe_factory_raises_when_context_unset():
 def test_oe_factory_create_with_context_returns_arb_client():
     loop, msgbus, cache, clock = _harness()
     liveness = VenueExecutionLiveness()
-    prepare_arb_context(venue_liveness=liveness, oe_session_timeout_secs=45.0)
+    prepare_arb_context(
+        venue_liveness=liveness,
+        oe_session_timeout_secs=45.0,
+        arbitrage_params=ArbitrageParams(fx=1.25),
+    )
     cfg = OrbitExchExecClientConfig(username="u", password="p")
 
     client = ArbOrbitExchLiveExecClientFactory.create(loop, "ORBITEXCH", cfg, msgbus, cache, clock)
@@ -67,6 +72,7 @@ def test_oe_factory_create_with_context_returns_arb_client():
     assert isinstance(client, OrbitExchExecutionClient)
     assert client._venue_liveness is liveness             # 同份 liveness 跨组件共享
     assert client._session_timeout_ns == int(45.0 * 1e9)  # context 传值生效
+    assert client._current_fx() == 1.25
     assert client._browser_manager is not None
     assert client._config is cfg
 

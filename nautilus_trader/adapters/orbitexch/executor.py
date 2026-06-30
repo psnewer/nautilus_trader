@@ -15,6 +15,7 @@ import logging
 import time
 import uuid
 from typing import Any
+from typing import Callable
 
 from playwright.async_api import Page
 
@@ -44,9 +45,11 @@ class OrbitExchExecutor:
         self,
         config: ExecutionConfig,
         logger: logging.Logger | None = None,
+        fx_getter: Callable[[], float] | None = None,
     ):
         self.config = config
         self._log = logger or logging.getLogger(self.__class__.__name__)
+        self._fx_getter = fx_getter
 
         # 页面引用 (从 OrbitExchOddsClient 获取)
         self._pages: dict[str, Page] = {}  # competition_id -> Page
@@ -129,12 +132,22 @@ class OrbitExchExecutor:
             # 生成唯一的 bet UUID
             bet_uuid = f"{order.market_id}_{order.selection_id}_{int(order.handicap)}__{int(time.time() * 1000)}"
 
-            # 构建请求数据
+            fx = self._fx_getter() if self._fx_getter is not None else 1.0
+            if fx <= 0:
+                self._log.error(f"Order {order.order_id} failed: invalid fx={fx}")
+                return ExecutionResult(
+                    success=False,
+                    order=order,
+                    message=f"Invalid fx: {fx}",
+                )
+            gbp_size = order.size / fx
+
+            # 构建请求数据。adapter 外部 order.size 为 USD 口径,OE payload 需要 GBP stake。
             bet_data = {
                 "selectionId": int(order.selection_id),
                 "handicap": order.handicap,
                 "price": odds_price,
-                "size": round(order.size, 2),
+                "size": round(gbp_size, 2),
                 "side": side,
                 "betUuid": bet_uuid,
                 "betType": "EXCHANGE",
@@ -157,7 +170,8 @@ class OrbitExchExecutor:
             self._log.info(
                 f"Placing OrbitExch order: market={order.market_id}, "
                 f"selection={order.selection_id}, side={side}, "
-                f"price={odds_price}, size={order.size}, payload={payload}"
+                f"price={odds_price}, size_usd={order.size}, fx={fx}, "
+                f"size_gbp={gbp_size}, payload={payload}"
             )
 
             # 通过页面上下文发送请求，包含 CSRF token

@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from py_clob_client_v2.exceptions import PolyApiException
 
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.identifiers import TradeId
@@ -137,7 +137,7 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
 
 
 class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
-    """OE 执行客户端 Debug 子类(quote=GBP)。"""
+    """OE 执行客户端 Debug 子类(quote=USD)。"""
 
     def __init__(self, *args, debug: DebugConfig, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -152,7 +152,7 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            _mock_submit(self, command, GBP)
+            _mock_submit(self, command, USD)
             return
         await super()._submit_order(command)
 

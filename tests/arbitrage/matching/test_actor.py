@@ -10,7 +10,7 @@ import pandas as pd
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AssetClass
@@ -66,8 +66,8 @@ def _oe(comp, home, away, role, sel_id):
         market_type="MATCH_ODDS",
         selection_handicap=null_handicap(),
         selection_id=sel_id, selection_name=role,
-        currency="GBP", price_precision=2, size_precision=2,
-        min_notional=Money(Decimal("1"), GBP),
+        currency="USD", price_precision=2, size_precision=2,
+        min_notional=Money(Decimal("1"), USD),
         ts_event=0, ts_init=0,
         info={"sport": "Soccer", "competition": comp,
               "home_team": home, "away_team": away,

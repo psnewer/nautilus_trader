@@ -54,7 +54,7 @@ class _Ctx:
         self.msgbus = MessageBus(trader_id=self.trader_id, clock=self.clock)
         self.cache = TestComponentStubs.cache()
         self.portfolio = ArbitragePortfolio(msgbus=self.msgbus, cache=self.cache, clock=self.clock)
-        self.portfolio.configure_arb(share=arbitrage_params.share, fx=arbitrage_params.fx)
+        self.portfolio.configure_arb(share=arbitrage_params.share)
         self.engine = ArbitrageLiveRiskEngine(
             loop=self.loop,
             portfolio=self.portfolio,
@@ -289,7 +289,7 @@ def test_balance_oe_trusts_free_no_extra_deduction():
     ctx.cache.add_account(_oe_account(ctx, total=100, free=40))  # WS free 已含占用
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
-    order = _DuckOrder(oe.id, price=2.5, qty=Quantity.from_int(50))    # OE cost = size*fx = 50 > free 40
+    order = _DuckOrder(oe.id, price=2.5, qty=Quantity.from_int(50))    # OE cost = USD size = 50 > free 40
     assert ctx.engine._check_balance(oe, order) is False
     assert any("Insufficient balance" in d for d in denials)
 

@@ -72,10 +72,17 @@ def test_build_legs_instrument_id_carries_market_and_selection(provider):
 
 
 def test_build_legs_sets_orbitexch_min_stake(provider):
-    """OE 最小下单额是 stake 7 GBP,应落到 BettingInstrument.min_notional。"""
+    """OE 最小 stake 入 NT 时按 adapter 外 USD 口径写成 7*fx。"""
     leg = next(iter(provider._build_legs(_event())))
     assert leg.min_notional.as_double() == 7.0
-    assert str(leg.min_notional.currency) == "GBP"
+    assert str(leg.min_notional.currency) == "USD"
+
+
+def test_build_legs_sets_orbitexch_min_stake_with_fx():
+    prov = OrbitExchInstrumentProvider(SimpleNamespace(), fx=1.3)
+    leg = next(iter(prov._build_legs(_event())))
+    assert leg.min_notional.as_double() == pytest.approx(9.1)
+    assert str(leg.min_notional.currency) == "USD"
 
 
 def test_load_all_async_invokes_scraper_and_adds_instruments():

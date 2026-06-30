@@ -7,7 +7,7 @@ from decimal import Decimal
 import pandas as pd
 
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AssetClass
@@ -71,10 +71,10 @@ def oe_instrument(competition: str, market_type: str, selection_id: int = 1) -> 
         selection_handicap=null_handicap(),
         selection_id=selection_id,
         selection_name=market_type,
-        currency="GBP",
+        currency="USD",
         price_precision=2,
         size_precision=2,
-        min_notional=Money(1, GBP),
+        min_notional=Money(1, USD),
         ts_event=0,
         ts_init=0,
         info={"competition": competition, "market_type": market_type},
@@ -97,7 +97,7 @@ def pm_account_state(total: float, account_id: str = "POLYMARKET-001") -> Accoun
 
 def oe_account_state(total: float, free: float, account_id: str = "ORBITEXCH-001") -> AccountState:
     locked = total - free
-    bal = AccountBalance(Money(total, GBP), Money(locked, GBP), Money(free, GBP))
+    bal = AccountBalance(Money(total, USD), Money(locked, USD), Money(free, USD))
     return _cash_state(account_id, [bal])
 
 

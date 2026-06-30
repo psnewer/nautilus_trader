@@ -417,8 +417,8 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 | `StrategyEvaluator` | `to_strategy_evaluator_config(cfg)` + `to_strategy_registry(cfg)` |
 | `WebGatewayActor`(Step 7,只读监控)| `to_web_gateway_config(cfg)`;`enabled=false` 时 launcher 不构造;`portfolio`/`loop` 经 `WebGatewayDeps` 注入 |
 | `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg), arbitrage_params=to_arbitrage_params(cfg))` |
-| `ArbitragePortfolio` | `arbitrage.share/fx` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`outcome_shares` 输出每个 outcome 已占用 share |
-| `ArbContext`(session / debug / pair_registry / settlement) | `prepare_arb_context(**to_arb_context_init_kwargs(cfg))` |
+| `ArbitragePortfolio` | `arbitrage.share` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`outcome_shares` 输出每个 outcome 已占用 share |
+| `ArbContext`(session / debug / pair_registry / settlement / arbitrage_params) | `prepare_arb_context(..., arbitrage_params=to_arbitrage_params(cfg), **to_arb_context_init_kwargs(cfg))`;OE data/exec factory 从中读取 `fx` 做 adapter 边界换汇 |
 | `DebugConfig`(Q11) | `to_debug_config(cfg)`(`enabled=False` → None)|
 
 ---

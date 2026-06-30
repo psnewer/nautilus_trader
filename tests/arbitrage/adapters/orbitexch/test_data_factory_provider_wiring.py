@@ -10,6 +10,7 @@ import pytest
 
 import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.orbitexch import factories as oe_factories
+from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venue_configs import OrbitExchVenueConfig
 from src.arbitrage.common.venue_configs import SportConfig
 
@@ -74,6 +75,7 @@ def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatc
         oe_scraper_config=oe_venue,
         oe_sport_aliases={"Tennis": "Tennis"},
         oe_competition_aliases={"Men's Roland Garros 2026": "ATP"},
+        arbitrage_params=ArbitrageParams(fx=1.25),
     )
 
     oe_factories.OrbitExchLiveDataClientFactory.create(**_args())
@@ -84,3 +86,4 @@ def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatc
     _, prov_kwargs = prov_class.call_args
     assert prov_kwargs["sport_aliases"] == {"Tennis": "Tennis"}
     assert prov_kwargs["competition_aliases"] == {"Men's Roland Garros 2026": "ATP"}
+    assert prov_kwargs["fx"] == 1.25

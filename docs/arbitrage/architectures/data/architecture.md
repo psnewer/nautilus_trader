@@ -161,7 +161,7 @@ PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_f
 ### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py`)
 
 - `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。
-- `OrbitExchLiveDataClientFactory.create()`:构造 `PlaywrightBrowserManager` + `OrbitExchDataClient`,instrument_provider 暂用 `InstrumentProvider()` 占位
+- `OrbitExchLiveDataClientFactory.create()`:构造 `PlaywrightBrowserManager` + `OrbitExchDataClient`,并把 `ArbContext.arbitrage_params.fx` 注入 `OrbitExchInstrumentProvider`,用于把 OE 最小 stake 7 GBP 写成 adapter 外 USD 口径的 `min_notional = Money(7 * fx, USD)`
 - **`PolymarketSportsLiveDataClientFactory.create()`(#60)**:构造 `PolymarketSportsDataClient`(bare `InstrumentProvider()` 占位)
 
 ### 3.4 `PolymarketSportsDataClient`(`adapters/polymarket/sports.py`,#60)—— 比分 firehose

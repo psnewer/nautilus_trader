@@ -27,7 +27,7 @@ from contextlib import suppress
 
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
-from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.identifiers import AccountId
@@ -38,6 +38,7 @@ from nautilus_trader.model.objects import Money
 
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
 
+from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
@@ -48,7 +49,7 @@ ORBITEXCH = "ORBITEXCH"
 _EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
 
 
-def oe_balance_to_account_balances(balance: float, currency=GBP) -> list:
+def oe_balance_to_account_balances(balance: float, currency=USD) -> list:
     """OE `BALANCE` 帧 → AccountBalance(纯映射,可单测)。
 
     WS 余额已含挂单占用(Q17)→ 即可用:total = free = balance,locked = 0
@@ -136,6 +137,49 @@ def current_bets_to_fills(bets, prev_matched: dict) -> list:
                 "size_matched": size_matched,
             })
     return fills
+
+
+_FX_AMOUNT_KEYS = {
+    "liability",
+    "netprofit",
+    "profitnet",
+    "profitgross",
+    "profit",
+    "pnl",
+}
+
+
+def normalize_current_bets_to_usd(bets, fx: float) -> list:
+    """OE CURRENT_BETS 的金额/size 字段从 GBP 归一到 USD,adapter 外部统一 USD 口径。"""
+    if fx <= 0:
+        fx = 1.0
+    return [_normalize_bet_amounts_to_usd(bet, fx) for bet in (bets or [])]
+
+
+def _normalize_bet_amounts_to_usd(bet: dict, fx: float) -> dict:
+    normalized = dict(bet)
+    for key, value in bet.items():
+        if not _is_fx_amount_key(key):
+            continue
+        amount = _try_float(value)
+        if amount is None:
+            continue
+        normalized[key] = amount * fx
+    return normalized
+
+
+def _is_fx_amount_key(key: str) -> bool:
+    key_lower = str(key).lower()
+    return key_lower.startswith("size") or key_lower in _FX_AMOUNT_KEYS
+
+
+def _try_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def bet_order_progress(bet) -> dict | None:
@@ -242,6 +286,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         pair_registry: PairRegistry | None = None,
         pair_inflight=None,  # PairInFlightGate(§6.10 §7);与 strategy 共享一份
         session_timeout_secs: float = 30.0,
+        fx: float = 1.0,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -249,7 +294,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             venue=Venue(ORBITEXCH),
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
-            base_currency=GBP,
+            base_currency=USD,
             instrument_provider=instrument_provider,
             msgbus=msgbus,
             cache=cache,
@@ -267,6 +312,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._config = config
         self._parser = OrbitExchMessageParser()
         self._executor = None
+        self._fx = float(fx) if fx > 0 else 1.0
         self._page = None
         self._ws_handler = None
         self._bet_matched: dict = {}    # offerId → 累积 sizeMatched(CURRENT_BETS 快照算 delta)
@@ -285,6 +331,20 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._last_current_bets_ns = 0
         self._reload_inflight = None
         self._reload_bets_wait_ns = secs_to_nanos(8.0)   # reload 后等 CURRENT_BETS 重推上限
+        self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
+
+    def _current_fx(self) -> float:
+        return self._fx if self._fx > 0 else 1.0
+
+    def _on_set_arbitrage_params_cmd(self, cmd) -> None:
+        fx = getattr(cmd, "fx", None)
+        if fx is None:
+            return
+        fx = float(fx)
+        if fx <= 0:
+            self._log.warning(f"Ignore invalid OE fx={fx}")
+            return
+        self._fx = fx
 
     async def _connect(self) -> None:
         """Gap C(#63):真接线 —— 共享 BM 取 `"execution"` page(#62:data/exec 同登录 context)→
@@ -319,7 +379,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._first_frame_fut, timeout=15.0)
         self._first_frame_fut = None
-        self._executor = OrbitExchExecutor(config=ExecutionConfig())
+        self._executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=self._current_fx)
         self._executor.set_page("default", self._page)
         # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
         self.generate_account_state(
@@ -538,7 +598,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             balance = parsed["balance"]
             if balance is not None:
                 self.generate_account_state(
-                    balances=oe_balance_to_account_balances(balance),
+                    balances=oe_balance_to_account_balances(balance * self._current_fx()),
                     margins=[],
                     reported=True,
                     ts_event=self._clock.timestamp_ns(),
@@ -561,14 +621,18 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         from nautilus_trader.model.identifiers import VenueOrderId
         from nautilus_trader.model.objects import Money
 
-        # 快照(非增量)→ 缓存供 reconcile reports;键 = offerId
-        self._current_bets = {str(b.get("offerId", "")): b for b in (bets or []) if b.get("offerId")}
+        usd_bets = normalize_current_bets_to_usd(bets, self._current_fx())
+
+        # 快照(非增量)→ 缓存供 reconcile reports;键 = offerId。缓存值为 USD 口径。
+        self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
         # #105 A2:CURRENT_BETS 重推时刻 = reconcile 成功信号(`_reload_exec_page` 等它越过 reload_ts)
         self._last_current_bets_ns = self._clock.timestamp_ns()
         # CURRENT_BETS 是 OE 执行页的完整 order/position response;收到即认为 OE 执行端可对账。
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         self._venue_liveness.mark_position_alive(ORBITEXCH)
 
+        # 成交增量必须用 OE 原始 GBP 累积值算,避免 web 热改 fx 时把换汇变化误判成新增成交。
+        # 生成 NT fill 前再把本次 delta 转成 USD;reconcile 快照仍使用上方 usd_bets。
         for fill in current_bets_to_fills(bets, self._bet_matched):
             offer_id = fill["offer_id"]
             voi = VenueOrderId(offer_id)
@@ -590,10 +654,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 trade_id=TradeId(f"OE-{offer_id}-{seq}"),
                 order_side=nt_order.side,
                 order_type=nt_order.order_type,
-                last_qty=inst.make_qty(fill["delta_qty"]),
+                last_qty=inst.make_qty(fill["delta_qty"] * self._current_fx()),
                 last_px=inst.make_price(fill["avg_price"]),
-                quote_currency=GBP,
-                commission=Money(0, GBP),
+                quote_currency=USD,
+                commission=Money(0, USD),
                 liquidity_side=LiquiditySide.MAKER,
                 ts_event=self._clock.timestamp_ns(),
             )
