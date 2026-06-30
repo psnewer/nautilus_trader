@@ -172,7 +172,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 
 **出口**:
 - `all allowed`:取消 barrier timer,先执行 opportunity-level cancel-only 判定;若不触发,把 `allowed` 中所有 command 逐条交回 `super()._execute_command(command)` 进入各 venue `ExecutionClient`;后续由现有 `ArbExecutionSessionMixin` 的 per-leg session 计数在最后一腿 `_end_session` 时释放 `PairInFlightGate`。
-- `cancel-only`:任一 risk-pass leg 有 residual open order,且本轮 risk-pass legs 中没有显式撤单腿时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。详细条件与“撤单腿”边界见同步真理源 §8.4bis。
+- `cancel-only`:同一 `pair_id` 任一 registered instrument 有 residual open order,且本轮 risk-pass legs 中没有显式撤单腿时触发;不 release 任何新 submit,按 residual instrument 调用对应 client 的 residual cancel 能力,并对本轮所有新 submit 生成本地 deny/reject。pair-wide 范围来自 `PairRegistry.instrument_ids_for_pair(pair_id)`,所以即使本轮 opportunity 只有单腿 `expected_legs`,也会先检查同 pair 其它 PM/OE outcome 的残留挂单;若 registry 不可用才退化为只查本次 `expected_legs`。若 cache 已发现 residual 但 client 路由异常,仍 fail-closed 阻断本轮新 submit 并记录错误。live 验收锚点:`Opportunity cancel-only: residual open orders present`。详细条件与“撤单腿”边界见同步真理源 §8.4bis。
 - `denied` / `timeout`:不 release 到 venue;对 `allowed` 中已暂存但未执行的 orders 生成本地 `OrderDenied`,reason 指向失败腿或 barrier timeout;然后以 zero-session execution 走统一 finish。
 - `finish outlet`:清 context / 取消 timer / 发布可观测 finished 消息(如需要) / 释放 `PairInFlightGate`。代码中 deny / timeout 经 `_finish(...)` 一个出口;pass 路径交给已存在的 session `_end_session` 出口。`pair_inflight` 不在 Risk deny 分支释放。
 
@@ -189,7 +189,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 | **cancel-only** | submit 时 instrument 上有**残留挂单** | 撤残留挂单,**丢弃**当次 submit | venue 推 CANCELED **或** timeout |
 | **submit+track** | submit 时无残留 | 下单 → 追踪 | terminal(FILLED/CANCELED/REJECTED/EXPIRED)**或** timeout |
 
-- 对带完整 opportunity metadata 的多腿套利,首选 §3.5 barrier 统一做 opportunity-level cancel-only:收齐所有 risk-pass legs 后,若任一 leg 有 residual 且 risk-pass legs 中没有显式撤单腿,则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。
+- 对带完整 opportunity metadata 的套利,首选 §3.5 barrier 统一做 opportunity-level cancel-only:收齐所有 risk-pass legs 后,若同 pair 任一 registered instrument 有 residual 且 risk-pass legs 中没有显式撤单腿,则整次 opportunity 撤旧并丢弃所有新 submit,避免一边撤旧另一边开新。检查范围是 pair-wide,不是仅本次 `expected_legs`。
 - 本节 per-client cancel-only 仍保留为 fallback:无 metadata、非 opportunity 订单、或 barrier 未接管时,client submit 入口可按单 instrument 残留退化为 cancel-only。
 - cancel-only 当次 submit **直接丢弃**(不排队、不延后);Strategy 每轮全量重算(快照 Q20),下轮自行重发。
 - session mixin 只维护 `_active_sessions`、tracking timeout、`execution.started/finished` 和 `PairInFlightGate.exec_started/exec_finished`。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
@@ -480,7 +480,7 @@ positions_fetcher / 间隔)—— 同 `install_arbitrage_engines` 的 import-替
 3. `prepare_arb_context(venue_liveness=, pm_settlement=, ...)` —— 填好共享件;#110 后不再注入 `pm_positions_fetcher` / `pm_health_interval_secs`
 4. `node.add_exec_client_factory("POLYMARKET", ArbPolymarketLiveExecClientFactory)`、`("ORBITEXCH", ArbOrbitExchLiveExecClientFactory)`
 5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 venue_liveness/settlement/fetcher/间隔);**漏调 prepare 早失败**(`RuntimeError: ArbContext.venue_liveness is None`)
-6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 venue_liveness 时**复用 context 那份**(execution 与 risk 同一对象),并把 `pair_inflight` 注入 `ArbLiveExecutionEngine`
+6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 venue_liveness 时**复用 context 那份**(execution 与 risk 同一对象),并把 `pair_inflight` / `pair_registry` 注入 `ArbLiveExecutionEngine`。`pair_registry` 供 opportunity barrier 做 pair-wide residual cancel-only 检查。
 7. `node.run()`
 
 **共用 —— ✅ session 核心已落地(`src/arbitrage/execution/session.py`,8 passed)**:

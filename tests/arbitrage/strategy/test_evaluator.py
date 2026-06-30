@@ -63,11 +63,28 @@ class _CaptureSignalAction(Action):
         self.value = ctx.store.peek(self.key)
 
 
+class _CaptureScratchLegsAction(Action):
+    def __init__(self):
+        self.legs = None
+
+    async def execute(self, ctx):
+        self.legs = list(ctx.scratch.get("legs") or [])
+
+
 class _StubCheck(Check):
     def __init__(self, returns: bool):
         self._returns = returns
     def passes(self, ctx):
         return self._returns
+
+
+class _SetScratchLegsCheck(Check):
+    def __init__(self, legs: list[dict]):
+        self._legs = legs
+
+    def passes(self, ctx):
+        ctx.scratch["legs"] = list(self._legs)
+        return True
 
 
 def _strategy(arb_hit: bool, comp_hit: bool, arb_action=None, comp_action=None) -> Strategy:
@@ -270,6 +287,44 @@ def test_arb_hit_blocks_comp_action():
     _run(_drain(loop))
     assert arb_action.calls == 1
     assert comp_action.calls == 0                     # 套利赢
+
+
+def test_arb_and_comp_evaluation_scratch_is_isolated():
+    """套利树与补偿树同轮命中时,套利 action 不得读到补偿树写入的单腿 legs。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    arb_action = _CaptureScratchLegsAction()
+    comp_action = _RecordingAction("comp")
+    arb_legs = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "role": "home"},
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "role": "away"},
+    ]
+    comp_legs = [
+        {"instrument_id": "A.POLYMARKET", "venue": "POLYMARKET", "role": "away"},
+    ]
+    arb_tree = Condition(
+        self_hits=SignalRef("arb_on"),
+        checktion=[_SetScratchLegsCheck(arb_legs)],
+        actions=[arb_action],
+    )
+    comp_tree = Condition(
+        self_hits=SignalRef("comp_on"),
+        checktion=[_SetScratchLegsCheck(comp_legs)],
+        actions=[comp_action],
+    )
+    strat_reg.register_pair(
+        "match_X",
+        Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=comp_tree),
+    )
+    store.view("match_X").set_persistent("arb_on", True)
+    store.view("match_X").set_persistent("comp_on", True)
+
+    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
+                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    actor.on_data(mp)
+    _run(_drain(loop))
+
+    assert arb_action.legs == arb_legs
+    assert comp_action.calls == 0
 
 
 # ── eval.5: 补救兜底 — arb 没命中 + comp 命中 → fire comp ─────────

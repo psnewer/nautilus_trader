@@ -163,6 +163,9 @@ def wire_arbitrage_runtime(
 
     exec_engine = getattr(node.kernel, "exec_engine", None)
     if isinstance(exec_engine, ArbLiveExecutionEngine):
-        exec_engine.configure_arb(pair_inflight=_arb_context.pair_inflight)
+        exec_engine.configure_arb(
+            pair_inflight=_arb_context.pair_inflight,
+            pair_registry=pair_registry,
+        )
 
     return venue_liveness

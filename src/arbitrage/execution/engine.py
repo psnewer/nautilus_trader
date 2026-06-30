@@ -8,6 +8,7 @@ from dataclasses import field
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
+from nautilus_trader.model.identifiers import InstrumentId
 
 from src.arbitrage.common.opportunity import OpportunityMeta
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
@@ -33,11 +34,20 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
         super().__init__(*args, **kwargs)
         self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
         self._arb_pair_inflight = pair_inflight
+        self._pair_registry = None
         self._arb_opportunities: dict[str, _OpportunityContext] = {}
         self._msgbus.subscribe(topic=RISK_LEG_DENIED_TOPIC, handler=self._on_opportunity_leg_denied)
 
-    def configure_arb(self, *, pair_inflight=None, barrier_timeout_secs: float | None = None) -> None:
+    def configure_arb(
+        self,
+        *,
+        pair_inflight=None,
+        pair_registry=None,
+        barrier_timeout_secs: float | None = None,
+    ) -> None:
         self._arb_pair_inflight = pair_inflight
+        if pair_registry is not None:
+            self._pair_registry = pair_registry
         if barrier_timeout_secs is not None:
             self._arb_barrier_timeout_ns = secs_to_nanos(barrier_timeout_secs)
 
@@ -145,18 +155,20 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
     def _opportunity_residuals(self, ctx: _OpportunityContext) -> list[tuple[object | None, object, list]]:
         residuals: list[tuple[object | None, object, list]] = []
         seen_instruments = set()
-        for leg_key in ctx.meta.expected_legs:
-            command = ctx.allowed.get(leg_key)
-            if command is None:
-                continue
-            instrument_id = command.order.instrument_id
+        allowed_by_instrument = {
+            str(command.order.instrument_id): command
+            for command in ctx.allowed.values()
+        }
+        for raw_instrument_id in self._residual_check_instrument_ids(ctx):
+            instrument_id = _coerce_instrument_id(raw_instrument_id)
             if instrument_id in seen_instruments:
                 continue
             seen_instruments.add(instrument_id)
             open_orders = list(self._cache.orders_open(instrument_id=instrument_id) or [])
             if not open_orders:
                 continue
-            client = self._find_client_for_command(command)
+            command = allowed_by_instrument.get(str(instrument_id))
+            client = self._find_client_for_command(command) if command is not None else self._client_for_instrument(instrument_id)
             if client is None:
                 self._log.error(
                     "Opportunity cancel-only found residual orders but no execution client: "
@@ -164,6 +176,27 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
                 )
             residuals.append((client, instrument_id, open_orders))
         return residuals
+
+    def _residual_check_instrument_ids(self, ctx: _OpportunityContext) -> list:
+        registry = getattr(self, "_pair_registry", None)
+        if registry is not None and ctx.meta.pair_id and hasattr(registry, "instrument_ids_for_pair"):
+            instrument_ids = list(registry.instrument_ids_for_pair(ctx.meta.pair_id))
+            if instrument_ids:
+                return instrument_ids
+        return [
+            command.order.instrument_id
+            for leg_key in ctx.meta.expected_legs
+            for command in [ctx.allowed.get(leg_key)]
+            if command is not None
+        ]
+
+    def _client_for_instrument(self, instrument_id):
+        routing_map = getattr(self, "_routing_map", None)
+        if routing_map is not None:
+            client = routing_map.get(instrument_id.venue)
+            if client is not None:
+                return client
+        return getattr(self, "_default_client", None)
 
     @staticmethod
     def _has_cancel_leg(ctx: _OpportunityContext) -> bool:
@@ -204,3 +237,9 @@ class ArbLiveExecutionEngine(LiveExecutionEngine):
             self._clock.cancel_timer(f"{_TIMEOUT_PREFIX}{ctx.meta.opportunity_id}")
         except Exception:
             pass
+
+
+def _coerce_instrument_id(value):
+    if isinstance(value, InstrumentId):
+        return value
+    return InstrumentId.from_str(str(value))

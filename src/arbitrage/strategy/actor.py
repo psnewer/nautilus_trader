@@ -253,20 +253,24 @@ class StrategyEvaluator(Actor):
             )
             store = self._signal_store.view(pair_id)
             store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
-            # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建(per-eval 自动隔离 Check→Action 传值)
-            # slice 10a(#50):submitter 注入 — Action 经 `await ctx.submitter(spec)` 真出单
-            ctx = EvalContext(
-                pair_id=pair_id,
-                snapshot=snapshot,
-                store=store,
-                submitter=self._make_submitter(),
-                portfolio=self._portfolio,
-                strategy_defaults=self._strategy_defaults(),
-            )
-            # 并行 evaluate(纯求值,无副作用);asyncio.gather 让 evaluator 顶层能等两树都返才决定 fire
+            # slice 9(#49):store 走 per-pair view(P3 隔离);scratch 由 EvalContext default_factory 创建。
+            # 套利树 / 补偿树必须各自持有独立 scratch:Check 会把 legs 写入 scratch 给同树 Action 消费,
+            # 若两树共用 ctx,补偿树单腿会覆盖套利树双腿。
+            submitter = self._make_submitter()
+            base_ctx = {
+                "pair_id": pair_id,
+                "snapshot": snapshot,
+                "store": store,
+                "submitter": submitter,
+                "portfolio": self._portfolio,
+                "strategy_defaults": self._strategy_defaults(),
+            }
+            arb_ctx = EvalContext(**base_ctx)
+            comp_ctx = EvalContext(**base_ctx)
+            # 并行 evaluate;各树 scratch 独立,顶层等两树都返回后再决定 fire
             arb_res, comp_res = await asyncio.gather(
-                self._aevaluate(strategy.arbitrage_tree, ctx),
-                self._aevaluate(strategy.compensation_tree, ctx),
+                self._aevaluate(strategy.arbitrage_tree, arb_ctx),
+                self._aevaluate(strategy.compensation_tree, comp_ctx),
             )
             if self._log_evaluations:
                 arb_actions_str = [type(a).__name__ for a in arb_res.pending_actions] if arb_res.pending_actions else None
@@ -282,12 +286,12 @@ class StrategyEvaluator(Actor):
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=arbitrage")
-                self._create_task(self._execute_actions(arb_res.pending_actions, ctx))
+                self._create_task(self._execute_actions(arb_res.pending_actions, arb_ctx))
             elif comp_res.hit and comp_res.pending_actions:
                 fired = True
                 if self._log_evaluations:
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
-                self._create_task(self._execute_actions(comp_res.pending_actions, ctx))
+                self._create_task(self._execute_actions(comp_res.pending_actions, comp_ctx))
             elif self._log_evaluations:
                 self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
         finally:

@@ -23,7 +23,9 @@ from nautilus_trader.trading.strategy import Strategy
 
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.pair_inflight import PairInFlightGate
+from src.arbitrage.execution.engine import _OpportunityContext
 from src.arbitrage.execution.engine import ArbLiveExecutionEngine
+from src.arbitrage.common.opportunity import OpportunityMeta
 from tests.arbitrage.risk._factories import pm_instrument
 
 
@@ -170,6 +172,51 @@ def test_barrier_cancel_only_blocks_all_new_submits_when_residual_and_no_cancel_
     assert ctx.client.residual_cancels == [(ctx.instrument.id, [residual])]
     assert len(denied) == 2
     assert not ctx.gate.is_in_flight("pair-1")
+
+
+def test_barrier_residual_check_is_pair_wide_even_for_single_leg_opportunity():
+    ctx = _Ctx()
+    allowed = ctx.submit_cmd("pm:away:0", expected=("pm:away:0",))
+    residual_instrument = pm_instrument("match_X", "home", token="tok-home-residual")
+    residual = ctx.strategy.order_factory.limit(
+        residual_instrument.id,
+        OrderSide.BUY,
+        Quantity.from_int(10),
+        residual_instrument.make_price(0.4),
+    )
+
+    class _FakePairRegistry:
+        def instrument_ids_for_pair(self, pair_id):
+            assert pair_id == "pair-1"
+            return {str(allowed.order.instrument_id), str(residual_instrument.id)}
+
+    class _FakeCache:
+        def orders_open(self, instrument_id=None):
+            return [residual] if str(instrument_id) == str(residual_instrument.id) else []
+
+    fake_engine = type("FakeEngine", (), {})()
+    fake_engine._pair_registry = _FakePairRegistry()
+    fake_engine._cache = _FakeCache()
+    fake_engine._log = ctx.engine._log
+    fake_engine._residual_check_instrument_ids = (
+        lambda barrier_ctx: ArbLiveExecutionEngine._residual_check_instrument_ids(fake_engine, barrier_ctx)
+    )
+    fake_engine._client_for_instrument = lambda instrument_id: ctx.client
+    fake_engine._find_client_for_command = lambda command: ctx.client
+    barrier_ctx = _OpportunityContext(
+        meta=OpportunityMeta(
+            opportunity_id="opp-1",
+            pair_id="pair-1",
+            leg_key="pm:away:0",
+            expected_legs=("pm:away:0",),
+        ),
+        expected={"pm:away:0"},
+        allowed={"pm:away:0": allowed},
+    )
+
+    residuals = ArbLiveExecutionEngine._opportunity_residuals(fake_engine, barrier_ctx)
+
+    assert residuals == [(ctx.client, residual_instrument.id, [residual])]
 
 
 def test_barrier_residual_with_explicit_cancel_leg_releases_normally():

@@ -212,16 +212,18 @@ class StrategyEvaluator(Actor):
                               pair_registry=self._pair_registry)            # Q20
         store = self._signal_store.view(pair_id)
         store.set_transient("pre_match", not snap.in_play)  # snapshot 派生 signal,供 self_hits 门控
-        ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=store)
+        submitter = self._make_submitter()
+        arb_ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=store, submitter=submitter)
+        comp_ctx = EvalContext(pair_id=pair_id, snapshot=snap, store=store, submitter=submitter)
         arb_res, comp_res = await asyncio.gather(                # 并行(_aevaluate 是 sync evaluate 的 async 包)
-            self._aevaluate(strategy.arbitrage_tree, ctx),
-            self._aevaluate(strategy.compensation_tree, ctx),
+            self._aevaluate(strategy.arbitrage_tree, arb_ctx),
+            self._aevaluate(strategy.compensation_tree, comp_ctx),
         )
         # 套利 > 补救;fire-and-forget(不阻塞)
         if arb_res.hit and arb_res.pending_action is not None:
-            self._create_task(arb_res.pending_action.execute(ctx))
+            self._create_task(arb_res.pending_action.execute(arb_ctx))
         elif comp_res.hit and comp_res.pending_action is not None:
-            self._create_task(comp_res.pending_action.execute(ctx))
+            self._create_task(comp_res.pending_action.execute(comp_ctx))
 
     async def _aevaluate(self, tree, ctx):
         return evaluate_tree(tree, ctx)         # sync evaluate 包成 coroutine 供 gather;
@@ -302,7 +304,7 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 
 **`SignalStore.view(pair_id)` 返 `_PairScopedStoreView`**:thin wrapper,所有读写自动 namespace 到 `f"{key}.{pair_id}"`。evaluator 构造 EvalContext 时传 `store=self._signal_store.view(pair_id)`,SignalRef / Action 写法不变。跨 pair 全局信号走 root store(罕见;`signal_collector` 决定走哪条)。
 
-**`EvalContext.scratch: dict`**:per-eval 自动隔离的 mutable scratch space。Check 算的 derived 数据(如 `ctx.scratch["legs"]`)给同 condition 树内 Action 用;Action consume 不需考虑跨 pair race(EvalContext 是 per-evaluate 新建,natural lifecycle)。
+**`EvalContext.scratch: dict`**:per-eval 自动隔离的 mutable scratch space。Check 算的 derived 数据(如 `ctx.scratch["legs"]`)给同 condition 树内 Action 用;Action consume 不需考虑跨 pair race。套利树与补偿树同轮并行 evaluate 时必须使用两份 `EvalContext` / `scratch`:补偿树可能写单腿 recovery legs,不得覆盖套利树写出的多腿 arbitrage legs。
 
 **运行时默认规模参数(2026-06-29)**:`EvalContext.strategy_defaults` 每轮由 `StrategyEvaluator` 从 live `ArbitrageParams` 读取,当前包含 `share` / `max_leg_share` / `fx`。这些值来自顶层 `arbitrage` 配置段,Web Arbitrage 标签页热改时通过 `command.arb.arbitrage_params` 同步到 StrategyEvaluator;strategy JSON 中各 Check/Action 的 `params` 若显式给同名字段,优先级高于 Web 默认。边界原则:Condition/Checktion 发现机会时应产出带 `share_if_wins` 或 `qty` 的完整计划腿;Action 只做缩放、选择、提交,不负责决定原始 share。
 
@@ -407,15 +409,17 @@ cancel-only 主流程由 `tests/arbitrage/e2e/test_mean_rebate_cancel_only.py` �
 
 ```python
 arb_res, comp_res = await asyncio.gather(
-    evaluate(arb_tree, ctx),
-    evaluate(comp_tree, ctx),
+    evaluate(arb_tree, arb_ctx),
+    evaluate(comp_tree, comp_ctx),
 )
 # 套利结果优先:套利命中 → 套利 action;否则补救命中 → 补救 action
-if arb_res.hit:   fire(arb_res.pending_action)
-elif comp_res.hit: fire(comp_res.pending_action)
+if arb_res.hit:   fire(arb_res.pending_action, arb_ctx)
+elif comp_res.hit: fire(comp_res.pending_action, comp_ctx)
 ```
 
 **为什么 evaluate 必须分离求值与执行**:补救要"等套利的 evaluate 结果"才决定 fire,所以 evaluate 不能边求值边执行 action(否则补救 evaluate 走到叶子就会 fire,无法回收)。这就是 Q21 "evaluate 返 True 不等 action 完成"的根本原因。
+
+**arb/comp scratch 隔离不变量**:两棵树可并行求值并共享同一 snapshot / store / submitter,但不能共享 `scratch`。否则补偿树命中时写入的单腿 `ctx.scratch["legs"]` 会污染套利树 action,形成 `intent=arbitrage` 但 `expected_legs` 只有一条腿的错误订单。
 
 ### 4.3 信号量双状态(Q9)
 

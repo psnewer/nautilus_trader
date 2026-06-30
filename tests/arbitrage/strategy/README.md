@@ -333,6 +333,7 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - **.2**:strategy 为 None(无挂载)→ no-op,无 fire
 - **.3**:Q19:`_execution_active` True 时 evaluate 跳过(让路)
 - **.4**:Q21 套利优先:arb.hit=True + comp.hit=True → fire arb.action,**不** fire comp.action
+- **.4a**(`test_arb_and_comp_evaluation_scratch_is_isolated`):同轮 arb/comp 都命中,arb check 写 PM+OE 双腿,comp check 写单腿 recovery legs → fire arb.action 时读取的必须仍是 arb 自己的双腿 scratch;comp.action 不执行。验收:不得出现补偿树单腿污染套利树,导致 `intent=arbitrage` 但 `expected_legs` 只有一条。
 - **.5**:Q21 补救兜底:arb.hit=False + comp.hit=True → fire comp.action(等 arb evaluate 完成确认未命中后才 fire)
 
 ### strategy-4.framework.eval.{15-16}:per-pair 串行闸(§6.10 §7,#84)
