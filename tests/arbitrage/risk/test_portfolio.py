@@ -17,6 +17,7 @@ from src.arbitrage.risk.portfolio import _Leg
 from tests.arbitrage.risk._factories import DuckPosition
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_instrument
+from tests.arbitrage.risk._factories import se_instrument
 
 
 def _portfolio(cache=None) -> ArbitragePortfolio:
@@ -116,6 +117,33 @@ def test_leg_from_position_pm_and_oe():
 
     leg_oe = pf._leg_from_position(DuckPosition(oe.id, 50.0, 2.5))
     assert leg_oe.venue == "orbitexch" and leg_oe.market_type == "away"
+
+
+def test_leg_from_position_sharpexch_keeps_venue_identity():
+    cache = TestComponentStubs.cache()
+    se = se_instrument("match_1", "away", 3)
+    cache.add_instrument(se)
+    pf = _portfolio(cache=cache)
+
+    leg = pf._leg_from_position(DuckPosition(se.id, 50.0, 2.5))
+
+    assert leg.venue == "sharpexch"
+    assert leg.market_type == "away"
+    assert leg.share_if_wins() == pytest.approx(125.0)
+
+
+def test_outcome_shares_for_venue_keeps_oe_and_se_separate():
+    pf = _portfolio()
+    _stub_legs(
+        pf,
+        [
+            _Leg("orbitexch", "home", 3, 2.0),
+            _Leg("sharpexch", "home", 4, 2.5),
+        ],
+    )
+
+    assert pf.outcome_shares_for_venue("match_1", "orbitexch")["home"] == pytest.approx(6.0)
+    assert pf.outcome_shares_for_venue("match_1", "sharpexch")["home"] == pytest.approx(10.0)
 
 
 def test_leg_from_position_missing_info_returns_none():

@@ -62,3 +62,29 @@
 `SetTradingStateCommand` / `SetRiskParamsCommand` / `SetArbitrageParamsCommand` / `SetRefreshIntervalCommand`。**契约真理源在 web §8.3**(WebGatewayActor 单一生产者 publish,risk/strategy/matching 订阅 apply);本目录只承载共享类型定义。
 
 `SetRiskParamsCommand` 使用 `None` 表示不覆盖该字段;当前热字段包括 `match_tp` / `match_sl` / `min_probability` / `max_probability`。`SetArbitrageParamsCommand` 承载普通套利运行默认值 `share` / `max_leg_share` / `fx`;这些字段不归 Risk 配置所有。
+
+## 5. Venue 配置 dataclass(`venue_configs.py`)
+
+`src/arbitrage/common/venue_configs.py` 承载 discovery / adapter factory 共享的轻量 venue 配置:
+`BrowserConfig`、`SportConfig`、`PolymarketVenueConfig`、`OrbitExchVenueConfig`、`SharpExchVenueConfig`。
+
+SharpExch 第一阶段只新增与 OE 同形的 `SharpExchVenueConfig(enabled, browser, sports)`。真实 SE
+浏览器/API/WS 接线仍归 `architectures/sharpexch/architecture.md`;common 只提供跨模块传参类型,不定义
+SE discovery 算法。
+
+## 6. ArbContext factory 注入字段
+
+`src/arbitrage/bootstrap.py:ArbContext` 是 NT factory 固定签名之外的进程级依赖注入通道。PM/OE
+字段已有生产接线;SharpExch 第一阶段新增同形字段,并由 launcher 按
+`venues.sharpexch.enabled` 显式 opt-in 注册 SE factories:
+
+| 字段 | 用途 |
+|---|---|
+| `se_session_timeout_secs` | `ArbSharpExchLiveExecClientFactory` 注入 SE execution session timeout |
+| `se_discovery_config` | `SharpExchLiveDataClientFactory` 判断是否构造 SE discovery/provider |
+| `se_sport_aliases` / `se_competition_aliases` | SE Provider 写 Q9 统一字段前的别名映射 |
+| `se_instrument_provider` | SE Data factory 构造 provider 后回写,供后续 runtime/测试读取 |
+| `se_browser_manager` | SE Data/Exec factory 共享同一个 Playwright browser manager |
+
+这些字段只承载 factory 注入状态;默认 `venues.sharpexch.enabled=false` 时不改变现有 PM/OE
+runtime 流程。

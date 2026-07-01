@@ -38,6 +38,7 @@ class DiscoveryConfig(msgspec.Struct, frozen=True, kw_only=True):
     refresh_interval_secs: float = 10.0     # #59:MarketMatchingActor timer 轮询间隔(锁 10s;发现间隔在 data client update_instruments_interval_mins,与此解耦)
     polymarket: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)
     orbitexch: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)
+    sharpexch: VenueDiscoveryConfig = msgspec.field(default_factory=VenueDiscoveryConfig)
 
 
 # ─── Matching ─────────────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ class MatchingConfig(msgspec.Struct, frozen=True, kw_only=True):
 class PolymarketSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     """Polymarket 接入参数 + 凭证(凭证字段由 env 注入,JSON 中应留 None)。"""
 
+    enabled: bool = True
     clob_url: str = "https://clob.polymarket.com"
     ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/"
     relayer_url: str = "https://relayer-v2.polymarket.com/"
@@ -83,6 +85,7 @@ class PolymarketSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
 
 
 class OrbitExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
+    enabled: bool = True
     base_url: str = "https://www.orbitexch.com"
     api_url: str = "https://www.orbitexch.com/customer/api"
     zoom_level: float = 0.8
@@ -109,9 +112,39 @@ class OrbitExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
     )
 
 
+class SharpExchSectionConfig(msgspec.Struct, frozen=True, kw_only=True):
+    """SharpExch 接入参数 + 凭证(凭证字段由 env 注入,JSON 中应留 None)。"""
+
+    enabled: bool = False
+    base_url: str = "https://portal.sharpxch.com"
+    login_url: str = "https://sharpxch.com/player/"
+    api_url: str = "https://portal.sharpxch.com/customer/api"
+    zoom_level: float = 0.8
+    page_load_timeout_sec: float = 120.0
+    page_refresh_sec: int = 600
+    staleness_timeout_sec: int = 300
+    headless: bool = True
+    browser_type: str = "chromium"
+    user_data_dir: str | None = None
+    cdp_url: str | None = None
+    # 凭证(env-only)
+    username: str | None = None
+    password: str | None = None
+    # 下单
+    default_persistence: str = "LAPSE"
+    default_order_type: str = "GTC"
+    discount: float = 1.0
+    take_off: float = 0.0
+    market_order_enabled: bool = False
+    supported_market_types: list[str] = msgspec.field(
+        default_factory=lambda: ["home", "draw", "away"],
+    )
+
+
 class VenuesConfig(msgspec.Struct, frozen=True, kw_only=True):
     polymarket: PolymarketSectionConfig = msgspec.field(default_factory=PolymarketSectionConfig)
     orbitexch: OrbitExchSectionConfig = msgspec.field(default_factory=OrbitExchSectionConfig)
+    sharpexch: SharpExchSectionConfig = msgspec.field(default_factory=SharpExchSectionConfig)
 
 
 # ─── Strategy(JSON 驱动嵌套 Condition 树,Q25)──────────────────────────

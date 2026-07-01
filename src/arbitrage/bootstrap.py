@@ -69,6 +69,15 @@ class ArbContext:
     # → 一个浏览器(data/exec 各取专属 page),而非各 new 一个(两窗口 bug,#62)。
     oe_browser_manager: object | None = None
 
+    # SE 专属(第一阶段离线接入):按 OE 型 venue 复制 factory 注入形状,但 launcher 暂不注册。
+    se_session_timeout_secs: float = 30.0
+    se_discovery_config: object | None = None  # SharpExchVenueConfig | None;运行时类型避循环 import
+    se_sport_aliases: dict = field(default_factory=dict)
+    se_competition_aliases: dict = field(default_factory=dict)
+    se_instrument_provider: object | None = None
+    se_browser_manager: object | None = None
+    se_browser_lock: object | None = None
+
     # PM 发现目标(#55):`ArbPolymarketInstrumentProvider.load_all_async` 读这两字段做 series-based 发现。
     pm_event_slug_tags: list = field(default_factory=list)        # 目标 competition 列表(如 ["atp"]);PM /sports `sport` 字段比对
     pm_competition_to_sport: dict = field(default_factory=dict)   # competition→sport map(如 {"atp": "Tennis"});provider 写 info["sport"]

@@ -34,11 +34,12 @@ _MATCH_ALERT = "market_matching:tick"
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
-    """`pm_venue`/`oe_venue` 用于读 cache.instruments;`refresh_interval_secs` = matching 周期轮询间隔
+    """`pm_venue`/`external_venues` 用于读 cache.instruments;`refresh_interval_secs` = matching 周期轮询间隔
     (#58 slice A:DataClient 拥有发现后,matching 自 timer 读 cache,不再被 InstrumentsRefreshed 触发)。"""
 
     pm_venue: str = "POLYMARKET"
-    oe_venue: str = "ORBITEXCH"
+    oe_venue: str = "ORBITEXCH"  # legacy alias;external_venues 为空时兜底
+    external_venues: tuple[str, ...] = ("ORBITEXCH",)
     refresh_interval_secs: float = 30.0
     min_similarity: int = 1
     competition_max_matches: dict = None
@@ -55,7 +56,7 @@ class MarketMatchingActor(Actor):
     def __init__(self, config: MarketMatchingConfig, deps: _RuntimeDeps) -> None:
         super().__init__(config=config)
         self._pm_venue_str = config.pm_venue
-        self._oe_venue_str = config.oe_venue
+        self._external_venue_strs = tuple(config.external_venues or (config.oe_venue,))
         self._refresh_interval_secs = config.refresh_interval_secs
         self._pair_registry = deps.pair_registry
         self._engine = MatchEngine(
@@ -63,7 +64,7 @@ class MarketMatchingActor(Actor):
             competition_max_matches=config.competition_max_matches or {},
         )
         self._emitted_pairs: set[str] = set()  # 已记 INFO 的 pair_id(每 tick 重 emit,日志只记新对)
-        self._game_to_pair: dict[int, str] = {}  # #60:gameId → pair_id(emit 时填,sports ended 时查)
+        self._game_to_pair: dict[int, set[str]] = {}  # #60:gameId → pair_id set(emit 时填,sports ended 时查)
         self._ended_games: set[int] = set()      # #60:已结束 gameId(matching 排除,不再 re-emit)
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
@@ -92,8 +93,8 @@ class MarketMatchingActor(Actor):
 
     def _evict_game(self, game_id: int) -> None:
         self._ended_games.add(game_id)
-        pair_id = self._game_to_pair.pop(game_id, None)
-        if pair_id is not None:
+        pair_ids = self._game_to_pair.pop(game_id, set())
+        for pair_id in pair_ids:
             self._pair_registry.unregister_pair(pair_id)
             self._emitted_pairs.discard(pair_id)
             self.log.info(f"Evicted pair {pair_id} (game {game_id} ended)")
@@ -131,14 +132,19 @@ class MarketMatchingActor(Actor):
             i for i in self.cache.instruments(venue=Venue(self._pm_venue_str))
             if self._game_id_of(i) not in self._ended_games
         ]
-        oe_instruments = list(self.cache.instruments(venue=Venue(self._oe_venue_str)))
-        if not pm_instruments or not oe_instruments:
+        if not pm_instruments:
             return
         pm_events = events_from_instruments(pm_instruments)
-        oe_events = events_from_instruments(oe_instruments)
-        results = self._engine.match_events(pm_events, oe_events)
-        for result in results:
-            self._emit_pair(result)
+        if not pm_events:
+            return
+        for external_venue in self._external_venue_strs:
+            external_instruments = list(self.cache.instruments(venue=Venue(external_venue)))
+            if not external_instruments:
+                continue
+            external_events = events_from_instruments(external_instruments)
+            results = self._engine.match_events(pm_events, external_events)
+            for result in results:
+                self._emit_pair(result, external_venue=external_venue)
 
     @staticmethod
     def _game_id_of(instrument):
@@ -146,23 +152,28 @@ class MarketMatchingActor(Actor):
         gid = info.get("game_id") if isinstance(info, dict) else None
         return int(gid) if gid is not None else None
 
-    def _emit_pair(self, result: MatchResult) -> None:
+    def _emit_pair(self, result: MatchResult, *, external_venue: str) -> None:
         pm_ev = result.polymarket_event
-        oe_ev = result.orbitexch_event
-        pair_id = _pair_id_for(pm_ev.competition, pm_ev.home_team_normalized, pm_ev.away_team_normalized)
+        external_ev = result.orbitexch_event
+        pair_id = _pair_id_for(
+            pm_ev.competition,
+            pm_ev.home_team_normalized,
+            pm_ev.away_team_normalized,
+            external_venue=external_venue,
+        )
         pm_ids = [str(leg.id) for leg in pm_ev.legs]
-        oe_ids = [str(leg.id) for leg in oe_ev.legs]
+        external_ids = [str(leg.id) for leg in external_ev.legs]
         # #60:记 gameId → pair_id(PM 腿 info["game_id"];sports `ended` 时经此 evict)
         gid = self._game_id_of(pm_ev.legs[0]) if pm_ev.legs else None
         if gid is not None:
-            self._game_to_pair[gid] = pair_id
+            self._game_to_pair.setdefault(gid, set()).add(pair_id)
         # 1. 注册到 PairRegistry(下游 pull;同 tick 同步发布前完成)
-        self._pair_registry.register(pair_id, pm_ids + oe_ids)
+        self._pair_registry.register(pair_id, pm_ids + external_ids)
         if pair_id not in self._emitted_pairs:
             self._emitted_pairs.add(pair_id)
             self.log.info(
                 f"MatchedPair {pair_id} (conf={_confidence(result.total_similarity):.2f}, "
-                f"pm={len(pm_ids)} oe={len(oe_ids)})",
+                f"pm={len(pm_ids)} {external_venue.lower()}={len(external_ids)})",
             )
         # 2. publish 事件(strategy 订阅)
         now = self.clock.timestamp_ns()
@@ -174,15 +185,22 @@ class MarketMatchingActor(Actor):
                 sport=pm_ev.sport,
                 competition=pm_ev.competition,
                 pm_instrument_ids=pm_ids,
-                oe_instrument_ids=oe_ids,
+                oe_instrument_ids=external_ids,
                 confidence=_confidence(result.total_similarity),
             ),
         )
 
 
-def _pair_id_for(competition: str, home_normalized: str, away_normalized: str) -> str:
+def _pair_id_for(
+    competition: str,
+    home_normalized: str,
+    away_normalized: str,
+    *,
+    external_venue: str = "ORBITEXCH",
+) -> str:
     """matching 架构 §4.3:稳定、确定性 pair_id 生成。"""
-    return f"{competition}|{home_normalized}|{away_normalized}"
+    base = f"{competition}|{home_normalized}|{away_normalized}"
+    return base if str(external_venue).upper() == "ORBITEXCH" else f"{base}|{str(external_venue).upper()}"
 
 
 def _confidence(total_similarity: int) -> float:

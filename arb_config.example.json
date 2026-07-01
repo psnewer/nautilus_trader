@@ -40,10 +40,12 @@
   },
   "venues": {
     "polymarket": {
+      "enabled": true,
       "clob_url": "https://clob.polymarket.com",
       "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/"
     },
     "orbitexch": {
+      "enabled": true,
       "base_url": "https://www.orbitexch.com",
       "headless": false,
       "page_load_timeout_sec": 120

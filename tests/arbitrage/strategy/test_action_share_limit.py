@@ -14,15 +14,18 @@ def _run(coro):
 
 
 class _Portfolio:
-    def __init__(self, pm=None, oe=None):
+    def __init__(self, pm=None, oe=None, se=None):
         self._pm = pm or {}
         self._oe = oe or {}
+        self._se = se or {}
 
     def outcome_shares_for_venue(self, pair_id, venue, account_id):
         if venue == "polymarket":
             return self._pm
         if venue == "orbitexch":
             return self._oe
+        if venue == "sharpexch":
+            return self._se
         return {}
 
 
@@ -74,6 +77,20 @@ def test_candidates_are_individually_share_limited_and_output_as_array():
     assert adjusted[0]["legs"][1]["qty"] == 25.0
     assert adjusted[1]["share_limit_scale"] == 1.0
     assert adjusted[1]["adjusted_share"] == 40.0
+
+
+def test_sharpexch_legs_are_adjusted_like_decimal_odds_venue():
+    ctx = EvalContext(pair_id="p", portfolio=_Portfolio(se={"home": 60.0, "away": 40.0}))
+    ctx.scratch["legs"] = [
+        {"venue": "SHARPEXCH", "role": "home", "price": 2.0, "share_if_wins": 100.0},
+    ]
+
+    _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
+
+    assert ctx.scratch["share_limit_scale"] == 0.8
+    assert ctx.scratch["adjusted_share"] == 80.0
+    assert ctx.scratch["legs"][0]["qty"] == 40.0
+    assert ctx.scratch["legs"][0]["share_if_wins"] == 80.0
 
 
 def test_candidates_with_no_remaining_are_removed():

@@ -20,6 +20,8 @@ from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClientConfig
+from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
+from nautilus_trader.adapters.sharpexch.config import SharpExchExecClientConfig
 
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.common.params import ArbitrageParams
@@ -121,6 +123,35 @@ def to_orbitexch_exec_client_config(cfg: ArbConfig) -> OrbitExchExecClientConfig
     )
 
 
+def to_sharpexch_data_client_config(cfg: ArbConfig) -> SharpExchDataClientConfig:
+    se = cfg.venues.sharpexch
+    return SharpExchDataClientConfig(
+        username=se.username or "",
+        password=se.password or "",
+        base_url=se.base_url,
+        login_url=se.login_url,
+        headless=se.headless,
+        browser_type=se.browser_type,
+        user_data_dir=se.user_data_dir,
+        page_timeout=int(se.page_load_timeout_sec * 1000),
+        staleness_timeout_secs=se.staleness_timeout_sec,
+    )
+
+
+def to_sharpexch_exec_client_config(cfg: ArbConfig) -> SharpExchExecClientConfig:
+    se = cfg.venues.sharpexch
+    return SharpExchExecClientConfig(
+        username=se.username or "",
+        password=se.password or "",
+        base_url=se.base_url,
+        login_url=se.login_url,
+        headless=se.headless,
+        browser_type=se.browser_type,
+        user_data_dir=se.user_data_dir,
+        page_timeout=int(se.page_load_timeout_sec * 1000),
+    )
+
+
 # ─── Actors ───────────────────────────────────────────────────────────────
 
 
@@ -132,10 +163,16 @@ def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingConfig:
     """注意:`sport_aliases` / `competition_aliases` 不在 MarketMatchingConfig
     (normalizer 注释:Provider 填 info 时已 alias);aliases → Provider 的接线见 slice 7。"""
     m = cfg.matching
+    external_venues = []
+    if cfg.venues.orbitexch.enabled:
+        external_venues.append("ORBITEXCH")
+    if cfg.venues.sharpexch.enabled:
+        external_venues.append("SHARPEXCH")
     return MarketMatchingConfig(
         refresh_interval_secs=cfg.discovery.refresh_interval_secs,
         min_similarity=int(m.min_similarity),
         competition_max_matches=m.competition_max_matches or None,
+        external_venues=tuple(external_venues),
     )
 
 
@@ -203,9 +240,13 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
     return {
         "pm_session_timeout_secs": cfg.execution.tracking_timeout_sec,
         "oe_session_timeout_secs": cfg.execution.tracking_timeout_sec,
+        "se_session_timeout_secs": cfg.execution.tracking_timeout_sec,
         "oe_scraper_config": to_oe_scraper_config(cfg),
         "oe_sport_aliases": dict(cfg.matching.sport_aliases),
         "oe_competition_aliases": dict(cfg.matching.competition_aliases),
+        "se_discovery_config": to_se_discovery_config(cfg) if cfg.venues.sharpexch.enabled else None,
+        "se_sport_aliases": dict(cfg.matching.sport_aliases),
+        "se_competition_aliases": dict(cfg.matching.competition_aliases),
         "pm_event_slug_tags": to_pm_event_slug_tags(cfg),
         "pm_competition_to_sport": to_pm_competition_to_sport(cfg),
     }
@@ -214,7 +255,7 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
 def to_pm_event_slug_tags(cfg: ArbConfig) -> list:
     """#55:`discovery.polymarket.sports[].competitions` 扁平化为目标 competition 列表;
     各 competition 字符串作为 PM `/sports` 的 `sport` 字段比对值(用户 config 用 PM 命名如 "atp" / "epl")。"""
-    if not cfg.discovery.polymarket.enabled:
+    if not cfg.venues.polymarket.enabled or not cfg.discovery.polymarket.enabled:
         return []
     tags = []
     for sf in cfg.discovery.polymarket.sports:
@@ -226,7 +267,7 @@ def to_pm_event_slug_tags(cfg: ArbConfig) -> list:
 
 def to_pm_competition_to_sport(cfg: ArbConfig) -> dict:
     """#55:competition(PM 缩写)→ sport 名,如 {"atp": "Tennis"};provider 写 `info["sport"]`。"""
-    if not cfg.discovery.polymarket.enabled:
+    if not cfg.venues.polymarket.enabled or not cfg.discovery.polymarket.enabled:
         return {}
     mapping = {}
     for sf in cfg.discovery.polymarket.sports:
@@ -247,7 +288,7 @@ def to_oe_scraper_config(cfg: ArbConfig):
     from src.arbitrage.common.venue_configs import SportConfig
 
     oe_dis = cfg.discovery.orbitexch
-    if not oe_dis.enabled:
+    if not cfg.venues.orbitexch.enabled or not oe_dis.enabled:
         return None
     oe_venue = cfg.venues.orbitexch
     return OrbitExchVenueConfig(
@@ -261,6 +302,31 @@ def to_oe_scraper_config(cfg: ArbConfig):
             timeout_ms=int(oe_venue.page_load_timeout_sec * 1000),
         ),
         sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in oe_dis.sports],
+    )
+
+
+def to_se_discovery_config(cfg: ArbConfig):
+    """`ArbConfig.discovery.sharpexch.sports` + `cfg.venues.sharpexch.*`
+    → `SharpExchVenueConfig | None`。
+
+    第一阶段仅供 SE provider/factory 后续接线;真实 Playwright/API fetch 还未启用。
+    """
+    from src.arbitrage.common.venue_configs import BrowserConfig
+    from src.arbitrage.common.venue_configs import SharpExchVenueConfig
+    from src.arbitrage.common.venue_configs import SportConfig
+
+    se_dis = cfg.discovery.sharpexch
+    if not cfg.venues.sharpexch.enabled or not se_dis.enabled:
+        return None
+    se_venue = cfg.venues.sharpexch
+    return SharpExchVenueConfig(
+        enabled=True,
+        browser=BrowserConfig(
+            headless=True,
+            user_data_dir=None,
+            timeout_ms=int(se_venue.page_load_timeout_sec * 1000),
+        ),
+        sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in se_dis.sports],
     )
 
 

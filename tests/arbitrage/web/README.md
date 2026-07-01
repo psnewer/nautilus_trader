@@ -4,7 +4,7 @@
 
 **落地状态(2026-06-23)**:Step 7 **完整控制台页面**(忠实照搬 legacy Bootstrap 标签页 + 控制 + 只读监控)已实现(`src/arbitrage/web/{actor,app}.py` + `static/console.html`)。`tests/arbitrage/web/test_web_gateway.py` 通过。
 
-**演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,OE 1/odds 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
+**演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,external venue 1/odds 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
 
 ## 锁定的关键性约束
 
@@ -39,9 +39,9 @@
 - 验收: `tests/arbitrage/launchers/test_arb_node.py::test_boot_halted_when_web_enabled_and_start_halted` / `test_no_boot_halt_when_web_disabled`
 
 ### web-7.13: 完整页面 + 只读监控端点(#123,照搬 legacy)
-- 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;`/odds` 的 OE 腿前端按 `1/赔率` 换算成隐含概率(bid/ask 互换使 bid≤ask)与 PM 统一,原赔率括号留存
+- 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;Discovery 页面统计/过滤 POLYMARKET / ORBITEXCH / SHARPEXCH;`/odds` 的非 PM external venue 腿前端按 `1/赔率` 换算成隐含概率(bid/ask 互换使 bid≤ask)与 PM 统一
 - 验收: `test_index_serves_html` / `test_get_accounts` / `test_get_instruments` / `test_get_matched_pairs` / `test_get_odds`
-- 注: Market Matching 表 PM/OE 列显示腿数(二元盘=2 legs=home+away)
+- 注: Market Matching 表保留 `oe_*` 旧字段兼容;新增 `external_venue` / `external_instrument_ids` / `external_teams` 表示真实 external venue(OE 或 SE),`test_on_matched_pair_infers_external_venue_for_sharpexch` 覆盖 PM+SE 字段。
 
 ### web-7.x: scaffolding(端口预检 / WS 背压 / 退订 / 优雅停机)
 - `test_port_bindable_detects_free_and_occupied`、`test_enqueue_drops_oldest_when_full`、`test_unregister_stops_broadcast`、`test_ws_sends_queued_message_then_closes_on_poison`(on_stop 毒丸优雅关 WS)

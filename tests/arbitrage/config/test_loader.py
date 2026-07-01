@@ -26,6 +26,7 @@ def _clean_env(monkeypatch):
     """删所有可能影响 loader 的 env,避免 test 互相污染或宿主机 .env 干扰。"""
     for var in [
         "ORBITEXCH_USERNAME", "ORBITEXCH_PASSWORD",
+        "SHARPEXCH_USERNAME", "SHARPEXCH_PASSWORD",
         "POLYMARKET_CLOB_API_KEY", "POLYMARKET_CLOB_SECRET", "POLYMARKET_CLOB_PASSPHRASE",
         "POLYMARKET_SIGNATURE_TYPE", "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER",
         "POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "POLYMARKET_EOA_ADDRESS",
@@ -44,6 +45,8 @@ def test_default_empty_json(cfg_path):
     assert cfg.arbitrage.share == 22.5
     assert cfg.venues.polymarket.clob_url == "https://clob.polymarket.com"
     assert cfg.venues.orbitexch.headless is True
+    assert cfg.venues.sharpexch.enabled is False
+    assert cfg.venues.sharpexch.base_url == "https://portal.sharpxch.com"
     assert cfg.debug is None
 
 
@@ -55,12 +58,14 @@ def test_full_json_parses(cfg_path):
             "refresh_interval_secs": 30,
             "polymarket": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["atp"]}]},
             "orbitexch": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["Men's Roland Garros 2026"]}]},
+            "sharpexch": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]},
         },
         "matching": {
             "min_similarity": 1,
             "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
         },
         "arbitrage": {"share": 50.0, "fx": 1.5, "max_leg_share": 75.0},
+        "venues": {"sharpexch": {"enabled": True}},
         "risk": {"match_tp": 0.08, "min_probability": 0.04},
         "strategy": {
             "strategies": {
@@ -75,6 +80,8 @@ def test_full_json_parses(cfg_path):
     cfg = load_arb_config(cfg_path)
     assert cfg.discovery.polymarket.sports[0].sport == "Tennis"
     assert cfg.discovery.orbitexch.sports[0].competitions == ["Men's Roland Garros 2026"]
+    assert cfg.discovery.sharpexch.sports[0].competitions == ["Men's Wimbledon 2026"]
+    assert cfg.venues.sharpexch.enabled is True
     assert cfg.matching.competition_aliases["atp"] == "ATP"
     assert cfg.arbitrage.share == 50.0
     assert cfg.arbitrage.fx == 1.5
@@ -140,12 +147,22 @@ def test_env_injects_orbitexch_credentials(cfg_path, monkeypatch):
     assert cfg.venues.orbitexch.password == "oe_pw"
 
 
+def test_env_injects_sharpexch_credentials(cfg_path, monkeypatch):
+    monkeypatch.setenv("SHARPEXCH_USERNAME", "se_user")
+    monkeypatch.setenv("SHARPEXCH_PASSWORD", "se_pw")
+    cfg_path.write_text("{}")
+    cfg = load_arb_config(cfg_path)
+    assert cfg.venues.sharpexch.username == "se_user"
+    assert cfg.venues.sharpexch.password == "se_pw"
+
+
 # ── .5 env 缺失 → cfg 字段保 None ───────────────────────────────
 def test_env_missing_keeps_none(cfg_path):
     cfg_path.write_text("{}")
     cfg = load_arb_config(cfg_path)
     assert cfg.venues.polymarket.clob_api_key is None
     assert cfg.venues.orbitexch.username is None
+    assert cfg.venues.sharpexch.username is None
 
 
 # ── .6 `POLYMARKET_ADDRESS` 别名 fallback ──────────────────────
@@ -176,6 +193,15 @@ def test_env_overrides_json_credential(cfg_path, monkeypatch):
     assert cfg.venues.orbitexch.password == "env_value"
 
 
+def test_env_overrides_json_sharpexch_credential(cfg_path, monkeypatch):
+    monkeypatch.setenv("SHARPEXCH_PASSWORD", "env_value")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConfigWarning)
+        cfg_path.write_text(json.dumps({"venues": {"sharpexch": {"password": "json_value"}}}))
+        cfg = load_arb_config(cfg_path)
+    assert cfg.venues.sharpexch.password == "env_value"
+
+
 # ── .8 JSON 含凭证 → ConfigWarning ─────────────────────────────
 def test_credential_in_json_triggers_warning(cfg_path):
     cfg_path.write_text(json.dumps({"venues": {"polymarket": {"clob_api_key": "leaked"}}}))
@@ -185,6 +211,15 @@ def test_credential_in_json_triggers_warning(cfg_path):
     assert any(issubclass(w.category, ConfigWarning) for w in caught)
     msg = str(caught[0].message)
     assert "venues.polymarket.clob_api_key" in msg
+
+
+def test_sharpexch_credential_in_json_triggers_warning(cfg_path):
+    cfg_path.write_text(json.dumps({"venues": {"sharpexch": {"username": "leaked"}}}))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ConfigWarning)
+        load_arb_config(cfg_path)
+    assert any(issubclass(w.category, ConfigWarning) for w in caught)
+    assert "venues.sharpexch.username" in str(caught[0].message)
 
 
 # ── .9 干净 JSON(无凭证字段)→ 无 warning ─────────────────────

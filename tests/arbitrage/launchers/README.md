@@ -8,7 +8,8 @@
 
 - ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session/pm_settlement 字段,且不再包含 PM/OE health interval 死接线 / main 调用链路
 - ✅ `test_arb_node.py`:NT exec config 保持启动期 `reconciliation=True`;连续 `open_check_interval_secs=300`(#111:驱动 order liveness 恢复);`position_check_interval_secs=300`(#110:驱动 PM merge/redeem + position liveness);默认 in-flight check 开启;`timeout_connection=180s`。
-- ✅ `test_arb_node.py`:PolymarketSettlement launcher 接线 —— cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全时构造 `PolymarketContractService` 并初始化,成功后按 `cleanup_merge_enabled` / `cleanup_claim_enabled` 注入 `PolymarketSettlement`;初始化失败则不阻塞节点启动。
+- ✅ `test_arb_node.py`:PolymarketSettlement launcher 接线 —— PM runtime venue disabled、cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 PM enabled 时构造 `PolymarketContractService` 并初始化,成功后按 `cleanup_merge_enabled` / `cleanup_claim_enabled` 注入 `PolymarketSettlement`;初始化失败则不阻塞节点启动。
+- ✅ `test_arb_node.py`:venue runtime enablement —— launcher 要求 `venues.*.enabled=true` 的 runtime venue 不少于 2 个;默认 PM+OE;PM+SE 时不注册 OE;OE+SE 时不注册 PM/PMSPORTS;PM+OE+SE 时三个 venue 同时注册。SE 显式 `true` 时加入 SE data+exec config、注册 SE factories、`VenueExecutionLiveness` 可标记 SE,并把 `se_session_timeout_secs` / `se_discovery_config` 注入 ArbContext。
 
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)

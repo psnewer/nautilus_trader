@@ -9,10 +9,10 @@
 
 | 件 | 基类 | 职责 |
 |---|---|---|
-| `MarketMatchingActor` | NT `Actor` | 订两 venue `InstrumentsRefreshed` → gate by 2×interval(Q5)→ 跑归一+匹配 → publish `MatchedPair` + 注册 `PairRegistry` |
+| `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:PM 作为锚点 venue,逐个 `external_venues`(默认 OE;SE opt-in)跑归一+匹配 → publish `MatchedPair` + 注册 `PairRegistry` |
 | `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;`dict[instrument_id, pair_id]` |
 | `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue 的多腿(home/draw/away)反推一个事件视图(供算法用) |
-| `MatchEngine` | 普通类(平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 PM↔OE 队名相似度匹配(`get_similar`)+ 贪心 + competition max_matches |
+| `MatchEngine` | 普通类(平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 PM↔单个 external venue 队名相似度匹配(`get_similar`)+ 贪心 + competition max_matches |
 
 **#34 修正**:`info["competition"]` 是**联赛名**(EPL/NFL/...),**不是** pair_id(老 `MatchedPair.pair_id` 是基于 PM event_id 生成的稳定 ID,是 matching 的产出)。`info` 的 6-key 是**匹配输入**;`pair_id` 由 matching 算出并通过 `PairRegistry` 暴露给下游。
 
@@ -26,11 +26,10 @@
 
 ```mermaid
 flowchart LR
-  EVpm["InstrumentsRefreshed.POLYMARKET"] --> MA[MarketMatchingActor]
-  EVoe["InstrumentsRefreshed.ORBITEXCH"] --> MA
-  MA -->|gate: 两家 last_refresh 都在 2×interval| C[(Cache.instruments)]
+  T["clock alert"] --> MA[MarketMatchingActor]
+  MA -->|PM + external venues| C[(Cache.instruments)]
   C -->|按 info 6-key 读| MA
-  MA -->|reconstruct events + cross-venue match| MATCH["NormalizedEvent[] × NormalizedEvent[]"]
+  MA -->|reconstruct events + PM×external match| MATCH["NormalizedEvent[PM][] × NormalizedEvent[external][]"]
   MATCH -->|emit| EV["publish data:MatchedPair"]
   MATCH -->|register| REG["PairRegistry.register(pair_id, instrument_ids)"]
   REG --> RPS["risk / portfolio / session / strategy 读"]
@@ -38,9 +37,9 @@ flowchart LR
 ```
 
 要点:
-- **gate by 2×interval(Q5)**:matching tick 检查两 venue `last_refresh_ts`,任一超 `2×refresh_interval` 不跑(避免用单边过期数据)。
-- **触发**:订两 venue `InstrumentsRefreshed`;event handler 更新 `last_refresh_ts` 并触发一次匹配(满足 gate 才跑)。
-- **PairRegistry 写**:matching 是**唯一写者**;register 时把 MatchedPair 的两边所有腿 instrument_id 都 → 同一 pair_id。
+- **触发**:#59 后由 NT clock 自重排 timer 驱动,不再订 `InstrumentsRefreshed`。
+- **PM 锚点 + external_venues**:PM cache 非空才配;每个 external venue 各自非空即可与 PM 匹配,某个 external 缺失不阻塞其它 external。
+- **PairRegistry 写**:matching 是**唯一写者**;register 时把 MatchedPair 的 PM 腿 + external 腿 instrument_id 都 → 同一 pair_id。
 
 ---
 
@@ -75,7 +74,7 @@ class MatchedPair(Data):
     sport: str
     competition: str           # 联赛名(非 pair_id;#34)
     pm_instrument_ids: list[str]
-    oe_instrument_ids: list[str]
+    oe_instrument_ids: list[str]   # 兼容字段名;现表示单个 external venue 的腿,可为 OE 或 SE
     confidence: float          # 队名相似度归一,0-1
 ```
 
@@ -100,12 +99,15 @@ class MarketMatchingActor(Actor):
     def _maybe_match(self):
         pm = [i for i in cache.instruments(venue=PM)
               if self._game_id_of(i) not in self._ended_games] # #60:排除已结束 game 的 PM 腿
-        oe = list(cache.instruments(venue=OE))
-        if not pm or not oe: return                            # latch:两 venue cache 都非空(替 2×window)
-        # 反推 events → cross-venue 匹配 → emit + register(_emit_pair 填 game_id→pair_id;_emitted_pairs 去重日志)
+        if not pm: return
+        for venue in config.external_venues:                    # 默认 ("ORBITEXCH",);SE enabled 时加 "SHARPEXCH"
+            external = list(cache.instruments(venue=venue))
+            if not external: continue                           # 单 external 缺失不阻塞其它
+            # 反推 events → PM×external 匹配 → emit + register(_emit_pair 填 game_id→pair_ids;_emitted_pairs 去重日志)
 ```
 
-`MarketMatchingConfig`:`pm_venue`/`oe_venue`、`refresh_interval_secs`(= matching 轮询间隔)、`min_similarity`、`competition_max_matches`。
+`MarketMatchingConfig`:`pm_venue`、`external_venues`(默认 `("ORBITEXCH",)`;
+`venues.sharpexch.enabled=true` 时 dispatcher 输出 `("ORBITEXCH","SHARPEXCH")`)、`refresh_interval_secs`(= matching 轮询间隔)、`min_similarity`、`competition_max_matches`。`oe_venue` 仅为 legacy alias。
 
 `_RuntimeDeps`:`pair_registry: PairRegistry`。
 
@@ -135,14 +137,16 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 ### 4.2 跨 venue 匹配(平移自旧 `MatchEngine.match_events`)
 
 1. 按 `(sport, competition)` 分组(完全相等)
-2. 组内对每个 PM 事件,在 OE 候选中找最佳队名相似度匹配(`get_similar`)
-3. 贪心:每个 OE 事件最多被匹配一次
+2. 组内对每个 PM 事件,在当前 external venue 候选中找最佳队名相似度匹配(`get_similar`)
+3. 贪心:每个 external venue 事件最多被匹配一次
 4. 阈值 `min_similarity` 过滤;`competition_max_matches[comp]` 限制单联赛上限
 
 ### 4.3 pair_id 生成
 
-稳定、确定性:`pair_id = f"{competition}|{home_team_normalized}|{away_team_normalized}"`。
-- 跨 PM/OE 一致(matching 已对上同一事件)
+稳定、确定性:
+- PM↔OE 保持历史格式:`pair_id = f"{competition}|{home_team_normalized}|{away_team_normalized}"`
+- PM↔非 OE external venue 追加 venue 后缀:`...|SHARPEXCH`
+- 这样同一 PM game 同时匹配 OE 和 SE 时不会互相覆盖 PairRegistry / `_emitted_pairs`
 - 重匹配同一对得同 ID(幂等,registry 整组覆盖)
 - 同联赛同 fixture 罕见(若发生,加 `start_ts` 维度;暂不引入)
 
@@ -150,7 +154,7 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 
 **触发节奏(#59 锁定)**:`_maybe_match` 由 NT clock 自重排 timer 周期跑,间隔 = `MarketMatchingConfig.refresh_interval_secs`(由 `cfg.discovery.refresh_interval_secs` 设,**默认 10s**)。控制:启动→首个 MatchedPair 延迟、新发现被配上的延迟、eviction 扫描节奏。与 DataClient 发现间隔(`update_instruments_interval_mins`,默认 60min)**解耦**——matching 在两次发现间反复扫同一 cache(幂等)。
 
-**latch**:两 venue `cache.instruments(venue)` 都非空才配。cache 永远保留 last-good(`add_instrument` upsert,失败发现不清零)+ matching 增量 register → 冷启动一边未加载时不出半成品,失败/单边不误删既有 pair。"多 venue 一失败不挡其他"自然成立。
+**latch**:PM cache 非空,且某个 external venue cache 非空时,只匹配该 external venue。cache 永远保留 last-good(`add_instrument` upsert,失败发现不清零)+ matching 增量 register → 冷启动 PM 未加载时不出半成品;单个 external 未加载不阻塞其它 external。"多 venue 一失败不挡其他"自然成立。
 > Q5 的 2×interval 新鲜度 gate(及 `_last_refresh_ns`)**退役**:DataClient 拥有发现后,"新鲜度"不再是 matching 的关注点;cache 非空即可配(理由见 refactor.md #58/#59)。
 
 **eviction —— PM Sports `ended` 驱动(#60,替 #59 的 expiration 扫描)**:用户判定 gamma `end_date_iso`(→`expiration_ns`)与 Data API `redeemable` 都**不准**;改用 **PM Sports WS 的真实赛事 `ended` 信号**。NT 无 instrument cache 删除 API,只清 registry / 活跃集(`SportsGameUpdate` 全链路见 §sports / refactor.md §5.9)。
@@ -159,9 +163,9 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 def on_data(d): if isinstance(d, SportsGameUpdate) and d.ended: self._evict_game(d.game_id)
 def _evict_game(gid):
     self._ended_games.add(gid)
-    pid = self._game_to_pair.pop(gid, None)
-    if pid: registry.unregister_pair(pid); _emitted_pairs.discard(pid)
-# _emit_pair 填 game_to_pair[PM 腿 info["game_id"]] = pair_id;_maybe_match 排除 game_id ∈ _ended_games 的 PM 腿
+    pids = self._game_to_pair.pop(gid, set())
+    for pid in pids: registry.unregister_pair(pid); _emitted_pairs.discard(pid)
+# _emit_pair 填 game_to_pair[PM 腿 info["game_id"]].add(pair_id);_maybe_match 排除 game_id ∈ _ended_games 的 PM 腿
 ```
 - **映射键 `game_id`**:`arb_provider` 发现时抽 `event["gameId"]` 入 `info["game_id"]`(== sports WS gameId,§5.9 实采证实)。
 - **纯 `ended` 无兜底**(D4 用户定):漏 `ended` 就不清(`finished_timestamp` 与 ended 绑定不能当 fallback)。
@@ -183,26 +187,27 @@ def _evict_game(gid):
 
 ```mermaid
 sequenceDiagram
-  participant RF as InstrumentRefresher(每 venue)
+  participant CLK as NT Clock
   participant MA as MarketMatchingActor
   participant CA as Cache
   participant PR as PairRegistry
   participant MB as MessageBus
 
-  RF->>MB: publish InstrumentsRefreshed{venue,count,ts}
-  MB->>MA: on_data
-  MA->>MA: _last_refresh_ns[venue] = ts
-  MA->>MA: gate: 两家都在 2×interval 窗口?
-  alt 是
-    MA->>CA: 读 instruments(PM) + instruments(OE)
-    MA->>MA: _event_from_legs → 跨 venue 匹配
-    loop 每个匹配
-      MA->>PR: register(pair_id, [PM legs + OE legs])
-      MA->>MB: publish MatchedPair
+  CLK->>MA: _MATCH_ALERT
+  MA->>CA: 读 instruments(PM,排除 ended game)
+  alt PM cache 非空
+    loop 每个 external venue
+      MA->>CA: 读 instruments(external)
+      alt external cache 非空
+        MA->>MA: events_from_instruments → PM×external 匹配
+        loop 每个匹配
+          MA->>PR: register(pair_id, [PM legs + external legs])
+          MA->>MB: publish MatchedPair
+        end
+      end
     end
-  else 否
-    MA->>MA: 等下一次 InstrumentsRefreshed
   end
+  MA->>CLK: 重排下一次 _MATCH_ALERT
 ```
 
 ---
@@ -213,7 +218,7 @@ sequenceDiagram
 - [ ] `MatchedPair`(@customdataclass)+ 测构造/字段
 - [ ] `_event_from_legs` + `EventNormalizer.normalize_team_name`(平移自旧)+ 单测
 - [ ] `MatchEngine.match_events`(平移,改输入为 `NormalizedEvent[from instruments]`)+ 单测
-- [ ] `MarketMatchingActor`:on_data + gate + _maybe_match + register + publish + 测
+- [x] `MarketMatchingActor`:clock tick + PM×external venues + register + publish + sports ended eviction + 测;SE opt-in 多 external 已离线覆盖
 - [ ] **#34 修正联动**:`risk._resolve_pair_id` 改读 `PairRegistry`;`session._pair_id_for` 同;`configure_arb` / `_init_arb_session` 加 `pair_registry` 参;factories 经 ArbContext 传;**discovery oe_provider 删 "competition = pair_id" 错注释**
 - [ ] 各 test 修:risk/portfolio/engine/session 用 `PairRegistry.register` 而非 `info["competition"]`
 - [ ] /live-test 待补:启动顺序 + 真实双 venue refresh 触发匹配

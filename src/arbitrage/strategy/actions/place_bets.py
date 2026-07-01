@@ -3,7 +3,7 @@ PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好),按 venue 算 size:
   - POLYMARKET: size = share(PM 单位是 shares,1 share = $1 win)
-  - ORBITEXCH: size = share / price(stake = share / odds,确保 win = share)
+  - ORBITEXCH/SHARPEXCH: size = share / price(stake = share / odds,确保 win = share)
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
 """
@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 from src.arbitrage.common.opportunity import new_opportunity_id
+from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -71,7 +72,7 @@ class PlaceBetsAction(Action):
 
         if submitter is not None:
             # #105:多腿**并发**提交(顺序 workaround 退役)。同页并发 placeBets 丢回执的风险由
-            # OE ExecClient 页锁串行碰页操作兜底;PM/OE 腿并行 → 对冲窗口更窄(synchronization §8.3)。
+            # OE/SE ExecClient 页锁串行碰页操作兜底;PM 与外部腿并行 → 对冲窗口更窄(synchronization §8.3)。
             # slice 10a(#50):SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成。
             await asyncio.gather(*(submitter(spec) for (_, _, _, _, spec) in prepared))
         else:
@@ -89,10 +90,10 @@ class PlaceBetsAction(Action):
 
 
 def _compute_size(venue: str, share: float, price: float) -> float:
-    """PM=share;OE=share/price(stake)。Mean rebate 数学:确保 win 一致。"""
+    """PM=share;OE/SE=share/price(stake)。Mean rebate 数学:确保 win 一致。"""
     if venue == "POLYMARKET":
         return share
-    if venue == "ORBITEXCH":
+    if _is_decimal_odds_venue(venue):
         if price <= 0:
             return 0.0
         return share / price

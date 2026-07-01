@@ -186,7 +186,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         size = order.leaves_qty.as_double()
         if isinstance(instrument, BinaryOption):
             return size * float(order.price)          # PM: size * price
-        return size                                  # OE: adapter 外部 size 已是 USD stake
+        return size                                  # OE/SE: adapter 外部 size 已是 USD stake
 
     def _pm_open_notional(self, venue, currency) -> float:
         total = 0.0
@@ -270,6 +270,8 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return "POLYMARKET"
         if prefix in {"oe", "orbitexch"}:
             return "ORBITEXCH"
+        if prefix in {"se", "sharpexch"}:
+            return "SHARPEXCH"
         return None
 
     # ── 应用层:单场止盈/止损硬停(Q16 修订)────────────────────────────

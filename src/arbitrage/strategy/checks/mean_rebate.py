@@ -2,7 +2,7 @@
 MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
 
 算法(对应 requirements §8):
-  1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取 PM/OE 两 venue 中
+  1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取 PM/OE 类 venue 中
      概率最小者(即 best_ask 最便宜方)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
   3. >= `min_rate` 阈值 → True;同时写带 `share_if_wins` 的 `ctx.scratch["legs"]`
@@ -11,7 +11,7 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
 输出 legs 形态(每方向一条):
   {
     "instrument_id": InstrumentId,
-    "venue": "POLYMARKET" | "ORBITEXCH",
+    "venue": "POLYMARKET" | "ORBITEXCH" | "SHARPEXCH",
     "side": "BUY",
     "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds),
     "prob": float,
@@ -19,7 +19,7 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
     "share_if_wins": float,
   }
 
-PlaceBetsAction 用 leg 自带 `share_if_wins` 推 qty:PM size=share,OE size=share/price(stake)。
+PlaceBetsAction 用 leg 自带 `share_if_wins` 推 qty:PM size=share,OE/SE size=share/price(stake)。
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class MeanRebateCheck(Check):
                 "role": role,
             })
 
-        # 必须 home + away(2-way)或 home + draw + away(3-way);每方向 PM/OE 各至少 1
+        # 必须 home + away(2-way)或 home + draw + away(3-way);每方向至少 2 条可比腿。
         roles_present = sorted(legs_by_role.keys())
         if not (roles_present == ["away", "home"] or roles_present == ["away", "draw", "home"]):
             return False
@@ -113,12 +113,14 @@ class MeanRebateCheck(Check):
 
 
 def _venue_of(instrument_id) -> str:
-    """从 InstrumentId 后缀提 venue 名(`X.POLYMARKET` / `Y.ORBITEXCH`)。"""
+    """从 InstrumentId 后缀提 venue 名(`X.POLYMARKET` / `Y.ORBITEXCH` / `Z.SHARPEXCH`)。"""
     s = str(instrument_id)
     if s.endswith(".POLYMARKET"):
         return "POLYMARKET"
     if s.endswith(".ORBITEXCH"):
         return "ORBITEXCH"
+    if s.endswith(".SHARPEXCH"):
+        return "SHARPEXCH"
     return ""
 
 
@@ -141,6 +143,11 @@ def _best_ask(book) -> float | None:
 def _to_prob(venue: str, price: float) -> float:
     if venue == "POLYMARKET":
         return polymarket_price_to_probability(price)
-    if venue == "ORBITEXCH":
+    if _is_decimal_odds_venue(venue):
         return orbitexch_odds_to_probability(price)
     return 0.0
+
+
+def _is_decimal_odds_venue(venue: str) -> bool:
+    """第一阶段 SE 接入:SHARPEXCH 先复用 OE decimal odds 语义。"""
+    return str(venue).upper() in {"ORBITEXCH", "SHARPEXCH"}

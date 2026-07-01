@@ -7,9 +7,9 @@ ShareLimitModification —— 在 strategy action 链中执行 share limit 缩�
 - candidate 数组:读取 `ctx.scratch["candidates"]`,对每个 candidate 独立计算 scale,
   输出调整后的 candidate 数组,供后续 `CandiSelectAction` 选择。
 
-复用 RiskEngine 的 PM/OE 公式:
+复用原 PM/OE 公式,第一阶段 SE 走 OE 类 decimal odds 分支:
   - PM: remaining = max - current[role]（单腿独立检查）
-  - OE: remaining = max - merged[role]（merge后一边为0）
+  - OE/SE: remaining = max - merged[role]（merge后一边为0）
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 
+from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -59,8 +60,8 @@ class ShareLimitModification(Action):
             requested_share = _leg_share_if_wins(leg, venue, self._configured_share(ctx))
             if requested_share <= 0:
                 continue
-            if venue == "ORBITEXCH":
-                remaining = self._oe_remaining(portfolio, ctx.pair_id, role, max_leg_share)
+            if _is_decimal_odds_venue(venue):
+                remaining = self._decimal_remaining(portfolio, ctx.pair_id, venue, role, max_leg_share)
             else:
                 remaining = self._pm_remaining(portfolio, ctx.pair_id, role, max_leg_share)
             if remaining <= 0:
@@ -142,8 +143,8 @@ class ShareLimitModification(Action):
             if requested_share <= 0:
                 return None
 
-            if venue == "ORBITEXCH":
-                remaining = self._oe_remaining(portfolio, pair_id, role, max_leg_share)
+            if _is_decimal_odds_venue(venue):
+                remaining = self._decimal_remaining(portfolio, pair_id, venue, role, max_leg_share)
             else:
                 remaining = self._pm_remaining(portfolio, pair_id, role, max_leg_share)
             if remaining <= 0:
@@ -172,15 +173,15 @@ class ShareLimitModification(Action):
         current = shares.get(role, 0.0)
         return max_leg_share - current
 
-    def _oe_remaining(self, portfolio, pair_id: str, role: str, max_leg_share: float) -> float:
-        """OE: 按 merge 后的单腿 share 计算 remaining。
+    def _decimal_remaining(self, portfolio, pair_id: str, venue: str, role: str, max_leg_share: float) -> float:
+        """OE/SE: 按 merge 后的单腿 share 计算 remaining。
 
-        OE 平台自动对冲，margin 按净敞口计算。remaining 基于 merge 后的 share:
+        OE/SE 平台自动对冲，margin 按净敞口计算。remaining 基于 merge 后的 share:
         - home=60, away=40 → merge后 home=20, away=0
         - home remaining = max - 20 = 80
         - away remaining = max - 0 = 100
         """
-        shares = portfolio.outcome_shares_for_venue(pair_id, "orbitexch", None)
+        shares = portfolio.outcome_shares_for_venue(pair_id, venue.lower(), None)
         home = shares.get("home", 0.0)
         away = shares.get("away", 0.0)
 
@@ -227,7 +228,7 @@ def _leg_share_if_wins(leg: dict, venue: str, fallback_share: float) -> float:
         return float(leg["share_if_wins"])
     if leg.get("qty") is not None:
         qty = float(leg["qty"])
-        if venue == "ORBITEXCH":
+        if _is_decimal_odds_venue(venue):
             return qty * float(leg.get("price", 0.0))
         return qty
     return fallback_share
@@ -243,7 +244,7 @@ def _adjust_legs(requested_by_leg: list[tuple[dict, float]], scale: float) -> li
         new_leg["share_if_wins"] = new_share
         if "qty" in new_leg:
             new_leg["qty"] = float(new_leg["qty"]) * scale
-        elif venue == "ORBITEXCH":
+        elif _is_decimal_odds_venue(venue):
             new_leg["qty"] = new_share / price if price > 0 else 0.0
         else:
             new_leg["qty"] = new_share

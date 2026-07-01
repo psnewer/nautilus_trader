@@ -115,6 +115,27 @@ def test_2way_arb_works():
     assert len(ctx.scratch["legs"]) == 2
 
 
+def test_2way_arb_works_with_sharpexch_as_decimal_odds_venue():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.45),
+        "H.SHARPEXCH": _fake_book(2.5),    # 0.40
+        "A.SHARPEXCH": _fake_book(2.5),    # 0.40
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+        "H.SHARPEXCH": {"selection_role": "home"},
+        "A.SHARPEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert MeanRebateCheck(min_rate=0.05).passes(ctx) is True
+
+    assert {leg["venue"] for leg in ctx.scratch["legs"]} == {"SHARPEXCH"}
+    assert ctx.scratch["mean_rebate_rate"] == 0.19999999999999996
+
+
 def test_explicit_share_overrides_strategy_default():
     books = {
         "H.POLYMARKET": _fake_book(0.45),

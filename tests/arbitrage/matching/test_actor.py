@@ -75,13 +75,38 @@ def _oe(comp, home, away, role, sel_id):
     )
 
 
-def _harness(interval=30.0):
+def _se(comp, home, away, role, sel_id):
+    return BettingInstrument(
+        venue_name="SHARPEXCH", betting_type="ODDS",
+        competition_id=1, competition_name=comp,
+        event_country_code="", event_id=1, event_name=f"{home} v {away}",
+        event_open_date=pd.Timestamp("2030-02-07 23:30:00+00:00"),
+        event_type_id=1, event_type_name="Soccer",
+        market_id="se-123", market_name=role,
+        market_start_time=pd.Timestamp("2030-02-07 23:30:00+00:00"),
+        market_type="MATCH_ODDS",
+        selection_handicap=null_handicap(),
+        selection_id=sel_id, selection_name=role,
+        currency="USD", price_precision=2, size_precision=2,
+        min_notional=Money(Decimal("1"), USD),
+        ts_event=0, ts_init=0,
+        info={"sport": "Soccer", "competition": comp,
+              "home_team": home, "away_team": away,
+              "start_ts": 0, "selection_role": role},
+    )
+
+
+def _harness(interval=30.0, external_venues=("ORBITEXCH",)):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     cache = TestComponentStubs.cache()
     portfolio = Portfolio(msgbus=msgbus, cache=cache, clock=clock)
     registry = PairRegistry()
-    cfg = MarketMatchingConfig(refresh_interval_secs=interval, min_similarity=1)
+    cfg = MarketMatchingConfig(
+        refresh_interval_secs=interval,
+        min_similarity=1,
+        external_venues=external_venues,
+    )
     actor = MarketMatchingActor(cfg, _RuntimeDeps(pair_registry=registry))
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
     return actor, clock, cache, registry, msgbus
@@ -127,6 +152,42 @@ def test_both_venues_in_cache_matches_and_publishes():
     pair_id = mp.pair_id
     for iid in mp.pm_instrument_ids + mp.oe_instrument_ids:
         assert registry.get(iid) == pair_id
+
+
+def test_sharpexch_external_venue_matches_without_orbitexch():
+    """matching-3.se.1: external_venues 含 SE 时,OE 缺失不阻塞 PM↔SE 匹配。"""
+    actor, clock, cache, registry, _ = _harness(external_venues=("ORBITEXCH", "SHARPEXCH"))
+    cache.add_instrument(_pm("EPL", "Arsenal", "Chelsea", "home", "pmh"))
+    cache.add_instrument(_pm("EPL", "Arsenal", "Chelsea", "away", "pma"))
+    cache.add_instrument(_se("EPL", "Arsenal", "Chelsea", "home", 11))
+    cache.add_instrument(_se("EPL", "Arsenal", "Chelsea", "away", 12))
+    published = []
+    actor.publish_data = lambda **k: published.append(k)
+
+    actor._maybe_match()
+
+    assert len(published) == 1
+    mp = published[0]["data"]
+    assert mp.pair_id.endswith("|SHARPEXCH")
+    assert all(iid.endswith(".SHARPEXCH") for iid in mp.oe_instrument_ids)
+    for iid in mp.pm_instrument_ids + mp.oe_instrument_ids:
+        assert registry.get(iid) == mp.pair_id
+
+
+def test_multiple_external_venues_emit_distinct_pairs_for_same_pm_game():
+    """matching-3.se.2: PM↔OE 与 PM↔SE 同场共存时 pair_id 不互相覆盖。"""
+    actor, clock, cache, registry, _ = _harness(external_venues=("ORBITEXCH", "SHARPEXCH"))
+    _populate_match(cache)
+    cache.add_instrument(_se("EPL", "Arsenal", "Chelsea", "home", 11))
+    cache.add_instrument(_se("EPL", "Arsenal", "Chelsea", "away", 12))
+    published = []
+    actor.publish_data = lambda **k: published.append(k)
+
+    actor._maybe_match()
+
+    pair_ids = {item["data"].pair_id for item in published}
+    assert pair_ids == {"EPL|Arsenal|Chelsea", "EPL|Arsenal|Chelsea|SHARPEXCH"}
+    assert actor._game_to_pair[777] == pair_ids
 
 
 def test_on_alert_triggers_match_and_reschedules():

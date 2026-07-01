@@ -11,7 +11,8 @@ ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / outcome 
 instrument.info 契约(由 discovery 组件填充,本类只读;单一 seam 见 `_leg_from_position`):
 - info["sport"] / info["competition"](联赛名)/ info["home_team"] / info["away_team"] / info["start_ts"] —— **matching 输入**
 - info["selection_role"]("home"/"draw"/"away")—— outcome 指标计算用("market_type" 同义)
-venue / 公式分支由 instrument 类型判定(BinaryOption=PM,BettingInstrument=OE),不靠字符串。
+venue / 公式分支由 instrument 类型判定(BinaryOption=PM,BettingInstrument=OE/SE 类 decimal odds),
+具体 venue 仍取 `instrument.id.venue`。
 
 NT `Portfolio` 是 cdef class,子类**只能加纯 Python 方法**(不能加 cpdef/cdef)。
 """
@@ -42,17 +43,17 @@ class _Leg:
     def profit_if_wins(self) -> float:
         if self.venue == "polymarket":
             return self.size * (1.0 - self.price)
-        return self.size * (self.price - 1.0)  # orbitexch
+        return self.size * (self.price - 1.0)  # decimal odds venues
 
     def loss_if_loses(self) -> float:
         if self.venue == "polymarket":
             return self.size * self.price
-        return self.size  # orbitexch
+        return self.size  # decimal odds venues
 
     def share_if_wins(self) -> float:
         if self.venue == "polymarket":
             return self.size
-        return self.size * self.price  # orbitexch gross payout
+        return self.size * self.price  # decimal odds gross payout
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +200,7 @@ class ArbitragePortfolio(Portfolio):
         if isinstance(instrument, BinaryOption):
             venue = "polymarket"
         elif isinstance(instrument, BettingInstrument):
-            venue = "orbitexch"
+            venue = str(instrument.id.venue.value).lower()
         else:
             return None
         return _Leg(

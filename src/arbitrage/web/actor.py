@@ -81,6 +81,15 @@ def _port_bindable(host: str, port: int) -> bool:
         sock.close()
 
 
+def _venue_from_instrument_ids(instrument_ids: list[str]) -> str:
+    """从 NT instrument id 后缀推断 venue,如 `... .SHARPEXCH`。"""
+    for iid in instrument_ids:
+        text = str(iid)
+        if "." in text:
+            return text.rsplit(".", 1)[-1].upper()
+    return ""
+
+
 class WebGatewayActor(Actor):
     def __init__(self, config: WebGatewayConfig, deps: WebGatewayDeps) -> None:
         super().__init__(config=config)
@@ -263,9 +272,13 @@ class WebGatewayActor(Actor):
     def _on_matched_pair(self, data) -> None:
         if not isinstance(data, MatchedPair):
             return
+        external_instrument_ids = list(data.oe_instrument_ids)
         self._matched_pairs[data.pair_id] = {
             "pair_id": data.pair_id, "sport": data.sport, "competition": data.competition,
-            "pm_instrument_ids": list(data.pm_instrument_ids), "oe_instrument_ids": list(data.oe_instrument_ids),
+            "pm_instrument_ids": list(data.pm_instrument_ids),
+            "oe_instrument_ids": external_instrument_ids,  # 兼容旧前端字段名;现表示当前 external venue 腿
+            "external_instrument_ids": external_instrument_ids,
+            "external_venue": _venue_from_instrument_ids(external_instrument_ids),
             "confidence": data.confidence,
         }
 
@@ -273,9 +286,11 @@ class WebGatewayActor(Actor):
         """Matching tab:已匹配对(MatchedPair 累积);各 venue 的队名经 cache instrument.info 解析。"""
         out: list[dict] = []
         for p in self._matched_pairs.values():
+            external_teams = self._venue_teams(p["external_instrument_ids"])
             out.append({**p,
                         "pm_teams": self._venue_teams(p["pm_instrument_ids"]),
-                        "oe_teams": self._venue_teams(p["oe_instrument_ids"])})
+                        "oe_teams": external_teams,  # 兼容旧前端字段名;现表示当前 external venue 队名
+                        "external_teams": external_teams})
         return out
 
     def _venue_teams(self, iids: list[str]) -> str:

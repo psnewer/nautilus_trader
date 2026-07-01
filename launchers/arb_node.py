@@ -45,6 +45,9 @@ from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_cl
 from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
 from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
 from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
+from nautilus_trader.adapters.sharpexch.data import SHARPEXCH
+from nautilus_trader.adapters.sharpexch.factories import ArbSharpExchLiveExecClientFactory
+from nautilus_trader.adapters.sharpexch.factories import SharpExchLiveDataClientFactory
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.model.enums import TradingState
 from nautilus_trader.config import LoggingConfig
@@ -60,6 +63,7 @@ from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config import ArbConfig
+from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.dispatcher import to_arb_context_init_kwargs
 from src.arbitrage.config.dispatcher import to_arb_risk_params
@@ -70,6 +74,8 @@ from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
 from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
+from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
+from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
@@ -116,6 +122,20 @@ def register_builtin_checks_and_actions() -> None:
 
 def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
     """ArbConfig → NT `TradingNodeConfig`(PM+OE × data+exec 四 client config)。"""
+    validate_venue_enablement(cfg)
+    data_clients = {}
+    exec_clients = {}
+    if cfg.venues.polymarket.enabled:
+        data_clients[POLYMARKET] = to_polymarket_data_client_config(cfg)
+        data_clients[SPORTS_CLIENT] = to_sports_data_client_config(cfg)   # #60:PM 比分 firehose
+        exec_clients[POLYMARKET] = to_polymarket_exec_client_config(cfg)
+    if cfg.venues.orbitexch.enabled:
+        data_clients[ORBITEXCH] = to_orbitexch_data_client_config(cfg)
+        exec_clients[ORBITEXCH] = to_orbitexch_exec_client_config(cfg)
+    if cfg.venues.sharpexch.enabled:
+        data_clients[SHARPEXCH] = to_sharpexch_data_client_config(cfg)
+        exec_clients[SHARPEXCH] = to_sharpexch_exec_client_config(cfg)
+
     return TradingNodeConfig(
         trader_id=TraderId("ARBITRAGE-001"),
         logging=LoggingConfig(log_level="INFO"),
@@ -128,15 +148,8 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             # PM 据此跑 merge/redeem(fire-and-forget),OE 据此刷 venue_position_alive(WS 新鲜则不 reload)。
             position_check_interval_secs=cfg.execution.position_check_interval_secs,
         ),
-        data_clients={
-            POLYMARKET: to_polymarket_data_client_config(cfg),
-            ORBITEXCH: to_orbitexch_data_client_config(cfg),
-            SPORTS_CLIENT: to_sports_data_client_config(cfg),   # #60:PM 比分 firehose
-        },
-        exec_clients={
-            POLYMARKET: to_polymarket_exec_client_config(cfg),
-            ORBITEXCH: to_orbitexch_exec_client_config(cfg),
-        },
+        data_clients=data_clients,
+        exec_clients=exec_clients,
         timeout_connection=180.0,    # #105:启动对账前需覆盖 OE 登录 + PM 初次 instrument load 最坏耗时
         timeout_disconnection=10.0,
         timeout_post_stop=1.0,
@@ -150,7 +163,34 @@ def prepare_runtime_state(cfg: ArbConfig):
     ArbContext 传给 factory + Actor 装配(slice 8)。`PairInFlightGate`(§6.10 §7)被 strategy
     评估入口 + execution session 共享,做 per-pair 串行。
     """
-    return VenueExecutionLiveness((POLYMARKET, ORBITEXCH)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
+    validate_venue_enablement(cfg)
+    venues = []
+    if cfg.venues.polymarket.enabled:
+        venues.append(POLYMARKET)
+    if cfg.venues.orbitexch.enabled:
+        venues.append(ORBITEXCH)
+    if cfg.venues.sharpexch.enabled:
+        venues.append(SHARPEXCH)
+    return VenueExecutionLiveness(tuple(venues)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
+
+
+def validate_venue_enablement(cfg: ArbConfig) -> None:
+    """校验第一版 venue 插拔约束:至少两个 venue 开启。"""
+    enabled = enabled_runtime_venues(cfg)
+    if len(enabled) < 2:
+        raise ConfigError("At least two venues must be enabled under venues.*.enabled")
+
+
+def enabled_runtime_venues(cfg: ArbConfig) -> tuple[str, ...]:
+    """按配置返回会注册进 TradingNode runtime 的 venue 名称。"""
+    venues = []
+    if cfg.venues.polymarket.enabled:
+        venues.append(POLYMARKET)
+    if cfg.venues.orbitexch.enabled:
+        venues.append(ORBITEXCH)
+    if cfg.venues.sharpexch.enabled:
+        venues.append(SHARPEXCH)
+    return tuple(venues)
 
 
 def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
@@ -159,6 +199,8 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
     只在 cleanup 开启且链上操作所需基础凭证存在时初始化;初始化失败时返回 None,
     让交易节点继续启动,由后续 position reconcile 只做对账不做链上 settlement。
     """
+    if not cfg.venues.polymarket.enabled:
+        return None
     if not cfg.execution.cleanup_enabled:
         return None
 
@@ -189,13 +231,21 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
     )
 
 
-def register_factories(node: TradingNode) -> None:
-    """注 4 个 factory(PM+OE × data+exec),NT `node.add_*_factory` 接口。"""
-    node.add_data_client_factory(POLYMARKET, ArbPolymarketLiveDataClientFactory)
-    node.add_data_client_factory(ORBITEXCH, OrbitExchLiveDataClientFactory)
-    node.add_data_client_factory(SPORTS_CLIENT, PolymarketSportsLiveDataClientFactory)  # #60
-    node.add_exec_client_factory(POLYMARKET, ArbPolymarketLiveExecClientFactory)
-    node.add_exec_client_factory(ORBITEXCH, ArbOrbitExchLiveExecClientFactory)
+def register_factories(node: TradingNode, cfg: ArbConfig | None = None) -> None:
+    """注入 venue factories;按 `venues.*.enabled` 注册 runtime venue。"""
+    if cfg is None:
+        cfg = ArbConfig()
+    validate_venue_enablement(cfg)
+    if cfg.venues.polymarket.enabled:
+        node.add_data_client_factory(POLYMARKET, ArbPolymarketLiveDataClientFactory)
+        node.add_data_client_factory(SPORTS_CLIENT, PolymarketSportsLiveDataClientFactory)  # #60
+        node.add_exec_client_factory(POLYMARKET, ArbPolymarketLiveExecClientFactory)
+    if cfg.venues.orbitexch.enabled:
+        node.add_data_client_factory(ORBITEXCH, OrbitExchLiveDataClientFactory)
+        node.add_exec_client_factory(ORBITEXCH, ArbOrbitExchLiveExecClientFactory)
+    if cfg.venues.sharpexch.enabled:
+        node.add_data_client_factory(SHARPEXCH, SharpExchLiveDataClientFactory)
+        node.add_exec_client_factory(SHARPEXCH, ArbSharpExchLiveExecClientFactory)
 
 
 def _make_is_execution_active(node: TradingNode):
@@ -321,7 +371,7 @@ def bootstrap_and_build(
     )
 
     # 4. 注 factories
-    register_factories(node)
+    register_factories(node, cfg)
 
     # 5. build(factory.create 此时跑,读 ArbContext)
     node.build()

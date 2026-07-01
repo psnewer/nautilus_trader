@@ -1,4 +1,4 @@
-"""Risk 测试用的轻量构造器:带 info 的 PM/OE instrument、duck position、账户状态。"""
+"""Risk 测试用的轻量构造器:带 info 的 PM/OE/SE instrument、duck position、账户状态。"""
 
 from __future__ import annotations
 
@@ -51,10 +51,14 @@ def pm_instrument(competition: str, market_type: str, token: str = "tok1") -> Bi
     )
 
 
-def oe_instrument(competition: str, market_type: str, selection_id: int = 1) -> BettingInstrument:
-    """ORBITEXCH BettingInstrument,info 携带 competition/market_type。"""
+def _betting_instrument(
+    venue_name: str,
+    competition: str,
+    market_type: str,
+    selection_id: int = 1,
+) -> BettingInstrument:
     return BettingInstrument(
-        venue_name="ORBITEXCH",
+        venue_name=venue_name,
         betting_type="ODDS",
         competition_id=1,
         competition_name=competition,
@@ -81,6 +85,16 @@ def oe_instrument(competition: str, market_type: str, selection_id: int = 1) -> 
     )
 
 
+def oe_instrument(competition: str, market_type: str, selection_id: int = 1) -> BettingInstrument:
+    """ORBITEXCH BettingInstrument,info 携带 competition/market_type。"""
+    return _betting_instrument("ORBITEXCH", competition, market_type, selection_id)
+
+
+def se_instrument(competition: str, market_type: str, selection_id: int = 1) -> BettingInstrument:
+    """SHARPEXCH BettingInstrument,info 携带 competition/market_type。"""
+    return _betting_instrument("SHARPEXCH", competition, market_type, selection_id)
+
+
 class DuckPosition:
     """只暴露 ArbitragePortfolio._leg_from_position / _resolve_pair_id 触及的字段。"""
 
@@ -96,6 +110,12 @@ def pm_account_state(total: float, account_id: str = "POLYMARKET-001") -> Accoun
 
 
 def oe_account_state(total: float, free: float, account_id: str = "ORBITEXCH-001") -> AccountState:
+    locked = total - free
+    bal = AccountBalance(Money(total, USD), Money(locked, USD), Money(free, USD))
+    return _cash_state(account_id, [bal])
+
+
+def se_account_state(total: float, free: float, account_id: str = "SHARPEXCH-001") -> AccountState:
     locked = total - free
     bal = AccountBalance(Money(total, USD), Money(locked, USD), Money(free, USD))
     return _cash_state(account_id, [bal])

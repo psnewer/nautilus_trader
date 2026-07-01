@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness、单场 profit gates(6.7.2/3/4)、余额 venue 非对称(6.3b)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(6.9.x)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
+**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(含 SHARPEXCH expected leg 解析)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(PM + OE/SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(6.9.x,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -28,7 +28,7 @@ ExecutionClient (维护账户)
 ```
 
 **唯一组件**: **`ArbitrageLiveRiskEngine`**(NT `LiveRiskEngine` 子类 —— 实盘 kernel 用 Live 版,非基类 `RiskEngine`)
-- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE:`instrument.min_notional=Money(7 * fx, USD)`)
+- NT 父类自动处理最小限额(PM:`instrument.min_quantity=5 shares`;OE/SE:`instrument.min_notional=Money(min_stake * fx, USD)`)
 - 子类加 `_check_balance` hook 做余额检查
 
 **删除**:
@@ -47,7 +47,7 @@ ExecutionClient (维护账户)
 ### risk-6.2: NT 自动处理 venue 最小下单额
 - 输入:
   - PM:提交一个 `quantity < instrument.min_quantity(5 shares)` 的订单
-  - OE:提交一个 USD stake/notional `< instrument.min_notional(7 * fx)` 的订单
+  - OE/SE:提交一个 USD stake/notional `< instrument.min_notional(min_stake * fx)` 的订单
 - 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
 - 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测
 
@@ -63,11 +63,11 @@ ExecutionClient (维护账户)
   - 输入: 再提交名义额 `50` 的开仓单
   - 期望: `_check_balance` 算可用 = `100 − 60 = 40 < 50` → **拒绝**(误读 `free=100` 则误放行)
   - 验收: PM 可用 = `total − Σ(PM cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
-- **OE —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
-  - 前置: OE WS 上报余额 `40 GBP`(**已扣**挂单占用),ExecutionClient 入站按 `fx` 写成 `Money(40 * fx, USD)`;该值即可用
+- **OE/SE —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
+  - 前置: OE/SE WS 上报余额 `40` venue currency(**已扣**挂单占用),ExecutionClient 入站按 `fx` 写成 `Money(40 * fx, USD)`;该值即可用
   - 输入: 提交名义额 `50` 的单
   - 期望: `_check_balance` 用 `40 < 50` → 拒绝;**不再额外扣挂单**(否则双重扣减低估)
-  - 验收: OE 可用 = cache 余额 USD 数值直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM/OE 不同处理
+  - 验收: OE/SE 可用 = cache 余额 USD 数值直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM 与非 PM 不同处理
 
 ### risk-6.4: cache stale 时由 venue 拒绝兜底
 - 前置: cache 余额过期,venue 真实余额已不够
@@ -102,7 +102,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 验收: 任一返回 False 即 `OrderDenied`;签名与 `engine.pyx:571` 一致,**override 被 Cython `_handle_submit_order` 派发到(已用真实 SubmitOrder 跑通:覆盖触发 1 次 + deny 事件发出 + 订单不泄漏到 exec)**。⚠️ 自定义 deny 必须自调 `self._deny_order(order, reason)`,否则订单静默丢弃、`on_order_denied` 不触发
 
 ### risk-6.7.1b: VenueExecutionLiveness gate 顺序与 fail-closed(2026-06-15)
-- 前置: `ArbitrageLiveRiskEngine` 注入 `VenueExecutionLiveness`;某 opportunity 的 `expected_legs=("pm:home:0","oe:away:1")`;PM `order_alive=true/position_alive=true`,OE `order_alive=false/position_alive=true`。
+- 前置: `ArbitrageLiveRiskEngine` 注入 `VenueExecutionLiveness`;某 opportunity 的 `expected_legs=("pm:home:0","oe:away:1")` 或 `("pm:home:0","sharpexch:away:1")`;PM `order_alive=true/position_alive=true`,外部 venue `order_alive=false/position_alive=true`。
 - 输入: PM leg 或 OE leg 任一 SubmitOrder 进入 `_check_order`。
 - 期望: `super()._check_order` 通过后,`_check_required_venues_alive` 发现 required venues 中 OE 不 alive → `_deny_order`。
 - 验收:
@@ -124,9 +124,9 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ### risk-6.7.1e: 概率门控拒绝极端概率/赔率
 - 前置: `min_probability=0.03`,`max_probability=0.97`。
-- 输入: PM order price=0.02/0.98;OE order price=40.0(隐含概率 0.025)/1.02(隐含概率约 0.98)。
+- 输入: PM order price=0.02/0.98;OE/SE order price=40.0(隐含概率 0.025)/1.02(隐含概率约 0.98)。
 - 期望: `_check_probability_gate` deny;price=0.03/0.97 或 OE price=2.0 放行。
-- 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability`;非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
+- 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability` / `test_probability_gate_converts_sharpexch_decimal_odds_to_probability`;非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
 
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,`share=22.5`,`match_tp=0.05`;所有 outcome 的 `net_profit > 1.125`
@@ -220,7 +220,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ## ArbitragePortfolio: outcome_exposures / outcome_shares 领域指标(Q14,§6.9)
 
-子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。OE position quantity 由 adapter 入站时归一为 USD stake,Portfolio/Risk 不再乘 fx。
+子类化 `Portfolio` 加 Python 方法,与 NT `unrealized_pnl` 并列扩展。Risk 门控读取 `outcome_exposures(pair_id)` 的绝对金额 `net_profit/liability`;Strategy `share_limit` action 读取 `outcome_shares_for_venue(pair_id, venue)` 按 venue 分开计算当前 outcome share。`way_rebate` / `min_way_rebate` / `way_rebates_by_venue` / `global_min_rebate_sum` 已退役。OE/SE position quantity 由 adapter 入站时归一为 USD stake,Portfolio/Risk 不再乘 fx。
 
 ### risk-6.9.1: 导入名替换 → kernel 原生构造 ArbitragePortfolio + ArbitrageLiveRiskEngine(✅ 部分已验证)
 
@@ -228,7 +228,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望:
   - `node.kernel.portfolio` 实例类型 = `ArbitragePortfolio`,`node.kernel.risk_engine` = `ArbitrageLiveRiskEngine`(kernel 原生构造,**非构造后 swap**)
   - 三个 msgbus endpoint(`Portfolio.update_account` / `update_order` / `update_position`)+ RiskEngine 的 `RiskEngine.execute`/`process` + `events.order/position.*` 订阅均由各自 `__init__` 原生注册(无摘除/重注册)
-  - `configure_arb` 注入 `ArbitrageParams.share`(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`;2026-06-30:fx 只在 OE adapter 边界使用)
+  - `configure_arb` 注入 `ArbitrageParams.share`(portfolio)与 profit gate params + `venue_liveness`(engine);share 是 Risk 绝对金额阈值基数(#108:portfolio 不再注入 `leg_settled`;2026-06-30:fx 只在 OE/SE adapter 边界使用)
 - 验收:
   - **已验证(冒烟)**:`install_arbitrage_engines()` 后 `kernel.Portfolio is ArbitragePortfolio`、`kernel.LiveRiskEngine is ArbitrageLiveRiskEngine`;子类关系成立
   - **待 .py**:全节点启动后 endpoint handler 指向正确实例;原 Portfolio API(`unrealized_pnl` 等)行为不变;`wire_*` 在非套利节点上抛 RuntimeError(install 漏调的早失败)
@@ -251,7 +251,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ### risk-6.9.2d: outcome_shares 按 outcome 聚合当前持仓 share
 
-- 前置:同一 outcome 同时有 PM/OE 持仓,例如 home 有 PM 5 share + OE gross 6 share,away 有 OE gross 10 share。
+- 前置:同一 outcome 同时有 PM/OE/SE 持仓,例如 home 有 PM 5 share + OE gross 6 share,away 有 SE gross 10 share。
 - 输入:`portfolio.outcome_shares("match_1")`
 - 期望:返回 `home=11, away=10`。
 - 验收:Strategy share_limit action 用该接口计算每个 outcome 的剩余额度,而不是逐 leg 单独看。
@@ -274,7 +274,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ### risk-6.9.14: ArbitragePortfolio 不读取执行健康状态(2026-06-15 / 2026-06-22 更新)
 
-- 前置: cache 中存在可计算的 PM/OE positions;`VenueExecutionLiveness` 中某 venue not alive。
+- 前置: cache 中存在可计算的 PM/OE/SE positions;`VenueExecutionLiveness` 中某 venue not alive。
 - 输入: 调 `portfolio.outcome_exposures(pair_id)` / `portfolio.outcome_shares(pair_id)`。
 - 期望: Portfolio 按 positions 正常计算;不因 liveness 返回空或 `None`。
 - 验收:

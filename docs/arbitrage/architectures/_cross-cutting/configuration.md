@@ -19,7 +19,9 @@ flowchart LR
   D --> CC2[PolymarketExecClientConfig]
   D --> CC3[OrbitExchDataClientConfig]
   D --> CC4[OrbitExchExecClientConfig]
-  D --> AC1[InstrumentRefresherConfig × 2]
+  D --> CC5[SharpExchDataClientConfig]
+  D --> CC6[SharpExchExecClientConfig]
+  D --> AC1[Venue discovery config]
   D --> AC2[MarketMatchingActorConfig]
   D --> AC3[StrategyEvaluatorConfig]
   D --> CTX[ArbContext]
@@ -53,6 +55,7 @@ class DiscoveryConfig(Struct, kw_only=True):
     refresh_interval_secs: float = 60.0     # 给 InstrumentRefresher
     polymarket: VenueDiscoveryConfig         # sport → competitions[]
     orbitexch:  VenueDiscoveryConfig
+    sharpexch:  VenueDiscoveryConfig
 
 
 class VenueDiscoveryConfig(Struct, kw_only=True):
@@ -62,20 +65,21 @@ class VenueDiscoveryConfig(Struct, kw_only=True):
 
 class SportFilter(Struct, kw_only=True):
     sport:        str                        # "Tennis" / "Soccer" / ...
-    competitions: list[str]                  # ["atp"] / ["Men's Roland Garros 2026"] / ...
+    competitions: list[str]                  # ["atp"] / ["Men's Wimbledon 2026"] / ...
 
 
 class MatchingConfig(Struct, kw_only=True):
     enabled:                bool = True
     min_similarity:         float = 1.0
     sport_aliases:          dict[str, str] = {}     # {"soccer": "Soccer"}
-    competition_aliases:    dict[str, str] = {}     # {"atp": "ATP", "Men's Roland Garros 2026": "ATP"}
+    competition_aliases:    dict[str, str] = {}     # {"atp": "ATP", "Men's Wimbledon 2026": "ATP"}
     competition_max_matches: dict[str, int] = {}    # {"ATP": 1}
 
 
 class VenuesConfig(Struct, kw_only=True):
     polymarket: PolymarketSectionConfig
     orbitexch:  OrbitExchSectionConfig
+    sharpexch:  SharpExchSectionConfig
 
 
 class PolymarketSectionConfig(Struct, kw_only=True):
@@ -117,6 +121,31 @@ class OrbitExchSectionConfig(Struct, kw_only=True):
     username:                 str | None = None
     password:                 str | None = None
     # 下单
+    default_persistence:      str = "LAPSE"
+    default_order_type:       str = "GTC"
+    discount:                 float = 1.0
+    take_off:                 float = 0.0
+    market_order_enabled:     bool = False
+    supported_market_types:   list[str] = ["home", "draw", "away"]
+
+
+class SharpExchSectionConfig(Struct, kw_only=True):
+    enabled:                  bool = False
+    base_url:                 str = "https://portal.sharpxch.com"
+    login_url:                str = "https://sharpxch.com/player/"
+    api_url:                  str = "https://portal.sharpxch.com/customer/api"
+    zoom_level:               float = 0.8
+    page_load_timeout_sec:    float = 120.0
+    page_refresh_sec:         int = 600
+    staleness_timeout_sec:    int = 300
+    headless:                 bool = True
+    browser_type:             str = "chromium"
+    user_data_dir:            str | None = None
+    cdp_url:                  str | None = None
+    # 凭证(从 env 注入)
+    username:                 str | None = None
+    password:                 str | None = None
+    # 下单字段第一阶段与 OE 同形;真实下单接线后再按 SE 实测收敛
     default_persistence:      str = "LAPSE"
     default_order_type:       str = "GTC"
     discount:                 float = 1.0
@@ -192,16 +221,18 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "enabled": true,
     "refresh_interval_secs": 60,
     "polymarket": {"enabled": true, "sports": [{"sport": "Tennis", "competitions": ["atp"]}]},
-    "orbitexch":  {"enabled": true, "sports": [{"sport": "Tennis", "competitions": ["Men's Roland Garros 2026"]}]}
+    "orbitexch":  {"enabled": true, "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]},
+    "sharpexch":  {"enabled": true, "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]}
   },
   "matching": {
     "enabled": true, "min_similarity": 1,
-    "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
+    "competition_aliases": {"atp": "ATP", "Men's Wimbledon 2026": "ATP"},
     "competition_max_matches": {"ATP": 1}
   },
   "venues": {
     "polymarket": {"clob_url": "https://clob.polymarket.com", "...": "其他非凭证字段"},
-    "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true}
+    "orbitexch":  {"base_url": "https://www.orbitexch.com", "headless": true},
+    "sharpexch":  {"enabled": false, "base_url": "https://portal.sharpxch.com", "login_url": "https://sharpxch.com/player/"}
   },
   "arbitrage": {"share": 22.5, "max_leg_share": 100, "fx": 1.33},
   "risk": {"match_tp": 0.05, "match_sl": -0.05},
@@ -234,6 +265,8 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
 |---|---|---|
 | `ORBITEXCH_USERNAME` | `venues.orbitexch.username` | 沿用旧码 |
 | `ORBITEXCH_PASSWORD` | `venues.orbitexch.password` | 沿用 |
+| `SHARPEXCH_USERNAME` | `venues.sharpexch.username` | SharpExch 第一阶段接入 |
+| `SHARPEXCH_PASSWORD` | `venues.sharpexch.password` | SharpExch 第一阶段接入 |
 | `POLYMARKET_CLOB_API_KEY` | `venues.polymarket.clob_api_key` | 沿用 |
 | `POLYMARKET_CLOB_SECRET` | `venues.polymarket.clob_api_secret` | 沿用(注意旧码用 `_SECRET` 不是 `_API_SECRET`)|
 | `POLYMARKET_CLOB_PASSPHRASE` | `venues.polymarket.clob_passphrase` | 沿用 |
@@ -267,7 +300,8 @@ def load_arb_config(path: str | Path) -> ArbConfig:
     """
 ```
 
-**错误路径**:JSON 解析失败 / schema 不匹配 → `ConfigError`;启用了 venue 但凭证缺 → `ConfigError(missing env: ...)`。
+**错误路径**:JSON 解析失败 / schema 不匹配 → `ConfigError`;凭证缺失不在 loader 阶段 raise,dispatcher 对 OE/SE
+`username/password` 回退空串,由下游 BrowserManager / login 流程触发明确错误。
 
 **旧字段兼容(2026-06-29)**:loader 仍兼容旧配置里的 `risk.share` / `risk.max_leg_share` / `risk.fx`;若顶层 `arbitrage` 段未显式给同名字段,加载时迁移为 `cfg.arbitrage.*`。新配置与 Web 写回均使用顶层 `arbitrage` 段,`RiskSectionConfig` 只保留真正风控字段。
 
@@ -282,7 +316,10 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
 def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConfig: ...
 def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig: ...
 def to_orbitexch_exec_client_config(cfg: ArbConfig) -> OrbitExchExecClientConfig: ...
-def to_instrument_refresher_configs(cfg: ArbConfig) -> tuple[InstrumentRefresherConfig, InstrumentRefresherConfig]: ...
+def to_sharpexch_data_client_config(cfg: ArbConfig) -> SharpExchDataClientConfig: ...
+def to_sharpexch_exec_client_config(cfg: ArbConfig) -> SharpExchExecClientConfig: ...
+def to_oe_scraper_config(cfg: ArbConfig) -> OrbitExchVenueConfig | None: ...
+def to_se_discovery_config(cfg: ArbConfig) -> SharpExchVenueConfig | None: ...
 def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingActorConfig: ...
 def to_strategy_evaluator_config(cfg: ArbConfig) -> StrategyEvaluatorConfig: ...
 def to_web_gateway_config(cfg: ArbConfig) -> WebGatewayConfig: ...   # Step 7 只读监控(portfolio/loop 经 deps 注入)
@@ -295,6 +332,32 @@ def to_debug_config(cfg: ArbConfig) -> DebugConfig | None: ...
 PM dispatcher 必须把 `venues.polymarket.signature_type` 同时透传给 Data/Exec config。否则
 proxy/funder 钱包会按 EOA(`0`)查 CLOB collateral,表现为 NT 账户余额 `0.000000 USDC.e`,
 而同一凭证用 `signature_type=2` 才能读到真实 proxy 钱包余额。
+
+**Venue runtime enablement(2026-07-01)**:
+`venues.<venue>.enabled` 是是否把该 venue 注册进 TradingNode runtime 的唯一开关,
+与 `discovery.<venue>.enabled` 分离。launcher 只要求至少两个 runtime venue 开启:
+
+| 字段 | 默认 | 语义 |
+|---|---:|---|
+| `venues.polymarket.enabled` | `true` | 是否注册 PM data/exec config、PMSPORTS 与 liveness |
+| `venues.orbitexch.enabled` | `true` | 是否注册 OE data/exec config、factories 与 liveness |
+| `venues.sharpexch.enabled` | `false` | 是否注册 SE data/exec config、factories 与 liveness |
+
+因此可表达 PM+OE(默认)、PM+SE、OE+SE、PM+OE+SE。当前 MatchingActor 仍默认以 PM 为
+`pm_venue`,所以不含 PM 的组合只表示 runtime 注册层已可启动,不代表已完成非 PM anchor 的匹配语义。
+这只是 venue 注册层插拔,不改变 Strategy/Risk/Barrier 的业务语义。
+
+**暂缓 TODO(venue 插拔第二阶段)**:
+- 泛化 `MarketMatchingActor` 的 PM anchor 语义,让非 PM 组合不只是 runtime 注册层可表达。
+- 将 `pm_settlement` 从 launcher / 通用 `ArbContext` 下沉到 Polymarket execution adapter/factory 内部。
+  现阶段它仍按历史接线由 launcher 构造并注入;后续应随 PM ExecClient 的 position reconciliation
+  归属回 PM adapter,launcher 只负责按 `venues.polymarket.enabled` 注册 PM factory。
+
+dispatcher 派发 discovery / settlement 运行时上下文时也以 runtime venue 开关为前置:
+- `venues.polymarket.enabled=false` → PM event slug tags / competition→sport map 为空,且 launcher 不构造 `PolymarketSettlement`。
+- `venues.orbitexch.enabled=false` → `oe_scraper_config=None`,即使 `discovery.orbitexch.enabled=true`。
+- `venues.sharpexch.enabled=false` → `se_discovery_config=None`,即使 `discovery.sharpexch.enabled=true`。
+`discovery.<venue>.enabled` 只在对应 runtime venue 已开启时继续决定是否跑该 venue 的发现。
 
 `to_strategy_evaluator_config` 只把 `cfg.strategy.log_evaluations` 映射到
 `StrategyEvaluatorConfig.log_evaluations`;registries / store / portfolio / execution-active callable
@@ -336,6 +399,17 @@ Polymarket `max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms` 透�
 NT 上游 `PolymarketExecClientConfig` 的共享 `RetryManagerPool`。默认仍为 `None`
 (当前等价不重试),避免无意改变真钱 submit/cancel 语义;若为周期 order/position 对账测试显式开启,
 必须同时意识到同一 upstream retry pool 也覆盖 PM CLOB submit/cancel/report。
+
+**SharpExch 第一阶段配置(2026-06-30)**:
+`discovery.sharpexch` 与 `venues.sharpexch` 已进入 `ArbConfig`;loader 从
+`SHARPEXCH_USERNAME` / `SHARPEXCH_PASSWORD` 注入凭证,并对 JSON 内凭证字段发
+`ConfigWarning`。dispatcher 已提供 `to_sharpexch_data_client_config` /
+`to_sharpexch_exec_client_config` 和 `to_se_discovery_config`。`venues.sharpexch.enabled`
+默认 `false`:只有显式置 `true` 时,launcher 才把 `SHARPEXCH` data/exec client config、
+factory、`VenueExecutionLiveness` 初始 venue 和 `ArbContext.se_*` discovery/session 注入打开。
+如需 SE-only external smoke,配置 `venues.orbitexch.enabled=false` 且
+`venues.sharpexch.enabled=true`。后续细节以 `architectures/sharpexch/architecture.md`
+为准分阶段落地。
 
 ---
 
@@ -410,15 +484,16 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 
 | 组件 | 输入 |
 |---|---|
-| `PolymarketDataClient` / `ExecClient` | `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)` |
-| `OrbitExchDataClient` / `ExecutionClient` | 同上 OE 版 |
-| `InstrumentRefresher`(PM / OE) | `to_instrument_refresher_configs(cfg)` × 2 |
-| `MarketMatchingActor` | `to_market_matching_actor_config(cfg)`(含 aliases / max_matches)|
+| `PolymarketDataClient` / `ExecClient` | `to_polymarket_data_client_config(cfg)` / `to_polymarket_exec_client_config(cfg)`;仅 `venues.polymarket.enabled=true` 时由 launcher 加入 TradingNode,并同时启用 PMSPORTS / PM discovery context / PM settlement |
+| `OrbitExchDataClient` / `ExecutionClient` | `to_orbitexch_data_client_config(cfg)` / `to_orbitexch_exec_client_config(cfg)`;仅 `venues.orbitexch.enabled=true` 时由 launcher 加入 TradingNode |
+| `SharpExchDataClient` / `ExecutionClient` | `to_sharpexch_data_client_config(cfg)` / `to_sharpexch_exec_client_config(cfg)`;仅 `venues.sharpexch.enabled=true` 时由 launcher 加入 TradingNode |
+| OE / SE discovery factory | `to_oe_scraper_config(cfg)` / `to_se_discovery_config(cfg)`;同时要求 `venues.<venue>.enabled=true` 与 `discovery.<venue>.enabled=true` |
+| `MarketMatchingActor` | `to_market_matching_actor_config(cfg)`(含 max_matches;`external_venues` 从 enabled external venues 推导:OE/SE 可单独或同时开启)|
 | `StrategyEvaluator` | `to_strategy_evaluator_config(cfg)` + `to_strategy_registry(cfg)` |
 | `WebGatewayActor`(Step 7,只读监控)| `to_web_gateway_config(cfg)`;`enabled=false` 时 launcher 不构造;`portfolio`/`loop` 经 `WebGatewayDeps` 注入 |
 | `ArbitrageLiveRiskEngine` | `wire_arbitrage_runtime(node, params=to_arb_risk_params(cfg), arbitrage_params=to_arbitrage_params(cfg))` |
 | `ArbitragePortfolio` | `arbitrage.share` 经 `wire_arbitrage_runtime`;`outcome_exposures` 输出每个 outcome 的绝对金额 `net_profit/liability`;`outcome_shares` 输出每个 outcome 已占用 share |
-| `ArbContext`(session / debug / pair_registry / settlement / arbitrage_params) | `prepare_arb_context(..., arbitrage_params=to_arbitrage_params(cfg), **to_arb_context_init_kwargs(cfg))`;OE data/exec factory 从中读取 `fx` 做 adapter 边界换汇 |
+| `ArbContext`(session / debug / pair_registry / settlement / arbitrage_params) | `prepare_arb_context(..., arbitrage_params=to_arbitrage_params(cfg), **to_arb_context_init_kwargs(cfg))`;OE/SE data/exec factory 从中读取 `fx` 做 adapter 边界换汇;PM/OE/SE discovery context 均同时受 runtime venue enabled 和 discovery enabled 控制 |
 | `DebugConfig`(Q11) | `to_debug_config(cfg)`(`enabled=False` → None)|
 
 ---
@@ -443,7 +518,7 @@ def to_strategy_registry(cfg: ArbConfig) -> StrategyRegistry:
 - [x] **slice 6**:`launchers/arb_node.py` 骨架(`build_trading_node_config` / `prepare_runtime_state` / `register_factories` / `bootstrap_and_build` / `main`)+ 单测 ✅ #45(11 passed);**不含 Actors**(留 slice 8)
 - [x] **slice 7A**:OE data factory 真接 scraper + Provider aliases 注入 ✅ #46(+9 passed);PM enricher 真写 + PM 按 sport 过滤留 7B/7C 或 slice 9 一并;**known divergence**:`OrbitExchScraper` 自管 browser 不走 BrowserManager(Q2 原意只覆盖 Data+Exec,discovery 是第三方 + unauthenticated 够用)
 - [x] **slice 8A**:Actors 接线(InstrumentRefresher × 2 + MarketMatchingActor + StrategyEvaluator)✅ #47 + #48 Q19 真接修正(+10 passed 累计);Provider 经 ArbContext 共享(data factory 回写 + launcher post-build 读 + Refresher 装入同一实例);**Q19 `is_execution_active` 已真接**(`_make_is_execution_active(node)` 遍历 `node.kernel.exec_engine._clients`,任一 client `_execution_active=True` → True;`ArbExecutionSessionMixin` 维护的 ref-count `len(_active_sessions) > 0`)
-- [x] **slice 8B / #110 settlement 接线(2026-06-21)**:launcher 构造 `PolymarketContractService` + `PolymarketSettlement` 注入 `ArbContext.pm_settlement`;`positions_fetcher` 已随 #110 退役(同一次 NT position reconcile 的 `_last_raw_positions` 喂 settlement)。cleanup 关闭/缺 PM 链上凭证/contract 初始化失败 → settlement=None,节点继续启动;凭证齐全且初始化成功 → PM 连续 position 对账可 fire-and-forget 触发 merge/redeem。
+- [x] **slice 8B / #110 settlement 接线(2026-06-21)**:launcher 构造 `PolymarketContractService` + `PolymarketSettlement` 注入 `ArbContext.pm_settlement`;`positions_fetcher` 已随 #110 退役(同一次 NT position reconcile 的 `_last_raw_positions` 喂 settlement)。cleanup 关闭/PM venue disabled/缺 PM 链上凭证/contract 初始化失败 → settlement=None,节点继续启动;凭证齐全且初始化成功 → PM 连续 position 对账可 fire-and-forget 触发 merge/redeem。**TODO**:归属上应下沉到 PM execution adapter/factory,与 PM reconciliation 触发点共址;现阶段暂缓,见 §6 Venue runtime enablement。
 - [x] **slice 10a**:`EvalContext.submitter` + 真出单链路 ✅ #50(+6 passed)— `make_submitter(cache, msgbus, clock, trader_id, log)` module-level 工厂构 NT LimitOrder + SubmitOrder cmd → `msgbus.send("ExecEngine.execute", cmd)`,经 NT ExecEngine 路由到 venue ExecClient(debug.skip_execution=true 时 SkipExecutionClient 兜底 mock 全成);`PlaceBetsAction` 双路径(submitter 注入→真出单 / submitter None→log-only)。**#106 目标设计已改为 submitter 发送 `RiskEngine.execute`,由 Execution opportunity barrier 收齐同机会 risk-pass legs 后再 release**;落地时以 `architectures/_cross-cutting/synchronization.md §8.4bis` 和 strategy §3.9 为准。
 - [x] **slice 7B PM enricher 真写 + event_slug_builder filter**(#53):**Gap D 修**(PM 端 6-key enricher 占位)+ **Gap B 修**(PM 全量 crawl 无 sport filter):① PM enricher 真写(`nautilus_trader/adapters/polymarket/arb_provider.py:enrich_pm_six_key_info`):market_info["events"][0].ticker 嵌入无需另调 gamma,ticker 解析 `{comp}-{home}-{away}-YYYY-MM-DD` + selection_role 由 market_slug 推 + sub-markets 返空 → matching 跳;② `build_pm_event_slugs_from_arb_context` callable + `PolymarketInstrumentProviderConfig.event_slug_builder` 配置;**关键 audit**:`tag_slug=atp` 错配(返 outright winners),**`series_slug=atp`** 才返 match-level events;③ ArbContext.pm_event_slug_tags + dispatcher to_pm_event_slug_tags 派生自 `cfg.discovery.polymarket.sports[].competitions`;④ launcher timeout_connection 当时 20→120s,现随 #105 启动对账统一为 180s。**14 单测** + **live smoke 验**:0 ERROR,PM 35s load 2026 instruments from 100 events(原 50K+ crawl 5 分钟未完);4 Actors RUNNING,Refresher 双 venue 各 1+ tick。**MatchedPair 不 fire 符合市场逻辑**:PM `series_slug=atp` 100 events 多为 Roland Garros JUNIORS / 次级赛(`atp-matisse-thomas-2026-06-01` = "Roland Garros Juniors, Boys: Matisse Martin vs Flynn Thomas"),OE config 锁的"Men's Roland Garros 2026"是主赛 — 不同赛事不可匹。详见 `discovery/architecture.md §3.2`(PM 端 6-key 真写段)
 - [x] **slice 10d 修 Gap A + E**(#52):**Gap A** `MarketMatchingActor` + `StrategyEvaluator` `Actor.subscribe_data` 强制路由 SubscribeData cmd 经 DataEngine 需 client_id/instrument_id 报 ERROR × 3 — **改 `self._msgbus.subscribe(topic=f"data.{TypeName}", handler=self.on_data)` 直订**(NT `publish_data` 内部正是 publish 到 `data.<TypeName>` topic);**MVP 不预订 OrderBookDeltas**(strategy 端 MatchedPair 触发即够,OBD-driven 重评待 slice 10e per-iid 接);**Gap E** `InstrumentRefresher._on_alert` 创建 task 未跟踪 → dispose 时 "Task was destroyed but it is pending" warning × 1 — **改存 `self._tick_task` + on_stop cancel**。**live smoke 验**:subscribe_data ERROR 3→**0**,pending task warning 1→**0**,OE refresh 3 次推进正常;仅剩 1 PM PolyApi 网络异常(无关本 slice,与 [[bug_polymarket_order_version_mismatch]] 同 PM 上游类问题)。`MatchedPair` 仍 0 fire 符合 slice 7B PM enricher 未写预期(`_both_recent()` 闸 Q5 守门)。详见 `matching/architecture.md §3.3` + `strategy/architecture.md §3.5` + `discovery/architecture.md §3.3`

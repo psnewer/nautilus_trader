@@ -74,6 +74,27 @@ def test_candidate_quantities_put_rebate_on_one_side():
     assert by_role["away"]["cost"] == 50.0
 
 
+def test_sharpexch_candidate_uses_decimal_odds_qty():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.SHARPEXCH": _fake_book(2.0),   # prob=0.50
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.SHARPEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.10, share=100.0).passes(ctx) is True
+
+    candidate = ctx.scratch["candidates"][0]
+    by_role = {leg["role"]: leg for leg in candidate["legs"]}
+    assert by_role["away"]["venue"] == "SHARPEXCH"
+    assert by_role["away"]["share_if_wins"] == 100.0
+    assert by_role["away"]["qty"] == 50.0
+    assert by_role["away"]["cost"] == 50.0
+
+
 def test_rate_below_threshold_does_not_write_candidates():
     books = {
         "H.POLYMARKET": _fake_book(0.50),

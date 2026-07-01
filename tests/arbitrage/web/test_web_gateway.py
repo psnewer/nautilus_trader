@@ -19,6 +19,7 @@ from src.arbitrage.common.control import TOPIC_TRADING_STATE
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.web.actor import WebGatewayActor
 from src.arbitrage.web.actor import _port_bindable
@@ -71,6 +72,28 @@ def test_on_risk_event_broadcasts_trading_state():
     actor._on_risk_event(_Evt())
     msg = q.get_nowait()
     assert msg["type"] == "trading_state" and msg["data"]["state"] == "HALTED"
+
+
+def test_on_matched_pair_infers_external_venue_for_sharpexch():
+    actor = _bare_actor()
+    actor._matched_pairs = {}
+    data = MatchedPair(
+        ts_event=1,
+        ts_init=1,
+        pair_id="ATP|a|b|SHARPEXCH",
+        sport="Tennis",
+        competition="ATP",
+        pm_instrument_ids=["pm-home.POLYMARKET", "pm-away.POLYMARKET"],
+        oe_instrument_ids=["se-home.SHARPEXCH", "se-away.SHARPEXCH"],
+        confidence=0.9,
+    )
+
+    actor._on_matched_pair(data)
+
+    row = actor._matched_pairs["ATP|a|b|SHARPEXCH"]
+    assert row["external_venue"] == "SHARPEXCH"
+    assert row["external_instrument_ids"] == ["se-home.SHARPEXCH", "se-away.SHARPEXCH"]
+    assert row["oe_instrument_ids"] == row["external_instrument_ids"]  # 兼容旧字段
 
 
 # ── 控制台:TradingState 启停 + 配置编辑(Actor 方法)──────────────────
@@ -248,6 +271,7 @@ def test_put_config_section():
 def test_index_serves_html():
     r = _client().get("/")
     assert r.status_code == 200 and "Arbitrage Dashboard" in r.text and "text/html" in r.headers["content-type"]
+    assert "SharpExch" in r.text and "External venue" in r.text
 
 
 def test_get_accounts():

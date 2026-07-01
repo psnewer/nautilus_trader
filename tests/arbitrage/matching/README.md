@@ -9,7 +9,7 @@
 - ✅ `test_matched_pair_event.py`(3:Data 子类、字段、roundtrip)
 - ✅ `test_normalizer.py`(5:`normalize_team_name` + `events_from_instruments` 反推/分组/info 缺失跳过/group_key)
 - ✅ `test_engine.py`(7:同组队名匹/跨 competition 隔/相似度近似匹/贪心/`competition_max_matches`/`min_similarity` 过滤/空输入)
-- ✅ `test_actor.py`(6:timer 驱动 + cache-非空 latch —— 单边 cache 空不配 / 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
+- ✅ `test_actor.py`(8:timer 驱动 + cache-非空 latch —— PM 单边 cache 空不配 / PM↔OE 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **SE opt-in 多 external**:OE 缺失但 SE 存在时 PM↔SE 可匹配、OE+SE 同场产两个不同 pair_id / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair set → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
   > **#59→#60 演进**:旧 `on_data(InstrumentsRefreshed)`+2×window gate(#52)退役 → matching 自 clock timer 读 cache(#59,refresher 退役);eviction 从 #59 的 expiration 扫描换成 **#60 sports `ended` 事件驱动**(用户判 gamma expiration 不准)。`PairRegistry` key 归一 str(#58),#116 增 `instrument_ids_for_pair` 供 Portfolio 读取完整 outcome 集合。
 - ⬜ 全链路 wiring(DataClient 原生发现 → cache → matching timer → MatchedPair)经 /live-test 验:**#59 smoke10 已验**(PM Loaded 114 + MatchedPair mensik-zverev,refresher 未参与)
 
@@ -20,8 +20,9 @@
 ## 锁定决定
 
 - **Q9**: PM `BinaryOption` + OE `BettingInstrument` 异构,通过 `instrument.info` dict 6 个统一 key 归一(`sport` / `competition` / `home_team` / `away_team` / `start_ts` / `selection_role`)
-- **触发**: 订阅 `InstrumentsRefreshed`,两家 venue 都有近期成功 refresh 才触发匹配(Q4)
-- **近期窗口**: `2 × refresh_interval`(Q5)
+- **触发**: #59 后由 NT clock timer 周期读 cache,不再订 `InstrumentsRefreshed`
+- **external venues**:dispatcher 从 `venues.orbitexch.enabled` / `venues.sharpexch.enabled` 推导;默认 PM↔OE;PM+SE smoke 可关闭 OE 并只输出 `external_venues=("SHARPEXCH",)`;两个 external 同时开启时单个 external 缺失不阻塞其它 external
+- **近期窗口**: `2 × refresh_interval`(Q5) 已退役;cache 非空 latch 取代
 - **算法**: `EventNormalizer` + `MatchEngine` 从 `services/market_matching/` 平移,**代码不动**
 
 ## 文件分布
@@ -58,12 +59,26 @@
 期望: 第二条事件后立即触发 `_do_match`,publish `MatchedPair` 数据
 验收: matched 数量 > 0(测试用 fixture 提供可匹配的 instrument 数据)
 
-### matching-3.2: MarketMatchingActor 单 venue 失败时不触发
+### matching-3.2: MarketMatchingActor PM 单边失败时不触发
 
-前置: Actor 启动,只收到 PM 的 `InstrumentsRefreshed`,OE 的从未到达
-输入: 等 `fresh_window` 过完
+前置: Actor 启动,cache 只有 PM instruments,没有任何 external venue instruments
+输入: 触发 `_maybe_match`
 期望: `_do_match` 从未被调用
 验收: 没有 `MatchedPair` 被 publish,即使 PM 数据完整
+
+### matching-3.se.1: SE external venue 可单独匹配
+
+前置:`MarketMatchingConfig.external_venues=("ORBITEXCH","SHARPEXCH")`,cache 有 PM+SE 同场 instruments,OE 缺失。
+输入:触发 `_maybe_match`
+期望:发布一个 PM↔SE `MatchedPair`;`pair_id` 追加 `|SHARPEXCH`;`oe_instrument_ids` 兼容字段承载 SE legs。
+验收:`test_sharpexch_external_venue_matches_without_orbitexch`。
+
+### matching-3.se.2: OE 与 SE 同场产不同 pair_id
+
+前置:`external_venues=("ORBITEXCH","SHARPEXCH")`,cache 有 PM+OE+SE 同场 instruments。
+输入:触发 `_maybe_match`
+期望:发布 PM↔OE 与 PM↔SE 两个 pair;PM↔OE 保持历史 pair_id,PM↔SE 追加 `|SHARPEXCH`;同一 `game_id` 映射到 pair_id set,ended 时可一起清理。
+验收:`test_multiple_external_venues_emit_distinct_pairs_for_same_pm_game`。
 
 ### matching-3.3: 异构 instrument 归一(Q9 关键)
 

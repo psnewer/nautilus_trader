@@ -15,6 +15,9 @@ from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
 from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
+from src.arbitrage.config.dispatcher import to_se_discovery_config
+from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
+from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import _polymarket_ws_base_url
 from src.arbitrage.config.schema import ArbConfig
@@ -156,6 +159,43 @@ def test_orbitexch_exec_client_config_maps_credentials():
     assert cc.page_timeout == 90000
 
 
+def test_sharpexch_data_client_config_maps_credentials():
+    cfg = _cfg(venues={"sharpexch": {
+        "username": "u",
+        "password": "p",
+        "base_url": "https://portal.example.com",
+        "login_url": "https://login.example.com/player/",
+        "headless": False,
+        "browser_type": "firefox",
+        "page_load_timeout_sec": 90.0,
+        "staleness_timeout_sec": 240,
+    }})
+    cc = to_sharpexch_data_client_config(cfg)
+    assert cc.username == "u"
+    assert cc.password == "p"
+    assert cc.base_url == "https://portal.example.com"
+    assert cc.login_url == "https://login.example.com/player/"
+    assert cc.headless is False
+    assert cc.browser_type == "firefox"
+    assert cc.page_timeout == 90000
+    assert cc.staleness_timeout_secs == 240
+
+
+def test_sharpexch_credentials_empty_string_fallback():
+    cfg = _cfg()
+    cc = to_sharpexch_data_client_config(cfg)
+    assert cc.username == ""
+    assert cc.password == ""
+
+
+def test_sharpexch_exec_client_config_maps_credentials():
+    cfg = _cfg(venues={"sharpexch": {"username": "u", "password": "p", "page_load_timeout_sec": 90.0}})
+    cc = to_sharpexch_exec_client_config(cfg)
+    assert cc.username == "u"
+    assert cc.password == "p"
+    assert cc.page_timeout == 90000
+
+
 # ─── Actors ───────────────────────────────────────────────────────────
 
 # #59(slice A):test_instrument_refresher_configs 删除 —— InstrumentRefresher 退役。
@@ -170,6 +210,19 @@ def test_market_matching_actor_config_maps_fields():
     assert mc.refresh_interval_secs == 60.0
     assert mc.min_similarity == 1
     assert mc.competition_max_matches == {"ATP": 1}
+    assert mc.external_venues == ("ORBITEXCH",)
+
+
+def test_market_matching_actor_config_includes_sharpexch_when_enabled():
+    cfg = _cfg(venues={"sharpexch": {"enabled": True}})
+    mc = to_market_matching_actor_config(cfg)
+    assert mc.external_venues == ("ORBITEXCH", "SHARPEXCH")
+
+
+def test_market_matching_actor_config_uses_enabled_external_venues():
+    cfg = _cfg(venues={"orbitexch": {"enabled": False}, "sharpexch": {"enabled": True}})
+    mc = to_market_matching_actor_config(cfg)
+    assert mc.external_venues == ("SHARPEXCH",)
 
 
 def test_market_matching_empty_max_matches_becomes_none():
@@ -217,6 +270,7 @@ def test_arb_context_init_kwargs_maps_execution_section():
     kw = to_arb_context_init_kwargs(cfg)
     assert kw["pm_session_timeout_secs"] == 45.0
     assert kw["oe_session_timeout_secs"] == 45.0
+    assert kw["se_session_timeout_secs"] == 45.0
     # #110/#109:PM/OE 健康 interval 均退役 —— 不再进 ArbContext。
     assert "pm_health_interval_secs" not in kw
     assert "oe_health_interval_secs" not in kw
@@ -249,6 +303,74 @@ def test_arb_context_init_kwargs_oe_scraper_config_none_when_disabled():
     assert kw["oe_scraper_config"] is None
 
 
+def test_arb_context_init_kwargs_omits_oe_scraper_when_venue_disabled():
+    cfg = _cfg(
+        venues={
+            "polymarket": {"enabled": True},
+            "orbitexch": {"enabled": False},
+            "sharpexch": {"enabled": True},
+        },
+        discovery={"orbitexch": {"enabled": True,
+                                  "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
+    )
+    kw = to_arb_context_init_kwargs(cfg)
+    assert kw["oe_scraper_config"] is None
+
+
+def test_se_discovery_config_maps_fields():
+    cfg = _cfg(
+        discovery={"sharpexch": {"enabled": True,
+                                  "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]}},
+        venues={"sharpexch": {"enabled": True, "headless": False, "page_load_timeout_sec": 90.0}},
+    )
+    sc = to_se_discovery_config(cfg)
+    assert sc is not None
+    assert sc.enabled is True
+    assert sc.browser.headless is True
+    assert sc.browser.user_data_dir is None
+    assert sc.browser.timeout_ms == 90000
+    assert sc.sports[0].sport == "Tennis"
+    assert sc.sports[0].competitions == ["Men's Wimbledon 2026"]
+
+
+def test_se_discovery_config_none_when_disabled():
+    cfg = _cfg(venues={"sharpexch": {"enabled": True}}, discovery={"sharpexch": {"enabled": False}})
+    assert to_se_discovery_config(cfg) is None
+
+
+def test_se_discovery_config_none_when_venue_disabled():
+    cfg = _cfg(
+        venues={"sharpexch": {"enabled": False}},
+        discovery={"sharpexch": {"enabled": True,
+                                  "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
+    )
+    assert to_se_discovery_config(cfg) is None
+
+
+def test_arb_context_init_kwargs_omits_se_discovery_when_venue_disabled():
+    cfg = _cfg(
+        venues={"sharpexch": {"enabled": False}},
+        discovery={"sharpexch": {"enabled": True,
+                                  "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
+    )
+    kw = to_arb_context_init_kwargs(cfg)
+    assert kw["se_discovery_config"] is None
+
+
+def test_arb_context_init_kwargs_includes_se_discovery_when_venue_enabled():
+    cfg = _cfg(
+        venues={"sharpexch": {"enabled": True}},
+        discovery={"sharpexch": {"enabled": True,
+                                  "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
+        matching={"sport_aliases": {"tennis": "Tennis"}, "competition_aliases": {"w": "Wimbledon"}},
+    )
+    kw = to_arb_context_init_kwargs(cfg)
+    assert kw["se_discovery_config"] is not None
+    assert kw["se_discovery_config"].sports[0].competitions == ["Wimbledon"]
+    assert kw["se_sport_aliases"] == {"tennis": "Tennis"}
+    assert kw["se_competition_aliases"] == {"w": "Wimbledon"}
+
+
 def test_arb_context_init_kwargs_includes_aliases():
     cfg = _cfg(matching={"sport_aliases": {"soccer": "Soccer"},
                          "competition_aliases": {"atp": "ATP",
@@ -271,6 +393,21 @@ def test_pm_event_slug_tags_empty_when_disabled():
     cfg = _cfg(discovery={"polymarket": {"enabled": False}})
     kw = to_arb_context_init_kwargs(cfg)
     assert kw["pm_event_slug_tags"] == []
+
+
+def test_pm_event_slug_tags_empty_when_venue_disabled():
+    cfg = _cfg(
+        venues={
+            "polymarket": {"enabled": False},
+            "orbitexch": {"enabled": True},
+            "sharpexch": {"enabled": True},
+        },
+        discovery={"polymarket": {"enabled": True,
+                                   "sports": [{"sport": "Tennis", "competitions": ["atp"]}]}},
+    )
+    kw = to_arb_context_init_kwargs(cfg)
+    assert kw["pm_event_slug_tags"] == []
+    assert kw["pm_competition_to_sport"] == {}
 
 
 def test_pm_competition_to_sport_map():

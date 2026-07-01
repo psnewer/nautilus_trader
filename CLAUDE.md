@@ -4,7 +4,7 @@ To reduce common LLM coding mistakes, please follow the @karpathy-skills guideli
 
 ## 项目概览
 
-本项目基于 NautilusTrader 构建跨市场套利系统。目前，先实现polymarket和orbitexch平台之间的体育赛事套利交易。
+本项目基于 NautilusTrader 构建跨市场套利系统。目前主链路先实现 Polymarket 和 OrbitExch 之间的体育赛事套利交易;SharpExch 正按 OE 型 venue 做第一阶段接入,尚未完成实盘 Data/Execution 接线。
 
 ## 项目文档索引
 

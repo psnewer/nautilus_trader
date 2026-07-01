@@ -35,6 +35,8 @@ from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
 from tests.arbitrage.risk._factories import pm_instrument
+from tests.arbitrage.risk._factories import se_account_state
+from tests.arbitrage.risk._factories import se_instrument
 
 
 class _Ctx:
@@ -215,6 +217,32 @@ def test_liveness_gate_passes_when_required_venues_alive():
     assert ctx.engine._check_required_venues_alive(order) is True
 
 
+def test_liveness_gate_parses_sharpexch_expected_leg():
+    liveness = VenueExecutionLiveness(("POLYMARKET", "SHARPEXCH"))
+    liveness.mark_order_alive("POLYMARKET")
+    liveness.mark_position_alive("POLYMARKET")
+    ctx = _Ctx(venue_liveness=liveness)
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(
+        pm.id,
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,sharpexch:away:1",
+        ],
+    )
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_required_venues_alive(order) is False
+    assert denials and "SHARPEXCH" in denials[0]
+
+    liveness.mark_order_alive("SHARPEXCH")
+    liveness.mark_position_alive("SHARPEXCH")
+    assert ctx.engine._check_required_venues_alive(order) is True
+
+
 # ── 赔率/概率门控(risk-6.7.1e)───────────────────────────────────
 def test_probability_gate_denies_pm_price_outside_bounds():
     ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
@@ -248,6 +276,18 @@ def test_probability_gate_converts_oe_decimal_odds_to_probability():
     assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=2.0)) is True
     assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=40.0)) is False
     assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=1.02)) is False
+    assert len(denials) == 2
+
+
+def test_probability_gate_converts_sharpexch_decimal_odds_to_probability():
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    se = se_instrument("match_X", "away", 2)
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=2.0)) is True
+    assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=40.0)) is False
+    assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=1.02)) is False
     assert len(denials) == 2
 
 
@@ -294,6 +334,19 @@ def test_balance_oe_trusts_free_no_extra_deduction():
     assert any("Insufficient balance" in d for d in denials)
 
 
+def test_balance_sharpexch_trusts_usd_free_no_extra_deduction():
+    ctx = _Ctx()
+    se = se_instrument("match_X", "away", 2)
+    ctx.cache.add_instrument(se)
+    ctx.cache.add_account(_se_account(ctx, total=100, free=40))
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+    order = _DuckOrder(se.id, price=2.5, qty=Quantity.from_int(50))
+
+    assert ctx.engine._check_balance(se, order) is False
+    assert any("Insufficient balance" in d for d in denials)
+
+
 def _pm_account(ctx, total):
     state = pm_account_state(total)
     from nautilus_trader.accounting.factory import AccountFactory
@@ -303,6 +356,11 @@ def _pm_account(ctx, total):
 def _oe_account(ctx, total, free):
     from nautilus_trader.accounting.factory import AccountFactory
     return AccountFactory.create(oe_account_state(total, free))
+
+
+def _se_account(ctx, total, free):
+    from nautilus_trader.accounting.factory import AccountFactory
+    return AccountFactory.create(se_account_state(total, free))
 
 
 def _register_pair(ctx, pair_id, instruments):

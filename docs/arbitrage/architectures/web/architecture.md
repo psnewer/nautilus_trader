@@ -1,7 +1,7 @@
 # Web 组件详细设计(Step 7 —— 控制台)
 
 > **状态**:**完整控制台页面**(忠实照搬 legacy Bootstrap 5 标签页:Market Discovery / Market Matching / Odds Monitor / Strategy / Configuration)已落地,详见 §8。对应初设 `refactor.md §5.7`。
-> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,OE 赔率前端换算成隐含概率与 PM 统一)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、market_order/discount/global_sl/返水率面板)按用户裁定**删除**。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
+> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,external venue 赔率前端换算成隐含概率与 PM 统一)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、market_order/discount/global_sl/返水率面板)按用户裁定**删除**。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
 
 ---
 
@@ -145,8 +145,8 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
-| GET | `/matched_pairs` | MatchedPair 累积(匹配表)|
-| GET | `/odds` | PairRegistry + `cache.order_book` 最优价(OE 赔率前端 1/odds 换算成隐含概率与 PM 统一)|
+| GET | `/matched_pairs` | MatchedPair 累积(匹配表);保留 `oe_*` 旧字段兼容,同时输出 `external_venue` / `external_instrument_ids` / `external_teams` 表示真实 external venue(OE 或 SE)|
+| GET | `/odds` | PairRegistry + `cache.order_book` 最优价;前端将非 PM external venue(OE/SE)十进制赔率按 1/odds 换算成隐含概率与 PM 统一 |
 | WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 
 ### 8.5 安全

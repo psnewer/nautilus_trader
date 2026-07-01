@@ -155,8 +155,8 @@ class InstrumentRefresher(Actor):
 **slice 10d(#52)Gap E:clean shutdown**:`_on_alert` 创建的 `_tick_task` 跟踪到 `self._tick_task`;`on_stop` cancel 未完成 task,避免 NT dispose 时 "Task was destroyed but it is pending" warning。**slice 10d live smoke 验:0 pending warning**(对比 #51 1 条)。
 
 **slice 8A(#47)Provider 共享机制**:Refresher 必须跟 DataClient 用**同一个 Provider 实例**(否则 add 的 instrument 双方各持一份,cache 视图分裂)。落地:
-- PM `ArbPolymarketLiveDataClientFactory.create` + OE `OrbitExchLiveDataClientFactory.create` 构造完 Provider 后**回写** `ArbContext.{pm,oe}_instrument_provider = provider`
-- launcher `add_actors` 在 `node.build()` 之后(provider 已构造)从 `ArbContext` 读出,构造 `InstrumentRefresher(deps=RefresherDeps(provider=ctx.{pm,oe}_instrument_provider, loop=asyncio.get_event_loop()))`,经 `node.trader.add_actor` 入 NT
+- PM `ArbPolymarketLiveDataClientFactory.create` + OE `OrbitExchLiveDataClientFactory.create` 构造完 Provider 后**回写** `ArbContext.{pm,oe}_instrument_provider = provider`;SE 在 `venues.sharpexch.enabled=true` 时由 `SharpExchLiveDataClientFactory` 同形回写 `ctx.se_instrument_provider`
+- launcher `add_actors` 在 `node.build()` 之后(provider 已构造)从 `ArbContext` 读出,构造需要的发现/匹配/策略组件;SE runtime 为显式 opt-in,默认 PM/OE discovery 流程不变
 - **provider 缺失场景**(discovery 禁用 / 占位 `InstrumentProvider()`):launcher 跳过该 venue 的 Refresher 装载(不 raise)
 
 ### 3.4 消息接线

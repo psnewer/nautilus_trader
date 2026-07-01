@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
+from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
 from src.arbitrage.strategy.condition import Check
@@ -115,7 +116,7 @@ def _existing_legs(snap) -> list[_CalcLeg]:
         if role not in _VALID_ROLES:
             continue
         venue = _venue_of(iid)
-        if venue not in ("POLYMARKET", "ORBITEXCH"):
+        if venue != "POLYMARKET" and not _is_decimal_odds_venue(venue):
             continue
         qty = abs(position.quantity.as_double())
         price = float(position.avg_px_open)

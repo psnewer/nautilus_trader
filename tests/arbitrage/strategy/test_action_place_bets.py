@@ -24,6 +24,10 @@ def test_oe_size_is_share_over_odds():
     assert _compute_size("ORBITEXCH", 22.5, 2.5) == 9.0
 
 
+def test_sharpexch_size_is_share_over_odds():
+    assert _compute_size("SHARPEXCH", 22.5, 2.5) == 9.0
+
+
 def test_oe_size_zero_when_price_invalid():
     assert _compute_size("ORBITEXCH", 22.5, 0) == 0.0
     assert _compute_size("ORBITEXCH", 22.5, -1) == 0.0
@@ -146,6 +150,24 @@ def test_action_uses_leg_share_if_wins_without_action_share():
 
     assert calls[0]["qty"] == 40.0
     assert calls[1]["qty"] == 16.0
+
+
+def test_action_uses_sharpexch_leg_share_if_wins_without_action_share():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.SHARPEXCH", "venue": "SHARPEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 40.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["qty"] == 16.0
+    assert calls[0]["leg_key"] == "sharpexch:away:0"
 
 
 def test_action_can_override_venue_price_and_qty_for_live_probe():

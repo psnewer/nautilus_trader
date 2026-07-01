@@ -1,7 +1,7 @@
 # discovery 测试
 
 覆盖**市场发现**capability,涵盖:
-- Step 1 InstrumentProvider(PM 用上游 + OE 自写)—— `refactor.md §5.1`
+- Step 1 InstrumentProvider(PM 用上游 + OE/SE 自写)—— `refactor.md §5.1` / `architectures/sharpexch/architecture.md`
 - Step 2 InstrumentRefresher Actor(调度 + 持久化)—— `refactor.md §5.2.2`
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
@@ -36,6 +36,8 @@
 |---|---|
 | `test_polymarket_provider.py` | PM Provider 行为(用上游版本,验证可满足需求) |
 | `test_orbitexch_provider.py` | OE Provider 行为(自写,含 Q9 info dict 字段) |
+| `../adapters/sharpexch/test_discovery_client.py` / `test_provider.py` | SE 第一阶段 discovery parser + Provider 行为(含 Q9 info dict 字段) |
+| `../adapters/sharpexch/test_message_parser.py` / `test_data.py` | SE 第一阶段 price frame parser + runner → `OrderBookDeltas` 纯映射 |
 | `test_instrument_refresher.py` | InstrumentRefresher Actor 调度/持久化/事件契约 |
 | `test_instruments_refreshed_event.py` | `InstrumentsRefreshed` Data 类型与 MessageBus 契约 |
 
@@ -111,6 +113,24 @@
 
 **验收标准**:`test_orbitexch_discovery_scraper.py::test_setup_stealth_installs_visibility_spoof_for_lazy_loaded_rows` 通过;live probe 对 Wimbledon competition 直达页从 20 rows/events 提升到 96 rows/events。
 
+### discovery-1.4.se:SE API discovery + Provider
+
+**前置**:SE `POST /customer/api/sport/details?page={n}&size=60` fixture。
+
+**输入**:`events_from_sport_details(payload)` + `SharpExchInstrumentProvider._build_legs(event)`。
+
+**期望**:
+- `sport_details_request` 为 Tennis/Wimbledon 构造 `POST /customer/api/sport/details?page=0&size=60`,body `id="2"`。
+- `SharpExchDiscoveryClient` 默认不联网;只有显式注入 `sport_details_provider` / `json_fetcher` 时才拉取 payload。
+- `json_fetcher` 路径分页请求,直到短页、空页、下一页无新 `marketId`,或 100 页保护上限。
+- `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher`;该 fetcher 经 `login_url` 进入外层页,在 `portal.sharpxch.com/customer` iframe context 内执行 `sport/details`。
+- 只保留 `Match Odds` market,按目标 competition 过滤。
+- 2 runner 映射 `home/away`;3 runner 映射 `home/draw/away`。
+- Provider 产 `BettingInstrument`,venue 为 `SHARPEXCH`,info 含 Q9 六统一 key。
+- `min_notional = Money(7 * fx, USD)` 作为第一阶段默认值。
+
+**验收标准**:`tests/arbitrage/adapters/sharpexch/test_discovery_client.py`、`test_provider.py`、`test_factories.py` 通过;2026-07-01 zero-order probe 实测 `sport/details` 分页返回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
+
 ---
 
 ### discovery-7B.1(slice 7B,#53):PM `enrich_pm_six_key_info` 真写
@@ -157,7 +177,7 @@
 
 ### discovery-2.A.1(slice 8A,#47):Provider 共享机制(回写 ArbContext + Refresher 读)
 
-**前置**: `node.build()` 已运行,data factory 在 `create` 内回写 `ArbContext.{pm,oe}_instrument_provider = provider`
+**前置**: `node.build()` 已运行,data factory 在 `create` 内回写 `ArbContext.{pm,oe,se}_instrument_provider = provider`
 
 **输入**: launcher `add_actors(node, cfg, pair_registry=...)` 在 build 后调用
 
@@ -167,6 +187,7 @@
 - launcher 构造 `InstrumentRefresher(deps=RefresherDeps(provider=ctx.{pm,oe}_instrument_provider, loop=asyncio.get_event_loop()))`,**与 DataClient 用同一 provider 实例**(cache add 视图一致)
 
 **provider 缺失场景**: `ctx.pm_instrument_provider is None`(PM data factory 未跑 / discovery 禁用) → launcher 跳过该 venue 的 Refresher 装载,不 raise
+**SE 状态**: `SharpExchLiveDataClientFactory` 已离线回写 `ctx.se_instrument_provider`,并在 discovery config 存在时注入 browser 分页 `json_fetcher`;launcher 仅在 `venues.sharpexch.enabled=true` 时 opt-in 注册 SE factory,默认 PM/OE discovery runtime 不变。SE zero-order discovery 已由 `scripts/se_probe.py` 实测通过;SE node 内端到端 discovery 仍待 skip live smoke 验证。
 
 **测试**: `tests/arbitrage/launchers/test_arb_node.py` 6 新增(4 actors when both providers / skip PM when missing / skip both / Strategy gets portfolio from kernel / refresher uses ctx provider / bootstrap calls add_actors)
 
@@ -176,11 +197,11 @@
 
 **前置**: `OrbitExchInstrumentProvider(scraper, sport_aliases={...}, competition_aliases={...})` 构造
 
-**输入**: scraper 返一个 MatchEvent(`sport="soccer"`, `competition="Men's Roland Garros 2026"`)
+**输入**: scraper 返一个 MatchEvent(`sport="soccer"`, `competition="Men's Wimbledon 2026"`)
 
 **期望**:
 - `info["sport"]` = `sport_aliases.get("soccer", "soccer")` (alias 命中则规范名,否则原值透传)
-- `info["competition"]` = `competition_aliases.get("Men's Roland Garros 2026", ...)`
+- `info["competition"]` = `competition_aliases.get("Men's Wimbledon 2026", ...)`
 - 无 aliases 参 / 默认 `None` → 原值透传(向后兼容)
 
 **测试**: `test_orbitexch_provider.py` 4 新增(sport alias 命中 / competition alias 命中 / miss 透传 / 无参默认)

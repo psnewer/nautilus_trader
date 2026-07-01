@@ -69,3 +69,12 @@ and downstream tooling can verify the checksum.
 For details on the other helper scripts, run them with `-h` or read the
 inline comments; they are mostly invoked from CI and rarely need manual
 execution.
+
+`se_probe.py` is a manual SharpExch zero-order website probe. It performs real
+login/API/WS observation only when explicitly run, does not start the arbitrage
+node, and does not place or cancel orders.
+
+`se_request_capture.py` is a manual SharpExch request capture helper. It logs in
+with local env credentials, keeps a headed browser open, and records only
+user-triggered `placeBets` / `cancelBets` requests. The script does not place or
+cancel orders by itself.

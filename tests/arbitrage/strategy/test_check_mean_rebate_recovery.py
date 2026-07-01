@@ -139,6 +139,29 @@ def test_recovery_uses_oe_qty_for_gross_payout_gap():
     assert ctx.scratch["legs"][0]["qty"] == 2.5
 
 
+def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
+    books = {
+        "H.POLYMARKET": _fake_book(0.50),
+        "A.SHARPEXCH": _fake_book(2.0),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.SHARPEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
+    )
+
+    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, fx=1.0).passes(ctx)
+
+    assert ok is True
+    assert ctx.scratch["legs"][0]["instrument_id"] == "A.SHARPEXCH"
+    assert ctx.scratch["legs"][0]["venue"] == "SHARPEXCH"
+    assert ctx.scratch["legs"][0]["qty"] == 2.5
+
+
 def test_recovery_handles_typed_instrument_info_map():
     home = InstrumentId.from_str("H.POLYMARKET")
     away = InstrumentId.from_str("A.POLYMARKET")

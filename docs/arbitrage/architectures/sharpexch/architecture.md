@@ -1,0 +1,513 @@
+# SharpExch 接入详细设计
+
+> **状态**: 第一阶段 OE 型接入已落地:配置 schema/env/dispatcher、`sport/details` 解析与 browser fetcher、Provider 产 `BettingInstrument`、DataClient 订阅/WS 路由、ExecutionClient page/WS 生命周期与 place/cancel 边界、factory 与 launcher 显式 opt-in 接线、MatchingActor 多 external venue、Strategy OE 类 odds/size 接线、Risk liveness/probability/balance/portfolio 识别 SE。
+> 2026-07-01 已用独立 zero-order probe 验证真实 SE 登录、customer iframe、`sport/details`、competition prices/general WS;skip node smoke 已验证 PM↔SE matching、SE 订阅、routed price frame、OrderBookDeltas 发布、SE `BALANCE`/`CURRENT_BETS` execution 业务帧与 SHARPEXCH startup reconciliation;真单 place+cancel probe 已通过(BACK@100,size=12,venue_order_id=22157223,随后撤单且兜底活单 0)。`venues.sharpexch.enabled` 默认 `false`,显式置 `true` 才注册进 runtime。第一阶段目标是把 SharpExch(SE) 按 OE 型 venue 接入 NT;第二阶段才做 venue 插拔化。
+> 决策理由与历史只在 `docs/arbitrage/refactor.md` 留指针,本文是 SE 接入设计真理源。
+> DevTools 探站时间:2026-06-30。
+
+---
+
+## 1. 目标与边界
+
+第一阶段把 SharpExch 当作第三个真实 venue 接进现有套利节点:
+
+| 维度 | 第一阶段决定 |
+|---|---|
+| venue id | `SHARPEXCH` |
+| adapter 位置 | `nautilus_trader/adapters/sharpexch/` |
+| instrument 类型 | `BettingInstrument` |
+| InstrumentId | `{market_id}-{selection_id}.SHARPEXCH` |
+| 运行模型 | Playwright 浏览器 + portal API + SockJS WS,对齐 OE |
+| 账户币种 | SE 前端 / `BALANCE` / `CURRENT_BETS` 当前均为 USD;adapter runtime 不做 FX 换算 |
+| Strategy/Risk | 不新增 SE 特殊分支;继续只吃 NT 标准 order book / account / instrument 元数据 |
+
+第一阶段必须遵循三条硬原则:
+- **不改架构**:SE 作为新增 venue adapter 同级接入,不重组 PM/OE、Strategy、Risk、Execution、Matching 的组件边界。
+- **不改逻辑**:不改变现有 PM/OE 套利判断、风控门控、barrier 同步、FX 口径、profit/share limit 等业务逻辑;SE 只产出相同 NT 标准数据契约。
+- **不改流程**:在 SE data/exec/factory/launcher 未完整接线前,不得把 SE 半成品塞进现有 runtime 启动链路;现有 PM/OE 启动、发现、匹配、下单流程不因 SE 代码存在而改变。
+
+不在第一阶段做:
+- 不把 OE/SE 立即抽成通用插件框架。
+- 不改 Strategy/Risk 的套利语义。
+- 不接 Binance/crypto。
+- 不跑实盘下单验证,除非用户明确要求。
+
+第二阶段目标是 venue 可插拔化,但必须等 OE+SE 两套真实 adapter 跑通后再抽象,避免把“看起来类似”的页面细节过早固化成框架契约。
+
+---
+
+## 2. DevTools 实测结论
+
+### 2.1 站点与页面模型
+
+DevTools 实测:
+- `https://www.sharpexch.com` 跳转到 `https://sharpxch.com/player/`。
+- 外层 `sharpxch.com/player/...` 页面包含登录表单,并内嵌 `https://portal.sharpxch.com/customer...` iframe。
+- portal SPA 标题为 `B2B Exchange`,URL 模式与 OE 同源:
+  - sport 页:`https://portal.sharpxch.com/customer/sport/{sport_id}`
+  - competition 页:`https://portal.sharpxch.com/customer/sport/{sport_id}/competition/{competition_id}`
+  - market 页:`https://portal.sharpxch.com/customer/sport/{sport_id}/market/{market_id}`
+- Tennis sport id 实测为 `2`;页面左侧 competitions 含 `Men's Wimbledon 2026`。
+
+### 2.2 API 与 WS
+
+DevTools 实测到以下 endpoint:
+
+| 类型 | endpoint | 结论 |
+|---|---|---|
+| sports | `GET /customer/api/sports` | 与 OE 类似,用于 sport 菜单 |
+| competition list | `GET /customer/api/competition/sport/2?showGroups=true` | 返回 `topCompetitions` / `moreCompetitions`,含 competition id/name |
+| sport details | `POST /customer/api/sport/details?page={n}&size=60` | 返回 `sportInfo` + `marketCatalogueList.content[]`;每条 market 含 marketId、runners、eventType、competition、event、inPlay、commission |
+| general SockJS info | `GET /customer/ws/general/info?...` | 返回 `websocket:true` |
+| prices SockJS info | `GET /customer/ws/multiple-market-prices/info?...` | 返回 `websocket:true` |
+
+`sport/details` 请求体实测:
+
+```json
+{"viewBy":"POPULARITY","timeFilter":"ALL","id":"2","contextFilter":"EVENT_TYPE"}
+```
+
+`sport/details` 响应中的 `marketCatalogueList.content[]` 已足够构建 SE provider,无需第一阶段依赖 DOM 行扫描:
+- `marketId`:例如 `1.259502313`
+- `marketName`:例如 `Match Odds`
+- `marketStartTime`:毫秒时间戳
+- `runners[]`:含 `selectionId` / `runnerName` / `handicap`
+- `eventType.id/name`
+- `competition.id/name`
+- `event.id/name/homeTeam/awayTeam/openDate`
+- `inPlay`
+- `commission`
+
+### 2.3 与 OE 的相似点和差异
+
+| 方面 | OE | SE 实测 |
+|---|---|---|
+| portal 路径 | `/customer/...` | `/customer/...` |
+| sport/competition URL | `/customer/sport/{sport}/competition/{competition}` | 相同 |
+| prices WS | `/customer/ws/multiple-market-prices` | 相同命名 |
+| general WS | `/customer/ws/general` | 相同命名 |
+| competition 列表 | 页面 DOM + API 可见 | API 明确可用 |
+| sport details | OE 当前代码主要走 DOM discovery | SE 可优先 API discovery |
+| 外层站点 | `www.orbitexch.com` | `sharpxch.com/player` iframe 到 `portal.sharpxch.com` |
+
+第一阶段实现应按 OE adapter 复制结构,但 SE discovery 优先走 portal API,只把 DOM 抓取作为 fallback。这样减少懒加载/滚动/visibility 相关风险。
+
+---
+
+## 3. 第一阶段落地结构
+
+新增目录:
+
+```text
+nautilus_trader/adapters/sharpexch/
+  __init__.py
+  config.py
+  discovery_client.py
+  providers.py
+  browser_manager.py
+  data.py
+  execution.py
+  executor.py
+  factories.py
+  message_parser.py
+  web.py
+  websocket_handler.py
+```
+
+第一阶段允许从 OE 复制后改名,但复制时必须保留清晰的 SE 边界,不能把 `ORBITEXCH` 常量散落在 SE 子树。
+
+已落地文件(2026-06-30 第一片):
+- `config.py`: `SharpExchDataClientConfig` / `SharpExchExecClientConfig`
+- `discovery_client.py`: `sport_details_request` + `events_from_sport_details` + 可注入 `SharpExchDiscoveryClient`
+- `providers.py`: `SharpExchInstrumentProvider`
+- `message_parser.py`: `SharpExchMessageParser.parse_price_message` / `parse_general_frame`
+- `data.py`: `se_runner_to_book_deltas`
+- `execution.py`: `SharpExchLegacyOrder` / `nt_order_to_legacy_order`
+- `executor.py`: `SharpExchExecutor` page-bound place/cancel 薄封装
+- `web.py`: SE customer iframe / 登录 / browser fetch helper
+- `websocket_handler.py`: `SharpExchWebSocketHandler` SockJS 解包 + prices/general 分发
+- `browser_manager.py`: SE adapter 内独立导入入口,当前复用 OE `PlaywrightBrowserManager`
+- `factories.py`: `SharpExchLiveDataClientFactory` / `ArbSharpExchLiveExecClientFactory` 离线构造
+- `__init__.py`: adapter 包导出
+
+### 3.1 config
+
+```python
+class SharpExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True):
+    username: str
+    password: str
+    base_url: str = "https://portal.sharpxch.com"
+    login_url: str = "https://sharpxch.com/player/"
+    headless: bool = True
+    browser_type: str = "chromium"
+    user_data_dir: str | None = None
+    page_timeout: int = 120000
+    update_instruments_interval_mins: int | None = 60
+    staleness_timeout_secs: float = 300.0
+```
+
+`ArbConfig` 第一阶段增加:
+- `discovery.sharpexch: VenueDiscoveryConfig`
+- `venues.sharpexch: SharpExchSectionConfig`
+- `venues.sharpexch.enabled: bool = False` 作为 runtime opt-in 开关
+- env 注入: `SHARPEXCH_USERNAME` / `SHARPEXCH_PASSWORD`
+
+SharpExch 的 `base_url` 指 portal 域,`login_url` 指外层登录页。这样后续如果某些 API 必须从 iframe session 继承 cookie,执行端仍能统一由登录页进入。
+
+已落地:
+- `ArbConfig.discovery.sharpexch`
+- `ArbConfig.venues.sharpexch`
+- `SHARPEXCH_USERNAME` / `SHARPEXCH_PASSWORD` env 注入
+- `to_sharpexch_data_client_config` / `to_sharpexch_exec_client_config` / `to_se_discovery_config`
+- launcher 按 `venues.*.enabled` 注册 runtime venue;PM 仍是 anchor,external venues(OE/SE)
+  可单独或同时开启。`venues.sharpexch.enabled=true` 且 `venues.orbitexch.enabled=false`
+  时可跑 PM+SE smoke,不会启动 OE。
+
+### 3.2 discovery/provider
+
+第一阶段不沿用 OE 的 DOM `role=row` 抓取作为主路径,而是新增 API discovery:
+
+```python
+class SharpExchDiscoveryClient:
+    async def discover_events(self, sport_configs: list[SportConfig]) -> list[SharpExchMarketEvent]:
+        # 1. sport_details_request(base_url, sport_config, page=n) 构造分页 sport/details 请求
+        # 2. 由 factory/DataClient 后续显式注入 json_fetcher 执行请求
+        # 3. 过滤 config 目标 competitions + marketName == "Match Odds"
+```
+
+当前已落地的是请求描述、parser 与 factory 注入的 Playwright fetcher:
+- `sport_details_request("https://portal.sharpxch.com", SportConfig("Tennis", ["Men's Wimbledon 2026"]))`
+  默认生成 `POST /customer/api/sport/details?page=0&size=60`,body 为
+  `{"viewBy":"POPULARITY","timeFilter":"ALL","id":"2","contextFilter":"EVENT_TYPE"}`。
+- `SharpExchDiscoveryClient` 只有传入 `sport_details_provider` 或 `json_fetcher` 时才会产生事件;无注入时返回空列表。`json_fetcher` 路径会分页请求,直到空页、短页、下一页没有新 `marketId`,或 100 页保护上限。
+- `SharpExchLiveDataClientFactory` 在 `ctx.se_discovery_config` 存在时注入 browser `json_fetcher`:启动共享 browser、打开/复用 `se-discovery` page、经 `login_url` 登录、定位 `portal.sharpxch.com/customer` iframe,并在 iframe context 内执行 `sport/details` fetch。Data factory 会把 `ctx.se_discovery_config.sports` 同时注入 Provider 的 `sport_configs`,Provider `load_all_async()` 调用 `discover_events(sport_configs)`,避免 runtime 退回默认 sport。
+- Data discovery fetch 与 Exec login 共用 `ctx.se_browser_manager` 和 `ctx.se_browser_lock`。NT 启动期会并发连接 data/exec clients,SE/Cloudflare 对同一 browser context 内的登录与 customer API fetch 敏感,因此 factory 只把登录/fetch 这类 session 相关操作串行化;order book/WS 后续仍按各 client 自己的事件路径运行。
+- 独立 probe 实测该路径可分页取回约 240 个 Tennis events(随 SE 当前赛事集变化);
+  其中 `Men's Wimbledon 2026` 为 64 个、`Women's Wimbledon 2026` 为 64 个。
+
+runner → role 规则:
+- 2 runner tennis:按 `event.homeTeam` / `event.awayTeam` 与 runnerName 匹配,匹配不到时按顺序 `[home, away]` fallback。
+- 3 runner soccer:按 `[home, draw, away]`,draw 名称可为 `Draw` / `X`。
+- 若 runner 无法映射 role,该 runner 不产 instrument,并记录低噪声 warning。
+
+`info` 必须填 Q9 统一字段:`sport`、`competition`、`home_team`、`away_team`、`start_ts`、`selection_role`。
+
+最小下单元数据:
+- SE 最小 stake 已在 2026-07-01 真单 preflight 中确认为 12 USD,Provider 写入
+  `min_notional = Money(12, USD)`。
+
+### 3.3 data client
+
+`SharpExchDataClient` 复用 OE 的 competition 页模型:
+- `_connect`:启动共享 browser,首轮 provider load,把 instruments 送入 DataEngine,启动周期发现。
+- `_subscribe_order_book_deltas`:注册 `market_id + selection_id -> InstrumentId`,并 eager 打开 competition 页。
+- competition 页 URL:`{base_url}/customer/sport/{sport_id}/competition/{competition_id}`。
+- WS handler 捕获 `multiple-market-prices`。
+- price frame parser 先按 OE parser 兼容实现,因为 endpoint 和 BIAB payload 命名高度相似;首轮必须用真实 SE price frame 单测锁 schema。
+- live 验收锚点对齐 OE:首个已路由行情帧打印 `SE price frame routed`,首次实际发布 deltas 打印 `SE OrderBookDeltas published`;两者均只打印一次,用于区分“WS 已连但未路由”和“已进入 NT order book”。
+
+输出仍是 NT 标准 `OrderBookDeltas`:BACK → BUY,LAY → SELL,每帧按 snapshot 处理。
+
+当前已落地的是 DataClient runtime 接线与纯映射层:
+- `SharpExchDataClient` 已接入 launcher 显式 opt-in runtime:维护
+  `market_id -> selection_id -> InstrumentId`、`market_id -> page_key`、
+  `page_key -> (sport_id,competition_id)` 与 competition page registry;`_connect`
+  启动注入的共享 browser manager、首轮 `load_all_async()`、把 provider instruments 灌入 DataEngine,
+  并按配置启动 `_update_instruments`;`_disconnect` 取消周期发现 task、停止已开 competition
+  handlers、清空 page registry,但不关闭共享 browser;`_update_instruments` 单轮失败只 log,
+  下一轮继续;`_subscribe_order_book_deltas`
+  复用 subscription helper 注册状态并调用注入式 open/reload;`_unsubscribe_order_book_deltas`
+  复用移除 helper;`_on_price_frame` 复用 `se_handle_price_frame(...)` 发布 deltas 并写 `in_play`;
+  `_on_comp_disconnect` 对 `close:prices` / `liveness_timeout` 建 reload task,`_reload_comp_on_disconnect`
+  调用同一 open/reload 方法并在失败时只 log + 清 reload-in-flight;订阅开页失败时排
+  `_delayed_reopen`,醒来后复用 `se_reopen_missing_page(...)`,失败时再排下一轮。
+  竞争条件通过 `_comp_pages_lock` 收口:`_subscribe_order_book_deltas`、`_delayed_reopen`、
+  `_reload_comp_on_disconnect` 进入 open/reload 前持锁,同一 competition 的 home/away 并发订阅只允许一条路径真正开页,第二条复用已登记的 page。
+  当前已可由 factory 构造并经 launcher 显式 opt-in 进入 runtime。
+- `se_routing_entry_from_instrument` / `se_update_market_routing` /
+  `se_remove_market_routing` 已落地:从 SE `BettingInstrument` 属性读取 `market_id` /
+  `selection_id`,统一转字符串后维护 `market_id -> selection_id -> InstrumentId` routing;
+  缺字段时返回 false/None,由后续 DataClient 记录 warning 并跳过。
+- `se_subscription_plan_from_instrument(...)` / `se_update_subscription_state(...)` 已落地:
+  从一个 SE instrument 同时派生 routing key 与 page ref,并一次性维护
+  `market_id -> selection_id -> InstrumentId`、`market_id -> page_key`、
+  `page_key -> (sport_id, competition_id)` 三张后续 DataClient 状态表;
+  缺任一必要字段时不写状态。
+- `se_remove_subscription_state(...)` 已落地:解订时移除目标 instrument 的 selection routing;
+  若 market 已无 selection,同步删除 `market_to_page_key`;若该 page_key 已无任何 market 引用,
+  再删除 `comp_page_refs`。这避免开页失败重试在解订后误判 page 仍被订阅。
+- `se_competition_page_ref_from_instrument` / `se_competition_page_url` 已落地:
+  从 `BettingInstrument.event_type_id` / `competition_id` 生成 `(page_key,sport_id,competition_id)`,
+  page key 为 `{sport_id}_{competition_id}`,URL 为
+  `{base_url}/customer/sport/{sport_id}/competition/{competition_id}`。
+- `se_should_reopen_missing_page(...)` 已落地:用于开页失败后的延迟重试醒来时判定是否继续,
+  条件是未关停、目标 page 仍未打开、且 `market_to_page_key` 仍有订阅 market 指向该 page_key。
+  它只返回 bool,不 sleep、不创建 task。
+- `se_reopen_missing_page(...)` 已落地为组合 helper:调用方显式传入 page_key、
+  `market_to_page_key`、`comp_page_refs`、`comp_pages` 与 open-page coroutine;helper 先复用
+  `se_should_reopen_missing_page(...)`,再从 `comp_page_refs` 找 sport/competition 并调用 open-page。
+  它不 sleep、不创建 task,open-page 异常向上抛。
+- `se_ensure_competition_page(...)` 已落地为可注入 helper:调用方传入订阅 plan、
+  当前 `comp_pages` 与 open-page coroutine;若页已存在则返回 `already_open`,若缺页则调用
+  open-page,坏 plan 直接 no-op,open-page 异常向上抛。它不创建 task、不持 lock、不接 NT 类。
+- `se_websocket_summary(handler)` 已落地:读取 handler `get_active_websockets()` 与
+  `get_frame_counts()` 并生成 `ws_count=N, ws_types={...}, frame_counts={...}` 摘要,
+  后续用于 competition 页 open/reload 日志锚点。
+- `SharpExchWebSocketHandler.get_frame_counts()` 已落地:只读暴露每类 WS 入向帧计数,
+  供 competition 页生命周期等待与 probe 摘要使用;它不改变 frame 分发语义。
+- `se_wait_for_websocket_frames(...)` 已落地:competition 页 `domcontentloaded` 之后最多短等
+  prices 首帧;新开页要求 `prices>=1`,reload 以刷新前 frame count 为 baseline,要求刷新后
+  至少再来一帧。等不到只由调用方低频 warning,不阻断订阅/重试流程。
+- `se_open_or_reload_competition_page(...)` 已落地为可注入 helper:调用方传入
+  `browser_manager`、`comp_pages`、`comp_handlers`、price/disconnect callbacks 后,
+  helper 负责新开时 `create_page -> handler.start -> bring_to_front -> goto(domcontentloaded) -> prices 首帧短等 -> registry 写入`,
+  reload 时复用已有 page 并 `bring_to_front -> reload(domcontentloaded) -> prices 新帧短等`;
+  新开失败时 stop handler 并 close page。
+  它不创建 runtime task、不注册 NT client,真实 DataClient 调用仍待后续切片。
+- `se_should_reload_on_disconnect(...)` 已落地:只对 `liveness_timeout` / `close:prices`
+  触发 reload 判定,并处理 disconnecting、reload-in-flight、页不存在、冷却窗防护;
+  允许 reload 时写入 `comp_last_reload_ns`。它只返回 bool,不创建 task。
+- `se_reload_competition_on_disconnect(...)` 已落地为组合 helper:调用方显式传入
+  `comp_page_refs`、browser/page/handler registry、reload-in-flight set、冷却时间与 callbacks;
+  helper 先做 reload 判定,再用 `comp_reloading` 包住 `se_open_or_reload_competition_page(...)`。
+  它不创建后台 task、不吞异常,失败时只保证清掉 reload-in-flight 标记。
+- `SharpExchMessageParser.parse_price_message(message)` 解析 BIAB/OE 型 price frame,支持
+  `bdatb`/`bdatl` dict 档和 `batb`/`batl` list 档,输出 `{market_id, runners[]}` 结构。
+- `se_runner_to_book_deltas(instrument_id, runner, ts)` 把单 runner 快照转为 NT
+  `OrderBookDeltas`:先 `CLEAR`,再 BACK 档 `ADD(BUY)`,LAY 档 `ADD(SELL)`。
+- `se_price_message_to_book_deltas(message, routing, ts)` 已落地:把 handler 收到的 price WS
+  message 经 `SharpExchMessageParser` 解析后,按 DataClient 后续维护的
+  `selection_id -> InstrumentId` routing 表生成要 publish 的 `OrderBookDeltas` 列表;
+  未订阅 runner、空档 runner、非法消息均跳过。
+- `se_market_price_message_to_book_deltas(message, market_routing, ts)` 已落地:
+  输入后续 DataClient 实际维护的 `market_id -> selection_id -> InstrumentId` routing,
+  先按 price frame 的 `market_id` 找 selection routing,再生成 `{market_id,in_play,runners,
+  subscribed_selections,deltas}`。未路由 market / 非法消息返回 `None`;已路由但空档时保留
+  frame 元信息并返回空 `deltas`。
+- `se_publish_routed_book_deltas(routed_payload, publish, write_in_play=None)` 已落地:
+  输入上一条 helper 的 routed payload,逐个 `OrderBookDeltas` 调用注入的 publish 函数,
+  并可选按 instrument 写入 `in_play`;返回实际发布数量。空 payload / 空 deltas no-op。
+- `se_handle_price_frame(message, market_routing, ts, publish, write_in_play=None)` 已落地:
+  组合 market-level routing 与 publish 两步,返回 routed payload 并追加 `published_count`。
+  未路由 frame 返回 `None`;已路由但空档时返回 frame 元信息且 `published_count=0`。
+- `SharpExchWebSocketHandler` 已落地:监听 Playwright `page.on("websocket")`,按 URL 分型
+  `multiple-market-prices`→`prices`、`general`→`orders`,解包 SockJS `a[...]` 业务帧并调用
+  price/order callback;`[` 开头的上行 subscribe 帧与 `o`/`h` 心跳不进业务 callback。
+  当前 handler 只做离线可测分发与 close callback,尚未搬 OE 的 NT clock liveness 机制。
+- `SharpExchDataClient` 当前只落离线骨架;真实 browser live smoke 与 launcher 注册仍是后续切片。
+
+存活:
+- 复用 handler 内部 liveness 模型:prices WS 入向帧/心跳刷新 `_last_frame_ns`,timeout 或 close 触发 competition reload。
+- 日志前缀必须是 `SE` 或 `SharpExch`,不能继续打印 `OE WS ...`。
+
+### 3.4 execution client
+
+`SharpExchExecutionClient` 第一阶段复制 OE 的执行模型:
+- 登录页从 `login_url` 进入,成功后真实 customer app 在 `portal.sharpxch.com/customer` iframe 内。
+- general WS 捕获 `BALANCE` / `CURRENT_BETS` 类帧。
+- `BALANCE` 入站按 USD 原值写 `AccountState(account_id="SHARPEXCH-001", base_currency=USD)`。
+- `CURRENT_BETS` 入站金额/size 字段按 USD 原值保留。
+- 下单 payload 直接使用 NT order quantity 的 USD stake,不除以 fx。
+- `nt_order_to_legacy_order` 产物应使用 `Venue.SHARPEXCH` 或新增通用 order model 支持,不能复用 `Venue.ORBITEXCH`。
+
+当前已落地的是 ExecutionClient runtime 接线、page/WS 生命周期、general 帧解析与 place/cancel 边界:
+- `SharpExchExecutionClient` 已接入 launcher 显式 opt-in runtime:继承
+  `ArbExecutionSessionMixin + LiveExecutionClient`,账号为 `SHARPEXCH-001`,base currency 为
+  `USD`;`_connect` 启动共享 browser manager、创建 `"execution"` page、先挂
+  `SharpExchWebSocketHandler` 再执行 `se_login(...)`;该 helper 不使用 `networkidle`,而是先检查
+  外层登录表单,有表单时必须提交凭据,只有确认没有登录表单时才把 `/customer` iframe
+  视为可复用登录态,兼容 `sharpxch.com/player/` 外层页长期不跳转且未授权时也可能预加载
+  customer iframe 的真实行为;customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
+  弹窗,再继续 API/WS 初始化。
+  连接完成后先生成 0 USD 初始 `AccountState` 以注册账户;
+  `_disconnect` 停止 WS handler 并清本地 page,不关闭共享 browser。
+- `_on_general_frame` 已接 parser:`BALANCE` 按 USD 原值生成
+  `AccountState`,首个有效 BALANCE 帧打印一次 `SE balance frame routed`;`CURRENT_BETS`
+  调 `_on_current_bets`。
+- `_on_current_bets` 已维护 USD 口径 `_current_bets` 快照、刷新 `_last_current_bets_ns`,
+  首帧打印一次 `SE CURRENT_BETS routed: bets=N`,可写 `VenueExecutionLiveness` 的
+  order/position alive,并按原始 `sizeMatched` 累积值生成增量 `generate_order_filled`。
+- `SharpExchWebSocketHandler.on_frame(...)` 已落地:任意非空 WS 帧(含 SockJS 心跳)都会刷新
+  ExecutionClient 的 `_last_frame_ns`。SE reconcile 与 OE 一样只信“有 CURRENT_BETS 快照且 general
+  WS 新鲜”的状态;否则 `_ensure_exec_snapshot_fresh()` 触发 single-flight `_reload_exec_page()`,
+  reload execution page 后等待 `CURRENT_BETS` 重推。超时未重推则 report 返回空/None 并把
+  SE order/position liveness 标记 dead。
+- `_submit_order` 已接 session gate 与 executor result → `generate_order_accepted/rejected`;
+  `_place_via_executor` 从 cache instrument 翻译 `SharpExchLegacyOrder`,再走
+  `SharpExchExecutor.place_order`;`_cancel_order` / `_cancel_one` 走 `SharpExchExecutor.cancel_order`;
+  `_modify_order` 固定 reject。
+- `generate_order_status_reports` / `generate_order_status_report` 已基于 `_current_bets`
+  快照生成 `OrderStatusReport`;无法通过上述 reload-then-report 获得可信快照时标记
+  SE order liveness dead 并返回空/None。
+- `generate_position_status_reports` 已基于 `current_bets_to_positions(...)` 生成
+  `PositionStatusReport`;无法获得可信快照时标记 SE position liveness dead 并返回空。
+  真实 zero-order probe 已验证登录/API/WS 与 `BALANCE` / `CURRENT_BETS` 业务帧。
+- `SharpExchMessageParser.parse_general_frame({"BALANCE": ...})` 输出
+  `{"type": "balance", "balance": float|None, "av_balance": float|None}`。
+- `SharpExchMessageParser.parse_general_frame({"CURRENT_BETS": ...})` 输出
+  `{"type": "current_bets", "bets": list[dict]}`。
+- 支持 payload 为 dict/list 或嵌套 JSON 字符串;不做 FX/账户币种换算,换算归后续 SE ExecutionClient 入站边界。
+- `se_balance_to_account_balances(balance)` 已落地:在 SE 入站金额已归一成 USD 口径后,
+  生成 `AccountBalance(total=free=balance USD, locked=0 USD)`,对齐 OE `BALANCE` 语义。
+- `normalize_current_bets_to_usd(bets, fx)` 保留为纯函数;SE runtime 调用时使用 `fx=1.0`,
+  因真实 `CURRENT_BETS.currency=USD`。
+- `current_bets_to_fills(bets, prev_matched)` 已落地:把非增量 `CURRENT_BETS` 快照转新增成交 delta,join key 为 `offerId`,只在 `sizeMatched` 累积值增加且 `averagePrice > 0` 时产出。
+- `bet_order_progress(bet)` 已落地:从单条 bet 派生 `accepted` / `partially_filled` / `filled` / `unknown`,并透出 `market_id` / `selection_id` / `side` / `original_qty` / `filled_qty` / `avg_px` / `price`。
+- `current_bets_to_positions(bets)` 已落地:按 `(marketId, selectionId)` 聚合 matched 注单,BACK=LONG、LAY=SHORT,反向 matched 只抵减净额、不进入主方向均价;净额为 0 或 matched 为 0 时跳过。
+- reload-then-report 与 launcher opt-in 已接线。真实登录 selector/post-login 行为已由
+  zero-order probe 校准,SE execution `BALANCE` / `CURRENT_BETS` empty 快照与 startup reconciliation
+  已由 SE skip node smoke 验证。
+- SE 是 iframe app,登录后主页面 URL 可能仍停在 `sharpxch.com/player/`。因此 `se_login`
+  以 customer iframe 出现作为优先完成信号,再 fallback 主 URL;post-login popup dismiss 支持
+  短超时调用,避免手动关闭弹窗后代码在两个 context 上各等完整超时。
+- `se_fetch_json` 在 customer iframe context 内执行 browser fetch,并带 AbortController 超时;
+  `sport/details` 被 Cloudflare/网络层挂起时返回 `status=0 + fetch_error:*`,由调用方 fail-fast,
+  不允许 discovery/probe 静默卡住而误以为已经进入下单阶段。
+
+当前也已落地 NT order → SE legacy order 纯映射:
+- `nt_order_to_legacy_order(nt_order, inst)` 从 `BettingInstrument` 读取 `market_id` / `selection_id` / `selection_handicap`。
+- NT `BUY` → SE `BACK`,NT `SELL` → SE `LAY`;`null_handicap` / NaN / None → `0.0`。
+- 缺 `market_id` 或 `selection_id` 时返回 `None`。
+- 为遵守“不改架构/逻辑/流程”,当前**不改共享** `src.arbitrage.common.order_models.Venue` enum,而是在 SE 子树内定义本地 `SharpExchLegacyOrder(venue="sharpexch")`。等 SE ExecutionClient 真接线时再决定是否推广到共享 order model。
+- 不做出站 FX 换算;SE place payload 直接使用 USD stake。
+- `se_order_to_place_bets_payload(order, fx)` 已落地:把 SE legacy order 转
+  `/customer/api/placeBets` payload,直接使用 USD stake `order.size`;同时生成 `betUuid`、
+  夹紧赔率到 `[1.01,1000]`。
+  2026-07-01 手动 DevTools capture 校准:SE 前端真实 payload 使用
+  `page="competition"`、`persistenceType="LAPSE"`、`showLayOddsEnabled=false`,
+  `betUuid` 为 `{market}_{selection}_{handicap}__{timestamp}-{5位随机后缀}`;
+  普通单不发送 `fillOrKill=false`,只在 FOK 时发送 `fillOrKill=true`。
+  该函数不触发 Playwright/网络,真实 `SharpExchExecutor.place_order` 由
+  `scripts/se_place_cancel_probe.py` 做最小 place+cancel live 验证入口。2026-07-01 已通过:
+  BACK@100,size=12 → `venue_order_id=22157223` → `CURRENT_BETS` working → cancel 后消失,
+  兜底活单数 0。
+- `parse_place_bets_response(response, market_id, bet_uuid)` 已落地:解析 OE/SE 同源响应格式,
+  成功时从 `offerIds[bet_uuid]` 取 `venue_order_id`,缺精确 key 时 fallback 第一个 offer id,
+  再缺则 fallback `bet_uuid`;全局/市场级错误返回失败 message。该函数不修改 NT 订单对象,
+  后续 `SharpExchExecutionClient` 只消费结果并生成 NT event。
+- `se_order_to_cancel_bets_payload(market_id, venue_order_id)` 已落地:生成
+  `/customer/api/cancelBets` request body。2026-07-01 手动 DevTools capture 校准:SE
+  前端撤单发送的是完整 open bet 对象;因此 ExecutionClient 若能从 CURRENT_BETS 找到该
+  offer,会把完整 bet 透传给 executor,否则 fallback 到 `{offerId,betType}` 最小结构。
+  缺 market 或 offer id 返回 `None`,留给后续 ExecutionClient 生成 cancel rejected。
+- `parse_cancel_bets_response(response)` 已落地:解析 cancelBets 返回;无 error 的 dict 视为成功,
+  空响应/非法响应/`error` 视为失败。真实 cookies/CSRF/page.evaluate 仍待 executor 切片。
+- `SharpExchExecutor` 已落地为 page-bound 薄封装:不创建浏览器、不登录、不持账户状态,
+  只在调用方传入 page 后取 `se_customer_context(page)` 并在 customer iframe context 内调用
+  `/customer/api/placeBets` / `/customer/api/cancelBets`,复用上述 payload/response 纯函数。
+  `SharpExchExecutionClient._connect` 已负责 page 注入;`_place_via_executor` 已从 NT order
+  翻译 `SharpExchLegacyOrder` 后传入 executor/page;`_cancel_one` 已用 instrument/current-bets
+  解析 `market_id` 后调用 executor cancel。真实 SE 真单 place/cancel 通过
+  `scripts/se_place_cancel_probe.py --confirm` 显式授权执行,默认 dry-run。
+
+执行 liveness:
+- SE ExecutionClient 写同一个 `VenueExecutionLiveness`。
+- Risk 通过 expected legs 推导 required venues 后,PM/OE/SE 都按同一逻辑检查。
+
+### 3.5 factory / launcher / runtime 接线
+
+当前已落地 factory 离线构造与 launcher 显式 opt-in 注册:
+- `ArbContext`:已增加 `se_session_timeout_secs` / `se_discovery_config` /
+  `se_sport_aliases` / `se_competition_aliases` / `se_instrument_provider` /
+  `se_browser_manager`。
+- `to_arb_context_init_kwargs`:始终注入 `se_session_timeout_secs`;仅当
+  `venues.sharpexch.enabled=true` 时注入 `se_discovery_config`,否则为 `None`。
+- `SharpExchLiveDataClientFactory`:复用/回写 `ctx.se_browser_manager`;若
+  `ctx.se_discovery_config` 存在,构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` +
+  `SharpExchInstrumentProvider`,并按 `ctx.arbitrage_params.fx` 注入 Provider;否则使用
+  `InstrumentProvider()` 占位。browser fetcher 会登录 `login_url`,在 customer iframe context
+  内调用 `sport/details`。创建后回写 `ctx.se_instrument_provider`。
+- `ArbSharpExchLiveExecClientFactory`:要求 `ctx.venue_liveness` 已准备,复用同一
+  `ctx.se_browser_manager`,注入 `ctx.se_session_timeout_secs`、`ctx.pair_registry`、
+  `ctx.pair_inflight` 与 `ctx.arbitrage_params.fx`。
+- `build_trading_node_config` / `register_factories` / `prepare_runtime_state` 均按
+  `venues.*.enabled` 注册 data/exec config、factories 与 `VenueExecutionLiveness` 初始
+  venue 集合。launcher 校验至少两个 runtime venue 开启;当前 MatchingActor 仍默认 PM anchor,
+  非 PM anchor 匹配语义留待后续 venue 插拔第二阶段泛化。
+- SE skip node smoke 已验证 discovery instruments、routed prices、general first frame、
+  balance/current bets 与 SHARPEXCH startup reconciliation;未下真单。
+
+独立 probe(已落地,不接套利链路):
+- `scripts/se_probe.py` 是 SE 网站事实探针,只做真登录、`sport/details` fetch、competition 页打开、
+  prices/general WS 监听与脱敏样本输出。
+- 该脚本不启动 TradingNode,不注册 Matching/Strategy/Risk,不调用 placeBets/cancelBets。
+- 默认只打印摘要;只有显式传 `--write-dir` 才写 `se_probe_redacted.json`,用于后续补 parser fixture。
+- 2026-07-01 已实跑通过:login ok,关闭登录后弹窗,`sport/details` 分页返回 242 个
+  Tennis events,其中 `Men's Wimbledon 2026` 为 64 个;price frame 可解析。general 帧是否含
+  balance/current_bets 取决于当次页面/账户状态,不能作为 zero-order probe 硬性成功条件。
+- 运行该 probe 仍会打开真实登录浏览器,需要用户明确要求;真单 probe 另行授权。
+
+已完成的 downstream 接线:
+- `MatchingActor` 已从硬编码 PM/OE 改为 PM 锚点 + `external_venues`;dispatcher 从
+  `venues.orbitexch.enabled` / `venues.sharpexch.enabled` 推导 external venues,PM↔SE 可独立产
+  `MatchedPair`,且 PM↔OE 与 PM↔SE 同场 pair_id 不互相覆盖。
+- `Strategy` 已完成第一阶段 SE 接线:`mean_rebate` / `one_side_rebate` /
+  `mean_rebate_recovery` / `place_bets` / `share_limit` 均把 `SHARPEXCH` 作为 OE 类
+  decimal odds venue 处理。该接线不引入第二阶段可插拔 odds-model 抽象。
+- `Risk` 已完成第一阶段 SE 接线:`expected_legs` 中 `se:*` / `sharpexch:*`
+  会推导 required venue `SHARPEXCH`;SE `BettingInstrument` 走 decimal odds 概率门控;
+  SE 余额按 adapter 入站后的 USD free 检查;`ArbitragePortfolio` 保留 SE venue
+  identity,不会把 SE 持仓归到 OE。
+
+---
+
+## 4. 插拔化观察点
+
+第一阶段写代码时必须记录以下差异,但不要先抽象:
+
+| 观察点 | OE | SE | 第二阶段可能抽象 |
+|---|---|---|---|
+| portal base URL | `www.orbitexch.com` | `portal.sharpxch.com` | `BrowserExchangeEndpoints` |
+| login URL | OE 首页/客户页 | `sharpxch.com/player/` 外层页 | `login_entry_url` |
+| discovery 主路径 | DOM scraper | API `sport/details` 优先 | `ExchangeDiscoveryBackend` |
+| price WS endpoint | `multiple-market-prices` | 同名 | 可共用 handler skeleton |
+| general WS endpoint | `general` | 同名 | 可共用 SockJS envelope parser |
+| price frame schema | OE parser 已知 | zero-order probe 已验证 BIAB/OE 型 frame 可解析 | `PriceFrameParser` protocol |
+| current bets schema | OE 已有实盘字段 | 待登录后抓帧 | `CurrentBetsParser` protocol |
+| stake currency | OE 已按 USD 边界转换 | SE general/price payload 当前显示 USD,仍按 adapter 边界 fx 归一 | `money_normalizer` |
+| min stake | OE 7 GBP | 12 venue stake | per-venue `min_stake` config |
+| page visibility | OE 需要 visibility spoof | SE 待观察,先复用 | shared browser init script |
+
+第二阶段抽象候选:
+
+```python
+class BrowserExchangeSpec(Protocol):
+    venue: str
+    base_url: str
+    login_url: str
+    prices_ws_path: str
+    general_ws_path: str
+    account_currency: str
+    min_stake: Decimal
+```
+
+但只有当 OE/SE 两边都跑通 discovery、prices WS、general WS、submit/cancel 后才抽。
+
+---
+
+## 5. 验收计划
+
+第一阶段按离线到 live 递进:
+
+1. 配置加载:JSON + env 注入 SharpExch 凭证,不把凭证写入 JSON。
+2. Provider 单测:API fixture → `BettingInstrument` legs,InstrumentId 可逆,Q9 info 完整。
+3. Data 映射单测:SE price frame fixture → `OrderBookDeltas`。
+4. Factory 接线单测:TradingNode config 包含 SE data/exec client,factory 使用 `ArbContext.se_*`。
+5. Matching 单测:PM + SE 同赛事可产 `MatchedPair`,PairRegistry 注册三方 instrument。
+6. Strategy 单测:SE 作为 OE 类 decimal odds venue 参与机会筛选、candidate、recovery、size 与 share limit。
+7. Risk 单测:metadata required venues 含 SE 时,venue liveness fail-closed/pass-open。
+8. 独立 zero-order probe:SE 真登录、真 `sport/details`、真 prices/general WS、脱敏样本,但不启动套利 node、不下真单。
+9. Skip live smoke:SE 真登录、真 discovery、真 prices WS、真 balance/current bets,但不下真单。
+10. 真单 live probe:仅用户明确授权后,先做 12 stake 小额不成交 place+cancel,再做成交路径。
+
+---
+
+## 6. 未决问题
+
+| 问题 | 处理 |
+|---|---|
+| SE 账户真实币种 | 登录后从 `api/account/info` / `BALANCE` 帧确认;页面未登录首屏显示 EUR,不能直接当事实 |
+| SE 最小 stake | 已由 2026-07-01 下单 preflight 确认为 12 |
+| SE price WS 真实业务帧 | 需要打开具体 competition/market 后抓 `multiple-market-prices` frame |
+| SE current bets schema | 需要登录后抓 `CURRENT_BETS` populated frame |
+| 是否能完全 API discovery | 当前 sport details API 已足够 tennis/soccer match odds;其它运动后续再验证 |

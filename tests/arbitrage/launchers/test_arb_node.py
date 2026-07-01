@@ -16,6 +16,7 @@ from launchers import arb_node
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
 
 
@@ -37,8 +38,10 @@ def test_build_trading_node_config_has_pm_oe_data_exec_clients():
     nc = arb_node.build_trading_node_config(cfg)
     assert "POLYMARKET" in nc.data_clients
     assert "ORBITEXCH" in nc.data_clients
+    assert "SHARPEXCH" not in nc.data_clients
     assert "POLYMARKET" in nc.exec_clients
     assert "ORBITEXCH" in nc.exec_clients
+    assert "SHARPEXCH" not in nc.exec_clients
     assert str(nc.trader_id) == "ARBITRAGE-001"
     assert nc.exec_engine.reconciliation is True
     assert nc.exec_engine.open_check_interval_secs == 300.0  # #111:连续 order 对账恢复 order liveness
@@ -54,6 +57,46 @@ def test_build_trading_node_config_includes_credentials_from_cfg():
     assert nc.data_clients["POLYMARKET"].private_key == "0xpk"
 
 
+def test_build_trading_node_config_includes_sharpexch_only_when_enabled():
+    cfg = _cfg(venues={"sharpexch": {"enabled": True, "username": "se", "password": "pw"}})
+    nc = arb_node.build_trading_node_config(cfg)
+
+    assert "SHARPEXCH" in nc.data_clients
+    assert "SHARPEXCH" in nc.exec_clients
+    assert nc.data_clients["SHARPEXCH"].username == "se"
+    assert nc.exec_clients["SHARPEXCH"].password == "pw"
+
+
+def test_build_trading_node_config_can_disable_orbitexch_with_sharpexch_enabled():
+    cfg = _cfg(venues={"orbitexch": {"enabled": False}, "sharpexch": {"enabled": True}})
+    nc = arb_node.build_trading_node_config(cfg)
+
+    assert set(nc.data_clients) == {"POLYMARKET", "PMSPORTS", "SHARPEXCH"}
+    assert set(nc.exec_clients) == {"POLYMARKET", "SHARPEXCH"}
+
+
+def test_build_trading_node_config_can_disable_polymarket_with_two_other_venues():
+    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
+    nc = arb_node.build_trading_node_config(cfg)
+
+    assert set(nc.data_clients) == {"ORBITEXCH", "SHARPEXCH"}
+    assert set(nc.exec_clients) == {"ORBITEXCH", "SHARPEXCH"}
+
+
+def test_build_trading_node_config_requires_at_least_two_enabled_venues():
+    cfg = _cfg(venues={"polymarket": {"enabled": True}, "orbitexch": {"enabled": False}, "sharpexch": {"enabled": False}})
+
+    with pytest.raises(ConfigError, match="At least two venues"):
+        arb_node.build_trading_node_config(cfg)
+
+
+def test_build_trading_node_config_rejects_no_enabled_venues():
+    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": False}, "sharpexch": {"enabled": False}})
+
+    with pytest.raises(ConfigError, match="At least two venues"):
+        arb_node.build_trading_node_config(cfg)
+
+
 # ─── prepare_runtime_state ────────────────────────────────────
 
 def test_prepare_runtime_state_no_debug():
@@ -63,7 +106,38 @@ def test_prepare_runtime_state_no_debug():
     assert isinstance(pair, PairRegistry)
     from src.arbitrage.common.pair_inflight import PairInFlightGate
     assert isinstance(inflight, PairInFlightGate)   # §6.10 §7:per-pair 闸进程级单例
+    assert liveness.order_alive("POLYMARKET") is False
+    assert liveness.order_alive("ORBITEXCH") is False
+    assert liveness.order_alive("SHARPEXCH") is False
     assert dbg is None
+
+
+def test_prepare_runtime_state_includes_sharpexch_when_enabled():
+    cfg = _cfg(venues={"sharpexch": {"enabled": True}})
+    liveness, _, _, _ = arb_node.prepare_runtime_state(cfg)
+
+    liveness.mark_order_alive("SHARPEXCH")
+    assert liveness.order_alive("SHARPEXCH") is True
+
+
+def test_prepare_runtime_state_excludes_orbitexch_when_disabled():
+    cfg = _cfg(venues={"orbitexch": {"enabled": False}, "sharpexch": {"enabled": True}})
+    liveness, _, _, _ = arb_node.prepare_runtime_state(cfg)
+
+    liveness.mark_order_alive("SHARPEXCH")
+    assert liveness.order_alive("SHARPEXCH") is True
+    assert liveness.order_alive("ORBITEXCH") is False
+
+
+def test_prepare_runtime_state_can_exclude_polymarket():
+    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
+    liveness, _, _, _ = arb_node.prepare_runtime_state(cfg)
+
+    liveness.mark_order_alive("ORBITEXCH")
+    liveness.mark_order_alive("SHARPEXCH")
+    assert liveness.order_alive("POLYMARKET") is False
+    assert liveness.order_alive("ORBITEXCH") is True
+    assert liveness.order_alive("SHARPEXCH") is True
 
 
 def test_prepare_runtime_state_enabled_debug():
@@ -77,6 +151,21 @@ def test_make_pm_settlement_skips_when_cleanup_disabled():
     cfg = _cfg(execution={"cleanup_enabled": False})
 
     assert arb_node._make_pm_settlement(cfg) is None
+
+
+def test_make_pm_settlement_skips_when_polymarket_disabled(monkeypatch):
+    cfg = _cfg(
+        venues={
+            "polymarket": {"enabled": False, "private_key": "0xpk", "funder": "0xfunder"},
+            "orbitexch": {"enabled": True},
+            "sharpexch": {"enabled": True},
+        },
+    )
+    contract_ctor = MagicMock()
+    monkeypatch.setattr(arb_node, "PolymarketContractService", contract_ctor)
+
+    assert arb_node._make_pm_settlement(cfg) is None
+    contract_ctor.assert_not_called()
 
 
 def test_make_pm_settlement_skips_without_chain_credentials():
@@ -170,6 +259,42 @@ def test_register_factories_registers_pm_oe_data_exec():
     assert set(exec_venues) == {"POLYMARKET", "ORBITEXCH"}
 
 
+def test_register_factories_registers_sharpexch_when_enabled():
+    node = MagicMock()
+    cfg = _cfg(venues={"sharpexch": {"enabled": True}})
+
+    arb_node.register_factories(node, cfg)
+
+    data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
+    exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
+    assert set(data_venues) == {"POLYMARKET", "ORBITEXCH", "PMSPORTS", "SHARPEXCH"}
+    assert set(exec_venues) == {"POLYMARKET", "ORBITEXCH", "SHARPEXCH"}
+
+
+def test_register_factories_can_disable_orbitexch_with_sharpexch_enabled():
+    node = MagicMock()
+    cfg = _cfg(venues={"orbitexch": {"enabled": False}, "sharpexch": {"enabled": True}})
+
+    arb_node.register_factories(node, cfg)
+
+    data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
+    exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
+    assert set(data_venues) == {"POLYMARKET", "PMSPORTS", "SHARPEXCH"}
+    assert set(exec_venues) == {"POLYMARKET", "SHARPEXCH"}
+
+
+def test_register_factories_can_disable_polymarket_with_oe_and_se_enabled():
+    node = MagicMock()
+    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
+
+    arb_node.register_factories(node, cfg)
+
+    data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
+    exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
+    assert set(data_venues) == {"ORBITEXCH", "SHARPEXCH"}
+    assert set(exec_venues) == {"ORBITEXCH", "SHARPEXCH"}
+
+
 # ─── bootstrap_and_build orchestrator(call sequence)───────────
 
 def test_bootstrap_and_build_full_call_sequence():
@@ -222,6 +347,24 @@ def test_bootstrap_populates_arb_context():
     assert not hasattr(ctx, "oe_health_interval_secs")
     assert not hasattr(ctx, "pm_positions_fetcher")
     assert ctx.pm_settlement is settlement
+
+
+def test_bootstrap_populates_sharpexch_context_when_enabled():
+    cfg = _cfg(
+        venues={"sharpexch": {"enabled": True}},
+        discovery={"sharpexch": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
+        execution={"tracking_timeout_sec": 45.0},
+    )
+    fake_node = MagicMock()
+
+    with patch.object(arb_node, "install_arbitrage_engines"), \
+         patch.object(arb_node, "wire_arbitrage_runtime"):
+        arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
+
+    ctx = bootstrap.get_arb_context()
+    assert ctx.se_session_timeout_secs == 45.0
+    assert ctx.se_discovery_config is not None
+    assert ctx.se_discovery_config.sports[0].competitions == ["Wimbledon"]
 
 
 def test_bootstrap_install_invoked_with_debug_config_when_enabled():

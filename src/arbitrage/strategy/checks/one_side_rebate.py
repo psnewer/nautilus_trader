@@ -2,7 +2,7 @@
 OneSideRebateCheck —— 定向返水候选生成。
 
 算法:
-  1. 按 outcome role 收集所有可买 leg(PM/OE 都保留,不提前取最优)。
+  1. 按 outcome role 收集所有可买 leg(PM/OE/SE 都保留,不提前取最优)。
   2. 枚举每个 role 选一条 leg 的笛卡尔积。
   3. 对每个组合枚举 target role,计算 `rate = (1 - total_prob) / target_prob`。
   4. `rate >= min_rate` 时生成 candidate,写入 `ctx.scratch["candidates"]`。
@@ -17,6 +17,7 @@ from itertools import product
 
 from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
+from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
 from src.arbitrage.strategy.condition import Check
@@ -192,6 +193,6 @@ def _qty_for_share_and_cost(
 ) -> float:
     if venue == "POLYMARKET":
         return share_if_wins
-    if venue == "ORBITEXCH":
+    if _is_decimal_odds_venue(venue):
         return cost
     return 0.0

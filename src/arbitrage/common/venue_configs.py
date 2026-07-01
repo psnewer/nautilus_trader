@@ -48,3 +48,11 @@ class OrbitExchVenueConfig:
     enabled: bool = True
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     sports: list[SportConfig] = field(default_factory=list)
+
+
+@dataclass
+class SharpExchVenueConfig:
+    """SharpExch 平台配置"""
+    enabled: bool = True
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
+    sports: list[SportConfig] = field(default_factory=list)

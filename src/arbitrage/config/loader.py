@@ -5,7 +5,8 @@ ArbConfig loader —— JSON + env 凭证注入(Q23 C:env 优先,JSON fallback)�
 
 顺序:
   1. 读 JSON → dict
-  2. 检测 JSON 内是否含凭证字段(`venues.polymarket.{clob_api_*,...}` / `venues.orbitexch.{username,password}`)
+  2. 检测 JSON 内是否含凭证字段(`venues.polymarket.{clob_api_*,...}` /
+     `venues.{orbitexch,sharpexch}.{username,password}`)
      → 发 `ConfigWarning`(凭证应只走 env,§9 安全原则)
   3. 凭证字段从 env 覆盖(沿用旧 `state.py` 变量名,用户 `.env` 不用改)
   4. PM proxy 从 JSON 或 env 注入(不属于凭证)
@@ -39,6 +40,11 @@ _OE_CRED_ENV: list[tuple[str, str]] = [
     ("ORBITEXCH_PASSWORD", "password"),
 ]
 
+_SE_CRED_ENV: list[tuple[str, str]] = [
+    ("SHARPEXCH_USERNAME", "username"),
+    ("SHARPEXCH_PASSWORD", "password"),
+]
+
 _PM_CRED_ENV: list[tuple[str, str | None, str]] = [
     ("POLYMARKET_CLOB_API_KEY", None, "clob_api_key"),
     ("POLYMARKET_CLOB_SECRET", None, "clob_api_secret"),         # 注意旧码用 _SECRET 非 _API_SECRET
@@ -55,6 +61,7 @@ _PM_CRED_ENV: list[tuple[str, str | None, str]] = [
 
 _CREDENTIAL_FIELDS_PM = {p[2] for p in _PM_CRED_ENV if p[2] != "signature_type"}
 _CREDENTIAL_FIELDS_OE = {p[1] for p in _OE_CRED_ENV}
+_CREDENTIAL_FIELDS_SE = {p[1] for p in _SE_CRED_ENV}
 
 
 def load_arb_config(path: str | Path) -> ArbConfig:
@@ -99,10 +106,11 @@ def _migrate_legacy_arbitrage_fields(raw: dict) -> None:
 
 
 def _warn_credentials_in_json(raw: dict) -> None:
-    """如果 `venues.{polymarket,orbitexch}` 里有凭证字段非空 → 发 ConfigWarning。"""
+    """如果 `venues.{polymarket,orbitexch,sharpexch}` 里有凭证字段非空 → 发 ConfigWarning。"""
     venues = raw.get("venues") or {}
     pm = venues.get("polymarket") or {}
     oe = venues.get("orbitexch") or {}
+    se = venues.get("sharpexch") or {}
     leaked = []
     for k in _CREDENTIAL_FIELDS_PM:
         if pm.get(k):
@@ -110,6 +118,9 @@ def _warn_credentials_in_json(raw: dict) -> None:
     for k in _CREDENTIAL_FIELDS_OE:
         if oe.get(k):
             leaked.append(f"venues.orbitexch.{k}")
+    for k in _CREDENTIAL_FIELDS_SE:
+        if se.get(k):
+            leaked.append(f"venues.sharpexch.{k}")
     if leaked:
         warnings.warn(
             f"credentials found in config JSON (should be env-only): {', '.join(leaked)}; "
@@ -120,13 +131,14 @@ def _warn_credentials_in_json(raw: dict) -> None:
 
 
 def _inject_env_credentials(raw: dict) -> None:
-    """env 凭证覆盖 raw['venues'].{polymarket,orbitexch} 字段(就地)。
+    """env 凭证覆盖 raw['venues'].{polymarket,orbitexch,sharpexch} 字段(就地)。
 
     env 缺失 → 不覆盖,保留 JSON 值(或 None);**不验证存在**(下游 client 构造时 raise)。
     """
     raw.setdefault("venues", {})
     raw["venues"].setdefault("polymarket", {})
     raw["venues"].setdefault("orbitexch", {})
+    raw["venues"].setdefault("sharpexch", {})
 
     pm = raw["venues"]["polymarket"]
     for env_name, fallback, field in _PM_CRED_ENV:
@@ -143,6 +155,12 @@ def _inject_env_credentials(raw: dict) -> None:
         val = os.environ.get(env_name)
         if val is not None:
             oe[field] = val
+
+    se = raw["venues"]["sharpexch"]
+    for env_name, field in _SE_CRED_ENV:
+        val = os.environ.get(env_name)
+        if val is not None:
+            se[field] = val
 
 
 def _inject_env_proxy(raw: dict) -> None:
