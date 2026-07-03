@@ -26,8 +26,8 @@ from nautilus_trader.execution.messages import CancelOrder
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
-from src.arbitrage.settlement.settlement import PolymarketSettlement
-from src.arbitrage.settlement.settlement import SettlementPosition
+from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
+from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 
 
 class _RetryFailureRecorder:

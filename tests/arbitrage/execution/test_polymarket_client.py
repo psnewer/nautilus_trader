@@ -32,7 +32,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
-from src.arbitrage.settlement.settlement import SettlementPosition
+from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 
 
 @dataclass

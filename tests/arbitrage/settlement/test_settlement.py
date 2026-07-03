@@ -7,8 +7,8 @@ import asyncio
 
 from nautilus_trader.adapters.polymarket.contract import TxResult
 
-from src.arbitrage.settlement.settlement import PolymarketSettlement
-from src.arbitrage.settlement.settlement import SettlementPosition
+from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
+from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 
 
 class FakeContract:

@@ -2,12 +2,12 @@
 PolymarketSettlement —— merge / redeem 编排(Q18c 三层结构的中间层)。
 
 结构(详细设计 `docs/arbitrage/architectures/execution/architecture.md §4.6`):
-    PM ExecClient 子类(宿主+触发:健康检查 tick 内调)
-      └─ PolymarketSettlement(本类,app 编排:按 condition 分组 / min 取量 / redeemable 门控)
+    PM ExecClient 子类(宿主+触发:NT position reconcile 内调)
+      └─ PolymarketSettlement(本类,编排:按 condition 分组 / min 取量 / redeemable 门控)
            └─ contract.py:PolymarketContractService(链上 IO:Builder Relayer)
 
-平移自旧 `src/arbitrage/services/execution/cleanup.py:_do_cleanup`,去掉自取持仓
-(改由调用方传入健康检查 /positions 的原始响应)与 config 对象(改显式 flag)。
+2026-07-03 移入 adapter 目录:Settlement 100% PM 特有,触发点在 PM reconciliate,
+代码位置反映真实依赖(选项 A)。
 
 - merge:同 condition ≥2 持仓 → `merge_positions(condition, min(sizes), neg_risk=any)`。
 - redeem:任一持仓 `redeemable=True` → `redeem_positions(...)`(negRisk 传 amounts)。

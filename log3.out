@@ -1,0 +1,358 @@
+[1m2026-07-03T08:18:00.098272000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098755000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  NAUTILUS TRADER - Automated Algorithmic Trading Platform[0m
+[1m2026-07-03T08:18:00.098765000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  by Nautech Systems Pty Ltd.[0m
+[1m2026-07-03T08:18:00.098766000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  Copyright (C) 2015-2026. All rights reserved.[0m
+[1m2026-07-03T08:18:00.098767000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098769000Z[0m [INFO] ARBITRAGE-001.TradingNode: [0m
+[1m2026-07-03T08:18:00.098770000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⣶⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098771000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣰⣾⣿⣿⣿⠀⢸⣿⣿⣿⣿⣶⣶⣤⣀⠀⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098772000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⠀⢀⣴⡇⢀⣾⣿⣿⣿⣿⣿⠀⣾⣿⣿⣿⣿⣿⣿⣿⠿⠓⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098773000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⣰⣿⣿⡀⢸⣿⣿⣿⣿⣿⣿⠀⣿⣿⣿⣿⣿⣿⠟⠁⣠⣄⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098774000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⢠⣿⣿⣿⣇⠀⢿⣿⣿⣿⣿⣿⠀⢻⣿⣿⣿⡿⢃⣠⣾⣿⣿⣧⡀⠀⠀[0m
+[1m2026-07-03T08:18:00.098775000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠠⣾⣿⣿⣿⣿⣿⣧⠈⠋⢀⣴⣧⠀⣿⡏⢠⡀⢸⣿⣿⣿⣿⣿⣿⣿⡇⠀[0m
+[1m2026-07-03T08:18:00.098776000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⣀⠙⢿⣿⣿⣿⣿⣿⠇⢠⣿⣿⣿⡄⠹⠃⠼⠃⠈⠉⠛⠛⠛⠛⠛⠻⠇⠀[0m
+[1m2026-07-03T08:18:00.098777000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⢸⡟⢠⣤⠉⠛⠿⢿⣿⠀⢸⣿⡿⠋⣠⣤⣄⠀⣾⣿⣿⣶⣶⣶⣦⡄⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098778000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠸⠀⣾⠏⣸⣷⠂⣠⣤⠀⠘⢁⣴⣾⣿⣿⣿⡆⠘⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098779000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠛⠀⣿⡟⠀⢻⣿⡄⠸⣿⣿⣿⣿⣿⣿⣿⡀⠘⣿⣿⣿⣿⠟⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098779001Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⠀⣿⠇⠀⠀⢻⡿⠀⠈⠻⣿⣿⣿⣿⣿⡇⠀⢹⣿⠿⠋⠀⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098780000Z[0m [INFO] ARBITRAGE-001.TradingNode: ⠀⠀⠀⠀⠀⠀⠋⠀⠀⠀⡘⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀[0m
+[1m2026-07-03T08:18:00.098781000Z[0m [INFO] ARBITRAGE-001.TradingNode: [0m
+[1m2026-07-03T08:18:00.098781001Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098782000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  SYSTEM SPECIFICATION[0m
+[1m2026-07-03T08:18:00.098783000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098793000Z[0m [INFO] ARBITRAGE-001.TradingNode: CPU architecture: Intel(R) Core(TM) i7-4770HQ CPU @ 2.20GHz[0m
+[1m2026-07-03T08:18:00.098795000Z[0m [INFO] ARBITRAGE-001.TradingNode: CPU(s): 8 @ 0 MHz[0m
+[1m2026-07-03T08:18:00.098797000Z[0m [INFO] ARBITRAGE-001.TradingNode: OS: kernel-21.6.0 macOS 12.7.6 Monterey[0m
+[1m2026-07-03T08:18:00.098865000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098870000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  MEMORY USAGE[0m
+[1m2026-07-03T08:18:00.098870001Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098889000Z[0m [INFO] ARBITRAGE-001.TradingNode: RAM-Total: 16.00 GiB[0m
+[1m2026-07-03T08:18:00.098893000Z[0m [INFO] ARBITRAGE-001.TradingNode: RAM-Used: 11.51 GiB (71.96%)[0m
+[1m2026-07-03T08:18:00.098894000Z[0m [INFO] ARBITRAGE-001.TradingNode: RAM-Avail: 4.49 GiB (28.04%)[0m
+[1m2026-07-03T08:18:00.098898000Z[0m [INFO] ARBITRAGE-001.TradingNode: Swap-Total: 13.00 GiB[0m
+[1m2026-07-03T08:18:00.098899000Z[0m [INFO] ARBITRAGE-001.TradingNode: Swap-Used: 12.57 GiB (96.68%)[0m
+[1m2026-07-03T08:18:00.098902000Z[0m [INFO] ARBITRAGE-001.TradingNode: Swap-Avail: 0.43 GiB (3.32%)[0m
+[1m2026-07-03T08:18:00.098939000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098941000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  IDENTIFIERS[0m
+[1m2026-07-03T08:18:00.098942000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098944000Z[0m [INFO] ARBITRAGE-001.TradingNode: trader_id: ARBITRAGE-001[0m
+[1m2026-07-03T08:18:00.098945000Z[0m [INFO] ARBITRAGE-001.TradingNode: machine_id: MacBook-Pro-10.local[0m
+[1m2026-07-03T08:18:00.098948000Z[0m [INFO] ARBITRAGE-001.TradingNode: instance_id: aae444bb-c2c3-4980-95fc-00e1bd7c2cc9[0m
+[1m2026-07-03T08:18:00.098949000Z[0m [INFO] ARBITRAGE-001.TradingNode: PID: 90612[0m
+[1m2026-07-03T08:18:00.098950000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.098951000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode:  VERSIONING[0m
+[1m2026-07-03T08:18:00.098951001Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.099651000Z[0m [INFO] ARBITRAGE-001.TradingNode: nautilus_trader: 1.226.0[0m
+[1m2026-07-03T08:18:00.099826000Z[0m [INFO] ARBITRAGE-001.TradingNode: python: 3.13.0[0m
+[1m2026-07-03T08:18:00.099841000Z[0m [INFO] ARBITRAGE-001.TradingNode: numpy: 2.4.4[0m
+[1m2026-07-03T08:18:00.099847000Z[0m [INFO] ARBITRAGE-001.TradingNode: pandas: 2.3.3[0m
+[1m2026-07-03T08:18:00.099852000Z[0m [INFO] ARBITRAGE-001.TradingNode: msgspec: 0.21.1[0m
+[1m2026-07-03T08:18:00.099856000Z[0m [INFO] ARBITRAGE-001.TradingNode: pyarrow: 24.0.0[0m
+[1m2026-07-03T08:18:00.099860000Z[0m [INFO] ARBITRAGE-001.TradingNode: pytz: 2026.1.post1[0m
+[1m2026-07-03T08:18:00.099864000Z[0m [INFO] ARBITRAGE-001.TradingNode: uvloop: 0.22.1[0m
+[1m2026-07-03T08:18:00.100045000Z[0m [36m[INFO] ARBITRAGE-001.TradingNode: =================================================================[0m
+[1m2026-07-03T08:18:00.100253000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building system kernel[0m
+[1m2026-07-03T08:18:00.101105000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.database=None[0m
+[1m2026-07-03T08:18:00.101116000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.encoding='msgpack'[0m
+[1m2026-07-03T08:18:00.101118000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.timestamps_as_iso8601=False[0m
+[1m2026-07-03T08:18:00.101120000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.buffer_interval_ms=None[0m
+[1m2026-07-03T08:18:00.101121000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.autotrim_mins=None[0m
+[1m2026-07-03T08:18:00.101123000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.use_trader_prefix=True[0m
+[1m2026-07-03T08:18:00.101124000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.use_trader_id=True[0m
+[1m2026-07-03T08:18:00.101125000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.use_instance_id=False[0m
+[1m2026-07-03T08:18:00.101129000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.streams_prefix='stream'[0m
+[1m2026-07-03T08:18:00.101130000Z[0m [94m[INFO] ARBITRAGE-001.MessageBus: config.types_filter=None[0m
+[1m2026-07-03T08:18:00.101418000Z[0m [INFO] ARBITRAGE-001.Cache: READY[0m
+[1m2026-07-03T08:18:00.103530000Z[0m [INFO] ARBITRAGE-001.DataEngine: READY[0m
+[1m2026-07-03T08:18:00.104138000Z[0m [94m[INFO] ARBITRAGE-001.DataEngine: config.graceful_shutdown_on_exception=False[0m
+[1m2026-07-03T08:18:00.104206000Z[0m [INFO] ARBITRAGE-001.RiskEngine: READY[0m
+[1m2026-07-03T08:18:00.105303000Z[0m [94m[INFO] ARBITRAGE-001.RiskEngine: TradingState is ACTIVE[0m
+[1m2026-07-03T08:18:00.105402000Z[0m [INFO] ARBITRAGE-001.Throttler-ORDER_SUBMIT_THROTTLER: READY[0m
+[1m2026-07-03T08:18:00.105438000Z[0m [94m[INFO] ARBITRAGE-001.RiskEngine: Set MAX_ORDER_SUBMIT_RATE: 100/00:00:01[0m
+[1m2026-07-03T08:18:00.105480000Z[0m [INFO] ARBITRAGE-001.Throttler-ORDER_MODIFY_THROTTLER: READY[0m
+[1m2026-07-03T08:18:00.105499000Z[0m [94m[INFO] ARBITRAGE-001.RiskEngine: Set MAX_ORDER_MODIFY_RATE: 100/00:00:01[0m
+[1m2026-07-03T08:18:00.105551000Z[0m [94m[INFO] ARBITRAGE-001.RiskEngine: config.graceful_shutdown_on_exception=False[0m
+[1m2026-07-03T08:18:00.105644000Z[0m [INFO] ARBITRAGE-001.ExecEngine: READY[0m
+[1m2026-07-03T08:18:00.105853000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.snapshot_orders=False[0m
+[1m2026-07-03T08:18:00.105862000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.snapshot_positions=False[0m
+[1m2026-07-03T08:18:00.105864000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.snapshot_positions_interval_secs=None[0m
+[1m2026-07-03T08:18:00.105865000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.allow_overfills=False[0m
+[1m2026-07-03T08:18:00.105921000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.reconciliation=True[0m
+[1m2026-07-03T08:18:00.105927000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.reconciliation_lookback_mins=None[0m
+[1m2026-07-03T08:18:00.105929000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.reconciliation_instrument_ids=None[0m
+[1m2026-07-03T08:18:00.105931000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.filter_unclaimed_external_orders=False[0m
+[1m2026-07-03T08:18:00.105932000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.filter_position_reports=False[0m
+[1m2026-07-03T08:18:00.105934000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.filtered_client_order_ids=None[0m
+[1m2026-07-03T08:18:00.105936000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.inflight_check_interval_ms=2000[0m
+[1m2026-07-03T08:18:00.105937000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.inflight_check_threshold_ms=5000[0m
+[1m2026-07-03T08:18:00.105939000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.inflight_check_retries=5[0m
+[1m2026-07-03T08:18:00.105940000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.own_books_audit_interval_secs=None[0m
+[1m2026-07-03T08:18:00.105944000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.open_check_interval_secs=300.0[0m
+[1m2026-07-03T08:18:00.105945000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.open_check_open_only=True[0m
+[1m2026-07-03T08:18:00.105947000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.open_check_lookback_mins=60[0m
+[1m2026-07-03T08:18:00.105948000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.open_check_threshold_ms=5000[0m
+[1m2026-07-03T08:18:00.105951000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.open_check_missing_retries=5[0m
+[1m2026-07-03T08:18:00.105952000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.max_single_order_queries_per_cycle=10[0m
+[1m2026-07-03T08:18:00.105954000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.single_order_query_delay_ms=100[0m
+[1m2026-07-03T08:18:00.105955000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.position_check_interval_secs=300.0[0m
+[1m2026-07-03T08:18:00.105957000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.position_check_lookback_mins=60[0m
+[1m2026-07-03T08:18:00.105959000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.position_check_threshold_ms=5000[0m
+[1m2026-07-03T08:18:00.105960000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.position_check_retries=3[0m
+[1m2026-07-03T08:18:00.105962000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.reconciliation_startup_delay_secs=10.0[0m
+[1m2026-07-03T08:18:00.105963000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_closed_orders_interval_mins=None[0m
+[1m2026-07-03T08:18:00.105965000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_closed_orders_buffer_mins=None[0m
+[1m2026-07-03T08:18:00.105966000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_closed_positions_interval_mins=None[0m
+[1m2026-07-03T08:18:00.105968000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_closed_positions_buffer_mins=None[0m
+[1m2026-07-03T08:18:00.105969000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_account_events_interval_mins=None[0m
+[1m2026-07-03T08:18:00.105970000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_account_events_lookback_mins=None[0m
+[1m2026-07-03T08:18:00.105972000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.purge_from_database=False[0m
+[1m2026-07-03T08:18:00.105973000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: config.graceful_shutdown_on_exception=False[0m
+[1m2026-07-03T08:18:00.106925000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 general objects from database[0m
+[1m2026-07-03T08:18:00.106946000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 currencies from database[0m
+[1m2026-07-03T08:18:00.106955000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 instruments from database[0m
+[1m2026-07-03T08:18:00.106964000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 accounts from database[0m
+[1m2026-07-03T08:18:00.106971000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 orders from database[0m
+[1m2026-07-03T08:18:00.106977000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 order lists from database[0m
+[1m2026-07-03T08:18:00.106982000Z[0m [INFO] ARBITRAGE-001.Cache: Cached 0 positions from database[0m
+[1m2026-07-03T08:18:00.107175000Z[0m [INFO] ARBITRAGE-001.Cache: Checking data integrity[0m
+[1m2026-07-03T08:18:00.107328000Z[0m [92m[INFO] ARBITRAGE-001.Cache: Integrity check passed in 317μs[0m
+[1m2026-07-03T08:18:00.107717000Z[0m [INFO] ARBITRAGE-001.ExecEngine: Loaded cache in 1ms[0m
+[1m2026-07-03T08:18:00.107982000Z[0m [INFO] ARBITRAGE-001.OrderEmulator: READY[0m
+[1m2026-07-03T08:18:00.108083000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: READY[0m
+[1m2026-07-03T08:18:00.108143000Z[0m [INFO] ARBITRAGE-001.TradingNode: Initialized in 21ms[0m
+[1m2026-07-03T08:18:00.108168000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: has_cache_backing=False[0m
+[1m2026-07-03T08:18:00.108172000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: has_msgbus_backing=False[0m
+2026-07-03 16:18:00,117 [INFO] __main__: PolymarketContractService initialized, proxy_wallet=0x568F620C81407e562678Ab7AB88Aa628D8d6d803
+[1m2026-07-03T08:18:00.118282000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building data client for POLYMARKET[0m
+[1m2026-07-03T08:18:00.118628000Z[0m [INFO] ARBITRAGE-001.ArbPolymarketInstrumentProvider: READY[0m
+[1m2026-07-03T08:18:00.125237000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: READY[0m
+[1m2026-07-03T08:18:00.125348000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.signature_type=2[0m
+[1m2026-07-03T08:18:00.125358000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.funder='0x568F620C81407e562678Ab7AB88Aa628D8d6d803'[0m
+[1m2026-07-03T08:18:00.125362000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.ws_connection_initial_delay_secs=5[0m
+[1m2026-07-03T08:18:00.125367000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.ws_connection_delay_secs=0.1[0m
+[1m2026-07-03T08:18:00.125370000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.ws_max_subscriptions_per_connection=200[0m
+[1m2026-07-03T08:18:00.125372000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.update_instruments_interval_mins=60[0m
+[1m2026-07-03T08:18:00.125375000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.compute_effective_deltas=False[0m
+[1m2026-07-03T08:18:00.125377000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.auto_load_missing_instruments=True[0m
+[1m2026-07-03T08:18:00.125378000Z[0m [94m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: config.auto_load_debounce_ms=100[0m
+[1m2026-07-03T08:18:00.125682000Z[0m [INFO] ARBITRAGE-001.DataEngine: Registered POLYMARKET[0m
+[1m2026-07-03T08:18:00.125699000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building data client for ORBITEXCH[0m
+[1m2026-07-03T08:18:00.126528000Z[0m [INFO] ARBITRAGE-001.OrbitExchInstrumentProvider: READY[0m
+[1m2026-07-03T08:18:00.126628000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: READY[0m
+[1m2026-07-03T08:18:00.126724000Z[0m [INFO] ARBITRAGE-001.DataEngine: Registered ORBITEXCH[0m
+[1m2026-07-03T08:18:00.126742000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building data client for PMSPORTS[0m
+[1m2026-07-03T08:18:00.126764000Z[0m [INFO] ARBITRAGE-001.InstrumentProvider: READY[0m
+[1m2026-07-03T08:18:00.126813000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: READY[0m
+[1m2026-07-03T08:18:00.126885000Z[0m [INFO] ARBITRAGE-001.DataEngine: Registered PMSPORTS[0m
+[1m2026-07-03T08:18:00.126901000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building execution client for POLYMARKET[0m
+[1m2026-07-03T08:18:00.126940000Z[0m [INFO] ARBITRAGE-001.PolymarketInstrumentProvider: READY[0m
+[1m2026-07-03T08:18:00.127103000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: READY[0m
+[1m2026-07-03T08:18:00.127133000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.signature_type=2[0m
+[1m2026-07-03T08:18:00.127140000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.funder='0x568F620C81407e562678Ab7AB88Aa628D8d6d803'[0m
+[1m2026-07-03T08:18:00.127142000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.max_retries=None[0m
+[1m2026-07-03T08:18:00.127144000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.retry_delay_initial_ms=None[0m
+[1m2026-07-03T08:18:00.127146000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.retry_delay_max_ms=None[0m
+[1m2026-07-03T08:18:00.127148000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.generate_order_history_from_trades=False[0m
+[1m2026-07-03T08:18:00.127150000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.log_raw_ws_messages=False[0m
+[1m2026-07-03T08:18:00.127154000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: config.ack_timeout_secs=5.0[0m
+[1m2026-07-03T08:18:00.127186000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: account_id=POLYMARKET-001[0m
+[1m2026-07-03T08:18:00.127204000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: wallet_address='0x8aD0301a7346cCDAaCe360199404B6f50571D434'[0m
+[1m2026-07-03T08:18:00.127209000Z[0m [94m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: user_address='0x568F620C81407e562678Ab7AB88Aa628D8d6d803'[0m
+[1m2026-07-03T08:18:00.129596000Z[0m [INFO] ARBITRAGE-001.ExecEngine: Registered ExecutionClient-POLYMARKET[0m
+[1m2026-07-03T08:18:00.129611000Z[0m [INFO] ARBITRAGE-001.TradingNode: Building execution client for ORBITEXCH[0m
+[1m2026-07-03T08:18:00.129631000Z[0m [INFO] ARBITRAGE-001.InstrumentProvider: READY[0m
+[1m2026-07-03T08:18:00.129681000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: READY[0m
+[1m2026-07-03T08:18:00.129772000Z[0m [INFO] ARBITRAGE-001.ExecEngine: Registered ExecutionClient-ORBITEXCH[0m
+[1m2026-07-03T08:18:00.130254000Z[0m [INFO] ARBITRAGE-001.MarketMatchingActor: READY[0m
+[1m2026-07-03T08:18:00.130307000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Registered Component MarketMatchingActor[0m
+[1m2026-07-03T08:18:00.130459000Z[0m [INFO] ARBITRAGE-001.StrategyEvaluator: READY[0m
+[1m2026-07-03T08:18:00.130496000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Registered Component StrategyEvaluator[0m
+[1m2026-07-03T08:18:00.130565000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: READY[0m
+[1m2026-07-03T08:18:00.130598000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Registered Component WebGatewayActor[0m
+[1m2026-07-03T08:18:00.130648000Z[0m [1;31m[INFO] ARBITRAGE-001.RiskEngine: TradingState is HALTED[0m
+[1m2026-07-03T08:18:00.130755000Z[0m [INFO] ARBITRAGE-001.TradingNode: STARTING[0m
+[1m2026-07-03T08:18:00.130855000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: RUNNING[0m
+[1m2026-07-03T08:18:00.130877000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: RUNNING[0m
+[1m2026-07-03T08:18:00.130889000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: RUNNING[0m
+[1m2026-07-03T08:18:00.130925000Z[0m [INFO] ARBITRAGE-001.DataEngine: RUNNING[0m
+[1m2026-07-03T08:18:00.130959000Z[0m [INFO] ARBITRAGE-001.RiskEngine: RUNNING[0m
+[1m2026-07-03T08:18:00.130980000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: RUNNING[0m
+[1m2026-07-03T08:18:00.130996000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: RUNNING[0m
+[1m2026-07-03T08:18:00.131215000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Started reconciliation task[0m
+[1m2026-07-03T08:18:00.131235000Z[0m [INFO] ARBITRAGE-001.ExecEngine: RUNNING[0m
+[1m2026-07-03T08:18:00.131250000Z[0m [INFO] ARBITRAGE-001.DataEngine: Connecting all clients...[0m
+[1m2026-07-03T08:18:00.131257000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: Connecting...[0m
+[1m2026-07-03T08:18:00.131275000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: Connecting...[0m
+[1m2026-07-03T08:18:00.131293000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: Connecting...[0m
+[1m2026-07-03T08:18:00.131313000Z[0m [INFO] ARBITRAGE-001.ExecEngine: Connecting all clients...[0m
+[1m2026-07-03T08:18:00.131323000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Connecting...[0m
+[1m2026-07-03T08:18:00.131335000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: Connecting...[0m
+[1m2026-07-03T08:18:00.131350000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: Awaiting engine connections and initializations (180.0s timeout)...[0m
+[1m2026-07-03T08:18:00.131586000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Starting continuous reconciliation with intervals: inflight=2000ms, consistency=300.0s, position=300.0s[0m
+[1m2026-07-03T08:18:00.131598000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Awaiting startup reconciliation completion before starting continuous checks[0m
+[1m2026-07-03T08:18:00.131608000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: Initializing instruments...[0m
+[1m2026-07-03T08:18:00.131618000Z[0m [INFO] ARBITRAGE-001.ArbPolymarketInstrumentProvider: Initializing instruments...[0m
+2026-07-03 16:18:00,255 [INFO] PlaywrightBrowserManager: 🚀 Starting Playwright browser...
+[1m2026-07-03T08:18:00.255424000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: PolymarketSportsDataClient connecting WS firehose: wss://sports-api.polymarket.com/ws[0m
+[1m2026-07-03T08:18:00.279879000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-PMSPORTS: Connected[0m
+2026-07-03 16:18:01,668 [INFO] httpx: HTTP Request: GET https://gamma-api.polymarket.com/sports "HTTP/1.1 200 OK"
+2026-07-03 16:18:02,329 [INFO] PlaywrightBrowserManager: ✅ Browser started successfully
+2026-07-03 16:18:02,348 [INFO] OrbitExchScraper: Starting Playwright browser for OrbitExch...
+2026-07-03 16:18:02,736 [INFO] httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?series_id=12012&closed=false&active=true&limit=500 "HTTP/1.1 200 OK"
+[1m2026-07-03T08:18:02.908060000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: Sports WS connected[0m
+2026-07-03 16:18:03,137 [INFO] PlaywrightBrowserManager: 📄 Created page: execution
+[1m2026-07-03T08:18:03.137899000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS registered order callback: _on_general_frame[0m
+[1m2026-07-03T08:18:03.137929000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS listener starting[0m
+[1m2026-07-03T08:18:03.137986000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS listener started[0m
+2026-07-03 16:18:07,179 [INFO] nautilus_trader.adapters.polymarket.arb_provider: PM discovery: loaded 200 instruments
+[1m2026-07-03T08:18:07.182441000Z[0m [INFO] ARBITRAGE-001.ArbPolymarketInstrumentProvider: Loaded 200 instruments[0m
+[1m2026-07-03T08:18:07.182466000Z[0m [INFO] ARBITRAGE-001.ArbPolymarketInstrumentProvider: Initialized instruments[0m
+[1m2026-07-03T08:18:07.183407000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: Connected[0m
+2026-07-03 16:18:07,197 [INFO] OrbitExchScraper: Browser started successfully
+2026-07-03 16:18:07,198 [INFO] OrbitExchScraper: Processing Tennis > Men's Wimbledon 2026
+2026-07-03 16:18:07,198 [INFO] OrbitExchScraper: Navigating to https://www.orbitexch.com...
+2026-07-03 16:18:07,293 [INFO] httpx: HTTP Request: GET https://polymarket.com/api/geoblock "HTTP/1.1 200 OK"
+[1m2026-07-03T08:18:07.296337000Z[0m [1;33m[WARN] ARBITRAGE-001.PolymarketInstrumentProvider: No loading configured: ensure either `load_all=True` or there are `load_ids`[0m
+[1m2026-07-03T08:18:10.551038000Z[0m [94m[INFO] ARBITRAGE-001.PolymarketWebSocketClient: ws-client 0: Connected to wss://ws-subscriptions-clob.polymarket.com/ws/user with 100 subscriptions[0m
+[1m2026-07-03T08:18:10.552085000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Checking account balance[0m
+2026-07-03 16:18:12,912 [INFO] httpx: HTTP Request: GET https://clob.polymarket.com/balance-allowance?signature_type=2&asset_type=COLLATERAL "HTTP/2 200 OK"
+[1m2026-07-03T08:18:12.932806000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: Updated AccountState(account_id=POLYMARKET-001, account_type=CASH, base_currency=USDC.e, is_reported=True, balances=[AccountBalance(total=38.719691 USDC.e, locked=0.000000 USDC.e, free=38.719691 USDC.e)], margins=[], event_id=3bd593eb-3092-4653-93a0-b46ae7c1d8c6)[0m
+[1m2026-07-03T08:18:12.933115000Z[0m [92m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Account POLYMARKET-001 registered in cache[0m
+[1m2026-07-03T08:18:12.933248000Z[0m [92m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Connected[0m
+2026-07-03 16:18:14,354 [INFO] OrbitExchScraper: Looking for sport: Tennis
+[1m2026-07-03T08:18:15.708329000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS connected: type=orders, url=wss://www.orbitexch.com/customer/ws/general/471/3155aa67-2c9f-4d4b-93ea-e834563d0dcc/websocket[0m
+[1m2026-07-03T08:18:16.152842000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS first frame received: type=orders, kind=sockjs_open, bytes=1[0m
+2026-07-03 16:18:17,408 [WARNING] OrbitExchScraper: Sport Tennis not found
+2026-07-03 16:18:17,408 [INFO] OrbitExchScraper: Discovered 0 total match events from OrbitExch
+[1m2026-07-03T08:18:17.408558000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: OrbitExchDataClient connected (competition pages opened on subscribe; event-driven WS liveness)[0m
+[1m2026-07-03T08:18:17.408689000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-ORBITEXCH: Connected[0m
+[1m2026-07-03T08:18:22.768437000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS connected: type=prices, url=wss://www.orbitexch.com/customer/ws/multiple-market-prices/653/3bd05d11-7e1b-46ac-a20d-0d96980cfeac/websocket[0m
+[1m2026-07-03T08:18:24.746105000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS first frame received: type=prices, kind=sockjs_open, bytes=1[0m
+[1m2026-07-03T08:18:27.666262000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OrbitExch login successful[0m
+[1m2026-07-03T08:18:29.089117000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS closed: type=orders, url=wss://www.orbitexch.com/customer/ws/general/471/3155aa67-2c9f-4d4b-93ea-e834563d0dcc/websocket[0m
+[1m2026-07-03T08:18:29.241445000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: Sports feed live: first update challenger/5880129 (Guido Justo vs Olle Wallin, live=True ended=False)[0m
+[1m2026-07-03T08:18:29.704917000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS closed: type=prices, url=wss://www.orbitexch.com/customer/ws/multiple-market-prices/653/3bd05d11-7e1b-46ac-a20d-0d96980cfeac/websocket[0m
+[1m2026-07-03T08:18:29.818992000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OrbitExch post-login popup dismissed[0m
+[1m2026-07-03T08:18:32.712539000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS connected: type=orders, url=wss://www.orbitexch.com/customer/ws/general/015/9b609a4c-6650-4b7c-af81-d0cbd04ebd8b/websocket[0m
+[1m2026-07-03T08:18:32.713673000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS connected: type=prices, url=wss://www.orbitexch.com/customer/ws/multiple-market-prices/131/f731b94c-9ae8-4483-8466-5bf95378e091/websocket[0m
+[1m2026-07-03T08:18:35.030256000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: Updated AccountState(account_id=ORBITEXCH-001, account_type=CASH, base_currency=USD, is_reported=True, balances=[AccountBalance(total=0.00 USD, locked=0.00 USD, free=0.00 USD)], margins=[], event_id=2cb4cfa7-97ab-427b-afe4-60acc3679db8)[0m
+[1m2026-07-03T08:18:35.030353000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OrbitExchExecutionClient connected (live)[0m
+[1m2026-07-03T08:18:35.030792000Z[0m [92m[INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: Connected[0m
+[1m2026-07-03T08:18:35.031117000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: Awaiting execution state reconciliation (30.0s timeout)...[0m
+[1m2026-07-03T08:18:35.031560000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Generating ExecutionMassStatus...[0m
+[1m2026-07-03T08:18:35.032921000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: Generating ExecutionMassStatus...[0m
+2026-07-03 16:18:36,618 [INFO] httpx: HTTP Request: GET https://clob.polymarket.com/data/trades?next_cursor=MA%3D%3D "HTTP/2 200 OK"
+[1m2026-07-03T08:18:36.627920000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Received 2 FillReports[0m
+2026-07-03 16:18:37,731 [INFO] httpx: HTTP Request: GET https://clob.polymarket.com/data/orders?next_cursor=MA%3D%3D "HTTP/2 200 OK"
+[1m2026-07-03T08:18:37.732005000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Received 0 OrderStatusReports[0m
+[1m2026-07-03T08:18:37.842314000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Long position for 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET of 5.000000 shares[0m
+[1m2026-07-03T08:18:37.842389000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Long position for 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET of 5.000000 shares[0m
+[1m2026-07-03T08:18:37.842451000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Received 2 PositionReports[0m
+[1m2026-07-03T08:18:37.842507000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: PM position reconcile OK: 2 report(s), settlement dispatched (2 raw positions)[0m
+2026-07-03 16:18:37,845 [INFO] __main__: Executing merge CTF positions: condition=0x2867a72d9cefa5..., amount=5.0
+2026-07-03 16:18:37,845 [INFO] __main__: Executing with proxy wallet override: 0x568F620C81407e562678Ab7AB88Aa628D8d6d803
+[1m2026-07-03T08:18:37.847666000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Reconciling ExecutionMassStatus for POLYMARKET[0m
+[1m2026-07-03T08:18:37.847744000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Attempting to adjust fills for 2 instruments[0m
+[1m2026-07-03T08:18:37.890331000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Updating adjusted fills for 2 instruments[0m
+[1m2026-07-03T08:18:37.890383000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Final order_reports contains 0 orders, fill_reports contains 2 fills across all instruments[0m
+[1m2026-07-03T08:18:37.890560000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Reconciling NET position for 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET[0m
+[1m2026-07-03T08:18:37.891167000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: report.signed_decimal_qty=Decimal('5')[0m
+[1m2026-07-03T08:18:37.891188000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: position_signed_decimal_qty=Decimal('0')[0m
+[1m2026-07-03T08:18:37.891226000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: diff_quantity=Quantity(5.000000)[0m
+[1m2026-07-03T08:18:37.899455000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Generated inferred OrderFilled(instrument_id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET, client_order_id=63c88d3a-8964-4867-ad24-ba0c056f87a5, venue_order_id=99da159f-588a-5045-83e5-a3dbdae8aac1, account_id=POLYMARKET-001, trade_id=10227d16-2c05-5693-9a1b-18912eccbcbf, position_id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET-EXTERNAL, order_side=BUY, order_type=LIMIT, last_qty=5.000000, last_px=0.76 USDC.e, commission=0.000000 USDC.e, liquidity_side=NO_LIQUIDITY_SIDE, ts_event=1783066717891415000)[0m
+[1m2026-07-03T08:18:37.901717000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET account=POLYMARKET-001 net_position=5.000000[0m
+[1m2026-07-03T08:18:37.901870000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Reconciling NET position for 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET[0m
+[1m2026-07-03T08:18:37.901888000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: report.signed_decimal_qty=Decimal('5')[0m
+[1m2026-07-03T08:18:37.901891000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: position_signed_decimal_qty=Decimal('0')[0m
+[1m2026-07-03T08:18:37.901918000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: diff_quantity=Quantity(5.000000)[0m
+[1m2026-07-03T08:18:37.902566000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Generated inferred OrderFilled(instrument_id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET, client_order_id=199388a6-e1e3-4ff7-a7a4-bfd0a85434a8, venue_order_id=30ea5ead-5ecd-5bdb-bb29-c64afba3ddd7, account_id=POLYMARKET-001, trade_id=c31ef87d-e3d1-5850-bb3a-d2b285f23dc4, position_id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET-EXTERNAL, order_side=BUY, order_type=LIMIT, last_qty=5.000000, last_px=0.29 USDC.e, commission=0.000000 USDC.e, liquidity_side=NO_LIQUIDITY_SIDE, ts_event=1783066717901952000)[0m
+[1m2026-07-03T08:18:37.902683000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET account=POLYMARKET-001 net_position=5.000000[0m
+[1m2026-07-03T08:18:37.902818000Z[0m [92m[INFO] ARBITRAGE-001.ExecEngine: Reconciliation for POLYMARKET succeeded[0m
+[1m2026-07-03T08:18:37.902849000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Reconciling ExecutionMassStatus for ORBITEXCH[0m
+[1m2026-07-03T08:18:37.902857000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Attempting to adjust fills for 0 instruments[0m
+[1m2026-07-03T08:18:37.902945000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Updating adjusted fills for 0 instruments[0m
+[1m2026-07-03T08:18:37.902958000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Final order_reports contains 0 orders, fill_reports contains 0 fills across all instruments[0m
+[1m2026-07-03T08:18:37.903003000Z[0m [92m[INFO] ARBITRAGE-001.ExecEngine: Reconciliation for ORBITEXCH succeeded[0m
+[1m2026-07-03T08:18:37.903044000Z[0m [92m[INFO] ARBITRAGE-001.TradingNode: Execution state reconciled[0m
+[1m2026-07-03T08:18:37.903342000Z[0m [INFO] ARBITRAGE-001.OrderEmulator: No emulated orders to reactivate[0m
+[1m2026-07-03T08:18:37.903578000Z[0m [INFO] ARBITRAGE-001.OrderEmulator: RUNNING[0m
+[1m2026-07-03T08:18:37.903811000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: Initialized 0 open orders[0m
+[1m2026-07-03T08:18:37.904723000Z[0m [94m[INFO] ARBITRAGE-001.ArbitragePortfolio: Initialized 2 open positions[0m
+[1m2026-07-03T08:18:37.904771000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: Awaiting portfolio initialization (10.0s timeout)...[0m
+[1m2026-07-03T08:18:37.905098000Z[0m [92m[INFO] ARBITRAGE-001.ExecEngine: Startup reconciliation completed[0m
+[1m2026-07-03T08:18:37.905122000Z[0m [94m[INFO] ARBITRAGE-001.ExecEngine: Applying post-reconciliation startup delay (10.0s)[0m
+[1m2026-07-03T08:18:37.905215000Z[0m [92m[INFO] ARBITRAGE-001.TradingNode: Portfolio initialized[0m
+[1m2026-07-03T08:18:37.923898000Z[0m [INFO] ARBITRAGE-001.MarketMatchingActor: RUNNING[0m
+[1m2026-07-03T08:18:37.924174000Z[0m [INFO] ARBITRAGE-001.StrategyEvaluator: RUNNING[0m
+[1m2026-07-03T08:18:38.011724000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: WebGateway listening on http://127.0.0.1:8090[0m
+[1m2026-07-03T08:18:38.011847000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: RUNNING[0m
+[1m2026-07-03T08:18:38.011900000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: RUNNING[0m
+[1m2026-07-03T08:18:38.011962000Z[0m [INFO] ARBITRAGE-001.TradingNode: RUNNING[0m
+[1m2026-07-03T08:18:38.821134000Z[0m [INFO] ARBITRAGE-001.ArbitragePortfolio: Updated AccountState(account_id=ORBITEXCH-001, account_type=CASH, base_currency=USD, is_reported=True, balances=[AccountBalance(total=50.23 USD, locked=0.00 USD, free=50.23 USD)], margins=[], event_id=0534e14f-b34e-4c23-990d-3f8ba91d9737)[0m
+[1m2026-07-03T08:18:38.979680000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS closed: type=prices, url=wss://www.orbitexch.com/customer/ws/multiple-market-prices/131/f731b94c-9ae8-4483-8466-5bf95378e091/websocket[0m
+[1m2026-07-03T08:18:40.704775000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS connected: type=prices, url=wss://www.orbitexch.com/customer/ws/multiple-market-prices/712/a0c9d939-e68e-4dde-ac59-a4705959b10a/websocket[0m
+2026-07-03 16:18:43,510 [INFO] __main__: Merge submitted: <py_builder_relayer_client.response.ClientRelayerTransactionResponse object at 0x1535802f0>
+Waiting for transaction 019f270f-14ac-77fd-8bc5-de6661ae3115 matching states: {'STATE_MINED', 'STATE_CONFIRMED'}...
+2026-07-03 16:18:49,077 [INFO] __main__: Merge confirmed: {'transactionID': '019f270f-14ac-77fd-8bc5-de6661ae3115', 'transactionHash': '0x7012a0107968b251e02a1f7dd7d43437bcfd0a67b33b3c038fc538fcc83fd06e', 'from': '0x8ad0301a7346ccdaace360199404b6f50571d434', 'to': '0x4d97dcd97ec945f40cf65f87097ace5ea0476045', 'proxyAddress': '0x568f620c81407e562678ab7ab88aa628d8d6d803', 'data': '0x9e7212ad0000000000000000000000002791bca1f2de4661ed88a30c99a7a9449aa8417400000000000000000000000000000000000000000000000000000000000000002867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d14100000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000004c4b40000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002', 'nonce': '38', 'value': '0', 'signature': '0xeac1ebf55eb3f70f6cbf88760abf4ee1def287ee2e8a790a093df2446503cc8553708b59e190c0c59cd7bf0099698984154a086ed72eb1c736aa0dbb7f147a5620', 'state': 'STATE_MINED', 'type': 'SAFE', 'owner': '', 'metadata': 'merge CTF positions: condition=0x2867a72d9cefa5..., amount=5.0', 'createdAt': '2026-07-03T08:18:47.599119Z', 'updatedAt': '2026-07-03T08:18:49.4113Z', 'builder': '019cd30c-7327-76e6-a932-22974bce6479', 'derivedMetadata': {'txnType': 'CTF Merge', 'operations': ['CTF Merge'], 'isBatch': False, 'operationCount': 1}, 'relayer': '0xfa98256fa766826437ab29338fb545bc488ad249'}
+[1m2026-07-03T08:20:27.484179000Z[0m [1;33m[WARN] ARBITRAGE-001.TradingNode: Received SIGTERM, shutting down[0m
+[1m2026-07-03T08:20:27.484583000Z[0m [INFO] ARBITRAGE-001.TradingNode: STOPPING[0m
+[1m2026-07-03T08:20:27.485580000Z[0m [INFO] ARBITRAGE-001.MarketMatchingActor: Canceling executor tasks[0m
+[1m2026-07-03T08:20:27.486013000Z[0m [INFO] ARBITRAGE-001.MarketMatchingActor: STOPPED[0m
+[1m2026-07-03T08:20:27.486092000Z[0m [1;33m[WARN] ARBITRAGE-001.StrategyEvaluator: The `Actor.on_stop` handler was called when not overridden. It's expected that any actions required when stopping the actor occur here, such as unsubscribing from data.[0m
+[1m2026-07-03T08:20:27.486102000Z[0m [INFO] ARBITRAGE-001.StrategyEvaluator: Canceling executor tasks[0m
+[1m2026-07-03T08:20:27.486138000Z[0m [INFO] ARBITRAGE-001.StrategyEvaluator: STOPPED[0m
+[1m2026-07-03T08:20:27.486231000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: Canceling executor tasks[0m
+[1m2026-07-03T08:20:27.486263000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: STOPPED[0m
+[1m2026-07-03T08:20:27.486305000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: STOPPED[0m
+[1m2026-07-03T08:20:27.486385000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: Awaiting post stop (1.0s timeout)...[0m
+[1m2026-07-03T08:20:28.488247000Z[0m [1;33m[WARN] ARBITRAGE-001.Cache: Residual Position(LONG 5.000000 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET, id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-14791014948633295644990701722787465785567024916800738445442272064838298552850.POLYMARKET-EXTERNAL)[0m
+[1m2026-07-03T08:20:28.488313000Z[0m [1;33m[WARN] ARBITRAGE-001.Cache: Residual Position(LONG 5.000000 0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET, id=0x2867a72d9cefa54b3ab0955177c8bd2506f61974ab6754de6873cba82aa0d141-83238622478429109682931676598187934110930963742862986801560253031894152262040.POLYMARKET-EXTERNAL)[0m
+[1m2026-07-03T08:20:28.489336000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: STOPPED[0m
+[1m2026-07-03T08:20:28.489484000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: STOPPED[0m
+[1m2026-07-03T08:20:28.489602000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: STOPPED[0m
+[1m2026-07-03T08:20:28.490241000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Shutting down retry manager pool[0m
+[1m2026-07-03T08:20:28.490348000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: STOPPED[0m
+[1m2026-07-03T08:20:28.490439000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: STOPPED[0m
+[1m2026-07-03T08:20:28.490664000Z[0m [INFO] ARBITRAGE-001.DataEngine: Disconnecting all clients...[0m
+[1m2026-07-03T08:20:28.490742000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: Disconnecting...[0m
+[1m2026-07-03T08:20:28.490832000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: Disconnecting...[0m
+[1m2026-07-03T08:20:28.490844000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: Disconnecting...[0m
+[1m2026-07-03T08:20:28.490891000Z[0m [INFO] ARBITRAGE-001.ExecEngine: Disconnecting all clients...[0m
+[1m2026-07-03T08:20:28.490948000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Disconnecting...[0m
+[1m2026-07-03T08:20:28.490987000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: Disconnecting...[0m
+[1m2026-07-03T08:20:28.491039000Z[0m [94m[INFO] ARBITRAGE-001.TradingNode: Awaiting engine disconnections (10.0s timeout)...[0m
+[1m2026-07-03T08:20:28.492572000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS listener stopping[0m
+[1m2026-07-03T08:20:28.492998000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: OE WS listener stopped[0m
+[1m2026-07-03T08:20:28.493088000Z[0m [92m[INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: Disconnected[0m
+[1m2026-07-03T08:20:28.498595000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-POLYMARKET: Disconnected[0m
+[1m2026-07-03T08:20:28.498687000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-ORBITEXCH: Disconnected[0m
+[1m2026-07-03T08:20:28.603979000Z[0m [94m[INFO] ARBITRAGE-001.PolymarketWebSocketClient: Disconnected all clients from wss://ws-subscriptions-clob.polymarket.com/ws/user[0m
+[1m2026-07-03T08:20:28.604042000Z[0m [92m[INFO] ARBITRAGE-001.ExecClient-POLYMARKET: Disconnected[0m
+[1m2026-07-03T08:20:28.851129000Z[0m [92m[INFO] ARBITRAGE-001.DataClient-PMSPORTS: Disconnected[0m
+[1m2026-07-03T08:20:28.852000000Z[0m [INFO] ARBITRAGE-001.DataEngine: STOPPED[0m
+[1m2026-07-03T08:20:28.852192000Z[0m [INFO] ARBITRAGE-001.RiskEngine: STOPPED[0m
+[1m2026-07-03T08:20:28.852472000Z[0m [INFO] ARBITRAGE-001.ExecEngine: STOPPED[0m
+[1m2026-07-03T08:20:28.852566000Z[0m [INFO] ARBITRAGE-001.OrderEmulator: STOPPED[0m
+[1m2026-07-03T08:20:28.852611000Z[0m [INFO] ARBITRAGE-001.TradingNode: STOPPED[0m
+[1m2026-07-03T08:20:28.854056000Z[0m [INFO] ARBITRAGE-001.DataClient-POLYMARKET: DISPOSED[0m
+[1m2026-07-03T08:20:28.854088000Z[0m [INFO] ARBITRAGE-001.DataClient-ORBITEXCH: DISPOSED[0m
+[1m2026-07-03T08:20:28.854104000Z[0m [INFO] ARBITRAGE-001.DataClient-PMSPORTS: DISPOSED[0m
+[1m2026-07-03T08:20:28.854117000Z[0m [INFO] ARBITRAGE-001.DataEngine: DISPOSED[0m
+[1m2026-07-03T08:20:28.854145000Z[0m [INFO] ARBITRAGE-001.RiskEngine: DISPOSED[0m
+[1m2026-07-03T08:20:28.854179000Z[0m [INFO] ARBITRAGE-001.ExecClient-POLYMARKET: DISPOSED[0m
+[1m2026-07-03T08:20:28.854226000Z[0m [INFO] ARBITRAGE-001.ExecClient-ORBITEXCH: DISPOSED[0m
+[1m2026-07-03T08:20:28.854242000Z[0m [INFO] ARBITRAGE-001.ExecEngine: DISPOSED[0m
+[1m2026-07-03T08:20:28.854508000Z[0m [INFO] ARBITRAGE-001.MarketMatchingActor: DISPOSED[0m
+[1m2026-07-03T08:20:28.854632000Z[0m [INFO] ARBITRAGE-001.StrategyEvaluator: DISPOSED[0m
+[1m2026-07-03T08:20:28.854660000Z[0m [INFO] ARBITRAGE-001.WebGatewayActor: DISPOSED[0m
+[1m2026-07-03T08:20:28.854687000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Cleared actors[0m
+[1m2026-07-03T08:20:28.854704000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Cleared trading strategies[0m
+[1m2026-07-03T08:20:28.854708000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: Cleared execution algorithms[0m
+[1m2026-07-03T08:20:28.854735000Z[0m [INFO] ARBITRAGE-001.ARBITRAGE-001: DISPOSED[0m
+[1m2026-07-03T08:20:28.856416000Z[0m [INFO] ARBITRAGE-001.Cache: Reset[0m
+[1m2026-07-03T08:20:28.857573000Z[0m [INFO] ARBITRAGE-001.MessageBus: Closed message bus[0m
+[1m2026-07-03T08:20:28.857652000Z[0m [INFO] ARBITRAGE-001.TradingNode: Shutting down executor[0m
+[1m2026-07-03T08:20:28.858688000Z[0m [INFO] ARBITRAGE-001.TradingNode: Closing event loop[0m
+[1m2026-07-03T08:20:28.859906000Z[0m [INFO] ARBITRAGE-001.TradingNode: loop.is_running=False[0m
+[1m2026-07-03T08:20:28.859928000Z[0m [INFO] ARBITRAGE-001.TradingNode: loop.is_closed=True[0m
+[1m2026-07-03T08:20:28.859932000Z[0m [INFO] ARBITRAGE-001.TradingNode: DISPOSED[0m
