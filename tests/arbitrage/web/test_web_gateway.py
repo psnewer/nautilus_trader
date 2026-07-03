@@ -74,7 +74,7 @@ def test_on_risk_event_broadcasts_trading_state():
     assert msg["type"] == "trading_state" and msg["data"]["state"] == "HALTED"
 
 
-def test_on_matched_pair_reads_external_venue_from_venue_map_for_sharpexch():
+def test_on_matched_pair_stores_venue_instrument_ids():
     actor = _bare_actor()
     actor._matched_pairs = {}
     data = MatchedPair(
@@ -99,15 +99,18 @@ def test_on_matched_pair_reads_external_venue_from_venue_map_for_sharpexch():
     actor._on_matched_pair(data)
 
     row = actor._matched_pairs["ATP|a|b|SHARPEXCH"]
-    assert row["external_venue"] == "SHARPEXCH"
-    assert row["external_instrument_ids"] == ["se-home.SHARPEXCH", "se-away.SHARPEXCH"]
-    assert "oe_instrument_ids" not in row
-    assert "pm_instrument_ids" not in row
-    assert row["venue_instrument_ids"]["SHARPEXCH"] == row["external_instrument_ids"]
+    assert row["venue_instrument_ids"] == {
+        "POLYMARKET": ["pm-home.POLYMARKET", "pm-away.POLYMARKET"],
+        "SHARPEXCH": ["se-home.SHARPEXCH", "se-away.SHARPEXCH"],
+    }
     assert row["tradable_instrument_ids"] == data.tradable_instrument_ids
+    # 不再有 external_* 或 pm_*/oe_* 旧字段
+    assert "external_venue" not in row
+    assert "pm_instrument_ids" not in row
+    assert "oe_instrument_ids" not in row
 
 
-def test_on_matched_pair_does_not_default_venues_without_venue_map():
+def test_on_matched_pair_handles_empty_venue_map():
     actor = _bare_actor()
     actor._matched_pairs = {}
     data = MatchedPair(
@@ -123,12 +126,13 @@ def test_on_matched_pair_does_not_default_venues_without_venue_map():
 
     row = actor._matched_pairs["legacy"]
     assert row["venue_instrument_ids"] == {}
-    assert row["external_instrument_ids"] == []
     assert row["tradable_instrument_ids"] == data.tradable_instrument_ids
-    assert row["external_venue"] == ""
+    assert "external_venue" not in row
+    assert "external_instrument_ids" not in row
 
 
-def test_on_matched_pair_does_not_infer_external_venue_from_instrument_suffix():
+def test_on_matched_pair_uses_explicit_venue_map_only():
+    """venue_instrument_ids 来自 MatchedPair.venue_instrument_ids,不从 instrument suffix 推断。"""
     actor = _bare_actor()
     actor._matched_pairs = {}
     data = MatchedPair(
@@ -144,12 +148,13 @@ def test_on_matched_pair_does_not_infer_external_venue_from_instrument_suffix():
     actor._on_matched_pair(data)
 
     row = actor._matched_pairs["suffix-only"]
+    # 无 venue_instrument_ids 传入则为空,不从 instrument suffix 推断
     assert row["venue_instrument_ids"] == {}
-    assert row["external_instrument_ids"] == []
-    assert row["external_venue"] == ""
+    assert "external_venue" not in row
 
 
-def test_matched_pairs_exposes_all_venue_teams_for_aggregated_pair():
+def test_matched_pairs_exposes_all_venue_teams():
+    """matched_pairs() 输出 venue_teams 字典,不再有 external_* 字段。"""
     actor = _bare_actor()
     actor._matched_pairs = {}
     actor._venue_teams = lambda iids: f"{iids[0]} teams" if iids else ""
@@ -179,16 +184,18 @@ def test_matched_pairs_exposes_all_venue_teams_for_aggregated_pair():
     actor._on_matched_pair(data)
     row = actor.matched_pairs()[0]
 
-    assert row["external_venues"] == ["ORBITEXCH", "SHARPEXCH"]
-    assert row["external_venue"] == "ORBITEXCH"  # 旧单 external 视图只保留兼容值
+    # 每个 venue 都在 venue_teams 字典里
     assert row["venue_teams"] == {
         "POLYMARKET": "pm-home.POLYMARKET teams",
         "ORBITEXCH": "oe-home.ORBITEXCH teams",
         "SHARPEXCH": "se-home.SHARPEXCH teams",
     }
+    # 不再有 external_* 或 pm_*/oe_* 旧字段
+    assert "external_venues" not in row
+    assert "external_venue" not in row
+    assert "external_teams" not in row
     assert "pm_teams" not in row
     assert "oe_teams" not in row
-    assert row["external_teams"] == "oe-home.ORBITEXCH teams"
 
 
 # ── 控制台:TradingState 启停 + 配置编辑(Actor 方法)──────────────────

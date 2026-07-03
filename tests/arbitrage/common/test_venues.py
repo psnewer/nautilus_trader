@@ -15,7 +15,6 @@ from src.arbitrage.common.venues import enabled_venue_ids
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
-from src.arbitrage.common.venues import is_primary_display_venue
 from src.arbitrage.common.venues import is_venue_enabled
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import qty_from_share
@@ -42,14 +41,11 @@ def test_static_descriptors_capture_current_venue_capabilities():
     oe = descriptor_for(ORBITEXCH)
     se = descriptor_for(SHARPEXCH)
 
-    assert pm.display_group == "primary"
     assert pm.odds_model == "probability"
     assert pm.settlement_kind == "polymarket_ctf"
     assert pm.discovery_config_builder is None
-    assert oe.display_group == "external"
     assert oe.odds_model == "decimal"
     assert oe.discovery_config_builder == "to_oe_scraper_config"
-    assert se.display_group == "external"
     assert se.odds_model == "decimal"
     assert se.discovery_config_builder == "to_se_discovery_config"
     assert oe.venue_id != se.venue_id
@@ -121,8 +117,6 @@ def test_decimal_helpers_are_shared_for_oe_and_se(venue):
 
 
 def test_polymarket_helpers_use_probability_share_semantics():
-    assert is_primary_display_venue(POLYMARKET) is True
-    assert is_primary_display_venue(ORBITEXCH) is False
     assert is_decimal_odds_venue(POLYMARKET) is False
     assert is_probability_odds_venue(POLYMARKET) is True
     assert probability_from_price(POLYMARKET, 0.25) == 0.25

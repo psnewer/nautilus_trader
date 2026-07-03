@@ -37,7 +37,6 @@ from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venues import descriptor_for
-from src.arbitrage.common.venues import is_primary_display_venue
 from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.web.app import build_app
 
@@ -271,21 +270,11 @@ class WebGatewayActor(Actor):
         if not isinstance(data, MatchedPair):
             return
         venue_instrument_ids = _venue_map_from_matched_pair(data)
-        external_instrument_ids = [
-            iid
-            for venue, ids in venue_instrument_ids.items()
-            if not is_primary_display_venue(venue)
-            for iid in ids
-        ]
-        external_venues = [venue for venue in venue_instrument_ids if not is_primary_display_venue(venue)]
         self._matched_pairs[data.pair_id] = {
             "pair_id": data.pair_id, "sport": data.sport, "competition": data.competition,
-            "external_instrument_ids": external_instrument_ids,
-            "external_venues": external_venues,
             "anchor_instrument_ids": list(data.anchor_instrument_ids),
             "tradable_instrument_ids": list(data.tradable_instrument_ids),
             "venue_instrument_ids": venue_instrument_ids,
-            "external_venue": external_venues[0] if external_venues else "",
             "confidence": data.confidence,
         }
 
@@ -297,11 +286,9 @@ class WebGatewayActor(Actor):
                 venue: self._venue_teams(ids)
                 for venue, ids in p["venue_instrument_ids"].items()
             }
-            external_teams = self._venue_teams(p["external_instrument_ids"])
             out.append({
                 **p,
                 "venue_teams": venue_teams,
-                "external_teams": external_teams,
             })
         return out
 
