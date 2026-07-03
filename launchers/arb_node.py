@@ -95,6 +95,11 @@ from src.arbitrage.settlement.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
 
 
+# 配置 Python logging 以输出 INFO 级别日志(settlement/contract service 使用标准 logging)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 _LOG = logging.getLogger(__name__)
 
 
