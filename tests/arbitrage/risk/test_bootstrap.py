@@ -79,13 +79,60 @@ def test_prepare_get_reset_arb_context():
     assert bootstrap.get_arb_context().venue_liveness is None
     liveness = VenueExecutionLiveness()
     ctx = bootstrap.prepare_arb_context(
-        venue_liveness=liveness, pm_session_timeout_secs=8.0,
+        venue_liveness=liveness,
+        session_timeout_secs_by_venue={"POLYMARKET": 8.0},
     )
     assert ctx.venue_liveness is liveness
     assert bootstrap.get_arb_context() is ctx                # 进程级单例
-    assert ctx.pm_session_timeout_secs == 8.0
+    assert ctx.session_timeout_secs_by_venue["POLYMARKET"] == 8.0
     bootstrap.reset_arb_context()
     assert bootstrap.get_arb_context().venue_liveness is None
+
+
+def test_ctx_map_get_set():
+    bootstrap.reset_arb_context()
+    ctx = bootstrap.get_arb_context()
+
+    assert bootstrap.ctx_map_get(ctx, "session_timeout_secs_by_venue", "POLYMARKET", 30.0) == 30.0
+    with pytest.raises(RuntimeError, match=r"session_timeout_secs_by_venue\['POLYMARKET'\] is required"):
+        bootstrap.ctx_map_require(ctx, "session_timeout_secs_by_venue", "POLYMARKET")
+
+    bootstrap.ctx_map_set(ctx, "session_timeout_secs_by_venue", "POLYMARKET", 45.0)
+
+    assert bootstrap.ctx_map_get(ctx, "session_timeout_secs_by_venue", "POLYMARKET", 30.0) == 45.0
+    assert bootstrap.ctx_map_require(ctx, "session_timeout_secs_by_venue", "POLYMARKET") == 45.0
+    bootstrap.reset_arb_context()
+
+
+def test_ctx_map_get_or_create_writes_once():
+    bootstrap.reset_arb_context()
+    ctx = bootstrap.get_arb_context()
+    calls = []
+
+    first = bootstrap.ctx_map_get_or_create(
+        ctx,
+        "browser_manager_by_venue",
+        "ORBITEXCH",
+        lambda: calls.append("created") or object(),
+    )
+    second = bootstrap.ctx_map_get_or_create(
+        ctx,
+        "browser_manager_by_venue",
+        "ORBITEXCH",
+        lambda: calls.append("created-again") or object(),
+    )
+
+    assert first is second
+    assert calls == ["created"]
+    assert ctx.browser_manager_by_venue["ORBITEXCH"] is first
+    bootstrap.reset_arb_context()
+
+
+def test_prepare_arb_context_rejects_removed_venue_specific_fields():
+    bootstrap.reset_arb_context()
+
+    with pytest.raises(TypeError, match="pm_session_timeout_secs"):
+        bootstrap.prepare_arb_context(pm_session_timeout_secs=8.0)
 
 
 def test_wire_reuses_context_liveness_when_none_passed():

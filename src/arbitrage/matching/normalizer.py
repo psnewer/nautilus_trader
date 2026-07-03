@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+from src.arbitrage.common.venues import venue_id_from_instrument_id
+
 
 def normalize_team_name(team_name: str | None) -> str:
     """队名预处理(平移自旧 EventNormalizer.normalize_team_name)。
@@ -30,7 +32,7 @@ def normalize_team_name(team_name: str | None) -> str:
 class NormalizedEvent:
     """从同 venue 的多腿(home/draw/away)反推的事件视图(matching 输入)。"""
 
-    venue: str                          # "POLYMARKET" / "ORBITEXCH"
+    venue: str                          # 真实 venue id,如 "POLYMARKET" / "ORBITEXCH" / "SHARPEXCH"
     sport: str                          # 标准化 sport(Provider 填 info 时已 alias)
     competition: str                    # 联赛名(league;非 pair_id,#34)
     home_team: str                      # 原始队名
@@ -62,7 +64,9 @@ def events_from_instruments(instruments) -> list[NormalizedEvent]:
         away_team = info.get("away_team")
         if not (sport and competition and home_team and away_team):
             continue  # info 不全的 instrument 不参与匹配
-        venue = str(instrument.id.venue) if hasattr(instrument, "id") else info.get("venue", "")
+        venue = _venue_of(instrument)
+        if not venue:
+            continue
         key = (venue, sport, competition, home_team, away_team)
         ev = by_event.get(key)
         if ev is None:
@@ -78,3 +82,15 @@ def events_from_instruments(instruments) -> list[NormalizedEvent]:
             by_event[key] = ev
         ev.legs.append(instrument)
     return list(by_event.values())
+
+
+def _venue_of(instrument) -> str:
+    instrument_id = getattr(instrument, "id", None)
+    venue = venue_id_from_instrument_id(instrument_id) if instrument_id is not None else ""
+    if venue:
+        return venue
+
+    raw_venue = getattr(instrument_id, "venue", None)
+    if raw_venue:
+        return str(raw_venue).upper()
+    return ""

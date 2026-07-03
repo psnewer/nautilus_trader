@@ -1,7 +1,7 @@
 # Web 组件详细设计(Step 7 —— 控制台)
 
 > **状态**:**完整控制台页面**(忠实照搬 legacy Bootstrap 5 标签页:Market Discovery / Market Matching / Odds Monitor / Strategy / Configuration)已落地,详见 §8。对应初设 `refactor.md §5.7`。
-> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,external venue 赔率前端换算成隐含概率与 PM 统一)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、market_order/discount/global_sl/返水率面板)按用户裁定**删除**。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
+> **范围演进**:① 只读监控 MVP(#118)→ ② 控制台(#119)→ ③ #120 一度移除监控只留控制面 → ④ **#123 用户要求照搬 legacy 完整页面,监控随页面重新加入**:`GET /`(serve HTML)+ 只读端点 `/accounts`(余额)、`/instruments`(发现仪表)、`/matched_pairs`(匹配表)、`/odds`(盘口,按 venue registry `odds_model` 前端换算成统一隐含概率)+ 控制台(启停 + 各 config 段编辑)。死面板/死字段(Run/Subscribe/pipeline、market_order/discount/global_sl/返水率面板)按用户裁定**删除**。本文 §1-7 = 通用骨架/机制,**控制语义真理源在 §8**。
 
 ---
 
@@ -78,6 +78,7 @@ class WebGatewayActor(Actor):
 |---|---|
 | Q16 TradingState(修订)| 控制台启停显式 `set_trading_state`(人工熔断);自动门控仍不碰 TradingState(risk §4.3 前向指针)。详见 §8.1 |
 | Q17 账户状态 | 余额真相仍由各 ExecutionClient 写 NT Cache;`/accounts`(#123)只读 `cache.accounts()` 序列化,navbar 显示余额数字,余额低/熔断由用户看着判断(替代旧 BalanceMonitorActor)|
+| Venue registry | 页面展示不再把 `POLYMARKET` 写死为唯一主腿;Discovery 统计/过滤从 `/instruments` 实际 venue 动态生成,Matching/Odds 按返回的真实 venue 列表展示;Matching 表分组只读 `venue_instrument_ids`,不再输出旧 `pm_*` / `oe_*` 字段;`/odds` leg 携带 `odds_model` 供前端决定是否 `1/decimal_odds` 换算 |
 | §6.10 同步 | 本 Actor 不参与健康检查 ⊥ 执行互斥;无 await 循环阻塞交易 loop(WS 用非阻塞 queue) |
 
 ## 6. 落地清单(scaffolding;控制台清单见 §8.6)
@@ -120,6 +121,11 @@ class WebGatewayActor(Actor):
 | discovery | competitions / sports | **重启**(要 provider 重载 instruments) |
 | web / execution | host/port / 超时 | **重启** |
 
+Discovery 配置页展示约定:
+- `discovery.polymarket/orbitexch/sharpexch.sports` 通过 Polymarket / OrbitExch / SharpExch 三个标签页分别编辑。
+- PMSPORTS 的 sports status data source 暂不在页面单独显式配置;默认 `data_sources.sports_status.sports` 为空,dispatcher 继承 `discovery.polymarket.sports` 作为 PMSPORTS discovery / sports firehose 目标过滤。
+- `page_load_timeout_sec` / `staleness_timeout_sec` 是 external browser discovery 的统一 UI 值,不在页面上区分 OE/SE;保存时同步写入 `venues.orbitexch` 与 `venues.sharpexch` 的同名字段,以兼容现有 schema/dispatcher。
+
 ### 8.3 接线 seam = MessageBus 命令(方案乙,解耦)
 
 WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owner 组件订阅自行 apply**(producer=web 定义契约,consumer=risk/matching;P11 单一生产者归属 → 契约住 web 组件,consumer 交叉引用)。
@@ -145,8 +151,8 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
-| GET | `/matched_pairs` | MatchedPair 累积(匹配表);保留 `oe_*` 旧字段兼容,同时输出 `external_venue` / `external_instrument_ids` / `external_teams` 表示真实 external venue(OE 或 SE)|
-| GET | `/odds` | PairRegistry + `cache.order_book` 最优价;前端将非 PM external venue(OE/SE)十进制赔率按 1/odds 换算成隐含概率与 PM 统一 |
+| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids`,不再输出旧 `pm_*` / `oe_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示分组只读 `venue_instrument_ids`,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底;`external_venue` 直接取 `venue_instrument_ids` 中第一个非 primary display group venue,`external_*` 仍是非 primary display group 可交易腿展示视图,`external_venues` / `venue_teams` 表达 3+ venue 聚合结果 |
+| GET | `/odds` | PairRegistry + `cache.order_book` 最优价;每条 leg 带 `venue` / `role` / `odds_model` / `bid` / `ask`,前端按 `odds_model=decimal` 将十进制赔率按 1/odds 换算成隐含概率,probability venue 原样展示 |
 | WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 
 ### 8.5 安全

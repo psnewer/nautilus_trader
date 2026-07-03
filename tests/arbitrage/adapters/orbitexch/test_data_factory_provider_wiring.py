@@ -1,7 +1,7 @@
 """Slice 7A:`OrbitExchLiveDataClientFactory.create` 真接 scraper + Provider 分支。
 
 不构造真 NT DataClient(同 debug factory test 模式):monkeypatch 客户端类 + scraper /
-Provider 类,验证 factory 按 ArbContext.oe_scraper_config 选生产 Provider 还是 InstrumentProvider 占位。
+Provider 类,验证 factory 按 ArbContext.discovery_config_by_venue 选生产 Provider 还是 InstrumentProvider 占位。
 """
 
 from unittest.mock import MagicMock
@@ -13,6 +13,7 @@ from nautilus_trader.adapters.orbitexch import factories as oe_factories
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venue_configs import OrbitExchVenueConfig
 from src.arbitrage.common.venue_configs import SportConfig
+from src.arbitrage.common.venues import ORBITEXCH
 
 
 @pytest.fixture(autouse=True)
@@ -45,10 +46,10 @@ def _stub_heavy(monkeypatch, dc_class=None, scraper_class=None, prov_class=None)
 
 
 def test_factory_uses_placeholder_provider_when_scraper_config_missing(monkeypatch):
-    """ArbContext.oe_scraper_config=None(默认)→ 走占位 InstrumentProvider 分支。"""
+    """discovery_config_by_venue 缺 ORBITEXCH → 走占位 InstrumentProvider 分支。"""
     dc = MagicMock(name="oe_dc")
     _stub_heavy(monkeypatch, dc_class=dc)
-    bootstrap.prepare_arb_context()  # 默认 oe_scraper_config=None
+    bootstrap.prepare_arb_context()
 
     oe_factories.OrbitExchLiveDataClientFactory.create(**_args())
 
@@ -61,7 +62,7 @@ def test_factory_uses_placeholder_provider_when_scraper_config_missing(monkeypat
 
 
 def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatch):
-    """ArbContext.oe_scraper_config 存在 → 装真 OrbitExchInstrumentProvider(scraper, aliases)。"""
+    """discovery_config_by_venue 存在 ORBITEXCH → 装真 OrbitExchInstrumentProvider。"""
     dc = MagicMock(name="oe_dc")
     scraper_class = MagicMock(name="OrbitExchScraperStub")
     prov_class = MagicMock(name="OrbitExchInstrumentProviderStub")
@@ -72,9 +73,9 @@ def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatc
         sports=[SportConfig(sport="Tennis", competitions=["Men's Roland Garros 2026"])],
     )
     bootstrap.prepare_arb_context(
-        oe_scraper_config=oe_venue,
-        oe_sport_aliases={"Tennis": "Tennis"},
-        oe_competition_aliases={"Men's Roland Garros 2026": "ATP"},
+        discovery_config_by_venue={ORBITEXCH: oe_venue},
+        sport_aliases_by_venue={ORBITEXCH: {"Tennis": "Tennis"}},
+        competition_aliases_by_venue={ORBITEXCH: {"Men's Roland Garros 2026": "ATP"}},
         arbitrage_params=ArbitrageParams(fx=1.25),
     )
 
@@ -87,3 +88,30 @@ def test_factory_constructs_real_provider_when_scraper_config_present(monkeypatc
     assert prov_kwargs["sport_aliases"] == {"Tennis": "Tennis"}
     assert prov_kwargs["competition_aliases"] == {"Men's Roland Garros 2026": "ATP"}
     assert prov_kwargs["fx"] == 1.25
+
+
+def test_factory_uses_keyed_venue_context(monkeypatch):
+    """Venue registry 第二阶段:OE data factory 只从 keyed map 读 discovery / aliases。"""
+    dc = MagicMock(name="oe_dc")
+    scraper_class = MagicMock(name="OrbitExchScraperStub")
+    prov_class = MagicMock(name="OrbitExchInstrumentProviderStub")
+    _stub_heavy(monkeypatch, dc_class=dc, scraper_class=scraper_class, prov_class=prov_class)
+
+    oe_venue = OrbitExchVenueConfig(
+        enabled=True,
+        sports=[SportConfig(sport="Tennis", competitions=["Men's Wimbledon 2026"])],
+    )
+    bootstrap.prepare_arb_context(
+        discovery_config_by_venue={ORBITEXCH: oe_venue},
+        sport_aliases_by_venue={ORBITEXCH: {"Tennis": "Tennis"}},
+        competition_aliases_by_venue={ORBITEXCH: {"Men's Wimbledon 2026": "ATP"}},
+        arbitrage_params=ArbitrageParams(fx=1.25),
+    )
+
+    oe_factories.OrbitExchLiveDataClientFactory.create(**_args())
+
+    scraper_class.assert_called_once_with(config=oe_venue)
+    _, prov_kwargs = prov_class.call_args
+    assert prov_kwargs["sport_aliases"] == {"Tennis": "Tennis"}
+    assert prov_kwargs["competition_aliases"] == {"Men's Wimbledon 2026": "ATP"}
+    assert bootstrap.get_arb_context().instrument_provider_by_venue[ORBITEXCH] is prov_class.return_value

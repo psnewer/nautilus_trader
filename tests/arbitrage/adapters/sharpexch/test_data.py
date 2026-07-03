@@ -74,9 +74,10 @@ class _FakeBrowserManager:
 
 
 class _FakeHandler:
-    def __init__(self, page, logger=None):
+    def __init__(self, page, logger=None, **kwargs):
         self.page = page
         self.logger = logger
+        self.kwargs = kwargs
         self.started = False
         self.stopped = False
         self.price_callbacks = []
@@ -520,8 +521,46 @@ def test_open_competition_page_registers_handler_before_goto():
     assert comp_pages == {"2_12597512": page}
     handler = comp_handlers["2_12597512"]
     assert handler.price_callbacks == [captured_prices.append]
+    assert handler.kwargs == {
+        "clock": None,
+        "liveness_timeout_secs": None,
+        "liveness_name": None,
+        "liveness_ws_type": None,
+    }
     handler.disconnect_callbacks[0]("close:prices")
     assert captured_disconnects == [("2_12597512", "close:prices")]
+
+
+def test_open_competition_page_passes_liveness_options_to_handler():
+    calls = []
+    page = _FakePage(calls)
+    clock = object()
+    comp_handlers = {}
+
+    asyncio.run(
+        se_open_or_reload_competition_page(
+            page_key="2_12597512",
+            sport_id="2",
+            competition_id="12597512",
+            base_url="https://portal.sharpxch.com/",
+            browser_manager=_FakeBrowserManager(page),
+            comp_pages={},
+            comp_handlers=comp_handlers,
+            price_callback=lambda message: None,
+            clock=clock,
+            liveness_timeout_secs=300.0,
+            liveness_name="se_comp_ws_liveness:2_12597512",
+            liveness_ws_type="prices",
+            handler_factory=_FakeHandler,
+        ),
+    )
+
+    assert comp_handlers["2_12597512"].kwargs == {
+        "clock": clock,
+        "liveness_timeout_secs": 300.0,
+        "liveness_name": "se_comp_ws_liveness:2_12597512",
+        "liveness_ws_type": "prices",
+    }
 
 
 def test_reload_competition_page_reuses_existing_page():

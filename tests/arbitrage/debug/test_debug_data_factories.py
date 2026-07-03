@@ -13,6 +13,7 @@ import pytest
 import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.orbitexch import factories as oe_factories
 from nautilus_trader.adapters.polymarket import arb_factories as pm_factories
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.debug import data_clients as debug_dc
 from src.arbitrage.debug.config import DebugConfig
 
@@ -48,6 +49,9 @@ def test_pm_factory_uses_production_when_no_debug(monkeypatch):
     pm_factories.ArbPolymarketLiveDataClientFactory.create(**_common_nt_args())
 
     assert prod.called and not dbg.called
+    assert bootstrap.get_arb_context().instrument_provider_by_venue[POLYMARKET] is (
+        pm_factories.ArbPolymarketInstrumentProvider.return_value
+    )
 
 
 def test_pm_factory_uses_production_when_debug_disabled(monkeypatch):

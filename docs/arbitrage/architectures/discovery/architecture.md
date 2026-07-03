@@ -11,6 +11,7 @@
 | 件 | 基类 | 职责 |
 |---|---|---|
 | PM InstrumentProvider | 上游 `PolymarketInstrumentProvider` | **零代码**,配置即用(P1)。产出 `BinaryOption`(`info` 由上游 + 我们配置补 6-key) |
+| PMSPORTS InstrumentProvider | 自写 `PolymarketSportsInstrumentProvider` | 公开 Gamma sports discovery → 每场一个 `.PMSPORTS` non-tradable synthetic event anchor,供 matching 做事件锚点 |
 | OE InstrumentProvider | 自写 `OrbitExchInstrumentProvider(InstrumentProvider)` | Playwright 抓赛事(包 `OrbitExchScraper.discover_events`)→ 每场 ≥2 个 `BettingInstrument`(home/draw/away),`info` 填全 6-key |
 | ~~InstrumentRefresher~~ **(退役,#59)** | — | **已退役**:周期发现迁回 DataClient 原生 `_update_instruments`(NT bybit/binance 范式)。详见 §3.3 + refactor.md §5.2.3/#59。 |
 | 周期发现(#59) | PM/OE **DataClient** | `_connect` 首抓 + `_update_instruments(interval)` task 周期 `provider.load_all_async()` → `_send_all_instruments_to_data_engine()`(`_handle_data`→DataEngine→cache + `on_instrument`);interval 经 client config `update_instruments_interval_mins` |
@@ -88,7 +89,8 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 
 > **#46 落实"Provider 填 info 时已 alias"假设**:normalizer 此前注释假设 Provider 已规范化 sport/competition,
 > 但旧 Provider 不查 aliases。slice 7A 加 `sport_aliases` / `competition_aliases` 构造参,
-> launcher 经 `ArbContext.oe_sport_aliases` / `oe_competition_aliases` 注入(由 `ArbConfig.matching` 派生)。
+> launcher 经 `ArbContext.sport_aliases_by_venue["ORBITEXCH"]` /
+> `competition_aliases_by_venue["ORBITEXCH"]` 注入(由 `ArbConfig.matching` 派生)。
 
 **OE competition 页懒加载处理(2026-06-29)**:`OrbitExchScraper` discovery 浏览器独立于 Data/Exec 登录浏览器,仍需在 `add_init_script`
 中注入与赔率页一致的可见性欺骗:固定 `document.hidden=false` / `visibilityState="visible"` / `hasFocus()=true`,
@@ -105,7 +107,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > 均在 v2 client surface 内,发现语义不变。
 >
 > 发现链路(每 competition 一次请求):
-> 1. `GET /sports` → 每 competition:`sport`(如 `atp`)+ `series` id + **`ordering`**(home/away);按 `ArbContext.pm_event_slug_tags` 过滤目标 competition。
+> 1. `GET /sports` → 每 competition:`sport`(如 `atp`)+ `series` id + **`ordering`**(home/away);按 `ArbContext.target_competitions_by_data_source["PMSPORTS"]` 过滤目标 competition。
 > 2. `GET /events?series_id={id}&closed=false&active=true&limit=500` → **一次拉全本 series 的 H2H 比赛**(每 event **内嵌** `teams`+`markets`,含主赛事,无需二跳 `/events?id=`)。
 >    - 旧版(#55)用 `/series/{id}` 只内嵌截断的 ~10 条 events → **漏主赛事**;默认 `limit=20` 是页面"懒加载"同源根因 → 调大即全量。
 >    - **`series_slug` 不通用**:只 atp/wta 的 series slug 恰好 == league slug;足球/棒球查 == 0,故必须走 `/sports` 取 series **id**。
@@ -116,18 +118,30 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > - **selection_role**:
 >   - 2-way / 单市场 3-outcome(`slug == ticker`):按 **competition `ordering`** 选映射 —— `home`→`[home,(draw),away]`;`away`→反排 `[away,(draw),home]`(如 MLB)。**不赌 outcomes 固定顺序**(MLB `ordering=away` 时 `[away,home]`,按固定下标会错位)。
 >   - 3-way binary(`slug == ticker-{abbr}`):仅 `Yes` token;`abbr` 取自 `teams.abbreviation`;`-{home_abbr}`→home / `-{away_abbr}`→away / `-draw`→draw;其它(`No` token / 未知后缀)→ 跳过。
-> - **sport**:`ArbContext.pm_competition_to_sport` 查表(config 派生)。
-> - **competition**:写 `info` 时经 `oe_competition_aliases` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。**start_ts** 从 market/event `startDate` → ns。
+> - **sport**:`ArbContext.competition_to_sport_by_data_source["PMSPORTS"]` 查表(config 派生)。
+> - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。**start_ts** 从 market/event `startDate` → ns。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
 > **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。
+
+**PMSPORTS event anchor discovery(#127,已落地 slice B)**:
+`PolymarketSportsInstrumentProvider` 复用同一组公开 Gamma discovery 目标(`ArbContext.target_competitions_by_data_source["PMSPORTS"]`,
+`competition_to_sport_by_data_source["PMSPORTS"]`,competition aliases),但每个 `event["gameId"]` 只产一条 `.PMSPORTS`
+synthetic `BettingInstrument`:
+- `venue=PMSPORTS`, `market_type=EVENT_ANCHOR`, `selection_name="event"`。
+- `info` 填 Q9 6-key + `game_id` + `tradable=False` + `anchor=True`。
+- 不解析 PM token / outcome / order size,不产出可交易腿;PM 可交易腿仍由 `ArbPolymarketInstrumentProvider`
+  产出 `.POLYMARKET`。
+- `PolymarketSportsDataClient._connect` 首轮 load 后 `_handle_data` 灌 cache,并按
+  `update_instruments_interval_mins` 周期重抓;单轮普通异常只 warning,下轮继续。
 
 ### 3.3 周期发现:DataClient 原生 `_update_instruments`(#59;替代退役的 `InstrumentRefresher`)
 
 **#59(slice A)**:`InstrumentRefresher` Actor **已退役** —— 它实为从零重造 NT 原生 `DataClient._update_instruments`(bybit/binance 范式),且本会话 3 个 bug(pending-task / cache 桥接缺失 / topic 通配)皆脱离原生路径的症状。周期发现迁回 DataClient:
 
 - **PM**(上游 `PolymarketDataClient` 已自带 `_update_instruments`):`_connect` → `initialize()` + `_send_all_instruments_to_data_engine()`;周期 task `initialize(reload=True)` + `_send_all`。**前提**:arb factory 强制 `instrument_config.load_all=True`(否则 `initialize` 走 "No loading configured" 加载 0;Gap α,refactor.md #59)。
+- **PMSPORTS**(`adapters/polymarket/sports.py`,#127):`_connect` → `PolymarketSportsInstrumentProvider.load_all_async()` + `_send_all_instruments_to_data_engine()`;周期 task 直调 provider `load_all_async()`。WS firehose 与 discovery 同属 data-only client,但 synthetic anchors 不接 order book 订阅。
 - **OE**(`adapters/orbitexch/data.py`,#59 新增):`_send_all_instruments_to_data_engine()`(`provider.get_all()`→`_handle_data`)+ `_update_instruments(interval)` task(**直调 `load_all_async`**,Gap-α-proof)+ `_connect` 首抓 + `_disconnect` cancel;config `update_instruments_interval_mins`(默认 60)。
 - **单轮失败语义(2026-06-29 overnight 修)**:周期发现 task 每轮单独 catch 普通异常并继续下一轮;断网 / DNS / Playwright `goto` 临时失败只损失本轮 rediscovery,不得杀死整个 `_update_instruments` task。`CancelledError` 仍表示组件 stop,正常退出。这个容错只覆盖 instrument rediscovery;行情 WS/competition 页恢复仍归 data §3.1 的 WS handler/reload 机制。
 - **灌 cache 路径**:`_handle_data(inst)` → DataEngine `_handle_instrument` → `cache.add_instrument` **且** 通知 `on_instrument` 订阅者(原生,替代旧 refresher 裸 `cache.add_instrument`)。
@@ -155,8 +169,8 @@ class InstrumentRefresher(Actor):
 **slice 10d(#52)Gap E:clean shutdown**:`_on_alert` 创建的 `_tick_task` 跟踪到 `self._tick_task`;`on_stop` cancel 未完成 task,避免 NT dispose 时 "Task was destroyed but it is pending" warning。**slice 10d live smoke 验:0 pending warning**(对比 #51 1 条)。
 
 **slice 8A(#47)Provider 共享机制**:Refresher 必须跟 DataClient 用**同一个 Provider 实例**(否则 add 的 instrument 双方各持一份,cache 视图分裂)。落地:
-- PM `ArbPolymarketLiveDataClientFactory.create` + OE `OrbitExchLiveDataClientFactory.create` 构造完 Provider 后**回写** `ArbContext.{pm,oe}_instrument_provider = provider`;SE 在 `venues.sharpexch.enabled=true` 时由 `SharpExchLiveDataClientFactory` 同形回写 `ctx.se_instrument_provider`
-- launcher `add_actors` 在 `node.build()` 之后(provider 已构造)从 `ArbContext` 读出,构造需要的发现/匹配/策略组件;SE runtime 为显式 opt-in,默认 PM/OE discovery 流程不变
+- PM `ArbPolymarketLiveDataClientFactory.create` + OE `OrbitExchLiveDataClientFactory.create` 构造完 Provider 后**只回写** `instrument_provider_by_venue["POLYMARKET"|"ORBITEXCH"]`。SE 在 `venues.sharpexch.enabled=true` 时由 `SharpExchLiveDataClientFactory` 同形回写 `instrument_provider_by_venue["SHARPEXCH"]`。PM/PMSPORTS targets、OE/SE discovery config 与 aliases 均从 keyed map 读取,不存在 `ctx.pm_*` / `ctx.oe_*` / `ctx.se_*` 兼容兜底。
+- launcher `add_actors` 在 `node.build()` 之后构造 Matching / Strategy / optional WebGateway;InstrumentRefresher 已退役,不会再从 `ArbContext` 读取 provider 构造 Refresher。Provider 回写只作为运行时共享/测试/后续 adapter 迁移入口保留;browser manager / lock 等 discovery 共享件通过 `ctx_map_get_or_create` 写入 keyed map;SE runtime 为显式 opt-in,默认 PM/OE discovery 流程不变。
 - **provider 缺失场景**(discovery 禁用 / 占位 `InstrumentProvider()`):launcher 跳过该 venue 的 Refresher 装载(不 raise)
 
 ### 3.4 消息接线
@@ -241,6 +255,7 @@ sequenceDiagram
 
 - [x] `InstrumentsRefreshed` Data 类(`@customdataclass` from `model.custom`)+ 测构造/字段(`src/arbitrage/discovery/events.py`,3 passed)
 - [x] `OrbitExchInstrumentProvider`:`load_all_async` 包 scraper、`_build_legs` 填 info 6-key(start_ts=0 标 TODO)(`nautilus_trader/adapters/orbitexch/providers.py`,6 passed)
+- [x] `PolymarketSportsInstrumentProvider`:公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchor(`tests/arbitrage/adapters/polymarket/test_sports.py`)
 - [x] `InstrumentRefresher` Actor:周期 NT clock 自重排 + try/finally + on_save/on_load + `config.{venue}.refresh_interval` 命令运行时改值 + Q4 静默失败(`src/arbitrage/discovery/refresher.py`,11 passed)
 - [ ] PM info 6-key post-processor(或上游 provider 子类)接线点 —— launcher 层,Step 1/2 全链路启动时定
 - [ ] **Step 1 待补**:scraper DOM 提取 `start_ts`(否则 matching 无法用时间窗过滤过期赛事)

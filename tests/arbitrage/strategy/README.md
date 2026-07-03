@@ -191,16 +191,17 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **框架改 4 件**(per-pair 隔离 + per-eval scratch + Web 默认规模):
 - ✅ `test_signal_store_view.py`(6):view writes 写 namespaced / view reads 只看 namespace / per-pair 不污染 / transient get 消费仅在 namespace / has namespaced / clear_persistent / root+view 共存
 - ✅ `test_snapshot.py` +3:in_play False when no leg marks / in_play True when any leg marks / 缺 cache.instrument 不 raise
-- ✅ `test_evaluator.py`:旧 test 改用 `store.view(pair_id).set_persistent(...)`,符合 view idiom;`test_eval_context_strategy_defaults_read_arbitrage_params` 验证每轮从 live `ArbitrageParams` 读取 `share/max_leg_share/fx` 作为 strategy 默认值
+- ✅ `test_evaluator.py`:旧 test 改用 `store.view(pair_id).set_persistent(...)`,符合 view idiom;`test_eval_context_strategy_defaults_read_arbitrage_params` 验证每轮从 live `ArbitrageParams` 读取 `share/max_leg_share` 作为 strategy 默认值;`fx` 不进入 Strategy defaults,只留在 adapter 边界
 
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `test_check_pre_match.py`(3):兼容 Check 形态 not in_play → True / in_play → False / snapshot=None → True 不阻塞;生产 example 推荐用 `self_hits: {"signal": "pre_match"}`
-- ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / SE 作为 OE 类 decimal odds venue 可触发 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:2-way 多 venue 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / SE candidate 使用 decimal odds stake qty / target outcome 用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share
+- ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
+- ✅ `test_check_one_side_rebate.py`:2-way 多 venue 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / SE candidate 经 Venue Registry 使用 decimal odds stake qty / target outcome 用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
-- ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
-- ✅ `test_action_place_bets.py`:PM size=share / OE/SE size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / 无 action share 时用 `leg["share_if_wins"]` 推 qty / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
-- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / SE 按 OE 类 decimal odds remaining 与 qty 公式缩放 / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 的 candidate 被移除 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认
+- ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
+- ✅ `test_action_place_bets.py`:PM size=share / OE/SE 经 Venue Registry size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / 用 `leg["share_if_wins"]` 推 qty,不再用 action share 兜底 / leg 缺 `qty/share_if_wins` 时整次机会 abort / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
+- ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
+- ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`(2):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs
 
 **OE inplay 写入**:
@@ -208,11 +209,24 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 ## Slice 10e(2026-06-04 #61):OBD per-iid 订阅 + OBD-driven 重评
 
-`StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:两边各腿首次见到时
+`StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:按 `tradable_instrument_ids`
+订各可交易腿,首次见到时
 `subscribe_order_book_deltas(InstrumentId)`(去重 `_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
 流进 cache → `build_snapshot` 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
 `on_order_book_deltas` → `_route_eval`(经 `instrument_id→PairRegistry→pair_id` 评估,OBD-driven 重评)。
-- ✅ `test_evaluator.py` +1 `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿订 OBD,同 pair 再来去重。
+- ✅ `test_evaluator.py` +1 `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿订 OBD,同 pair 再来去重;测试显式提供 `tradable_instrument_ids`,Strategy 不从旧 PM/OE 字段 fallback。
+- ✅ `test_evaluator.py` +1 `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:PMSPORTS anchor id 不触发 OBD 订阅。
+- ✅ `test_evaluator.py` +1 `test_matched_pair_obd_subscription_ignores_legacy_projection_fields`:Strategy 只消费 `tradable_instrument_ids`,即使旧 PM/OE projection 字段与主字段不一致也不读取旧字段。
+
+**PMSPORTS event anchor 部分落地(#127/#129)**:当 MatchedPair 包含 `.PMSPORTS` anchor ids 时,
+`_ensure_obd_subscribed` 已只消费 `tradable_instrument_ids`,跳过 `.PMSPORTS`。`build_snapshot`
+经 `PairRegistry.instrument_ids_for_pair()` 默认只取可交易腿,已覆盖 `.PMSPORTS` 不进入机会快照。
+仍需端到端 smoke 验证 `.PMSPORTS` 不进入 `ctx.scratch["legs"]` 或 `PlaceBetsAction` submit spec。详细设计见
+`docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
+
+- ✅ `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:anchor id 不触发 `subscribe_order_book_deltas`。
+- ✅ `test_snapshot_uses_tradable_pair_ids_not_anchor_ids`:snapshot 只包含 tradable ids。
+- ⬜ `test_place_bets_rejects_non_tradable_anchor_leg`:若上游误传 `tradable=false` leg,action 不提交。
 - **live smoke15 验**:MatchedPair mensik-zverev → 4 个 `SubscribeOrderBook`(2 PM token + 2 OE selection)→ 两 data client `Subscribed ... order book deltas`,0 ERROR。
 
 ## Slice 10e 观测增强(2026-06-07):`log_evaluations` 评估锚点
@@ -283,8 +297,8 @@ result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 
 
 `src/arbitrage/strategy/check_action_registry.py` + `src/arbitrage/strategy/json_loader.py`(框架层,具体 Check/Action 子类由用户后落)。
 
-- ✅ `test_check_action_registry.py`(8):register + build + 默认 params / 未知 type / 缺 type / 同名同类幂等 / 同名异类 raise
-- ✅ `test_json_loader.py`(27):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry + `strategy.enabled=false` 时即使有 bindings 也返回空 registry(保留 OBD 订阅桥,禁用 Action)
+- ✅ `test_check_action_registry.py`(10):register + build + 默认 params / 未知 type / 缺 type / 参数错 / 同名同类幂等 / 同名异类 raise
+- ✅ `test_json_loader.py`(28):BoolExpr 5 形态(signal/AND/OR/NOT/嵌套)+ None 默认真值 + 多 key/未知 key/类型错 raise;Condition 全空默认 pass + self_hits False 短路 + checktion 短路 + 递归 sub_conditions 互斥 + `actions` 数组顺序执行 + 旧单字段 `action` 明确拒绝 + 未知 check/action raise;Strategy 两树 + 缺 compensation_tree 永 False + 缺 arbitrage_tree raise;StrategyRegistry pair/competition/sport 三层挂载锁定 + `pair_id:` 别名 + 未知 strategy_id / 错 scope kind / 错 scope 格式 raise + 空 bindings → 空 registry + `strategy.enabled=false` 时即使有 bindings 也返回空 registry(保留 OBD 订阅桥,禁用 Action)。旧 `strategy.signals` 配置定义表已从 ArbConfig schema 删除;`self_hits` 直接读取运行时 `SignalStore`。
 
 ## Debug 相关
 

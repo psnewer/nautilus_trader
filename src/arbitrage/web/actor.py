@@ -36,6 +36,9 @@ from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.venues import descriptor_for
+from src.arbitrage.common.venues import is_primary_display_venue
+from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.web.app import build_app
 
 
@@ -81,13 +84,8 @@ def _port_bindable(host: str, port: int) -> bool:
         sock.close()
 
 
-def _venue_from_instrument_ids(instrument_ids: list[str]) -> str:
-    """从 NT instrument id 后缀推断 venue,如 `... .SHARPEXCH`。"""
-    for iid in instrument_ids:
-        text = str(iid)
-        if "." in text:
-            return text.rsplit(".", 1)[-1].upper()
-    return ""
+def _venue_map_from_matched_pair(data: MatchedPair) -> dict[str, list[str]]:
+    return {str(venue).upper(): list(ids) for venue, ids in data.venue_instrument_ids.items()}
 
 
 class WebGatewayActor(Actor):
@@ -272,13 +270,22 @@ class WebGatewayActor(Actor):
     def _on_matched_pair(self, data) -> None:
         if not isinstance(data, MatchedPair):
             return
-        external_instrument_ids = list(data.oe_instrument_ids)
+        venue_instrument_ids = _venue_map_from_matched_pair(data)
+        external_instrument_ids = [
+            iid
+            for venue, ids in venue_instrument_ids.items()
+            if not is_primary_display_venue(venue)
+            for iid in ids
+        ]
+        external_venues = [venue for venue in venue_instrument_ids if not is_primary_display_venue(venue)]
         self._matched_pairs[data.pair_id] = {
             "pair_id": data.pair_id, "sport": data.sport, "competition": data.competition,
-            "pm_instrument_ids": list(data.pm_instrument_ids),
-            "oe_instrument_ids": external_instrument_ids,  # 兼容旧前端字段名;现表示当前 external venue 腿
             "external_instrument_ids": external_instrument_ids,
-            "external_venue": _venue_from_instrument_ids(external_instrument_ids),
+            "external_venues": external_venues,
+            "anchor_instrument_ids": list(data.anchor_instrument_ids),
+            "tradable_instrument_ids": list(data.tradable_instrument_ids),
+            "venue_instrument_ids": venue_instrument_ids,
+            "external_venue": external_venues[0] if external_venues else "",
             "confidence": data.confidence,
         }
 
@@ -286,11 +293,16 @@ class WebGatewayActor(Actor):
         """Matching tab:已匹配对(MatchedPair 累积);各 venue 的队名经 cache instrument.info 解析。"""
         out: list[dict] = []
         for p in self._matched_pairs.values():
+            venue_teams = {
+                venue: self._venue_teams(ids)
+                for venue, ids in p["venue_instrument_ids"].items()
+            }
             external_teams = self._venue_teams(p["external_instrument_ids"])
-            out.append({**p,
-                        "pm_teams": self._venue_teams(p["pm_instrument_ids"]),
-                        "oe_teams": external_teams,  # 兼容旧前端字段名;现表示当前 external venue 队名
-                        "external_teams": external_teams})
+            out.append({
+                **p,
+                "venue_teams": venue_teams,
+                "external_teams": external_teams,
+            })
         return out
 
     def _venue_teams(self, iids: list[str]) -> str:
@@ -338,6 +350,7 @@ class WebGatewayActor(Actor):
                 legs.append({
                     "venue": iid.venue.value,
                     "role": role,
+                    "odds_model": descriptor_for(iid.venue.value).odds_model if is_known_venue(iid.venue.value) else "",
                     "bid": float(bid) if bid is not None else None,
                     "ask": float(ask) if ask is not None else None,
                 })

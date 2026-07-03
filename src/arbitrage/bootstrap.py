@@ -42,45 +42,26 @@ from src.arbitrage.risk.portfolio import ArbitragePortfolio
 class ArbContext:
     """factory create 时读取的进程级共享件。"""
 
-    venue_liveness: VenueExecutionLiveness | None = None  # 跨 PM/OE 共享同一份
+    venue_liveness: VenueExecutionLiveness | None = None  # enabled trading venues 共享同一份
     pair_registry: PairRegistry | None = None      # matching 唯一写;risk/portfolio/session 只读(#34)
     pair_inflight: object | None = None            # PairInFlightGate(§6.10 §7,per-pair 串行);strategy+execution 共享一份
 
     # PM 专属
     pm_settlement: object | None = None
-    pm_session_timeout_secs: float = 30.0
     # 注(#110):PM merge/redeem 改由 NT 连续 position 对账驱动(无 HealthCheckLoop)→
     # 不再需要 `pm_positions_fetcher` / `pm_health_interval_secs`(已删)。
 
-    # OE 专属
-    oe_session_timeout_secs: float = 30.0
-    # 注(#109):OE competition 页存活封装进 WS handler(无 HealthCheckLoop)→ 不再有 health interval。
-    # OE Discovery:scraper config + Provider 写 info 时查 aliases(slice 7A / #46)
-    oe_scraper_config: object | None = None  # OrbitExchVenueConfig | None;运行时类型避循环 import
-    oe_sport_aliases: dict = field(default_factory=dict)
-    oe_competition_aliases: dict = field(default_factory=dict)
-
-    # Provider 实例回写(slice 8A / #47):data factory 构造完 provider 后写回此处。
-    # #59:原读者 InstrumentRefresher 已退役(发现迁 DataClient),当前**无读者**(仅 prepare_arb_context
-    # / 测试设值);保留字段备未来跨组件取 provider 用,删除需级联 prepare_arb_context 签名 + 测试。
-    pm_instrument_provider: object | None = None
-    oe_instrument_provider: object | None = None
-    # OE 共享 BrowserManager(§6.2 单例):data factory 先建并回写,exec factory 复用同一实例
-    # → 一个浏览器(data/exec 各取专属 page),而非各 new 一个(两窗口 bug,#62)。
-    oe_browser_manager: object | None = None
-
-    # SE 专属(第一阶段离线接入):按 OE 型 venue 复制 factory 注入形状,但 launcher 暂不注册。
-    se_session_timeout_secs: float = 30.0
-    se_discovery_config: object | None = None  # SharpExchVenueConfig | None;运行时类型避循环 import
-    se_sport_aliases: dict = field(default_factory=dict)
-    se_competition_aliases: dict = field(default_factory=dict)
-    se_instrument_provider: object | None = None
-    se_browser_manager: object | None = None
-    se_browser_lock: object | None = None
-
-    # PM 发现目标(#55):`ArbPolymarketInstrumentProvider.load_all_async` 读这两字段做 series-based 发现。
-    pm_event_slug_tags: list = field(default_factory=list)        # 目标 competition 列表(如 ["atp"]);PM /sports `sport` 字段比对
-    pm_competition_to_sport: dict = field(default_factory=dict)   # competition→sport map(如 {"atp": "Tennis"});provider 写 info["sport"]
+    # Venue/DataSource Registry 第二阶段通用入口。PM/OE/SE factories 只读取这些 keyed map,
+    # 避免继续扩散 venue 专属上下文形状。
+    session_timeout_secs_by_venue: dict = field(default_factory=dict)
+    discovery_config_by_venue: dict = field(default_factory=dict)
+    sport_aliases_by_venue: dict = field(default_factory=dict)
+    competition_aliases_by_venue: dict = field(default_factory=dict)
+    instrument_provider_by_venue: dict = field(default_factory=dict)
+    browser_manager_by_venue: dict = field(default_factory=dict)
+    browser_lock_by_venue: dict = field(default_factory=dict)
+    target_competitions_by_data_source: dict = field(default_factory=dict)
+    competition_to_sport_by_data_source: dict = field(default_factory=dict)
 
     # Debug 注入(Q11 / §6.6;`enabled=False` 或 None → 全套生产路径)
     debug_config: object | None = None  # `DebugConfig | None`;运行时类型,避免 bootstrap import debug 模块循环
@@ -90,6 +71,39 @@ class ArbContext:
 
 
 _arb_context: ArbContext = ArbContext()
+
+
+def ctx_map_get(ctx, attr: str, key: str, default=None):
+    """读取 ArbContext keyed map;map 缺失或 key 缺失时返回显式默认值。"""
+    mapping = getattr(ctx, attr, None) or {}
+    return mapping.get(key, default)
+
+
+def ctx_map_require(ctx, attr: str, key: str):
+    """读取必需的 ArbContext keyed map 值;缺失时 fail-fast。"""
+    mapping = getattr(ctx, attr, None) or {}
+    if key not in mapping:
+        raise RuntimeError(f"ArbContext.{attr}[{key!r}] is required")
+    return mapping[key]
+
+
+def ctx_map_set(ctx, attr: str, key: str, value) -> None:
+    """写入 ArbContext keyed map;用于 factory 构造后回写共享对象。"""
+    mapping = getattr(ctx, attr, None)
+    if mapping is None:
+        mapping = {}
+        setattr(ctx, attr, mapping)
+    mapping[key] = value
+
+
+def ctx_map_get_or_create(ctx, attr: str, key: str, factory):
+    """读取 ArbContext keyed map 值;缺失时用 factory 创建并回写。"""
+    existing = ctx_map_get(ctx, attr, key)
+    if existing is not None:
+        return existing
+    value = factory()
+    ctx_map_set(ctx, attr, key, value)
+    return value
 
 
 def get_arb_context() -> ArbContext:

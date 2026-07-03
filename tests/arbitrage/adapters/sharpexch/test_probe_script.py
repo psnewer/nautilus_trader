@@ -2,6 +2,7 @@
 
 import asyncio
 
+from scripts import se_fill_probe
 from scripts.se_probe import _ProbeSamples
 from scripts.se_probe import _competition_counts
 from scripts.se_probe import _competition_url
@@ -290,3 +291,41 @@ def test_dismiss_post_login_popup_timeout_continues_without_click():
 
     assert asyncio.run(se_dismiss_post_login_popup(page)) is False
     assert page.mouse.clicks == []
+
+
+def test_se_fill_probe_defaults_to_min_stake_marketable_back():
+    args = se_fill_probe._build_parser().parse_args(["--config", "arb_config.json"])
+
+    assert args.confirm is False
+    assert args.size == 12.0
+    assert args.odds == 1.01
+    assert args.discovery_timeout == 120.0
+
+
+def test_se_fill_probe_records_accepted_venue_order_mapping():
+    class Cache:
+        def __init__(self):
+            self.calls = []
+
+        def add_venue_order_id(self, client_order_id, venue_order_id):
+            self.calls.append((client_order_id, venue_order_id))
+
+    cache = Cache()
+
+    se_fill_probe._record_accepted_probe_cache(cache, "COID-1", "VOID-1")
+
+    assert cache.calls == [("COID-1", "VOID-1")]
+
+
+def test_se_fill_probe_can_override_user_data_dir():
+    cfg = se_fill_probe.SharpExchExecClientConfig(
+        username="u",
+        password="p",
+        user_data_dir=None,
+    )
+
+    out = se_fill_probe._exec_config_with_user_data_dir(cfg, "/tmp/se-profile")
+
+    assert out.user_data_dir == "/tmp/se-profile"
+    assert out.username == "u"
+    assert out.password == "p"

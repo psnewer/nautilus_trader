@@ -1,7 +1,4 @@
-"""SharpExch data 侧纯映射函数。
-
-真实 `LiveMarketDataClient` 后续接线;本文件先提供可测的 price runner → `OrderBookDeltas`。
-"""
+"""SharpExch data client 与 price frame → `OrderBookDeltas` 映射。"""
 
 from __future__ import annotations
 
@@ -35,9 +32,9 @@ _COMP_WS_READY_POLL_MS = 100
 
 
 class SharpExchDataClient(LiveMarketDataClient):
-    """SE data client 离线骨架。
+    """SE data client。
 
-    当前只把订阅状态与 price frame 分发接到已落地 helper;factory/launcher 尚未接线。
+    负责 discovery instruments、订阅时打开 competition 页、路由 price frame 并发布 `OrderBookDeltas`。
     """
 
     def __init__(
@@ -175,6 +172,10 @@ class SharpExchDataClient(LiveMarketDataClient):
             disconnect_callback=self._on_comp_disconnect,
             logger=self._log,
             page_timeout=self._config.page_timeout,
+            clock=self._clock,
+            liveness_timeout_secs=self._config.staleness_timeout_secs,
+            liveness_name=f"se_comp_ws_liveness:{page_key}",
+            liveness_ws_type="prices",
         )
 
     def _on_price_frame(self, message) -> None:
@@ -564,6 +565,10 @@ async def se_open_or_reload_competition_page(
     disconnect_callback: Callable | None = None,
     logger=None,
     page_timeout: int = 120000,
+    clock=None,
+    liveness_timeout_secs: float | None = None,
+    liveness_name: str | None = None,
+    liveness_ws_type: str | None = None,
     handler_factory=SharpExchWebSocketHandler,
 ) -> dict:
     """SE competition 页新开/刷新统一 helper。
@@ -576,7 +581,14 @@ async def se_open_or_reload_competition_page(
     if page is None:
         page_name = f"comp-{page_key}"
         page = await browser_manager.create_page(page_name)
-        handler = handler_factory(page, logger=logger)
+        handler = handler_factory(
+            page,
+            logger=logger,
+            clock=clock,
+            liveness_timeout_secs=liveness_timeout_secs,
+            liveness_name=liveness_name,
+            liveness_ws_type=liveness_ws_type,
+        )
         handler.on_price_update(price_callback)
         if disconnect_callback is not None:
             handler.on_disconnect(lambda reason, pk=page_key: disconnect_callback(pk, reason))
@@ -628,6 +640,10 @@ async def se_reload_competition_on_disconnect(
     disconnect_callback: Callable | None = None,
     logger=None,
     page_timeout: int = 120000,
+    clock=None,
+    liveness_timeout_secs: float | None = None,
+    liveness_name: str | None = None,
+    liveness_ws_type: str | None = None,
     handler_factory=SharpExchWebSocketHandler,
     disconnecting: bool = False,
 ) -> dict | None:
@@ -666,6 +682,10 @@ async def se_reload_competition_on_disconnect(
             disconnect_callback=disconnect_callback,
             logger=logger,
             page_timeout=page_timeout,
+            clock=clock,
+            liveness_timeout_secs=liveness_timeout_secs,
+            liveness_name=liveness_name,
+            liveness_ws_type=liveness_ws_type,
             handler_factory=handler_factory,
         )
     finally:

@@ -4,7 +4,7 @@
 
 **落地状态(2026-06-23)**:Step 7 **完整控制台页面**(忠实照搬 legacy Bootstrap 标签页 + 控制 + 只读监控)已实现(`src/arbitrage/web/{actor,app}.py` + `static/console.html`)。`tests/arbitrage/web/test_web_gateway.py` 通过。
 
-**演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,external venue 1/odds 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
+**演进**:#118 只读监控 MVP → #119 控制台 → #120 一度移除监控只留控制面 → **#123 照搬 legacy 完整页面、监控随页面加回**:`GET /`(serve HTML)+ `/accounts`(余额)/`/instruments`(发现)/`/matched_pairs`(匹配)/`/odds`(盘口,按 `odds_model` 换算隐含概率)+ 控制台(启停 + 各 config 段编辑);删 legacy 死面板/死字段。
 
 ## 锁定的关键性约束
 
@@ -22,7 +22,7 @@
 - 验收: web 端 `test_set_trading_state_publishes_command` / `test_post_trading_state_ok` / `test_post_trading_state_invalid_400` / `test_get_trading_state` / `test_trading_state_reads_risk_engine` / `test_on_risk_event_broadcasts_trading_state`;risk 端 end-to-end `tests/arbitrage/risk/test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored`
 
 ### web-7.9: 配置热改(PUT /config/arbitrage 与 /config/risk,C 混合热段)
-- 期望: `PUT /config/arbitrage {share,max_leg_share,fx}` → 写回文件 + publish `command.arb.arbitrage_params` + `applied:live`;RiskEngine 后续 profit/balance 读取 live `ArbitrageParams`,StrategyEvaluator 后续评估读取 live `ArbitrageParams` 作为默认 `share/max_leg_share/fx`
+- 期望: `PUT /config/arbitrage {share,max_leg_share,fx}` → 写回文件 + publish `command.arb.arbitrage_params` + `applied:live`;RiskEngine / adapter 边界继续读取 live `ArbitrageParams.fx`,StrategyEvaluator 后续评估只读取 `share/max_leg_share` 作为默认规模参数
 - 期望: `PUT /config/risk {match_tp,match_sl,min_probability,max_probability,...}` → 写回文件 + publish `command.arb.risk_params` + `applied:live`;risk 引擎只覆盖给定字段,概率上下界由 risk 组件侧校验
 - 验收: `test_update_arbitrage_config_writes_file_and_publishes_command` / `test_update_risk_config_writes_file_and_publishes_command` / `test_put_config_section`;risk 端 `test_arbitrage_params_command_hot_updates_only_given_fields` / `test_risk_params_command_hot_updates_only_given_fields` / `test_probability_bounds_hot_update_rejects_invalid_interval`;strategy 端 `test_eval_context_strategy_defaults_read_arbitrage_params`
 
@@ -39,9 +39,11 @@
 - 验收: `tests/arbitrage/launchers/test_arb_node.py::test_boot_halted_when_web_enabled_and_start_halted` / `test_no_boot_halt_when_web_disabled`
 
 ### web-7.13: 完整页面 + 只读监控端点(#123,照搬 legacy)
-- 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;Discovery 页面统计/过滤 POLYMARKET / ORBITEXCH / SHARPEXCH;`/odds` 的非 PM external venue 腿前端按 `1/赔率` 换算成隐含概率(bid/ask 互换使 bid≤ask)与 PM 统一
+- 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;Discovery 页面统计/过滤从 `/instruments` 实际 venue 动态生成;`/odds` 每条 leg 携带 `odds_model`,前端按 `decimal → 1/赔率`、`probability → 原样` 换算成统一隐含概率(bid/ask 对 decimal 互换使 bid≤ask)
 - 验收: `test_index_serves_html` / `test_get_accounts` / `test_get_instruments` / `test_get_matched_pairs` / `test_get_odds`
-- 注: Market Matching 表保留 `oe_*` 旧字段兼容;新增 `external_venue` / `external_instrument_ids` / `external_teams` 表示真实 external venue(OE 或 SE),`test_on_matched_pair_infers_external_venue_for_sharpexch` 覆盖 PM+SE 字段。
+- 注: Market Matching 表不再输出 `pm_*` / `oe_*` 旧字段;`venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` 暴露 MatchedPair 真实 schema,其中 `tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 分组只读 `venue_instrument_ids`,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底。`external_venue` / `external_instrument_ids` / `external_teams` 仍表示非 primary display group 可交易腿展示视图,`external_venues` / `venue_teams` 表达 3+ venue 聚合结果。`test_on_matched_pair_does_not_default_venues_without_venue_map` 与 `test_on_matched_pair_does_not_infer_external_venue_from_instrument_suffix` 覆盖无兜底负向路径;`test_on_matched_pair_reads_external_venue_from_venue_map_for_sharpexch` 覆盖 PM+SE 字段;`test_matched_pairs_exposes_all_venue_teams_for_aggregated_pair` 覆盖 PM+OE+SE 聚合展示字段。
+- 注: 控制台页面不再把 `POLYMARKET` 写死为唯一主腿;Matching 表按 `venue_teams` 展示全部 venue,Odds 表按 role 展示全部 venue 概率。`test_index_serves_html` 覆盖动态 venue 展示文案锚点。
+- 注: Discovery Config 以 Polymarket / OrbitExch / SharpExch 标签页分别编辑 `discovery.polymarket.sports` / `discovery.orbitexch.sports` / `discovery.sharpexch.sports`;PMSPORTS 暂不单独展示,默认继承 `discovery.polymarket.sports`。`page_load_timeout_sec` / `staleness_timeout_sec` 是 OE/SE 共用 UI 值,保存时同步写入 `venues.orbitexch` 与 `venues.sharpexch`。`test_index_serves_html` 覆盖 SharpExch sports textarea 与统一 browser discovery 保存锚点。
 
 ### web-7.x: scaffolding(端口预检 / WS 背压 / 退订 / 优雅停机)
 - `test_port_bindable_detects_free_and_occupied`、`test_enqueue_drops_oldest_when_full`、`test_unregister_stops_broadcast`、`test_ws_sends_queued_message_then_closes_on_poison`(on_stop 毒丸优雅关 WS)

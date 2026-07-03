@@ -49,6 +49,25 @@ class _CapturingLogger:
         self.error_messages.append(message)
 
 
+class _FakeClock:
+    def __init__(self):
+        self.now_ns = 1_000
+        self.alerts = {}
+        self.canceled = []
+
+    def timestamp_ns(self):
+        return self.now_ns
+
+    def set_time_alert_ns(self, *, name, alert_time_ns, callback):
+        self.alerts[name] = (alert_time_ns, callback)
+
+    def cancel_timer(self, name):
+        self.canceled.append(name)
+        if name not in self.alerts:
+            raise KeyError(name)
+        del self.alerts[name]
+
+
 def test_start_and_stop_register_page_listener():
     page = _FakePage()
     handler = SharpExchWebSocketHandler(page)
@@ -79,6 +98,34 @@ def test_frame_callback_fires_for_heartbeat_before_business_filter():
     handler._on_frame_received("orders", "h")
 
     assert calls == ["frame"]
+
+
+def test_liveness_uses_only_configured_ws_type_frames():
+    clock = _FakeClock()
+    handler = SharpExchWebSocketHandler(
+        _FakePage(),
+        clock=clock,
+        liveness_timeout_secs=1.0,
+        liveness_name="se-liveness",
+        liveness_ws_type="prices",
+    )
+    disconnected = []
+    handler.on_disconnect(disconnected.append)
+
+    asyncio.run(handler.start())
+    assert clock.alerts["se-liveness"][0] == 1_000_001_000
+
+    clock.now_ns += 500_000_000
+    handler._on_frame_received("orders", "h")
+    assert handler._last_frame_ns == 1_000
+
+    handler._on_frame_received("prices", "h")
+    assert handler._last_frame_ns == 500_001_000
+
+    clock.now_ns = 1_500_001_000
+    clock.alerts["se-liveness"][1](None)
+    assert disconnected == ["liveness_timeout"]
+    assert clock.alerts["se-liveness"][0] == 2_500_001_000
 
 
 def test_sockjs_unwrap_to_parsed_current_bets():

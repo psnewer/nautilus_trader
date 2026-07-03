@@ -53,15 +53,13 @@
                         <div class="card-body"><div class="d-grid gap-2">
                             <button class="btn btn-outline-secondary" onclick="refreshDiscovery()"><i class="bi bi-arrow-clockwise me-1"></i>Refresh Results</button>
                         </div><hr>
-                        <p class="mb-1"><strong>Polymarket:</strong> <span id="poly-count">0</span> events</p>
-                        <p class="mb-1"><strong>OrbitExch:</strong> <span id="orbit-count">0</span> events</p>
-                        <p class="mb-0"><strong>SharpExch:</strong> <span id="sharp-count">0</span> events</p>
+                        <div id="venue-counts" class="small"></div>
                         <div class="text-muted small mt-2">发现连续自动(无手动 Run);此处只读 cache instruments</div>
                     </div></div></div>
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Discovery Results</span>
-                        <select class="form-select form-select-sm w-auto" id="discovery-venue-filter" onchange="renderDiscovery()">
-                            <option value="all">All Venues</option><option value="POLYMARKET">Polymarket</option><option value="ORBITEXCH">OrbitExch</option><option value="SHARPEXCH">SharpExch</option></select>
+	                        <select class="form-select form-select-sm w-auto" id="discovery-venue-filter" onchange="renderDiscovery()">
+	                            <option value="all">All Venues</option></select>
                     </div><div class="card-body" style="max-height:520px;overflow-y:auto">
                         <table class="table table-sm table-hover"><thead><tr><th>Venue</th><th>Sport</th><th>Competition</th><th>Home</th><th>Away</th></tr></thead>
                         <tbody id="discovery-results-table"><tr><td colspan="5" class="text-center text-muted">加载中…</td></tr></tbody></table>
@@ -80,7 +78,7 @@
                     </div></div></div>
                     <div class="col-md-8"><div class="card"><div class="card-header"><i class="bi bi-table me-1"></i>Matched Pairs</div>
                         <div class="card-body" style="max-height:520px;overflow-y:auto">
-                        <table class="table table-sm table-hover"><thead><tr><th>Sport</th><th>Competition</th><th>Polymarket (home vs away)</th><th>External venue (home vs away)</th><th>Confidence</th></tr></thead>
+	                        <table class="table table-sm table-hover"><thead><tr><th>Sport</th><th>Competition</th><th>Venues (home vs away)</th><th>Confidence</th></tr></thead>
                         <tbody id="matching-results-table"><tr><td colspan="5" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
@@ -98,7 +96,7 @@
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
                         <div class="card-body" style="max-height:600px;overflow-y:auto">
-                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Polymarket 概率 (bid/ask)</th><th>External 概率 (bid/ask)</th></tr></thead>
+	                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Role</th><th>Venue 概率 (bid/ask)</th></tr></thead>
                         <tbody id="odds-data-table"><tr><td colspan="3" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
@@ -131,8 +129,16 @@
                             <div class="col-md-3 mb-2"><label class="form-label">refresh_interval_secs</label><input type="number" step="any" class="form-control" id="d-refresh"></div>
                             <div class="col-md-3 mb-2"><label class="form-label">page_load_timeout_sec</label><input type="number" step="any" class="form-control" id="d-plt"></div>
                             <div class="col-md-3 mb-2"><label class="form-label">staleness_timeout_sec</label><input type="number" step="any" class="form-control" id="d-stale"></div></div>
-                            <div class="row"><div class="col-md-6"><label class="form-label">Polymarket Sports (JSON)</label><textarea class="form-control config-editor" id="d-poly" rows="6"></textarea></div>
-                            <div class="col-md-6"><label class="form-label">OrbitExch Sports (JSON)</label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div></div>
+                            <ul class="nav nav-tabs mt-2 mb-2" role="tablist">
+                                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#disc-poly" type="button">Polymarket</button></li>
+                                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#disc-orbit" type="button">OrbitExch</button></li>
+                                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#disc-sharp" type="button">SharpExch</button></li>
+                            </ul>
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="disc-poly"><label class="form-label">Sports (JSON)</label><textarea class="form-control config-editor" id="d-poly" rows="6"></textarea></div>
+                                <div class="tab-pane fade" id="disc-orbit"><label class="form-label">Sports (JSON)</label><textarea class="form-control config-editor" id="d-orbit" rows="6"></textarea></div>
+                                <div class="tab-pane fade" id="disc-sharp"><label class="form-label">Sports (JSON)</label><textarea class="form-control config-editor" id="d-sharp" rows="6"></textarea></div>
+                            </div>
                         </div></div></div>
                     <!-- Matching config -->
                     <div class="tab-pane fade" id="cfg-matching"><div class="card">
@@ -208,18 +214,27 @@
     async function refreshState(){ try{ renderState((await api('GET','/control/trading_state')).trading_state); }catch(e){} }
 
     // ── Discovery / Matching / Odds ──
-    async function refreshDiscovery(){ try{ state.discovery=await api('GET','/instruments'); renderDiscovery();
-      $('poly-count').textContent=state.discovery.filter(x=>x.venue==='POLYMARKET').length;
-      $('orbit-count').textContent=state.discovery.filter(x=>x.venue==='ORBITEXCH').length;
-      $('sharp-count').textContent=state.discovery.filter(x=>x.venue==='SHARPEXCH').length; }catch(e){} }
+	    function discoveryVenues(){ return [...new Set(state.discovery.map(x=>x.venue).filter(Boolean))].sort(); }
+	    function renderDiscoveryVenueControls(){
+	      const current=$('discovery-venue-filter').value||'all';
+	      const venues=discoveryVenues();
+	      $('discovery-venue-filter').innerHTML='<option value="all">All Venues</option>'+venues.map(v=>`<option value="${v}">${v}</option>`).join('');
+	      $('discovery-venue-filter').value=venues.includes(current)?current:'all';
+	      $('venue-counts').innerHTML=venues.map(v=>`<p class="mb-1"><strong>${v}:</strong> ${state.discovery.filter(x=>x.venue===v).length} events</p>`).join('')||'<span class="text-muted">无 venue</span>';
+	    }
+	    async function refreshDiscovery(){ try{ state.discovery=await api('GET','/instruments'); renderDiscoveryVenueControls(); renderDiscovery(); }catch(e){} }
     function renderDiscovery(){ const f=$('discovery-venue-filter').value;
       const rows=state.discovery.filter(x=>f==='all'||x.venue===f).map(x=>`<tr><td>${x.venue}</td><td>${fmt(x.sport)}</td><td>${fmt(x.competition)}</td><td>${fmt(x.home)}</td><td>${fmt(x.away)}</td></tr>`).join('');
       $('discovery-results-table').innerHTML=rows||'<tr><td colspan="5" class="text-center text-muted">无</td></tr>'; }
     async function refreshMatching(){ try{ const ps=await api('GET','/matched_pairs');
       $('pairs-count').textContent=ps.length;
-      $('matching-results-table').innerHTML=ps.length?ps.map(p=>
-        `<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td><td>${p.pm_teams||fmt(null)}</td><td><span class="badge bg-secondary me-1">${fmt(p.external_venue||'External')}</span>${p.external_teams||p.oe_teams||fmt(null)}</td><td>${p.confidence}</td></tr>`
-      ).join(''):'<tr><td colspan="5" class="text-center text-muted">暂无匹配</td></tr>'; }catch(e){} }
+	      $('matching-results-table').innerHTML=ps.length?ps.map(p=>
+	        `<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td><td>${renderVenueTeams(p)}</td><td>${p.confidence}</td></tr>`
+	      ).join(''):'<tr><td colspan="4" class="text-center text-muted">暂无匹配</td></tr>'; }catch(e){} }
+	    function renderVenueTeams(p){ const teams=p.venue_teams||{};
+	      const venues=Object.keys(teams).sort();
+	      if(venues.length){ return venues.map(v=>`<div><span class="badge bg-secondary me-1">${fmt(v)}</span>${teams[v]||fmt(null)}</div>`).join(''); }
+	      return `<span class="badge bg-secondary me-1">${fmt(p.external_venue||'Venue')}</span>${p.external_teams||fmt(null)}`; }
     async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
       if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="3" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
       let rows='';
@@ -227,13 +242,16 @@
         for(const l of p.legs){ (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
         // home 在上,away 在下
         const roles=Object.keys(byRole).sort((a,b)=>a==='home'?-1:b==='home'?1:0); let first=true;
-        for(const role of roles){ const pm=byRole[role].POLYMARKET||{};
-          // 统一成隐含概率:PM 价本来就是概率;OE/SE 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask。
-          const decProb = o => o ? (1/o).toFixed(3) : null;
-          const extCells = Object.entries(byRole[role]).filter(([venue])=>venue!=='POLYMARKET').sort(([a],[b])=>a.localeCompare(b)).map(([venue,leg])=>
-            `<div><span class="badge bg-secondary me-1">${venue}</span>${fmt(decProb(leg.ask))} / ${fmt(decProb(leg.bid))}</div>`
-          ).join('') || fmt(null);
-          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${fmt(pm.bid)} / ${fmt(pm.ask)}</td><td>${extCells}</td></tr>`; first=false; } }
+	        for(const role of roles){
+	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask。
+	          const decProb = o => o ? (1/o).toFixed(3) : null;
+	          const venueCells = Object.entries(byRole[role]).sort(([a],[b])=>a.localeCompare(b)).map(([venue,leg])=>{
+	            const isDecimal = leg.odds_model==='decimal';
+	            const bid = isDecimal ? decProb(leg.ask) : leg.bid;
+	            const ask = isDecimal ? decProb(leg.bid) : leg.ask;
+	            return `<div><span class="badge bg-secondary me-1">${venue}</span>${fmt(bid)} / ${fmt(ask)}</div>`;
+	          }).join('') || fmt(null);
+	          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${fmt(role)}</td><td>${venueCells}</td></tr>`; first=false; } }
       $('odds-data-table').innerHTML=rows; }catch(e){} }
 
     // ── Config:读 /config 填表 + 按段保存 ──
@@ -249,8 +267,8 @@
       if(t==='bool')o[k]=el.checked; else if(t==='num'){ if(el.value!=='')o[k]=parseFloat(el.value);} else if(el.value!=='')o[k]=el.value; } return o; }
 
     async function loadConfig(){ const c=await api('GET','/config'); state.cfg=c.file||{}; state.live=c.live||{}; renderState(state.live.trading_state||'UNKNOWN');
-      const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]);
-      const oe=(state.cfg.venues||{}).orbitexch||{}; $('d-plt').value=oe.page_load_timeout_sec??120; $('d-stale').value=oe.staleness_timeout_sec??300;
+      const d=state.cfg.discovery||{}; $('d-refresh').value=d.refresh_interval_secs??''; jset('d-poly',(d.polymarket||{}).sports||[]); jset('d-orbit',(d.orbitexch||{}).sports||[]); jset('d-sharp',(d.sharpexch||{}).sports||[]);
+      const vs=state.cfg.venues||{}, oe=vs.orbitexch||{}, se=vs.sharpexch||{}; $('d-plt').value=oe.page_load_timeout_sec??se.page_load_timeout_sec??120; $('d-stale').value=oe.staleness_timeout_sec??se.staleness_timeout_sec??300;
       const m=state.cfg.matching||{}; jset('m-sa',m.sport_aliases||{}); jset('m-ca',m.competition_aliases||{}); jset('m-mm',m.competition_max_matches||{});
       const a={...(state.cfg.arbitrage||{}),...(state.live.arbitrage||{})}; $('a-share').value=a.share??''; $('a-max-leg-share').value=a.max_leg_share??''; $('a-fx').value=a.fx??'';
       const r={...(state.cfg.risk||{}),...(state.live.risk||{})};
@@ -263,10 +281,10 @@
     }
     async function put(section,obj,label){ try{ await api('PUT','/config/'+section,obj); toast(`已保存 ${label||section}`,'success'); loadConfig(); }catch(e){ toast('保存失败: '+e.message,'error'); } }
     function saveDiscovery(){ const d={...(state.cfg.discovery||{})}; if($('d-refresh').value!=='')d.refresh_interval_secs=num($('d-refresh').value);
-      try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; }catch(e){ return toast(e.message,'error'); }
-      // OE 参数存 venues.orbitexch
+      try{ d.polymarket={...(d.polymarket||{}),sports:jget('d-poly')}; d.orbitexch={...(d.orbitexch||{}),sports:jget('d-orbit')}; d.sharpexch={...(d.sharpexch||{}),sports:jget('d-sharp')}; }catch(e){ return toast(e.message,'error'); }
+      // browser discovery 参数对 OE / SE 使用同一组 UI 值,落盘时同步写入两个 venue 段。
       const plt=$('d-plt').value, stale=$('d-stale').value;
-      if(plt!==''||stale!==''){ const v={...(state.cfg.venues||{})}; v.orbitexch={...(v.orbitexch||{})}; if(plt!=='')v.orbitexch.page_load_timeout_sec=num(plt); if(stale!=='')v.orbitexch.staleness_timeout_sec=num(stale); put('venues',v,'orbitexch'); }
+      if(plt!==''||stale!==''){ const v={...(state.cfg.venues||{})}; v.orbitexch={...(v.orbitexch||{})}; v.sharpexch={...(v.sharpexch||{})}; for(const key of ['orbitexch','sharpexch']){ if(plt!=='')v[key].page_load_timeout_sec=num(plt); if(stale!=='')v[key].staleness_timeout_sec=num(stale); } put('venues',v,'browser discovery'); }
       put('discovery',d); }
     function saveMatching(){ const m={...(state.cfg.matching||{})};
       try{ m.sport_aliases=jget('m-sa'); m.competition_aliases=jget('m-ca'); m.competition_max_matches=jget('m-mm'); }catch(e){ return toast(e.message,'error'); } put('matching',m); }

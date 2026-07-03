@@ -87,6 +87,7 @@ def _ctx_with_one_leg(submitter, instrument_id):
         "role": "home",
         "price": 0.40,
         "prob": 0.40,
+        "share_if_wins": 10.0,
     }]
     ctx.scratch["mean_rebate_rate"] = 0.10
     return ctx
@@ -112,7 +113,7 @@ def test_mean_rebate_next_opportunity_first_cancels_unmatched_residual():
         )
         await client.submit(order)
 
-    action = PlaceBetsAction(share=10.0)
+    action = PlaceBetsAction()
 
     # 第一次机会:无残留,进入 submit+track。
     _run(action.execute(_ctx_with_one_leg(submitter, instrument.id)))

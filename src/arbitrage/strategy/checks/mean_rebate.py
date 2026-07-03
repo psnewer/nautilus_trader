@@ -2,7 +2,7 @@
 MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
 
 算法(对应 requirements §8):
-  1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取 PM/OE 类 venue 中
+  1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取所有 venue 中
      概率最小者(即 best_ask 最便宜方)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
   3. >= `min_rate` 阈值 → True;同时写带 `share_if_wins` 的 `ctx.scratch["legs"]`
@@ -11,7 +11,7 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
 输出 legs 形态(每方向一条):
   {
     "instrument_id": InstrumentId,
-    "venue": "POLYMARKET" | "ORBITEXCH" | "SHARPEXCH",
+    "venue": str,
     "side": "BUY",
     "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds),
     "prob": float,
@@ -19,13 +19,14 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
     "share_if_wins": float,
   }
 
-PlaceBetsAction 用 leg 自带 `share_if_wins` 推 qty:PM size=share,OE/SE size=share/price(stake)。
+PlaceBetsAction 用 leg 自带 `share_if_wins` 经 Venue Registry 推 qty。
 """
 
 from __future__ import annotations
 
-from src.arbitrage.common.utils import orbitexch_odds_to_probability
-from src.arbitrage.common.utils import polymarket_price_to_probability
+from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import venue_id_from_instrument_id
+from src.arbitrage.common.venues import venue_preference_rank
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -79,12 +80,12 @@ class MeanRebateCheck(Check):
             if len(legs_by_role[role]) < 2:
                 return False  # 缺一边 → 算不了 mean_rebate
 
-        # 每方向取 min(prob);相同 prob 时 PM 优先(arbitrary 但稳定)
+        # 每方向取 min(prob);相同 prob 时按 venue capability 稳定排序。
         chosen_legs = []
         total_prob = 0.0
         for role in roles_present:
             cands = legs_by_role[role]
-            best = min(cands, key=lambda lg: (lg["prob"], 0 if lg["venue"] == "POLYMARKET" else 1))
+            best = min(cands, key=lambda lg: (lg["prob"], venue_preference_rank(lg["venue"])))
             chosen_legs.append(best)
             total_prob += best["prob"]
 
@@ -113,15 +114,8 @@ class MeanRebateCheck(Check):
 
 
 def _venue_of(instrument_id) -> str:
-    """从 InstrumentId 后缀提 venue 名(`X.POLYMARKET` / `Y.ORBITEXCH` / `Z.SHARPEXCH`)。"""
-    s = str(instrument_id)
-    if s.endswith(".POLYMARKET"):
-        return "POLYMARKET"
-    if s.endswith(".ORBITEXCH"):
-        return "ORBITEXCH"
-    if s.endswith(".SHARPEXCH"):
-        return "SHARPEXCH"
-    return ""
+    """从 NT `InstrumentId` 或兼容字符串提真实 venue 名。"""
+    return venue_id_from_instrument_id(instrument_id)
 
 
 def _best_ask(book) -> float | None:
@@ -141,13 +135,7 @@ def _best_ask(book) -> float | None:
 
 
 def _to_prob(venue: str, price: float) -> float:
-    if venue == "POLYMARKET":
-        return polymarket_price_to_probability(price)
-    if _is_decimal_odds_venue(venue):
-        return orbitexch_odds_to_probability(price)
-    return 0.0
-
-
-def _is_decimal_odds_venue(venue: str) -> bool:
-    """第一阶段 SE 接入:SHARPEXCH 先复用 OE decimal odds 语义。"""
-    return str(venue).upper() in {"ORBITEXCH", "SHARPEXCH"}
+    try:
+        return probability_from_price(venue, price)
+    except KeyError:
+        return 0.0

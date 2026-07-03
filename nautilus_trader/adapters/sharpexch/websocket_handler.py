@@ -1,6 +1,6 @@
 """SharpExch WebSocket handler.
 
-只负责 Playwright WebSocket 事件与 SockJS frame 解包;真实 page 生命周期由后续
+只负责 Playwright WebSocket 事件与 SockJS frame 解包;page 生命周期由
 DataClient/ExecutionClient 管理。
 """
 
@@ -10,11 +10,22 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from nautilus_trader.core.datetime import secs_to_nanos
+
 
 class SharpExchWebSocketHandler:
     """SE WS frame dispatcher."""
 
-    def __init__(self, page, logger: Any | None = None):
+    def __init__(
+        self,
+        page,
+        logger: Any | None = None,
+        *,
+        clock: Any | None = None,
+        liveness_timeout_secs: float | None = None,
+        liveness_name: str | None = None,
+        liveness_ws_type: str | None = None,
+    ):
         self.page = page
         self._log = logger
         self._price_callbacks: list[Callable] = []
@@ -24,17 +35,28 @@ class SharpExchWebSocketHandler:
         self._websockets: dict[str, dict] = {}
         self._frame_counts: dict[str, int] = {}
         self._running = False
+        self._clock = clock
+        self._liveness_timeout_secs = liveness_timeout_secs
+        self._liveness_name = liveness_name or f"se_ws_liveness:{id(self)}"
+        self._liveness_ws_type = liveness_ws_type
+        self._liveness_enabled = clock is not None and liveness_timeout_secs is not None
+        self._last_frame_ns = 0
 
     async def start(self) -> None:
         self._log_info("SE WS listener starting")
         self._running = True
         self.page.on("websocket", self._on_websocket)
+        if self._liveness_enabled:
+            self._last_frame_ns = self._clock.timestamp_ns()
+            self._schedule_liveness()
         self._log_info("SE WS listener started")
 
     async def stop(self) -> None:
         self._log_info("SE WS listener stopping")
         self._running = False
         self.page.remove_listener("websocket", self._on_websocket)
+        if self._liveness_enabled:
+            self._cancel_liveness()
         self._log_info("SE WS listener stopped")
 
     def on_price_update(self, callback: Callable) -> None:
@@ -50,6 +72,45 @@ class SharpExchWebSocketHandler:
 
     def on_disconnect(self, callback: Callable) -> None:
         self._disconnect_callbacks.append(callback)
+
+    def _fire_disconnect(self, reason: str) -> None:
+        for callback in self._disconnect_callbacks:
+            try:
+                callback(reason)
+            except Exception as exc:  # noqa: BLE001
+                self._log_debug(f"SE WS disconnect callback error: {exc}")
+
+    def _schedule_liveness(self) -> None:
+        self._cancel_liveness()
+        self._clock.set_time_alert_ns(
+            name=self._liveness_name,
+            alert_time_ns=self._last_frame_ns + secs_to_nanos(self._liveness_timeout_secs),
+            callback=self._on_liveness_alert,
+        )
+
+    def _cancel_liveness(self) -> None:
+        try:
+            self._clock.cancel_timer(self._liveness_name)
+        except (KeyError, ValueError):
+            pass
+
+    def _on_liveness_alert(self, event) -> None:
+        if not self._running:
+            return
+        now = self._clock.timestamp_ns()
+        timeout_ns = secs_to_nanos(self._liveness_timeout_secs)
+        if (now - self._last_frame_ns) >= timeout_ns:
+            self._log_info(f"SE WS liveness timeout (no frame {self._liveness_timeout_secs}s, 含心跳) → disconnect")
+            self._fire_disconnect("liveness_timeout")
+            next_at = now + timeout_ns
+        else:
+            next_at = self._last_frame_ns + timeout_ns
+        self._cancel_liveness()
+        self._clock.set_time_alert_ns(
+            name=self._liveness_name,
+            alert_time_ns=next_at,
+            callback=self._on_liveness_alert,
+        )
 
     def get_active_websockets(self) -> list[dict[str, str]]:
         return [
@@ -77,6 +138,11 @@ class SharpExchWebSocketHandler:
         try:
             if not data:
                 return
+
+            if self._liveness_enabled and (
+                self._liveness_ws_type is None or ws_type == self._liveness_ws_type
+            ):
+                self._last_frame_ns = self._clock.timestamp_ns()
 
             for callback in self._frame_callbacks:
                 try:
@@ -111,11 +177,7 @@ class SharpExchWebSocketHandler:
         ws_type = ws_info["type"] if ws_info is not None else "unknown"
         self._log_info(f"SE WS closed: type={ws_type}, url={url}")
         self._websockets.pop(url, None)
-        for callback in self._disconnect_callbacks:
-            try:
-                callback(f"close:{ws_type}")
-            except Exception as exc:  # noqa: BLE001
-                self._log_debug(f"SE WS disconnect callback error: {exc}")
+        self._fire_disconnect(f"close:{ws_type}")
 
     def _handle_price_update(self, message: Any) -> None:
         self._log_debug(f"SE WS price message parsed: {str(message)[:200]}")

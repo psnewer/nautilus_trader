@@ -3,8 +3,8 @@ MatchEngine —— 跨 venue 队名相似度匹配(平移自旧 `services/market
 
 算法逻辑原样保留(P2 领域 IP 保留):
 1. 按 `(sport, competition)` 完全相等分组
-2. 组内对每个 PM 事件,在 OE 候选中找最佳队名相似度匹配(`get_similar`)
-3. 贪心:每个 OE 事件最多被匹配一次
+2. 组内对每个 anchor 事件,在 tradable 候选中找最佳队名相似度匹配(`get_similar`)
+3. 贪心:每个 tradable 事件最多被匹配一次
 4. `min_similarity` 阈值过滤;`competition_max_matches[comp]` 单联赛上限
 
 **输入改为 `NormalizedEvent[]`**(matching/normalizer.py,从 NT instruments 反推)。
@@ -21,10 +21,10 @@ from src.arbitrage.matching.normalizer import NormalizedEvent
 
 @dataclass
 class MatchResult:
-    """单次 PM↔OE 配对的详细信息(供 MatchedPair 生成 + 调试)。"""
+    """单次 anchor↔tradable 配对的详细信息(供 MatchedPair 生成 + 调试)。"""
 
-    polymarket_event: NormalizedEvent
-    orbitexch_event: NormalizedEvent
+    anchor_event: NormalizedEvent
+    tradable_event: NormalizedEvent
     home_similarity: int
     away_similarity: int
     home_matched_chars: int
@@ -49,62 +49,62 @@ class MatchEngine:
     # ── public ────────────────────────────────────────────────────────
     def match_events(
         self,
-        poly_events: list[NormalizedEvent],
-        orbit_events: list[NormalizedEvent],
+        anchor_events: list[NormalizedEvent],
+        tradable_events: list[NormalizedEvent],
     ) -> list[MatchResult]:
         """全量匹配:按 group_key 分组 → 组内匹配 → 合并所有 results。"""
-        poly_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
-        orbit_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
-        for ev in poly_events:
-            poly_groups[ev.group_key].append(ev)
-        for ev in orbit_events:
-            orbit_groups[ev.group_key].append(ev)
+        anchor_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
+        tradable_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
+        for ev in anchor_events:
+            anchor_groups[ev.group_key].append(ev)
+        for ev in tradable_events:
+            tradable_groups[ev.group_key].append(ev)
 
         all_results: list[MatchResult] = []
-        for key in set(poly_groups.keys()) & set(orbit_groups.keys()):
-            all_results.extend(self._match_within_group(poly_groups[key], orbit_groups[key]))
+        for key in set(anchor_groups.keys()) & set(tradable_groups.keys()):
+            all_results.extend(self._match_within_group(anchor_groups[key], tradable_groups[key]))
         return all_results
 
     # ── internal ──────────────────────────────────────────────────────
     def _match_within_group(
         self,
-        poly_events: list[NormalizedEvent],
-        orbit_events: list[NormalizedEvent],
+        anchor_events: list[NormalizedEvent],
+        tradable_events: list[NormalizedEvent],
     ) -> list[MatchResult]:
-        if not poly_events or not orbit_events:
+        if not anchor_events or not tradable_events:
             return []
 
         results: list[MatchResult] = []
-        used_orbit: set[int] = set()
-        competition = poly_events[0].competition
+        used_tradable: set[int] = set()
+        competition = anchor_events[0].competition
         cap = self._competition_max_matches.get(competition)
 
-        for poly in poly_events:
+        for anchor in anchor_events:
             if cap is not None and len(results) >= cap:
                 break
             candidates: list[tuple[int, MatchResult]] = []
-            for oi, orbit in enumerate(orbit_events):
-                if oi in used_orbit:
+            for ti, tradable in enumerate(tradable_events):
+                if ti in used_tradable:
                     continue
-                result = self._pair(poly, orbit)
+                result = self._pair(anchor, tradable)
                 if result.is_valid and result.total_similarity >= self._min_similarity:
-                    candidates.append((oi, result))
+                    candidates.append((ti, result))
             if not candidates:
                 continue
             # 先 total_similarity 降序,再 total_matched_chars 降序(平移自旧 _select_best_match)
             candidates.sort(key=lambda x: (x[1].total_similarity, x[1].total_matched_chars), reverse=True)
-            best_oi, best_result = candidates[0]
+            best_ti, best_result = candidates[0]
             results.append(best_result)
-            used_orbit.add(best_oi)
+            used_tradable.add(best_ti)
         return results
 
     @staticmethod
-    def _pair(poly: NormalizedEvent, orbit: NormalizedEvent) -> MatchResult:
-        home_sim, home_chars = _team_similarity(poly.home_team_normalized, orbit.home_team_normalized)
-        away_sim, away_chars = _team_similarity(poly.away_team_normalized, orbit.away_team_normalized)
+    def _pair(anchor: NormalizedEvent, tradable: NormalizedEvent) -> MatchResult:
+        home_sim, home_chars = _team_similarity(anchor.home_team_normalized, tradable.home_team_normalized)
+        away_sim, away_chars = _team_similarity(anchor.away_team_normalized, tradable.away_team_normalized)
         return MatchResult(
-            polymarket_event=poly,
-            orbitexch_event=orbit,
+            anchor_event=anchor,
+            tradable_event=tradable,
             home_similarity=home_sim,
             away_similarity=away_sim,
             home_matched_chars=home_chars,

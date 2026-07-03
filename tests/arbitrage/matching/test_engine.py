@@ -20,8 +20,8 @@ def test_match_within_same_group_team_names_equal():
     assert len(results) == 1
     r = results[0]
     assert r.is_valid and r.total_similarity > 0
-    assert r.polymarket_event.home_team == "Arsenal"
-    assert r.orbitexch_event.home_team == "Arsenal"
+    assert r.anchor_event.home_team == "Arsenal"
+    assert r.tradable_event.home_team == "Arsenal"
 
 
 def test_match_skipped_across_different_competitions():

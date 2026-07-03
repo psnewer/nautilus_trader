@@ -17,7 +17,7 @@ from itertools import product
 
 from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
-from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
+from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
 from src.arbitrage.strategy.condition import Check
@@ -30,10 +30,9 @@ _ROLE_ORDER = ("home", "draw", "away")
 class OneSideRebateCheck(Check):
     """枚举所有定向返水 candidate。"""
 
-    def __init__(self, min_rate: float = 0.01, share: float | None = None, fx: float | None = None) -> None:
+    def __init__(self, min_rate: float = 0.01, share: float | None = None) -> None:
         self._min_rate = float(min_rate)
         self._share = float(share) if share is not None else None
-        self._fx = float(fx) if fx is not None else None  # 兼容旧配置,当前中间层不再使用 fx
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
@@ -191,8 +190,9 @@ def _qty_for_share_and_cost(
     share_if_wins: float,
     cost: float,
 ) -> float:
-    if venue == "POLYMARKET":
-        return share_if_wins
-    if _is_decimal_odds_venue(venue):
-        return cost
-    return 0.0
+    if price <= 0:
+        return 0.0
+    try:
+        return qty_from_share(venue, share_if_wins, price)
+    except KeyError:
+        return 0.0

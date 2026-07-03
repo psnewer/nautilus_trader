@@ -79,6 +79,8 @@ flowchart LR
 | Common | 跨组件轻量契约 / 注册表 / 工具 | **✅ 详细** | [common/](architectures/common/architecture.md) |
 | SharpExch | 第三 venue 接入设计(OE 型 Playwright/BIAB exchange) | **设计中** | [sharpexch/](architectures/sharpexch/architecture.md) |
 | Web | WebGatewayActor | 占位(暂不迁移) | [web/](architectures/web/architecture.md) |
+| **横切·Venue Registry** | venue enablement / capability / factory 注册收敛 | **设计中** | [_cross-cutting/venues.md](architectures/_cross-cutting/venues.md) |
+| **横切·Sports Event Anchor** | PMSPORTS non-tradable event discovery + matching anchor | **设计中** | [_cross-cutting/sports-event-anchor.md](architectures/_cross-cutting/sports-event-anchor.md) |
 | **横切·同步** | 健康检查 ⊥ 执行 全局互斥 | **✅ 详细** | [_cross-cutting/synchronization.md](architectures/_cross-cutting/synchronization.md) |
 | **横切·Debug** | 子类化 + 工厂注入 | **✅ 详细** | [_cross-cutting/debug-injection.md](architectures/_cross-cutting/debug-injection.md) |
 
@@ -88,6 +90,8 @@ flowchart LR
 
 - **同步**:健康检查 ⊥ 执行**全局互斥**(msgbus + ref-count + strategy 前置 pre-check,单 loop 无锁)→ `synchronization.md`
 - **Debug 注入**:生产类干净 + Debug 子类覆盖 + 工厂选择,零 `if self._debug` → `debug-injection.md`
+- **Venue Registry / Capability**:真实 venue identity 保留,概率/size/enablement/factory 等同类规则集中到静态 registry → `venues.md`
+- **Sports Event Anchor**:`PMSPORTS` 产出 `.PMSPORTS` non-tradable synthetic event instruments,作为 matching anchor;PM/OE/SE 作为 tradable venues 匹配到该 anchor → `sports-event-anchor.md`
 - **健康检查**:OE(页面 staleness)/ PM(report 对账 + merge/redeem),NT clock 自重排,详见 `execution/architecture.md §4.3`
 - **VenueExecutionLiveness**(#108,取代退役的 `leg_settled`):per-venue `order_alive && position_alive`,execution/reconciliation 写、**Risk 读门控**(Strategy/Portfolio 不读)→ `_cross-cutting/synchronization.md §8.5`
 

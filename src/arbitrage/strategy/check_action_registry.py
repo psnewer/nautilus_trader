@@ -57,7 +57,10 @@ def build_check(spec: dict) -> Check:
             f"unknown check type: '{name}' (registered: {sorted(_CHECK_REGISTRY.keys())})",
         )
     params = spec.get("params") or {}
-    return cls(**params)
+    try:
+        return cls(**params)
+    except TypeError as exc:
+        raise StrategyConfigError(f"invalid params for check type '{name}': {exc}") from exc
 
 
 def build_action(spec: dict) -> Action:
@@ -70,7 +73,10 @@ def build_action(spec: dict) -> Action:
             f"unknown action type: '{name}' (registered: {sorted(_ACTION_REGISTRY.keys())})",
         )
     params = spec.get("params") or {}
-    return cls(**params)
+    try:
+        return cls(**params)
+    except TypeError as exc:
+        raise StrategyConfigError(f"invalid params for action type '{name}': {exc}") from exc
 
 
 def _reset_for_tests() -> None:

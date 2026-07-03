@@ -16,7 +16,6 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 
-from src.arbitrage.bootstrap import ArbContext
 from src.arbitrage.bootstrap import prepare_arb_context
 from src.arbitrage.bootstrap import reset_arb_context
 from src.arbitrage.common.params import ArbitrageParams
@@ -56,13 +55,22 @@ def test_oe_factory_raises_when_context_unset():
         ArbOrbitExchLiveExecClientFactory.create(loop, "ORBITEXCH", cfg, msgbus, cache, clock)
 
 
+def test_oe_factory_requires_session_timeout_keyed_value():
+    loop, msgbus, cache, clock = _harness()
+    prepare_arb_context(venue_liveness=VenueExecutionLiveness())
+    cfg = OrbitExchExecClientConfig(username="u", password="p")
+
+    with pytest.raises(RuntimeError, match=r"session_timeout_secs_by_venue\['ORBITEXCH'\] is required"):
+        ArbOrbitExchLiveExecClientFactory.create(loop, "ORBITEXCH", cfg, msgbus, cache, clock)
+
+
 # ── OE factory 全程走通(stub 上下文)──────────────────────────────
 def test_oe_factory_create_with_context_returns_arb_client():
     loop, msgbus, cache, clock = _harness()
     liveness = VenueExecutionLiveness()
     prepare_arb_context(
         venue_liveness=liveness,
-        oe_session_timeout_secs=45.0,
+        session_timeout_secs_by_venue={"ORBITEXCH": 45.0},
         arbitrage_params=ArbitrageParams(fx=1.25),
     )
     cfg = OrbitExchExecClientConfig(username="u", password="p")

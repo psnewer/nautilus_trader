@@ -19,18 +19,11 @@ from nautilus_trader.adapters.sharpexch.web import se_customer_context
 _PLACE_BETS_JS = """async (arg) => {
     try {
         const payload = arg && arg.payload ? arg.payload : arg;
-        const cookies = document.cookie.split(';');
         let csrfToken = arg && arg.csrfToken ? arg.csrfToken : '';
-        for (const cookie of cookies) {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'CSRF-TOKEN') {
-                csrfToken = decodeURIComponent(value);
-                break;
-            }
-        }
         if (!csrfToken) {
-            return { error: 'CSRF token not found in cookies' };
+            return { error: 'CSRF token not found in browser context cookies' };
         }
+        const bodyStr = JSON.stringify(payload);
         const response = await fetch('/customer/api/placeBets', {
             method: 'POST',
             headers: {
@@ -41,10 +34,19 @@ _PLACE_BETS_JS = """async (arg) => {
                 'Origin': window.location.origin,
                 'Referer': window.location.href,
             },
-            body: JSON.stringify(payload),
+            body: bodyStr,
             credentials: 'include',
         });
-        return await response.json();
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            return {
+                error: `json_parse_failed: ${e.message}`,
+                status: response.status,
+                raw_sample: text.slice(0, 500),
+            };
+        }
     } catch (error) {
         return { error: error.message };
     }
@@ -53,18 +55,11 @@ _PLACE_BETS_JS = """async (arg) => {
 _CANCEL_BETS_JS = """async (arg) => {
     try {
         const payload = arg && arg.payload ? arg.payload : arg;
-        const cookies = document.cookie.split(';');
         let csrfToken = arg && arg.csrfToken ? arg.csrfToken : '';
-        for (const cookie of cookies) {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'CSRF-TOKEN') {
-                csrfToken = decodeURIComponent(value);
-                break;
-            }
-        }
         if (!csrfToken) {
-            return { error: 'CSRF token not found in cookies' };
+            return { error: 'CSRF token not found in browser context cookies' };
         }
+        const bodyStr = JSON.stringify(payload);
         const response = await fetch('/customer/api/cancelBets', {
             method: 'POST',
             headers: {
@@ -75,10 +70,19 @@ _CANCEL_BETS_JS = """async (arg) => {
                 'Origin': window.location.origin,
                 'Referer': window.location.href,
             },
-            body: JSON.stringify(payload),
+            body: bodyStr,
             credentials: 'include',
         });
-        return await response.json();
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            return {
+                error: `json_parse_failed: ${e.message}`,
+                status: response.status,
+                raw_sample: text.slice(0, 500),
+            };
+        }
     } catch (error) {
         return { error: error.message };
     }
@@ -88,7 +92,7 @@ _CANCEL_BETS_JS = """async (arg) => {
 class SharpExchExecutor:
     """SE page-bound 下单/撤单薄封装。
 
-    `page` 由后续 BrowserManager/ExecutionClient 传入;本类不持有真实账户状态。
+    `page` 由 BrowserManager/ExecutionClient 传入;本类不持有真实账户状态。
     """
 
     def __init__(

@@ -1,6 +1,6 @@
 """
-MarketMatchingActor —— NT `Actor` 子类(#59 slice A:自 clock timer 周期触发,gate = 两 venue
-cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venue 匹配 → publish `MatchedPair`
+MarketMatchingActor —— NT `Actor` 子类(#59 slice A:自 clock timer 周期触发,gate = anchor + tradable
+venue cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venue 匹配 → publish `MatchedPair`
 + 注册 `PairRegistry`;过期 instrument 经 `_reap_stale_pairs` eviction。
 
 设计见 `docs/arbitrage/architectures/matching/architecture.md §3.3 / §4`。
@@ -24,6 +24,7 @@ from nautilus_trader.model.identifiers import Venue
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
 from src.arbitrage.matching.events import MatchedPair
@@ -34,12 +35,11 @@ _MATCH_ALERT = "market_matching:tick"
 
 
 class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
-    """`pm_venue`/`external_venues` 用于读 cache.instruments;`refresh_interval_secs` = matching 周期轮询间隔
+    """`anchor_venue`/`tradable_venues` 用于读 cache.instruments;`refresh_interval_secs` = matching 周期轮询间隔
     (#58 slice A:DataClient 拥有发现后,matching 自 timer 读 cache,不再被 InstrumentsRefreshed 触发)。"""
 
-    pm_venue: str = "POLYMARKET"
-    oe_venue: str = "ORBITEXCH"  # legacy alias;external_venues 为空时兜底
-    external_venues: tuple[str, ...] = ("ORBITEXCH",)
+    anchor_venue: str | None = None
+    tradable_venues: tuple[str, ...] = ()
     refresh_interval_secs: float = 30.0
     min_similarity: int = 1
     competition_max_matches: dict = None
@@ -55,8 +55,11 @@ class _RuntimeDeps:
 class MarketMatchingActor(Actor):
     def __init__(self, config: MarketMatchingConfig, deps: _RuntimeDeps) -> None:
         super().__init__(config=config)
-        self._pm_venue_str = config.pm_venue
-        self._external_venue_strs = tuple(config.external_venues or (config.oe_venue,))
+        self._anchor_venue_str = str(config.anchor_venue or "").upper()
+        self._tradable_venue_strs = tuple(
+            str(venue).upper()
+            for venue in config.tradable_venues
+        )
         self._refresh_interval_secs = config.refresh_interval_secs
         self._pair_registry = deps.pair_registry
         self._engine = MatchEngine(
@@ -124,27 +127,75 @@ class MarketMatchingActor(Actor):
 
     # ── 匹配主流程 ────────────────────────────────────────────────────
     def _maybe_match(self) -> None:
-        # latch:两 venue cache 都非空才配(#58)。
+        if not self._anchor_venue_str or not self._tradable_venue_strs:
+            return
+        # latch:anchor + 单个 tradable venue cache 都非空才配(#58)。
         # #60:eviction 改由 sports `ended` 事件驱动(`_evict_game`),非周期 expiration 扫描(用户判定
-        # gamma expiration 不准)。这里只**排除已结束 game 的 PM 腿** → 结束的场不再 re-match/re-register
+        # gamma expiration 不准)。这里只**排除已结束 game 的 anchor 腿** → 结束的场不再 re-match/re-register
         # (PM instrument 仍留 cache,NT 无删除 API)。
-        pm_instruments = [
-            i for i in self.cache.instruments(venue=Venue(self._pm_venue_str))
+        anchor_instruments = [
+            i for i in self.cache.instruments(venue=Venue(self._anchor_venue_str))
             if self._game_id_of(i) not in self._ended_games
         ]
-        if not pm_instruments:
+        if not anchor_instruments:
             return
-        pm_events = events_from_instruments(pm_instruments)
-        if not pm_events:
+        anchor_events = events_from_instruments(anchor_instruments)
+        if not anchor_events:
             return
-        for external_venue in self._external_venue_strs:
-            external_instruments = list(self.cache.instruments(venue=Venue(external_venue)))
-            if not external_instruments:
+        if any(_event_is_non_tradable(event) for event in anchor_events):
+            self._maybe_match_non_tradable_anchor(anchor_events)
+            return
+        for tradable_venue in self._tradable_venue_strs:
+            tradable_instruments = list(self.cache.instruments(venue=Venue(tradable_venue)))
+            if not tradable_instruments:
                 continue
-            external_events = events_from_instruments(external_instruments)
-            results = self._engine.match_events(pm_events, external_events)
+            tradable_events = events_from_instruments(tradable_instruments)
+            results = self._engine.match_events(anchor_events, tradable_events)
             for result in results:
-                self._emit_pair(result, external_venue=external_venue)
+                self._emit_pair(result, tradable_venue=tradable_venue)
+
+    def _maybe_match_non_tradable_anchor(self, anchor_events) -> None:
+        """PMSPORTS event-anchor path:同一 anchor event 聚合所有 tradable venues 后发一个 pair。"""
+        by_pair: dict[str, dict] = {}
+        for tradable_venue in self._tradable_venue_strs:
+            tradable_instruments = list(self.cache.instruments(venue=Venue(tradable_venue)))
+            if not tradable_instruments:
+                continue
+            tradable_events = events_from_instruments(tradable_instruments)
+            results = self._engine.match_events(anchor_events, tradable_events)
+            for result in results:
+                anchor_ev = result.anchor_event
+                pair_id = _pair_id_for(
+                    anchor_ev.competition,
+                    anchor_ev.home_team_normalized,
+                    anchor_ev.away_team_normalized,
+                    include_venue_suffix=False,  # non-tradable anchor 下同一 event 共用一个基础 pair_id
+                )
+                entry = by_pair.setdefault(
+                    pair_id,
+                    {
+                        "anchor_ev": anchor_ev,
+                        "tradable_ids": [],
+                        "venue_ids": {},
+                        "confidence": _confidence(result.total_similarity),
+                    },
+                )
+                entry["confidence"] = max(entry["confidence"], _confidence(result.total_similarity))
+                for leg in result.tradable_event.legs:
+                    iid = str(leg.id)
+                    if iid in entry["tradable_ids"]:
+                        continue
+                    entry["tradable_ids"].append(iid)
+                    venue = _venue_of(leg)
+                    entry["venue_ids"].setdefault(venue, []).append(iid)
+        for pair_id, entry in by_pair.items():
+            self._emit_anchor_pair(
+                pair_id,
+                anchor_ev=entry["anchor_ev"],
+                tradable_ids=entry["tradable_ids"],
+                venue_ids=entry["venue_ids"],
+                confidence=entry["confidence"],
+            )
 
     @staticmethod
     def _game_id_of(instrument):
@@ -152,40 +203,87 @@ class MarketMatchingActor(Actor):
         gid = info.get("game_id") if isinstance(info, dict) else None
         return int(gid) if gid is not None else None
 
-    def _emit_pair(self, result: MatchResult, *, external_venue: str) -> None:
-        pm_ev = result.polymarket_event
-        external_ev = result.orbitexch_event
-        pair_id = _pair_id_for(
-            pm_ev.competition,
-            pm_ev.home_team_normalized,
-            pm_ev.away_team_normalized,
-            external_venue=external_venue,
+    def _emit_anchor_pair(
+        self,
+        pair_id: str,
+        *,
+        anchor_ev,
+        tradable_ids: list[str],
+        venue_ids: dict[str, list[str]],
+        confidence: float,
+    ) -> None:
+        anchor_ids = [str(leg.id) for leg in anchor_ev.legs]
+        gid = self._game_id_of(anchor_ev.legs[0]) if anchor_ev.legs else None
+        if gid is not None:
+            self._game_to_pair.setdefault(gid, set()).add(pair_id)
+        self._pair_registry.register(pair_id, tradable_ids, anchor_instrument_ids=anchor_ids)
+        if pair_id not in self._emitted_pairs:
+            self._emitted_pairs.add(pair_id)
+            self.log.info(
+                f"MatchedPair {pair_id} (conf={confidence:.2f}, "
+                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} tradable={len(tradable_ids)})",
+            )
+        now = self.clock.timestamp_ns()
+        self.publish_data(
+            data=MatchedPair(
+                ts_event=now,
+                ts_init=now,
+                pair_id=pair_id,
+                sport=anchor_ev.sport,
+                competition=anchor_ev.competition,
+                anchor_instrument_ids=anchor_ids,
+                tradable_instrument_ids=tradable_ids,
+                venue_instrument_ids=venue_ids,
+                confidence=confidence,
+            ),
         )
-        pm_ids = [str(leg.id) for leg in pm_ev.legs]
-        external_ids = [str(leg.id) for leg in external_ev.legs]
-        # #60:记 gameId → pair_id(PM 腿 info["game_id"];sports `ended` 时经此 evict)
-        gid = self._game_id_of(pm_ev.legs[0]) if pm_ev.legs else None
+
+    def _emit_pair(self, result: MatchResult, *, tradable_venue: str) -> None:
+        anchor_ev = result.anchor_event
+        tradable_ev = result.tradable_event
+        pair_id = _pair_id_for(
+            anchor_ev.competition,
+            anchor_ev.home_team_normalized,
+            anchor_ev.away_team_normalized,
+            tradable_venue=tradable_venue,
+        )
+        anchor_ids = [str(leg.id) for leg in anchor_ev.legs]
+        tradable_ids = [str(leg.id) for leg in tradable_ev.legs]
+        tradable_anchor_ids = [] if _event_is_non_tradable(anchor_ev) else anchor_ids
+        anchor_registry_ids = anchor_ids if _event_is_non_tradable(anchor_ev) else []
+        # #60:记 gameId → pair_id(anchor 腿 info["game_id"];sports `ended` 时经此 evict)
+        gid = self._game_id_of(anchor_ev.legs[0]) if anchor_ev.legs else None
         if gid is not None:
             self._game_to_pair.setdefault(gid, set()).add(pair_id)
         # 1. 注册到 PairRegistry(下游 pull;同 tick 同步发布前完成)
-        self._pair_registry.register(pair_id, pm_ids + external_ids)
+        self._pair_registry.register(
+            pair_id,
+            tradable_anchor_ids + tradable_ids,
+            anchor_instrument_ids=anchor_registry_ids,
+        )
         if pair_id not in self._emitted_pairs:
             self._emitted_pairs.add(pair_id)
             self.log.info(
                 f"MatchedPair {pair_id} (conf={_confidence(result.total_similarity):.2f}, "
-                f"pm={len(pm_ids)} {external_venue.lower()}={len(external_ids)})",
+                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} "
+                f"{tradable_venue.lower()}={len(tradable_ids)})",
             )
         # 2. publish 事件(strategy 订阅)
         now = self.clock.timestamp_ns()
+        venue_ids: dict[str, list[str]] = {}
+        if tradable_anchor_ids:
+            venue_ids[self._anchor_venue_str] = tradable_anchor_ids
+        venue_ids[str(tradable_venue).upper()] = tradable_ids
         self.publish_data(
             data_type=DataType(MatchedPair),
             data=MatchedPair(
                 ts_event=now, ts_init=now,
                 pair_id=pair_id,
-                sport=pm_ev.sport,
-                competition=pm_ev.competition,
-                pm_instrument_ids=pm_ids,
-                oe_instrument_ids=external_ids,
+                sport=anchor_ev.sport,
+                competition=anchor_ev.competition,
+                anchor_instrument_ids=anchor_registry_ids,
+                tradable_instrument_ids=tradable_anchor_ids + tradable_ids,
+                venue_instrument_ids=venue_ids,
                 confidence=_confidence(result.total_similarity),
             ),
         )
@@ -196,13 +294,32 @@ def _pair_id_for(
     home_normalized: str,
     away_normalized: str,
     *,
-    external_venue: str = "ORBITEXCH",
+    tradable_venue: str | None = None,
+    include_venue_suffix: bool = True,
 ) -> str:
     """matching 架构 §4.3:稳定、确定性 pair_id 生成。"""
     base = f"{competition}|{home_normalized}|{away_normalized}"
-    return base if str(external_venue).upper() == "ORBITEXCH" else f"{base}|{str(external_venue).upper()}"
+    if not include_venue_suffix:
+        return base
+    venue = str(tradable_venue or "").upper()
+    return f"{base}|{venue}" if venue else base
 
 
 def _confidence(total_similarity: int) -> float:
     """队名相似度 → 置信度(0-1)。沿用旧 `MatchedPair.from_match_result` 的简单评估。"""
     return min(total_similarity / 10.0, 1.0)
+
+
+def _event_is_non_tradable(event) -> bool:
+    for leg in getattr(event, "legs", []) or []:
+        info = getattr(leg, "info", None)
+        if isinstance(info, dict) and info.get("tradable") is False:
+            return True
+    return False
+
+
+def _venue_of(instrument) -> str:
+    try:
+        return venue_id_from_instrument_id(instrument.id) or str(instrument.id.venue).upper()
+    except Exception:  # noqa: BLE001
+        return ""

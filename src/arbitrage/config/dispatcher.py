@@ -7,8 +7,8 @@ ArbConfig → 各组件 config 的纯函数派发(slice 4)。
 
 不在本模块的事:
 - 凭证检查(loader 阶段 ConfigWarning 已处理;下游 client 构造时按需 raise)
-- aliases → Provider 层接线(待 slice 7;normalizer 注释:Provider 填 info 时已 alias)
-- Strategy JSON → Condition 树解析(待 slice 5;`to_strategy_registry` 暂留 stub)
+- provider 内部 alias 应用逻辑(本模块只把 aliases 派发进 ArbContext keyed map)
+- Strategy JSON → Condition 树解析细节(`to_strategy_registry` 只调用 loader)
 """
 
 from __future__ import annotations
@@ -24,7 +24,14 @@ from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.config import SharpExchExecClientConfig
 
 from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import SPORTS_CLIENT
+from src.arbitrage.common.venues import descriptor_for
+from src.arbitrage.common.venues import enabled_tradable_venues
+from src.arbitrage.common.venues import enabled_tradable_venue_ids
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
 from src.arbitrage.debug.config import MockCategory
@@ -44,14 +51,16 @@ if TYPE_CHECKING:
 
 
 def _polymarket_ws_base_url(url: str | None) -> str | None:
-    """兼容旧配置的 full endpoint,输出 NT 上游 PolymarketWebSocketClient 期望的 base URL。"""
+    """输出 NT 上游 PolymarketWebSocketClient 期望的 base URL。"""
     if url is None:
         return None
     normalized = url.rstrip("/")
     for suffix in ("/market", "/user"):
         if normalized.endswith(suffix):
-            normalized = normalized[: -len(suffix)]
-            break
+            raise ConfigError(
+                "venues.polymarket.ws_url must be the base websocket URL ending in /ws, "
+                f"not a channel endpoint ending in {suffix}",
+            )
     return normalized.rstrip("/") + "/"
 
 
@@ -72,7 +81,8 @@ def to_polymarket_data_client_config(cfg: ArbConfig) -> PolymarketDataClientConf
 
 def to_sports_data_client_config(cfg: ArbConfig) -> PolymarketSportsDataClientConfig:
     """#60:PM Sports 比分 firehose client config（公开 WS,无凭证;端点用默认)。"""
-    return PolymarketSportsDataClientConfig()
+    sports = cfg.data_sources.sports_status
+    return PolymarketSportsDataClientConfig(sports_ws_url=sports.ws_url)
 
 
 def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConfig:
@@ -95,7 +105,7 @@ def to_polymarket_exec_client_config(cfg: ArbConfig) -> PolymarketExecClientConf
 
 def to_orbitexch_data_client_config(cfg: ArbConfig) -> OrbitExchDataClientConfig:
     oe = cfg.venues.orbitexch
-    # OE Config 把 username/password 标为 required str(非 Optional);env 缺失时回退空串
+    # OE Config 把 username/password 标为 required str(非 Optional);env 缺失时转为空串
     # 让下游 BrowserManager / login 流程触发明确错误(loader 不预判)
     return OrbitExchDataClientConfig(
         username=oe.username or "",
@@ -160,19 +170,18 @@ def to_sharpexch_exec_client_config(cfg: ArbConfig) -> SharpExchExecClientConfig
 
 
 def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingConfig:
-    """注意:`sport_aliases` / `competition_aliases` 不在 MarketMatchingConfig
-    (normalizer 注释:Provider 填 info 时已 alias);aliases → Provider 的接线见 slice 7。"""
+    """注意:`sport_aliases` / `competition_aliases` 不在 MarketMatchingConfig。
+
+    aliases 经 `to_arb_context_init_kwargs` 派发给 provider/discovery keyed map,matching actor
+    只消费 provider 写入 instrument.info 后的标准化字段。
+    """
     m = cfg.matching
-    external_venues = []
-    if cfg.venues.orbitexch.enabled:
-        external_venues.append("ORBITEXCH")
-    if cfg.venues.sharpexch.enabled:
-        external_venues.append("SHARPEXCH")
     return MarketMatchingConfig(
+        anchor_venue=SPORTS_CLIENT,
+        tradable_venues=enabled_tradable_venue_ids(cfg),
         refresh_interval_secs=cfg.discovery.refresh_interval_secs,
         min_similarity=int(m.min_similarity),
         competition_max_matches=m.competition_max_matches or None,
-        external_venues=tuple(external_venues),
     )
 
 
@@ -213,7 +222,6 @@ def to_arb_risk_params(cfg: ArbConfig) -> ArbRiskParams:
     return ArbRiskParams(
         match_tp=r.match_tp,
         match_sl=r.match_sl,
-        global_sl=r.global_sl,
         min_probability=r.min_probability,
         max_probability=r.max_probability,
     )
@@ -232,49 +240,120 @@ def to_arb_context_init_kwargs(cfg: ArbConfig) -> dict:
     """`prepare_arb_context(**dict)` 用;launcher 后续补 `venue_liveness` / `pair_registry` /
     `pm_settlement` 等运行时件。
 
-    slice 7A:加 `oe_scraper_config` / `oe_sport_aliases` / `oe_competition_aliases`(供
-    OE data factory 构造真 scraper + Provider 写 info 时查表)。
-    #55:`pm_event_slug_tags`(目标 competition 列表,如 ["atp"];PM `/sports` 的 `sport` 字段比对)
-    + `pm_competition_to_sport`(competition→sport map,如 {"atp": "Tennis"};provider 写 info["sport"])。
+    只返回 venue/data-source keyed map;旧 `pm_*` / `oe_*` / `se_*` 投影已删除。
     """
+    tracking_timeout = cfg.execution.tracking_timeout_sec
+    tradable_venues = enabled_tradable_venue_ids(cfg)
+    sport_aliases = dict(cfg.matching.sport_aliases)
+    competition_aliases = dict(cfg.matching.competition_aliases)
+    discovery_by_venue = _discovery_config_by_enabled_venue(cfg)
+    data_source_competitions = {SPORTS_CLIENT: to_sports_status_target_competitions(cfg)}
+    data_source_comp_to_sport = {SPORTS_CLIENT: to_sports_status_competition_to_sport(cfg)}
     return {
-        "pm_session_timeout_secs": cfg.execution.tracking_timeout_sec,
-        "oe_session_timeout_secs": cfg.execution.tracking_timeout_sec,
-        "se_session_timeout_secs": cfg.execution.tracking_timeout_sec,
-        "oe_scraper_config": to_oe_scraper_config(cfg),
-        "oe_sport_aliases": dict(cfg.matching.sport_aliases),
-        "oe_competition_aliases": dict(cfg.matching.competition_aliases),
-        "se_discovery_config": to_se_discovery_config(cfg) if cfg.venues.sharpexch.enabled else None,
-        "se_sport_aliases": dict(cfg.matching.sport_aliases),
-        "se_competition_aliases": dict(cfg.matching.competition_aliases),
-        "pm_event_slug_tags": to_pm_event_slug_tags(cfg),
-        "pm_competition_to_sport": to_pm_competition_to_sport(cfg),
+        "session_timeout_secs_by_venue": {
+            venue: tracking_timeout
+            for venue in tradable_venues
+        },
+        "discovery_config_by_venue": discovery_by_venue,
+        "sport_aliases_by_venue": {
+            venue: sport_aliases
+            for venue in tradable_venues
+        },
+        "competition_aliases_by_venue": {
+            venue: competition_aliases
+            for venue in tradable_venues
+        },
+        "target_competitions_by_data_source": data_source_competitions,
+        "competition_to_sport_by_data_source": data_source_comp_to_sport,
     }
 
 
-def to_pm_event_slug_tags(cfg: ArbConfig) -> list:
-    """#55:`discovery.polymarket.sports[].competitions` 扁平化为目标 competition 列表;
-    各 competition 字符串作为 PM `/sports` 的 `sport` 字段比对值(用户 config 用 PM 命名如 "atp" / "epl")。"""
-    if not cfg.venues.polymarket.enabled or not cfg.discovery.polymarket.enabled:
+def _discovery_config_by_enabled_venue(cfg: ArbConfig) -> dict:
+    """从 Venue Registry 的 discovery builder 派生 runtime discovery keyed map。"""
+    discovery_by_venue = {}
+    for descriptor in enabled_tradable_venues(cfg):
+        builder_name = descriptor.discovery_config_builder
+        if builder_name is None:
+            continue
+        builder = globals()[builder_name]
+        discovery = builder(cfg)
+        if discovery is not None:
+            discovery_by_venue[descriptor.venue_id] = discovery
+    return discovery_by_venue
+
+
+def to_sports_status_target_competitions(cfg: ArbConfig) -> list:
+    """PMSPORTS 目标 competitions 扁平化。
+
+    `data_sources.sports_status.sports` 显式配置时优先;常规省略时按当前约定继承
+    `discovery.polymarket.sports`,让 PMSPORTS discovery 与 PM sports 配置保持一致。
+    """
+    filters = _sports_status_filters(cfg)
+    if not filters:
         return []
     tags = []
-    for sf in cfg.discovery.polymarket.sports:
+    for sf in filters:
         for comp in sf.competitions:
             if comp and comp not in tags:
                 tags.append(comp)
     return tags
 
 
-def to_pm_competition_to_sport(cfg: ArbConfig) -> dict:
-    """#55:competition(PM 缩写)→ sport 名,如 {"atp": "Tennis"};provider 写 `info["sport"]`。"""
-    if not cfg.venues.polymarket.enabled or not cfg.discovery.polymarket.enabled:
+def to_sports_status_competition_to_sport(cfg: ArbConfig) -> dict:
+    """PMSPORTS competition slug → sport 名,如 {"atp": "Tennis"};provider 写 `info["sport"]`。"""
+    filters = _sports_status_filters(cfg)
+    if not filters:
         return {}
     mapping = {}
-    for sf in cfg.discovery.polymarket.sports:
+    for sf in filters:
         for comp in sf.competitions:
             if comp:
                 mapping[comp.lower()] = sf.sport
     return mapping
+
+
+def _sports_status_filters(cfg: ArbConfig):
+    """PMSPORTS discovery targets:显式 data source 配置优先,默认继承 PM sports 配置。"""
+    sports = cfg.data_sources.sports_status
+    if not sports.enabled:
+        return []
+    if sports.sports:
+        return sports.sports
+    if not cfg.discovery.polymarket.enabled:
+        return []
+    return cfg.discovery.polymarket.sports
+
+
+def _enabled_venue_discovery_sections(cfg: ArbConfig, venue: str):
+    """按 Venue Registry descriptor 读取 runtime venue + discovery section。"""
+    descriptor = descriptor_for(venue)
+    venue_section = getattr(cfg.venues, descriptor.config_key)
+    discovery_section = getattr(cfg.discovery, descriptor.config_key)
+    if not venue_section.enabled or not discovery_section.enabled:
+        return None
+    return venue_section, discovery_section
+
+
+def _browser_venue_discovery_config(cfg: ArbConfig, venue: str, config_cls):
+    """OE 型 browser discovery config:免登录、后台 headless、按 discovery.sports 过滤。"""
+    from src.arbitrage.common.venue_configs import BrowserConfig
+    from src.arbitrage.common.venue_configs import SportConfig
+
+    sections = _enabled_venue_discovery_sections(cfg, venue)
+    if sections is None:
+        return None
+    venue_section, discovery_section = sections
+    return config_cls(
+        enabled=True,
+        # discovery/scraper 独立浏览器,免登录、定时后台跑:强制 headless 且不用登录 profile,
+        # 避免和 data/exec 的登录会话抢同一 persistent 目录。
+        browser=BrowserConfig(
+            headless=True,
+            user_data_dir=None,
+            timeout_ms=int(venue_section.page_load_timeout_sec * 1000),
+        ),
+        sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in discovery_section.sports],
+    )
 
 
 def to_oe_scraper_config(cfg: ArbConfig):
@@ -283,51 +362,20 @@ def to_oe_scraper_config(cfg: ArbConfig):
 
     返 `OrbitExchVenueConfig | None`;`enabled=False` → None(让 factory 装空 Provider)。
     """
-    from src.arbitrage.common.venue_configs import BrowserConfig
     from src.arbitrage.common.venue_configs import OrbitExchVenueConfig
-    from src.arbitrage.common.venue_configs import SportConfig
 
-    oe_dis = cfg.discovery.orbitexch
-    if not cfg.venues.orbitexch.enabled or not oe_dis.enabled:
-        return None
-    oe_venue = cfg.venues.orbitexch
-    return OrbitExchVenueConfig(
-        enabled=True,
-        # #62:scraper 独立浏览器,**免登录、定时后台跑** —— 强制 headless(无需可见,也不干扰
-        # data/exec 的登录会话)+ **不用登录 profile**(`user_data_dir=None`:免登录,且避免和 data BM
-        # 抢同一 persistent 目录)。与 data/exec 的可见登录浏览器(共享单例,§6.2)解耦。
-        browser=BrowserConfig(
-            headless=True,
-            user_data_dir=None,
-            timeout_ms=int(oe_venue.page_load_timeout_sec * 1000),
-        ),
-        sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in oe_dis.sports],
-    )
+    return _browser_venue_discovery_config(cfg, ORBITEXCH, OrbitExchVenueConfig)
 
 
 def to_se_discovery_config(cfg: ArbConfig):
     """`ArbConfig.discovery.sharpexch.sports` + `cfg.venues.sharpexch.*`
     → `SharpExchVenueConfig | None`。
 
-    第一阶段仅供 SE provider/factory 后续接线;真实 Playwright/API fetch 还未启用。
+    供 SE provider/factory 构造 discovery client;`enabled=False` 时返回 None。
     """
-    from src.arbitrage.common.venue_configs import BrowserConfig
     from src.arbitrage.common.venue_configs import SharpExchVenueConfig
-    from src.arbitrage.common.venue_configs import SportConfig
 
-    se_dis = cfg.discovery.sharpexch
-    if not cfg.venues.sharpexch.enabled or not se_dis.enabled:
-        return None
-    se_venue = cfg.venues.sharpexch
-    return SharpExchVenueConfig(
-        enabled=True,
-        browser=BrowserConfig(
-            headless=True,
-            user_data_dir=None,
-            timeout_ms=int(se_venue.page_load_timeout_sec * 1000),
-        ),
-        sports=[SportConfig(sport=s.sport, competitions=list(s.competitions)) for s in se_dis.sports],
-    )
+    return _browser_venue_discovery_config(cfg, SHARPEXCH, SharpExchVenueConfig)
 
 
 def to_debug_config(cfg: ArbConfig) -> DebugConfig | None:

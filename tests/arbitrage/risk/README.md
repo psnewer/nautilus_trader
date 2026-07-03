@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(含 SHARPEXCH expected leg 解析)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(PM + OE/SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(6.9.x,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
+**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线,2026-07-01 Venue Registry helper,2026-07-02 ArbContext keyed helper)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(经 common helper 解析 expected_legs required venues,含 SHARPEXCH)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(经 Venue Registry 转换 PM probability / OE-SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(经 Venue Registry 判定 probability/decimal,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)、`ctx_map_get/require/set/get_or_create` keyed map helper,其中 `ctx_map_require` 缺必需 keyed 值会 fail-fast,`ctx_map_get_or_create` 只在缺失时创建并回写共享对象,`prepare_arb_context` 传旧 venue 专属字段会 TypeError。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -57,17 +57,17 @@ ExecutionClient (维护账户)
 - 期望: `ArbitrageLiveRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
 - 验收: 检查依据 = `balance_total − Σ(cache.orders_open 在途名义额)`,**不直接信 `account.balance_free()`**(Q17,2026-05-19)
 
-### risk-6.3b: 可用余额按 venue 非对称(Q17,2026-05-19)
-- **PM —— 自扣在途挂单(free=total 陷阱)**
+### risk-6.3b: 可用余额按 venue capability 非对称(Q17,2026-05-19)
+- **probability venue(当前 PM) —— 自扣在途挂单(free=total 陷阱)**
   - 前置: PM `total=100`,一笔未成交挂单占用 `60`;cache 上报 `reported=True/locked=0/free=100`(`CashAccount.apply` 已清空 NT 自算 locked)
   - 输入: 再提交名义额 `50` 的开仓单
   - 期望: `_check_balance` 算可用 = `100 − 60 = 40 < 50` → **拒绝**(误读 `free=100` 则误放行)
-  - 验收: PM 可用 = `total − Σ(PM cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
-- **OE/SE —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
+  - 验收: probability venue 可用 = `total − Σ(cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
+- **decimal venue(当前 OE/SE) —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
   - 前置: OE/SE WS 上报余额 `40` venue currency(**已扣**挂单占用),ExecutionClient 入站按 `fx` 写成 `Money(40 * fx, USD)`;该值即可用
   - 输入: 提交名义额 `50` 的单
   - 期望: `_check_balance` 用 `40 < 50` → 拒绝;**不再额外扣挂单**(否则双重扣减低估)
-  - 验收: OE/SE 可用 = cache 余额 USD 数值直接用;`_check_balance` 内按 `order.instrument_id.venue` 分支,PM 与非 PM 不同处理
+  - 验收: OE/SE 可用 = cache 余额 USD 数值直接用;`_check_balance` 用 Venue Registry descriptor 判断 probability venue vs decimal venue,真实 venue identity 仍用于账户读取
 
 ### risk-6.4: cache stale 时由 venue 拒绝兜底
 - 前置: cache 余额过期,venue 真实余额已不够
@@ -91,7 +91,7 @@ ExecutionClient (维护账户)
 
 ## 单场 profit gates: match_tp / match_sl(Q16 修订,§5.6 `_check_profit_gates`)
 
-Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`ArbitrageLiveRiskEngine._check_profit_gates` 每次 submit 从 `ArbitragePortfolio.outcome_exposures(pair_id)` 读取所有 outcome 的绝对金额 `net_profit/liability`,用 `ArbitrageParams.share` 计算阈值:止盈阈值 `share*match_tp`,止损阈值 `share*match_sl`。逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。概率门控位于 NT 父类检查之后、venue liveness/余额/profit gates 之前;PM price 直接当概率,OE 十进制赔率换算为 `1/price`。
+Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`ArbitrageLiveRiskEngine._check_profit_gates` 每次 submit 从 `ArbitragePortfolio.outcome_exposures(pair_id)` 读取所有 outcome 的绝对金额 `net_profit/liability`,用 `ArbitrageParams.share` 计算阈值:止盈阈值 `share*match_tp`,止损阈值 `share*match_sl`。逐 submit deny = 别开新仓。**无 TradingState 翻闸、无监测 Actor、无频率**。概率门控位于 NT 父类检查之后、venue liveness/余额/profit gates 之前;概率转换统一经 Venue Registry helper。
 
 `ArbitrageParams.max_leg_share` 只作为 Web Arbitrage → StrategyEvaluator 的默认规模参数,供 strategy `share_limit` action 未显式配置时读取;RiskEngine 不执行 share-limit 缩放/门控。
 
@@ -126,7 +126,7 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 前置: `min_probability=0.03`,`max_probability=0.97`。
 - 输入: PM order price=0.02/0.98;OE/SE order price=40.0(隐含概率 0.025)/1.02(隐含概率约 0.98)。
 - 期望: `_check_probability_gate` deny;price=0.03/0.97 或 OE price=2.0 放行。
-- 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability` / `test_probability_gate_converts_sharpexch_decimal_odds_to_probability`;非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
+- 验收: `test_probability_gate_denies_pm_price_outside_bounds` / `test_probability_gate_allows_inclusive_pm_bounds` / `test_probability_gate_converts_oe_decimal_odds_to_probability` / `test_probability_gate_converts_sharpexch_decimal_odds_to_probability`;转换入口由 `src.arbitrage.common.venues.probability_from_price` 提供,非法热更新区间不 apply(`test_probability_bounds_hot_update_rejects_invalid_interval`)。
 
 ### risk-6.7.2: match_tp 触发 deny(止盈,赚够别加仓)
 - 前置: pair_id="match_X" 持仓,`share=22.5`,`match_tp=0.05`;所有 outcome 的 `net_profit > 1.125`
@@ -140,11 +140,11 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 期望: deny → `on_order_denied`
 - 验收: 必须所有 outcome 都低于阈值才 deny;任一 outcome 未跌破阈值则放行
 
-### risk-6.7.4: global_sl 不再阻断(全局止盈/止损退役)
-- 前置: 旧配置仍带 `global_sl`
-- 输入: 对任意 pair submit,且该 pair 的 `outcome_exposures` 未触发 match_tp/match_sl
-- 期望: `_check_profit_gates` 放行,不读取任何全局 profit/rebate 聚合指标
-- 验收: `global_sl` 仅为旧配置兼容字段;Risk 不再执行全局止盈/止损
+### risk-6.7.4: global_sl 配置字段已删除(全局止盈/止损退役)
+- 前置: NT `RiskSectionConfig` 严格 schema。
+- 输入: 配置写入旧 `risk.global_sl`。
+- 期望: loader schema mismatch,不会进入 runtime。
+- 验收: Risk 只保留 `match_tp/match_sl` 单场 profit gates,不读取任何全局 profit/rebate 聚合指标。
 
 ### risk-6.7.5: 撤单不受 profit gates 影响(只挡开仓)
 - 前置: 任一单场 profit gate 已触发
@@ -286,11 +286,23 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 - 前置:order 带 `arb:expected_legs=pm:home:0,oe:away:1`;共享 `VenueExecutionLiveness` 中 PM alive、OE not alive。
 - 输入:Risk 检查 PM leg。
-- 期望:Risk 从 `expected_legs` 推导 required venues `{POLYMARKET, ORBITEXCH}`,因 OE not alive 拒绝整次机会。
+- 期望:Risk 通过 `common.venues.venue_id_from_leg_key` 从 `expected_legs` 推导 required venues `{POLYMARKET, ORBITEXCH}`,因 OE not alive 拒绝整次机会;`sharpexch:...` / `se:...` 同样解析为 `SHARPEXCH`。
 - 验收:
   - `tests/arbitrage/common/test_venue_liveness.py`
+  - `tests/arbitrage/common/test_venues.py::test_venue_id_from_leg_key_accepts_full_names_and_legacy_aliases`
   - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_checks_all_expected_leg_venues`
   - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_passes_when_required_venues_alive`
+
+### risk-pmsports-anchor.1:PMSPORTS 不进入 required venues(待落地,#127)
+
+- 前置:PairRegistry / MatchedPair 后续区分 anchor ids 与 tradable ids;某 pair 含
+  `5843495.PMSPORTS` anchor id 和 PM/OE/SE tradable ids。
+- 输入:Strategy 生成普通套利 SubmitOrder,`arb:expected_legs` 只来自 tradable legs。
+- 期望:Risk `_check_required_venues_alive` 推导 required venues 时不包含 `PMSPORTS`。
+- 验收:
+  - `VenueExecutionLiveness` 初始化不包含 `PMSPORTS`。
+  - `.PMSPORTS` 不触发余额、概率、profit gate 或 liveness gate。
+  - 若误把 `pmsports:*` 写进 `expected_legs`,Risk 应 fail closed 或明确拒绝 unsupported non-tradable venue,不能当交易 venue 放行。
 
 ---
 

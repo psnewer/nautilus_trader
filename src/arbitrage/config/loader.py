@@ -1,5 +1,5 @@
 """
-ArbConfig loader —— JSON + env 凭证注入(Q23 C:env 优先,JSON fallback)。
+ArbConfig loader —— JSON + env 凭证注入(Q23 C:env 优先覆盖 JSON 中的非空凭证值)。
 
 设计见 `docs/arbitrage/architectures/_cross-cutting/configuration.md §5`。
 
@@ -8,12 +8,12 @@ ArbConfig loader —— JSON + env 凭证注入(Q23 C:env 优先,JSON fallback)�
   2. 检测 JSON 内是否含凭证字段(`venues.polymarket.{clob_api_*,...}` /
      `venues.{orbitexch,sharpexch}.{username,password}`)
      → 发 `ConfigWarning`(凭证应只走 env,§9 安全原则)
-  3. 凭证字段从 env 覆盖(沿用旧 `state.py` 变量名,用户 `.env` 不用改)
+  3. 补缺省 venues 子 section,并从 env 覆盖凭证字段
   4. PM proxy 从 JSON 或 env 注入(不属于凭证)
   5. `msgspec.convert(dict, ArbConfig)` 校验 + 冻结
   6. 返回
 
-错误路径:JSON 解析失败 / schema 不匹配 → `ConfigError`(原异常 chained)。
+错误路径:JSON 解析失败 / section 显式非 object / schema 不匹配 → `ConfigError`。
 """
 
 from __future__ import annotations
@@ -33,8 +33,7 @@ class ConfigWarning(UserWarning):
     """JSON 中含本应只走 env 的凭证字段时发出。"""
 
 
-# (env_var, fallback_env_var | None, target_path)
-# fallback_env_var:旧码 `POLYMARKET_USER_ADDRESS` 同时认 `POLYMARKET_ADDRESS` 别名
+# (env_var, target_path)
 _OE_CRED_ENV: list[tuple[str, str]] = [
     ("ORBITEXCH_USERNAME", "username"),
     ("ORBITEXCH_PASSWORD", "password"),
@@ -45,21 +44,19 @@ _SE_CRED_ENV: list[tuple[str, str]] = [
     ("SHARPEXCH_PASSWORD", "password"),
 ]
 
-_PM_CRED_ENV: list[tuple[str, str | None, str]] = [
-    ("POLYMARKET_CLOB_API_KEY", None, "clob_api_key"),
-    ("POLYMARKET_CLOB_SECRET", None, "clob_api_secret"),         # 注意旧码用 _SECRET 非 _API_SECRET
-    ("POLYMARKET_CLOB_PASSPHRASE", None, "clob_passphrase"),
-    ("POLYMARKET_SIGNATURE_TYPE", None, "signature_type"),
-    ("POLYMARKET_PRIVATE_KEY", None, "private_key"),
-    ("POLYMARKET_FUNDER", None, "funder"),
-    ("POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "user_address"),
-    ("POLYMARKET_EOA_ADDRESS", None, "eoa_address"),
-    ("POLYMARKET_API_KEY", None, "builder_api_key"),              # builder relayer
-    ("POLYMARKET_API_SECRET", None, "builder_api_secret"),
-    ("POLYMARKET_PASSPHRASE", None, "builder_passphrase"),
+_PM_CRED_ENV: list[tuple[str, str]] = [
+    ("POLYMARKET_CLOB_API_KEY", "clob_api_key"),
+    ("POLYMARKET_CLOB_SECRET", "clob_api_secret"),         # 注意旧码用 _SECRET 非 _API_SECRET
+    ("POLYMARKET_CLOB_PASSPHRASE", "clob_passphrase"),
+    ("POLYMARKET_SIGNATURE_TYPE", "signature_type"),
+    ("POLYMARKET_PRIVATE_KEY", "private_key"),
+    ("POLYMARKET_FUNDER", "funder"),
+    ("POLYMARKET_API_KEY", "builder_api_key"),              # builder relayer
+    ("POLYMARKET_API_SECRET", "builder_api_secret"),
+    ("POLYMARKET_PASSPHRASE", "builder_passphrase"),
 ]
 
-_CREDENTIAL_FIELDS_PM = {p[2] for p in _PM_CRED_ENV if p[2] != "signature_type"}
+_CREDENTIAL_FIELDS_PM = {p[1] for p in _PM_CRED_ENV if p[1] != "signature_type"}
 _CREDENTIAL_FIELDS_OE = {p[1] for p in _OE_CRED_ENV}
 _CREDENTIAL_FIELDS_SE = {p[1] for p in _SE_CRED_ENV}
 
@@ -79,7 +76,6 @@ def load_arb_config(path: str | Path) -> ArbConfig:
         raise ConfigError(f"config root must be JSON object, got {type(raw).__name__}")
 
     _warn_credentials_in_json(raw)
-    _migrate_legacy_arbitrage_fields(raw)
     _inject_env_credentials(raw)
     _inject_env_proxy(raw)
 
@@ -89,28 +85,12 @@ def load_arb_config(path: str | Path) -> ArbConfig:
         raise ConfigError(f"schema mismatch in {path}: {e}") from e
 
 
-def _migrate_legacy_arbitrage_fields(raw: dict) -> None:
-    """兼容旧配置:`risk.share/max_leg_share/fx` → 顶层 `arbitrage` 默认值。
-
-    新 `arbitrage` 段显式字段优先;旧字段只在新字段缺失时补齐。
-    """
-    risk = raw.get("risk") or {}
-    if not isinstance(risk, dict):
-        return
-    arb = raw.setdefault("arbitrage", {})
-    if not isinstance(arb, dict):
-        return
-    for key in ("share", "max_leg_share", "fx"):
-        if key not in arb and risk.get(key) is not None:
-            arb[key] = risk[key]
-
-
 def _warn_credentials_in_json(raw: dict) -> None:
     """如果 `venues.{polymarket,orbitexch,sharpexch}` 里有凭证字段非空 → 发 ConfigWarning。"""
-    venues = raw.get("venues") or {}
-    pm = venues.get("polymarket") or {}
-    oe = venues.get("orbitexch") or {}
-    se = venues.get("sharpexch") or {}
+    venues = _mapping_or_empty(raw.get("venues"))
+    pm = _mapping_or_empty(venues.get("polymarket"))
+    oe = _mapping_or_empty(venues.get("orbitexch"))
+    se = _mapping_or_empty(venues.get("sharpexch"))
     leaked = []
     for k in _CREDENTIAL_FIELDS_PM:
         if pm.get(k):
@@ -135,28 +115,26 @@ def _inject_env_credentials(raw: dict) -> None:
 
     env 缺失 → 不覆盖,保留 JSON 值(或 None);**不验证存在**(下游 client 构造时 raise)。
     """
-    raw.setdefault("venues", {})
-    raw["venues"].setdefault("polymarket", {})
-    raw["venues"].setdefault("orbitexch", {})
-    raw["venues"].setdefault("sharpexch", {})
+    venues = _ensure_mapping(raw, "venues")
+    _ensure_mapping(venues, "polymarket", path="venues.polymarket")
+    _ensure_mapping(venues, "orbitexch", path="venues.orbitexch")
+    _ensure_mapping(venues, "sharpexch", path="venues.sharpexch")
 
-    pm = raw["venues"]["polymarket"]
-    for env_name, fallback, field in _PM_CRED_ENV:
+    pm = venues["polymarket"]
+    for env_name, field in _PM_CRED_ENV:
         val = os.environ.get(env_name)
-        if val is None and fallback is not None:
-            val = os.environ.get(fallback)
         if val is not None:
             if field == "signature_type":
                 val = int(val)
             pm[field] = val
 
-    oe = raw["venues"]["orbitexch"]
+    oe = venues["orbitexch"]
     for env_name, field in _OE_CRED_ENV:
         val = os.environ.get(env_name)
         if val is not None:
             oe[field] = val
 
-    se = raw["venues"]["sharpexch"]
+    se = venues["sharpexch"]
     for env_name, field in _SE_CRED_ENV:
         val = os.environ.get(env_name)
         if val is not None:
@@ -165,10 +143,10 @@ def _inject_env_credentials(raw: dict) -> None:
 
 def _inject_env_proxy(raw: dict) -> None:
     """PM CLOB WS 使用 NT pyo3 client,需显式 proxy_url;不读系统代理会导致直连超时。"""
-    raw.setdefault("venues", {})
-    raw["venues"].setdefault("polymarket", {})
+    venues = _ensure_mapping(raw, "venues")
+    _ensure_mapping(venues, "polymarket", path="venues.polymarket")
 
-    pm = raw["venues"]["polymarket"]
+    pm = venues["polymarket"]
     if pm.get("proxy_url"):
         return
 
@@ -177,3 +155,21 @@ def _inject_env_proxy(raw: dict) -> None:
         if val:
             pm["proxy_url"] = val
             return
+
+
+def _ensure_mapping(parent: dict, key: str, *, path: str | None = None) -> dict:
+    """确保配置 section 缺省时补空 object,但显式非 object 时 fail-fast。"""
+    section_path = path or key
+    if key not in parent:
+        parent[key] = {}
+    value = parent[key]
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"config section {section_path} must be JSON object, got {type(value).__name__}",
+        )
+    return value
+
+
+def _mapping_or_empty(value) -> dict:
+    """warning 检查只读凭证字段;显式类型错误留给 `_ensure_mapping` 报 ConfigError。"""
+    return value if isinstance(value, dict) else {}

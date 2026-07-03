@@ -132,7 +132,7 @@ def test_recovery_uses_oe_qty_for_gross_payout_gap():
         positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
     )
 
-    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, fx=1.0).passes(ctx)
+    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx)
 
     assert ok is True
     assert ctx.scratch["legs"][0]["instrument_id"] == "A.ORBITEXCH"
@@ -154,7 +154,7 @@ def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
         positions=[_position("H.POLYMARKET", qty=5.0, price=0.50)],
     )
 
-    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05, fx=1.0).passes(ctx)
+    ok = MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx)
 
     assert ok is True
     assert ctx.scratch["legs"][0]["instrument_id"] == "A.SHARPEXCH"

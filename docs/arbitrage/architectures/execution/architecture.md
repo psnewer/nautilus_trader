@@ -331,7 +331,7 @@ async def _ensure_exec_snapshot_fresh():
 - adapter 外部统一 USD 口径:Strategy 生成的 OE `qty`、Risk 余额/利润门控、Portfolio outcome 指标、NT order/fill/report quantity 都按 USD stake 解释。
 - 入站:`BALANCE.balance` 乘当前 `arbitrage.fx` 后写入 NT account cache,使 Risk 余额门控直接比较 USD stake;`OrbitExchExecutionClient._on_current_bets` 调 `normalize_current_bets_to_usd`,把 `size*` 字段以及 `liability`/`profit*`/`pnl` 等金额字段乘当前 `arbitrage.fx` 后缓存到 `_current_bets`,供 order report / position report 使用。fill delta 例外:增量用 OE 原始 GBP `sizeMatched` 累积值计算,再把本次 delta 乘当前 `fx` 生成 NT fill quantity,避免 web 热改 fx 时把汇率变化误判成新增成交。
 - 出站:`OrbitExchExecutor.place_order` 在构造 `/customer/api/placeBets` payload 前把 legacy order 的 USD `size` 除以当前 `fx`,payload 的 `"size"` 才是 OE 要求的 GBP stake。
-- `fx` 启动值经 `ArbContext.arbitrage_params` 注入 OE factory;Web 热改 `arbitrage.fx` 通过 `command.arb.arbitrage_params` 同步到 `OrbitExchExecutionClient`,executor 通过 getter 读取最新值。
+- `fx` 启动值经 `ArbContext.arbitrage_params` 注入 OE factory;PM/OE/SE execution session timeout 只从 `ArbContext.session_timeout_secs_by_venue[venue]` 读取。缺失该 keyed 值时 factory fail-fast,不再用 venue 专属字段兜底。Web 热改 `arbitrage.fx` 通过 `command.arb.arbitrage_params` 同步到 `OrbitExchExecutionClient`,executor 通过 getter 读取最新值。
 
 **(5b) in-flight check / reconcile 失败语义(#105 已定)**:
 - **in-flight check 保持开**(全局,PM 需要;不为 OE 单独关)。OE 同步生成终态 + 页锁 → 订单几乎不滞留在飞 → 极少对 OE 触发。
@@ -485,7 +485,7 @@ positions_fetcher / 间隔)—— 同 `install_arbitrage_engines` 的 import-替
 2. `node = TradingNode(config)` —— kernel 原生构造 Arbitrage 子类
 3. `prepare_arb_context(venue_liveness=, pm_settlement=, ...)` —— 填好共享件;#110 后不再注入 `pm_positions_fetcher` / `pm_health_interval_secs`
 4. `node.add_exec_client_factory("POLYMARKET", ArbPolymarketLiveExecClientFactory)`、`("ORBITEXCH", ArbOrbitExchLiveExecClientFactory)`
-5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 venue_liveness/settlement/fetcher/间隔);**漏调 prepare 早失败**(`RuntimeError: ArbContext.venue_liveness is None`)
+5. `node.build()` —— factory.create 读 `get_arb_context()` 构造 Arb*ExecutionClient(注入 venue_liveness/settlement/fetcher/间隔)。PM/OE/SE factory 只读取 venue keyed map(`session_timeout_secs_by_venue`,OE/SE 另经 `ctx_map_get_or_create` 复用或创建 `browser_manager_by_venue`/`browser_lock_by_venue`);**漏调 prepare 或缺必需 keyed 值早失败**(`RuntimeError: ArbContext.venue_liveness is None` / `ArbContext.session_timeout_secs_by_venue[...] is required`)
 6. `wire_arbitrage_runtime(node, params=)` —— configure_arb;不传 venue_liveness 时**复用 context 那份**(execution 与 risk 同一对象),并把 `pair_inflight` / `pair_registry` 注入 `ArbLiveExecutionEngine`。`pair_registry` 供 opportunity barrier 做 pair-wide residual cancel-only 检查。
 7. `node.run()`
 

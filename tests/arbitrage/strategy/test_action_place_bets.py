@@ -36,7 +36,7 @@ def test_oe_size_zero_when_price_invalid():
 def test_action_log_only_no_raise_when_no_legs(caplog):
     """Check 没写 scratch["legs"] → Action 静默 skip,不 raise。"""
     ctx = EvalContext(pair_id="p")
-    action = PlaceBetsAction(share=22.5)
+    action = PlaceBetsAction()
     _run(action.execute(ctx))
     # 没下单 log(只 debug 级别 skip)
 
@@ -45,14 +45,14 @@ def test_action_logs_each_leg(caplog):
     ctx = EvalContext(pair_id="p")    # submitter=None → log-only fallback
     ctx.scratch["legs"] = [
         {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
-         "role": "home", "price": 0.4, "prob": 0.4},
+         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 22.5},
         {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.5, "prob": 0.4},
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 22.5},
     ]
     ctx.scratch["mean_rebate_rate"] = 0.15
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction(share=22.5).execute(ctx))
+        _run(PlaceBetsAction().execute(ctx))
 
     msgs = [r.message for r in caplog.records]
     assert any("PlaceBets[smoke]" in m and "legs=2" in m for m in msgs)
@@ -71,14 +71,14 @@ def test_action_calls_submitter_when_present(caplog):
     ctx = EvalContext(pair_id="p", submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
-         "role": "home", "price": 0.4, "prob": 0.4},
+         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 22.5},
         {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
-         "role": "away", "price": 2.5, "prob": 0.4},
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 22.5},
     ]
     ctx.scratch["mean_rebate_rate"] = 0.15
 
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
-        _run(PlaceBetsAction(share=22.5).execute(ctx))
+        _run(PlaceBetsAction().execute(ctx))
 
     # 2 leg → 2 submitter 调用
     assert len(calls) == 2
@@ -117,7 +117,7 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction(share=22.5).execute(ctx))
+    _run(PlaceBetsAction().execute(ctx))
 
     assert calls == [{
         "instrument_id": "A.ORBITEXCH",
@@ -184,7 +184,6 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
     ]
 
     action = PlaceBetsAction(
-        share=22.5,
         price_overrides={"orbitexch": 1000.0},
         qty_overrides={"ORBITEXCH": 7.0},
     )
@@ -216,7 +215,7 @@ def test_action_qty_override_beats_leg_qty():
          "role": "away", "price": 2.5, "prob": 0.4, "qty": 3.25},
     ]
 
-    _run(PlaceBetsAction(share=22.5, qty_overrides={"ORBITEXCH": 7.0}).execute(ctx))
+    _run(PlaceBetsAction(qty_overrides={"ORBITEXCH": 7.0}).execute(ctx))
 
     assert calls[0]["qty"] == 7.0
 
@@ -231,17 +230,37 @@ def test_action_can_mark_recovery_intent():
     ctx = EvalContext(pair_id="p", submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
-         "role": "home", "price": 0.4, "prob": 0.4},
+         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 5.0},
     ]
 
-    _run(PlaceBetsAction(share=5.0, intent="recovery").execute(ctx))
+    _run(PlaceBetsAction(intent="recovery").execute(ctx))
 
     assert calls[0]["intent"] == "recovery"
+    assert calls[0]["qty"] == 5.0
 
 
 def test_submitter_none_falls_back_to_log_only():
     """显式确认:submitter=None 走 log-only,无 raise(已被 test_action_logs_each_leg 覆盖,但显式再确认)。"""
     ctx = EvalContext(pair_id="p", submitter=None)
     ctx.scratch["legs"] = [{"instrument_id": "X", "venue": "POLYMARKET", "side": "BUY",
-                             "role": "home", "price": 0.5, "prob": 0.5}]
-    _run(PlaceBetsAction(share=10.0).execute(ctx))   # 不 raise
+                             "role": "home", "price": 0.5, "prob": 0.5, "share_if_wins": 10.0}]
+    _run(PlaceBetsAction().execute(ctx))   # 不 raise
+
+
+def test_action_aborts_when_leg_missing_qty_and_share_if_wins(caplog):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+         "role": "home", "price": 0.4, "prob": 0.4},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="src.arbitrage.strategy.actions.place_bets"):
+        _run(PlaceBetsAction().execute(ctx))
+
+    assert calls == []
+    assert any("missing qty/share_if_wins" in r.message for r in caplog.records)

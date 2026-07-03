@@ -1,8 +1,4 @@
-"""SharpExch sport details 解析。
-
-第一阶段只把 SE portal API 的 `sport/details` payload 解析成 Provider 可消费的领域事件。
-真实 Playwright/API fetch 后续接入,但解析规则先独立可测。
-"""
+"""SharpExch sport details 发现与解析。"""
 
 from __future__ import annotations
 
@@ -65,9 +61,9 @@ _MAX_SPORT_DETAILS_PAGES = 100
 
 
 class SharpExchDiscoveryClient:
-    """SharpExch 发现客户端的第一阶段壳。
+    """SharpExch 发现客户端。
 
-    `sport_details_provider` 是可注入 fetcher,便于单测和后续 Playwright/API 接线复用同一解析器。
+    `sport_details_provider` 是可注入 fetcher,便于单测与 Playwright/API runtime 复用同一解析器。
     """
 
     def __init__(

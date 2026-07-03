@@ -1,6 +1,6 @@
 """SharpExch WebSocket 消息解析器。
 
-第一阶段只落价格帧纯解析。真实 WS handler / DataClient 接线后复用本 parser。
+解析 competition prices WS 与 execution general WS 帧;DataClient/ExecutionClient 共用。
 """
 
 from __future__ import annotations
@@ -103,8 +103,10 @@ class SharpExchMessageParser:
         return None
 
 
-def _levels(raw_levels: list) -> list[dict[str, float]]:
+def _levels(raw_levels) -> list[dict[str, float]]:
     levels: list[dict[str, float]] = []
+    if isinstance(raw_levels, dict):
+        raw_levels = raw_levels.values()
     for item in raw_levels:
         if isinstance(item, dict):
             price = _to_float(item.get("odds"), 0.0)
@@ -112,6 +114,9 @@ def _levels(raw_levels: list) -> list[dict[str, float]]:
         elif isinstance(item, (list, tuple)) and len(item) >= 3:
             price = _to_float(item[1], 0.0)
             size = _to_float(item[2], 0.0)
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            price = _to_float(item[0], 0.0)
+            size = _to_float(item[1], 0.0)
         else:
             continue
         levels.append({"price": price, "size": size})

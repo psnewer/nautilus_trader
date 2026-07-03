@@ -1,7 +1,7 @@
 """
 PairRegistry —— 跨组件共享的 instrument_id → pair_id 映射。
 
-**唯一写者**:`MarketMatchingActor`(匹配成功 → `register(pair_id, [所有腿 instrument_ids])`)。
+**唯一写者**:`MarketMatchingActor`(匹配成功 → `register(pair_id, [所有可交易腿], anchor_instrument_ids=...)`)。
 **读者**:`risk._resolve_pair_id` / `portfolio._resolve_pair_id` / `session._pair_id_for` /
 strategy(opportunity scan)。
 
@@ -20,14 +20,19 @@ from typing import Hashable
 
 
 class PairRegistry:
-    """`dict[instrument_id, pair_id]` —— 进程级 instrument→pair 映射。线程不安全(单 loop 串行)。"""
+    """进程级 instrument→pair 映射。线程不安全(单 loop 串行)。
+
+    默认 API 面向可交易腿。PMSPORTS event-anchor 设计落地时,anchor ids 单独登记,
+    供 matching/lifecycle 反查,但不默认暴露给 Strategy/Risk/Portfolio。
+    """
 
     def __init__(self) -> None:
         self._by_instrument: dict[Hashable, str] = {}
+        self._by_anchor: dict[Hashable, str] = {}
 
     # ── matching 写入侧 ──────────────────────────────────────────────
-    def register(self, pair_id: str, instrument_ids) -> None:
-        """匹配成功后把该 pair 的所有腿 instrument_id 映射到同一 pair_id。
+    def register(self, pair_id: str, instrument_ids, *, anchor_instrument_ids=()) -> None:
+        """匹配成功后把该 pair 的可交易腿和 anchor instrument_id 映射到同一 pair_id。
 
         幂等:同 pair_id 再 register 时,新腿集合覆盖旧映射(也清理旧腿——若该腿不再属于
         此 pair)。重匹配场景安全。
@@ -43,11 +48,21 @@ class PairRegistry:
         for iid in new_set:
             self._by_instrument[iid] = pair_id
 
+        new_anchor_set = {str(iid) for iid in anchor_instrument_ids}
+        stale_anchor = [iid for iid, pid in self._by_anchor.items() if pid == pair_id and iid not in new_anchor_set]
+        for iid in stale_anchor:
+            del self._by_anchor[iid]
+        for iid in new_anchor_set:
+            self._by_anchor[iid] = pair_id
+
     def unregister_pair(self, pair_id: str) -> None:
         """清除该 pair 所有腿映射(可选,主要给重匹配 / 测试用)。"""
         stale = [iid for iid, pid in self._by_instrument.items() if pid == pair_id]
         for iid in stale:
             del self._by_instrument[iid]
+        stale_anchor = [iid for iid, pid in self._by_anchor.items() if pid == pair_id]
+        for iid in stale_anchor:
+            del self._by_anchor[iid]
 
     # ── consumers 读取侧 ─────────────────────────────────────────────
     def get(self, instrument_id: Hashable) -> str | None:
@@ -55,14 +70,26 @@ class PairRegistry:
 
         查询侧同样 `str(instrument_id)` 归一 —— 消费者多传 `InstrumentId` 对象,而 key 以 str 存。
         """
-        return self._by_instrument.get(str(instrument_id))
+        key = str(instrument_id)
+        return self._by_instrument.get(key) or self._by_anchor.get(key)
 
     def all_pair_ids(self) -> set[str]:
-        return set(self._by_instrument.values())
+        return set(self._by_instrument.values()) | set(self._by_anchor.values())
 
-    def instrument_ids_for_pair(self, pair_id: str) -> set[str]:
-        """返回该 pair 当前注册的全部 instrument_id 字符串。"""
-        return {iid for iid, pid in self._by_instrument.items() if pid == pair_id}
+    def instrument_ids_for_pair(self, pair_id: str, *, tradable_only: bool = True) -> set[str]:
+        """返回该 pair 当前注册的 instrument_id 字符串。
+
+        默认只返回可交易腿,供 Strategy/Risk/Portfolio 使用。`tradable_only=False`
+        才包含 anchor ids,用于 matching/lifecycle 观测或测试。
+        """
+        ids = {iid for iid, pid in self._by_instrument.items() if pid == pair_id}
+        if not tradable_only:
+            ids |= self.anchor_ids_for_pair(pair_id)
+        return ids
+
+    def anchor_ids_for_pair(self, pair_id: str) -> set[str]:
+        """返回该 pair 当前注册的 anchor instrument_id 字符串。"""
+        return {iid for iid, pid in self._by_anchor.items() if pid == pair_id}
 
     def __len__(self) -> int:
-        return len(self._by_instrument)
+        return len(self._by_instrument) + len(self._by_anchor)

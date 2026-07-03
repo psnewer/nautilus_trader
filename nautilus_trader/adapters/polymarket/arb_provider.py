@@ -13,7 +13,7 @@ ArbPolymarketInstrumentProvider —— PM 端市场发现 + 6-key 补全(matchin
 
 发现链路:
   /sports                          → 每 competition:`sport`(如 "atp")+ series id + ordering
-    └─ 按 ArbContext.pm_event_slug_tags(目标 competition 列表)过滤
+    └─ 按 ArbContext.target_competitions_by_data_source["PMSPORTS"] 过滤
     └─ ordering(home/away)是 **competition 特异**属性(ATP=home / MLB=away),决定 2-way outcomes 排列
   /events?series_id={id}&closed=false&active=true&limit=500
     └─ 一次拉全本 series 的 H2H 比赛(含主赛事;每 event **内嵌** teams + markets,无需二次 /events?id=)
@@ -191,13 +191,31 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
 
     async def load_all_async(self, filters: dict | None = None) -> None:
         from src.arbitrage.bootstrap import get_arb_context
+        from src.arbitrage.common.venues import POLYMARKET
+        from src.arbitrage.common.venues import SPORTS_CLIENT
 
         ctx = get_arb_context()
-        target_comps = {str(c).lower() for c in (getattr(ctx, "pm_event_slug_tags", None) or [])}
-        comp_to_sport = dict(getattr(ctx, "pm_competition_to_sport", None) or {})
+        target_competitions = (
+            (getattr(ctx, "target_competitions_by_data_source", None) or {}).get(
+                SPORTS_CLIENT,
+                [],
+            )
+        )
+        comp_to_sport = dict(
+            (getattr(ctx, "competition_to_sport_by_data_source", None) or {}).get(
+                SPORTS_CLIENT,
+                {},
+            ),
+        )
+        target_comps = {str(c).lower() for c in target_competitions}
         # #56:competition_aliases 镜像 OE provider(slice 7A)—— 写 info["competition"] 时标准化,
         # 让 matching 的 (sport, competition) 分组两边对得上(PM "atp" / OE "Men's RG 2026" → 都 "ATP")。
-        comp_aliases = dict(getattr(ctx, "oe_competition_aliases", None) or {})
+        comp_aliases = dict(
+            (getattr(ctx, "competition_aliases_by_venue", None) or {}).get(
+                POLYMARKET,
+                {},
+            ),
+        )
         if not target_comps:
             _LOG.info("PM discovery: no target competitions configured → load 0")
             return

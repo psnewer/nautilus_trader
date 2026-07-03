@@ -52,8 +52,25 @@ def test_events_from_instruments_different_matches_separate():
     assert len(events) == 2
 
 
+def test_events_from_instruments_uses_registry_venue_from_instrument_id_suffix():
+    """matching-1.event.3: 真实 InstrumentId 字符串后缀经 Venue Registry 解析为 venue id。"""
+    leg = SimpleNamespace(
+        id="123.SHARPEXCH",
+        info={
+            "sport": "Tennis", "competition": "Wimbledon",
+            "home_team": "A", "away_team": "B",
+            "selection_role": "home", "start_ts": 0,
+        },
+    )
+
+    events = events_from_instruments([leg])
+
+    assert len(events) == 1
+    assert events[0].venue == "SHARPEXCH"
+
+
 def test_events_from_instruments_skips_missing_info():
-    """matching-1.event.3: info 缺 6-key → 跳过该腿(防御 Provider 漏填,不进 matching)。"""
+    """matching-1.event.4: info 缺 6-key → 跳过该腿(防御 Provider 漏填,不进 matching)。"""
     legs = [
         _instrument("POLYMARKET", "Soccer", "EPL", "A", "B", "home", "1"),
         SimpleNamespace(id=SimpleNamespace(venue="POLYMARKET"), info=None),
@@ -63,8 +80,23 @@ def test_events_from_instruments_skips_missing_info():
     assert len(events) == 1
 
 
+def test_events_from_instruments_skips_missing_venue():
+    """matching-1.event.4b: venue 不来自 InstrumentId / id.venue 时跳过,不读 info['venue'] 兜底。"""
+    leg = SimpleNamespace(
+        id=SimpleNamespace(),
+        info={
+            "sport": "Tennis", "competition": "Wimbledon",
+            "home_team": "A", "away_team": "B",
+            "selection_role": "home", "start_ts": 0,
+            "venue": "SHARPEXCH",
+        },
+    )
+
+    assert events_from_instruments([leg]) == []
+
+
 def test_normalized_event_group_key_for_matching():
-    """matching-1.event.4: group_key = "{sport}::{competition}",matching 分组用。"""
+    """matching-1.event.5: group_key = "{sport}::{competition}",matching 分组用。"""
     ev = NormalizedEvent(
         venue="POLYMARKET", sport="Soccer", competition="EPL",
         home_team="A", away_team="B",

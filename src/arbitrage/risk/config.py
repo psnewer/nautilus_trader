@@ -16,7 +16,6 @@ class ArbRiskParams:
     # 单场硬停(逐 submit deny = "别开新仓");金额基数来自 ArbitrageParams.share。
     match_tp: float = 0.05      # 所有 outcome net_profit > share*tp → deny(已赚够别加)
     match_sl: float = -0.05     # 所有 outcome net_profit < share*sl → deny(该场恶化别加)
-    global_sl: float = -0.10    # 旧配置兼容字段;Risk 不再执行全局止盈/止损门控
 
     # 订单隐含概率闭区间:PM price 即概率;OE 十进制赔率换算为 1/price。
     min_probability: float = 0.03

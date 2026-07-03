@@ -67,7 +67,7 @@ def _build_mean_rebate_strategy():
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.05}},
                         ],
-                        "action": {"type": "place_bets", "params": {"share": 22.5}},
+                        "actions": [{"type": "place_bets"}],
                     },
                 },
             },
@@ -121,7 +121,7 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
         pair_id="pair_X",
         snapshot=snap,
         store=SignalStore().view("pair_X"),
-        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
     )
     ctx.store.set_transient("pre_match", True)
 
@@ -155,7 +155,7 @@ def test_in_play_blocks_mean_rebate(caplog):
         pair_id="pair_X",
         snapshot=snap,
         store=SignalStore().view("pair_X"),
-        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
     )
     ctx.store.set_transient("pre_match", False)
 
@@ -190,7 +190,7 @@ def test_no_arb_below_threshold_no_action(caplog):
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],
-                        "action": {"type": "place_bets", "params": {"share": 22.5}},
+                        "actions": [{"type": "place_bets"}],
                     },
                 },
             },
@@ -207,7 +207,7 @@ def test_no_arb_below_threshold_no_action(caplog):
         pair_id="pair_X",
         snapshot=snap,
         store=SignalStore().view("pair_X"),
-        strategy_defaults={"share": 22.5, "max_leg_share": 100.0, "fx": 1.0},
+        strategy_defaults={"share": 22.5, "max_leg_share": 100.0},
     )
     ctx.store.set_transient("pre_match", True)
     res = evaluate_tree(strategy.arbitrage_tree, ctx)
@@ -224,13 +224,13 @@ def test_recovery_tree_config_builds_with_recovery_intent():
                         "checktion": [
                             {"type": "mean_rebate", "params": {"min_rate": 0.30}},
                         ],
-                        "action": {"type": "place_bets", "params": {"share": 5.0}},
+                        "actions": [{"type": "place_bets"}],
                     },
                     "compensation_tree": {
                         "checktion": [
                             {"type": "mean_rebate_recovery", "params": {"min_repaired_rebate": -0.05}},
                         ],
-                        "action": {"type": "place_bets", "params": {"share": 5.0, "intent": "recovery"}},
+                        "actions": [{"type": "place_bets", "params": {"intent": "recovery"}}],
                     },
                 },
             },

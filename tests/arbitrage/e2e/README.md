@@ -15,10 +15,11 @@
 ## 预期用例(占位)
 
 - e2e-1: 完整套利会话(从 instrument 加载到双腿成交)在 paper trading 上的端到端验证
-- e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual 且 risk-pass legs 中没有显式撤单腿 → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
+- e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual 且 risk-pass legs 中没有显式撤单腿 → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit。测试输入 leg 必须已带 `share_if_wins/qty`,Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
 - e2e-3: 单腿成交另一腿失败时的专门 recovery 状态机(后议,不属于当前主流程闭环)
 - e2e-4: 启动重连 reconciliation(Cache 状态与 venue 一致)
 - e2e-5: 多 MatchedPair 并发处理
+- e2e-12: SharpExch 完整真钱套利端到端验收(venue 插拔化第二阶段完成后再测;第一阶段只验 SE adapter probes 与 skip node smoke)
 
 ## Opportunity execution barrier(已落地代码,待 live 验证,2026-06-14)
 
@@ -90,3 +91,11 @@
 - 输入: 下一轮 Strategy 重新评估同 pair 并生成新 opportunity。
 - 期望: liveness gate 不再 deny;若余额/rebate gates 也通过,两腿进入 execution barrier,收齐后 release。
 - 验收: liveness 是 Risk live 状态,不依赖 Strategy 缓存或旧 opportunity 状态。
+
+### e2e-12: SharpExch 完整真钱套利端到端验收
+- 前置: venue 插拔化第二阶段完成,SE/OE/PM 均由 registry/capability 配置进入 Matching/Strategy/Risk/Execution,且用户明确授权真钱测试。
+- 输入: 启动包含 SE 的真实 arb node,开启真实 strategy/risk/barrier/execution 链路。
+- 步骤: 选择小额机会,观察从 discovery、matching、strategy candidate、risk pass、barrier release、SE execution、CURRENT_BETS/fill/reconcile 到 opportunity finish 的完整链路。
+- 期望: 不依赖第一阶段 PM/OE/SE 硬编码路径推进真钱 E2E;SE leg 与其它 venue leg 同步 release,成交/撤单/失败均走统一出口。
+- 验收: 一次完整 opportunity 不出现半边绕过 barrier、pair_inflight 卡死、SE liveness 误判、或残单未进入 cancel-only/reconcile 的情况。
+- 状态:第二阶段完成后再执行;第一阶段不跑该真钱 E2E。

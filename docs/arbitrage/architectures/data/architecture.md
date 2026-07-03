@@ -11,6 +11,7 @@
 |---|---|---|
 | PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
 | `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 Q9 6-key,matching 必需;#35) |
+| `PolymarketSportsDataClient` / `PolymarketSportsInstrumentProvider` | 自写 `LiveMarketDataClient` + `InstrumentProvider` | 公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchors + Sports WS firehose 产出 `SportsGameUpdate` |
 | `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + ADDs);BACK→BUY 侧 / LAY→SELL 侧;路由 market_id+selection_id → InstrumentId |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
 
@@ -158,17 +159,23 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
 
 PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_from_instruments` 见 4-key 任一空才跳过该 instrument。
 
-### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py`)
+### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py` + `adapters/sharpexch/factories.py`)
 
-- `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。
-- `OrbitExchLiveDataClientFactory.create()`:构造 `PlaywrightBrowserManager` + `OrbitExchDataClient`,并把 `ArbContext.arbitrage_params.fx` 注入 `OrbitExchInstrumentProvider`,用于把 OE 最小 stake 7 GBP 写成 adapter 外 USD 口径的 `min_notional = Money(7 * fx, USD)`
-- **`PolymarketSportsLiveDataClientFactory.create()`(#60)**:构造 `PolymarketSportsDataClient`(bare `InstrumentProvider()` 占位)
+- `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。构造完 provider 后回写 `instrument_provider_by_venue["POLYMARKET"]`。
+- `OrbitExchLiveDataClientFactory.create()`:只从 `ArbContext.discovery_config_by_venue["ORBITEXCH"]` / `*_aliases_by_venue["ORBITEXCH"]` / `browser_manager_by_venue["ORBITEXCH"]` 读取依赖;通过 `ctx_map_get_or_create` 复用或创建 `PlaywrightBrowserManager`,并把 `ArbContext.arbitrage_params.fx` 注入 `OrbitExchInstrumentProvider`,用于把 OE 最小 stake 7 GBP 写成 adapter 外 USD 口径的 `min_notional = Money(7 * fx, USD)`。构造完 provider 后回写 `instrument_provider_by_venue["ORBITEXCH"]`。
+- `SharpExchLiveDataClientFactory.create()`:仅在 `venues.sharpexch.enabled=true` 时由 launcher 注册;只从 `ArbContext.discovery_config_by_venue["SHARPEXCH"]` / `*_aliases_by_venue["SHARPEXCH"]` / `browser_manager_by_venue["SHARPEXCH"]` / `browser_lock_by_venue["SHARPEXCH"]` 读取依赖。browser manager / lock 通过 `ctx_map_get_or_create` 复用或创建;discovery config 存在时构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` + `SharpExchInstrumentProvider`;缺失时使用占位 `InstrumentProvider()`。构造完 provider 后回写 `instrument_provider_by_venue["SHARPEXCH"]`。
+- **`PolymarketSportsLiveDataClientFactory.create()`(#60/#127)**:构造 `PolymarketSportsDataClient` + `PolymarketSportsInstrumentProvider`;provider 读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`,产出 PMSPORTS synthetic event anchors。
 
 ### 3.4 `PolymarketSportsDataClient`(`adapters/polymarket/sports.py`,#60)—— 比分 firehose
 
 PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/无鉴权/事件驱动稀疏)→ 实时赛事状态。**P11:`SportsGameUpdate` 事件的单一自然归属 = 本生产者**(消费者 matching/strategy 只读)。
+PMSPORTS event anchor 见 `_cross-cutting/sports-event-anchor.md`:该 data-only client 同时执行公开
+Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matching 作为 event anchor;
+它不拥有 execution/account/position,也不进入套利下单流。
 
-- `_connect` 即开 WS firehose(无 instrument 订阅);服务端协议层 ping 由 `websockets` 自动回 pong,客户端主动 keepalive ping 关闭(`ping_interval=None`),避免 PM Sports / 代理链路不回客户端 ping 时被本地 `keepalive ping timeout` 误杀;仍兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
+- `_connect` 先 `PolymarketSportsInstrumentProvider.load_all_async()` + `_handle_data(instrument)` 灌入 NT cache,再开 WS firehose;`update_instruments_interval_mins` 默认 60min,单轮失败只 warning,下一轮重试。
+- synthetic anchor 每场一条 `BettingInstrument(venue=PMSPORTS, market_type=EVENT_ANCHOR)`, `info` 含 Q9 6-key + `game_id` + `tradable=False` + `anchor=True`。它只给 Matching 识别 event,不代表可交易 selection。
+- WS firehose 无 instrument 订阅;服务端协议层 ping 由 `websockets` 自动回 pong,客户端主动 keepalive ping 关闭(`ping_interval=None`),避免 PM Sports / 代理链路不回客户端 ping 时被本地 `keepalive ping timeout` 误杀;仍兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
 - 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate` → **`msgbus.publish` 裸发到 `data.SportsGameUpdate*`**(同 MatchedPair/InstrumentsRefreshed 的 publish_data 风格;消费者 `msgbus.subscribe("data.{Type}*")` 带 #58 的 `*` 通配)。**注**:`_handle_data` 走 DataEngine.process 只认内置/CustomData,裸自定义 Data 报 "unrecognized type"(#60 smoke 抓出 → 改裸 publish)。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
 - 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 经 `signal_collector` seam(strategy)。详见 refactor.md §5.9 / #60。
@@ -180,6 +187,7 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 | 横切 | 约束 |
 |---|---|
 | Q9 6-key | OE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider`(`arb_provider.py`)`load_async` 走 gamma `/sports`+`/events` 填全 6-key(extraction 已实写,2026-06-21 核实)|
+| PMSPORTS event anchor | `PolymarketSportsInstrumentProvider` 复用公开 Gamma discovery 目标,产出 non-tradable `.PMSPORTS` 6-key instrument;Matching 负责把 anchor 与真实 tradable venues 聚合成 pair |
 | §4.3 OE 健康检查 | **历史设计已失效**:execution 页 reload 宿主已迁到 `OrbitExchExecutionClient`;本文件只保留 competition 页健康检查,见 execution §4.3bis |
 | 订阅去重 | NT `DataEngine` 引用计数自动,客户端不自管 |
 | **Q11.A Debug 行情掉包**(#39) | `Debug{PM,OE}DataClient`(`src/arbitrage/debug/data_clients.py`)子类化 `_handle_data`,按 `DebugConfig.mock_data(ODDS)` 替换 / 注入;两 factory 读 `ArbContext.debug_config`,`enabled` → 装 Debug 子类,否则装生产。框架只提供 `_maybe_substitute(data) → data|None` 钩子(默认 passthrough),具体替换算法由 user 按 mock_data schema 子类化覆盖。详见 `_cross-cutting/debug-injection.md` |
@@ -193,6 +201,7 @@ PM **Sports WebSocket**(`wss://sports-api.polymarket.com/ws`,公开/无订阅/�
 - [x] OE `LiveMarketDataClient` 子类(整体重写,`data.py`)+ `oe_runner_to_book_deltas` 纯映射 + routing(`tests/arbitrage/adapters/orbitexch/test_data_client_step2.py` 10 passed)
 - [x] OE `OrbitExchLiveDataClientFactory`(同目录 `factories.py`)
 - [x] PM `ArbPolymarketInstrumentProvider`(`arb_provider.py`)+ `ArbPolymarketLiveDataClientFactory`:真 6-key extraction 已实写(gamma `/sports`+`/events` → home/away/selection_role/competition/start_ts),实盘 discovery/matching 已跑
+- [x] PMSPORTS `PolymarketSportsInstrumentProvider` + `PolymarketSportsDataClient`:公开 Gamma discovery → non-tradable event anchors 入 cache;Sports WS 继续发布 `SportsGameUpdate`
 - [x] ~~真 PM 6-key extraction~~ 已落地(见上)。**OE scraper DOM 抽 `start_ts`:不做** —— `start_ts` 当前无任何 consumer(matching 按 (sport,competition)+队名相似度配对,eviction 由 sports `ended` 比分信号驱动,#60 已取代时间窗 reaper);需要时再补
 - [x] OE competition 页存活封装进 `OrbitExchWebSocketHandler` + `on_disconnect` 事件化 reload;旧 `HealthCheckLoop` staleness / 补开已退役
 - [ ] /live-test:双 venue OrderBookDelta 全链路 → strategy 收

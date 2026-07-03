@@ -7,14 +7,13 @@
   1. `install_arbitrage_engines(debug_config=...)`  →  替换 kernel.Portfolio / .LiveRiskEngine
   2. `TradingNode(config)`                          →  kernel 原生构造 ArbitragePortfolio / ArbitrageLiveRiskEngine
   3. `prepare_arb_context(...)`                     →  填好 venue_liveness / pair_registry / 间隔等
-  4. `node.add_*_client_factory(...)` × 4           →  PM+OE × data+exec
+  4. `node.add_*_client_factory(...)`               →  enabled data sources + enabled venues
   5. `node.build()`                                  →  factory.create 读 ArbContext 构造 client
   6. `wire_arbitrage_runtime(node, params=...)`     →  注入 ArbRiskParams 到已构造的 Portfolio/RiskEngine
-  7. (slice 8 待补)Actors:InstrumentRefresher × 2 + MarketMatchingActor + StrategyEvaluator
+  7. Actors:MarketMatchingActor + StrategyEvaluator + optional WebGatewayActor
   8. `node.run()` / `node.dispose()`
 
-**slice 6 范围**:1-6 + node.run() / dispose。Actors / settlement / positions_fetcher 留 slice 8。
-当前用空 StrategyRegistry(launcher 仍能起 connect / discovery / matching 链路,Q19 决策器 no-op evaluate)。
+当前 factory 注册由 Venue/DataSource Registry 驱动;PMSPORTS 是 data source,不是 trading venue。
 """
 
 from __future__ import annotations
@@ -34,20 +33,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from nautilus_trader.adapters.orbitexch.data import ORBITEXCH
-from nautilus_trader.adapters.orbitexch.factories import ArbOrbitExchLiveExecClientFactory
-from nautilus_trader.adapters.orbitexch.factories import OrbitExchLiveDataClientFactory
-from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveDataClientFactory
-from nautilus_trader.adapters.polymarket.arb_factories import ArbPolymarketLiveExecClientFactory
-from nautilus_trader.adapters.polymarket.arb_factories import PolymarketSportsLiveDataClientFactory
-from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
 from nautilus_trader.adapters.polymarket.http.transport import check_polymarket_geoblock
-from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
-from nautilus_trader.adapters.sharpexch.data import SHARPEXCH
-from nautilus_trader.adapters.sharpexch.factories import ArbSharpExchLiveExecClientFactory
-from nautilus_trader.adapters.sharpexch.factories import SharpExchLiveDataClientFactory
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.model.enums import TradingState
 from nautilus_trader.config import LoggingConfig
@@ -61,6 +49,12 @@ from src.arbitrage.bootstrap import wire_arbitrage_runtime
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.subscription_config import OddsSubscriptionConfig
+from src.arbitrage.common.venues import enabled_data_sources
+from src.arbitrage.common.venues import enabled_settlement_venues
+from src.arbitrage.common.venues import enabled_sports_client_ids
+from src.arbitrage.common.venues import enabled_venue_ids
+from src.arbitrage.common.venues import enabled_venues
+from src.arbitrage.common.venues import resolve_factory
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.config import ArbConfig
 from src.arbitrage.config.schema import ConfigError
@@ -70,13 +64,9 @@ from src.arbitrage.config.dispatcher import to_arb_risk_params
 from src.arbitrage.config.dispatcher import to_arbitrage_params
 from src.arbitrage.config.dispatcher import to_debug_config
 from src.arbitrage.config.dispatcher import to_market_matching_actor_config
-from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
-from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
+import src.arbitrage.config.dispatcher as config_dispatcher
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
-from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
-from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
-from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import to_strategy_registry
 from src.arbitrage.config.dispatcher import to_web_gateway_config
@@ -121,20 +111,16 @@ def register_builtin_checks_and_actions() -> None:
 
 
 def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
-    """ArbConfig → NT `TradingNodeConfig`(PM+OE × data+exec 四 client config)。"""
+    """ArbConfig → NT `TradingNodeConfig`(按 enabled data source / venue 生成 client config)。"""
     validate_venue_enablement(cfg)
     data_clients = {}
     exec_clients = {}
-    if cfg.venues.polymarket.enabled:
-        data_clients[POLYMARKET] = to_polymarket_data_client_config(cfg)
-        data_clients[SPORTS_CLIENT] = to_sports_data_client_config(cfg)   # #60:PM 比分 firehose
-        exec_clients[POLYMARKET] = to_polymarket_exec_client_config(cfg)
-    if cfg.venues.orbitexch.enabled:
-        data_clients[ORBITEXCH] = to_orbitexch_data_client_config(cfg)
-        exec_clients[ORBITEXCH] = to_orbitexch_exec_client_config(cfg)
-    if cfg.venues.sharpexch.enabled:
-        data_clients[SHARPEXCH] = to_sharpexch_data_client_config(cfg)
-        exec_clients[SHARPEXCH] = to_sharpexch_exec_client_config(cfg)
+    for source in enabled_data_sources(cfg):
+        data_clients[source.client_id] = getattr(config_dispatcher, source.data_config_builder)(cfg)
+    for venue in enabled_venues(cfg):
+        data_clients[venue.venue_id] = getattr(config_dispatcher, venue.data_config_builder)(cfg)
+        if venue.exec_config_builder:
+            exec_clients[venue.venue_id] = getattr(config_dispatcher, venue.exec_config_builder)(cfg)
 
     return TradingNodeConfig(
         trader_id=TraderId("ARBITRAGE-001"),
@@ -164,33 +150,21 @@ def prepare_runtime_state(cfg: ArbConfig):
     评估入口 + execution session 共享,做 per-pair 串行。
     """
     validate_venue_enablement(cfg)
-    venues = []
-    if cfg.venues.polymarket.enabled:
-        venues.append(POLYMARKET)
-    if cfg.venues.orbitexch.enabled:
-        venues.append(ORBITEXCH)
-    if cfg.venues.sharpexch.enabled:
-        venues.append(SHARPEXCH)
-    return VenueExecutionLiveness(tuple(venues)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
+    return VenueExecutionLiveness(enabled_venue_ids(cfg)), PairRegistry(), PairInFlightGate(), to_debug_config(cfg)
 
 
 def validate_venue_enablement(cfg: ArbConfig) -> None:
-    """校验第一版 venue 插拔约束:至少两个 venue 开启。"""
+    """校验第一版 venue 插拔约束:至少两个 venue 开启,且存在 sports firehose anchor 数据源。"""
     enabled = enabled_runtime_venues(cfg)
     if len(enabled) < 2:
         raise ConfigError("At least two venues must be enabled under venues.*.enabled")
+    if not enabled_sports_client_ids(cfg):
+        raise ConfigError("sports_status data source must be enabled for PMSPORTS event anchor")
 
 
 def enabled_runtime_venues(cfg: ArbConfig) -> tuple[str, ...]:
     """按配置返回会注册进 TradingNode runtime 的 venue 名称。"""
-    venues = []
-    if cfg.venues.polymarket.enabled:
-        venues.append(POLYMARKET)
-    if cfg.venues.orbitexch.enabled:
-        venues.append(ORBITEXCH)
-    if cfg.venues.sharpexch.enabled:
-        venues.append(SHARPEXCH)
-    return tuple(venues)
+    return enabled_venue_ids(cfg)
 
 
 def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
@@ -199,12 +173,13 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
     只在 cleanup 开启且链上操作所需基础凭证存在时初始化;初始化失败时返回 None,
     让交易节点继续启动,由后续 position reconcile 只做对账不做链上 settlement。
     """
-    if not cfg.venues.polymarket.enabled:
-        return None
     if not cfg.execution.cleanup_enabled:
         return None
+    settlement_venues = enabled_settlement_venues(cfg, "polymarket_ctf")
+    if not settlement_venues:
+        return None
 
-    pm = cfg.venues.polymarket
+    pm = getattr(cfg.venues, settlement_venues[0].config_key)
     if not pm.private_key or not pm.funder:
         _LOG.warning("PM settlement disabled: missing POLYMARKET_PRIVATE_KEY or POLYMARKET_FUNDER")
         return None
@@ -232,20 +207,17 @@ def _make_pm_settlement(cfg: ArbConfig) -> PolymarketSettlement | None:
 
 
 def register_factories(node: TradingNode, cfg: ArbConfig | None = None) -> None:
-    """注入 venue factories;按 `venues.*.enabled` 注册 runtime venue。"""
+    """注入 data source / venue factories;按 registry enablement 注册 runtime clients。"""
     if cfg is None:
         cfg = ArbConfig()
     validate_venue_enablement(cfg)
-    if cfg.venues.polymarket.enabled:
-        node.add_data_client_factory(POLYMARKET, ArbPolymarketLiveDataClientFactory)
-        node.add_data_client_factory(SPORTS_CLIENT, PolymarketSportsLiveDataClientFactory)  # #60
-        node.add_exec_client_factory(POLYMARKET, ArbPolymarketLiveExecClientFactory)
-    if cfg.venues.orbitexch.enabled:
-        node.add_data_client_factory(ORBITEXCH, OrbitExchLiveDataClientFactory)
-        node.add_exec_client_factory(ORBITEXCH, ArbOrbitExchLiveExecClientFactory)
-    if cfg.venues.sharpexch.enabled:
-        node.add_data_client_factory(SHARPEXCH, SharpExchLiveDataClientFactory)
-        node.add_exec_client_factory(SHARPEXCH, ArbSharpExchLiveExecClientFactory)
+    for source in enabled_data_sources(cfg):
+        node.add_data_client_factory(source.client_id, resolve_factory(source.data_factory))
+    for venue in enabled_venues(cfg):
+        if venue.data_factory is not None:
+            node.add_data_client_factory(venue.venue_id, resolve_factory(venue.data_factory))
+        if venue.exec_factory is not None:
+            node.add_exec_client_factory(venue.venue_id, resolve_factory(venue.exec_factory))
 
 
 def _make_is_execution_active(node: TradingNode):
@@ -273,8 +245,10 @@ def add_actors(
     pair_inflight: PairInFlightGate | None = None,
     config_path: str | None = None,
 ) -> None:
-    """slice 8A:**必须在 `node.build()` 之后调用**(provider 由 data factory 构造后回写到
-    `ArbContext.{pm,oe}_instrument_provider`,Refresher 取同一实例确保 cache add 视图一致)。
+    """slice 8A:**必须在 `node.build()` 之后调用**。
+
+    Data factories 已在 `node.build()` 期间构造 DataClient / Provider;周期发现由各
+    DataClient 原生 `_update_instruments` 负责,launcher 这里只装配业务 Actor。
 
     构造 Actor + `node.trader.add_actor`:
       - `MarketMatchingActor`
@@ -359,7 +333,7 @@ def bootstrap_and_build(
     node = node_factory(config=build_trading_node_config(cfg))
 
     # 3. 准备 ArbContext(必须在 node.build 之前;factory.create 读)
-    #    `to_arb_context_init_kwargs(cfg)` 自带 oe_scraper_config / aliases(slice 7A)
+    #    `to_arb_context_init_kwargs(cfg)` 只输出 venue/data-source keyed maps。
     prepare_arb_context(
         venue_liveness=venue_liveness,
         pair_registry=pair_registry,

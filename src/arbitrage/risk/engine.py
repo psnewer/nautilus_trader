@@ -34,8 +34,10 @@ from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.params import ArbitrageParams
-from src.arbitrage.common.utils import orbitexch_odds_to_probability
-from src.arbitrage.common.utils import polymarket_price_to_probability
+from src.arbitrage.common.venues import descriptor_for
+from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import venue_id_from_instrument_id
+from src.arbitrage.common.venues import venue_id_from_leg_key
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
 
@@ -160,14 +162,14 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         currency = instrument.quote_currency
         cost = self._order_cost(instrument, order)
 
-        if order.instrument_id.venue.value == "POLYMARKET":
-            # PM 上报 reported=True/locked=0/free=total → 不能信 cache free,自扣在途挂单
+        if self._uses_probability_balance_model(order.instrument_id.venue.value):
+            # probability venue 上报 reported=True/locked=0/free=total 时,不能信 cache free,需自扣在途挂单。
             total = account.balance_total(currency)
             if total is None:
                 return True
-            available = total.as_double() - self._pm_open_notional(order.instrument_id.venue, currency)
+            available = total.as_double() - self._probability_open_notional(order.instrument_id.venue, currency)
         else:
-            # OE:WS 余额帧已含挂单占用,直接信 free
+            # decimal venue:WS 余额帧已含挂单占用,直接信 free。
             free = account.balance_free(currency)
             if free is None:
                 return True
@@ -188,7 +190,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return size * float(order.price)          # PM: size * price
         return size                                  # OE/SE: adapter 外部 size 已是 USD stake
 
-    def _pm_open_notional(self, venue, currency) -> float:
+    def _probability_open_notional(self, venue, currency) -> float:
         total = 0.0
         for o in self._cache.orders_open(venue=venue):
             if o.has_price:
@@ -197,7 +199,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
     # ── 应用层:赔率/概率门控───────────────────────────────────────
     def _check_probability_gate(self, instrument, order) -> bool:
-        """PM price 即概率;OE 十进制赔率换算为隐含概率 1/price。"""
+        """按 Venue Registry 概率模型计算订单隐含概率。"""
         if not order.has_price:
             return True
 
@@ -212,10 +214,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             )
             return False
 
-        if isinstance(instrument, BinaryOption):
-            probability = polymarket_price_to_probability(order.price)
-        else:
-            probability = orbitexch_odds_to_probability(order.price)
+        try:
+            probability = probability_from_price(order.instrument_id.venue.value, float(order.price))
+        except (KeyError, ZeroDivisionError):
+            self._deny_order(order=order, reason=f"probability gate: unsupported venue={order.instrument_id.venue}")
+            return False
 
         if probability < params.min_probability or probability > params.max_probability:
             self._deny_order(
@@ -232,6 +235,13 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     @staticmethod
     def _valid_probability_bounds(params: ArbRiskParams) -> bool:
         return 0.0 <= params.min_probability < params.max_probability <= 1.0
+
+    @staticmethod
+    def _uses_probability_balance_model(venue: str) -> bool:
+        try:
+            return descriptor_for(venue).odds_model == "probability"
+        except KeyError:
+            return False
 
     # ── 应用层:venue execution liveness(跨 venue 同机会 fail-closed)────
     def _check_required_venues_alive(self, order) -> bool:
@@ -251,7 +261,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _required_venues(self, order) -> set[str]:
         meta = meta_from_order(order)
         if meta is None:
-            return {str(order.instrument_id.venue.value).upper()}
+            return {self._venue_from_order(order)}
 
         venues = {
             venue
@@ -261,18 +271,15 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         }
         if venues:
             return venues
-        return {str(order.instrument_id.venue.value).upper()}
+        return {self._venue_from_order(order)}
 
     @staticmethod
     def _venue_from_leg_key(leg_key: str) -> str | None:
-        prefix = str(leg_key).split(":", 1)[0].lower()
-        if prefix in {"pm", "polymarket"}:
-            return "POLYMARKET"
-        if prefix in {"oe", "orbitexch"}:
-            return "ORBITEXCH"
-        if prefix in {"se", "sharpexch"}:
-            return "SHARPEXCH"
-        return None
+        return venue_id_from_leg_key(leg_key)
+
+    @staticmethod
+    def _venue_from_order(order) -> str:
+        return venue_id_from_instrument_id(order.instrument_id) or str(order.instrument_id.venue.value).upper()
 
     # ── 应用层:单场止盈/止损硬停(Q16 修订)────────────────────────────
     def _check_profit_gates(self, order) -> bool:

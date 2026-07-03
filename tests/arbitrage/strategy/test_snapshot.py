@@ -113,6 +113,32 @@ def test_unknown_pair_id_yields_empty_snapshot():
     assert snap.instrument_ids == [] and snap.order_books == {} and snap.positions == []
 
 
+def test_snapshot_uses_tradable_pair_ids_not_anchor_ids():
+    """strategy-pmsports-anchor.2:PMSPORTS anchor id 不进入机会快照。"""
+    cache = _FakeCache()
+    cache.set_book("A.POLYMARKET", "book-A")
+    cache.set_book("X.ORBITEXCH", "book-X")
+    cache.set_book("anchor.PMSPORTS", "book-anchor")
+    cache.set_instrument("A.POLYMARKET", {})
+    cache.set_instrument("X.ORBITEXCH", {})
+    cache.set_instrument("anchor.PMSPORTS", {"tradable": False, "anchor": True})
+    cache.add_position(SimpleNamespace(instrument_id="A.POLYMARKET"))
+    cache.add_position(SimpleNamespace(instrument_id="anchor.PMSPORTS"))
+    pair_registry = PairRegistry()
+    pair_registry.register(
+        "match_X",
+        ["A.POLYMARKET", "X.ORBITEXCH"],
+        anchor_instrument_ids=["anchor.PMSPORTS"],
+    )
+
+    snap = build_snapshot("match_X", cache=cache, portfolio=SimpleNamespace(), pair_registry=pair_registry)
+
+    assert set(snap.instrument_ids) == {"A.POLYMARKET", "X.ORBITEXCH"}
+    assert snap.order_books == {"A.POLYMARKET": "book-A", "X.ORBITEXCH": "book-X"}
+    assert {p.instrument_id for p in snap.positions} == {"A.POLYMARKET"}
+    assert "anchor.PMSPORTS" not in snap.instrument_info
+
+
 # ── slice 9(#49):in_play 派生(任一 leg `info["in_play"]=True` → pair in_play)──
 
 def test_snapshot_in_play_false_when_no_instrument_marks_inplay():

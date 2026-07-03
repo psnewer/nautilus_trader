@@ -393,6 +393,36 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     assert captured["canceled"] is True
 
 
+def test_cancel_residual_one_reuses_normal_cancel_path():
+    client = _client()
+    captured = {}
+
+    async def cancel_one(strategy_id, instrument_id, client_order_id, venue_order_id):
+        captured.update(
+            strategy_id=strategy_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+        )
+
+    client._cancel_one = cancel_one
+    residual = SimpleNamespace(
+        strategy_id=StrategyId("S-000"),
+        instrument_id="I",
+        client_order_id=ClientOrderId("COID-1"),
+        venue_order_id=VenueOrderId("SE-OFFER-1"),
+    )
+
+    _run(client._cancel_residual_one(residual))
+
+    assert captured == {
+        "strategy_id": residual.strategy_id,
+        "instrument_id": "I",
+        "client_order_id": residual.client_order_id,
+        "venue_order_id": residual.venue_order_id,
+    }
+
+
 def test_modify_order_is_rejected():
     client = _client()
     rejected = {}

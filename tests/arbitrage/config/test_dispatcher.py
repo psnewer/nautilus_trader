@@ -15,12 +15,14 @@ from src.arbitrage.config.dispatcher import to_orbitexch_data_client_config
 from src.arbitrage.config.dispatcher import to_orbitexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_data_client_config
 from src.arbitrage.config.dispatcher import to_polymarket_exec_client_config
+from src.arbitrage.config.dispatcher import to_sports_data_client_config
 from src.arbitrage.config.dispatcher import to_se_discovery_config
 from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
 from src.arbitrage.config.dispatcher import to_sharpexch_exec_client_config
 from src.arbitrage.config.dispatcher import to_strategy_evaluator_config
 from src.arbitrage.config.dispatcher import _polymarket_ws_base_url
 from src.arbitrage.config.schema import ArbConfig
+from src.arbitrage.config.schema import ConfigError
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import MockCategory
 
@@ -56,19 +58,22 @@ def test_polymarket_data_client_config_maps_credentials():
     [
         ("wss://ws-subscriptions-clob.polymarket.com/ws/", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
         ("wss://ws-subscriptions-clob.polymarket.com/ws", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
-        ("wss://ws-subscriptions-clob.polymarket.com/ws/market", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
-        ("wss://ws-subscriptions-clob.polymarket.com/ws/user", "wss://ws-subscriptions-clob.polymarket.com/ws/"),
     ],
 )
 def test_polymarket_ws_url_normalized_to_nt_base_url(raw, expected):
-    """配置层兼容旧 full endpoint,传给上游 Polymarket WS client 前转为 base URL。"""
     assert _polymarket_ws_base_url(raw) == expected
+
+
+@pytest.mark.parametrize("suffix", ["market", "user"])
+def test_polymarket_ws_url_rejects_channel_endpoint(suffix):
+    with pytest.raises(ConfigError, match="must be the base websocket URL"):
+        _polymarket_ws_base_url(f"wss://ws-subscriptions-clob.polymarket.com/ws/{suffix}")
 
 
 def test_polymarket_exec_client_config_maps_credentials():
     cfg = _cfg(venues={"polymarket": {
         "clob_api_key": "K",
-        "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/",
     }})
     cc = to_polymarket_exec_client_config(cfg)
     assert cc.api_key == "K"
@@ -114,6 +119,13 @@ def test_polymarket_credentials_none_passthrough():
     assert cc.private_key is None
 
 
+def test_sports_data_client_config_maps_data_source_url():
+    cfg = _cfg(data_sources={"sports_status": {"ws_url": "wss://sports.example/ws"}})
+    cc = to_sports_data_client_config(cfg)
+
+    assert cc.sports_ws_url == "wss://sports.example/ws"
+
+
 def test_orbitexch_data_client_config_maps_credentials():
     cfg = _cfg(venues={"orbitexch": {
         "username": "u", "password": "p", "headless": False, "browser_type": "firefox",
@@ -142,8 +154,8 @@ def test_orbitexch_data_client_config_staleness_default():
     assert cc.staleness_timeout_secs == 300
 
 
-def test_orbitexch_credentials_empty_string_fallback():
-    """OE Config 把 username/password 标为必填 str;env 缺失时 dispatcher 回退空串
+def test_orbitexch_credentials_default_to_empty_string():
+    """OE Config 把 username/password 标为必填 str;env 缺失时 dispatcher 转为空串
     让下游 login 触发明确错误(loader 不预判)。"""
     cfg = _cfg()  # username/password 全 None
     cc = to_orbitexch_data_client_config(cfg)
@@ -167,6 +179,7 @@ def test_sharpexch_data_client_config_maps_credentials():
         "login_url": "https://login.example.com/player/",
         "headless": False,
         "browser_type": "firefox",
+        "user_data_dir": "/tmp/se-playwright-profile",
         "page_load_timeout_sec": 90.0,
         "staleness_timeout_sec": 240,
     }})
@@ -177,11 +190,12 @@ def test_sharpexch_data_client_config_maps_credentials():
     assert cc.login_url == "https://login.example.com/player/"
     assert cc.headless is False
     assert cc.browser_type == "firefox"
+    assert cc.user_data_dir == "/tmp/se-playwright-profile"
     assert cc.page_timeout == 90000
     assert cc.staleness_timeout_secs == 240
 
 
-def test_sharpexch_credentials_empty_string_fallback():
+def test_sharpexch_credentials_default_to_empty_string():
     cfg = _cfg()
     cc = to_sharpexch_data_client_config(cfg)
     assert cc.username == ""
@@ -189,10 +203,16 @@ def test_sharpexch_credentials_empty_string_fallback():
 
 
 def test_sharpexch_exec_client_config_maps_credentials():
-    cfg = _cfg(venues={"sharpexch": {"username": "u", "password": "p", "page_load_timeout_sec": 90.0}})
+    cfg = _cfg(venues={"sharpexch": {
+        "username": "u",
+        "password": "p",
+        "user_data_dir": "/tmp/se-playwright-profile",
+        "page_load_timeout_sec": 90.0,
+    }})
     cc = to_sharpexch_exec_client_config(cfg)
     assert cc.username == "u"
     assert cc.password == "p"
+    assert cc.user_data_dir == "/tmp/se-playwright-profile"
     assert cc.page_timeout == 90000
 
 
@@ -210,23 +230,32 @@ def test_market_matching_actor_config_maps_fields():
     assert mc.refresh_interval_secs == 60.0
     assert mc.min_similarity == 1
     assert mc.competition_max_matches == {"ATP": 1}
-    assert mc.external_venues == ("ORBITEXCH",)
+    assert mc.anchor_venue == "PMSPORTS"
+    assert mc.tradable_venues == ("POLYMARKET", "ORBITEXCH")
 
 
 def test_market_matching_actor_config_includes_sharpexch_when_enabled():
     cfg = _cfg(venues={"sharpexch": {"enabled": True}})
     mc = to_market_matching_actor_config(cfg)
-    assert mc.external_venues == ("ORBITEXCH", "SHARPEXCH")
+    assert mc.tradable_venues == ("POLYMARKET", "ORBITEXCH", "SHARPEXCH")
 
 
-def test_market_matching_actor_config_uses_enabled_external_venues():
+def test_market_matching_actor_config_uses_enabled_tradable_venues():
     cfg = _cfg(venues={"orbitexch": {"enabled": False}, "sharpexch": {"enabled": True}})
     mc = to_market_matching_actor_config(cfg)
-    assert mc.external_venues == ("SHARPEXCH",)
+    assert mc.tradable_venues == ("POLYMARKET", "SHARPEXCH")
+
+
+def test_market_matching_actor_config_supports_oe_se_only_with_pmsports_anchor():
+    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
+    mc = to_market_matching_actor_config(cfg)
+
+    assert mc.anchor_venue == "PMSPORTS"
+    assert mc.tradable_venues == ("ORBITEXCH", "SHARPEXCH")
 
 
 def test_market_matching_empty_max_matches_becomes_none():
-    """空 dict 不传入 MarketMatchingConfig(其默认是 None,内部 `or {}` 兜底)。"""
+    """空 dict 不传入 MarketMatchingConfig(保持 None,由 actor 内部按空 map 处理)。"""
     cfg = _cfg()  # competition_max_matches 默认空 dict
     mc = to_market_matching_actor_config(cfg)
     assert mc.competition_max_matches is None
@@ -247,12 +276,11 @@ def test_strategy_evaluator_config_log_evaluations_maps_strategy_section():
 # ─── Risk / Context / Debug ───────────────────────────────────────────
 
 def test_arb_risk_params_maps_fields():
-    cfg = _cfg(risk={"match_tp": 0.08, "match_sl": -0.06, "global_sl": -0.20,
+    cfg = _cfg(risk={"match_tp": 0.08, "match_sl": -0.06,
                      "min_probability": 0.04, "max_probability": 0.96})
     rp = to_arb_risk_params(cfg)
     assert rp.match_tp == 0.08
     assert rp.match_sl == -0.06
-    assert rp.global_sl == -0.20
     assert rp.min_probability == 0.04
     assert rp.max_probability == 0.96
 
@@ -268,12 +296,64 @@ def test_arbitrage_params_maps_fields():
 def test_arb_context_init_kwargs_maps_execution_section():
     cfg = _cfg(execution={"tracking_timeout_sec": 45.0})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["pm_session_timeout_secs"] == 45.0
-    assert kw["oe_session_timeout_secs"] == 45.0
-    assert kw["se_session_timeout_secs"] == 45.0
+    assert kw["session_timeout_secs_by_venue"] == {
+        "POLYMARKET": 45.0,
+        "ORBITEXCH": 45.0,
+    }
     # #110/#109:PM/OE 健康 interval 均退役 —— 不再进 ArbContext。
     assert "pm_health_interval_secs" not in kw
     assert "oe_health_interval_secs" not in kw
+
+
+def test_arb_context_keeps_pmsports_targets_when_polymarket_venue_disabled():
+    cfg = _cfg(
+        venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}},
+        discovery={"polymarket": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["atp"]}]}},
+    )
+
+    kw = to_arb_context_init_kwargs(cfg)
+
+    assert kw["session_timeout_secs_by_venue"] == {
+        "ORBITEXCH": 30.0,
+        "SHARPEXCH": 30.0,
+    }
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": ["atp"]}
+    assert kw["competition_to_sport_by_data_source"] == {"PMSPORTS": {"atp": "Tennis"}}
+
+
+def test_arb_context_prefers_explicit_sports_status_targets_over_default_polymarket_sports():
+    cfg = _cfg(
+        data_sources={"sports_status": {"sports": [{"sport": "Tennis", "competitions": ["wta"]}]}},
+        discovery={"polymarket": {"enabled": True, "sports": [{"sport": "Soccer", "competitions": ["epl"]}]}},
+    )
+
+    kw = to_arb_context_init_kwargs(cfg)
+
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": ["wta"]}
+    assert kw["competition_to_sport_by_data_source"] == {"PMSPORTS": {"wta": "Tennis"}}
+
+
+def test_arb_context_pmsports_targets_default_to_polymarket_sports_when_data_sources_omitted():
+    cfg = _cfg(
+        discovery={"polymarket": {"enabled": True, "sports": [{"sport": "Soccer", "competitions": ["epl"]}]}},
+    )
+
+    kw = to_arb_context_init_kwargs(cfg)
+
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": ["epl"]}
+    assert kw["competition_to_sport_by_data_source"] == {"PMSPORTS": {"epl": "Soccer"}}
+
+
+def test_arb_context_omits_pmsports_targets_when_data_source_disabled():
+    cfg = _cfg(
+        data_sources={"sports_status": {"enabled": False}},
+        discovery={"polymarket": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["atp"]}]}},
+    )
+
+    kw = to_arb_context_init_kwargs(cfg)
+
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": []}
+    assert kw["competition_to_sport_by_data_source"] == {"PMSPORTS": {}}
 
 
 # ── slice 7A:OE scraper config + aliases 进 ArbContext ────
@@ -285,7 +365,7 @@ def test_arb_context_init_kwargs_includes_oe_scraper_config():
         venues={"orbitexch": {"headless": False, "page_load_timeout_sec": 90.0}},
     )
     kw = to_arb_context_init_kwargs(cfg)
-    sc = kw["oe_scraper_config"]
+    sc = kw["discovery_config_by_venue"]["ORBITEXCH"]
     assert sc is not None
     assert sc.enabled is True
     # #62:scraper 强制 headless + 无登录 profile(免登录、后台定时、与 data/exec 登录浏览器解耦),
@@ -295,12 +375,16 @@ def test_arb_context_init_kwargs_includes_oe_scraper_config():
     assert sc.browser.timeout_ms == 90000   # 90s → 90000ms
     assert sc.sports[0].sport == "Tennis"
     assert sc.sports[0].competitions == ["Men's Roland Garros 2026"]
+    assert kw["discovery_config_by_venue"]["ORBITEXCH"] is sc
+    assert "POLYMARKET" not in kw["discovery_config_by_venue"]
+    assert kw["sport_aliases_by_venue"]["ORBITEXCH"] == dict(cfg.matching.sport_aliases)
+    assert kw["competition_aliases_by_venue"]["ORBITEXCH"] == dict(cfg.matching.competition_aliases)
 
 
 def test_arb_context_init_kwargs_oe_scraper_config_none_when_disabled():
     cfg = _cfg(discovery={"orbitexch": {"enabled": False}})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["oe_scraper_config"] is None
+    assert "ORBITEXCH" not in kw["discovery_config_by_venue"]
 
 
 def test_arb_context_init_kwargs_omits_oe_scraper_when_venue_disabled():
@@ -314,7 +398,7 @@ def test_arb_context_init_kwargs_omits_oe_scraper_when_venue_disabled():
                                   "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
     )
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["oe_scraper_config"] is None
+    assert "ORBITEXCH" not in kw["discovery_config_by_venue"]
 
 
 def test_se_discovery_config_maps_fields():
@@ -354,7 +438,7 @@ def test_arb_context_init_kwargs_omits_se_discovery_when_venue_disabled():
                                   "sports": [{"sport": "Tennis", "competitions": ["Wimbledon"]}]}},
     )
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["se_discovery_config"] is None
+    assert "SHARPEXCH" not in kw["discovery_config_by_venue"]
 
 
 def test_arb_context_init_kwargs_includes_se_discovery_when_venue_enabled():
@@ -365,10 +449,14 @@ def test_arb_context_init_kwargs_includes_se_discovery_when_venue_enabled():
         matching={"sport_aliases": {"tennis": "Tennis"}, "competition_aliases": {"w": "Wimbledon"}},
     )
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["se_discovery_config"] is not None
-    assert kw["se_discovery_config"].sports[0].competitions == ["Wimbledon"]
-    assert kw["se_sport_aliases"] == {"tennis": "Tennis"}
-    assert kw["se_competition_aliases"] == {"w": "Wimbledon"}
+    assert kw["discovery_config_by_venue"]["SHARPEXCH"].sports[0].competitions == ["Wimbledon"]
+    assert kw["sport_aliases_by_venue"]["SHARPEXCH"] == {"tennis": "Tennis"}
+    assert kw["competition_aliases_by_venue"]["SHARPEXCH"] == {"w": "Wimbledon"}
+    assert kw["session_timeout_secs_by_venue"] == {
+        "POLYMARKET": 30.0,
+        "ORBITEXCH": 30.0,
+        "SHARPEXCH": 30.0,
+    }
 
 
 def test_arb_context_init_kwargs_includes_aliases():
@@ -376,26 +464,30 @@ def test_arb_context_init_kwargs_includes_aliases():
                          "competition_aliases": {"atp": "ATP",
                                                   "Men's Roland Garros 2026": "ATP"}})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["oe_sport_aliases"] == {"soccer": "Soccer"}
-    assert kw["oe_competition_aliases"]["Men's Roland Garros 2026"] == "ATP"
+    assert kw["sport_aliases_by_venue"] == {
+        "POLYMARKET": {"soccer": "Soccer"},
+        "ORBITEXCH": {"soccer": "Soccer"},
+    }
+    assert kw["competition_aliases_by_venue"]["POLYMARKET"]["atp"] == "ATP"
+    assert kw["competition_aliases_by_venue"]["ORBITEXCH"]["Men's Roland Garros 2026"] == "ATP"
 
 
-# ── #55:PM 发现目标 + competition→sport map ──────────────────
+# ── PMSPORTS 发现目标 + competition→sport map ──────────────────
 
-def test_pm_event_slug_tags_from_competitions():
+def test_sports_status_target_competitions_from_polymarket_sports():
     cfg = _cfg(discovery={"polymarket": {"enabled": True,
                                           "sports": [{"sport": "Tennis", "competitions": ["atp", "wta"]}]}})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["pm_event_slug_tags"] == ["atp", "wta"]
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": ["atp", "wta"]}
 
 
-def test_pm_event_slug_tags_empty_when_disabled():
+def test_sports_status_target_competitions_empty_when_polymarket_discovery_disabled():
     cfg = _cfg(discovery={"polymarket": {"enabled": False}})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["pm_event_slug_tags"] == []
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": []}
 
 
-def test_pm_event_slug_tags_empty_when_venue_disabled():
+def test_sports_status_target_competitions_survive_when_polymarket_venue_disabled():
     cfg = _cfg(
         venues={
             "polymarket": {"enabled": False},
@@ -406,16 +498,18 @@ def test_pm_event_slug_tags_empty_when_venue_disabled():
                                    "sports": [{"sport": "Tennis", "competitions": ["atp"]}]}},
     )
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["pm_event_slug_tags"] == []
-    assert kw["pm_competition_to_sport"] == {}
+    assert kw["target_competitions_by_data_source"] == {"PMSPORTS": ["atp"]}
+    assert kw["competition_to_sport_by_data_source"] == {"PMSPORTS": {"atp": "Tennis"}}
 
 
-def test_pm_competition_to_sport_map():
+def test_sports_status_competition_to_sport_map():
     cfg = _cfg(discovery={"polymarket": {"enabled": True,
                                           "sports": [{"sport": "Tennis", "competitions": ["atp", "wta"]},
                                                      {"sport": "Soccer", "competitions": ["epl"]}]}})
     kw = to_arb_context_init_kwargs(cfg)
-    assert kw["pm_competition_to_sport"] == {"atp": "Tennis", "wta": "Tennis", "epl": "Soccer"}
+    assert kw["competition_to_sport_by_data_source"] == {
+        "PMSPORTS": {"atp": "Tennis", "wta": "Tennis", "epl": "Soccer"},
+    }
 
 
 def test_debug_config_none_when_section_missing():

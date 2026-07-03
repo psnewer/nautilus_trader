@@ -11,6 +11,10 @@ import pytest
 
 from src.arbitrage.config import ArbConfig
 from src.arbitrage.config import ConfigError
+from src.arbitrage.config import DataSourcesConfig
+from src.arbitrage.config import SharpExchSectionConfig
+from src.arbitrage.config import SportsStatusDataSourceConfig
+from src.arbitrage.config import StrategyJsonConfig
 from src.arbitrage.config import load_arb_config
 from src.arbitrage.config.loader import ConfigWarning
 
@@ -29,7 +33,6 @@ def _clean_env(monkeypatch):
         "SHARPEXCH_USERNAME", "SHARPEXCH_PASSWORD",
         "POLYMARKET_CLOB_API_KEY", "POLYMARKET_CLOB_SECRET", "POLYMARKET_CLOB_PASSPHRASE",
         "POLYMARKET_SIGNATURE_TYPE", "POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER",
-        "POLYMARKET_USER_ADDRESS", "POLYMARKET_ADDRESS", "POLYMARKET_EOA_ADDRESS",
         "POLYMARKET_API_KEY", "POLYMARKET_API_SECRET", "POLYMARKET_PASSPHRASE",
         "POLYMARKET_PROXY_URL", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
     ]:
@@ -41,7 +44,6 @@ def test_default_empty_json(cfg_path):
     cfg_path.write_text("{}")
     cfg = load_arb_config(cfg_path)
     assert isinstance(cfg, ArbConfig)
-    assert cfg.discovery.enabled is True
     assert cfg.arbitrage.share == 22.5
     assert cfg.venues.polymarket.clob_url == "https://clob.polymarket.com"
     assert cfg.venues.orbitexch.headless is True
@@ -50,11 +52,17 @@ def test_default_empty_json(cfg_path):
     assert cfg.debug is None
 
 
+def test_config_package_exports_current_schema_types():
+    assert DataSourcesConfig.__name__ == "DataSourcesConfig"
+    assert SportsStatusDataSourceConfig.__name__ == "SportsStatusDataSourceConfig"
+    assert SharpExchSectionConfig.__name__ == "SharpExchSectionConfig"
+    assert StrategyJsonConfig.__name__ == "StrategyJsonConfig"
+
+
 # ── .2 JSON 全字段(关键路径)→ 全部解析 ─────────────────────
 def test_full_json_parses(cfg_path):
     payload = {
         "discovery": {
-            "enabled": True,
             "refresh_interval_secs": 30,
             "polymarket": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["atp"]}]},
             "orbitexch": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["Men's Roland Garros 2026"]}]},
@@ -70,7 +78,7 @@ def test_full_json_parses(cfg_path):
         "strategy": {
             "strategies": {
                 "tennis_prematch": {
-                    "arbitrage_tree": {"self_hits": None, "sub_conditions": [], "checktion": [], "action": None},
+                    "arbitrage_tree": {"self_hits": None, "sub_conditions": [], "checktion": [], "actions": []},
                 },
             },
             "bindings": [{"scope": "competition:ATP", "strategy_id": "tennis_prematch"}],
@@ -91,14 +99,79 @@ def test_full_json_parses(cfg_path):
     assert cfg.strategy.strategies["tennis_prematch"].arbitrage_tree is not None
 
 
-def test_legacy_risk_arbitrage_fields_migrate_to_arbitrage_section(cfg_path):
+def test_example_config_omits_data_sources_but_gets_defaults():
+    """示例配置不重复写 PMSPORTS sports;schema 默认启用 data source 并继承 PM sports。"""
+    cfg = load_arb_config(Path(__file__).parents[3] / "arb_config.example.json")
+
+    assert cfg.data_sources.sports_status.enabled is True
+    assert cfg.data_sources.sports_status.provider == "polymarket_sports"
+    assert cfg.data_sources.sports_status.sports == []
+    assert cfg.discovery.polymarket.sports[0].competitions == ["atp"]
+
+
+def test_unknown_risk_arbitrage_fields_raise_schema_mismatch(cfg_path):
     cfg_path.write_text(json.dumps({
         "risk": {"share": 50.0, "max_leg_share": 100.0, "fx": 1.5},
     }))
-    cfg = load_arb_config(cfg_path)
-    assert cfg.arbitrage.share == 50.0
-    assert cfg.arbitrage.max_leg_share == 100.0
-    assert cfg.arbitrage.fx == 1.5
+    with pytest.raises(ConfigError, match="schema mismatch.*unknown field `share`.*\\$\\.risk"):
+        load_arb_config(cfg_path)
+
+
+def test_legacy_global_sl_field_raises_schema_mismatch(cfg_path):
+    cfg_path.write_text(json.dumps({"risk": {"global_sl": -0.10}}))
+    with pytest.raises(ConfigError, match="schema mismatch.*unknown field `global_sl`.*\\$\\.risk"):
+        load_arb_config(cfg_path)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("risk", "execution_enabled", False),
+        ("risk", "health_check_interval_sec", 120.0),
+        ("risk", "match_overrides", {}),
+        ("venues.orbitexch", "discount", 1.0),
+        ("venues.orbitexch", "take_off", 0.0),
+        ("venues.orbitexch", "market_order_enabled", False),
+        ("venues.orbitexch", "supported_market_types", ["home", "draw", "away"]),
+        ("venues.sharpexch", "discount", 1.0),
+        ("venues.sharpexch", "take_off", 0.0),
+        ("venues.sharpexch", "market_order_enabled", False),
+        ("venues.sharpexch", "supported_market_types", ["home", "draw", "away"]),
+        ("venues.orbitexch", "api_url", "https://www.orbitexch.com/customer/api"),
+        ("venues.orbitexch", "zoom_level", 0.8),
+        ("venues.orbitexch", "page_refresh_sec", 600),
+        ("venues.orbitexch", "cdp_url", "http://127.0.0.1:9222"),
+        ("venues.orbitexch", "default_persistence", "LAPSE"),
+        ("venues.orbitexch", "default_order_type", "GTC"),
+        ("venues.sharpexch", "api_url", "https://portal.sharpxch.com/customer/api"),
+        ("venues.sharpexch", "zoom_level", 0.8),
+        ("venues.sharpexch", "page_refresh_sec", 600),
+        ("venues.sharpexch", "cdp_url", "http://127.0.0.1:9222"),
+        ("venues.sharpexch", "default_persistence", "LAPSE"),
+        ("venues.sharpexch", "default_order_type", "GTC"),
+        ("discovery", "enabled", True),
+        ("matching", "enabled", True),
+        ("risk", "enabled", True),
+        ("execution", "enabled", True),
+        ("execution", "tracking_check_interval_sec", 5.0),
+        ("execution", "max_failure_retries", 5),
+        ("execution", "staleness_timeout_sec", 300),
+        ("venues.polymarket", "user_address", "0xuser"),
+        ("venues.polymarket", "eoa_address", "0xeoa"),
+        ("strategy", "signals", {}),
+    ],
+)
+def test_legacy_dead_config_fields_raise_schema_mismatch(cfg_path, section, field, value):
+    payload = {}
+    cursor = payload
+    parts = section.split(".")
+    for part in parts[:-1]:
+        cursor = cursor.setdefault(part, {})
+    cursor.setdefault(parts[-1], {})[field] = value
+
+    cfg_path.write_text(json.dumps(payload))
+    with pytest.raises(ConfigError, match=rf"schema mismatch.*unknown field `{field}`"):
+        load_arb_config(cfg_path)
 
 
 # ── .3 env 凭证注入 PM ──────────────────────────────────────────
@@ -109,8 +182,6 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     monkeypatch.setenv("POLYMARKET_SIGNATURE_TYPE", "2")
     monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0xdead")
     monkeypatch.setenv("POLYMARKET_FUNDER", "0xfun")
-    monkeypatch.setenv("POLYMARKET_USER_ADDRESS", "0xuser")
-    monkeypatch.setenv("POLYMARKET_EOA_ADDRESS", "0xeoa")
     cfg_path.write_text("{}")
     cfg = load_arb_config(cfg_path)
     assert cfg.venues.polymarket.clob_api_key == "test_key"
@@ -119,8 +190,6 @@ def test_env_injects_polymarket_credentials(cfg_path, monkeypatch):
     assert cfg.venues.polymarket.signature_type == 2
     assert cfg.venues.polymarket.private_key == "0xdead"
     assert cfg.venues.polymarket.funder == "0xfun"
-    assert cfg.venues.polymarket.user_address == "0xuser"
-    assert cfg.venues.polymarket.eoa_address == "0xeoa"
 
 
 def test_env_injects_polymarket_proxy_when_json_missing(cfg_path, monkeypatch):
@@ -165,23 +234,6 @@ def test_env_missing_keeps_none(cfg_path):
     assert cfg.venues.sharpexch.username is None
 
 
-# ── .6 `POLYMARKET_ADDRESS` 别名 fallback ──────────────────────
-def test_user_address_alias_fallback(cfg_path, monkeypatch):
-    monkeypatch.setenv("POLYMARKET_ADDRESS", "0xalias")
-    # POLYMARKET_USER_ADDRESS 不设
-    cfg_path.write_text("{}")
-    cfg = load_arb_config(cfg_path)
-    assert cfg.venues.polymarket.user_address == "0xalias"
-
-
-def test_user_address_primary_wins_over_alias(cfg_path, monkeypatch):
-    monkeypatch.setenv("POLYMARKET_USER_ADDRESS", "0xprimary")
-    monkeypatch.setenv("POLYMARKET_ADDRESS", "0xalias")
-    cfg_path.write_text("{}")
-    cfg = load_arb_config(cfg_path)
-    assert cfg.venues.polymarket.user_address == "0xprimary"
-
-
 # ── .7 env 优先于 JSON 内同字段 ────────────────────────────────
 def test_env_overrides_json_credential(cfg_path, monkeypatch):
     monkeypatch.setenv("ORBITEXCH_PASSWORD", "env_value")
@@ -224,7 +276,7 @@ def test_sharpexch_credential_in_json_triggers_warning(cfg_path):
 
 # ── .9 干净 JSON(无凭证字段)→ 无 warning ─────────────────────
 def test_clean_json_no_warning(cfg_path):
-    cfg_path.write_text(json.dumps({"risk": {"share": 10}}))
+    cfg_path.write_text(json.dumps({"arbitrage": {"share": 10}}))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ConfigWarning)
         load_arb_config(cfg_path)
@@ -246,18 +298,30 @@ def test_invalid_json_raises_config_error(cfg_path):
 
 # ── .12 schema 字段类型错 → ConfigError ────────────────────────
 def test_schema_mismatch_raises_config_error(cfg_path):
-    cfg_path.write_text(json.dumps({"risk": {"share": "not_a_number"}}))
+    cfg_path.write_text(json.dumps({"risk": {"match_tp": "not_a_number"}}))
     with pytest.raises(ConfigError, match="schema mismatch"):
         load_arb_config(cfg_path)
 
 
-# ── .13 venues 段缺 → loader setdefault 兜底 ─────────────────
+# ── .13 venues 段缺 → loader 补默认 section ─────────────────
 def test_missing_venues_section_is_safe(cfg_path, monkeypatch):
     monkeypatch.setenv("ORBITEXCH_USERNAME", "u")
     cfg_path.write_text("{}")  # 整个 venues 段缺
     cfg = load_arb_config(cfg_path)
-    # env 注入仍生效(loader setdefault 出空 dict)
+    # env 注入仍生效(loader 补出空 dict)
     assert cfg.venues.orbitexch.username == "u"
+
+
+def test_venues_section_must_be_object(cfg_path):
+    cfg_path.write_text(json.dumps({"venues": ["not-object"]}))
+    with pytest.raises(ConfigError, match="config section venues must be JSON object"):
+        load_arb_config(cfg_path)
+
+
+def test_nested_venue_section_must_be_object(cfg_path):
+    cfg_path.write_text(json.dumps({"venues": {"polymarket": ["not-object"]}}))
+    with pytest.raises(ConfigError, match="config section venues.polymarket must be JSON object"):
+        load_arb_config(cfg_path)
 
 
 # ── root 非 object → ConfigError ─────────────────────────────

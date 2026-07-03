@@ -41,15 +41,20 @@ from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
 from nautilus_trader.adapters.polymarket.sports import PolymarketSportsDataClient
-from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.adapters.polymarket.sports import PolymarketSportsInstrumentProvider
 
+from src.arbitrage.bootstrap import ctx_map_get
+from src.arbitrage.bootstrap import ctx_map_require
+from src.arbitrage.bootstrap import ctx_map_set
 from src.arbitrage.bootstrap import get_arb_context
+from src.arbitrage.common.venues import POLYMARKET
+from src.arbitrage.common.venues import SPORTS_CLIENT
 
 
 class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
     """#60:PM Sports 比分 firehose DataClient(`PMSPORTS` —— 名不含 `-`,否则 NT node_builder
-    会按 `partition("-")[0]` 前缀路由到 POLYMARKET 主 factory)。无 instrument 订阅,
-    `_connect` 即开 WS;装 bare `InstrumentProvider()` 占位(NT 基类要求)。"""
+    会按 `partition("-")[0]` 前缀路由到 POLYMARKET 主 factory)。`_connect` 先加载 PMSPORTS
+    synthetic event anchors,再开 WS firehose。"""
 
     @staticmethod
     def create(  # type: ignore[override]
@@ -60,12 +65,33 @@ class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
         cache: Cache,
         clock: LiveClock,
     ) -> PolymarketSportsDataClient:
+        ctx = get_arb_context()
+        provider = PolymarketSportsInstrumentProvider(
+            target_competitions=ctx_map_get(
+                ctx,
+                "target_competitions_by_data_source",
+                SPORTS_CLIENT,
+                [],
+            ),
+            competition_to_sport=ctx_map_get(
+                ctx,
+                "competition_to_sport_by_data_source",
+                SPORTS_CLIENT,
+                {},
+            ),
+            competition_aliases=ctx_map_get(
+                ctx,
+                "competition_aliases_by_venue",
+                POLYMARKET,
+                {},
+            ),
+        )
         return PolymarketSportsDataClient(
             loop=loop,
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            instrument_provider=InstrumentProvider(),
+            instrument_provider=provider,
             config=config,
         )
 
@@ -94,7 +120,7 @@ class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
         )
         ctx = get_arb_context()
         # #55:ArbPolymarketInstrumentProvider.load_all_async 整体 override(series-based 发现),
-        # 不再依赖 upstream event_slug_builder;直接读 ArbContext.pm_event_slug_tags(目标 competition)。
+        # 不再依赖 upstream event_slug_builder;直接读 ArbContext data-source keyed map。
         # #58(slice A):强制 load_all=True —— PM 上游 `_update_instruments` 走 `initialize(reload=True)`,
         # 而 `initialize` 仅 load_all=True 才调 load_all_async(否则 "No loading configured" 加载 0 → cache 空,
         # 历史上靠 refresher 直调 load_all_async 兜底;refresher 退役后必须让原生路径自己能 load)。
@@ -110,7 +136,7 @@ class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
             clock=clock,
             config=instrument_config,
         )
-        ctx.pm_instrument_provider = provider  # slice 8A 回写,InstrumentRefresher 取同一实例
+        ctx_map_set(ctx, "instrument_provider_by_venue", POLYMARKET, provider)
         debug = ctx.debug_config
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.data_clients import DebugPolymarketDataClient
@@ -188,7 +214,7 @@ class ArbPolymarketLiveExecClientFactory(LiveExecClientFactory):
             pair_registry=ctx.pair_registry,
             pair_inflight=getattr(ctx, "pair_inflight", None),  # §6.10 §7:per-pair 串行
             settlement=ctx.pm_settlement,
-            session_timeout_secs=ctx.pm_session_timeout_secs,
+            session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", POLYMARKET),
             # #110:merge/redeem 改由 NT 连续 position 对账驱动;不再需要 positions_fetcher / health_interval。
         )
         if debug is not None and getattr(debug, "enabled", False):

@@ -20,7 +20,6 @@ from .session import (
 from .planner import ExecutionPlanner, ExecutionPlan, OrderOperation, OperationType, OperationVenue
 from .tracker import OrderTracker, TrackingStatus, TrackingResult, BatchTrackingResult
 from .models import Order, OrderSide, OrderType, Venue
-from src.arbitrage.common.utils import check_min_size
 
 
 class ExecutionOrchestrator:
@@ -124,7 +123,7 @@ class ExecutionOrchestrator:
             del self._active_pair_sessions[pair_id]
             return False
 
-        return True
+        return False
 
     def get_active_session_for_pair(self, pair_id: str) -> ExecutionSession | None:
         """获取指定 pair 的活跃 session"""
@@ -677,27 +676,11 @@ class ExecutionOrchestrator:
 
     def _recovery_below_min_size(self, plan: ExecutionPlan) -> bool:
         """
-        检查 recovery 规划的订单是否全部低于最小 size
+        旧 services 栈不再维护应用层最小下单额门控。
 
-        如果所有操作都不满足最小 size，认为上一轮订单已实质完成。
-
-        Args:
-            plan: recovery 规划
-
-        Returns:
-            True 表示所有操作都低于最小 size
+        NT 路径由 instrument 元数据 + RiskEngine 检查最小下单额;这里保留方法形状,
+        但不再用 PM/OE 固定阈值判断 recovery 是否完成。
         """
-        place_or_modify = [
-            op for op in plan.operations
-            if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
-        ]
-        if not place_or_modify:
-            return False
-
-        for op in place_or_modify:
-            if check_min_size(op.venue.value, op.size):
-                return False
-
         return True
 
     def _has_tracking_failure(

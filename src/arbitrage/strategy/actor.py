@@ -128,7 +128,7 @@ class _RuntimeDeps:
     signal_store: SignalStore
     is_execution_active: Callable[[], bool]  # Q19/§6.10:在飞跳过
     loop: object                            # 单测兜底 loop;生产调度使用 NT register_executor 注入的 ActorExecutor loop
-    arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share/fx
+    arbitrage_params: ArbitrageParams | None = None  # Web Arbitrage 运行时默认 share/max_leg_share
     signal_collector: Callable[[object, SignalStore], None] | None = None  # event → SignalStore 更新(可选)
     pair_inflight: object = None            # PairInFlightGate(§6.10 §7,per-pair 串行);None → 不串行(测试/降级)
 
@@ -227,7 +227,8 @@ class StrategyEvaluator(Actor):
         instrument 已在 cache(slice A 发现);OE/PM data client `_subscribe_order_book_deltas` 接 WS 流。"""
         from nautilus_trader.model.identifiers import InstrumentId
 
-        for iid_str in list(mp.pm_instrument_ids) + list(mp.oe_instrument_ids):
+        instrument_ids = list(mp.tradable_instrument_ids)
+        for iid_str in instrument_ids:
             if iid_str in self._obd_subscribed:
                 continue
             self._obd_subscribed.add(iid_str)
@@ -334,7 +335,6 @@ class StrategyEvaluator(Actor):
         return {
             "share": params.share,
             "max_leg_share": params.max_leg_share,
-            "fx": params.fx,
         }
 
     def _on_set_arbitrage_params_cmd(self, cmd) -> None:

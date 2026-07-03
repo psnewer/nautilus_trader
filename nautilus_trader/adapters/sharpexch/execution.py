@@ -1,6 +1,6 @@
 """SharpExch execution adapter。
 
-第一阶段按 OE 型 venue 结构接入 NT runtime;真单 place/cancel 仍需用户授权 live 验证。
+第一阶段按 OE 型 venue 结构接入 NT runtime;place/cancel 与成交路径均已由独立真单 probe 验证。
 """
 
 from __future__ import annotations
@@ -158,8 +158,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def _login(self) -> None:
         """SE 登录页操作。
 
-        SE 与 OE 同源型页面相似,先沿用 username/password/login button 结构;真实站点差异
-        后续 live smoke 再用最小补丁校准。
+        SE 外层登录页提交用户名/密码后,真实 customer app 位于 portal iframe。
         """
 
         await se_login(self._page, self._config)
@@ -251,6 +250,20 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             command.instrument_id,
             command.client_order_id,
             command.venue_order_id,
+        )
+
+    async def _cancel_residual_one(self, order) -> None:
+        """撤一条 cancel-only 残单。
+
+        session 计数由 `ArbExecutionSessionMixin._tracked_residual_cancel` 统一收尾;
+        本方法只负责把残留 NT order 复用正常撤单路径送到 SE。
+        """
+
+        await self._cancel_one(
+            order.strategy_id,
+            order.instrument_id,
+            order.client_order_id,
+            order.venue_order_id,
         )
 
     async def _cancel_one(self, strategy_id, instrument_id, client_order_id, venue_order_id) -> None:
@@ -722,7 +735,7 @@ def nt_order_to_legacy_order(nt_order, inst) -> SharpExchLegacyOrder | None:
 
     - `market_id` / `selection_id` / `handicap` 取自 instrument;
     - NT `BUY` → SE `BACK`,NT `SELL` → SE `LAY`;
-    - 只做字段翻译,不做 FX 换算,换算归后续 SE executor 出站边界。
+    - 只做字段翻译,SE 当前按 USD 原生 stake 出站,不做 FX 换算。
     """
 
     from nautilus_trader.model.enums import OrderSide as _NTOrderSide

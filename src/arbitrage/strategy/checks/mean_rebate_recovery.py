@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.arbitrage.common.venues import is_decimal_odds_venue
+from src.arbitrage.common.venues import is_known_venue
+from src.arbitrage.common.venues import qty_from_share
+from src.arbitrage.common.venues import venue_preference_rank
 from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
-from src.arbitrage.strategy.checks.mean_rebate import _is_decimal_odds_venue
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
 from src.arbitrage.strategy.condition import Check
@@ -30,27 +33,26 @@ class _CalcLeg:
     price: float
 
     def profit_if_wins(self) -> float:
-        if self.venue == "POLYMARKET":
-            return self.qty * (1.0 - self.price)
-        return self.qty * (self.price - 1.0)
+        if is_decimal_odds_venue(self.venue):
+            return self.qty * (self.price - 1.0)
+        return self.qty * (1.0 - self.price)
 
     def loss_if_loses(self) -> float:
-        if self.venue == "POLYMARKET":
-            return self.qty * self.price
-        return self.qty
-
-    def share_if_wins(self) -> float:
-        if self.venue == "POLYMARKET":
+        if is_decimal_odds_venue(self.venue):
             return self.qty
         return self.qty * self.price
+
+    def share_if_wins(self) -> float:
+        if is_decimal_odds_venue(self.venue):
+            return self.qty * self.price
+        return self.qty
 
 
 class MeanRebateRecoveryCheck(Check):
     """补齐缺口后,若最差 outcome rebate 达标则写 recovery legs。"""
 
-    def __init__(self, min_repaired_rebate: float = -0.05, fx: float = 1.0) -> None:
+    def __init__(self, min_repaired_rebate: float = -0.05) -> None:
         self._min_repaired_rebate = float(min_repaired_rebate)
-        self._fx = float(fx)  # 兼容旧配置,当前中间层 size 已是 USD 口径
 
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
@@ -79,7 +81,7 @@ class MeanRebateRecoveryCheck(Check):
             cand = candidates.get(role)
             if cand is None:
                 return False
-            qty = missing if cand["venue"] == "POLYMARKET" else missing / cand["price"]
+            qty = qty_from_share(cand["venue"], missing, cand["price"])
             recovery_specs.append({
                 "instrument_id": cand["instrument_id"],
                 "venue": cand["venue"],
@@ -116,7 +118,7 @@ def _existing_legs(snap) -> list[_CalcLeg]:
         if role not in _VALID_ROLES:
             continue
         venue = _venue_of(iid)
-        if venue != "POLYMARKET" and not _is_decimal_odds_venue(venue):
+        if not is_known_venue(venue):
             continue
         qty = abs(position.quantity.as_double())
         price = float(position.avg_px_open)
@@ -157,7 +159,7 @@ def _best_candidates_by_role(snap) -> dict[str, dict]:
             "prob": prob,
         })
     return {
-        role: min(legs, key=lambda leg: (leg["prob"], 0 if leg["venue"] == "POLYMARKET" else 1))
+        role: min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
         for role, legs in candidates.items()
     }
 

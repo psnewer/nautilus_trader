@@ -6,23 +6,23 @@
 
 `launchers/arb_node.py` —— NT 节点 launcher 骨架。
 
-- ✅ `test_arb_node.py`:`build_trading_node_config` PM+OE × data+exec 4 client config 装配 / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session/pm_settlement 字段,且不再包含 PM/OE health interval 死接线 / main 调用链路
+- ✅ `test_arb_node.py`:`build_trading_node_config` 按 enabled data source / venue 生成 client config(PMSPORTS + PM/OE/SE 任意 enabled 组合,至少两个 trading venues) / `prepare_runtime_state` 返共享件(VenueExecutionLiveness / PairRegistry / PairInFlightGate / DebugConfig 可 None)/ `register_factories` 按 registry 调 add_*_factory / `bootstrap_and_build` 调用顺序(install_engines → TradingNode → prepare_context → factories → build → wire)/ ArbContext 包含 venue_liveness/pair_registry/debug_config/session/pm_settlement 字段,并注入 venue/data-source keyed registry map(`session_timeout_secs_by_venue` / `discovery_config_by_venue` / PMSPORTS target maps),且不再包含 PM/OE health interval 死接线 / main 调用链路
 - ✅ `test_arb_node.py`:NT exec config 保持启动期 `reconciliation=True`;连续 `open_check_interval_secs=300`(#111:驱动 order liveness 恢复);`position_check_interval_secs=300`(#110:驱动 PM merge/redeem + position liveness);默认 in-flight check 开启;`timeout_connection=180s`。
-- ✅ `test_arb_node.py`:PolymarketSettlement launcher 接线 —— PM runtime venue disabled、cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 PM enabled 时构造 `PolymarketContractService` 并初始化,成功后按 `cleanup_merge_enabled` / `cleanup_claim_enabled` 注入 `PolymarketSettlement`;初始化失败则不阻塞节点启动。
-- ✅ `test_arb_node.py`:venue runtime enablement —— launcher 要求 `venues.*.enabled=true` 的 runtime venue 不少于 2 个;默认 PM+OE;PM+SE 时不注册 OE;OE+SE 时不注册 PM/PMSPORTS;PM+OE+SE 时三个 venue 同时注册。SE 显式 `true` 时加入 SE data+exec config、注册 SE factories、`VenueExecutionLiveness` 可标记 SE,并把 `se_session_timeout_secs` / `se_discovery_config` 注入 ArbContext。
+- ✅ `test_arb_node.py`:PolymarketSettlement launcher 接线 —— 通过 Venue Registry `settlement_kind=polymarket_ctf` 能力触发;PM runtime venue disabled、cleanup 关闭或缺 PM 链上凭证时跳过;凭证齐全且 PM enabled 时构造 `PolymarketContractService` 并初始化,成功后按 `cleanup_merge_enabled` / `cleanup_claim_enabled` 注入 `PolymarketSettlement`;初始化失败则不阻塞节点启动。
+- ✅ `test_arb_node.py`:venue runtime enablement —— launcher 要求 `venues.*.enabled=true` 的 runtime venue 不少于 2 个,且 `data_sources.sports_status.enabled=true` 提供 PMSPORTS anchor client;默认 PM+OE;PM+SE 时不注册 OE;OE+SE 时注册 PMSPORTS/OE/SE 且不注册 PM;PM+OE+SE 时三个 trading venue 同时注册。SE 显式 `true` 时加入 SE data+exec config、注册 SE factories、`VenueExecutionLiveness` 可标记 SE,并通过 `session_timeout_secs_by_venue` / `discovery_config_by_venue` 等 keyed map 注入 ArbContext。
 
 **不在 slice 6 范围**:
 - ✅ Aliases → Provider 注入(slice 7A,#46)
 - ✅ OE data factory 真接 scraper(slice 7A,#46)
-- ✅ InstrumentRefresher × 2 + MarketMatchingActor + StrategyEvaluator 接线(slice 8A,#47)
+- ✅ MarketMatchingActor + StrategyEvaluator + optional WebGatewayActor 接线;InstrumentRefresher 已退役,发现由 DataClient 原生周期负责
 - ✅ PolymarketSettlement 接线(#110:由 NT 连续 position 对账触发;#110 后不再有 `pm_positions_fetcher`)
 - ✅ `is_execution_active` 真接 in-flight 检测(#48)
 
 ## Slice 8A 落地(2026-05-29 #47)
 
-`launchers/arb_node.py:add_actors(node, cfg, pair_registry=)` — node.build 后调用,经 ArbContext 取共享 provider 实例,构造 4 个 Actor + `node.trader.add_actor`。
+`launchers/arb_node.py:add_actors(node, cfg, pair_registry=)` — node.build 后调用,构造 MarketMatchingActor + StrategyEvaluator,并在 `web.enabled=true` 时额外构造 WebGatewayActor。
 
-- ✅ `test_arb_node.py` +6:both providers → 4 actors / PM 缺 → 3 actors / 两缺 → 2 actors / StrategyEvaluator portfolio 取自 kernel / Refresher provider 引用 ctx 同一实例 / bootstrap_and_build 调 add_actors
+- ✅ `test_arb_node.py`:默认只装 Matching + Strategy 两个 actor / `web.enabled=true` 额外装 WebGatewayActor / StrategyEvaluator portfolio 取自 kernel / bootstrap_and_build 调 add_actors
 
 ## Slice 8A 修正(2026-05-30 #48):Q19 `is_execution_active` 真接(撤"TODO")
 

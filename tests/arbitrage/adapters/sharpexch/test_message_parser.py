@@ -50,6 +50,20 @@ def test_parse_price_message_supports_list_levels():
     assert runner["lay"] == [{"price": 2.1, "size": 5.0}]
 
 
+def test_parse_price_message_supports_dict_of_level_arrays():
+    parser = SharpExchMessageParser()
+    parsed = parser.parse_price_message(
+        {
+            "id": "1.259502313",
+            "rc": [{"id": 111, "bdatb": {"0": [2.0, 10]}, "bdatl": {"0": [2.1, 5]}}],
+            "marketDefinition": {},
+        },
+    )
+    runner = parsed["runners"][0]
+    assert runner["back"] == [{"price": 2.0, "size": 10.0}]
+    assert runner["lay"] == [{"price": 2.1, "size": 5.0}]
+
+
 def test_parse_price_message_missing_market_id_returns_none():
     parser = SharpExchMessageParser()
     assert parser.parse_price_message({"rc": []}) is None

@@ -19,7 +19,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 |---|---|
 | `test_upstream_integration.py` | 上游 PM 适配器在我们配置下能正常加载 / 订阅 / 下单 / 事件回写 |
 | `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
-| `test_sports.py` | **#60** PM Sports 比分信号(`sports.py`):4 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。2026-06-29 live 诊断确认 PM Sports 发协议层 ping(约 15s),`websockets` 自动回 pong;生产代码关闭客户端主动 keepalive ping(`ping_interval=None`),避免本地 `keepalive ping timeout` 误杀连接。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
+| `test_sports.py` | **#60/#127** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`):6 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip + `PolymarketSportsInstrumentProvider` 产出 `.PMSPORTS` non-tradable anchor + `PolymarketSportsLiveDataClientFactory` 读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。2026-06-29 live 诊断确认 PM Sports 发协议层 ping(约 15s),`websockets` 自动回 pong;生产代码关闭客户端主动 keepalive ping(`ping_interval=None`),避免本地 `keepalive ping timeout` 误杀连接。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` / PMSPORTS provider 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 | `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译;本项目要求 `minimum_order_size` 映射到 `min_quantity` |
@@ -37,7 +37,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **验收**: 不需要修改上游代码即可工作
 
 ### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 结构落地,extraction TODO)
-**落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 4 passed)
+**落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖纯函数;`test_debug_data_factories.py` 覆盖 provider 回写 `instrument_provider_by_venue["POLYMARKET"]`)
 - 评估结果:**上游 info=market_info(gamma dict)缺 6-key** → 走"子类化 PolymarketInstrumentProvider 补"路径
 - `ArbPolymarketInstrumentProvider._parse_instrument` super 后调 `enrich_pm_six_key_info(market_info, outcome)` update info
 - 当前 enricher 是 **best-effort seam**:`sport ← market_info["category"]`(能拿就拿);其它 5-key 空字符串/0 占位
@@ -275,50 +275,10 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 ---
 
-> **schedule 系列实现基于 NT `Clock`**(§6.8.4.5):自重排 one-shot time-alert(`clock.set_time_alert_ns`),时间读 `clock.timestamp_ns()`,下次时间查 `clock.next_time_ns(name)`,关停 NT 自动 `cancel_timers()`。**不**用 `asyncio.Event` / `time.monotonic()`。
-
-### pm-adapter-5.schedule.1: 每轮结束重排下次检查 alert(§6.8.4.5)
-
-**前置**: PM adapter 健康检查启动,`health_check_interval_sec = 60`,t=0 完成第一轮
-**输入**: 等到 t=60 / 120 / 180 各轮自然 fire
-**期望**: 每轮 callback 末尾 `clock.set_time_alert_ns(name, now_ns + 60s, override=True)`,`clock.next_time_ns` 稳定指向下一 fire 点
-**验收**: 每轮**结束**(callback finally)才排下次 alert(不是开始)
-
-### pm-adapter-5.schedule.2: 运行时改 interval 下一轮即时生效
-
-**前置**: 初始 interval=60,t=0 第一轮结束 alert 排在 t=60
-**输入**: t=10 改 `health_check_interval_sec = 30`
-**期望**:
-- 第二轮仍 t=60 fire(alert 已排定)
-- 第二轮 callback 末尾 `set_time_alert_ns(now_ns + 30s)`(读当前 config)
-- 第三轮在 t ≈ 90 fire
-**验收**: 无需重启;`_schedule_next()` 每次读 config
-
-### pm-adapter-5.schedule.3: trigger 立即唤醒(对应原"外部消息可立即触发")
-
-**前置**: alert 排在 t=60,当前 t=20
-**输入**: 外部调 `trigger_health_check()`
-**期望**:
-- `clock.set_time_alert_ns(name, now_ns, override=True)` → NT past/now 即时 fire
-- 立即拉一次持仓/挂单/余额(t=20)
-- callback 末尾重排 alert 到 `20 + interval`
-**验收**: 与 §6.8.4 "外部消息可立即触发" 锁定行为一致
-
-### pm-adapter-5.schedule.4: 异常路径也重排 alert
-
-**前置**: 一轮拉取内部抛异常(模拟 PM API 失败)
-**输入**: 异常在 callback 内抛出
-**期望**: callback `try/finally` 保证 `finally` 里 `_schedule_next()` 仍执行,排下次 alert
-**验收**: 避免一次 API 失败让健康检查永久停摆
-
-### pm-adapter-5.schedule.5: 不实现 block/unblock API(§6.8.4.5)
-
-**前置**: 检查 PM adapter 健康检查实现
-**期望**:
-- 类上**没有** `block_health_check` / `unblock_health_check` / `is_health_check_blocked` 方法
-- 实例上**没有** `_health_check_blocked` 字段
-- status dict 输出**没有** `"blocked"` 字段
-**验收**: P6 不超前实现;旧 `services/risk/service.py` 中对应符号 Step 5/6 实施时一并删除
+> **退役(#110)**:旧 `pm-adapter-5.schedule.*` 自写健康检查调度用例已删除。
+> 当前 PM merge/redeem 由 NT 连续 position reconciliation 触发,不再有 PM
+> `HealthCheckLoop` / `_run_health_check` / 独立健康检查调度。现行验收见
+> `pm-adapter-5.3c` 与 settlement 相关用例。
 
 > ⚠️ **失效横幅(#108,2026-06-15):以下 5.session.1 ~ 5.timeout.4 中所有 `leg_settled` 置位 / 状态机语义(尤其 5.health.2~5 整节)退役** —— `LegSettledRegistry` 已删除,执行健康真相改由 `ArbPolymarketExecutionClient` reconcile 写 `VenueExecutionLiveness`(order/position alive),现行验收见 **pm-adapter-5.3c**。**注意**:cancel-only / submit+track 的 session 入口与超时 watchdog 机制**本身仍有效**(见 synchronization §8.4 + execution §4.2),只是不再写 `leg_settled`。
 

@@ -1,7 +1,4 @@
-"""SharpExch data/exec client factories.
-
-第一阶段按显式 venue enable 注册进 launcher;第二阶段再抽象通用 venue registry。
-"""
+"""SharpExch data/exec client factories."""
 
 from __future__ import annotations
 
@@ -26,21 +23,27 @@ from nautilus_trader.adapters.sharpexch.web import se_customer_context
 from nautilus_trader.adapters.sharpexch.web import se_fetch_json
 from nautilus_trader.adapters.sharpexch.web import se_login
 
+from src.arbitrage.bootstrap import ctx_map_get
+from src.arbitrage.bootstrap import ctx_map_get_or_create
+from src.arbitrage.bootstrap import ctx_map_require
+from src.arbitrage.bootstrap import ctx_map_set
 from src.arbitrage.bootstrap import get_arb_context
+from src.arbitrage.common.venues import SHARPEXCH
 
 
 def _shared_se_browser_manager(ctx, config) -> PlaywrightBrowserManager:
     """SE 共享 BrowserManager:Data/Exec factory 复用同一实例。"""
 
-    bm = getattr(ctx, "se_browser_manager", None)
-    if bm is None:
-        bm = PlaywrightBrowserManager(
+    return ctx_map_get_or_create(
+        ctx,
+        "browser_manager_by_venue",
+        SHARPEXCH,
+        lambda: PlaywrightBrowserManager(
             browser_type=config.browser_type,
             headless=config.headless,
             user_data_dir=config.user_data_dir,
-        )
-        ctx.se_browser_manager = bm
-    return bm
+        ),
+    )
 
 
 def _shared_se_browser_lock(ctx) -> asyncio.Lock:
@@ -51,11 +54,7 @@ def _shared_se_browser_lock(ctx) -> asyncio.Lock:
     login/fetch 这种会改变 customer session 状态的操作串行化。
     """
 
-    lock = getattr(ctx, "se_browser_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        ctx.se_browser_lock = lock
-    return lock
+    return ctx_map_get_or_create(ctx, "browser_lock_by_venue", SHARPEXCH, asyncio.Lock)
 
 
 def _se_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock):
@@ -95,7 +94,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
         ctx = get_arb_context()
         browser_manager = _shared_se_browser_manager(ctx, config)
         browser_lock = _shared_se_browser_lock(ctx)
-        se_discovery_cfg = getattr(ctx, "se_discovery_config", None)
+        se_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", SHARPEXCH)
         if se_discovery_cfg is not None:
             sport_configs = list(getattr(se_discovery_cfg, "sports", []) or [])
             target_competitions = [
@@ -110,14 +109,18 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
             )
             provider = SharpExchInstrumentProvider(
                 discovery=discovery,
-                sport_aliases=dict(getattr(ctx, "se_sport_aliases", {})),
-                competition_aliases=dict(getattr(ctx, "se_competition_aliases", {})),
+                sport_aliases=dict(
+                    ctx_map_get(ctx, "sport_aliases_by_venue", SHARPEXCH, {}),
+                ),
+                competition_aliases=dict(
+                    ctx_map_get(ctx, "competition_aliases_by_venue", SHARPEXCH, {}),
+                ),
                 sport_configs=sport_configs,
                 fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             )
         else:
             provider = InstrumentProvider()
-        ctx.se_instrument_provider = provider
+        ctx_map_set(ctx, "instrument_provider_by_venue", SHARPEXCH, provider)
         return SharpExchDataClient(
             loop=loop,
             browser_manager=browser_manager,
@@ -161,7 +164,7 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             venue_liveness=ctx.venue_liveness,
             pair_registry=ctx.pair_registry,
             pair_inflight=getattr(ctx, "pair_inflight", None),
-            session_timeout_secs=ctx.se_session_timeout_secs,
+            session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", SHARPEXCH),
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             browser_lock=browser_lock,
         )

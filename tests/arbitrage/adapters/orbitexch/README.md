@@ -25,7 +25,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 | `test_data_client.py` | OE DataClient(Step 2 占位,详细等 Step 2 启动) |
 | `test_execution_client.py` | OE ExecutionClient(Step 5 占位,详细等 Step 5 启动) |
 | `test_execution_translation.py` | **Gap C(#63/#64)纯映射 + fx 边界**:① `nt_order_to_legacy_order`(NT Order→executor 旧 Order)5 case:BUY→BACK / SELL→LAY / `null_handicap`(-9999999.0 sentinel)→0 / 真 handicap 保留 / 缺 market\|selection→None。② **OE 出站 fx**:`OrbitExchExecutor.place_order` 接收 USD `order.size`,payload `"size"` 除以 `fx` 转 GBP。③ **OE 入站 fx**:`normalize_current_bets_to_usd` 把 `size*`/`liability`/`profitNet` 等字段乘 `fx`,价格字段不变。④ **`current_bets_to_fills`(成交回执)7 case**:空→[] / unmatched→[] / 新成交→full delta / 增量(5→8)→delta=3 / 同累积值→[] / 无价(avg=0)→跳过 / 缺 offerId→跳过。⑤ **`bet_order_progress`(reconcile 派生)8 case**:缺 offerId→None / 仅 remaining→accepted / remaining+matched→partially_filled / 仅 matched→filled / 都 0→unknown / **bet 自带 side+market+selection+price 透出** / **原始量优先 sizePlaced** / 无 sizePlaced→matched+remaining 兜底。真 `executor.place_order` + `_connect` + `_on_current_bets`→`generate_order_filled` + `generate_order_status_report(s)`(**bet 自带 `side`/`sizePlaced` 直接派生,`market+selection` 反查 instrument → 外部/重启单也能 reconcile**)= **真钱,/live-test 经 `launchers/arb_node.py` 验**(scenario 跑老栈不验 NT client)。`test_orbitexch_client.py::test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes` 锁定 fill delta 用原始 GBP 累积值,fx 热改不制造虚假成交 |
-| `test_data_factory_provider_wiring.py` | **slice 7A(#46) + fx 最小 stake 接线**:`OrbitExchLiveDataClientFactory.create` 按 `ArbContext.oe_scraper_config` 分支(缺→`InstrumentProvider()` 占位 / 有→真 `OrbitExchInstrumentProvider(scraper, aliases, fx)`),`fx` 来自 `ArbContext.arbitrage_params` |
+| `test_data_factory_provider_wiring.py` | **slice 7A(#46) + fx 最小 stake接线 + venue keyed context**:`OrbitExchLiveDataClientFactory.create` 只读 `ArbContext.discovery_config_by_venue["ORBITEXCH"]`(缺→`InstrumentProvider()` 占位 / 有→真 `OrbitExchInstrumentProvider(scraper, aliases, fx)`),`fx` 来自 `ArbContext.arbitrage_params`;构造后回写 `instrument_provider_by_venue["ORBITEXCH"]` |
 | `test_data_client_inplay_writeback.py` | **slice 9(#49)**:`write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper(`_on_price_frame` 路径 NT 重,_cache cdef readonly Mock 困难,验 helper 即可)。case:present True / present False / cache 缺 instrument 不 raise / info=None 不 raise |
 | `test_data_client_step2.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:OE 周期 instrument rediscovery 单轮 `load_all_async` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 
@@ -50,7 +50,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 ## #62(2026-06-04):两个可见窗口修复 —— data/exec 真共享 + scraper headless
 
 用户报"弹两个浏览器,一个停在主页"。根因:§6.2/Q2"data+exec 共享"**未落地**——`factories.py` 的 data/exec factory **各 `new` 一个 `PlaywrightBrowserManager`**;scraper 又自起一套(Slice 7A 已知),且跟随 venue `headless`(=false 可见)+ 用 data/exec 的登录 `user_data_dir`。修:
-- **data+exec 共享单例**:`ArbContext.oe_browser_manager` + `_shared_oe_browser_manager(ctx,config)`(data 先建回写、exec 复用)→ 一个登录浏览器。
+- **data+exec 共享单例**:`ArbContext.browser_manager_by_venue["ORBITEXCH"]` 由 `_shared_oe_browser_manager(ctx,config)` 经 `ctx_map_get_or_create` 读取/回写(data 先建回写、exec 复用)→ 一个登录浏览器。
 - **scraper 解耦 headless**:`to_oe_scraper_config` 强制 `headless=True` + `user_data_dir=None`(免登录、非持久化、后台隐身)—— **不与 data/exec 共享**(用户:免登录 + 定时跑,共享会打断登录会话/抢资源)。
 - 验:`test_dispatcher` 断言 `headless is True`/`user_data_dir is None`;live smoke16 `MatchedPair (oe=2)` 证 headless scraper 发现仍产 OE instrument,0 错误。
 - exec 非 skip 真接线(Gap C)后,exec 经共享 BM 取 `"execution"` page,不再多窗口。
@@ -243,52 +243,11 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 ---
 
-> **schedule 系列实现基于 NT `Clock`**(§6.8.4.5):自重排 one-shot time-alert(`clock.set_time_alert_ns`),时间读 `clock.timestamp_ns()`,下次时间查 `clock.next_time_ns(name)`,关停 NT 自动 `cancel_timers()`。**不**用 `asyncio.Event` / `time.monotonic()`。
-
-### oe-adapter-2.schedule.1: 每轮结束重排下次检查 alert(§6.8.4.5)
-
-**前置**: OE adapter 健康检查启动,`health_check_interval_sec = 60`,t=0 完成第一轮
-**输入**: 等到 t=60 第二轮自然 fire 并完成,t=120 第三轮
-**期望**:
-- 每轮 callback 的 `finally` 里调 `clock.set_time_alert_ns(name, now_ns + 60s, override=True)`
-- `clock.next_time_ns("health_check_orbitexch")` 在各轮稳定指向下一个 fire 点
-**验收**: 节奏不漂移;每轮**结束**(callback finally)才排下次 alert(不是开始)
-
-### oe-adapter-2.schedule.2: 运行时改 interval 下一轮即时生效
-
-**前置**: 初始 interval=60,t=0 第一轮结束后 alert 排在 t=60
-**输入**: t=10 时通过配置 API 改 `health_check_interval_sec = 30`
-**期望**:
-- 第二轮仍按 t=60 fire(alert 已排定)
-- 第二轮 callback 末尾 `set_time_alert_ns(now_ns + 30s)`(读当前 config)
-- 第三轮在 t ≈ 90 fire(60 + 30)
-**验收**: 不需重启;`_schedule_next()` 每次读 config → 下一轮即时生效
-
-### oe-adapter-2.schedule.3: trigger 立即唤醒,执行完按当前 config 重新规划
-
-**前置**: alert 排在 t=60,当前 t=20
-**输入**: 外部调 `trigger_health_check()`
-**期望**:
-- `clock.set_time_alert_ns(name, now_ns, override=True)` → NT past/now 即时 fire(`component.pyx:333`)
-- 立即执行一次健康检查(t=20)
-- callback 末尾重排 alert 到 `20 + interval`(从当下起算,覆盖原 t=60)
-**验收**: trigger 立即生效;后续周期从 trigger 完成时刻起算;`override=True` 覆盖原 alert 不冲突
-
-### oe-adapter-2.schedule.4: 异常路径也重排 alert
-
-**前置**: 一轮健康检查内部抛异常(模拟 Playwright 失败)
-**输入**: 异常在 callback 内抛出
-**期望**: callback 的 `try/finally` 保证 `finally` 里 `_schedule_next()` **仍然**执行,排下一次 alert
-**验收**: 避免一次失败让健康检查永久停摆;静态检查 callback 有 try/finally 包裹
-
-### oe-adapter-2.schedule.5: 不实现 block/unblock API(§6.8.4.5)
-
-**前置**: 检查 OE adapter 健康检查实现
-**期望**:
-- 类上**没有** `block_health_check` / `unblock_health_check` / `is_health_check_blocked` 方法
-- 实例上**没有** `_health_check_blocked` / `_blocked` 字段
-- status dict 输出**没有** `"blocked"` 字段
-**验收**: P6 不超前实现;旧 `services/risk/service.py` 中对应符号 Step 5/6 实施时一并删除
+> **退役(#109/#110)**:旧 `oe-adapter-2.schedule.*` 自写健康检查调度用例已删除。
+> 当前 OE competition 页存活由 `OrbitExchWebSocketHandler` 内部 liveness timeout +
+> `on_disconnect` 事件化 reload 覆盖;execution 页状态由 NT reconciliation +
+> `VenueExecutionLiveness` 覆盖。现行验收见上方 `oe-ws-liveness.*` 与下方
+> `oe-adapter-5.liveness*` / `oe-adapter-5.reload*`。
 
 ---
 

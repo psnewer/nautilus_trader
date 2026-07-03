@@ -70,6 +70,17 @@ def test_place_order_passes_context_csrf_token_when_available():
     assert page.calls[0]["payload"]["csrfToken"] == "csrf-from-context"
 
 
+def test_place_and_cancel_scripts_do_not_read_document_cookie():
+    page = _FakePage({"1.259502313": {"status": "OK", "offerIds": {}}}, with_context=True)
+    executor = SharpExchExecutor()
+
+    asyncio.run(executor.place_order(_order(), page, timestamp_ms=123456))
+    asyncio.run(executor.cancel_order("1.259502313", "OID-1", page))
+
+    assert "document.cookie" not in page.calls[0]["script"]
+    assert "document.cookie" not in page.calls[1]["script"]
+
+
 def test_place_order_returns_failure_without_page_or_bad_fx():
     executor = SharpExchExecutor(fx_getter=lambda: 1.0)
     assert asyncio.run(executor.place_order(_order(), None))["message"] == "No page available"
@@ -94,6 +105,15 @@ def test_cancel_order_posts_payload_and_parses_success():
         "1.259502313": [{"offerId": "OID-1", "betType": "EXCHANGE"}],
     }
     assert "/customer/api/cancelBets" in page.calls[0]["script"]
+
+
+def test_cancel_order_passes_context_csrf_token_when_available():
+    page = _FakePage({"status": "OK"}, with_context=True)
+    executor = SharpExchExecutor()
+
+    asyncio.run(executor.cancel_order("1.259502313", "OID-1", page))
+
+    assert page.calls[0]["payload"]["csrfToken"] == "csrf-from-context"
 
 
 def test_cancel_order_posts_full_open_bet_when_available():

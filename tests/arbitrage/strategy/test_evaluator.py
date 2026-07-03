@@ -152,6 +152,30 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
+def _mp(
+    pair_id: str = "match_X",
+    *,
+    confidence: float = 0,
+    tradable_instrument_ids: list[str] | None = None,
+    venue_instrument_ids: dict[str, list[str]] | None = None,
+    anchor_instrument_ids: list[str] | None = None,
+) -> MatchedPair:
+    """构造当前主 schema 的 MatchedPair;旧 PM/OE 字段只在专门测试兼容投影时显式写。"""
+    if tradable_instrument_ids is None and venue_instrument_ids is not None:
+        tradable_instrument_ids = [iid for ids in venue_instrument_ids.values() for iid in ids]
+    return MatchedPair(
+        ts_event=0,
+        ts_init=0,
+        pair_id=pair_id,
+        sport="Soccer",
+        competition="EPL",
+        confidence=confidence,
+        anchor_instrument_ids=list(anchor_instrument_ids or []),
+        tradable_instrument_ids=list(tradable_instrument_ids or []),
+        venue_instrument_ids=dict(venue_instrument_ids or {}),
+    )
+
+
 # ── eval.1: MatchedPair → 直接拿 pair_id/sport/comp,无需 instrument 反查 ─
 def test_matched_pair_routes_directly_with_embedded_pair_id():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
@@ -159,9 +183,7 @@ def test_matched_pair_routes_directly_with_embedded_pair_id():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
     store.view("match_X").set_persistent("arb_on", True)  # slice 9(#49):P3 per-pair view
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"],
-                     confidence=1.0)
+    mp = _mp(confidence=1.0)
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 1
@@ -175,12 +197,11 @@ def test_eval_context_strategy_defaults_read_arbitrage_params():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=action))
     store.view("match_X").set_persistent("arb_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
 
-    assert action.defaults == {"share": 40.0, "max_leg_share": 100.0, "fx": 1.33}
+    assert action.defaults == {"share": 40.0, "max_leg_share": 100.0}
 
 
 def test_evaluator_sets_pre_match_signal_from_snapshot():
@@ -196,8 +217,7 @@ def test_evaluator_sets_pre_match_signal_from_snapshot():
         Strategy(scope_key="pair:match_X", arbitrage_tree=arb_tree, compensation_tree=Condition(self_hits=SignalRef("never"))),
     )
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
 
@@ -209,8 +229,7 @@ def test_no_strategy_mounted_no_op():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     arb_action = _RecordingAction()
     # 不挂任何策略
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_unknown", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp("match_unknown")
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 0
@@ -224,8 +243,7 @@ def test_execution_active_skips_evaluation():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
     store.view("match_X").set_persistent("arb_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
     # _evaluate_and_fire 跑了但开头就 return(execution_active)→ 没 fire
@@ -241,8 +259,7 @@ def test_log_evaluations_enabled_keeps_evaluator_behavior():
     store.view("match_X").set_persistent("arb_on", True)
     store.view("match_X").set_persistent("comp_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
 
@@ -260,12 +277,8 @@ def test_log_evaluations_enabled_covers_skip_paths():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
     store.view("match_X").set_persistent("arb_on", True)
 
-    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_unknown", sport="Soccer",
-                              competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[],
-                              confidence=0))
-    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                              competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[],
-                              confidence=0))
+    actor.on_data(_mp("match_unknown"))
+    actor.on_data(_mp())
     _run(_drain(loop))
 
     assert arb_action.calls == 0
@@ -281,8 +294,7 @@ def test_arb_hit_blocks_comp_action():
     store.view("match_X").set_persistent("arb_on", True)
     store.view("match_X").set_persistent("comp_on", True)        # 两边 self_hits 都过
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 1
@@ -318,8 +330,7 @@ def test_arb_and_comp_evaluation_scratch_is_isolated():
     store.view("match_X").set_persistent("arb_on", True)
     store.view("match_X").set_persistent("comp_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
 
@@ -336,8 +347,7 @@ def test_comp_hit_when_arb_miss_fires_comp():
     # arb_on 不 set → arb self_hits False;comp_on set → comp self_hits True
     store.view("match_X").set_persistent("comp_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 0
@@ -349,8 +359,7 @@ def test_both_miss_no_fire():
     actor, store, pair_reg, strat_reg, loop, _ = _harness()
     arb_action = _RecordingAction(); comp_action = _RecordingAction()
     strat_reg.register_pair("match_X", _strategy(False, False, arb_action=arb_action, comp_action=comp_action))
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
     assert arb_action.calls == 0 and comp_action.calls == 0
@@ -369,8 +378,7 @@ def test_signal_collector_called_before_evaluation():
     arb_action = _RecordingAction()
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=0)
+    mp = _mp()
     actor.on_data(mp)
     _run(_drain(loop))
     assert collector_calls == [mp]                    # collector 收到 event
@@ -391,8 +399,7 @@ def test_submitter_wired_into_eval_context():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=capture_action))
     store.view("match_X").set_persistent("arb_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer",
-                     competition="EPL", pm_instrument_ids=[], oe_instrument_ids=[], confidence=1.0)
+    mp = _mp(confidence=1.0)
     actor.on_data(mp)
     _run(_drain(loop))
 
@@ -417,12 +424,49 @@ def test_matched_pair_subscribes_obd_deduped():
     actor, *_ = _harness()
     calls = []
     actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
-                     pm_instrument_ids=["A.PM", "B.PM"], oe_instrument_ids=["X.OE"], confidence=0)
+    mp = _mp(
+        tradable_instrument_ids=["A.PM", "B.PM", "X.OE"],
+        venue_instrument_ids={"PM": ["A.PM", "B.PM"], "OE": ["X.OE"]},
+    )
+    assert mp.tradable_instrument_ids == ["A.PM", "B.PM", "X.OE"]
     actor.on_data(mp)
     assert set(calls) == {"A.PM", "B.PM", "X.OE"}
     actor.on_data(mp)                                  # 再来同 pair → 去重,不再订
     assert len(calls) == 3
+
+
+def test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids():
+    """strategy-pmsports-anchor.1:PMSPORTS anchor 不参与 OBD 订阅。"""
+    actor, *_ = _harness()
+    calls = []
+    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
+    mp = _mp(
+        anchor_instrument_ids=["anchor.PMSPORTS"],
+        tradable_instrument_ids=["A.POLYMARKET", "X.ORBITEXCH"],
+        venue_instrument_ids={"POLYMARKET": ["A.POLYMARKET"], "ORBITEXCH": ["X.ORBITEXCH"]},
+    )
+
+    actor.on_data(mp)
+
+    assert set(calls) == {"A.POLYMARKET", "X.ORBITEXCH"}
+
+
+def test_matched_pair_obd_subscription_consumes_only_main_fields():
+    """venue-registry.10:Strategy 只消费 MatchedPair 主字段。"""
+    actor, *_ = _harness()
+    calls = []
+    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
+    mp = MatchedPair(
+        ts_event=0, ts_init=0,
+        pair_id="match_X", sport="Soccer", competition="EPL",
+        confidence=0,
+        tradable_instrument_ids=["A.POLYMARKET", "X.ORBITEXCH"],
+        venue_instrument_ids={"POLYMARKET": ["A.POLYMARKET"], "ORBITEXCH": ["X.ORBITEXCH"]},
+    )
+
+    actor.on_data(mp)
+
+    assert set(calls) == {"A.POLYMARKET", "X.ORBITEXCH"}
 
 
 # ── eval.15(§6.10 §7,#84):同 pair 并发触发 → per-pair 闸只放一次 fire ──
@@ -435,8 +479,7 @@ def test_same_pair_concurrent_eval_fires_once():
     strat_reg.register_pair("match_X", _strategy(True, False, arb_action=arb_action))
     store.view("match_X").set_persistent("arb_on", True)
 
-    mp = MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
-                     pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0)
+    mp = _mp(confidence=1.0)
     # drain 前两次触发(模拟同突发并发):第一次 try_enter 成功派发评估;第二次 gate busy → 不派发
     actor.on_data(mp)
     actor.on_data(mp)
@@ -458,10 +501,8 @@ def test_different_pairs_not_blocked():
     store.view("P1").set_persistent("arb_on", True)
     store.view("P2").set_persistent("arb_on", True)
 
-    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="P1", sport="S", competition="C",
-                              pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
-    actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="P2", sport="S", competition="C",
-                              pm_instrument_ids=["B.PM"], oe_instrument_ids=["Y.OE"], confidence=1.0))
+    actor.on_data(_mp("P1", confidence=1.0))
+    actor.on_data(_mp("P2", confidence=1.0))
     assert len(loop.tasks) == 2                        # 不同 pair 各派发
     _run(_drain(loop))
     assert a1.calls == 1 and a2.calls == 1
@@ -478,8 +519,7 @@ def test_running_loop_task_dispatch_uses_current_loop():
         store.view("match_X").set_persistent("arb_on", True)
 
         try:
-            actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
-                                      pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
+            actor.on_data(_mp(confidence=1.0))
             for _ in range(5):
                 await asyncio.sleep(0)
         finally:
@@ -502,8 +542,7 @@ def test_registered_executor_loop_used_without_running_loop():
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         actor.register_executor(nt_loop, executor)
-        actor.on_data(MatchedPair(ts_event=0, ts_init=0, pair_id="match_X", sport="Soccer", competition="EPL",
-                                  pm_instrument_ids=["A.PM"], oe_instrument_ids=["X.OE"], confidence=1.0))
+        actor.on_data(_mp(confidence=1.0))
         for _ in range(5):
             nt_loop.run_until_complete(asyncio.sleep(0))
 

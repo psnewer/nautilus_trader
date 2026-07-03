@@ -12,7 +12,7 @@
 
 用法:
   python3 -m scripts.se_place_cancel_probe --config arb_config.json --headed
-  python3 -m scripts.se_place_cancel_probe --config arb_config.json --headed --confirm --size 7
+  python3 -m scripts.se_place_cancel_probe --config arb_config.json --headed --confirm --size 12
 """
 
 from __future__ import annotations
@@ -34,8 +34,6 @@ from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchDiscove
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketEvent
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchSportDetailsRequest
-from nautilus_trader.adapters.sharpexch.discovery_client import events_from_sport_details
-from nautilus_trader.adapters.sharpexch.discovery_client import sport_details_request
 from nautilus_trader.adapters.sharpexch.execution import SHARPEXCH
 from nautilus_trader.adapters.sharpexch.execution import SharpExchExecutionClient
 from nautilus_trader.adapters.sharpexch.execution import bet_order_progress
@@ -175,14 +173,13 @@ async def _discover_instruments(
             await asyncio.sleep(max(0.0, challenge_wait_secs))
             return await _fetch_once(request)
 
-    first_config = sport_configs[0] if sport_configs else None
-    request = sport_details_request(exec_client._config.base_url, first_config, page=0, size=60)
-    payload = await _fetch(request)
-    events = events_from_sport_details(
-        payload,
-        target_competitions=target_competitions or request.target_competitions,
+    discovery = SharpExchDiscoveryClient(
+        base_url=exec_client._config.base_url,
+        json_fetcher=_fetch,
+        target_competitions=target_competitions,
     )
-    print(f"  page0 解析 {len(events)} 个 SE events")
+    events = await discovery.discover_events(sport_configs)
+    print(f"  分页解析 {len(events)} 个 SE events")
     provider = SharpExchInstrumentProvider(
         discovery=SharpExchDiscoveryClient(),
         sport_aliases=dict(cfg.matching.sport_aliases),
@@ -262,6 +259,7 @@ async def _open_competition_and_wait_prices(
     inst,
     *,
     timeout: float,
+    target_market_id: str | None = None,
 ) -> dict[str, dict]:
     parser = SharpExchMessageParser()
     seen: dict[str, dict] = {}
@@ -279,8 +277,11 @@ async def _open_competition_and_wait_prices(
     print(f"▶ open competition page before place: {url}")
     await exec_client._page.goto(url, wait_until="domcontentloaded", timeout=exec_client._config.page_timeout)
     deadline = time.monotonic() + timeout
+    target_market_id = str(target_market_id or "")
     while time.monotonic() < deadline:
-        if seen:
+        if target_market_id and target_market_id in seen:
+            return seen
+        if seen and not target_market_id:
             return seen
         await asyncio.sleep(0.2)
     return seen

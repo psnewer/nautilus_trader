@@ -13,7 +13,6 @@ from .config import StrategyServiceConfig, MatchConfig
 from .signals import get_signal, SignalResult, MatchContext
 from .signals.base import ArbitrageDirection
 from .strategies import Strategy, StrategyResult, DefaultStrategy, get_strategy_class
-from src.arbitrage.common.utils import adjust_share_by_liquidity
 from src.arbitrage.services.odds_subscription.messages import OddsUpdateMessage, MatchStatusMessage
 from src.arbitrage.services.odds_subscription.topics import (
     ODDS_TOPIC_PATTERN,
@@ -531,14 +530,9 @@ class StrategyService:
                 "raw_odds": raw_odds,
             })
 
-        adjusted_share = adjust_share_by_liquidity(share, legs_info, fx=self._fx)
+        adjusted_share = _scale_share_by_liquidity(share, legs_info)
 
-        if adjusted_share is None:
-            self._log.info(
-                f"Size check failed for {pair_id}: below minimum after adjustment, "
-                f"share={share}, fx={self._fx}, legs={legs_info}"
-            )
-        elif adjusted_share < share:
+        if adjusted_share < share:
             self._log.info(
                 f"Size scaled for {pair_id}: share {share} → {adjusted_share:.2f} "
                 f"(factor={adjusted_share / share:.4f})"
@@ -821,3 +815,14 @@ class StrategyService:
         self._strategy_results.clear()
         self._opportunities.clear()
         self._log.info("Strategy caches cleared")
+
+
+def _scale_share_by_liquidity(share: float, legs: list[dict]) -> float:
+    """旧 services 私有:只按可用量等比例缩放 share,不做应用层最小额门控。"""
+    scale_factor = 1.0
+    for leg in legs:
+        intended = float(leg.get("intended") or 0.0)
+        available = float(leg.get("available") or 0.0)
+        if intended > 0 and 0 < available < intended:
+            scale_factor = min(scale_factor, available / intended)
+    return share * scale_factor

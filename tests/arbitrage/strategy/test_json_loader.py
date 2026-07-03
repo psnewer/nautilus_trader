@@ -131,7 +131,7 @@ def test_self_hits_true_with_passing_check_fires_action():
     c = condition_from_json({
         "self_hits": {"signal": "live"},
         "checktion": [{"type": "pass"}],
-        "action": {"type": "noop", "params": {"label": "fire"}},  # 兼容旧格式
+        "actions": [{"type": "noop", "params": {"label": "fire"}}],
     })
     store = SignalStore()
     store.set_persistent("live", True)
@@ -145,7 +145,7 @@ def test_self_hits_true_with_passing_check_fires_action():
 def test_failing_check_short_circuits():
     c = condition_from_json({
         "checktion": [{"type": "pass"}, {"type": "fail"}],
-        "action": {"type": "noop"},
+        "actions": [{"type": "noop"}],
     })
     res = evaluate_tree(c, _ctx(SignalStore()))
     assert res.hit is False
@@ -155,8 +155,8 @@ def test_recursive_sub_conditions():
     """根 self_hits=True → sub_conditions 互斥;第一个 sub 命中则停。"""
     c = condition_from_json({
         "sub_conditions": [
-            {"self_hits": {"signal": "branch_a"}, "action": {"type": "noop", "params": {"label": "A"}}},
-            {"self_hits": {"signal": "branch_b"}, "action": {"type": "noop", "params": {"label": "B"}}},
+            {"self_hits": {"signal": "branch_a"}, "actions": [{"type": "noop", "params": {"label": "A"}}]},
+            {"self_hits": {"signal": "branch_b"}, "actions": [{"type": "noop", "params": {"label": "B"}}]},
         ],
     })
     store = SignalStore()
@@ -180,7 +180,12 @@ def test_unknown_check_type_in_condition_raises():
 
 def test_unknown_action_type_in_condition_raises():
     with pytest.raises(StrategyConfigError, match="unknown action type"):
-        condition_from_json({"action": {"type": "nope"}})
+        condition_from_json({"actions": [{"type": "nope"}]})
+
+
+def test_legacy_single_action_field_is_rejected():
+    with pytest.raises(StrategyConfigError, match="action.*actions"):
+        condition_from_json({"action": {"type": "noop"}})
 
 
 def test_actions_array_format():
@@ -205,7 +210,7 @@ def test_actions_array_format():
 
 def test_strategy_with_both_trees():
     spec = {
-        "arbitrage_tree": {"checktion": [{"type": "pass"}], "action": {"type": "noop"}},
+        "arbitrage_tree": {"checktion": [{"type": "pass"}], "actions": [{"type": "noop"}]},
         "compensation_tree": {"checktion": [{"type": "fail"}]},
     }
     s = strategy_from_json("s1", spec, scope_key="sport:Tennis")
@@ -244,9 +249,9 @@ def _cfg(strategies, bindings):
 def test_registry_binds_sport_competition_pair():
     cfg = _cfg(
         strategies={
-            "s_sport": {"arbitrage_tree": {"action": {"type": "noop", "params": {"label": "sport"}}}},
-            "s_comp":  {"arbitrage_tree": {"action": {"type": "noop", "params": {"label": "comp"}}}},
-            "s_pair":  {"arbitrage_tree": {"action": {"type": "noop", "params": {"label": "pair"}}}},
+            "s_sport": {"arbitrage_tree": {"actions": [{"type": "noop", "params": {"label": "sport"}}]}},
+            "s_comp":  {"arbitrage_tree": {"actions": [{"type": "noop", "params": {"label": "comp"}}]}},
+            "s_pair":  {"arbitrage_tree": {"actions": [{"type": "noop", "params": {"label": "pair"}}]}},
         },
         bindings=[
             {"scope": "sport:Tennis",          "strategy_id": "s_sport"},
@@ -268,7 +273,7 @@ def test_registry_binds_sport_competition_pair():
 def test_registry_pair_id_alias_kind():
     """scope `pair_id:X` 等同 `pair:X`(用户习惯兼容)。"""
     cfg = _cfg(
-        strategies={"s": {"arbitrage_tree": {"action": {"type": "noop"}}}},
+        strategies={"s": {"arbitrage_tree": {"actions": [{"type": "noop"}]}}},
         bindings=[{"scope": "pair_id:abc", "strategy_id": "s"}],
     )
     reg = to_strategy_registry(cfg)
@@ -314,7 +319,7 @@ def test_strategy_disabled_returns_empty_registry_even_with_bindings():
     cfg = msgspec.convert(
         {"strategy": {
             "enabled": False,
-            "strategies": {"s": {"arbitrage_tree": {"action": {"type": "noop"}}}},
+            "strategies": {"s": {"arbitrage_tree": {"actions": [{"type": "noop"}]}}},
             "bindings": [{"scope": "sport:Tennis", "strategy_id": "s"}],
         }},
         type=ArbConfig,

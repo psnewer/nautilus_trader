@@ -6,13 +6,13 @@
 
 ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 
-- ✅ `test_loader.py`(17):JSON 解析 / 默认值 / 凭证 env 注入 / PM proxy env 注入(JSON 显式值优先) / env 缺失保 None / 别名 fallback / 凭证-JSON ConfigWarning / 错误路径(文件不存在 / 无效 JSON / schema 不匹配)
+- ✅ `test_loader.py`(57):JSON 解析 / 默认值 / config 包导出当前 schema 类型 / `arb_config.example.json` 不写 `data_sources` 但获得 PMSPORTS 默认值 / 未知字段统一 schema mismatch(含旧 `risk.share/max_leg_share/fx`、`risk.global_sl`、risk 健康/override 死字段、OE/SE 旧执行/浏览器/API 死字段、execution 旧 session/staleness 字段、PM 旧地址字段、旧 `strategy.signals`、无效顶层 enabled 开关) / 凭证 env 注入 / PM proxy env 注入(JSON 显式值优先) / env 缺失保 None / 凭证-JSON ConfigWarning / 错误路径(文件不存在 / 无效 JSON / schema 不匹配 / `venues` 或单 venue section 显式非 object)
 
 ## Slice 4 落地(2026-05-28 #43)
 
 `ArbConfig` → 各组件 config 的纯函数派发。
 
-- ✅ `test_dispatcher.py`:PM/OE Data/Exec Client config 凭证映射 / PM `proxy_url` 透传(WS + #98 CLOB REST factory + #111 Data API `/positions` async client 消费) / PM Exec retry 参数显式透传且默认 None / OE `page_load_timeout_sec` → Data/Exec `page_timeout` / **OE `venues.orbitexch.staleness_timeout_sec` → `OrbitExchDataClientConfig.staleness_timeout_secs`**(#109:WS handler 内部 liveness timeout,默认 300s;旧 `health_interval_sec`/HealthCheckLoop + `health_check_exec_reload_enabled` 均退役删除)/ PM 凭证 None passthrough / OE 凭证空串 fallback / MarketMatching min_similarity + competition_max_matches(含 empty → None 兜底) + external venues 从 `venues.orbitexch.enabled` / `venues.sharpexch.enabled` 推导 / StrategyEvaluator log_evaluations 默认值 + `strategy.log_evaluations` 映射 / ArbRiskParams 风控字段 / ArbitrageParams 普通运行默认值(`share/max_leg_share/fx`) / ArbContext init kwargs(execution → PM+OE+SE session timeout;**PM/OE/SE discovery context 同时受 `venues.<venue>.enabled` 与 `discovery.<venue>.enabled` 控制**;**#109/#110:PM/OE 健康 interval 死接线均已删,断言 `pm_health_interval_secs`/`oe_health_interval_secs` 不出现**)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
+- ✅ `test_dispatcher.py`:PM/OE Data/Exec Client config 凭证映射 / PM `ws_url` 只接受 base URL(`/ws` 或 `/ws/`),拒绝 channel endpoint(`/ws/market` / `/ws/user`) / PMSPORTS `data_sources.sports_status.ws_url` 透传 / PM `proxy_url` 透传(WS + #98 CLOB REST factory + #111 Data API `/positions` async client 消费) / PM Exec retry 参数显式透传且默认 None / OE `page_load_timeout_sec` → Data/Exec `page_timeout` / **OE `venues.orbitexch.staleness_timeout_sec` → `OrbitExchDataClientConfig.staleness_timeout_secs`**(#109:WS handler 内部 liveness timeout,默认 300s;旧 `health_interval_sec`/HealthCheckLoop + `health_check_exec_reload_enabled` 均退役删除)/ SE `headless`、`browser_type`、`user_data_dir` 映射到 SE Data/Exec config,生产复用 profile 需显式配置 `venues.sharpexch.user_data_dir` / PM 凭证 None passthrough / OE 凭证缺省转空串 / MarketMatching min_similarity + competition_max_matches(含 empty → None) + `anchor_venue=PMSPORTS` + `tradable_venues` 从 Venue Registry enabled helpers 派生,OE+SE-only 时 anchor 仍为 PMSPORTS / StrategyEvaluator log_evaluations 默认值 + `strategy.log_evaluations` 映射 / ArbRiskParams 风控字段 / ArbitrageParams 普通运行默认值(`share/max_leg_share/fx`) / ArbContext init kwargs(execution → enabled trading venue 的 `session_timeout_secs_by_venue`;OE/SE discovery → `discovery_config_by_venue`;alias → enabled trading venue 的 `*_aliases_by_venue`;**PM/OE/SE discovery context 经 Venue Registry descriptor `config_key` 同时受 runtime venue enabled 与 `discovery.<venue>.enabled` 控制;PMSPORTS target competitions 可由 `data_sources.sports_status.sports` 覆盖并同步写入 `target_competitions_by_data_source`,常规省略时继承 `discovery.polymarket.sports`,且不受 PM trading venue enabled 影响**;**#109/#110:PM/OE 健康 interval 死接线均已删,断言 `pm_health_interval_secs`/`oe_health_interval_secs` 不出现**)/ Debug None when missing/disabled / Debug enabled overrides+mock_data / Debug conditions 不匹配返 None / 纯函数不 mutate cfg
 
 ## Slice 5 落地(2026-05-28 #44)
 
@@ -39,11 +39,10 @@ ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 - **.3b**:PM proxy JSON 缺省时从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入;JSON 显式 `proxy_url` 优先
 - **.4**:env 凭证注入 OE 字段 → cfg.venues.orbitexch.* 取 env 值
 - **.5**:env 缺失 → cfg 字段保 None,不 raise
-- **.6**:`POLYMARKET_ADDRESS` 别名 fallback for `POLYMARKET_USER_ADDRESS`
 - **.7**:env 优先于 JSON 内的同字段
 - **.8**:凭证存在 JSON 中(非 None / 非空)→ ConfigWarning
 - **.9**:JSON 凭证段省略 → 无 warning(干净路径)
 - **.10**:文件不存在 → ConfigError
 - **.11**:无效 JSON → ConfigError
 - **.12**:schema 字段类型错 → ConfigError
-- **.13**:`venues` 段省略 → loader setdefault 兜底不 crash
+- **.13**:`venues` 段省略 → loader 补默认 section,env 注入仍生效

@@ -52,6 +52,27 @@ def test_instrument_ids_for_pair_returns_registered_legs():
     assert r.instrument_ids_for_pair("unknown") == set()
 
 
+def test_anchor_ids_are_registered_but_not_returned_as_tradable_legs_by_default():
+    """matching-3.pair.4c(#127):PMSPORTS anchor id 单独存,默认不暴露给套利消费者。"""
+    r = PairRegistry()
+    r.register("p1", ["L1", "L2"], anchor_instrument_ids=["777.PMSPORTS"])
+
+    assert r.get("777.PMSPORTS") == "p1"
+    assert r.instrument_ids_for_pair("p1") == {"L1", "L2"}
+    assert r.instrument_ids_for_pair("p1", tradable_only=False) == {"L1", "L2", "777.PMSPORTS"}
+    assert r.anchor_ids_for_pair("p1") == {"777.PMSPORTS"}
+
+
+def test_register_same_pair_drops_stale_anchor_ids():
+    """matching-3.pair.4d(#127):重匹配时 anchor 映射也覆盖旧集合。"""
+    r = PairRegistry()
+    r.register("p1", ["L1"], anchor_instrument_ids=["old.PMSPORTS"])
+    r.register("p1", ["L1"], anchor_instrument_ids=["new.PMSPORTS"])
+
+    assert r.get("old.PMSPORTS") is None
+    assert r.get("new.PMSPORTS") == "p1"
+
+
 def test_unregister_pair_clears_all_legs():
     """matching-3.pair.5: unregister_pair 清掉该 pair 所有腿(测试 / 重匹配显式清理用)。"""
     r = PairRegistry()

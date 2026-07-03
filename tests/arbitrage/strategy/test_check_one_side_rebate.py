@@ -20,7 +20,7 @@ def _ctx(*, books: dict, infos: dict) -> EvalContext:
         order_books=books,
         instrument_info=infos,
     )
-    return EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0, "fx": 1.0})
+    return EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
 
 
 def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():

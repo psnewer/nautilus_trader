@@ -151,21 +151,9 @@ def test_match_sl_gate_passes_when_any_outcome_not_below_threshold():
     assert denials == []
 
 
-def test_global_sl_no_longer_blocks():
-    ctx, order, denials = _gate_ctx(
-        ArbRiskParams(global_sl=-0.10),
-        exposures={
-            "home": OutcomeExposure(net_profit=0.0, liability=0.0),
-            "away": OutcomeExposure(net_profit=0.0, liability=0.0),
-        },
-    )
-    assert ctx.engine._check_profit_gates(order) is True
-    assert denials == []
-
-
 def test_gates_pass_when_within_thresholds():
     ctx, order, denials = _gate_ctx(
-        ArbRiskParams(match_tp=0.05, match_sl=-0.05, global_sl=-0.10),
+        ArbRiskParams(match_tp=0.05, match_sl=-0.05),
         exposures={
             "home": OutcomeExposure(net_profit=0.50, liability=1.0),
             "away": OutcomeExposure(net_profit=-0.50, liability=1.0),
@@ -304,7 +292,7 @@ def test_balance_pm_self_deducts_open_orders():
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
     ctx.cache.add_account(_pm_account(ctx, total=100))
-    ctx.engine._pm_open_notional = lambda venue, currency: 60.0  # 在途挂单占 60
+    ctx.engine._probability_open_notional = lambda venue, currency: 60.0  # 在途挂单占 60
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
     order = _DuckOrder(pm.id, price=0.4, qty=Quantity.from_int(125))  # cost = 125*0.4 = 50 > (100-60)=40

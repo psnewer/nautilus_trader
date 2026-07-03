@@ -74,7 +74,7 @@ def test_on_risk_event_broadcasts_trading_state():
     assert msg["type"] == "trading_state" and msg["data"]["state"] == "HALTED"
 
 
-def test_on_matched_pair_infers_external_venue_for_sharpexch():
+def test_on_matched_pair_reads_external_venue_from_venue_map_for_sharpexch():
     actor = _bare_actor()
     actor._matched_pairs = {}
     data = MatchedPair(
@@ -83,8 +83,16 @@ def test_on_matched_pair_infers_external_venue_for_sharpexch():
         pair_id="ATP|a|b|SHARPEXCH",
         sport="Tennis",
         competition="ATP",
-        pm_instrument_ids=["pm-home.POLYMARKET", "pm-away.POLYMARKET"],
-        oe_instrument_ids=["se-home.SHARPEXCH", "se-away.SHARPEXCH"],
+        tradable_instrument_ids=[
+            "pm-home.POLYMARKET",
+            "pm-away.POLYMARKET",
+            "se-home.SHARPEXCH",
+            "se-away.SHARPEXCH",
+        ],
+        venue_instrument_ids={
+            "POLYMARKET": ["pm-home.POLYMARKET", "pm-away.POLYMARKET"],
+            "SHARPEXCH": ["se-home.SHARPEXCH", "se-away.SHARPEXCH"],
+        },
         confidence=0.9,
     )
 
@@ -93,7 +101,94 @@ def test_on_matched_pair_infers_external_venue_for_sharpexch():
     row = actor._matched_pairs["ATP|a|b|SHARPEXCH"]
     assert row["external_venue"] == "SHARPEXCH"
     assert row["external_instrument_ids"] == ["se-home.SHARPEXCH", "se-away.SHARPEXCH"]
-    assert row["oe_instrument_ids"] == row["external_instrument_ids"]  # 兼容旧字段
+    assert "oe_instrument_ids" not in row
+    assert "pm_instrument_ids" not in row
+    assert row["venue_instrument_ids"]["SHARPEXCH"] == row["external_instrument_ids"]
+    assert row["tradable_instrument_ids"] == data.tradable_instrument_ids
+
+
+def test_on_matched_pair_does_not_default_venues_without_venue_map():
+    actor = _bare_actor()
+    actor._matched_pairs = {}
+    data = MatchedPair(
+        ts_event=1,
+        ts_init=1,
+        pair_id="legacy",
+        sport="Tennis",
+        competition="ATP",
+        confidence=0.9,
+    )
+
+    actor._on_matched_pair(data)
+
+    row = actor._matched_pairs["legacy"]
+    assert row["venue_instrument_ids"] == {}
+    assert row["external_instrument_ids"] == []
+    assert row["tradable_instrument_ids"] == data.tradable_instrument_ids
+    assert row["external_venue"] == ""
+
+
+def test_on_matched_pair_does_not_infer_external_venue_from_instrument_suffix():
+    actor = _bare_actor()
+    actor._matched_pairs = {}
+    data = MatchedPair(
+        ts_event=1,
+        ts_init=1,
+        pair_id="suffix-only",
+        sport="Tennis",
+        competition="ATP",
+        tradable_instrument_ids=["se-home.SHARPEXCH"],
+        confidence=0.9,
+    )
+
+    actor._on_matched_pair(data)
+
+    row = actor._matched_pairs["suffix-only"]
+    assert row["venue_instrument_ids"] == {}
+    assert row["external_instrument_ids"] == []
+    assert row["external_venue"] == ""
+
+
+def test_matched_pairs_exposes_all_venue_teams_for_aggregated_pair():
+    actor = _bare_actor()
+    actor._matched_pairs = {}
+    actor._venue_teams = lambda iids: f"{iids[0]} teams" if iids else ""
+    data = MatchedPair(
+        ts_event=1,
+        ts_init=1,
+        pair_id="ATP|a|b",
+        sport="Tennis",
+        competition="ATP",
+        anchor_instrument_ids=["anchor.PMSPORTS"],
+        tradable_instrument_ids=[
+            "pm-home.POLYMARKET",
+            "pm-away.POLYMARKET",
+            "oe-home.ORBITEXCH",
+            "oe-away.ORBITEXCH",
+            "se-home.SHARPEXCH",
+            "se-away.SHARPEXCH",
+        ],
+        venue_instrument_ids={
+            "POLYMARKET": ["pm-home.POLYMARKET", "pm-away.POLYMARKET"],
+            "ORBITEXCH": ["oe-home.ORBITEXCH", "oe-away.ORBITEXCH"],
+            "SHARPEXCH": ["se-home.SHARPEXCH", "se-away.SHARPEXCH"],
+        },
+        confidence=0.9,
+    )
+
+    actor._on_matched_pair(data)
+    row = actor.matched_pairs()[0]
+
+    assert row["external_venues"] == ["ORBITEXCH", "SHARPEXCH"]
+    assert row["external_venue"] == "ORBITEXCH"  # 旧单 external 视图只保留兼容值
+    assert row["venue_teams"] == {
+        "POLYMARKET": "pm-home.POLYMARKET teams",
+        "ORBITEXCH": "oe-home.ORBITEXCH teams",
+        "SHARPEXCH": "se-home.SHARPEXCH teams",
+    }
+    assert "pm_teams" not in row
+    assert "oe_teams" not in row
+    assert row["external_teams"] == "oe-home.ORBITEXCH teams"
 
 
 # ── 控制台:TradingState 启停 + 配置编辑(Actor 方法)──────────────────
@@ -228,7 +323,9 @@ class _ControlStubActor:
 
     def matched_pairs(self):
         return [{"pair_id": "ATP|a|b", "sport": "Tennis", "competition": "ATP",
-                 "pm_instrument_ids": ["p1", "p2"], "oe_instrument_ids": ["o1", "o2"], "confidence": 0.9}]
+                 "venue_instrument_ids": {"POLYMARKET": ["p1", "p2"], "ORBITEXCH": ["o1", "o2"]},
+                 "tradable_instrument_ids": ["p1", "p2", "o1", "o2"],
+                 "confidence": 0.9}]
 
     def instruments_snapshot(self):
         return [{"venue": "POLYMARKET", "sport": "Tennis", "competition": "ATP", "home": "A", "away": "B"}]
@@ -271,7 +368,8 @@ def test_put_config_section():
 def test_index_serves_html():
     r = _client().get("/")
     assert r.status_code == 200 and "Arbitrage Dashboard" in r.text and "text/html" in r.headers["content-type"]
-    assert "SharpExch" in r.text and "External venue" in r.text
+    assert "SharpExch" in r.text and "Venues (home vs away)" in r.text and "Venue 概率" in r.text
+    assert 'id="d-sharp"' in r.text and "browser discovery" in r.text
 
 
 def test_get_accounts():

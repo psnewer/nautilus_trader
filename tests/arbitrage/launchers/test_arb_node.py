@@ -75,11 +75,25 @@ def test_build_trading_node_config_can_disable_orbitexch_with_sharpexch_enabled(
     assert set(nc.exec_clients) == {"POLYMARKET", "SHARPEXCH"}
 
 
-def test_build_trading_node_config_can_disable_polymarket_with_two_other_venues():
+def test_build_trading_node_config_rejects_without_sports_anchor_provider():
+    cfg = _cfg(data_sources={"sports_status": {"enabled": False}})
+
+    with pytest.raises(ConfigError, match="sports_status data source"):
+        arb_node.build_trading_node_config(cfg)
+
+
+def test_build_trading_node_config_rejects_unknown_sports_provider():
+    cfg = _cfg(data_sources={"sports_status": {"enabled": True, "provider": "unknown"}})
+
+    with pytest.raises(ConfigError, match="sports_status data source"):
+        arb_node.build_trading_node_config(cfg)
+
+
+def test_build_trading_node_config_allows_oe_se_with_independent_sports_anchor():
     cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
     nc = arb_node.build_trading_node_config(cfg)
 
-    assert set(nc.data_clients) == {"ORBITEXCH", "SHARPEXCH"}
+    assert set(nc.data_clients) == {"PMSPORTS", "ORBITEXCH", "SHARPEXCH"}
     assert set(nc.exec_clients) == {"ORBITEXCH", "SHARPEXCH"}
 
 
@@ -129,15 +143,11 @@ def test_prepare_runtime_state_excludes_orbitexch_when_disabled():
     assert liveness.order_alive("ORBITEXCH") is False
 
 
-def test_prepare_runtime_state_can_exclude_polymarket():
-    cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
-    liveness, _, _, _ = arb_node.prepare_runtime_state(cfg)
+def test_prepare_runtime_state_rejects_without_sports_anchor_provider():
+    cfg = _cfg(data_sources={"sports_status": {"enabled": False}})
 
-    liveness.mark_order_alive("ORBITEXCH")
-    liveness.mark_order_alive("SHARPEXCH")
-    assert liveness.order_alive("POLYMARKET") is False
-    assert liveness.order_alive("ORBITEXCH") is True
-    assert liveness.order_alive("SHARPEXCH") is True
+    with pytest.raises(ConfigError, match="sports_status data source"):
+        arb_node.prepare_runtime_state(cfg)
 
 
 def test_prepare_runtime_state_enabled_debug():
@@ -283,7 +293,18 @@ def test_register_factories_can_disable_orbitexch_with_sharpexch_enabled():
     assert set(exec_venues) == {"POLYMARKET", "SHARPEXCH"}
 
 
-def test_register_factories_can_disable_polymarket_with_oe_and_se_enabled():
+def test_register_factories_rejects_without_sports_anchor_provider():
+    node = MagicMock()
+    cfg = _cfg(data_sources={"sports_status": {"enabled": False}})
+
+    with pytest.raises(ConfigError, match="sports_status data source"):
+        arb_node.register_factories(node, cfg)
+
+    node.add_data_client_factory.assert_not_called()
+    node.add_exec_client_factory.assert_not_called()
+
+
+def test_register_factories_allows_oe_se_with_independent_sports_anchor():
     node = MagicMock()
     cfg = _cfg(venues={"polymarket": {"enabled": False}, "orbitexch": {"enabled": True}, "sharpexch": {"enabled": True}})
 
@@ -291,7 +312,7 @@ def test_register_factories_can_disable_polymarket_with_oe_and_se_enabled():
 
     data_venues = [call.args[0] for call in node.add_data_client_factory.call_args_list]
     exec_venues = [call.args[0] for call in node.add_exec_client_factory.call_args_list]
-    assert set(data_venues) == {"ORBITEXCH", "SHARPEXCH"}
+    assert set(data_venues) == {"PMSPORTS", "ORBITEXCH", "SHARPEXCH"}
     assert set(exec_venues) == {"ORBITEXCH", "SHARPEXCH"}
 
 
@@ -328,7 +349,7 @@ def test_bootstrap_and_build_full_call_sequence():
 
 def test_bootstrap_populates_arb_context():
     """`prepare_arb_context` 是 module-global 状态修改;验证 ArbContext 被填满。"""
-    cfg = _cfg(execution={"tracking_timeout_sec": 45.0, "health_check_interval_sec": 90.0})
+    cfg = _cfg(execution={"tracking_timeout_sec": 45.0})
     fake_node = MagicMock()
     settlement = object()
 
@@ -340,8 +361,10 @@ def test_bootstrap_populates_arb_context():
     ctx = bootstrap.get_arb_context()
     assert ctx.venue_liveness is liveness
     assert ctx.pair_registry is pair
-    assert ctx.pm_session_timeout_secs == 45.0
-    assert ctx.oe_session_timeout_secs == 45.0
+    assert ctx.session_timeout_secs_by_venue == {
+        "POLYMARKET": 45.0,
+        "ORBITEXCH": 45.0,
+    }
     # #109/#110:PM/OE 健康 interval 死接线均已删(HealthCheckLoop 退役)
     assert not hasattr(ctx, "pm_health_interval_secs")
     assert not hasattr(ctx, "oe_health_interval_secs")
@@ -362,9 +385,12 @@ def test_bootstrap_populates_sharpexch_context_when_enabled():
         arb_node.bootstrap_and_build(cfg, node_factory=lambda config: fake_node)
 
     ctx = bootstrap.get_arb_context()
-    assert ctx.se_session_timeout_secs == 45.0
-    assert ctx.se_discovery_config is not None
-    assert ctx.se_discovery_config.sports[0].competitions == ["Wimbledon"]
+    assert ctx.session_timeout_secs_by_venue == {
+        "POLYMARKET": 45.0,
+        "ORBITEXCH": 45.0,
+        "SHARPEXCH": 45.0,
+    }
+    assert ctx.discovery_config_by_venue["SHARPEXCH"].sports[0].competitions == ["Wimbledon"]
 
 
 def test_bootstrap_install_invoked_with_debug_config_when_enabled():
@@ -534,8 +560,10 @@ def _add_actors_setup(monkeypatch, *, pm_provider=None, oe_provider=None):
     """共享 setup:重置 ArbContext,装 mock providers,monkeypatch asyncio。"""
     bootstrap.reset_arb_context()
     bootstrap.prepare_arb_context(
-        pm_instrument_provider=pm_provider,
-        oe_instrument_provider=oe_provider,
+        instrument_provider_by_venue={
+            "POLYMARKET": pm_provider,
+            "ORBITEXCH": oe_provider,
+        },
     )
     fake_loop = MagicMock(name="loop")
     import asyncio

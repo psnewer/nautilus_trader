@@ -24,7 +24,9 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 - ❌ 无独立熔断 Actor / 不翻 `TradingState`(单场 profit gates 与 venue liveness = 逐 submit deny,见 §4.3/§4.4)
 - ❌ Strategy **不引用** Risk —— 透明拦截,Strategy 只通过 `on_order_denied` 感知结果
 
-**账户状态来源**:由各 venue 的 `ExecutionClient` 维护写入 NT `Cache`(PM 事件驱动 / OE 被动 WS),Risk 层**只读 Cache**,对来源透明。
+**账户状态来源**:由各 venue 的 `ExecutionClient` 维护写入 NT `Cache`(PM 事件驱动 / OE/SE 被动 WS),Risk 层**只读 Cache**,对来源透明。
+Venue capability / enablement 的横切真理源见 `_cross-cutting/venues.md`;Risk 只消费
+概率模型、金额口径与真实 venue identity,不拥有 venue registry。
 
 ---
 
@@ -54,7 +56,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   PM[PM ExecutionClient<br/>事件驱动:连接+链上成交确认] -->|generate_account_state| CACHE[(Cache.account_state)]
-  OE[OE ExecutionClient<br/>被动 WS 余额帧] -->|generate_account_state| CACHE
+  DEC[OE/SE ExecutionClient<br/>被动 WS 余额帧] -->|generate_account_state| CACHE
   CACHE --> RB[_check_balance 同步读]
   CACHE --> WG[WebGatewayActor 订阅推前端]
 ```
@@ -81,7 +83,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _check_order(self, instrument: Instrument, order: Order) -> bool:
         if not super()._check_order(instrument, order):   # NT: price/quantity/GTD
             return False
-        if not self._check_probability_gate(instrument, order):  # 应用层:PM 概率 / OE 十进制赔率
+        if not self._check_probability_gate(instrument, order):  # 应用层:Venue Registry 概率转换
             return False
         if not self._check_required_venues_alive(order):  # 应用层:venue 执行真相可信
             return False
@@ -104,7 +106,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **NT 检查分两步,本类只覆盖第一步**(Step 6 核实修正):
 - `_check_order`(本类覆盖点):仅 **price / quantity / GTD**。
-- `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT 的 native 余额读 cache `free`——对 PM 因 `free==total` 偏宽松(不会误拒,只是不够紧),故本类在 `_check_order` 内**前置**更严的 PM 自扣余额检查(它先于 native 跑、先拒)。
+- `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT 的 native 余额读 cache `free`——对 probability venue 因 `free==total` 可能偏宽松(不会误拒,只是不够紧),故本类在 `_check_order` 内**前置**更严的 probability venue 自扣余额检查(它先于 native 跑、先拒)。
 
 **venue 最小下单门控来源**:
 - PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
@@ -117,12 +119,13 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 | Venue | 可用余额 | 理由 |
 |---|---|---|
-| PM | `account.balance_total − Σ(PM cache.orders_open 在途名义额)` 自扣 | PM 上报 `reported=True/locked=0/free=total`,`CashAccount.apply` 清空 NT 自算 locked → cache `free` 恒 total,不能信 |
-| OE/SE | 直接信 cache 余额(WS 已含挂单占用,不再减);BALANCE 入站已乘 fx,cache 数值按 USD 解释;订单 size 在 adapter 外为 USD stake | 再减会双重扣减低估;adapter 只在出站 placeBets payload 前转 venue stake |
+| probability venue(当前 PM) | `account.balance_total − Σ(cache.orders_open 在途名义额)` 自扣 | PM 上报 `reported=True/locked=0/free=total`,`CashAccount.apply` 清空 NT 自算 locked → cache `free` 恒 total,不能信 |
+| decimal venue(当前 OE/SE) | 直接信 cache 余额(WS 已含挂单占用,不再减);BALANCE 入站已乘 fx,cache 数值按 USD 解释;订单 size 在 adapter 外为 USD stake | 再减会双重扣减低估;adapter 只在出站 placeBets payload 前转 venue stake |
 
-→ 实现内按 `order.instrument_id.venue` 分支。读 **live** cache(非快照)。
+→ 实现内用 Venue Registry descriptor 的 `odds_model` 判断 probability venue vs decimal venue。
+读 **live** cache(非快照)。真实 venue identity 仍用于账户、持仓和 liveness 查询。
 
-**`_check_profit_gates` —— 单场止盈/止损硬停(Q16 修订)**:逐 submit deny = "别开新仓",与 Strategy 的机会评估正交。Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损;`global_sl` 仅作为旧配置兼容字段保留。
+**`_check_profit_gates` —— 单场止盈/止损硬停(Q16 修订)**:逐 submit deny = "别开新仓",与 Strategy 的机会评估正交。Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损;`global_sl` 字段已从 NT 配置 schema / `ArbRiskParams` 删除。
 
 ```python
 def _check_profit_gates(self, order: Order) -> bool:
@@ -135,12 +138,12 @@ def _check_profit_gates(self, order: Order) -> bool:
 
 **`_check_probability_gate` —— 概率/赔率上下界门控(2026-06-29)**:逐 submit deny,用于过滤极端概率/赔率订单。配置字段为 `min_probability` / `max_probability`,默认 `0.03 / 0.97`,闭区间放行:概率 `< min_probability` 或 `> max_probability` 才 deny。
 
-- PM `BinaryOption` 的 `order.price` 本身就是概率。
-- OE/SE `BettingInstrument` 的 `order.price` 是十进制赔率,先换算为隐含概率 `1 / price`。
+- 概率转换统一调用 `src.arbitrage.common.venues.probability_from_price(venue, price)`。
+- PM `odds_model=probability`,价格本身就是概率;OE/SE `odds_model=decimal`,十进制赔率换算为隐含概率 `1 / price`。
 - Web 可热改上下界,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1`,非法区间不 apply。
 - recovery 下单不跳过该门控:极端赔率/概率属于订单本身风险,不是 profit gate。
 
-`_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。
+`_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;解析统一调用 `common.venues.venue_id_from_leg_key`,兼容 `pm/oe/se` 旧缩写与完整 venue/config key,不在 Risk 内维护私有映射。任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。
 
 **补救下单 intent 例外(2026-06-11)**:
 - Strategy submitter 将 `spec["intent"]` 写入 NT `Order.tags=["arb:intent=<intent>"]`,详见 strategy 详设 §3.9。
@@ -170,7 +173,7 @@ class ArbitragePortfolio(Portfolio):
 **腿来源(平移自旧 `position.py`,但不再自维护 `_positions`)**:从 NT Cache 的 `positions_open()` 反推 `_Leg`。
 - **pair_id 经 `PairRegistry`**(matching 写、本类读;#34 修正,原误用 `info["competition"]` 是联赛名非 pair_id)。`outcome_exposures` 会通过 `PairRegistry.instrument_ids_for_pair(pair_id)` 读取该 pair 的完整 instrument 集合,再从 cache instrument.info 得到完整 outcome 集合;若 registry 不可用才回退到持仓腿推断。
 - **`instrument.info` 契约**(由 **discovery** 填充,本类只读,单一 seam 在 `_leg_from_position`):`info["selection_role"]`→home/draw/away(Q9 标准 key;旧 `info["market_type"]` 作 fallback 兼容);其它 Q9 6-key 是 matching 输入。
-- **venue / 公式分支**: `BinaryOption` 按 PM 公式;`BettingInstrument` 按 OE/SE 类 decimal odds 公式,但 `_Leg.venue` 必须取 `instrument.id.venue.value.lower()` 保留真实 venue identity,避免 SE 持仓被归到 OE。
+- **venue / 公式分支**: `_Leg` 按 Venue Registry `odds_model` 分流 probability / decimal odds 公式;`_Leg.venue` 必须取 `instrument.id.venue.value.lower()` 保留真实 venue identity,避免 SE 持仓被归到 OE。
 
 **接线 —— 导入名替换(`src/arbitrage/bootstrap.py`),取代旧"构造后 swap"方案**(Step 6 改进,见 refactor.md 修订记录):
 
@@ -244,8 +247,7 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 Risk 在 NT 父类基础检查之后、venue liveness/余额/profit gates 之前检查订单隐含概率:
 
 ```
-probability = order.price              # PM BinaryOption
-probability = 1 / order.price          # OE/SE BettingInstrument 十进制赔率
+probability = probability_from_price(order.instrument_id.venue.value, float(order.price))
 ```
 
 若 `probability < min_probability` 或 `probability > max_probability`,调用 `_deny_order` 并阻止订单继续进入 execution。默认闭区间为 `[0.03, 0.97]`,等于边界允许通过。
@@ -258,15 +260,15 @@ probability = 1 / order.price          # OE/SE BettingInstrument 十进制赔率
 outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AND leg.venue == venue
 ```
 
-- `profit_if_wins`:PM = `size*(1-price)`;OE/SE = `size*(price-1)`
-- `loss_if_loses`:PM = `size*price`;OE/SE = `size`
-- `share_if_wins`:PM=`size`;OE/SE=`size*price`(adapter 外 OE/SE size 已是 USD stake)
+- `profit_if_wins`:probability venue = `size*(1-price)`;decimal odds venue = `size*(price-1)`
+- `loss_if_loses`:probability venue = `size*price`;decimal odds venue = `size`
+- `share_if_wins`:probability venue = `size`;decimal odds venue = `size*price`(adapter 外 OE/SE size 已是 USD stake)
 - `outcome ∈ {home, draw, away}`,draw 由 PairRegistry/instrument info 或已有腿推导
 - 不依赖 mark price,只依赖成交落库的 `size/price`;OE/SE `CURRENT_BETS` 的 `size*`/`liability`/`profit*` 字段由 adapter 入站时乘 `fx` 归一为 USD
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 
-`leg_settled` gate 退役。`ArbitragePortfolio` 是持仓指标计算器,只根据 NT Cache positions 计算 `outcome_exposures` / `outcome_shares`;执行真相是否可信由 `ArbitrageLiveRiskEngine._check_required_venues_alive` 统一门控。
+`leg_settled` gate 退役。`ArbitragePortfolio` 是持仓指标计算器,只根据 NT Cache positions 计算 `outcome_exposures` / `outcome_shares`;PM probability vs decimal venue 公式分支经 Venue Registry `is_decimal_odds_venue` 派生,执行真相是否可信由 `ArbitrageLiveRiskEngine._check_required_venues_alive` 统一门控。
 
 因此:
 - `outcome_exposures` / `outcome_shares` 不因执行健康状态返回 `{}`。
@@ -316,7 +318,7 @@ sequenceDiagram
   ST->>EE: submit_order(order)
   EE->>RE: _check_order(instrument, order)
   RE->>RE: super()._check_order  (min/max qty, notional, rate, TradingState)
-  RE->>RE: _check_probability_gate (PM price / OE/SE 1/odds)
+  RE->>RE: _check_probability_gate (Venue Registry probability_from_price)
   RE->>RE: _check_required_venues_alive(expected_legs → venues)
   RE->>C: 读 account_state（venue 分支算可用余额）
   RE->>RE: _check_balance
@@ -335,7 +337,7 @@ sequenceDiagram
 ## 7. 落地清单(Step 6 实施)
 
 - [x] `ArbitrageLiveRiskEngine` 子类(基类 `LiveRiskEngine`)+ `_check_order` 两参签名 + super 先行 + 自 emit `_deny_order`
-- [x] `_check_balance` venue 分支(PM 自扣在途挂单 / OE 信 cache free);无价单交父类
+- [x] `_check_balance` venue 分支(probability venue 自扣在途挂单 / decimal venue 信 cache free);无价单交父类
 - [x] `_check_profit_gates` 单场止盈/止损;Risk 不再执行全局止盈/止损
 - [x] `_check_required_venues_alive`:注入 `VenueExecutionLiveness`,从 `expected_legs` 推导 required venues,任一不 alive 则 deny
 - [x] `ArbitragePortfolio` 四方法 + `_legs_for_pair` + `_resolve_pair_id` + `_leg_from_position`(从 cache Position 反推)
@@ -352,4 +354,4 @@ sequenceDiagram
 
 **NT 子类化两个 cdef 可见性陷阱(写测试时发现,已修;production-affecting)**:
 1. **`Portfolio._cache` 是私有 `cdef`(非 `readonly`)→ Python 子类方法 `self._cache` 抛 AttributeError**(`RiskEngine._cache` 是 `readonly` 故引擎侧无此问题)。`ArbitragePortfolio` 改为**覆盖 `__init__`**(签名 `msgbus/cache/clock/config`,与 kernel 原生构造一致)`super().__init__(...)` 后自存 `self._arb_cache = cache`,所有腿提取走 `_arb_cache`。
-2. **`order.has_price_c()` 是 `cdef` 方法,Python 侧不可调** → `_check_balance` / `_pm_open_notional` 必须用 **`order.has_price`(property)**。同理价格/数量用 `order.price` / `order.leaves_qty`(均 Python 可见)。
+2. **`order.has_price_c()` 是 `cdef` 方法,Python 侧不可调** → `_check_balance` / `_probability_open_notional` 必须用 **`order.has_price`(property)**。同理价格/数量用 `order.price` / `order.leaves_qty`(均 Python 可见)。

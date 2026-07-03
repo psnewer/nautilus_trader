@@ -84,11 +84,12 @@ def condition_from_json(spec) -> Condition:
         "sub_conditions": [<condition_spec>, ...],
         "checktion":      [{"type": ..., "params": {...}}, ...],
         "actions":        [{"type": ..., "params": {...}}, ...],  # 依次执行
-        "action":         {"type": ..., "params": {...}} | None,  # 兼容旧格式(转 actions=[action])
       }
     """
     if not isinstance(spec, dict):
         raise StrategyConfigError(f"condition spec must be dict, got {type(spec).__name__}: {spec!r}")
+    if "action" in spec:
+        raise StrategyConfigError("condition field `action` is no longer supported; use `actions` list")
 
     self_hits = bool_expr_from_json(spec.get("self_hits"))
 
@@ -102,10 +103,7 @@ def condition_from_json(spec) -> Condition:
         raise StrategyConfigError(f"checktion must be list, got {check_specs!r}")
     checktion = [build_check(c) for c in check_specs]
 
-    # 兼容两种格式: "actions": [...] (新) 或 "action": {...} (旧)
     actions_spec = spec.get("actions") or []
-    if not actions_spec and spec.get("action"):  # 兼容旧格式
-        actions_spec = [spec.get("action")]
     if not isinstance(actions_spec, list):
         raise StrategyConfigError(f"actions must be list, got {actions_spec!r}")
     actions = [build_action(a) for a in actions_spec]

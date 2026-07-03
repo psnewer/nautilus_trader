@@ -7,6 +7,8 @@ import pytest
 import src.arbitrage.bootstrap as bootstrap
 from nautilus_trader.adapters.orbitexch import factories as oe_factories
 from nautilus_trader.adapters.polymarket import arb_factories as pm_factories
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.debug import execution_clients as debug_exec
 from src.arbitrage.debug.config import DebugConfig
 
@@ -49,10 +51,24 @@ def test_pm_exec_factory_uses_production_when_no_debug(monkeypatch):
     monkeypatch.setattr(pm_factories, "ArbPolymarketExecutionClient", prod)
     monkeypatch.setattr(debug_exec, "SkipExecutionPolymarketClient", dbg)
 
-    bootstrap.prepare_arb_context(venue_liveness=MagicMock())  # debug_config=None
+    bootstrap.prepare_arb_context(
+        venue_liveness=MagicMock(),
+        session_timeout_secs_by_venue={POLYMARKET: 45.0},
+    )
     pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
     assert prod.called and not dbg.called
+    assert prod.call_args.kwargs["session_timeout_secs"] == 45.0
+
+
+def test_pm_exec_factory_requires_session_timeout_keyed_value(monkeypatch):
+    _stub_pm(monkeypatch)
+    monkeypatch.setattr(pm_factories, "ArbPolymarketExecutionClient", MagicMock())
+
+    bootstrap.prepare_arb_context(venue_liveness=MagicMock())
+
+    with pytest.raises(RuntimeError, match=r"session_timeout_secs_by_venue\['POLYMARKET'\] is required"):
+        pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
 
 def test_pm_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
@@ -62,7 +78,11 @@ def test_pm_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
     monkeypatch.setattr(debug_exec, "SkipExecutionPolymarketClient", dbg)
 
     cfg = DebugConfig(enabled=True)
-    bootstrap.prepare_arb_context(venue_liveness=MagicMock(), debug_config=cfg)
+    bootstrap.prepare_arb_context(
+        venue_liveness=MagicMock(),
+        debug_config=cfg,
+        session_timeout_secs_by_venue={POLYMARKET: 45.0},
+    )
     pm_factories.ArbPolymarketLiveExecClientFactory.create(**_pm_args())
 
     assert dbg.called and not prod.called
@@ -77,10 +97,14 @@ def test_oe_exec_factory_uses_production_when_no_debug(monkeypatch):
     monkeypatch.setattr(debug_exec, "SkipExecutionOrbitExchClient", dbg)
     monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
 
-    bootstrap.prepare_arb_context(venue_liveness=MagicMock())
+    bootstrap.prepare_arb_context(
+        venue_liveness=MagicMock(),
+        session_timeout_secs_by_venue={ORBITEXCH: 45.0},
+    )
     oe_factories.ArbOrbitExchLiveExecClientFactory.create(**_oe_args())
 
     assert prod.called and not dbg.called
+    assert prod.call_args.kwargs["session_timeout_secs"] == 45.0
 
 
 def test_oe_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
@@ -90,7 +114,11 @@ def test_oe_exec_factory_uses_skip_when_debug_enabled(monkeypatch):
     monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
 
     cfg = DebugConfig(enabled=True)
-    bootstrap.prepare_arb_context(venue_liveness=MagicMock(), debug_config=cfg)
+    bootstrap.prepare_arb_context(
+        venue_liveness=MagicMock(),
+        debug_config=cfg,
+        session_timeout_secs_by_venue={ORBITEXCH: 45.0},
+    )
     oe_factories.ArbOrbitExchLiveExecClientFactory.create(**_oe_args())
 
     assert dbg.called and not prod.called

@@ -82,10 +82,16 @@
 对应设计:execution §4.3bis(5c)。adapter 外部统一 USD 口径,OE adapter 自己负责 BALANCE/CURRENT_BETS 入站乘 fx、placeBets 出站除 fx。
 
 ### execution-5.fx.1: factory 注入启动 fx
-- 前置:`prepare_arb_context(..., arbitrage_params=ArbitrageParams(fx=1.25))`。
+- 前置:`prepare_arb_context(..., session_timeout_secs_by_venue={"ORBITEXCH": 45.0}, arbitrage_params=ArbitrageParams(fx=1.25))`。
 - 输入:`ArbOrbitExchLiveExecClientFactory.create(...)`。
 - 期望:构造出的 `OrbitExchExecutionClient._current_fx()==1.25`。
 - 验收:`tests/arbitrage/execution/test_factories.py::test_oe_factory_create_with_context_returns_arb_client`。
+
+### execution-5.factory.1: OE session timeout keyed map 必填
+- 前置:`prepare_arb_context(venue_liveness=...)` 未提供 `session_timeout_secs_by_venue["ORBITEXCH"]`。
+- 输入:`ArbOrbitExchLiveExecClientFactory.create(...)`。
+- 期望:factory fail-fast,不使用默认值或旧 venue 专属字段兜底。
+- 验收:`tests/arbitrage/execution/test_factories.py::test_oe_factory_requires_session_timeout_keyed_value`。
 
 ### execution-5.fx.2: Web 热改 fx 同步到 OE client
 - 前置:OE execution client 已订阅 `command.arb.arbitrage_params`。

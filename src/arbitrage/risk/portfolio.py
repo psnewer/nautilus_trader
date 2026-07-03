@@ -11,8 +11,7 @@ ArbitragePortfolio —— NT Portfolio 子类,扩展 outcome exposure / outcome 
 instrument.info 契约(由 discovery 组件填充,本类只读;单一 seam 见 `_leg_from_position`):
 - info["sport"] / info["competition"](联赛名)/ info["home_team"] / info["away_team"] / info["start_ts"] —— **matching 输入**
 - info["selection_role"]("home"/"draw"/"away")—— outcome 指标计算用("market_type" 同义)
-venue / 公式分支由 instrument 类型判定(BinaryOption=PM,BettingInstrument=OE/SE 类 decimal odds),
-具体 venue 仍取 `instrument.id.venue`。
+venue / 公式分支由 Venue Registry 的 odds_model 判定,具体 venue 仍取 `instrument.id.venue`。
 
 NT `Portfolio` 是 cdef class,子类**只能加纯 Python 方法**(不能加 cpdef/cdef)。
 """
@@ -27,6 +26,8 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.portfolio.portfolio import Portfolio
 
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import is_decimal_odds_venue
+from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
 class _Leg:
@@ -41,19 +42,19 @@ class _Leg:
         self.price = price
 
     def profit_if_wins(self) -> float:
-        if self.venue == "polymarket":
-            return self.size * (1.0 - self.price)
-        return self.size * (self.price - 1.0)  # decimal odds venues
+        if is_decimal_odds_venue(self.venue):
+            return self.size * (self.price - 1.0)
+        return self.size * (1.0 - self.price)
 
     def loss_if_loses(self) -> float:
-        if self.venue == "polymarket":
-            return self.size * self.price
-        return self.size  # decimal odds venues
+        if is_decimal_odds_venue(self.venue):
+            return self.size
+        return self.size * self.price
 
     def share_if_wins(self) -> float:
-        if self.venue == "polymarket":
-            return self.size
-        return self.size * self.price  # decimal odds gross payout
+        if is_decimal_odds_venue(self.venue):
+            return self.size * self.price
+        return self.size
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,12 +198,12 @@ class ArbitragePortfolio(Portfolio):
         market_type = instrument.info.get("selection_role") or instrument.info.get("market_type")
         if not market_type:
             return None
-        if isinstance(instrument, BinaryOption):
-            venue = "polymarket"
-        elif isinstance(instrument, BettingInstrument):
-            venue = str(instrument.id.venue.value).lower()
-        else:
+        if not isinstance(instrument, (BinaryOption, BettingInstrument)):
             return None
+        venue_id = venue_id_from_instrument_id(instrument.id)
+        if not venue_id:
+            return None
+        venue = venue_id.lower()
         return _Leg(
             venue=venue,
             market_type=market_type,

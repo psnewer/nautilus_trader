@@ -7,6 +7,7 @@
 
 > **#59(slice A)架构反转**:`InstrumentRefresher` Actor **已退役** —— 周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE `adapters/orbitexch/data.py` 新增 `_send_all_instruments_to_data_engine` + `_update_instruments` task)。Q8"调度归 Refresher"被验证为重造 NT 原生而反转(refactor.md §5.2.3/#59)。下方 `test_instrument_refresher.py` / `test_instruments_refreshed_event.py` 现测 **dead code**(refresher.py/events.py 暂留,smoke 验后删);新增「DataClient 周期发现 + on_instrument 灌 cache」用例**待补**(#59 已 live smoke10 验:PM `initialize` Loaded 114 + matching timer 出 MatchedPair,refresher 未参与)。
 > **2026-06-29 overnight 修**:PM/OE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` 失败杀死整个 60min 周期 discovery task。验收落在 PM/OE adapter 测试: `test_update_instruments_continues_after_provider_error`。
+> **2026-07-02 venue/data-source keyed context**:PM/OE/SE Data factory 只从 `ArbContext` keyed map 读取 discovery/session/alias 相关配置并回写 `instrument_provider_by_venue`;PMSPORTS factory 只读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`;专属 `pm_*` / `oe_*` / `se_*` ArbContext 字段已删除。验收落在 PM/OE/SE adapter factory 测试。
 
 **落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
 - ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)
@@ -29,6 +30,11 @@
 **2026-06-10 PM CLOB V2 SDK 迁移(#97)**:PM factory 统一构造 `py_clob_client_v2.ClobClient`,并注入 DataClient / ExecClient / Provider。discovery/data 侧的验收重点是“启动路径不再导入 V1 `py_clob_client`、Provider/DataClient 可用同一个 V2 client 构造”;提交/查询/撤单 surface 由 PM adapter README `pm-adapter-5.1b` 和 `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface` 锁定。
 
 **2026-06-10 PM CLOB REST 路由约束(#98)**:同一个 `py_clob_client_v2.ClobClient` 现在由 factory 显式配置 `venues.polymarket.proxy_url` 到 CLOB REST transport;Provider/Discovery 的行为语义不变,只要求发现侧 CLOB 读取与 PM WS/Exec REST 使用同一路由。geoblock 仅作为 PM Execution 真下单 preflight,不阻断 discovery 只读市场发现。验收见 PM adapter README `pm-adapter-2.3b` / `5.1c`。
+
+**2026-07-02 PMSPORTS event anchor(#127,已落地 provider slice)**:`PMSPORTS` 执行公开 Gamma discovery,
+产出 `.PMSPORTS` non-tradable synthetic event instruments,供 matching 做 event anchor。PM discovery
+保留并继续产出可交易 `.POLYMARKET`;PMSPORTS discovery 不产出可交易腿,也不接 Risk/Execution。详细设计见
+`docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 
 ## 文件分布
 
@@ -131,6 +137,26 @@
 
 **验收标准**:`tests/arbitrage/adapters/sharpexch/test_discovery_client.py`、`test_provider.py`、`test_factories.py` 通过;2026-07-01 zero-order probe 实测 `sport/details` 分页返回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
 
+### discovery-pmsports-anchor.1:PMSPORTS synthetic event instruments(已落地,#127)
+
+**前置**:`data_sources.sports_status.enabled=true`;常规配置可不写 `data_sources` 段,目标
+competitions 默认继承 `discovery.polymarket.sports`;dispatcher 写入
+`target_competitions_by_data_source["PMSPORTS"]`;只有 PMSPORTS 目标需要和 PM
+tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`。
+
+**输入**:PMSPORTS discovery 拉公开 Gamma `/sports` + `/events?series_id=...`。
+
+**期望**:
+- 每场比赛产出一个 `{game_id}.PMSPORTS` synthetic instrument。
+- `instrument.info` 含 `sport/competition/home_team/away_team/start_ts/game_id`。
+- `instrument.info["tradable"] is False` 且 `instrument.info["anchor"] is True`。
+- 不产出 `.POLYMARKET` instrument,不写 PM token/order book/min order 字段。
+
+**验收**:
+- `tests/arbitrage/adapters/polymarket/test_sports.py::test_sports_provider_builds_non_tradable_anchor_instrument`。
+- Cache 可读到 `venue=PMSPORTS` instruments(待 live smoke)。
+- Strategy / Risk / Execution 相关测试确认 `.PMSPORTS` 不进入套利流(后续端到端补充)。
+
 ---
 
 ### discovery-7B.1(slice 7B,#53):PM `enrich_pm_six_key_info` 真写
@@ -150,7 +176,7 @@
 
 ### discovery-7B.2(slice 7B,#53):PM `event_slug_builder` 路径
 
-**前置**: `PolymarketInstrumentProviderConfig.event_slug_builder = "nautilus_trader.adapters.polymarket.arb_provider:build_pm_event_slugs_from_arb_context"`;`ArbContext.pm_event_slug_tags = ["atp"]`(launcher 经 dispatcher 从 `cfg.discovery.polymarket.sports[].competitions` 派生)
+**前置**: `ArbContext.target_competitions_by_data_source["PMSPORTS"] = ["atp"]`(launcher 经 dispatcher 从 `data_sources.sports_status.sports` 或继承的 `cfg.discovery.polymarket.sports[].competitions` 派生)
 
 **输入**: 启动 PM Provider,upstream `_load_from_event_slugs` 触发 callable
 
@@ -175,21 +201,22 @@
 
 ---
 
-### discovery-2.A.1(slice 8A,#47):Provider 共享机制(回写 ArbContext + Refresher 读)
+### discovery-2.A.1(slice 8A,#47,#59修订):Provider 回写 ArbContext
 
 **前置**: `node.build()` 已运行,data factory 在 `create` 内回写 `ArbContext.{pm,oe,se}_instrument_provider = provider`
 
 **输入**: launcher `add_actors(node, cfg, pair_registry=...)` 在 build 后调用
 
 **期望**:
-- PM `ArbPolymarketLiveDataClientFactory.create` 完成后,`ctx.pm_instrument_provider is provider`(same instance)
-- OE `OrbitExchLiveDataClientFactory.create` 完成后,`ctx.oe_instrument_provider is provider`
-- launcher 构造 `InstrumentRefresher(deps=RefresherDeps(provider=ctx.{pm,oe}_instrument_provider, loop=asyncio.get_event_loop()))`,**与 DataClient 用同一 provider 实例**(cache add 视图一致)
+- PM `ArbPolymarketLiveDataClientFactory.create` 完成后,`ctx.instrument_provider_by_venue["POLYMARKET"] is provider`(same instance)
+- OE `OrbitExchLiveDataClientFactory.create` 完成后,`ctx.instrument_provider_by_venue["ORBITEXCH"] is provider`
+- SE `SharpExchLiveDataClientFactory.create` 完成后,`ctx.instrument_provider_by_venue["SHARPEXCH"] is provider`
+- launcher `add_actors` 不再构造 InstrumentRefresher;发现周期由各 DataClient 原生 `_update_instruments` 负责。Provider 回写仅作为共享对象/测试/后续 adapter 迁移入口。
 
-**provider 缺失场景**: `ctx.pm_instrument_provider is None`(PM data factory 未跑 / discovery 禁用) → launcher 跳过该 venue 的 Refresher 装载,不 raise
-**SE 状态**: `SharpExchLiveDataClientFactory` 已离线回写 `ctx.se_instrument_provider`,并在 discovery config 存在时注入 browser 分页 `json_fetcher`;launcher 仅在 `venues.sharpexch.enabled=true` 时 opt-in 注册 SE factory,默认 PM/OE discovery runtime 不变。SE zero-order discovery 已由 `scripts/se_probe.py` 实测通过;SE node 内端到端 discovery 仍待 skip live smoke 验证。
+**provider 缺失场景**: Data factory 未跑 / discovery 禁用时 provider map 可为空,launcher 不依赖 provider map 决定 actor 数。
+**SE 状态**: `SharpExchLiveDataClientFactory` 已回写 keyed provider,并在 discovery config 存在时注入 browser 分页 `json_fetcher`;launcher 仅在 `venues.sharpexch.enabled=true` 时 opt-in 注册 SE factory。
 
-**测试**: `tests/arbitrage/launchers/test_arb_node.py` 6 新增(4 actors when both providers / skip PM when missing / skip both / Strategy gets portfolio from kernel / refresher uses ctx provider / bootstrap calls add_actors)
+**测试**:provider keyed 回写由 PM/OE/SE adapter factory 测试覆盖;`tests/arbitrage/launchers/test_arb_node.py` 覆盖 add_actors 只装 Matching + Strategy,Web 开启时额外装 WebGateway。
 
 ---
 

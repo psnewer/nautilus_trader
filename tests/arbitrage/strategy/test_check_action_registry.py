@@ -69,6 +69,18 @@ def test_unknown_action_type_raises():
         build_action({"type": "nope"})
 
 
+def test_invalid_action_params_raise_strategy_config_error():
+    register_action("dummy", _DummyAction)
+    with pytest.raises(StrategyConfigError, match="invalid params for action type 'dummy'"):
+        build_action({"type": "dummy", "params": {"missing": "x"}})
+
+
+def test_invalid_check_params_raise_strategy_config_error():
+    register_check("dummy", _DummyCheck)
+    with pytest.raises(StrategyConfigError, match="invalid params for check type 'dummy'"):
+        build_check({"type": "dummy", "params": {"missing": "x"}})
+
+
 def test_spec_missing_type_raises():
     with pytest.raises(StrategyConfigError, match="must have 'type'"):
         build_check({"params": {}})
