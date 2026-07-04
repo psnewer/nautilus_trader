@@ -24,7 +24,7 @@
       ]
     },
     "sharpexch": {
-      "enabled": false,
+      "enabled": true,
       "sports": [
         {
           "sport": "Tennis",
@@ -43,7 +43,7 @@
       "Men's Wimbledon 2026": "ATP"
     },
     "competition_max_matches": {
-      "ATP": 5
+      "ATP": 1
     }
   },
   "venues": {
@@ -53,20 +53,20 @@
       "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/"
     },
     "orbitexch": {
-      "enabled": true,
+      "enabled": false,
       "base_url": "https://www.orbitexch.com",
       "headless": false,
       "page_load_timeout_sec": 120,
       "staleness_timeout_sec": 300
     },
     "sharpexch": {
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://portal.sharpxch.com",
       "login_url": "https://sharpxch.com/player/",
       "headless": false,
-      "user_data_dir": "~/.config/browser",
       "page_load_timeout_sec": 120,
-      "staleness_timeout_sec": 300
+      "staleness_timeout_sec": 300,
+      "user_data_dir": "/tmp/se-profile"
     }
   },
   "arbitrage": {
@@ -100,7 +100,7 @@
             {
               "type": "mean_rebate",
               "params": {
-                "min_rate": 0.01
+                "min_rate": -1
               }
             },
             {
@@ -121,7 +121,7 @@
             {
               "type": "mean_rebate_recovery",
               "params": {
-                "min_repaired_rebate": -0.05
+                "min_repaired_rebate": 0.1
               }
             }
           ],
@@ -170,10 +170,10 @@
     ]
   },
   "debug": {
-    "enabled": false,
+    "enabled": true,
     "overrides": {
       "skip_execution": {
-        "enabled": true,
+        "enabled": false,
         "value": true,
         "description": "smoke 不真下单"
       }

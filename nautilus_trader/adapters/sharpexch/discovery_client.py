@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Iterable
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,7 @@ class SharpExchDiscoveryClient:
 
     async def discover_events(self, sport_configs: Iterable[Any] | None = None) -> list[SharpExchMarketEvent]:
         if self._sport_details_provider is None and self._json_fetcher is None:
+            _log.warning("SE DiscoveryClient: no provider or fetcher configured")
             return []
         events: list[SharpExchMarketEvent] = []
         configs = list(sport_configs or [None])
@@ -102,7 +106,7 @@ class SharpExchDiscoveryClient:
 
     async def _discover_events_from_json_fetcher(self, sport_config: Any) -> list[SharpExchMarketEvent]:
         page = 0
-        size = 60
+        size = 20  # SE API max page size
         events: list[SharpExchMarketEvent] = []
         seen_market_ids: set[str] = set()
         while page < _MAX_SPORT_DETAILS_PAGES:
@@ -120,12 +124,11 @@ class SharpExchDiscoveryClient:
             if not content or (page > 0 and not new_market_ids):
                 break
             seen_market_ids.update(new_market_ids)
-            events.extend(
-                events_from_sport_details(
-                    payload,
-                    target_competitions=self._target_competitions or request.target_competitions,
-                ),
+            page_events = events_from_sport_details(
+                payload,
+                target_competitions=self._target_competitions or request.target_competitions,
             )
+            events.extend(page_events)
             if len(content) < size or not _sport_details_has_next_page(payload, page=page, size=size):
                 break
             page += 1
@@ -137,7 +140,7 @@ def sport_details_request(
     sport_config: Any,
     *,
     page: int = 0,
-    size: int = 60,
+    size: int = 20,  # SE API max page size
 ) -> SharpExchSportDetailsRequest:
     """根据 `SportConfig` 形状构造 SE `sport/details` 请求。
 

@@ -97,48 +97,6 @@ spread = calculate_spread_pct(100, 98)
 
 ---
 
-### `polymarket_price_to_probability(price: float) -> float`
-
-PM 价格转概率(binary outcome 价格本身就是 0-1 概率;clamp 校验防脏数据)。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| price | float | PM 价格(预期 0-1) |
-
-**返回值**:clamp 到 `[0, 1]` 的概率;**`<=0` 或非数返 `0.0`**(无效价位,上层短路)。
-
-```python
-from src.arbitrage.common.utils import polymarket_price_to_probability
-
-polymarket_price_to_probability(0.4)    # 0.4
-polymarket_price_to_probability(0)      # 0.0 (无效)
-polymarket_price_to_probability(1.5)    # 1.0 (clamp)
-polymarket_price_to_probability(None)   # 0.0 (脏数据)
-```
-
----
-
-### `orbitexch_odds_to_probability(odds: float) -> float`
-
-OE 赔率转概率(OE 赔率是 stake odds,概率 = `1/odds`)。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| odds | float | OE stake odds(>1 才有意义) |
-
-**返回值**:概率;**`odds <= 1.0` 或非数返 `0.0`**(无效价位,上层短路)。
-
-```python
-from src.arbitrage.common.utils import orbitexch_odds_to_probability
-
-orbitexch_odds_to_probability(2.0)    # 0.5
-orbitexch_odds_to_probability(2.26)   # ~0.4425
-orbitexch_odds_to_probability(0.8)    # 0.0 (无效 stake odds)
-orbitexch_odds_to_probability(None)   # 0.0
-```
-
----
-
 ## 字符串处理函数
 
 ### `generate_id(prefix: str = "") -> str`

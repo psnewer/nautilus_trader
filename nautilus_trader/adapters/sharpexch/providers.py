@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Iterable
 
 import pandas as pd
 
 from nautilus_trader.common.providers import InstrumentProvider
+
+_log = logging.getLogger(__name__)
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.instruments import BettingInstrument
@@ -47,6 +50,7 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         for event in events:
             for instrument in self._build_legs(event):
                 self.add(instrument)
+        _log.info(f"SE InstrumentProvider: loaded {self.count} instruments")
 
     def _build_legs(self, event: SharpExchMarketEvent) -> Iterable[BettingInstrument]:
         info_base = {

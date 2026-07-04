@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from nautilus_trader.cache.cache import Cache
+
+_log = logging.getLogger(__name__)
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
@@ -64,17 +67,28 @@ def _se_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock
         page.set_default_timeout(config.page_timeout)
         async with browser_lock:
             await se_login(page, config)
-            payload = await se_fetch_json(
-                se_customer_context(page),
-                request.url,
-                params=request.params,
-                body=request.body,
-            )
-        if not payload.get("ok") or not isinstance(payload.get("json"), dict):
+            # Wait for customer app to fully initialize after login
+            ctx = se_customer_context(page)
+            if ctx is None:
+                raise RuntimeError("SE login completed but customer context not available")
+            # Retry fetch up to 3 times for transient failures
+            last_error = None
+            for attempt in range(3):
+                payload = await se_fetch_json(
+                    ctx,
+                    request.url,
+                    params=request.params,
+                    body=request.body,
+                )
+                if payload.get("ok") and isinstance(payload.get("json"), dict):
+                    return payload["json"]
+                last_error = payload
+                if attempt < 2:
+                    await asyncio.sleep(2.0)  # Wait before retry
             raise RuntimeError(
-                f"SE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
+                f"SE sport/details failed after 3 attempts: "
+                f"status={last_error.get('status')} text={last_error.get('text')!r}",
             )
-        return payload["json"]
 
     return _fetch
 
@@ -119,6 +133,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
                 fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             )
         else:
+            _log.warning("SE factory: no discovery config found, using empty InstrumentProvider")
             provider = InstrumentProvider()
         ctx_map_set(ctx, "instrument_provider_by_venue", SHARPEXCH, provider)
         return SharpExchDataClient(

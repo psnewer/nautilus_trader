@@ -111,7 +111,7 @@ class OrbitExchDiscoveryClient:
 
     async def _discover_events_from_json_fetcher(self, sport_config: Any) -> list[OrbitExchMarketEvent]:
         page = 0
-        size = 60
+        size = 20  # OE API max page size
         events: list[OrbitExchMarketEvent] = []
         seen_market_ids: set[str] = set()
         while page < _MAX_SPORT_DETAILS_PAGES:
@@ -146,7 +146,7 @@ def sport_details_request(
     sport_config: Any,
     *,
     page: int = 0,
-    size: int = 60,
+    size: int = 20,  # OE API max page size
 ) -> OrbitExchSportDetailsRequest:
     """根据 `SportConfig` 形状构造 OE `sport/details` 请求。
 

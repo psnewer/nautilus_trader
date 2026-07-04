@@ -225,6 +225,7 @@ class MarketMatchingActor(Actor):
             )
         now = self.clock.timestamp_ns()
         self.publish_data(
+            data_type=DataType(MatchedPair),
             data=MatchedPair(
                 ts_event=now,
                 ts_init=now,

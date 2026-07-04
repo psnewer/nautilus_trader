@@ -110,7 +110,7 @@ def test_sport_details_request_maps_tennis_to_wimbledon_api_body():
     )
     assert request.method == "POST"
     assert request.url == "https://portal.sharpxch.com/customer/api/sport/details"
-    assert request.params == {"page": "0", "size": "60"}
+    assert request.params == {"page": "0", "size": "20"}  # SE API max page size
     assert request.body == {
         "viewBy": "POPULARITY",
         "timeFilter": "ALL",

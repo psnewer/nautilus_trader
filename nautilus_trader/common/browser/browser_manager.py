@@ -123,7 +123,14 @@ class PlaywrightBrowserManager:
         
         # Anti-detection
         await self._setup_stealth()
-        
+
+        # Close default blank page created by launch_persistent_context
+        if self.user_data_dir and self._context.pages:
+            default_page = self._context.pages[0]
+            if default_page.url in ("about:blank", ""):
+                await default_page.close()
+                self._log.debug("Closed default blank page")
+
         self._log.info('✅ Browser started successfully')
     
     async def _setup_stealth(self) -> None:

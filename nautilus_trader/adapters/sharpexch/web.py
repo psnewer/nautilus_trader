@@ -8,8 +8,11 @@ context 内执行,否则会被浏览器按跨 origin 请求拒绝。
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 def se_is_customer_url(url: str) -> bool:
@@ -40,7 +43,17 @@ async def se_login(page, config) -> None:
     """登录 SE 并等待 customer iframe 出现。
 
     不使用 `networkidle`:customer app 会长期维持 websocket,该条件不稳定。
+
+    已登录时跳过导航:如果当前页已在 customer app 中(URL 包含 /customer 或存在
+    customer iframe),直接返回,避免重复 goto 触发 Cloudflare。
     """
+
+    # 快速路径:已在 customer app 中,无需重新导航登录
+    current_url = getattr(page, "url", "") or ""
+    if se_is_customer_url(current_url) or se_customer_frame(page) is not None:
+        await se_dismiss_post_login_popup(page, timeout_ms=2500)
+        await _settle_customer_app(page)
+        return
 
     await page.goto(config.login_url, wait_until="domcontentloaded", timeout=config.page_timeout)
     if await _login_form_visible(page, timeout_ms=5000):
@@ -49,6 +62,7 @@ async def se_login(page, config) -> None:
         return
 
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
+        _log.info("SE login: already authenticated via session cookies")
         await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
@@ -65,8 +79,40 @@ async def se_login(page, config) -> None:
     except TimeoutError:
         pass
 
-    await _submit_login_form(page, config)
-    await _wait_after_login(page)
+    # Re-check after customer frame wait - page state might have changed
+    current_url_after = getattr(page, "url", "") or ""
+    if se_is_customer_url(current_url_after) or se_customer_frame(page) is not None:
+        await se_dismiss_post_login_popup(page, timeout_ms=2500)
+        await _settle_customer_app(page)
+        return
+
+    # Wait for page to stabilize - might be redirecting or loading
+    await _settle_customer_app(page)
+
+    # Final check before attempting login form
+    if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
+        await se_dismiss_post_login_popup(page, timeout_ms=2500)
+        await _settle_customer_app(page)
+        return
+
+    # If login form is visible, submit it; otherwise page might be stuck on challenge
+    if await _login_form_visible(page, timeout_ms=3000):
+        await _submit_login_form(page, config)
+        await _wait_after_login(page)
+        return
+
+    # Page is neither login form nor customer app - might be Cloudflare challenge or error
+    # Wait a bit longer for manual challenge resolution, then re-check
+    await asyncio.sleep(5.0)
+    if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
+        await se_dismiss_post_login_popup(page, timeout_ms=2500)
+        await _settle_customer_app(page)
+        return
+
+    raise TimeoutError(
+        f"SE login stuck: not on customer URL ({getattr(page, 'url', '')!r}) "
+        "and login form not visible - possible Cloudflare challenge"
+    )
 
 
 async def _login_form_visible(page, *, timeout_ms: int) -> bool:
@@ -83,6 +129,7 @@ async def _login_form_visible(page, *, timeout_ms: int) -> bool:
 
 async def _submit_login_form(page, config) -> None:
     await page.wait_for_selector('input[name="username"], input[type="text"]', timeout=15000)
+    _log.info("SE login: submitting credentials via form")
     await _fill_first(page, ['input[name="username"]', 'input[type="text"]'], config.username)
     await _fill_first(page, ['input[name="password"]', 'input[type="password"]'], config.password)
     await _click_first(
@@ -213,9 +260,8 @@ async def se_fetch_json(
 
 
 async def _settle_customer_app(page) -> None:
-    wait_for_timeout = getattr(page, "wait_for_timeout", None)
-    if wait_for_timeout is not None:
-        await wait_for_timeout(1500)
+    """No-op: domcontentloaded + fetch retry logic handles app readiness."""
+    pass
 
 
 async def _fill_first(page, selectors: list[str], value: str) -> None:

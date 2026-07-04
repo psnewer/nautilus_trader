@@ -340,6 +340,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
             instrument_provider=instrument_provider,
             config=config,
         )
+        self._sports_config = config  # Keep config object ref (base class stores json_primitives dict)
         self._ws_url = getattr(config, "sports_ws_url", None) or SPORTS_WS_URL
         self._ws_task: asyncio.Task | None = None
         self._update_instruments_task: asyncio.Task | None = None
@@ -352,7 +353,7 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
     async def _connect(self) -> None:
         await self._instrument_provider.load_all_async()
         self._send_all_instruments_to_data_engine()
-        update_interval = getattr(self._config, "update_instruments_interval_mins", None)
+        update_interval = getattr(self._sports_config, "update_instruments_interval_mins", None)
         if update_interval:
             self._update_instruments_task = self.create_task(self._update_instruments(update_interval))
         self._ws_task = self.create_task(self._run_ws())

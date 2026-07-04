@@ -104,21 +104,8 @@ def test_se_fetch_json_passes_timeout_to_browser_context():
     assert context.arg["body"] == {"id": "2"}
 
 
-def test_login_submits_form_even_when_customer_iframe_exists():
-    class FormControl:
-        def __init__(self, page, selector):
-            self._page = page
-            self._selector = selector
-
-        @property
-        def first(self):
-            return self
-
-        async def fill(self, value, *, timeout):
-            self._page.filled.append((self._selector, value, timeout))
-
-        async def click(self, *, timeout):
-            self._page.clicked.append((self._selector, timeout))
+def test_login_skips_form_when_customer_iframe_exists():
+    """When customer iframe already exists, skip login form (already authenticated)."""
 
     class Popup:
         @property
@@ -130,7 +117,7 @@ def test_login_submits_form_even_when_customer_iframe_exists():
 
     class Mouse:
         async def click(self, x, y):
-            raise AssertionError("no popup click expected")
+            pass  # popup backdrop click is OK
 
     class Page:
         def __init__(self):
@@ -139,24 +126,18 @@ def test_login_submits_form_even_when_customer_iframe_exists():
             self.filled = []
             self.clicked = []
             self.mouse = Mouse()
+            self.goto_called = False
 
         async def goto(self, url, *, wait_until, timeout):
+            self.goto_called = True
             self.url = url
-
-        async def wait_for_selector(self, selector, **kwargs):
-            assert selector == 'input[name="username"], input[type="text"]'
 
         def locator(self, selector):
             if selector == 'div[class*="_postLoginPopup_"]':
                 return Popup()
-            return FormControl(self, selector)
-
-        async def wait_for_url(self, pattern, *, timeout):
-            assert pattern == "**/customer**"
-            self.url = "https://portal.sharpxch.com/customer/"
-
-        async def wait_for_timeout(self, timeout):
-            assert timeout == 1500
+            if selector == "body":
+                return Popup()  # for backdrop click
+            raise AssertionError(f"should not access form controls: {selector}")
 
     cfg = type(
         "Config",
@@ -167,9 +148,10 @@ def test_login_submits_form_even_when_customer_iframe_exists():
 
     asyncio.run(se_login(page, cfg))
 
-    assert ('input[name="username"]', "u", 5000) in page.filled
-    assert ('input[name="password"]', "p", 5000) in page.filled
-    assert page.clicked
+    # Customer iframe exists → skip form, no navigation, no form fill
+    assert not page.goto_called
+    assert page.filled == []
+    assert page.clicked == []
 
 
 def test_login_reuses_customer_iframe_only_when_login_form_missing():
@@ -202,9 +184,6 @@ def test_login_reuses_customer_iframe_only_when_login_form_missing():
             if selector == 'div[class*="_postLoginPopup_"]':
                 return Popup()
             raise AssertionError("login controls should not be touched")
-
-        async def wait_for_timeout(self, timeout):
-            assert timeout == 1500
 
     cfg = type(
         "Config",
