@@ -449,7 +449,7 @@ class OrbitExchOddsClient:
             self._log.warning("No OrbitExch credentials provided, skipping login")
             await main_page.goto(
                 self.config.orbitexch_base_url,
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
             )
 
@@ -468,7 +468,7 @@ class OrbitExchOddsClient:
             # 导航到首页
             await page.goto(
                 self.config.orbitexch_base_url,
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=int(self.config.orbitexch_page_load_timeout_sec * 1000),
             )
 
@@ -1940,10 +1940,10 @@ class OrbitExchOddsClient:
 
             if is_first_open:
                 self._log.info(f"Navigating to: {url}")
-                await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             else:
                 self._log.info(f"Reloading page {page_key} ({url})")
-                await page.reload(wait_until="networkidle", timeout=timeout_ms)
+                await page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
                 # reload 可能重置 CDP 状态，重新 enable Network
                 cdp = self._cdp_sessions.get(page_key)
                 if cdp:

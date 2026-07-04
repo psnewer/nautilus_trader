@@ -50,8 +50,8 @@ def test_each_component_uses_distinct_page_name():
 # ── 并发首次 start 不双开浏览器(2026-06-21 SIGABRT 修)──────────────────
 import asyncio
 
-from nautilus_trader.adapters.orbitexch import browser_manager as _bm_mod
-from nautilus_trader.adapters.orbitexch.browser_manager import PlaywrightBrowserManager
+from nautilus_trader.common.browser import browser_manager as _bm_mod
+from nautilus_trader.common.browser import PlaywrightBrowserManager
 
 
 def test_concurrent_start_launches_browser_once(monkeypatch):

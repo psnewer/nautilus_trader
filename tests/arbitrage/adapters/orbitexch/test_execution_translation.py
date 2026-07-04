@@ -67,10 +67,18 @@ def test_oe_executor_converts_usd_size_to_gbp_payload():
 
     captured = {}
 
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
     class _Page:
+        def context(self):
+            return _Context()
+
         async def evaluate(self, _script, payload):
-            captured["payload"] = payload
-            bet_uuid = payload["1.23"][0]["betUuid"]
+            # payload 现在是 {"payload": ..., "csrfToken": ...}
+            captured["payload"] = payload["payload"]
+            bet_uuid = payload["payload"]["1.23"][0]["betUuid"]
             return {"1.23": {"status": "OK", "offerIds": {bet_uuid: "OID-1"}}}
 
     order = Order(

@@ -6,6 +6,8 @@ Arb OE 执行客户端 factory —— 给 `TradingNode.add_exec_client_factory(.
 
 **位置(#33 校准)**:OE 适配器全套住 `nautilus_trader/adapters/orbitexch/`(P9 唯一例外);
 本文件 `factories.py` 与上游无冲突(OE 无上游)。
+
+2026-07-03: 迁移到 `sport/details` API,与 SE 对齐,替代原有 DOM 抓取方式。
 """
 
 from __future__ import annotations
@@ -23,7 +25,12 @@ from nautilus_trader.adapters.orbitexch.browser_manager import PlaywrightBrowser
 from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
 from nautilus_trader.adapters.orbitexch.config import OrbitExchExecClientConfig
 from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchDiscoveryClient
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchSportDetailsRequest
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
+from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
+from nautilus_trader.adapters.orbitexch.web import oe_fetch_json
+from nautilus_trader.adapters.orbitexch.web import oe_login
 
 from src.arbitrage.bootstrap import ctx_map_get
 from src.arbitrage.bootstrap import ctx_map_get_or_create
@@ -51,8 +58,53 @@ def _shared_oe_browser_manager(ctx, config) -> PlaywrightBrowserManager:
     )
 
 
+def _shared_oe_browser_lock(ctx) -> asyncio.Lock:
+    """OE browser context 级操作锁。
+
+    Data discovery 与 Exec 共用同一 browser context;启动期 NT 会并发 connect
+    data/exec clients。把 discovery fetch 这种操作串行化,避免并发问题。
+    """
+    return ctx_map_get_or_create(ctx, "browser_lock_by_venue", ORBITEXCH, asyncio.Lock)
+
+
+def _oe_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock):
+    """创建 OE sport/details API fetcher。
+
+    OE API 需要登录后的 CSRF token(从 CSRF-TOKEN cookie 读取)。
+    首次 fetch 时登录,后续复用已登录 session。
+    """
+    _logged_in = False
+
+    async def _fetch(request: OrbitExchSportDetailsRequest) -> dict:
+        nonlocal _logged_in
+        await browser_manager.start()
+        page = await browser_manager.create_page("oe-discovery")
+        page.set_default_timeout(config.page_timeout)
+        async with browser_lock:
+            # 首次 fetch 时登录,确保 CSRF token cookie 存在
+            if not _logged_in:
+                await oe_login(page, config)
+                _logged_in = True
+            payload = await oe_fetch_json(
+                page,
+                request.url,
+                params=request.params,
+                body=request.body,
+            )
+        if not payload.get("ok") or not isinstance(payload.get("json"), dict):
+            raise RuntimeError(
+                f"OE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
+            )
+        return payload["json"]
+
+    return _fetch
+
+
 class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
-    """OrbitExch 自写适配器的 data client factory(Step 2)。"""
+    """OrbitExch 自写适配器的 data client factory(Step 2)。
+
+    2026-07-03: 迁移到 `sport/details` API,与 SE 对齐。
+    """
 
     @staticmethod
     def create(  # type: ignore[override]
@@ -66,19 +118,29 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         ctx = get_arb_context()
         # OE 共享 BrowserManager(§6.2 单例;#62:exec factory 复用同一实例 → 一个浏览器)
         browser_manager = _shared_oe_browser_manager(ctx, config)
-        oe_scraper_cfg = ctx_map_get(ctx, "discovery_config_by_venue", ORBITEXCH)
-        if oe_scraper_cfg is not None:
-            from nautilus_trader.adapters.orbitexch.discovery_scraper import OrbitExchScraper
-            from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
-            scraper = OrbitExchScraper(config=oe_scraper_cfg)
+        browser_lock = _shared_oe_browser_lock(ctx)
+        oe_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", ORBITEXCH)
+        if oe_discovery_cfg is not None:
+            sport_configs = list(getattr(oe_discovery_cfg, "sports", []) or [])
+            target_competitions = [
+                comp
+                for sport in sport_configs
+                for comp in getattr(sport, "competitions", []) or []
+            ]
+            discovery = OrbitExchDiscoveryClient(
+                base_url=config.base_url,
+                json_fetcher=_oe_browser_json_fetcher(browser_manager, config, browser_lock),
+                target_competitions=target_competitions,
+            )
             provider = OrbitExchInstrumentProvider(
-                scraper=scraper,
+                discovery=discovery,
                 sport_aliases=dict(
                     ctx_map_get(ctx, "sport_aliases_by_venue", ORBITEXCH, {}),
                 ),
                 competition_aliases=dict(
                     ctx_map_get(ctx, "competition_aliases_by_venue", ORBITEXCH, {}),
                 ),
+                sport_configs=sport_configs,
                 fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             )
         else:

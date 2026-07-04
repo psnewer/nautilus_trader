@@ -19,6 +19,8 @@ from typing import Callable
 
 from playwright.async_api import Page
 
+from nautilus_trader.adapters.orbitexch.web import oe_csrf_token
+
 from src.arbitrage.common.execution_config import ExecutionConfig
 from src.arbitrage.common.order_models import (
     Order,
@@ -175,26 +177,16 @@ class OrbitExchExecutor:
             )
 
             # 通过页面上下文发送请求，包含 CSRF token
+            csrf_token = await oe_csrf_token(page)
+            if not csrf_token:
+                order.status = OrderStatus.REJECTED
+                order.error_message = "CSRF token not found"
+                return ExecutionResult(success=False, order=order, message=order.error_message)
+
             response = await page.evaluate(
-                """async (payload) => {
+                """async ({payload, csrfToken}) => {
                     try {
-                        // 从 cookie 中提取 CSRF token
-                        const cookies = document.cookie.split(';');
-                        let csrfToken = '';
-                        for (const cookie of cookies) {
-                            const [name, value] = cookie.trim().split('=');
-                            if (name === 'CSRF-TOKEN') {
-                                csrfToken = decodeURIComponent(value);
-                                break;
-                            }
-                        }
-
-                        if (!csrfToken) {
-                            return { error: 'CSRF token not found in cookies' };
-                        }
-
                         const bodyStr = JSON.stringify(payload);
-
                         const response = await fetch('/customer/api/placeBets', {
                             method: 'POST',
                             headers: {
@@ -212,7 +204,7 @@ class OrbitExchExecutor:
                         return { error: error.message };
                     }
                 }""",
-                payload,
+                {"payload": payload, "csrfToken": csrf_token},
             )
 
             order.submitted_at = time.time()
@@ -561,26 +553,16 @@ class OrbitExchExecutor:
         try:
             self._log.info(f"Cancelling order (legacy): {order.venue_order_id}")
 
+            csrf_token = await oe_csrf_token(page)
             response = await page.evaluate(
-                """async (betId) => {
+                """async ({betId, csrfToken}) => {
                     try {
-                        // 从 cookie 中提取 CSRF token
-                        const cookies = document.cookie.split(';');
-                        let csrfToken = '';
-                        for (const cookie of cookies) {
-                            const [name, value] = cookie.trim().split('=');
-                            if (name === 'CSRF-TOKEN') {
-                                csrfToken = decodeURIComponent(value);
-                                break;
-                            }
-                        }
-
                         const response = await fetch('/customer/api/cancelBets', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json, text/plain, */*',
-                                'x-csrf-token': csrfToken,
+                                'x-csrf-token': csrfToken || '',
                                 'Origin': window.location.origin,
                                 'Referer': window.location.href,
                             },
@@ -592,7 +574,7 @@ class OrbitExchExecutor:
                         return { error: error.message };
                     }
                 }""",
-                order.venue_order_id,
+                {"betId": order.venue_order_id, "csrfToken": csrf_token},
             )
 
             if response and not response.get("error"):
@@ -653,26 +635,16 @@ class OrbitExchExecutor:
             self._log.info("Cancelling all unmatched orders")
 
             # 方法1: 使用 API 批量撤单
+            csrf_token = await oe_csrf_token(page)
             response = await page.evaluate(
-                """async () => {
+                """async (csrfToken) => {
                     try {
-                        // 从 cookie 中提取 CSRF token
-                        const cookies = document.cookie.split(';');
-                        let csrfToken = '';
-                        for (const cookie of cookies) {
-                            const [name, value] = cookie.trim().split('=');
-                            if (name === 'CSRF-TOKEN') {
-                                csrfToken = decodeURIComponent(value);
-                                break;
-                            }
-                        }
-
                         const response = await fetch('/customer/api/cancelAllUnmatchedBets', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json, text/plain, */*',
-                                'x-csrf-token': csrfToken,
+                                'x-csrf-token': csrfToken || '',
                                 'Origin': window.location.origin,
                                 'Referer': window.location.href,
                             },
@@ -682,7 +654,8 @@ class OrbitExchExecutor:
                     } catch (error) {
                         return { error: error.message };
                     }
-                }"""
+                }""",
+                csrf_token,
             )
 
             if response and not response.get("error"):
@@ -899,25 +872,15 @@ class OrbitExchExecutor:
 
         try:
             # 通过 API 获取当前订单
+            csrf_token = await oe_csrf_token(page)
             response = await page.evaluate(
-                """async () => {
+                """async (csrfToken) => {
                     try {
-                        // 从 cookie 中提取 CSRF token
-                        const cookies = document.cookie.split(';');
-                        let csrfToken = '';
-                        for (const cookie of cookies) {
-                            const [name, value] = cookie.trim().split('=');
-                            if (name === 'CSRF-TOKEN') {
-                                csrfToken = decodeURIComponent(value);
-                                break;
-                            }
-                        }
-
                         const response = await fetch('/customer/api/currentBets', {
                             method: 'GET',
                             headers: {
                                 'Accept': 'application/json, text/plain, */*',
-                                'x-csrf-token': csrfToken,
+                                'x-csrf-token': csrfToken || '',
                                 'Origin': window.location.origin,
                                 'Referer': window.location.href,
                             },
@@ -927,7 +890,8 @@ class OrbitExchExecutor:
                     } catch (error) {
                         return { error: error.message };
                     }
-                }"""
+                }""",
+                csrf_token,
             )
 
             if response and not response.get("error"):

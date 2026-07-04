@@ -277,8 +277,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
         §4.3 健康检查 reload 将来复用本方法的 reload 分支。"""
         url = f"{self._config.base_url}/customer/sport/{sport_id}/competition/{competition_id}"
-        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),用配置 page_timeout(默认 120s),
-        # 对齐老 odds_client(`networkidle` + `timeout=page_load_timeout_sec*1000`);默认 30s 不够会超时。
+        # #68:competition 页加载重(走代理 + 页面 JS 建价格 WS 握手),用配置 page_timeout(默认 120s)。
+        # 使用 domcontentloaded(不用 networkidle):OE prices WS 长连会让 networkidle 不稳定或超时。
         timeout_ms = self._config.page_timeout
         page = self._comp_pages.get(page_key)
         if page is None:
@@ -297,7 +297,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
             try:
                 await handler.start()                   # #67:先挂监听
                 await page.bring_to_front()             # #87:OE prices socket 受页面/market 可见性影响
-                await page.goto(url, wait_until="networkidle", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)   # 再导航(价格 WS 此时建,被抓)
             except Exception:
                 with suppress(Exception):
                     await handler.stop()
@@ -310,7 +310,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         else:
             handler = self._comp_handlers.get(page_key)
             await page.bring_to_front()
-            await page.reload(wait_until="networkidle", timeout=timeout_ms)
+            await page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
             summary = self._websocket_summary(handler) if handler is not None else "ws_count=unknown"
             self._log.info(f"OE competition page reloaded: {page_key} ({summary})")
 

@@ -112,7 +112,7 @@ class OrbitExchScraper:
     async def _wait_for_quiet_network(self, timeout_ms: int = 5000) -> None:
         """等待短暂网络空闲；OrbitExch 长连接可能存在，超时不视为失败。"""
         try:
-            await self._page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         except PlaywrightTimeout:
             self._log.debug("Network idle wait timed out, continuing with DOM readiness checks")
 
@@ -285,7 +285,7 @@ class OrbitExchScraper:
         self._log.info(f"Navigating to {self.BASE_URL}...")
         await self._page.goto(
             self.BASE_URL,
-            wait_until="networkidle",
+            wait_until="domcontentloaded",
             timeout=self._page_load_timeout_ms(),
         )
 
@@ -475,7 +475,7 @@ class OrbitExchScraper:
         try:
             await self._page.goto(
                 url,
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
                 timeout=self._page_load_timeout_ms(),
             )
             return True
@@ -592,7 +592,7 @@ class OrbitExchScraper:
     async def go_back(self) -> None:
         """返回上一页"""
         try:
-            await self._page.go_back(wait_until="networkidle")
+            await self._page.go_back(wait_until="domcontentloaded")
             await asyncio.sleep(1)
         except Exception as e:
             self._log.warning(f"Failed to go back: {e}")

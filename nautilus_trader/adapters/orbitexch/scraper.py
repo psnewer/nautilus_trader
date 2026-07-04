@@ -61,7 +61,7 @@ class OrbitExchScraper:
         
         try:
             # Navigate to homepage
-            await self.page.goto(self.base_url, wait_until='networkidle')
+            await self.page.goto(self.base_url, wait_until='domcontentloaded')
             
             # Wait for login form
             await self.page.wait_for_selector('input[name="username"]', timeout=10000)
@@ -136,7 +136,7 @@ class OrbitExchScraper:
         
         # Navigate to in-play page
         url = f'{self.base_url}/customer/inplay/highlights'
-        await self.page.goto(url, wait_until='networkidle')
+        await self.page.goto(url, wait_until='domcontentloaded')
         
         # Wait for content
         await asyncio.sleep(2)

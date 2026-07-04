@@ -394,7 +394,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         """OE 登录(平移自 `scraper.py:login`):填 username/password → 点 Log In → 等 `/customer/`
         → **关登录后弹窗**(否则弹层盖住页面,general WS 不推 BALANCE/CURRENT_BETS)。"""
         cfg = self._config
-        await self._page.goto(cfg.base_url, wait_until="networkidle", timeout=cfg.page_timeout)
+        await self._page.goto(cfg.base_url, wait_until="domcontentloaded", timeout=cfg.page_timeout)
         await self._page.wait_for_selector('input[name="username"]', timeout=10000)
         await self._page.fill('input[name="username"]', cfg.username)
         await self._page.fill('input[name="password"]', cfg.password)
@@ -565,7 +565,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         reload_ts = self._clock.timestamp_ns()
         try:
             async with self._page_lock:   # 与 place/cancel 同锁串行(#105 §8.2)
-                await self._page.reload(wait_until="networkidle", timeout=self._config.page_timeout)
+                await self._page.reload(wait_until="domcontentloaded", timeout=self._config.page_timeout)
         except Exception as e:  # noqa: BLE001 — reload 失败 = reconcile 失败,交调用方判 dead
             self._log.warning(f"OE exec page reload failed: {e!r}")
             return False

@@ -1,9 +1,11 @@
 """
 OE InstrumentProvider 测试(用例见 README.md)。
 
-OE 没有上游适配器 → 自写 `OrbitExchInstrumentProvider` 包 `OrbitExchScraper.discover_events`。
-本测试用 mock scraper 验证:每场 MatchEvent → 各方向 BettingInstrument(只对有 selection_id 的
+OE 自写 `OrbitExchInstrumentProvider` 包 `OrbitExchDiscoveryClient.discover_events`。
+本测试用 mock discovery client 验证:每场 MarketEvent → 各方向 BettingInstrument(只对有 selection_id 的
 方向产腿)、info 6-key 完整、命名 + venue 正确。Browser/page 路径属 live(/live-test 验)。
+
+2026-07-03: 迁移到 `sport/details` API,与 SE 对齐。
 
 对应章节: refactor.md §5.1.2, §6.2, §6.4;架构 architectures/discovery/architecture.md §3.2/§4.1
 """
@@ -14,21 +16,34 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nautilus_trader.adapters.orbitexch.discovery_scraper import MatchEvent
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchDiscoveryClient
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchMarketEvent
+from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchRunner
 
 from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
 
 
 @pytest.fixture
 def provider():
-    return OrbitExchInstrumentProvider(SimpleNamespace())  # scraper 不被 _build_legs 触及
+    # discovery 不被 _build_legs 触及,用 mock
+    discovery = SimpleNamespace()
+    discovery.discover_events = AsyncMock(return_value=[])
+    return OrbitExchInstrumentProvider(discovery)
 
 
 def _event(home_sel="1", draw_sel="2", away_sel="3"):
-    return MatchEvent(
+    """创建测试用 MarketEvent,支持可选的 draw。"""
+    runners = []
+    if home_sel:
+        runners.append(OrbitExchRunner(selection_id=home_sel, runner_name="Arsenal", role="home"))
+    if draw_sel:
+        runners.append(OrbitExchRunner(selection_id=draw_sel, runner_name="The Draw", role="draw"))
+    if away_sel:
+        runners.append(OrbitExchRunner(selection_id=away_sel, runner_name="Chelsea", role="away"))
+    return OrbitExchMarketEvent(
         sport="Soccer", competition="EPL", home_team="Arsenal", away_team="Chelsea",
         sport_id="1", competition_id="100", market_id="1-123456",
-        home_selection_id=home_sel, draw_selection_id=draw_sel, away_selection_id=away_sel,
+        start_ts=0, runners=tuple(runners),
     )
 
 
@@ -79,40 +94,48 @@ def test_build_legs_sets_orbitexch_min_stake(provider):
 
 
 def test_build_legs_sets_orbitexch_min_stake_with_fx():
-    prov = OrbitExchInstrumentProvider(SimpleNamespace(), fx=1.3)
+    discovery = SimpleNamespace()
+    discovery.discover_events = AsyncMock(return_value=[])
+    prov = OrbitExchInstrumentProvider(discovery, fx=1.3)
     leg = next(iter(prov._build_legs(_event())))
     assert leg.min_notional.as_double() == pytest.approx(9.1)
     assert str(leg.min_notional.currency) == "USD"
 
 
-def test_load_all_async_invokes_scraper_and_adds_instruments():
-    """discovery-1.4.e: load_all_async → scraper.discover_events → 基类 add。"""
-    scraper = SimpleNamespace()
-    scraper.discover_events = AsyncMock(return_value=[_event()])
-    prov = OrbitExchInstrumentProvider(scraper)
+def test_load_all_async_invokes_discovery_and_adds_instruments():
+    """discovery-1.4.e: load_all_async → discovery.discover_events → 基类 add。"""
+    discovery = SimpleNamespace()
+    discovery.discover_events = AsyncMock(return_value=[_event()])
+    prov = OrbitExchInstrumentProvider(discovery)
 
     _run(prov.load_all_async())
 
-    scraper.discover_events.assert_awaited_once()
+    discovery.discover_events.assert_awaited_once()
     instruments = prov.get_all()
     assert len(instruments) == 3  # home/draw/away
 
 
 def test_load_all_async_empty_does_not_raise():
-    """discovery-1.4.f: scraper 返空 → load_all_async 不抛、Provider 仍可用。"""
-    scraper = SimpleNamespace()
-    scraper.discover_events = AsyncMock(return_value=[])
-    prov = OrbitExchInstrumentProvider(scraper)
+    """discovery-1.4.f: discovery 返空 → load_all_async 不抛、Provider 仍可用。"""
+    discovery = SimpleNamespace()
+    discovery.discover_events = AsyncMock(return_value=[])
+    prov = OrbitExchInstrumentProvider(discovery)
     _run(prov.load_all_async())
     assert prov.get_all() == {}
 
 
 # ── slice 7A:aliases 注入 ─────────────────────────────────────
 
+def _mock_discovery():
+    discovery = SimpleNamespace()
+    discovery.discover_events = AsyncMock(return_value=[])
+    return discovery
+
+
 def test_build_legs_applies_sport_alias():
     """discovery-1.4.g(slice 7A): sport_aliases 命中时 info["sport"] 替换为规范名。"""
     prov = OrbitExchInstrumentProvider(
-        SimpleNamespace(),
+        _mock_discovery(),
         sport_aliases={"Soccer": "Soccer Normalized"},
     )
     leg = next(iter(prov._build_legs(_event())))
@@ -122,7 +145,7 @@ def test_build_legs_applies_sport_alias():
 def test_build_legs_applies_competition_alias():
     """discovery-1.4.h: competition_aliases 命中(`Men's Roland Garros 2026` → `ATP`)。"""
     prov = OrbitExchInstrumentProvider(
-        SimpleNamespace(),
+        _mock_discovery(),
         competition_aliases={"EPL": "English Premier League"},
     )
     leg = next(iter(prov._build_legs(_event())))
@@ -132,7 +155,7 @@ def test_build_legs_applies_competition_alias():
 def test_build_legs_alias_miss_uses_raw():
     """无 alias 命中 → info 用原 sport/competition 字符串。"""
     prov = OrbitExchInstrumentProvider(
-        SimpleNamespace(),
+        _mock_discovery(),
         sport_aliases={"Tennis": "TENNIS"},  # 不匹配 _event 的 Soccer
     )
     leg = next(iter(prov._build_legs(_event())))
@@ -141,7 +164,7 @@ def test_build_legs_alias_miss_uses_raw():
 
 def test_build_legs_no_aliases_provided():
     """`sport_aliases=None` / `competition_aliases=None`(默认)→ 原值透传。"""
-    prov = OrbitExchInstrumentProvider(SimpleNamespace())
+    prov = OrbitExchInstrumentProvider(_mock_discovery())
     leg = next(iter(prov._build_legs(_event())))
     assert leg.info["sport"] == "Soccer"
     assert leg.info["competition"] == "EPL"
