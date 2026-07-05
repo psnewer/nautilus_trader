@@ -128,13 +128,15 @@ def test_execution_client_connects_with_fake_page_and_registers_ws_before_naviga
     assert browser.page.default_timeout == client._config.page_timeout
     assert browser.page.events[0] == ("timeout", client._config.page_timeout)
     assert browser.page.events[1] == ("on", "websocket")
-    assert browser.page.events[2][0] == "goto"
+    assert browser.page.events[2] == ("on", "response")
+    assert browser.page.events[3][0] == "goto"
     assert captured["reported"] is True
     assert captured["balances"][0].total.as_double() == pytest.approx(0.0)
 
     _run(client._disconnect())
 
     assert ("remove_listener", "websocket") in browser.page.events
+    assert ("remove_listener", "response") in browser.page.events
     assert client._page is None
     assert client._ws_handler is None
 
@@ -165,33 +167,21 @@ def test_execution_client_login_runs_inside_shared_browser_lock():
     assert lock.events == ["enter", "login", "exit"]
 
 
-def test_on_general_frame_balance_generates_usd_account_state():
+def test_on_general_frame_balance_is_ignored():
+    """WS BALANCE 帧不再消费(实测返回 0.00 不可靠),余额改从 HTTP 响应拦截。"""
     client = _client()
-    captured = {}
-    client.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
-        balances=balances,
-        reported=reported,
-    )
+    calls = []
+    client.generate_account_state = lambda **kwargs: calls.append(kwargs)
 
     client._on_general_frame({"BALANCE": {"balance": "37.49", "avBalance": None}})
 
-    assert captured["reported"] is True
-    assert captured["balances"][0].total.as_double() == pytest.approx(37.49)
-    assert client._balance_frames_seen == 1
+    assert calls == []
 
 
-def test_arbitrage_fx_command_does_not_change_se_usd_balance():
+def test_arbitrage_fx_command_does_not_change_se_usd_fx():
     client = _client()
-    captured = {}
-    client.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
-        balances=balances,
-    )
-
     client._msgbus.publish(topic=TOPIC_ARBITRAGE_PARAMS, msg=SetArbitrageParamsCommand(fx=1.3))
-    client._on_general_frame({"BALANCE": {"balance": "10.00"}})
-
     assert client._current_fx() == pytest.approx(1.0)
-    assert captured["balances"][0].total.as_double() == pytest.approx(10.0)
 
 
 def test_on_general_frame_unknown_ignored():

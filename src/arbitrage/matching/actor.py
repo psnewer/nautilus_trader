@@ -62,9 +62,10 @@ class MarketMatchingActor(Actor):
         )
         self._refresh_interval_secs = config.refresh_interval_secs
         self._pair_registry = deps.pair_registry
+        self._competition_max_matches = config.competition_max_matches or {}
         self._engine = MatchEngine(
             min_similarity=config.min_similarity,
-            competition_max_matches=config.competition_max_matches or {},
+            competition_max_matches=self._competition_max_matches,
         )
         self._emitted_pairs: set[str] = set()  # 已记 INFO 的 pair_id(每 tick 重 emit,日志只记新对)
         self._game_to_pair: dict[int, set[str]] = {}  # #60:gameId → pair_id set(emit 时填,sports ended 时查)
@@ -155,14 +156,19 @@ class MarketMatchingActor(Actor):
                 self._emit_pair(result, tradable_venue=tradable_venue)
 
     def _maybe_match_non_tradable_anchor(self, anchor_events) -> None:
-        """PMSPORTS event-anchor path:同一 anchor event 聚合所有 tradable venues 后发一个 pair。"""
+        """PMSPORTS event-anchor path:同一 anchor event 聚合所有 tradable venues 后发一个 pair。
+
+        过滤条件:pair 的 matched venue 数必须 >= 2(至少两个 tradable venue 匹配上)。
+        cap 在聚合+过滤后应用。
+        """
         by_pair: dict[str, dict] = {}
         for tradable_venue in self._tradable_venue_strs:
             tradable_instruments = list(self.cache.instruments(venue=Venue(tradable_venue)))
             if not tradable_instruments:
                 continue
             tradable_events = events_from_instruments(tradable_instruments)
-            results = self._engine.match_events(anchor_events, tradable_events)
+            # skip_cap=True:cap 在聚合+过滤后应用
+            results = self._engine.match_events(anchor_events, tradable_events, skip_cap=True)
             for result in results:
                 anchor_ev = result.anchor_event
                 pair_id = _pair_id_for(
@@ -188,7 +194,18 @@ class MarketMatchingActor(Actor):
                     entry["tradable_ids"].append(iid)
                     venue = _venue_of(leg)
                     entry["venue_ids"].setdefault(venue, []).append(iid)
+
+        # 聚合后过滤 + 应用 cap
+        emitted_by_comp: dict[str, int] = {}
         for pair_id, entry in by_pair.items():
+            # 过滤:至少 2 个 tradable venue 匹配上
+            if len(entry["venue_ids"]) < 2:
+                continue
+            comp = entry["anchor_ev"].competition
+            cap = self._competition_max_matches.get(comp)
+            if cap is not None and emitted_by_comp.get(comp, 0) >= cap:
+                continue
+            emitted_by_comp[comp] = emitted_by_comp.get(comp, 0) + 1
             self._emit_anchor_pair(
                 pair_id,
                 anchor_ev=entry["anchor_ev"],

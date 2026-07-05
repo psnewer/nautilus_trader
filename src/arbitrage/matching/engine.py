@@ -51,8 +51,15 @@ class MatchEngine:
         self,
         anchor_events: list[NormalizedEvent],
         tradable_events: list[NormalizedEvent],
+        *,
+        skip_cap: bool = False,
     ) -> list[MatchResult]:
-        """全量匹配:按 group_key 分组 → 组内匹配 → 合并所有 results。"""
+        """全量匹配:按 group_key 分组 → 组内匹配 → 合并所有 results。
+
+        Args:
+            skip_cap: 跳过 competition_max_matches 限制(供 non-tradable anchor 聚合路径使用,
+                      cap 改在 actor 聚合后应用)。
+        """
         anchor_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
         tradable_groups: dict[str, list[NormalizedEvent]] = defaultdict(list)
         for ev in anchor_events:
@@ -62,7 +69,7 @@ class MatchEngine:
 
         all_results: list[MatchResult] = []
         for key in set(anchor_groups.keys()) & set(tradable_groups.keys()):
-            all_results.extend(self._match_within_group(anchor_groups[key], tradable_groups[key]))
+            all_results.extend(self._match_within_group(anchor_groups[key], tradable_groups[key], skip_cap=skip_cap))
         return all_results
 
     # ── internal ──────────────────────────────────────────────────────
@@ -70,6 +77,8 @@ class MatchEngine:
         self,
         anchor_events: list[NormalizedEvent],
         tradable_events: list[NormalizedEvent],
+        *,
+        skip_cap: bool = False,
     ) -> list[MatchResult]:
         if not anchor_events or not tradable_events:
             return []
@@ -77,7 +86,7 @@ class MatchEngine:
         results: list[MatchResult] = []
         used_tradable: set[int] = set()
         competition = anchor_events[0].competition
-        cap = self._competition_max_matches.get(competition)
+        cap = None if skip_cap else self._competition_max_matches.get(competition)
 
         for anchor in anchor_events:
             if cap is not None and len(results) >= cap:

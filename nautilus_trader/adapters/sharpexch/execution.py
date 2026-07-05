@@ -122,8 +122,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._exec_ws_idle_timeout_ns = secs_to_nanos(_EXEC_WS_IDLE_TIMEOUT_SECS)
         self._reload_inflight = None
         self._reload_bets_wait_ns = secs_to_nanos(8.0)
-        self._balance_frames_seen = 0
         self._current_bets_frames_seen = 0
+        self._balance_reported = False
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
 
     async def _connect(self) -> None:
@@ -144,15 +144,27 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._ws_handler.on_frame(self._mark_exec_frame)
         await self._ws_handler.start()
 
+        # response 监听必须在 login(即首次导航)之前注册,才能捕获 SPA 初始化时发出的
+        # profile/balance API 请求。
+        self._page.on("response", self._on_response)
+
         async with self._browser_lock:
             await self._login()
 
-        self.generate_account_state(
-            balances=se_balance_to_account_balances(0.0),
-            margins=[],
-            reported=True,
-            ts_event=self._clock.timestamp_ns(),
-        )
+        # 余额通过 page.on("response") 监听从 SPA 的 profile/balance API 响应中提取;
+        # 等待最多 8s,超时则按 0.0 兜底。
+        for _ in range(16):
+            if self._balance_reported:
+                break
+            await asyncio.sleep(0.5)
+        if not self._balance_reported:
+            self._log.warning("SE balance not captured from responses; reporting 0.0")
+            self.generate_account_state(
+                balances=se_balance_to_account_balances(0.0),
+                margins=[],
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
         self._log.info("SharpExchExecutionClient connected")
 
     async def _login(self) -> None:
@@ -165,6 +177,11 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._log.info("SharpExch login successful")
 
     async def _disconnect(self) -> None:
+        if self._page is not None:
+            try:
+                self._page.remove_listener("response", self._on_response)
+            except Exception:  # noqa: BLE001
+                pass
         if self._ws_handler is not None:
             await self._ws_handler.stop()
             self._ws_handler = None
@@ -172,6 +189,34 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     def _current_fx(self) -> float:
         return 1.0
+
+    async def _on_response(self, response) -> None:
+        """response 监听器: 从登录后 SPA 的 profile/balance API 响应中提取余额。"""
+        if self._balance_reported:
+            return
+        url = response.url
+        # 只看 API 请求(排除静态资源)
+        if "/api/" not in url:
+            return
+        # 排除已知的非余额 API(placeBets/cancelBets/competition 等)
+        if any(k in url for k in ("placeBets", "cancelBets", "competition", "market-prices")):
+            return
+        try:
+            body = await response.json()
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(body, dict):
+            return
+        balance_val = _extract_balance_from_response(body)
+        if balance_val is not None:
+            self._log.info("SE balance from %s: %.2f" % (url, balance_val))
+            self.generate_account_state(
+                balances=se_balance_to_account_balances(balance_val),
+                margins=[],
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
+            self._balance_reported = True
 
     def _mark_exec_frame(self) -> None:
         self._last_frame_ns = self._clock.timestamp_ns()
@@ -335,19 +380,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         parsed = self._parser.parse_general_frame(message)
         if parsed is None:
             return
-        if parsed["type"] == "balance":
-            balance = parsed["balance"]
-            if balance is not None:
-                self._balance_frames_seen += 1
-                if self._balance_frames_seen == 1:
-                    self._log.info("SE balance frame routed")
-                self.generate_account_state(
-                    balances=se_balance_to_account_balances(balance),
-                    margins=[],
-                    reported=True,
-                    ts_event=self._clock.timestamp_ns(),
-                )
-        elif parsed["type"] == "current_bets":
+        # WS BALANCE 帧不再消费(实测返回 0.00 不可靠),余额改从 HTTP 响应拦截
+        if parsed["type"] == "current_bets":
             self._on_current_bets(parsed["bets"])
 
     def _on_current_bets(self, bets) -> None:
@@ -568,6 +602,39 @@ def se_balance_to_account_balances(balance: float, currency=USD) -> list:
 
     money = Money(balance, currency)
     return [AccountBalance(money, Money(0, currency), money)]
+
+
+_BALANCE_FIELD_CANDIDATES = (
+    "balance", "availableBalance", "accountBalance", "cashBalance",
+    "currentBalance", "totalBalance", "walletBalance",
+    "cash", "wallet", "balanceAmount", "balanceUsd", "availableToBet",
+)
+
+
+def _extract_balance_from_response(body: dict) -> float | None:
+    """从 SE API 响应 dict 中提取余额值。
+
+    先在顶层查找,再浅搜索嵌套子 dict 的第一层。
+    """
+    for key in _BALANCE_FIELD_CANDIDATES:
+        val = body.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    # 浅搜索第一层嵌套 dict
+    for v in body.values():
+        if not isinstance(v, dict):
+            continue
+        for key in _BALANCE_FIELD_CANDIDATES:
+            val = v.get(key)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    pass
+    return None
 
 
 def se_order_to_place_bets_payload(
