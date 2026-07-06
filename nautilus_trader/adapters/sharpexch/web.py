@@ -39,14 +39,29 @@ async def se_wait_for_customer_frame(page, *, timeout_ms: int) -> None:
     raise TimeoutError("SE customer iframe did not appear")
 
 
-async def se_login(page, config) -> None:
+async def se_login(page, config, browser_lock=None) -> None:
     """登录 SE 并等待 customer iframe 出现。
 
     不使用 `networkidle`:customer app 会长期维持 websocket,该条件不稳定。
 
     已登录时跳过导航:如果当前页已在 customer app 中(URL 包含 /customer 或存在
     customer iframe),直接返回,避免重复 goto 触发 Cloudflare。
+
+    browser_lock:可选的 asyncio.Lock,用于串行化多个 page 的登录操作。
+    NT 启动期 Data/Exec 并发 connect,同一 browser context 内并发登录会触发
+    Cloudflare 验证。通过 browser_lock 串行化登录,第一个 page 完成登录后,
+    后续 page 可复用 context 内的 session cookies。
     """
+
+    if browser_lock is not None:
+        async with browser_lock:
+            await _se_login_impl(page, config)
+    else:
+        await _se_login_impl(page, config)
+
+
+async def _se_login_impl(page, config) -> None:
+    """se_login 的实际实现。"""
 
     # 快速路径:已在 customer app 中,无需重新导航登录
     current_url = getattr(page, "url", "") or ""

@@ -65,30 +65,46 @@ def _se_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock
         await browser_manager.start()
         page = await browser_manager.create_page("se-discovery")
         page.set_default_timeout(config.page_timeout)
-        async with browser_lock:
-            await se_login(page, config)
-            # Wait for customer app to fully initialize after login
-            ctx = se_customer_context(page)
-            if ctx is None:
-                raise RuntimeError("SE login completed but customer context not available")
-            # Retry fetch up to 3 times for transient failures
-            last_error = None
-            for attempt in range(3):
+
+        # se_login 内部使用 browser_lock 串行化登录,避免并发登录触发 Cloudflare
+        await se_login(page, config, browser_lock)
+
+        # Retry fetch up to 3 times for transient failures (including frame detachment)
+        last_error = None
+        for attempt in range(3):
+            # Re-acquire context on each attempt to handle frame detachment
+            frame_ctx = se_customer_context(page)
+            if frame_ctx is None:
+                if attempt < 2:
+                    _log.warning(f"SE fetch attempt {attempt + 1}: customer context not available, retrying")
+                    await asyncio.sleep(2.0)
+                    continue
+                raise RuntimeError("SE login completed but customer context not available after retries")
+            try:
                 payload = await se_fetch_json(
-                    ctx,
+                    frame_ctx,
                     request.url,
                     params=request.params,
                     body=request.body,
                 )
-                if payload.get("ok") and isinstance(payload.get("json"), dict):
-                    return payload["json"]
-                last_error = payload
-                if attempt < 2:
-                    await asyncio.sleep(2.0)  # Wait before retry
-            raise RuntimeError(
-                f"SE sport/details failed after 3 attempts: "
-                f"status={last_error.get('status')} text={last_error.get('text')!r}",
-            )
+            except Exception as e:
+                # Handle frame detachment and other Playwright errors
+                err_msg = str(e).lower()
+                if "frame was detached" in err_msg or "frame" in err_msg:
+                    _log.warning(f"SE fetch attempt {attempt + 1}: frame detached, re-acquiring context")
+                    if attempt < 2:
+                        await asyncio.sleep(2.0)
+                        continue
+                raise
+            if payload.get("ok") and isinstance(payload.get("json"), dict):
+                return payload["json"]
+            last_error = payload
+            if attempt < 2:
+                await asyncio.sleep(2.0)  # Wait before retry
+        raise RuntimeError(
+            f"SE sport/details failed after 3 attempts: "
+            f"status={last_error.get('status')} text={last_error.get('text')!r}",
+        )
 
     return _fetch
 
@@ -168,7 +184,9 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
         browser_manager = _shared_se_browser_manager(ctx, config)
         browser_lock = _shared_se_browser_lock(ctx)
         provider = InstrumentProvider()
-        return SharpExchExecutionClient(
+
+        debug = ctx.debug_config
+        common_kwargs = dict(
             loop=loop,
             browser_manager=browser_manager,
             msgbus=msgbus,
@@ -183,3 +201,7 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             browser_lock=browser_lock,
         )
+        if debug is not None and getattr(debug, "enabled", False):
+            from src.arbitrage.debug.execution_clients import SkipExecutionSharpExchClient
+            return SkipExecutionSharpExchClient(debug=debug, **common_kwargs)
+        return SharpExchExecutionClient(**common_kwargs)

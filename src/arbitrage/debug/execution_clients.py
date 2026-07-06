@@ -7,10 +7,10 @@ Debug ExecutionClient 子类 —— Q11.3 跳真执行 + mock 全成交(子类�
 真时,只跳过真 venue 上送;仍先进入 `_begin_session`,再 `generate_order_accepted` +
 `generate_order_filled` mock 全成交事件;未激活时透传 `super()._submit_order(command)`(走真路径)。
 
-**不实现订单状态时序**(Q11.4 `timeline.py`)—— 当前版本是"立即全成",足够覆盖大多数链路测试
-(risk → submit → fill → portfolio 更新)。需要部分填 / 拒单 / 撤单时序的场景再加 timeline。
+**订单状态时序**(Q11.4 `timeline.py`)—— 支持通过 `mock_data.timeline` 配置部分成交、拒单、
+撤单等时序场景。无 timeline 配置时走默认"立即全成"。
 
-PM / OE 两子类除 quote_currency / 基类不同外完全对称。
+PM / OE / SE 三子类除 quote_currency / 基类不同外完全对称。
 """
 
 from __future__ import annotations
@@ -30,8 +30,10 @@ from nautilus_trader.model.objects import Quantity
 
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
+from nautilus_trader.adapters.sharpexch.execution import SharpExchExecutionClient
 
 from src.arbitrage.debug.config import DebugConfig
+from src.arbitrage.debug.timeline import TimelineExecutor
 
 _SKIP_KEY = "skip_execution"
 
@@ -82,6 +84,21 @@ def _mock_submit(client, command, quote_currency) -> None:
     _mock_fill(client, command, quote_currency)
 
 
+def _mock_submit_with_timeline(client, command, quote_currency) -> None:
+    """支持 timeline 的 mock submit:有 timeline 配置时按配置执行,否则立即全成。
+
+    注:timeline 使用 NT Clock.set_time_alert_ns 调度,是同步函数。
+    """
+    debug = getattr(client, "_debug", None)
+    if debug is not None:
+        executor = TimelineExecutor(client, debug, quote_currency)
+        if executor.has_timeline(command.order):
+            executor.execute(command)  # 同步,内部用 Clock 调度
+            return
+    # 无 timeline 配置,走原有立即全成
+    _mock_submit(client, command, quote_currency)
+
+
 class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
     """PM 执行客户端 Debug 子类(quote=USDC)。"""
 
@@ -118,7 +135,7 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            _mock_submit(self, command, USDC_POS)
+            await _mock_submit_with_timeline(self, command, USDC_POS)
             return
         await super()._submit_order(command)
 
@@ -152,7 +169,40 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            _mock_submit(self, command, USD)
+            await _mock_submit_with_timeline(self, command, USD)
+            return
+        await super()._submit_order(command)
+
+    async def _cancel_order(self, command) -> None:
+        if self._mock_orders():
+            return  # mock 模式无真单可撤
+        await super()._cancel_order(command)
+
+    async def _cancel_all_orders(self, command) -> None:
+        if self._mock_orders():
+            return
+        await super()._cancel_all_orders(command)
+
+    async def _cancel_residual_one(self, order) -> None:
+        if self._mock_orders():
+            return
+        await super()._cancel_residual_one(order)
+
+
+class SkipExecutionSharpExchClient(SharpExchExecutionClient):
+    """SE 执行客户端 Debug 子类(quote=USD,对齐 OE)。"""
+
+    def __init__(self, *args, debug: DebugConfig, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._debug = debug
+
+    def _mock_orders(self) -> bool:
+        """skip_execution 真 → mock 订单 IO(submit/cancel 不碰真 venue)。连接照常真跑。"""
+        return self._debug.is_override_active(_SKIP_KEY)
+
+    async def _submit_order(self, command) -> None:
+        if self._mock_orders():
+            await _mock_submit_with_timeline(self, command, USD)
             return
         await super()._submit_order(command)
 

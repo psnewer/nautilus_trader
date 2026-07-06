@@ -41,6 +41,7 @@ class MockCategory(Enum):
     EXECUTION = "execution"
     MARKET = "market"
     ACCOUNT = "account"
+    TIMELINE = "timeline"  # 订单状态时序模拟(部分填/拒单/撤单)
 
 
 @dataclass

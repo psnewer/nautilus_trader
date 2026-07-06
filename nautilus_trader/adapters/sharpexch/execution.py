@@ -148,8 +148,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # profile/balance API 请求。
         self._page.on("response", self._on_response)
 
-        async with self._browser_lock:
-            await self._login()
+        # se_login 内部使用 browser_lock 串行化登录,避免并发登录触发 Cloudflare
+        await self._login()
 
         # 余额通过 page.on("response") 监听从 SPA 的 profile/balance API 响应中提取;
         # 等待最多 8s,超时则按 0.0 兜底。
@@ -171,9 +171,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         """SE 登录页操作。
 
         SE 外层登录页提交用户名/密码后,真实 customer app 位于 portal iframe。
+        browser_lock 串行化登录,避免 Data/Exec 并发登录触发 Cloudflare。
         """
 
-        await se_login(self._page, self._config)
+        await se_login(self._page, self._config, self._browser_lock)
         self._log.info("SharpExch login successful")
 
     async def _disconnect(self) -> None:

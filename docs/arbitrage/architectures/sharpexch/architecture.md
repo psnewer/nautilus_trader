@@ -185,8 +185,8 @@ class SharpExchDiscoveryClient:
   默认生成 `POST /customer/api/sport/details?page=0&size=60`,body 为
   `{"viewBy":"POPULARITY","timeFilter":"ALL","id":"2","contextFilter":"EVENT_TYPE"}`。
 - `SharpExchDiscoveryClient` 只有传入 `sport_details_provider` 或 `json_fetcher` 时才会产生事件;无注入时返回空列表。`json_fetcher` 路径会分页请求,直到空页、短页、下一页没有新 `marketId`,或 100 页保护上限。
-- `SharpExchLiveDataClientFactory` 在 `discovery_config_by_venue["SHARPEXCH"]` 存在时注入 browser `json_fetcher`:启动共享 browser、打开/复用 `se-discovery` page、经 `login_url` 登录、定位 `portal.sharpxch.com/customer` iframe,并在 iframe context 内执行 `sport/details` fetch。Data factory 会把该 discovery config 的 `sports` 同时注入 Provider 的 `sport_configs`,Provider `load_all_async()` 调用 `discover_events(sport_configs)`,避免 runtime 退回默认 sport。
-- Data discovery fetch 与 Exec login 共用 `browser_manager_by_venue["SHARPEXCH"]` 和 `browser_lock_by_venue["SHARPEXCH"]`。NT 启动期会并发连接 data/exec clients,SE/Cloudflare 对同一 browser context 内的登录与 customer API fetch 敏感,因此 factory 只把登录/fetch 这类 session 相关操作串行化;order book/WS 后续仍按各 client 自己的事件路径运行。
+- `SharpExchLiveDataClientFactory` 在 `discovery_config_by_venue["SHARPEXCH"]` 存在时注入 browser `json_fetcher`:创建 `se-discovery` page、经 `se_login` 登录(见 §3.6 Login 串行化)、定位 `portal.sharpxch.com/customer` iframe,并在 iframe context 内执行 `sport/details` fetch。Data factory 会把该 discovery config 的 `sports` 同时注入 Provider 的 `sport_configs`,Provider `load_all_async()` 调用 `discover_events(sport_configs)`,避免 runtime 退回默认 sport。
+- Data discovery fetch 与 Exec login 共用 `browser_manager_by_venue["SHARPEXCH"]` 和 `browser_lock_by_venue["SHARPEXCH"]`。NT 启动期会并发连接 data/exec clients,SE/Cloudflare 对同一 browser context 内的并发登录敏感,因此 `se_login` 使用 `browser_lock` 串行化登录操作(见 §3.6);order book/WS 后续仍按各 client 自己的事件路径运行。
 - 独立 probe 实测该路径可分页取回约 240 个 Tennis events(随 SE 当前赛事集变化);
   其中 `Men's Wimbledon 2026` 为 64 个、`Women's Wimbledon 2026` 为 64 个。
 
@@ -327,7 +327,7 @@ runner → role 规则:
 - `SharpExchExecutionClient` 已接入 launcher 显式 opt-in runtime:继承
   `ArbExecutionSessionMixin + LiveExecutionClient`,账号为 `SHARPEXCH-001`,base currency 为
   `USD`;`_connect` 启动共享 browser manager、创建 `"execution"` page、先挂
-  `SharpExchWebSocketHandler` 再执行 `se_login(...)`;该 helper 不使用 `networkidle`,而是先检查
+  `SharpExchWebSocketHandler` 再执行 `se_login`(见 §3.6 Login 串行化);该 helper 不使用 `networkidle`,而是先检查
   外层登录表单,有表单时必须提交凭据,只有确认没有登录表单时才把 `/customer` iframe
   视为可复用登录态,兼容 `sharpxch.com/player/` 外层页长期不跳转且未授权时也可能预加载
   customer iframe 的真实行为;customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
@@ -478,6 +478,67 @@ runner → role 规则:
   会推导 required venue `SHARPEXCH`;SE `BettingInstrument` 走 decimal odds 概率门控;
   SE 余额按 adapter 入站后的 USD free 检查;`ArbitragePortfolio` 保留 SE venue
   identity,不会把 SE 持仓归到 OE。
+
+### 3.6 Login 串行化
+
+**问题**:NT 启动时并发连接 Data/Exec clients。Discovery 创建 `se-discovery` 页、Execution 创建 `execution` 页,两者并发调用 `se_login` 触发 Cloudflare 验证。
+
+**解决方案**:在 `se_login` 中使用 `browser_lock` 串行化登录。各 client 保持独立 page,但登录操作串行执行。
+
+#### 3.6.1 原理
+
+Browser context 内 cookies/session 是共享的:
+1. 第一个 page 登录成功 → session cookies 写入 context
+2. 第二个 page 调用 `se_login` → 导航到 login_url → 检测到已有 session → 跳过表单提交
+
+#### 3.6.2 时序
+
+```
+NT 并发 connect data/exec clients
+    │
+    ├─ [Discovery] _se_browser_json_fetcher
+    │     ├─ create_page("se-discovery")
+    │     ├─ se_login(page, config, browser_lock) ← 持锁
+    │     │     └─ 导航 → 填表单 → 登录成功 → cookies 写入 context
+    │     └─ 释放锁 → fetch API
+    │
+    └─ [Execution] _connect
+          ├─ create_page("execution")
+          ├─ 设置 WS handler + response listener
+          ├─ se_login(page, config, browser_lock) ← 等锁
+          │     └─ 拿到锁 → 导航 → 检测已有 session → 跳过表单
+          └─ 继续 WS 监听
+```
+
+#### 3.6.3 页面模型
+
+| 页面 | 用途 | 创建者 |
+|---|---|---|
+| `se-discovery` | Discovery API fetch | DataClient json_fetcher |
+| `execution` | Execution orders/balance/WS | ExecutionClient |
+| `comp-{sport}_{competition}` | OrderBook 订阅 | DataClient |
+
+各 client 保持独立 page,只有 login 操作串行化。
+
+#### 3.6.4 代码落点
+
+- `web.py`:
+  - `se_login(page, config, browser_lock=None)`:增加可选 `browser_lock` 参数,有锁时串行化登录
+
+- `factories.py`:
+  - `_se_browser_json_fetcher()`:调用 `se_login(page, config, browser_lock)`
+
+- `execution.py`:
+  - `_connect()`:调用 `se_login(self._page, self._config, self._browser_lock)`
+
+#### 3.6.5 Session 复用检测
+
+`se_login` 已有 session 复用逻辑:导航后检查登录表单是否存在,无表单则视为已登录。
+第二个 page 登录时,因 context 已有 session cookies,SE 服务端可能:
+- 直接跳转到 customer 页面(不显示登录表单)
+- 或显示已登录状态
+
+无论哪种情况,`se_login` 都能正确处理
 
 ---
 

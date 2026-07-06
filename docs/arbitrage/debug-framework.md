@@ -221,6 +221,7 @@ MockDataManager 作为 DebugConfig 的一部分，提供灵活的测试数据注
 | `execution` | 执行结果 | 模拟下单结果 |
 | `market` | 市场数据 | 模拟市场状态 |
 | `account` | 账户数据 | 模拟余额等 |
+| `timeline` | 订单状态时序 | 模拟部分成交/拒单/撤单 |
 
 ## 使用方式
 
@@ -283,6 +284,108 @@ orders = debug_manager.get_or_default(
   "specific_orders": {
     "priority": 10,
     "conditions": {"venue": "polymarket"}
+  }
+}
+```
+
+---
+
+# 订单状态时序模拟 (Timeline)
+
+## 概述
+
+Timeline 功能允许在 Live 测试中模拟真实订单状态转换时序，如部分成交、拒单、撤单等。
+当 `skip_execution=true` 且配置了 `mock_data.timeline` 时生效。
+
+## 事件类型
+
+| 事件 | 说明 |
+|------|------|
+| `ACCEPT` | 订单被接受 |
+| `PARTIAL_FILL` | 部分成交，`fill_pct` 指定填充百分比 |
+| `FILL` | 全部成交（或填充剩余部分） |
+| `REJECT` | 拒单，`reject_reason` 指定原因 |
+| `CANCEL` | 撤单，`cancel_reason` 指定原因 |
+| `EXPIRE` | 订单过期 |
+
+## 配置格式
+
+```json
+{
+  "mock_data": {
+    "se_partial_fill": {
+      "category": "timeline",
+      "name": "SE 部分成交测试",
+      "enabled": true,
+      "conditions": {"venue": "sharpexch"},
+      "data": {
+        "steps": [
+          {"event": "ACCEPT", "delay_ms": 100},
+          {"event": "PARTIAL_FILL", "delay_ms": 500, "fill_pct": 0.5},
+          {"event": "FILL", "delay_ms": 1000}
+        ]
+      }
+    },
+    "pm_reject": {
+      "category": "timeline",
+      "name": "PM 拒单测试",
+      "enabled": true,
+      "conditions": {"venue": "polymarket"},
+      "data": {
+        "steps": [
+          {"event": "ACCEPT", "delay_ms": 100},
+          {"event": "REJECT", "delay_ms": 2000, "reject_reason": "INSUFFICIENT_FUNDS"}
+        ]
+      }
+    }
+  }
+}
+```
+
+## 步骤参数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `event` | string | 事件类型（必填） |
+| `delay_ms` | int | 事件触发前延迟毫秒数（默认 0） |
+| `fill_pct` | float | PARTIAL_FILL 时填充百分比 0-1（默认 1.0） |
+| `reject_reason` | string | REJECT 时拒单原因 |
+| `cancel_reason` | string | CANCEL 时撤单原因 |
+
+## 条件匹配
+
+Timeline 配置支持按以下上下文字段匹配：
+
+| 字段 | 说明 |
+|------|------|
+| `venue` | 交易所（小写），如 "polymarket", "orbitexch", "sharpexch" |
+| `instrument_id` | 完整 instrument ID |
+| `order_side` | 订单方向 "BUY" / "SELL" |
+| `order_type` | 订单类型 "LIMIT" / "MARKET" |
+
+## 使用示例
+
+测试 SE 订单延迟 2 秒后部分成交 30%，再延迟 3 秒全部成交：
+
+```json
+{
+  "enabled": true,
+  "overrides": {
+    "skip_execution": {"enabled": true, "value": true}
+  },
+  "mock_data": {
+    "se_slow_fill": {
+      "category": "timeline",
+      "enabled": true,
+      "conditions": {"venue": "sharpexch"},
+      "data": {
+        "steps": [
+          {"event": "ACCEPT", "delay_ms": 500},
+          {"event": "PARTIAL_FILL", "delay_ms": 2000, "fill_pct": 0.3},
+          {"event": "FILL", "delay_ms": 3000}
+        ]
+      }
+    }
   }
 }
 ```

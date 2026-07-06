@@ -26,6 +26,7 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 
 from nautilus_trader.adapters.orbitexch.data import OrbitExchDataClient
+from nautilus_trader.adapters.sharpexch.data import SharpExchDataClient
 
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import MockCategory
@@ -82,6 +83,14 @@ class DebugPolymarketDataClient(_DebugDataClientMixin, PolymarketDataClient):
 
 class DebugOrbitExchDataClient(_DebugDataClientMixin, OrbitExchDataClient):
     """OE 数据客户端 Debug 子类。机制同 PM(共享 mixin)。"""
+
+    def __init__(self, *args, debug: DebugConfig, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._debug = debug
+
+
+class DebugSharpExchDataClient(_DebugDataClientMixin, SharpExchDataClient):
+    """SE 数据客户端 Debug 子类。机制同 OE(共享 mixin)。"""
 
     def __init__(self, *args, debug: DebugConfig, **kwargs) -> None:
         super().__init__(*args, **kwargs)
