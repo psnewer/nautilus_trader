@@ -149,3 +149,4 @@ settings.local.json
 src/arbitrage/services/web_gateway/default_config.json
 
 arb_config.json
+.playwright-mcp/
