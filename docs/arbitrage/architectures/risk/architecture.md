@@ -216,6 +216,7 @@ Risk 是 **submit 管道拦截 + P2P endpoint** 型,**不是 topic pub/sub 重�
 
 - 该领域消息只服务 Execution opportunity barrier,不能替代 NT `OrderDenied`。
 - Risk 不等待其它 legs,不维护 opportunity 状态,不释放 `pair_inflight`;统一出口属 Execution barrier。
+- NT core `RiskEngine._deny_order` 的 `SubmitOrder ... DENIED` 日志在 vendored Cython 源码中降为 DEBUG,避免 min-notional/min-size 等预期拒单刷 WARN;修改 `.pyx` 后必须 rebuild 对应 `.so` 才会在运行时生效。
 
 ### 3.4 同步参与(Q19 / §6.10)+ VenueExecutionLiveness 读取
 

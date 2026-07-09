@@ -49,7 +49,7 @@ ExecutionClient (维护账户)
   - PM:提交一个 `quantity < instrument.min_quantity(5 shares)` 的订单
   - OE/SE:提交一个 USD stake/notional `< instrument.min_notional(min_stake * fx)` 的订单
 - 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
-- 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测
+- 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测。NT core 拒单日志已降为 DEBUG,默认日志不再把预期 min-notional/min-size 拒单刷成 WARN;验收应看 `OrderDenied` / strategy 回调 / barrier deny 事件,不要依赖 WARN 行。
 
 ### risk-6.3: 应用层余额检查(自算可用余额,扣在途挂单)
 - 前置: ExecutionClient 已写入 cache.account_state

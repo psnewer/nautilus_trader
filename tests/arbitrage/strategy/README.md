@@ -232,7 +232,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 ## Slice 10e 观测增强(2026-06-07):`log_evaluations` 评估锚点
 
 `StrategyEvaluatorConfig.log_evaluations=True` 时,`StrategyEvaluator` 对 schedule / skip /
-result / fire 分支输出低噪声日志,用于 skip=true NT-node smoke 判断 OBD 是否真的触发 strategy evaluate。
+result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smoke 判断 OBD 是否真的触发 strategy evaluate。
 默认值仍为 `False`,不改变生产运行行为。
 
 - ✅ `test_evaluator.py` +2:启用 `log_evaluations` 后套利优先语义不变;无策略 / execution_active skip 路径保持 no-op。

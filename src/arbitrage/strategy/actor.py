@@ -202,14 +202,14 @@ class StrategyEvaluator(Actor):
         strategy = self._strategy_registry.get_for(pair_id, competition, sport)
         if strategy is None:
             if self._log_evaluations:
-                self._log.debug(
+                self._log.info(
                     f"Strategy evaluate skipped: pair_id={pair_id}, sport={sport}, "
                     f"competition={competition}, reason=no_strategy",
                 )
             return
         if self._log_evaluations:
             event_type = type(data).__name__
-            self._log.debug(
+            self._log.info(
                 f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
                 f"competition={competition}, event={event_type}",
             )
@@ -217,7 +217,7 @@ class StrategyEvaluator(Actor):
         # 同 pair 已在飞(评估中/执行中)→ 直接放弃,不派发评估。单 loop 串行保证同突发后到的评估立刻看到。
         if self._pair_inflight is not None and not self._pair_inflight.try_enter(pair_id):
             if self._log_evaluations:
-                self._log.debug(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
+                self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=pair_in_flight")
             return
         # sync 入口 → async evaluate
         self._create_task(self._evaluate_and_fire(strategy, pair_id))
@@ -246,7 +246,7 @@ class StrategyEvaluator(Actor):
             # Q19:执行在飞 → 直接让路(策略前置 pre-check 放弃机会)
             if self._is_execution_active():
                 if self._log_evaluations:
-                    self._log.debug(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
+                    self._log.info(f"Strategy evaluate skipped: pair_id={pair_id}, reason=execution_active")
                 return
             # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
             snapshot = build_snapshot(
@@ -276,7 +276,7 @@ class StrategyEvaluator(Actor):
             if self._log_evaluations:
                 arb_actions_str = [type(a).__name__ for a in arb_res.pending_actions] if arb_res.pending_actions else None
                 comp_actions_str = [type(a).__name__ for a in comp_res.pending_actions] if comp_res.pending_actions else None
-                self._log.debug(
+                self._log.info(
                     f"Strategy evaluate result: pair_id={pair_id}, arb_hit={arb_res.hit}, "
                     f"arb_actions={arb_actions_str}, "
                     f"comp_hit={comp_res.hit}, "
@@ -294,7 +294,7 @@ class StrategyEvaluator(Actor):
                     self._log.info(f"Strategy action fired: pair_id={pair_id}, action=compensation")
                 self._create_task(self._execute_actions(comp_res.pending_actions, comp_ctx))
             elif self._log_evaluations:
-                self._log.debug(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
+                self._log.info(f"Strategy action skipped: pair_id={pair_id}, reason=no_pending_actions")
         finally:
             if not fired and self._pair_inflight is not None:
                 self._pair_inflight.release_eval(pair_id)

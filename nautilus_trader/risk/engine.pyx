@@ -1083,7 +1083,7 @@ cdef class RiskEngine(Component):
         self._reject_modify_order(order, reason="Exceeded MAX_ORDER_MODIFY_RATE")
 
     cpdef void _deny_order(self, Order order, str reason):
-        self._log.warning(f"SubmitOrder for {order.client_order_id.to_str()} DENIED: {reason}")
+        self._log.debug(f"SubmitOrder for {order.client_order_id.to_str()} DENIED: {reason}")
 
         if order is None:
             # Nothing to deny

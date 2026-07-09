@@ -244,7 +244,7 @@ running loop 正是注册 loop,直接 `create_task`,否则通过 `registered_loo
 当作 NT 实际运行 loop,否则会出现只打印 `Strategy evaluate scheduled`、但无
 `Strategy evaluate result` 且 `PairInFlightGate` 一直占用的症状。
 
-`StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加低噪声运行锚点日志,不改变决策语义:
+`StrategyEvaluatorConfig.log_evaluations=True` 时,评估器只增加 INFO 级低噪声运行锚点日志,不改变决策语义:
 `Strategy evaluate scheduled` / `Strategy evaluate skipped` / `Strategy evaluate result` /
 `Strategy action fired|skipped`。该开关用于 NT-node smoke 中确认 `OrderBookDeltas` 是否真的触发了
 strategy evaluate,默认 `False` 保持生产路径安静。
