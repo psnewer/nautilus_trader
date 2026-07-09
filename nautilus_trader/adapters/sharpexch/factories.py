@@ -25,6 +25,7 @@ from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProv
 from nautilus_trader.adapters.sharpexch.web import se_customer_context
 from nautilus_trader.adapters.sharpexch.web import se_fetch_json
 from nautilus_trader.adapters.sharpexch.web import se_login
+from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
 
 from src.arbitrage.bootstrap import ctx_map_get
 from src.arbitrage.bootstrap import ctx_map_get_or_create
@@ -60,14 +61,20 @@ def _shared_se_browser_lock(ctx) -> asyncio.Lock:
     return ctx_map_get_or_create(ctx, "browser_lock_by_venue", SHARPEXCH, asyncio.Lock)
 
 
-def _se_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock):
+def _shared_se_login_state(ctx) -> SharpExchLoginState:
+    """SE browser context 级登录状态:串行化登录并避免二次提交旧登录页。"""
+
+    return ctx_map_get_or_create(ctx, "browser_login_state_by_venue", SHARPEXCH, SharpExchLoginState)
+
+
+def _se_browser_json_fetcher(browser_manager, config, login_state: SharpExchLoginState):
     async def _fetch(request: SharpExchSportDetailsRequest) -> dict:
         await browser_manager.start()
         page = await browser_manager.create_page("se-discovery")
         page.set_default_timeout(config.page_timeout)
 
-        # se_login 内部使用 browser_lock 串行化登录,避免并发登录触发 Cloudflare
-        await se_login(page, config, browser_lock)
+        # se_login 内部使用 browser context 级状态串行化登录,避免并发/二次登录触发 Cloudflare
+        await se_login(page, config, login_state=login_state)
 
         # Retry fetch up to 3 times for transient failures (including frame detachment)
         last_error = None
@@ -123,7 +130,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
     ) -> SharpExchDataClient:
         ctx = get_arb_context()
         browser_manager = _shared_se_browser_manager(ctx, config)
-        browser_lock = _shared_se_browser_lock(ctx)
+        login_state = _shared_se_login_state(ctx)
         se_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", SHARPEXCH)
         if se_discovery_cfg is not None:
             sport_configs = list(getattr(se_discovery_cfg, "sports", []) or [])
@@ -134,7 +141,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
             ]
             discovery = SharpExchDiscoveryClient(
                 base_url=config.base_url,
-                json_fetcher=_se_browser_json_fetcher(browser_manager, config, browser_lock),
+                json_fetcher=_se_browser_json_fetcher(browser_manager, config, login_state),
                 target_competitions=target_competitions,
             )
             provider = SharpExchInstrumentProvider(
@@ -183,6 +190,7 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             )
         browser_manager = _shared_se_browser_manager(ctx, config)
         browser_lock = _shared_se_browser_lock(ctx)
+        login_state = _shared_se_login_state(ctx)
         provider = InstrumentProvider()
 
         debug = ctx.debug_config
@@ -200,6 +208,7 @@ class ArbSharpExchLiveExecClientFactory(LiveExecClientFactory):
             session_timeout_secs=ctx_map_require(ctx, "session_timeout_secs_by_venue", SHARPEXCH),
             fx=getattr(ctx.arbitrage_params, "fx", 1.0) if ctx.arbitrage_params is not None else 1.0,
             browser_lock=browser_lock,
+            login_state=login_state,
         )
         if debug is not None and getattr(debug, "enabled", False):
             from src.arbitrage.debug.execution_clients import SkipExecutionSharpExchClient

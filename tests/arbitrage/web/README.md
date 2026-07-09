@@ -42,7 +42,7 @@
 - 期望: `GET /` 返 legacy 风格 HTML 标签页;`/accounts`/`/instruments`/`/matched_pairs`/`/odds` 返各自只读快照;Discovery 页面统计/过滤从 `/instruments` 实际 venue 动态生成;`/odds` 每条 leg 携带 `odds_model`,前端按 `decimal → 1/赔率`、`probability → 原样` 换算成统一隐含概率(bid/ask 对 decimal 互换使 bid≤ask)
 - 验收: `test_index_serves_html` / `test_get_accounts` / `test_get_instruments` / `test_get_matched_pairs` / `test_get_odds`
 - 注: Market Matching 表不再输出 `pm_*` / `oe_*` / `external_*` 旧字段;`venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams` 暴露 MatchedPair 真实 schema(2026-06-23 简化)。`test_on_matched_pair_stores_venue_instrument_ids` 覆盖多 venue 场景;`test_on_matched_pair_handles_empty_venue_map` / `test_on_matched_pair_uses_explicit_venue_map_only` 覆盖空值与无兜底路径;`test_matched_pairs_exposes_all_venue_teams` 覆盖 PM+OE+SE 聚合展示。
-- 注: 控制台页面不再把 `POLYMARKET` 写死为唯一主腿;Matching 表按 `venue_teams` 展示全部 venue,Odds 表按 role 展示全部 venue 概率。`test_index_serves_html` 覆盖动态 venue 展示文案锚点。
+- 注: 控制台页面不再把 `POLYMARKET` 写死为唯一主腿;Matching / Odds 表头按 `config.venues.*.enabled` 中的可交易 venue 动态生成列,列名就是真实 venue id,不展示 PMSPORTS/anchor;Matching 单元格从 `venue_teams[venue]` 取 `home vs away`,且页面不展示 Confidence 列(API 可继续返回 confidence);Odds 单元格按 venue 展示统一隐含概率 bid/ask。`test_index_serves_html` 覆盖动态 venue 展示文案锚点。
 - 注: Discovery Config 以 Polymarket / OrbitExch / SharpExch 标签页分别编辑 `discovery.polymarket.sports` / `discovery.orbitexch.sports` / `discovery.sharpexch.sports`;PMSPORTS 暂不单独展示,默认继承 `discovery.polymarket.sports`。`page_load_timeout_sec` / `staleness_timeout_sec` 是 OE/SE 共用 UI 值,保存时同步写入 `venues.orbitexch` 与 `venues.sharpexch`。`test_index_serves_html` 覆盖 SharpExch sports textarea 与统一 browser discovery 保存锚点。
 
 ### web-7.x: scaffolding(端口预检 / WS 背压 / 退订 / 优雅停机)

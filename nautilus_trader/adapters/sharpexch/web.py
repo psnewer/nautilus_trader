@@ -10,9 +10,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass
+class SharpExchLoginState:
+    """SE browser context 级登录状态。"""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    authenticated: bool = False
 
 
 def se_is_customer_url(url: str) -> bool:
@@ -39,7 +49,7 @@ async def se_wait_for_customer_frame(page, *, timeout_ms: int) -> None:
     raise TimeoutError("SE customer iframe did not appear")
 
 
-async def se_login(page, config, browser_lock=None) -> None:
+async def se_login(page, config, browser_lock=None, login_state: SharpExchLoginState | None = None) -> None:
     """登录 SE 并等待 customer iframe 出现。
 
     不使用 `networkidle`:customer app 会长期维持 websocket,该条件不稳定。
@@ -54,15 +64,27 @@ async def se_login(page, config, browser_lock=None) -> None:
     后续 page 可复用 context 内的 session cookies。
     """
 
-    if browser_lock is not None:
+    if login_state is not None:
+        async with login_state.lock:
+            await _se_login_impl(page, config, authenticated=login_state.authenticated)
+            login_state.authenticated = True
+    elif browser_lock is not None:
         async with browser_lock:
             await _se_login_impl(page, config)
     else:
         await _se_login_impl(page, config)
 
 
-async def _se_login_impl(page, config) -> None:
+async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     """se_login 的实际实现。"""
+
+    if authenticated:
+        if not (se_is_customer_url(getattr(page, "url", "") or "") or se_customer_frame(page) is not None):
+            await page.goto(config.login_url, wait_until="domcontentloaded", timeout=config.page_timeout)
+        if await _customer_app_available(page, timeout_ms=5000):
+            await se_dismiss_post_login_popup(page, timeout_ms=2500)
+            await _settle_customer_app(page)
+            return
 
     # 快速路径:已在 customer app 中且没有登录表单,无需重新导航登录。
     # 若 iframe 和登录表单并存,说明页面处于半登录/过期状态,表单优先。
@@ -153,6 +175,16 @@ async def _login_form_visible(page, *, timeout_ms: int) -> bool:
         )
         return True
     except Exception:  # noqa: BLE001
+        return False
+
+
+async def _customer_app_available(page, *, timeout_ms: int) -> bool:
+    if se_is_customer_url(getattr(page, "url", "") or "") or se_customer_frame(page) is not None:
+        return True
+    try:
+        await se_wait_for_customer_frame(page, timeout_ms=timeout_ms)
+        return True
+    except TimeoutError:
         return False
 
 

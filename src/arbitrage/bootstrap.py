@@ -60,6 +60,7 @@ class ArbContext:
     instrument_provider_by_venue: dict = field(default_factory=dict)
     browser_manager_by_venue: dict = field(default_factory=dict)
     browser_lock_by_venue: dict = field(default_factory=dict)
+    browser_login_state_by_venue: dict = field(default_factory=dict)
     target_competitions_by_data_source: dict = field(default_factory=dict)
     competition_to_sport_by_data_source: dict = field(default_factory=dict)
 

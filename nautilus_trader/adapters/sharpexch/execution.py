@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 from nautilus_trader.adapters.sharpexch.message_parser import SharpExchMessageParser
+from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
 from nautilus_trader.adapters.sharpexch.web import se_login
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.live.execution_client import LiveExecutionClient
@@ -83,6 +84,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         session_timeout_secs: float = 30.0,
         fx: float = 1.0,
         browser_lock: asyncio.Lock | None = None,
+        login_state: SharpExchLoginState | None = None,
     ) -> None:
         super().__init__(
             loop=loop,
@@ -115,6 +117,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._ws_handler = None
         self._page_lock = asyncio.Lock()
         self._browser_lock = browser_lock or asyncio.Lock()
+        self._login_state = login_state
         self._bet_matched: dict[str, float] = {}
         self._bet_fill_seq: dict[str, int] = {}
         self._current_bets: dict[str, dict] = {}
@@ -198,10 +201,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         """SE 登录页操作。
 
         SE 外层登录页提交用户名/密码后,真实 customer app 位于 portal iframe。
-        browser_lock 串行化登录,避免 Data/Exec 并发登录触发 Cloudflare。
+        browser context 级登录状态串行化登录,避免 Data/Exec 并发登录与二次提交旧登录页。
         """
 
-        await se_login(self._page, self._config, self._browser_lock)
+        await se_login(self._page, self._config, self._browser_lock, login_state=self._login_state)
         self._log.info("SharpExch login successful")
 
     async def _disconnect(self) -> None:

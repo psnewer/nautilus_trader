@@ -333,7 +333,9 @@ runner → role 规则:
   `SharpExchWebSocketHandler` 再执行 `se_login`(见 §3.6 Login 串行化);该 helper 不使用 `networkidle`,而是先检查
   外层登录表单,有表单时必须提交凭据,只有确认没有登录表单时才把 `/customer` iframe
   视为可复用登录态,兼容 `sharpxch.com/player/` 外层页长期不跳转且未授权时也可能预加载
-  customer iframe 的真实行为;customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
+  customer iframe 的真实行为;同一 browser context 内若已有 page 完成登录,后续 page 在
+  `SharpExchLoginState` 锁内优先复用 authenticated session,避免 discovery/execution 旧登录页二次提交;
+  customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
   弹窗,再继续 API/WS 初始化。`_connect` 使用 Future 等待 profile/balance 与 `CURRENT_BETS`
   两个业务信号,等待上限 30s,不再使用 8s 固定轮询只等余额。
   若余额缺失,连接完成后生成 0 USD 初始 `AccountState` 以注册账户;
@@ -484,15 +486,17 @@ runner → role 规则:
 
 ### 3.6 Login 串行化
 
-**问题**:NT 启动时并发连接 Data/Exec clients。Discovery 创建 `se-discovery` 页、Execution 创建 `execution` 页,两者并发调用 `se_login` 触发 Cloudflare 验证。
+**问题**:NT 启动时并发连接 Data/Exec clients。Discovery 创建 `se-discovery` 页、Execution 创建 `execution` 页,两者并发调用 `se_login` 触发 Cloudflare 验证。仅用裸 lock 串行化还不够:第二个 page 可能在第一个 page 登录前已经打开旧登录页,拿到锁后仍会基于旧 DOM 二次提交表单。
 
-**解决方案**:在 `se_login` 中使用 `browser_lock` 串行化登录。各 client 保持独立 page,但登录操作串行执行。
+**解决方案**:在 `se_login` 中使用 browser context 级 `SharpExchLoginState`。它同时持有登录锁与 `authenticated` 标记:第一个 page 成功登录后标记 context 已认证;第二个 page 拿到锁后优先等待 customer app/session 复用,不再直接提交旧登录页。
 
 #### 3.6.1 原理
 
 Browser context 内 cookies/session 是共享的:
-1. 第一个 page 登录成功 → session cookies 写入 context
-2. 第二个 page 调用 `se_login` → 导航到 login_url → 检测到已有 session → 跳过表单提交
+1. 第一个 page 登录成功 → session cookies 写入 context,`SharpExchLoginState.authenticated=True`
+2. 第二个 page 调用 `se_login` → 拿到同一 `SharpExchLoginState.lock`
+3. 若 context 已认证,先导航/等待 customer app;成功则跳过表单提交
+4. 若 session 过期或 customer app 不可用,再退回普通表单登录路径
 
 #### 3.6.2 时序
 
@@ -501,15 +505,15 @@ NT 并发 connect data/exec clients
     │
     ├─ [Discovery] _se_browser_json_fetcher
     │     ├─ create_page("se-discovery")
-    │     ├─ se_login(page, config, browser_lock) ← 持锁
-    │     │     └─ 导航 → 填表单 → 登录成功 → cookies 写入 context
+    │     ├─ se_login(page, config, login_state) ← 持 context 登录锁
+    │     │     └─ 导航 → 填表单 → 登录成功 → cookies 写入 context → authenticated=True
     │     └─ 释放锁 → fetch API
     │
     └─ [Execution] _connect
           ├─ create_page("execution")
           ├─ 设置 WS handler + response listener
-          ├─ se_login(page, config, browser_lock) ← 等锁
-          │     └─ 拿到锁 → 导航 → 检测已有 session → 跳过表单
+          ├─ se_login(page, config, login_state) ← 等 context 登录锁
+          │     └─ 拿到锁 → authenticated=True → 等 customer app → 跳过表单
           └─ 继续 WS 监听
 ```
 
@@ -526,17 +530,20 @@ NT 并发 connect data/exec clients
 #### 3.6.4 代码落点
 
 - `web.py`:
-  - `se_login(page, config, browser_lock=None)`:增加可选 `browser_lock` 参数,有锁时串行化登录
+  - `SharpExchLoginState`:browser context 级登录锁 + authenticated 标记
+  - `se_login(page, config, browser_lock=None, login_state=None)`:优先使用 `login_state` 串行化登录并复用已认证 context;`browser_lock` 仅保留兼容旧调用
 
 - `factories.py`:
-  - `_se_browser_json_fetcher()`:调用 `se_login(page, config, browser_lock)`
+  - `_shared_se_login_state(ctx)`:从 `ArbContext.browser_login_state_by_venue["SHARPEXCH"]` 取/建共享状态
+  - `_se_browser_json_fetcher()`:调用 `se_login(page, config, login_state=...)`
 
 - `execution.py`:
-  - `_connect()`:调用 `se_login(self._page, self._config, self._browser_lock)`
+  - `_connect()`:调用 `se_login(self._page, self._config, login_state=...)`
 
 #### 3.6.5 Session 复用检测
 
 `se_login` 已有 session 复用逻辑:导航后检查登录表单是否存在,无表单则视为已登录。
+新增 context authenticated 快路径后,第二个 page 即使仍持有旧登录页 DOM,也会先等待 customer app/session 复用。
 第二个 page 登录时,因 context 已有 session cookies,SE 服务端可能:
 - 直接跳转到 customer 页面(不显示登录表单)
 - 或显示已登录状态

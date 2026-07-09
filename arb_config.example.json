@@ -7,7 +7,7 @@
         {
           "sport": "Tennis",
           "competitions": [
-            "atp"
+            "wimbledon"
           ]
         }
       ]
@@ -39,7 +39,7 @@
     "min_similarity": 1,
     "sport_aliases": {},
     "competition_aliases": {
-      "atp": "ATP",
+      "wimbledon": "ATP",
       "Men's Wimbledon 2026": "ATP"
     },
     "competition_max_matches": {
@@ -56,27 +56,26 @@
       "enabled": true,
       "base_url": "https://www.orbitexch.com",
       "headless": false,
-      "page_load_timeout_sec": 120,
-      "staleness_timeout_sec": 300
+      "page_load_timeout_sec": 120
     },
     "sharpexch": {
       "enabled": false,
       "base_url": "https://portal.sharpxch.com",
       "login_url": "https://sharpxch.com/player/",
       "headless": false,
-      "user_data_dir": "~/.config/browser",
-      "page_load_timeout_sec": 120,
-      "staleness_timeout_sec": 300
+      "page_load_timeout_sec": 120
     }
   },
   "arbitrage": {
-    "share": 40,
-    "max_leg_share": 100,
+    "share": 30,
+    "max_leg_share": 40,
     "fx": 1.33
   },
   "risk": {
     "match_tp": 0.05,
-    "match_sl": -0.05
+    "match_sl": -0.05,
+    "min_probability": 0.03,
+    "max_probability": 0.97
   },
   "execution": {
     "tracking_timeout_sec": 30
@@ -84,23 +83,21 @@
   "web": {
     "enabled": true,
     "host": "127.0.0.1",
-    "port": 3001,
-    "start_halted": true
+    "port": 8090,
+    "start_halted": false
   },
   "strategy": {
     "enabled": true,
-    "log_evaluations": false,
+    "log_evaluations": true,
     "strategies": {
       "mean_rebate": {
         "arbitrage_tree": {
-          "self_hits": {
-            "signal": "pre_match"
-          },
+          "self_hits": {},
           "checktion": [
             {
               "type": "mean_rebate",
               "params": {
-                "min_rate": 0.01
+                "min_rate": -1
               }
             },
             {
@@ -112,7 +109,17 @@
               "type": "share_limit"
             },
             {
-              "type": "place_bets"
+              "type": "place_bets",
+              "params": {
+                "price_overrides": {
+                  "ORBITEXCH": 20,
+                  "POLYMARKET": 0.05
+                },
+                "qty_overrides": {
+                  "ORBITEXCH": 12,
+                  "POLYMARKET": 5
+                }
+              }
             }
           ]
         },
@@ -121,7 +128,7 @@
             {
               "type": "mean_rebate_recovery",
               "params": {
-                "min_repaired_rebate": -0.05
+                "min_repaired_rebate": 0.1
               }
             }
           ],
@@ -131,32 +138,6 @@
               "params": {
                 "intent": "recovery"
               }
-            }
-          ]
-        }
-      },
-      "one_side_rebate": {
-        "arbitrage_tree": {
-          "self_hits": {
-            "signal": "pre_match"
-          },
-          "checktion": [
-            {
-              "type": "one_side_rebate",
-              "params": {
-                "min_rate": 0.01
-              }
-            },
-            {
-              "type": "require_cross_venue"
-            }
-          ],
-          "actions": [
-            {
-              "type": "share_limit"
-            },
-            {
-              "type": "place_bets"
             }
           ]
         }
@@ -170,14 +151,67 @@
     ]
   },
   "debug": {
-    "enabled": false,
+    "enabled": true,
     "overrides": {
       "skip_execution": {
-        "enabled": true,
+        "enabled": false,
         "value": true,
         "description": "smoke 不真下单"
       }
     },
-    "mock_data": {}
+    "mock_data": {
+      "mock_odds_oe_home": {
+        "category": "odds",
+        "name": "SE home: lay=20 → prob=0.05, 优于 PM home",
+        "enabled": true,
+        "data": {
+          "lay": 20,
+          "lay_size": 12
+        },
+        "conditions": {
+          "venue": "orbitexch",
+          "market_type": "home"
+        }
+      },
+      "mock_odds_pm_home": {
+        "category": "odds",
+        "name": "PM home: ask=0.10 → prob=0.10, 差于 SE home",
+        "enabled": true,
+        "data": {
+          "ask": 0.10,
+          "ask_size": 100
+        },
+        "conditions": {
+          "venue": "polymarket",
+          "market_type": "home"
+        }
+      },
+      "mock_odds_pm_away": {
+        "category": "odds",
+        "name": "PM away: ask=0.05 → prob=0.05, 优于 SE away",
+        "enabled": true,
+        "data": {
+          "ask": 0.05,
+          "ask_size": 5
+        },
+        "conditions": {
+          "venue": "polymarket",
+          "market_type": "away"
+        }
+      },
+      "mock_odds_oe_away": {
+        "category": "odds",
+        "name": "SE away: lay=10 → prob=0.10, 差于 PM away",
+        "enabled": true,
+        "data": {
+          "lay": 10,
+          "lay_size": 100
+        },
+        "conditions": {
+          "venue": "orbitexch",
+          "market_type": "away"
+        }
+      }
+    }
   }
 }

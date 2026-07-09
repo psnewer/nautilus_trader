@@ -124,6 +124,7 @@ def test_data_and_exec_factories_share_browser_manager(monkeypatch):
     assert data_client._browser_manager is exec_client._browser_manager
     assert bootstrap.get_arb_context().browser_manager_by_venue[SHARPEXCH] is data_client._browser_manager
     assert bootstrap.get_arb_context().browser_lock_by_venue[SHARPEXCH] is exec_client._browser_lock
+    assert bootstrap.get_arb_context().browser_login_state_by_venue[SHARPEXCH] is exec_client._login_state
     assert len(created) == 1
 
 

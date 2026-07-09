@@ -78,8 +78,8 @@
                     </div></div></div>
                     <div class="col-md-8"><div class="card"><div class="card-header"><i class="bi bi-table me-1"></i>Matched Pairs</div>
                         <div class="card-body" style="max-height:520px;overflow-y:auto">
-	                        <table class="table table-sm table-hover"><thead><tr><th>Sport</th><th>Competition</th><th>Venues (home vs away)</th><th>Confidence</th></tr></thead>
-                        <tbody id="matching-results-table"><tr><td colspan="5" class="text-center text-muted">加载中…</td></tr></tbody></table>
+	                        <table class="table table-sm table-hover"><thead id="matching-results-head"><tr><th>Sport</th><th>Competition</th></tr></thead>
+                        <tbody id="matching-results-table"><tr><td colspan="2" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
             </div>
@@ -96,8 +96,8 @@
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
                         <div class="card-body" style="max-height:600px;overflow-y:auto">
-	                        <table class="table table-sm table-hover"><thead><tr><th>Match</th><th>Role</th><th>Venue 概率 (bid/ask)</th></tr></thead>
-                        <tbody id="odds-data-table"><tr><td colspan="3" class="text-center text-muted">加载中…</td></tr></tbody></table>
+	                        <table class="table table-sm table-hover"><thead id="odds-data-head"><tr><th>Match</th></tr></thead>
+                        <tbody id="odds-data-table"><tr><td colspan="1" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
             </div>
@@ -206,6 +206,26 @@
     }
     const num = v => v===''?undefined:parseFloat(v);
     const fmt = v => v===null||v===undefined?'<span class="text-muted">—</span>':v;
+    const VENUE_KEY_MAP={polymarket:'POLYMARKET',orbitexch:'ORBITEXCH',sharpexch:'SHARPEXCH'};
+    const KNOWN_TRADABLE_VENUES=['POLYMARKET','ORBITEXCH','SHARPEXCH'];
+    function enabledVenueIds(fallback=[]){
+      const cfg=state.cfg.venues||{};
+      const keys=Object.keys(cfg);
+      const configured=keys.map(k=>[k,cfg[k]||{}])
+        .filter(([k,v])=>v.enabled!==false)
+        .map(([k])=>VENUE_KEY_MAP[k]||k.toUpperCase())
+        .filter(v=>KNOWN_TRADABLE_VENUES.includes(v));
+      if(keys.length) return configured;
+      const seen=new Set();
+      for(const row of fallback){
+        const venues=typeof row==='string'
+          ? [row]
+          : (Array.isArray(row)?row:[row.venue,...Object.keys(row.venue_teams||{}),...Object.keys(row.venue_instrument_ids||{})]);
+        for(const v of venues){ if(KNOWN_TRADABLE_VENUES.includes(v)) seen.add(v); }
+      }
+      return KNOWN_TRADABLE_VENUES.filter(v=>seen.has(v));
+    }
+    const tableEmpty = (cols, text) => `<tr><td colspan="${cols}" class="text-center text-muted">${text}</td></tr>`;
 
     // ── 启停 ──
     function renderState(s){ const e=$('state'); e.textContent=s; e.className='badge '+(s==='ACTIVE'?'bg-success':s==='HALTED'?'bg-danger':'bg-secondary'); e.style.padding='6px 12px'; }
@@ -228,30 +248,32 @@
       $('discovery-results-table').innerHTML=rows||'<tr><td colspan="5" class="text-center text-muted">无</td></tr>'; }
     async function refreshMatching(){ try{ const ps=await api('GET','/matched_pairs');
       $('pairs-count').textContent=ps.length;
+      const venues=enabledVenueIds(ps);
+      $('matching-results-head').innerHTML=`<tr><th>Sport</th><th>Competition</th>${venues.map(v=>`<th>${v} (home vs away)</th>`).join('')}</tr>`;
 	      $('matching-results-table').innerHTML=ps.length?ps.map(p=>
-	        `<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td><td>${renderVenueTeams(p)}</td><td>${p.confidence}</td></tr>`
-	      ).join(''):'<tr><td colspan="4" class="text-center text-muted">暂无匹配</td></tr>'; }catch(e){} }
-	    function renderVenueTeams(p){ const teams=p.venue_teams||{};
-	      const venues=Object.keys(teams).sort();
-	      if(venues.length){ return venues.map(v=>`<div><span class="badge bg-secondary me-1">${fmt(v)}</span>${teams[v]||fmt(null)}</div>`).join(''); }
-	      return fmt(null); }
+	        `<tr><td>${fmt(p.sport)}</td><td>${fmt(p.competition)}</td>${venues.map(v=>`<td>${fmt((p.venue_teams||{})[v])}</td>`).join('')}</tr>`
+	      ).join(''):tableEmpty(venues.length+2,'暂无匹配'); }catch(e){} }
     async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
-      if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="3" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
+      const venueFallback=pairs.flatMap(p=>(p.legs||[]).map(l=>l.venue));
+      const venues=enabledVenueIds(venueFallback);
+      $('odds-data-head').innerHTML=`<tr><th>Match</th>${venues.map(v=>`<th>${v} 概率 (bid/ask)</th>`).join('')}</tr>`;
+      if(!pairs.length){ $('odds-data-table').innerHTML=tableEmpty(venues.length+1,'暂无 matched pair'); return; }
       let rows='';
       for(const p of pairs){ const byRole={};
-        for(const l of p.legs){ (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
+        for(const l of p.legs){ if(venues.includes(l.venue)) (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
         // home 在上,away 在下
         const roles=Object.keys(byRole).sort((a,b)=>a==='home'?-1:b==='home'?1:0); let first=true;
 	        for(const role of roles){
 	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask。
 	          const decProb = o => o ? (1/o).toFixed(3) : null;
-	          const venueCells = Object.entries(byRole[role]).sort(([a],[b])=>a.localeCompare(b)).map(([venue,leg])=>{
+	          const cells = venues.map(venue=>{
+	            const leg=byRole[role][venue]||{};
 	            const isDecimal = leg.odds_model==='decimal';
 	            const bid = isDecimal ? decProb(leg.ask) : leg.bid;
 	            const ask = isDecimal ? decProb(leg.bid) : leg.ask;
-	            return `<div><span class="badge bg-secondary me-1">${venue}</span>${fmt(bid)} / ${fmt(ask)}</div>`;
-	          }).join('') || fmt(null);
-	          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${fmt(role)}</td><td>${venueCells}</td></tr>`; first=false; } }
+	            return `<td>${fmt(bid)} / ${fmt(ask)}</td>`;
+	          }).join('');
+	          rows+=`<tr><td>${first?p.pair_id:''}</td>${cells}</tr>`; first=false; } }
       $('odds-data-table').innerHTML=rows; }catch(e){} }
 
     // ── Config:读 /config 填表 + 按段保存 ──

@@ -12,6 +12,7 @@ from nautilus_trader.adapters.sharpexch.web import se_dismiss_post_login_popup
 from nautilus_trader.adapters.sharpexch.web import se_fetch_json
 from nautilus_trader.adapters.sharpexch.web import se_is_customer_url
 from nautilus_trader.adapters.sharpexch.web import se_login
+from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
 
 
 def test_probe_sanitize_redacts_sensitive_nested_keys():
@@ -209,6 +210,53 @@ def test_login_reuses_customer_iframe_only_when_login_form_missing():
     asyncio.run(se_login(page, cfg))
 
     assert page.clicked == []
+
+
+def test_login_state_reuses_authenticated_context_without_second_submit():
+    class Popup:
+        @property
+        def first(self):
+            return self
+
+        async def wait_for(self, *, state, timeout):
+            raise TimeoutError("missing")
+
+    class Mouse:
+        async def click(self, x, y):
+            raise AssertionError("no popup click expected")
+
+    class Page:
+        def __init__(self):
+            self.url = "about:blank"
+            self.frames = []
+            self.mouse = Mouse()
+            self.locator_calls = []
+
+        async def goto(self, url, *, wait_until, timeout):
+            self.url = url
+            self.frames = [type("Frame", (), {"url": "https://portal.sharpxch.com/customer"})()]
+
+        async def wait_for_selector(self, *args, **kwargs):
+            raise AssertionError("login form should not be queried after authenticated context")
+
+        def locator(self, selector):
+            self.locator_calls.append(selector)
+            if selector == 'div[class*="_postLoginPopup_"]':
+                return Popup()
+            raise AssertionError("login controls should not be touched")
+
+    cfg = type(
+        "Config",
+        (),
+        {"login_url": "https://sharpxch.com/player/", "page_timeout": 120000, "username": "u", "password": "p"},
+    )()
+    state = SharpExchLoginState(authenticated=True)
+    page = Page()
+
+    asyncio.run(se_login(page, cfg, login_state=state))
+
+    assert state.authenticated is True
+    assert page.locator_calls == ['div[class*="_postLoginPopup_"]']
 
 
 def test_login_uses_browser_lock_when_provided():

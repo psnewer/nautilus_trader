@@ -78,7 +78,7 @@ class WebGatewayActor(Actor):
 |---|---|
 | Q16 TradingState(修订)| 控制台启停显式 `set_trading_state`(人工熔断);自动门控仍不碰 TradingState(risk §4.3 前向指针)。详见 §8.1 |
 | Q17 账户状态 | 余额真相仍由各 ExecutionClient 写 NT Cache;`/accounts`(#123)只读 `cache.accounts()` 序列化,navbar 显示余额数字,余额低/熔断由用户看着判断(替代旧 BalanceMonitorActor)|
-| Venue registry | 页面展示不再把 `POLYMARKET` 写死为唯一主腿;Discovery 统计/过滤从 `/instruments` 实际 venue 动态生成,Matching/Odds 按返回的真实 venue 列表展示;Matching 表分组只读 `venue_instrument_ids`,不再输出旧 `pm_*` / `oe_*` 字段;`/odds` leg 携带 `odds_model` 供前端决定是否 `1/decimal_odds` 换算 |
+| Venue registry | 页面展示不再把 `POLYMARKET` 写死为唯一主腿;Discovery 统计/过滤从 `/instruments` 实际 venue 动态生成;Matching/Odds 的列名按 `config.venues.*.enabled` 中的可交易 venue 生成,列标题即真实 venue id,不展示 PMSPORTS/anchor;Matching 表分组只读 `venue_instrument_ids`,不再输出旧 `pm_*` / `oe_*` 字段;`/odds` leg 携带 `odds_model` 供前端决定是否 `1/decimal_odds` 换算 |
 | §6.10 同步 | 本 Actor 不参与健康检查 ⊥ 执行互斥;无 await 循环阻塞交易 loop(WS 用非阻塞 queue) |
 
 ## 6. 落地清单(scaffolding;控制台清单见 §8.6)
@@ -151,8 +151,8 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
-| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams`,不再输出旧 `pm_*` / `oe_*` / `external_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示分组只读 `venue_instrument_ids`,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底 |
-| GET | `/odds` | PairRegistry + `cache.order_book` 最优价;每条 leg 带 `venue` / `role` / `odds_model` / `bid` / `ask`,前端按 `odds_model=decimal` 将十进制赔率按 1/odds 换算成隐含概率,probability venue 原样展示 |
+| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams`,不再输出旧 `pm_*` / `oe_*` / `external_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示列按配置 enabled tradable venues 生成,每列从 `venue_teams[venue]` 取值,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底,也不显示 anchor;API 保留 `confidence`,但页面不展示 Confidence 列 |
+| GET | `/odds` | PairRegistry + `cache.order_book` 最优价;每条 leg 带 `venue` / `role` / `odds_model` / `bid` / `ask`,前端按配置 enabled tradable venues 生成列并过滤 anchor;`odds_model=decimal` 时将十进制赔率按 1/odds 换算成隐含概率,probability venue 原样展示 |
 | WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 
 ### 8.5 安全
