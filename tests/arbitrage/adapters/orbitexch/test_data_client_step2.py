@@ -40,7 +40,7 @@ def _iid(): return InstrumentId(Symbol("1-123-2-None"), Venue("ORBITEXCH"))
 
 
 def test_runner_to_book_deltas_clears_then_adds_both_sides():
-    """data-2.snap.1: snapshot 帧 → 1 CLEAR + N BACK(BUY) + M LAY(SELL),包成 OrderBookDeltas。"""
+    """data-2.snap.1: snapshot 帧 → 1 CLEAR + N BACK(SELL) + M LAY(BUY),包成 OrderBookDeltas。"""
     runner = {
         "selection_id": "2",
         "back": [{"price": 2.26, "size": 80.59}, {"price": 2.24, "size": 50.0}],
@@ -51,11 +51,11 @@ def test_runner_to_book_deltas_clears_then_adds_both_sides():
     deltas = list(out.deltas)
     assert len(deltas) == 4
     assert deltas[0].action == BookAction.CLEAR
-    # back 档 → BUY
-    assert deltas[1].order.side == OrderSide.BUY and float(deltas[1].order.price) == pytest.approx(2.26)
-    assert deltas[2].order.side == OrderSide.BUY and float(deltas[2].order.price) == pytest.approx(2.24)
-    # lay 档 → SELL
-    assert deltas[3].order.side == OrderSide.SELL and float(deltas[3].order.price) == pytest.approx(2.36)
+    # back 档 → SELL (卖方出价 = asks)
+    assert deltas[1].order.side == OrderSide.SELL and float(deltas[1].order.price) == pytest.approx(2.26)
+    assert deltas[2].order.side == OrderSide.SELL and float(deltas[2].order.price) == pytest.approx(2.24)
+    # lay 档 → BUY (买方出价 = bids)
+    assert deltas[3].order.side == OrderSide.BUY and float(deltas[3].order.price) == pytest.approx(2.36)
 
 
 def test_runner_to_book_deltas_returns_none_when_empty():
@@ -78,7 +78,7 @@ def test_runner_to_book_deltas_only_back_or_only_lay():
     only_back = {"back": [{"price": 2.0, "size": 10}], "lay": []}
     out = oe_runner_to_book_deltas(_iid(), only_back, ts_init_ns=1)
     assert out is not None and len(list(out.deltas)) == 2
-    assert list(out.deltas)[1].order.side == OrderSide.BUY
+    assert list(out.deltas)[1].order.side == OrderSide.SELL  # back → SELL (asks)
 
 
 # ── DataClient 构造 + 路由(离线)─────────────────────────────────

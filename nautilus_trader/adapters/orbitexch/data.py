@@ -85,19 +85,21 @@ def oe_runner_to_book_deltas(
         ),
     ]
     order_id = 1
+    # back = 卖方出价 (seller's price) → asks
     for level in back:
         price = level.get("price")
         size = level.get("size")
         if not price or not size or float(size) <= 0:
             continue
-        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
+        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
+    # lay = 买方出价 (buyer's price) → bids
     for level in lay:
         price = level.get("price")
         size = level.get("size")
         if not price or not size or float(size) <= 0:
             continue
-        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
+        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
     if len(deltas) == 1:  # 只有 CLEAR,无实际档位 → 不发(避免空簿噪音)

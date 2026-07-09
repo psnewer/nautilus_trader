@@ -261,13 +261,11 @@ runner → role 规则:
   用于 competition 页 open/reload 日志锚点。
 - `SharpExchWebSocketHandler.get_frame_counts()` 已落地:只读暴露每类 WS 入向帧计数,
   供 competition 页生命周期等待与 probe 摘要使用;它不改变 frame 分发语义。
-- `se_wait_for_websocket_frames(...)` 已落地:competition 页 `domcontentloaded` 之后最多短等
-  prices 首帧;新开页要求 `prices>=1`,reload 以刷新前 frame count 为 baseline,要求刷新后
-  至少再来一帧。等不到只由调用方低频 warning,不阻断订阅/重试流程。
 - `se_open_or_reload_competition_page(...)` 已落地为可注入 helper:调用方传入
   `browser_manager`、`comp_pages`、`comp_handlers`、price/disconnect callbacks 后,
-  helper 负责新开时 `create_page -> handler.start -> bring_to_front -> goto(domcontentloaded) -> prices 首帧短等 -> registry 写入`,
-  reload 时复用已有 page 并 `bring_to_front -> reload(domcontentloaded) -> prices 新帧短等`;
+  helper 负责新开时 `create_page -> handler.start -> bring_to_front -> goto(domcontentloaded) -> registry 写入`,
+  reload 时复用已有 page 并 `bring_to_front -> reload(domcontentloaded)`;与 OE 一致,`domcontentloaded`
+  之后不再等 prices 首帧(SockJS feed 由 handler 后续帧与 staleness liveness 自愈),
   新开失败时 stop handler 并 close page。`SharpExchDataClient` 调用时把 NT `clock`、
   `config.staleness_timeout_secs`、`liveness_ws_type="prices"` 注入 handler,因此
   `venues.sharpexch.staleness_timeout_sec` 是 competition prices WS 的静默断流 timeout。

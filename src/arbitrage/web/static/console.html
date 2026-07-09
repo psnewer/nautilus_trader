@@ -264,13 +264,13 @@
         // home 在上,away 在下
         const roles=Object.keys(byRole).sort((a,b)=>a==='home'?-1:b==='home'?1:0); let first=true;
 	        for(const role of roles){
-	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率,且 bid/ask 互换(赔率高=概率低)使 bid≤ask。
+	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率。
 	          const decProb = o => o ? (1/o).toFixed(3) : null;
 	          const cells = venues.map(venue=>{
 	            const leg=byRole[role][venue]||{};
 	            const isDecimal = leg.odds_model==='decimal';
-	            const bid = isDecimal ? decProb(leg.ask) : leg.bid;
-	            const ask = isDecimal ? decProb(leg.bid) : leg.ask;
+	            const bid = isDecimal ? decProb(leg.bid) : leg.bid;
+	            const ask = isDecimal ? decProb(leg.ask) : leg.ask;
 	            return `<td>${fmt(bid)} / ${fmt(ask)}</td>`;
 	          }).join('');
 	          rows+=`<tr><td>${first?p.pair_id:''}</td>${cells}</tr>`; first=false; } }

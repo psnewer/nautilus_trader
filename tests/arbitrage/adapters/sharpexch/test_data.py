@@ -24,7 +24,6 @@ from nautilus_trader.adapters.sharpexch.data import se_should_reopen_missing_pag
 from nautilus_trader.adapters.sharpexch.data import se_subscription_plan_from_instrument
 from nautilus_trader.adapters.sharpexch.data import se_update_market_routing
 from nautilus_trader.adapters.sharpexch.data import se_update_subscription_state
-from nautilus_trader.adapters.sharpexch.data import se_wait_for_websocket_frames
 from nautilus_trader.adapters.sharpexch.data import se_websocket_summary
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
@@ -463,23 +462,6 @@ def test_websocket_summary_counts_types():
 def test_websocket_summary_handles_empty():
     handler = SimpleNamespace(get_active_websockets=lambda: [])
     assert se_websocket_summary(handler) == "ws_count=0, ws_types={}, frame_counts={}"
-
-
-def test_wait_for_websocket_frames_returns_true_when_count_reaches_minimum():
-    handler = SimpleNamespace(get_frame_counts=lambda: {"prices": 2})
-
-    assert asyncio.run(se_wait_for_websocket_frames(handler, min_count=2, timeout_ms=1)) is True
-
-
-def test_wait_for_websocket_frames_times_out_when_count_does_not_advance():
-    handler = SimpleNamespace(get_frame_counts=lambda: {"prices": 1})
-
-    assert (
-        asyncio.run(
-            se_wait_for_websocket_frames(handler, min_count=2, timeout_ms=1, poll_ms=1),
-        )
-        is False
-    )
 
 
 def test_open_competition_page_registers_handler_before_goto():
@@ -1025,10 +1007,12 @@ def test_runner_to_book_deltas_clears_then_adds_both_sides():
     deltas = list(out.deltas)
     assert len(deltas) == 4
     assert deltas[0].action == BookAction.CLEAR
-    assert deltas[1].order.side == OrderSide.BUY
+    # back → SELL (卖方出价 = asks)
+    assert deltas[1].order.side == OrderSide.SELL
     assert float(deltas[1].order.price) == pytest.approx(2.0)
-    assert deltas[2].order.side == OrderSide.BUY
-    assert deltas[3].order.side == OrderSide.SELL
+    assert deltas[2].order.side == OrderSide.SELL
+    # lay → BUY (买方出价 = bids)
+    assert deltas[3].order.side == OrderSide.BUY
     assert float(deltas[3].order.price) == pytest.approx(2.1)
 
 

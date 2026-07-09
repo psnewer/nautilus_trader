@@ -27,8 +27,6 @@ from nautilus_trader.model.objects import Quantity
 SHARPEXCH = "SHARPEXCH"
 _COMP_RELOAD_COOLDOWN_SECS = 5.0
 _COMP_REOPEN_RETRY_SECS = 5.0
-_COMP_WS_READY_TIMEOUT_MS = 3000
-_COMP_WS_READY_POLL_MS = 100
 
 
 class SharpExchDataClient(LiveMarketDataClient):
@@ -525,33 +523,6 @@ def se_websocket_summary(handler) -> str:
     return f"ws_count={len(active)}, ws_types={counts}, frame_counts={frame_counts}"
 
 
-async def se_wait_for_websocket_frames(
-    handler,
-    *,
-    ws_type: str = "prices",
-    min_count: int = 1,
-    timeout_ms: int = _COMP_WS_READY_TIMEOUT_MS,
-    poll_ms: int = _COMP_WS_READY_POLL_MS,
-) -> bool:
-    """等待指定 SE WS 类型至少收到一帧。
-
-    competition 页的 `domcontentloaded` 只代表 DOM 可用,不代表 SockJS prices feed
-    已完成连接。这里最多短等一个 prices 首帧;等不到由调用方记录低频 warning。
-    """
-
-    if not hasattr(handler, "get_frame_counts"):
-        return True
-
-    deadline = asyncio.get_running_loop().time() + max(0, timeout_ms) / 1000
-    while True:
-        counts = handler.get_frame_counts()
-        if int(counts.get(ws_type, 0) or 0) >= min_count:
-            return True
-        if asyncio.get_running_loop().time() >= deadline:
-            return False
-        await asyncio.sleep(max(1, poll_ms) / 1000)
-
-
 async def se_open_or_reload_competition_page(
     *,
     page_key: str,
@@ -596,7 +567,6 @@ async def se_open_or_reload_competition_page(
             await handler.start()
             await page.bring_to_front()
             await page.goto(url, wait_until="domcontentloaded", timeout=page_timeout)
-            ready = await se_wait_for_websocket_frames(handler)
         except Exception:
             with suppress(Exception):
                 await handler.stop()
@@ -605,20 +575,11 @@ async def se_open_or_reload_competition_page(
             raise
         comp_pages[page_key] = page
         comp_handlers[page_key] = handler
-        if not ready and logger is not None:
-            logger.warning(f"SE competition page {page_key} opened before prices first frame: {se_websocket_summary(handler)}")
         return {"action": "opened", "url": url, "summary": se_websocket_summary(handler)}
 
     handler = comp_handlers.get(page_key)
     await page.bring_to_front()
-    baseline = 0
-    if handler is not None and hasattr(handler, "get_frame_counts"):
-        baseline = int(handler.get_frame_counts().get("prices", 0) or 0)
     await page.reload(wait_until="domcontentloaded", timeout=page_timeout)
-    if handler is not None:
-        ready = await se_wait_for_websocket_frames(handler, min_count=baseline + 1)
-        if not ready and logger is not None:
-            logger.warning(f"SE competition page {page_key} reloaded before prices first frame: {se_websocket_summary(handler)}")
     summary = se_websocket_summary(handler) if handler is not None else "ws_count=unknown"
     return {"action": "reloaded", "url": url, "summary": summary}
 
@@ -851,19 +812,21 @@ def se_runner_to_book_deltas(
         ),
     ]
     order_id = 1
+    # back = 卖方出价 (seller's price) → asks
     for level in back:
         price = level.get("price")
         size = level.get("size")
         if not price or not size or float(size) <= 0:
             continue
-        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
+        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
+    # lay = 买方出价 (buyer's price) → bids
     for level in lay:
         price = level.get("price")
         size = level.get("size")
         if not price or not size or float(size) <= 0:
             continue
-        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
+        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
     if len(deltas) == 1:
