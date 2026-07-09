@@ -231,6 +231,28 @@ def test_liveness_gate_parses_sharpexch_expected_leg():
     assert ctx.engine._check_required_venues_alive(order) is True
 
 
+def test_liveness_gate_denies_unparseable_expected_leg_key():
+    liveness = VenueExecutionLiveness(("POLYMARKET",))
+    liveness.mark_order_alive("POLYMARKET")
+    liveness.mark_position_alive("POLYMARKET")
+    ctx = _Ctx(venue_liveness=liveness)
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(
+        pm.id,
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:home:0",
+            "arb:expected_legs=pm:home:0,pmsports:event:1",
+        ],
+    )
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_required_venues_alive(order) is False
+    assert denials and "__UNSUPPORTED_EXPECTED_LEG__" in denials[0]
+
+
 # ── 赔率/概率门控(risk-6.7.1e)───────────────────────────────────
 def test_probability_gate_denies_pm_price_outside_bounds():
     ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))

@@ -118,7 +118,6 @@ runtime 流程。
 | `is_known_venue(venue)` | 只检查 venue 是否存在于静态 registry;供上层过滤未知 venue,不顺便表达 odds/role 语义 |
 | `venue_id_from_instrument_id(instrument_id)` | 优先从 NT `InstrumentId.venue.value` 读取真实 venue id;兼容旧测试字符串后缀 |
 | `venue_id_from_leg_key(leg_key)` | 从 opportunity `leg_key` 前缀解析真实 venue id;兼容 `pm/oe/se` 旧缩写和完整 config key |
-| `is_primary_display_venue(venue)` | 判断 Web 旧 `pm_*` 展示字段所属分组;不表达 matching anchor |
 | `is_decimal_odds_venue(venue)` / `is_probability_odds_venue(venue)` | 查询 descriptor odds model,供策略 / 风控 / portfolio 公式分支使用 |
 | `venue_preference_rank(venue)` | 同概率/同价时的稳定排序 key:probability venue 先于 decimal venue,再按 registry 顺序 |
 | `probability_from_price(venue, price)` | PM probability price / decimal odds venue 的统一概率转换入口 |

@@ -160,7 +160,7 @@ def _mp(
     venue_instrument_ids: dict[str, list[str]] | None = None,
     anchor_instrument_ids: list[str] | None = None,
 ) -> MatchedPair:
-    """构造当前主 schema 的 MatchedPair;旧 PM/OE 字段只在专门测试兼容投影时显式写。"""
+    """构造当前主 schema 的 MatchedPair;测试不再构造旧 PM/OE 投影字段。"""
     if tradable_instrument_ids is None and venue_instrument_ids is not None:
         tradable_instrument_ids = [iid for ids in venue_instrument_ids.values() for iid in ids]
     return MatchedPair(

@@ -1,8 +1,10 @@
-# e2e 测试(占位)
+# e2e 测试
 
 端到端套利场景测试,涵盖完整链路: discovery → matching → strategy → execution → events。
 
 对应章节: 不归属单一 §,贯穿 §5.1-§5.7
+
+**状态(2026-07-08)**:barrier / liveness 的关键机制已有 execution/risk 离线单测覆盖,本文保留跨组件 E2E 与真钱 live 验收清单。需要真实账户或全节点启动的项目必须由用户明确触发。
 
 ## 与 `src/arbitrage/testing/` 的关系
 
@@ -12,7 +14,7 @@
 
 迁移完成后两者可能合并(Step 8 清理时考虑)。
 
-## 预期用例(占位)
+## 预期用例
 
 - e2e-1: 完整套利会话(从 instrument 加载到双腿成交)在 paper trading 上的端到端验证
 - e2e-2: 当前主流程闭环:mean_rebate 下一轮机会重新 submit 时,execution barrier 收齐同 opportunity 的 risk-pass legs;若任一 leg 有 residual 且 risk-pass legs 中没有显式撤单腿 → 整次 opportunity cancel-only,撤残单并丢弃本次所有新 submit。测试输入 leg 必须已带 `share_if_wins/qty`,Action 不再用 `share` 参数兜底(`test_mean_rebate_cancel_only.py` 需升级为 barrier 级验收)
@@ -69,7 +71,7 @@
 - 期望:barrier 不因 residual 把整次 opportunity 改写为普通 cancel-only;按撤单腿所属设计继续。
 - 验收:撤单腿判定来自显式 metadata/command,不是 residual cancel-only 的内部动作。
 
-## VenueExecutionLiveness opportunity 门控(设计待落地,2026-06-15)
+## VenueExecutionLiveness opportunity 门控(代码已落地,E2E 待验,2026-06-15)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + risk §3.1。
 
@@ -84,7 +86,7 @@
   - PM leg 也被 Risk deny,因为 required venues 包含 OE。
   - OE leg 同样 deny。
   - ExecutionClient 没有任何一腿真实 submit。
-- 验收: Risk 用 `expected_legs` 推导 required venues,不是只看当前 order venue;`risk.opportunity.leg_denied` 触发 barrier zero-session finish。
+- 验收: Risk 用 `expected_legs` 推导 required venues,不是只看当前 order venue;`risk.opportunity.leg_denied` 触发 barrier zero-session finish。离线验收已覆盖 PM/OE/SE required venue 解析与无法解析的 `pmsports:*` fail-closed;本目录保留全链路 E2E 待验。
 
 ### e2e-11: venue liveness 恢复后下一轮 opportunity 可通过
 - 前置: e2e-10 后,reconcile 成功写 `oe_order_alive=true` 且 `oe_position_alive=true`;PM 仍 alive。

@@ -234,7 +234,7 @@
 	    function renderVenueTeams(p){ const teams=p.venue_teams||{};
 	      const venues=Object.keys(teams).sort();
 	      if(venues.length){ return venues.map(v=>`<div><span class="badge bg-secondary me-1">${fmt(v)}</span>${teams[v]||fmt(null)}</div>`).join(''); }
-	      return `<span class="badge bg-secondary me-1">${fmt(p.external_venue||'Venue')}</span>${p.external_teams||fmt(null)}`; }
+	      return fmt(null); }
     async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
       if(!pairs.length){ $('odds-data-table').innerHTML='<tr><td colspan="3" class="text-center text-muted">暂无 matched pair</td></tr>'; return; }
       let rows='';

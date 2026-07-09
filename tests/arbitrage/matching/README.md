@@ -35,13 +35,10 @@
 | `test_normalizer.py` | 名称归一化算法 + instrument → `NormalizedEvent` 反推 |
 | `test_engine.py` | 匹配算法(输入为 `NormalizedEvent` 列表,输出 anchor/tradable `MatchResult`) |
 | `test_actor.py` | Actor timer 触发、cache latch、PairRegistry 注册、PMSPORTS anchor 聚合、ended eviction |
+| `test_matched_pair_event.py` | `MatchedPair` schema / keyed map / Arrow roundtrip / 旧 PM/OE 字段拒绝回填 |
+| `test_pair_registry.py` | pair→legs / anchor 分槽 / refresh interval 热改 |
 
-## Slice 10d 修(#52):msgbus 直订替代 subscribe_data
-
-`MarketMatchingActor.on_start` 改用 `self._msgbus.subscribe(topic=f"data.{InstrumentsRefreshed.__name__}", handler=self.on_data)` 替代 `subscribe_data(DataType(InstrumentsRefreshed))`。**原因**:NT `subscribe_data` 强制走 SubscribeData cmd 经 DataEngine 路由,需 `client_id` 或 `instrument_id`(slice 10c live smoke 见 3 个 ERROR);custom Actor-to-Actor 事件无 venue/instrument 归属,正确路径是 msgbus 直订(`publish_data` 内部就是 msgbus.publish 到 `data.<TypeName>` topic)。**slice 10d live smoke 验:0 ERROR + OE refresh 3 次正常推进**。
-| `test_heterogeneous_normalization.py` | 跨 venue 异构 instrument 归一(Q9 验收) |
-
----
+早期 `test_event_normalizer.py` / `test_match_engine.py` / `test_heterogeneous_normalization.py` skipped 摘要文件已删除;真实验收集中在上表可执行测试。
 
 ## 用例(摘要)
 
@@ -55,12 +52,12 @@
 期望: 匹配引擎输出 `MatchResult` 列表,主字段为 `anchor_event` / `tradable_event`
 验收: `test_engine.py` 覆盖同名匹配 / 跨 competition 不配 / 模糊匹配 / 贪心 / cap / min_similarity / 空输入 / anchor/tradable 字段。
 
-### matching-3.1: MarketMatchingActor 在两家都有近期 refresh 时触发匹配
+### matching-3.1: MarketMatchingActor timer 读 cache 触发匹配
 
-前置: Actor 启动,订阅 `DataType(InstrumentsRefreshed)`
-输入: 先收到 PM 的 `InstrumentsRefreshed`,再收到 OE 的 `InstrumentsRefreshed`(都在 `fresh_window` 内)
-期望: 第二条事件后立即触发 `_do_match`,publish `MatchedPair` 数据
-验收: matched 数量 > 0(测试用 fixture 提供可匹配的 instrument 数据)
+前置: Actor 启动,cache 已有 anchor venue 与至少一个 tradable venue 的可归一 instruments。
+输入: 触发 `_maybe_match` / actor timer。
+期望: Actor 从 cache 读取当前 instrument 快照,经 normalizer + match engine 生成并 publish `MatchedPair`。
+验收:`test_timer_tick_matches_when_anchor_and_tradable_cache_present` 等 `test_actor.py` 用例覆盖;不再依赖 `InstrumentsRefreshed`。
 
 ### matching-3.2: MarketMatchingActor PM 单边失败时不触发
 

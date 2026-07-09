@@ -1,9 +1,12 @@
 """ArbPolymarketInstrumentProvider —— PM series-based 发现纯函数测试(#55/#57)。
 
-队名解析(`_parse_team_names`)+ selection_role(`_role_for_token`)是离线纯逻辑,可单测;
-完整 load_all_async(真 gamma API + httpx)经 /live-test 验。
+队名解析(`_parse_team_names`)+ selection_role(`_role_for_token`)+ moneyline instrument info 写入
+是离线纯逻辑,可单测;完整 load_all_async(真 gamma API + httpx)经 /live-test 验。
 """
 
+from types import SimpleNamespace
+
+from nautilus_trader.adapters.polymarket.arb_provider import ArbPolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
 from nautilus_trader.adapters.polymarket.arb_provider import _role_for_token
 from nautilus_trader.adapters.polymarket.arb_provider import _teams_from_event
@@ -179,3 +182,59 @@ def test_unknown_suffix_skipped():
 
 def test_empty_ticker_returns_empty():
     assert _role_for_token(market_slug="x", event_ticker="", outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
+
+
+# ─── _load_moneyline_market: PM 6-key + game_id 写入 ──────────────
+
+
+def test_load_moneyline_market_writes_matching_info_keys():
+    provider = object.__new__(ArbPolymarketInstrumentProvider)
+    provider._clock = SimpleNamespace(timestamp_ns=lambda: 0)
+    added = []
+    provider.add = lambda inst: added.append(inst)
+
+    market = {
+        "conditionId": "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        "questionID": "q",
+        "question": "ATP: A vs B",
+        "description": "",
+        "slug": "atp-aaa-bbb-2026-06-03",
+        "enableOrderBook": True,
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5,
+        "acceptingOrders": True,
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "endDateIso": "2026-06-03T00:00:00Z",
+        "startDateIso": "2026-06-03T10:00:00Z",
+        "marketMakerAddress": "",
+        "outcomes": '["A","B"]',
+        "outcomePrices": '["0.5","0.5"]',
+        "clobTokenIds": '["1","2"]',
+        "sportsMarketType": "moneyline",
+    }
+
+    count = provider._load_moneyline_market(
+        market=market,
+        event_ticker="atp-aaa-bbb-2026-06-03",
+        comp_name="ATP",
+        sport="Tennis",
+        home_team="A",
+        away_team="B",
+        home_abbr="aaa",
+        away_abbr="bbb",
+        event_start="2026-06-03T10:00:00Z",
+        ordering="home",
+        game_id=5843495,
+    )
+
+    assert count == 2
+    assert [inst.info["selection_role"] for inst in added] == ["home", "away"]
+    for inst in added:
+        assert inst.info["sport"] == "Tennis"
+        assert inst.info["competition"] == "ATP"
+        assert inst.info["home_team"] == "A"
+        assert inst.info["away_team"] == "B"
+        assert inst.info["start_ts"] == 1780480800000000000
+        assert inst.info["game_id"] == 5843495

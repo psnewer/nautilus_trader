@@ -20,12 +20,13 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 | 文件 | 范围 |
 |---|---|
-| `test_browser_manager_sharing.py` | Q2 验收: 三方共享 manager + page 命名 + 生命周期 |
-| `test_provider.py` | OE Provider 的具体行为(Q9 字段 / 抓取失败 / page 命名 / 最小 stake 元数据) |
-| `test_data_client.py` | OE DataClient(Step 2 占位,详细等 Step 2 启动) |
-| `test_execution_client.py` | OE ExecutionClient(Step 5 占位,详细等 Step 5 启动) |
+| `test_browser_manager_sharing.py` | 共享 BrowserManager 的并发 `start()` 低层回归(SIGABRT 修) |
+| `../discovery/test_orbitexch_provider.py` / `../discovery/test_orbitexch_discovery_scraper.py` | OE Provider / discovery scraper 的具体行为(Q9 字段、最小 stake 元数据、懒加载解除) |
+| `test_data_client_step2.py` | OE DataClient(Step 2)真实实现离线覆盖:runner→`OrderBookDeltas`、competition page open/reload、订阅状态、周期发现异常继续、prices WS liveness/reload |
+| `test_ws_general_frames.py` | OE WebSocket handler 帧解析、首帧日志、close callback、prices liveness timeout |
+| `../execution/test_orbitexch_client.py` | OE ExecutionClient(Step 5)离线核心覆盖:BALANCE→AccountState、submit/cancel/session/page-lock、CURRENT_BETS fills/reports、execution liveness/reload |
 | `test_execution_translation.py` | **Gap C(#63/#64)纯映射 + fx 边界**:① `nt_order_to_legacy_order`(NT Order→executor 旧 Order)5 case:BUY→BACK / SELL→LAY / `null_handicap`(-9999999.0 sentinel)→0 / 真 handicap 保留 / 缺 market\|selection→None。② **OE 出站 fx**:`OrbitExchExecutor.place_order` 接收 USD `order.size`,payload `"size"` 除以 `fx` 转 GBP。③ **OE 入站 fx**:`normalize_current_bets_to_usd` 把 `size*`/`liability`/`profitNet` 等字段乘 `fx`,价格字段不变。④ **`current_bets_to_fills`(成交回执)7 case**:空→[] / unmatched→[] / 新成交→full delta / 增量(5→8)→delta=3 / 同累积值→[] / 无价(avg=0)→跳过 / 缺 offerId→跳过。⑤ **`bet_order_progress`(reconcile 派生)8 case**:缺 offerId→None / 仅 remaining→accepted / remaining+matched→partially_filled / 仅 matched→filled / 都 0→unknown / **bet 自带 side+market+selection+price 透出** / **原始量优先 sizePlaced** / 无 sizePlaced→matched+remaining 兜底。真 `executor.place_order` + `_connect` + `_on_current_bets`→`generate_order_filled` + `generate_order_status_report(s)`(**bet 自带 `side`/`sizePlaced` 直接派生,`market+selection` 反查 instrument → 外部/重启单也能 reconcile**)= **真钱,/live-test 经 `launchers/arb_node.py` 验**(scenario 跑老栈不验 NT client)。`test_orbitexch_client.py::test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes` 锁定 fill delta 用原始 GBP 累积值,fx 热改不制造虚假成交 |
-| `test_data_factory_provider_wiring.py` | **slice 7A(#46) + fx 最小 stake接线 + venue keyed context**:`OrbitExchLiveDataClientFactory.create` 只读 `ArbContext.discovery_config_by_venue["ORBITEXCH"]`(缺→`InstrumentProvider()` 占位 / 有→真 `OrbitExchInstrumentProvider(scraper, aliases, fx)`),`fx` 来自 `ArbContext.arbitrage_params`;构造后回写 `instrument_provider_by_venue["ORBITEXCH"]` |
+| `test_data_factory_provider_wiring.py` | **slice 7A(#46) + fx 最小 stake接线 + venue keyed context**:`OrbitExchLiveDataClientFactory.create` 只读 `ArbContext.discovery_config_by_venue["ORBITEXCH"]`(缺→fallback `InstrumentProvider()` / 有→真 `OrbitExchInstrumentProvider(scraper, aliases, fx)`),`fx` 来自 `ArbContext.arbitrage_params`;构造后回写 `instrument_provider_by_venue["ORBITEXCH"]`,data/exec 共享 BrowserManager 由 keyed map 保证 |
 | `test_data_client_inplay_writeback.py` | **slice 9(#49)**:`write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper(`_on_price_frame` 路径 NT 重,_cache cdef readonly Mock 困难,验 helper 即可)。case:present True / present False / cache 缺 instrument 不 raise / info=None 不 raise |
 | `test_data_client_step2.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:OE 周期 instrument rediscovery 单轮 `load_all_async` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 
@@ -49,7 +50,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 ## #62(2026-06-04):两个可见窗口修复 —— data/exec 真共享 + scraper headless
 
-用户报"弹两个浏览器,一个停在主页"。根因:§6.2/Q2"data+exec 共享"**未落地**——`factories.py` 的 data/exec factory **各 `new` 一个 `PlaywrightBrowserManager`**;scraper 又自起一套(Slice 7A 已知),且跟随 venue `headless`(=false 可见)+ 用 data/exec 的登录 `user_data_dir`。修:
+用户报"弹两个浏览器,一个停在主页"。根因:§6.2/Q2"data+exec 共享"**当时缺失**——`factories.py` 的 data/exec factory **各 `new` 一个 `PlaywrightBrowserManager`**;scraper 又自起一套(Slice 7A 已知),且跟随 venue `headless`(=false 可见)+ 用 data/exec 的登录 `user_data_dir`。修:
 - **data+exec 共享单例**:`ArbContext.browser_manager_by_venue["ORBITEXCH"]` 由 `_shared_oe_browser_manager(ctx,config)` 经 `ctx_map_get_or_create` 读取/回写(data 先建回写、exec 复用)→ 一个登录浏览器。
 - **scraper 解耦 headless**:`to_oe_scraper_config` 强制 `headless=True` + `user_data_dir=None`(免登录、非持久化、后台隐身)—— **不与 data/exec 共享**(用户:免登录 + 定时跑,共享会打断登录会话/抢资源)。
 - 验:`test_dispatcher` 断言 `headless is True`/`user_data_dir is None`;live smoke16 `MatchedPair (oe=2)` 证 headless scraper 发现仍产 OE instrument,0 错误。
@@ -118,7 +119,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
 - ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
 - ✅ **competition 页存活(#109)**:封装进 WS handler(心跳超时 + close → `on_disconnect`),DataClient 事件驱动 reload、**无 HealthCheckLoop**;见上方"#109 WS 存活封装"用例(旧 #70 HealthCheckLoop 段已失效)
-- ⬜ **待 live 接**:scraper DOM 抽 `start_ts`
+- ✅ `start_ts` 已由 NT 路径 `OrbitExchDiscoveryClient` 从 `sport/details.marketStartTime` / `event.openDate` 解析;旧 scraper DOM 路径仅供 services 栈使用
 
 ---
 
@@ -253,13 +254,13 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 ### oe-adapter-5.x (Step 5): OE ExecutionClient
 
-**待 Step 5 启动时展开**。预期范围:
-- 继承 `LiveExecutionClient`
-- `_submit_order` / `_cancel_order` / `_modify_order` 实现
-- 事件回写: `generate_order_submitted` / `generate_order_filled` 等
-- 通过 `manager.get_page("execution")` 提交订单
-- WS USER channel 订阅订单状态(如 OE 提供;否则轮询)
-- Reconciliation: `generate_order_status_reports` / `generate_position_status_reports`
+**已落地离线核心 + 分档 live 验证**。当前实现继承 `LiveExecutionClient`,实现
+`_submit_order` / `_cancel_order` / `_modify_order`(拒绝) / reports,通过共享
+BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BETS`
+驱动 fill/reconcile/liveness。离线验收主要在
+`tests/arbitrage/execution/test_orbitexch_client.py` 与
+`tests/arbitrage/adapters/orbitexch/test_execution_translation.py`;真 place+cancel 与真成交
+已按 Gap C 分档 live probe 记录在本 README 上方与 execution 详设中。
 
 ### oe-adapter-5.liveness(#105 A1):exec 页 WS 存活锚(§4.3bis(4))
 **✅ 已落地 2026-06-13;close stale 已落地 2026-06-18**。前置:`OrbitExchWebSocketHandler.on_frame` 回调注册;输入:`_on_frame_received` 收到 empty / `'h'`(SockJS 心跳)/ `a[...]`(业务)帧;步骤:非空帧(含心跳)在分型前触发 `on_frame` 回调 → ExecClient `_mark_exec_frame` 刷 `_last_frame_ns`;`_exec_ws_fresh()`(idle=300s)判新鲜。期望:心跳/业务帧触发、empty 不触发;刚刷→fresh、超 idle→stale、从未收→stale。新增 close 语义:`close:orders`(general WS)只把 exec freshness 置 stale,不主动 reload / 不直接 mark dead;execution 页 `close:prices` 不影响 exec freshness。**验收**:`test_orbitexch_client.py::test_handler_on_frame_fires_for_heartbeat_and_data_not_empty` / `test_exec_ws_fresh_lifecycle` / `test_exec_ws_orders_close_marks_stale` / `test_exec_ws_prices_close_does_not_mark_stale`。reports 入口已由 reload-then-report 用例消费该锚点。
@@ -346,7 +347,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **期望**:
 - execution 不**再启**新一轮 plan / retry
 - 不存在 "execution 内部撤后再下" 路径(strategy 后议补救)
-**验收**: 静态检索 execution 代码无 recovery 循环;关联 `bug_compensating_cancel_missing` 留在 strategy 设计 TODO
+**验收**: 静态检索 execution 代码无 recovery 循环;关联 `bug_compensating_cancel_missing` 留在 strategy recovery 专项延期项
 
 > ⚠️ **失效横幅(#108,2026-06-15):本节及以下所有 `leg_settled` 状态机用例(oe-adapter-5.health.1 ~ 5.timeout.*)全部退役**。`LegSettledRegistry` 已删除;执行健康真值改由 `OrbitExchExecutionClient` 写 `VenueExecutionLiveness`(order/position alive),Risk 读取门控。现行验收见上方 **oe-adapter-5.liveness-current-bets / 5.liveness-reload(#108)**。以下保留为迁移前记录,迁移时删除或改写。
 

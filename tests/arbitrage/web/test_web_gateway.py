@@ -8,6 +8,7 @@ import asyncio
 import json as _json
 import socket
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nautilus_trader.model.enums import TradingState
@@ -29,7 +30,11 @@ from src.arbitrage.web.app import build_app
 # ── 端口预检 + WS 广播/队列(Actor 纯逻辑)────────────────────────────
 def test_port_bindable_detects_free_and_occupied():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
+    try:
+        sock.bind(("127.0.0.1", 0))
+    except PermissionError as exc:
+        sock.close()
+        pytest.skip(f"local socket bind not permitted in this environment: {exc}")
     sock.listen(1)
     port = sock.getsockname()[1]
     try:

@@ -186,7 +186,7 @@ MatchedPair(
 
 - `MatchedPair` 事件不再携带 `pm_instrument_ids` / `oe_instrument_ids`。
 - `MatchedPair` 不从旧字段或 instrument id 后缀反推 `tradable_instrument_ids` / `venue_instrument_ids`。
-- Web 若仍需对旧前端输出 PM/OE 展示字段,只能从 `venue_instrument_ids` 派生,不得反向影响 Matching 事件。
+- Web `/matched_pairs` 不再输出 PM/OE/external 旧展示字段,只暴露 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams`。
 - consumer 必须使用 `tradable_instrument_ids` / `venue_instrument_ids` 或 PairRegistry tradable API。
 
 PairRegistry 需要扩展:
@@ -257,7 +257,7 @@ Venue Registry 仍只描述 trading venues。若需要 registry,新增 `DATA_SOU
 |---|---|
 | 增加 `.PMSPORTS` synthetic instrument discovery,锁住字段和 non-tradable 标记 | 已落地 |
 | PairRegistry 增 anchor/tradable 区分 API,默认 consumer API 返回 tradable ids | 已落地 |
-| `MatchedPair` 增 anchor/tradable/venue 字段,旧字段仅展示且不回填主字段 | 已落地 |
+| `MatchedPair` 增 anchor/tradable/venue 字段,并删除旧 PM/OE 投影字段 | 已落地 |
 | StrategyEvaluator OBD 订阅与 snapshot 改只读 tradable ids | 已落地 |
 | MatchingActor 增 `anchor_venue="PMSPORTS"` 路径,用 PMSPORTS anchors 匹配 enabled tradable venues | 已落地 |
 | Eviction 从 `game_id -> pair_id` 继续工作,game_id 来源改为 anchor instrument | 已落地 |

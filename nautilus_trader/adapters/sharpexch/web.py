@@ -44,8 +44,9 @@ async def se_login(page, config, browser_lock=None) -> None:
 
     不使用 `networkidle`:customer app 会长期维持 websocket,该条件不稳定。
 
-    已登录时跳过导航:如果当前页已在 customer app 中(URL 包含 /customer 或存在
-    customer iframe),直接返回,避免重复 goto 触发 Cloudflare。
+    已登录时跳过导航:如果当前页已在 customer app 中且登录表单不可见,直接返回,
+    避免重复 goto 触发 Cloudflare。若 customer iframe 与登录表单并存,以登录表单为准,
+    必须重新提交凭据。
 
     browser_lock:可选的 asyncio.Lock,用于串行化多个 page 的登录操作。
     NT 启动期 Data/Exec 并发 connect,同一 browser context 内并发登录会触发
@@ -63,9 +64,14 @@ async def se_login(page, config, browser_lock=None) -> None:
 async def _se_login_impl(page, config) -> None:
     """se_login 的实际实现。"""
 
-    # 快速路径:已在 customer app 中,无需重新导航登录
+    # 快速路径:已在 customer app 中且没有登录表单,无需重新导航登录。
+    # 若 iframe 和登录表单并存,说明页面处于半登录/过期状态,表单优先。
     current_url = getattr(page, "url", "") or ""
     if se_is_customer_url(current_url) or se_customer_frame(page) is not None:
+        if await _login_form_visible(page, timeout_ms=1000):
+            await _submit_login_form(page, config)
+            await _wait_after_login(page)
+            return
         await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
@@ -97,6 +103,10 @@ async def _se_login_impl(page, config) -> None:
     # Re-check after customer frame wait - page state might have changed
     current_url_after = getattr(page, "url", "") or ""
     if se_is_customer_url(current_url_after) or se_customer_frame(page) is not None:
+        if await _login_form_visible(page, timeout_ms=1000):
+            await _submit_login_form(page, config)
+            await _wait_after_login(page)
+            return
         await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
@@ -106,6 +116,10 @@ async def _se_login_impl(page, config) -> None:
 
     # Final check before attempting login form
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
+        if await _login_form_visible(page, timeout_ms=1000):
+            await _submit_login_form(page, config)
+            await _wait_after_login(page)
+            return
         await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return

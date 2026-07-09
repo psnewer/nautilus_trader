@@ -20,9 +20,13 @@ from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecu
 
 from src.arbitrage.debug.config import DebugConfig
 from src.arbitrage.debug.config import DebugOverride
+from src.arbitrage.debug.config import MockCategory
+from src.arbitrage.debug.config import MockDataItem
 from src.arbitrage.debug.execution_clients import _mock_fill
 from src.arbitrage.debug.execution_clients import _mock_submit
+from src.arbitrage.debug.execution_clients import _mock_submit_with_timeline
 from src.arbitrage.debug.execution_clients import SkipExecutionPolymarketClient
+from src.arbitrage.debug.timeline import TimelineExecutor
 
 
 def _run(coro):
@@ -41,11 +45,36 @@ class _Recorder:
     def __init__(self):
         self.accepted = []
         self.filled = []
+        self.rejected = []
+        self.canceled = []
+        self.expired = []
         self._clock = MagicMock()
         self._clock.timestamp_ns.return_value = 12345
 
     def generate_order_accepted(self, **kw): self.accepted.append(kw)
     def generate_order_filled(self, **kw): self.filled.append(kw)
+    def generate_order_rejected(self, **kw): self.rejected.append(kw)
+    def generate_order_canceled(self, **kw): self.canceled.append(kw)
+    def generate_order_expired(self, **kw): self.expired.append(kw)
+
+
+class _FakeClock:
+    """最小 NT Clock 替身:记录 time alert,测试手动触发。"""
+
+    def __init__(self):
+        self.now = 1_000
+        self.alerts = []
+
+    def timestamp_ns(self):
+        return self.now
+
+    def set_time_alert_ns(self, *, name, alert_time_ns, callback):
+        self.alerts.append((name, alert_time_ns, callback))
+
+    def trigger_next(self):
+        name, alert_time_ns, callback = self.alerts.pop(0)
+        self.now = alert_time_ns
+        callback(MagicMock(name=name))
 
 
 def _make_order(price="0.4", qty="10"):
@@ -123,6 +152,132 @@ def test_mock_submit_cancel_only_skips_mock_fill(monkeypatch):
     _mock_submit(rec, cmd, USDC_POS)
 
     assert calls == [("begin", cmd)]
+
+
+def test_mock_submit_with_timeline_falls_back_to_immediate_fill(monkeypatch):
+    rec = _Recorder()
+    rec._debug = DebugConfig(enabled=True)
+    cmd = MagicMock(); cmd.order = _make_order()
+    calls = []
+    rec._begin_session = lambda command: calls.append(("begin", command)) or True
+    monkeypatch.setattr("src.arbitrage.debug.execution_clients._mock_fill", lambda client, command, ccy: calls.append(("fill", command, ccy)))
+
+    _mock_submit_with_timeline(rec, cmd, USDC_POS)
+
+    assert calls == [("begin", cmd), ("fill", cmd, USDC_POS)]
+
+
+def test_mock_submit_with_timeline_uses_timeline_executor(monkeypatch):
+    rec = _Recorder()
+    rec._debug = DebugConfig(enabled=True)
+    rec._debug.mock_data["timeline"] = MockDataItem(
+        id="timeline",
+        category=MockCategory.TIMELINE,
+        enabled=True,
+        data={"steps": [{"event": "ACCEPT"}]},
+    )
+    cmd = MagicMock(); cmd.order = _make_order()
+    calls = []
+
+    class FakeTimelineExecutor:
+        def __init__(self, client, debug, quote_currency):
+            calls.append(("init", client, debug, quote_currency))
+
+        def has_timeline(self, order):
+            calls.append(("has", order))
+            return True
+
+        def execute(self, command):
+            calls.append(("execute", command))
+
+    monkeypatch.setattr("src.arbitrage.debug.execution_clients.TimelineExecutor", FakeTimelineExecutor)
+    monkeypatch.setattr("src.arbitrage.debug.execution_clients._mock_fill", lambda *args: calls.append(("fill", args)))
+
+    _mock_submit_with_timeline(rec, cmd, USDC_POS)
+
+    assert calls == [
+        ("init", rec, rec._debug, USDC_POS),
+        ("has", cmd.order),
+        ("execute", cmd),
+    ]
+
+
+def _timeline_debug(steps):
+    cfg = DebugConfig(enabled=True)
+    cfg.mock_data["timeline"] = MockDataItem(
+        id="timeline",
+        category=MockCategory.TIMELINE,
+        enabled=True,
+        data={"steps": steps},
+    )
+    return cfg
+
+
+def _timeline_client(steps):
+    rec = _Recorder()
+    rec._clock = _FakeClock()
+    rec._debug = _timeline_debug(steps)
+    rec._begin_session = lambda command: True
+    rec._cache = None
+    return rec
+
+
+def test_timeline_executor_partial_fill_then_fills_remaining():
+    rec = _timeline_client([
+        {"event": "ACCEPT"},
+        {"event": "PARTIAL_FILL", "delay_ms": 5, "fill_pct": 0.4},
+        {"event": "FILL", "delay_ms": 7},
+    ])
+    cmd = MagicMock(); cmd.order = _make_order(price="0.37", qty="10")
+
+    TimelineExecutor(rec, rec._debug, USDC_POS).execute(cmd)
+    assert len(rec.accepted) == 1
+    assert rec.filled == []
+
+    rec._clock.trigger_next()
+    assert str(rec.filled[0]["last_qty"]) == "4.00"
+
+    rec._clock.trigger_next()
+    assert str(rec.filled[1]["last_qty"]) == "6.00"
+    assert str(rec.filled[1]["last_px"]) == "0.37"
+
+
+def test_timeline_executor_reject_terminates_sequence():
+    rec = _timeline_client([
+        {"event": "ACCEPT"},
+        {"event": "REJECT", "delay_ms": 5, "reject_reason": "NO_BALANCE"},
+        {"event": "FILL", "delay_ms": 5},
+    ])
+    cmd = MagicMock(); cmd.order = _make_order()
+
+    TimelineExecutor(rec, rec._debug, USD).execute(cmd)
+    rec._clock.trigger_next()
+
+    assert len(rec.accepted) == 1
+    assert rec.rejected[0]["reason"] == "NO_BALANCE"
+    assert rec.filled == []
+    assert rec._clock.alerts == []
+
+
+@pytest.mark.parametrize(
+    ("event", "bucket"),
+    [("CANCEL", "canceled"), ("EXPIRE", "expired")],
+)
+def test_timeline_executor_terminal_cancel_and_expire(event, bucket):
+    rec = _timeline_client([
+        {"event": "ACCEPT"},
+        {"event": event, "delay_ms": 5},
+        {"event": "FILL", "delay_ms": 5},
+    ])
+    cmd = MagicMock(); cmd.order = _make_order()
+
+    TimelineExecutor(rec, rec._debug, USD).execute(cmd)
+    rec._clock.trigger_next()
+
+    assert len(rec.accepted) == 1
+    assert len(getattr(rec, bucket)) == 1
+    assert rec.filled == []
+    assert rec._clock.alerts == []
 
 
 # ── PM skip connect 容忍 transport 级余额/USER WS 失败 ───────────────

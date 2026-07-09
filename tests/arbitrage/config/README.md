@@ -18,13 +18,13 @@ ArbConfig schema(msgspec)+ JSON loader + env 凭证注入。
 
 `to_strategy_registry(cfg)` 增补 dispatcher(消费 ArbConfig.strategy 经 `build_strategy_registry`);
 `strategy.enabled=false` 时返回空 registry,保留 StrategyEvaluator 的 MatchedPair→OBD 订阅桥但不触发 Action。
-本身的 Strategy JSON 解析测试在 **`tests/arbitrage/strategy/test_json_loader.py`**(strategy capability 域)。
+本身的 Strategy JSON 递归解析测试在 **`tests/arbitrage/strategy/test_json_loader.py`**(strategy capability 域):BoolExpr / Condition / Check / Action registry / binding / strategy disabled / unknown type fail-fast。
 
-**仍待**(后续 slice):
-- ⬜ slice 5:Strategy JSON parser(BoolExpr/Condition `from_json` 递归 + Check/Action registry)
-- ⬜ slice 6:`launchers/arb_node.py` 接线
-- ⬜ slice 7:OE data factory 真接 scraper
-- ⬜ slice 8:Actors 接线
+## 后续 slice 落地状态
+
+- ✅ **slice 6**:`launchers/arb_node.py` 接线已落地。`tests/arbitrage/launchers/test_arb_node.py` 覆盖 config → factories / StrategyEvaluator / WebGatewayActor / boot HALTED 等 wiring。
+- ✅ **slice 7**:OE data factory 真接 scraper/provider 已落地。`tests/arbitrage/adapters/orbitexch/test_data_factory_provider_wiring.py` 覆盖 factory 从 venue keyed context 读取 discovery config、alias、fx,并回写 `instrument_provider_by_venue["ORBITEXCH"]`。
+- ✅ **slice 8**:Actors 接线已落地。`MarketMatchingActor` / `StrategyEvaluator` / optional `WebGatewayActor` 由 launcher 构造,运行时控制命令由 owner 组件订阅 apply;对应验收分布在 launcher、matching、strategy、web 测试域。
 
 ## 关键约束(P10-类同 / Q23)
 

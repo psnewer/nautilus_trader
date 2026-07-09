@@ -3,7 +3,7 @@
 不依赖真 NT TradingNode / Cache,直接喂 hand-crafted snapshot + 经 JSON loader 拿 Strategy,
 跑 `evaluate_tree` + `pending_actions[0].execute(ctx)` —— 验证:
   1. JSON config → JSON loader → Strategy(Check/Action 经 registry 装入)
-  2. evaluate_tree:PreMatchCheck pass + MeanRebateCheck pass + 写 scratch["legs"]
+  2. evaluate_tree:pre_match self_hits signal pass + MeanRebateCheck pass + 写 scratch["legs"]
   3. PlaceBetsAction consume scratch + log 每 leg(Q-D1=A smoke)
 
 也就是 `mean_rebate` 配置→决策→fire(log-only)端到端真实跑一次。
@@ -24,7 +24,6 @@ from src.arbitrage.strategy.check_action_registry import register_action
 from src.arbitrage.strategy.check_action_registry import register_check
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
-from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
 from src.arbitrage.strategy.signals import SignalStore
@@ -35,7 +34,6 @@ from src.arbitrage.strategy.snapshot import OpportunitySnapshot
 def _registry():
     """每 test 重置 + 注 launcher 用的 3 类(模拟 launcher main 顶部 register_*)。"""
     _reset_for_tests()
-    register_check("pre_match", PreMatchCheck)
     register_check("mean_rebate", MeanRebateCheck)
     register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
     register_action("place_bets", PlaceBetsAction)

@@ -2,24 +2,23 @@
 
 覆盖**市场发现**capability,涵盖:
 - Step 1 InstrumentProvider(PM 用上游 + OE/SE 自写)—— `refactor.md §5.1` / `architectures/sharpexch/architecture.md`
-- Step 2 InstrumentRefresher Actor(调度 + 持久化)—— `refactor.md §5.2.2`
+- Step 2 周期发现已迁回 DataClient 原生 `_update_instruments`—— `refactor.md §5.2.3/#59`
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
-> **#59(slice A)架构反转**:`InstrumentRefresher` Actor **已退役** —— 周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE `adapters/orbitexch/data.py` 新增 `_send_all_instruments_to_data_engine` + `_update_instruments` task)。Q8"调度归 Refresher"被验证为重造 NT 原生而反转(refactor.md §5.2.3/#59)。下方 `test_instrument_refresher.py` / `test_instruments_refreshed_event.py` 现测 **dead code**(refresher.py/events.py 暂留,smoke 验后删);新增「DataClient 周期发现 + on_instrument 灌 cache」用例**待补**(#59 已 live smoke10 验:PM `initialize` Loaded 114 + matching timer 出 MatchedPair,refresher 未参与)。
+> **#59(slice A)架构反转**:`InstrumentRefresher` Actor 与 `InstrumentsRefreshed` 事件已退役删除。周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE/SE 自写 DataClient 各自维护 `_send_all_instruments_to_data_engine` + `_update_instruments` task;PMSPORTS data-only client 同形首抓 + 周期重抓)。Matching 不再订 discovery 事件,而是 timer 读 cache。旧 refresher 相关 skipped 测试/README 条目不再作为当前验收。
 > **2026-06-29 overnight 修**:PM/OE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` 失败杀死整个 60min 周期 discovery task。验收落在 PM/OE adapter 测试: `test_update_instruments_continues_after_provider_error`。
 > **2026-07-02 venue/data-source keyed context**:PM/OE/SE Data factory 只从 `ArbContext` keyed map 读取 discovery/session/alias 相关配置并回写 `instrument_provider_by_venue`;PMSPORTS factory 只读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`;专属 `pm_*` / `oe_*` / `se_*` ArbContext 字段已删除。验收落在 PM/OE/SE adapter factory 测试。
 
-**落地状态(2026-05-23)**:`src/arbitrage/discovery/{events,oe_provider,refresher}.py` 已落,**20 passed, 3 PM skipped**:
-- ✅ `test_instruments_refreshed_event.py`(3.1/3.2/3.3:Data 子类、字段时间戳、roundtrip)
+**落地状态(2026-07-08)**:发现路径以 adapter DataClient + Provider 测试为准:
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
 - ✅ `test_orbitexch_discovery_scraper.py`(1.4.i:discovery 独立浏览器注入 document visibility + IntersectionObserver spoof,避免 OE competition 页懒加载只发现首屏 20 场)
-- ✅ `test_instrument_refresher.py`(2.1-2.11:on_start 调度、on_stop 取消、on_save/on_load 持久化 + 损坏值/<min 夹下界、msgbus 命令运行时改值、tick 成功 publish / 0 不 publish / 异常静默不卡死)
-- ⬜ `test_polymarket_provider.py`(1.1/1.2/1.3 上游构造需链上 creds,/live-test 验)
-- ⬜ 浏览器抓取失败处理(1.7)、双 venue Refresher 隔离(2.7 整端到端,要起 node)、`InstrumentsRefreshed` msgbus 全链路(3.2)—— 经 /live-test 或上层 e2e 验
+- ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、price frame 路由与 DataClient 生命周期。
+- ⬜ PM Provider 冷启动 / 字段完整度 / API 失败保 cache 需 Gamma/CLOB live smoke 验;不保留 skipped pytest 空壳。
+- ⬜ DataClient 原生发现 → cache → matching timer → MatchedPair 的全节点路径仍归上层 e2e/live smoke 验;不再以 Refresher/msgbus 事件作为验收对象。
 
 **2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
-**仍待 Step 1**:scraper DOM 抽 `start_ts`(现 Provider 暂置 0);PM info 6-key 真 extraction(`#35` 已落 seam:`adapters/polymarket/arb_provider.py:enrich_pm_six_key_info`,**TODO** 实写需 gamma `/events/{id}` 调用 + ticker 拆解;参旧 `odds_client.py:255+`)。
+**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。PM 6-key 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
@@ -40,12 +39,10 @@
 
 | 文件 | 范围 |
 |---|---|
-| `test_polymarket_provider.py` | PM Provider 行为(用上游版本,验证可满足需求) |
+| `../adapters/polymarket/test_arb_provider.py` | PM sports moneyline provider 解析 + matching info 写入 |
 | `test_orbitexch_provider.py` | OE Provider 行为(自写,含 Q9 info dict 字段) |
 | `../adapters/sharpexch/test_discovery_client.py` / `test_provider.py` | SE 第一阶段 discovery parser + Provider 行为(含 Q9 info dict 字段) |
 | `../adapters/sharpexch/test_message_parser.py` / `test_data.py` | SE 第一阶段 price frame parser + runner → `OrderBookDeltas` 纯映射 |
-| `test_instrument_refresher.py` | InstrumentRefresher Actor 调度/持久化/事件契约 |
-| `test_instruments_refreshed_event.py` | `InstrumentsRefreshed` Data 类型与 MessageBus 契约 |
 
 ---
 
@@ -67,7 +64,7 @@
 - 每个 instrument 是 `BinaryOption` 实例(不是 BettingInstrument)
 - InstrumentId 格式严格匹配 `{condition_id}-{token_id}.POLYMARKET`(用 `get_polymarket_instrument_id` helper 验证可逆)
 
-**验收标准**: instrument 列表非空 AND 任取一个 instrument 调 `get_polymarket_condition_id(inst.id)` / `get_polymarket_token_id(inst.id)` 能正确反解
+**验收标准**: instrument 列表非空 AND 任取一个 instrument 调 `get_polymarket_condition_id(inst.id)` / `get_polymarket_token_id(inst.id)` 能正确反解。该用例需要真实 Gamma/CLOB 网络与凭证,归 live smoke;不保留 skipped pytest 空壳。
 
 ---
 
@@ -159,45 +156,33 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ---
 
-### discovery-7B.1(slice 7B,#53):PM `enrich_pm_six_key_info` 真写
+### discovery-7B.1(slice 7B,#53/#57):PM moneyline provider 写 6-key
 
-**前置**: `ArbPolymarketInstrumentProvider._parse_instrument` 截 BinaryOption 创建后,调 `enrich_pm_six_key_info(market_info, outcome)` 补 info 6-key
+**前置**: `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order，再走 `/events?series_id=...` 拉内嵌 teams + markets;`_load_moneyline_market` 创建每个 PM token 后补 info 6-key。
 
-**输入**: PM gamma `market_info`(含嵌 events[0].ticker / slug / outcomes / startDate / category)
+**输入**: PM Gamma event + moneyline market(含 `teams`/`ticker`/`markets[].sportsMarketType=moneyline` / `clobTokenIds` / `outcomes`)。
 
-**期望**(详 `tests/arbitrage/adapters/polymarket/test_arb_provider_enricher.py` 14 tests):
-- ticker `{comp}-{home}-{away}-YYYY-MM-DD` 解析:competition 大写,home/away 由 outcomes index 或 abbr 决定
-- selection_role 由 market_slug 推 / sub-markets(first-set-winner / match-total / set-totals)返空 → matching 跳
-- 非 match-level events(`2026-mens-french-open-winner`)→ 返空,不阻塞 matching
-- sport 推断走 ticker 前缀 map(`atp→Tennis`),unmapped 用 `market_info["category"]` 兜底
-- 容错:events 缺 / outcomes 是 JSON 字符串 / outcome 不在 outcomes 列表
+**期望**:
+- `info["sport"]` 来自 `competition_to_sport_by_data_source["PMSPORTS"]`
+- `info["competition"]` 使用 PM venue competition alias 标准化后的名字
+- `home_team` / `away_team` 优先来自 `event["teams"]`,缺失时 fallback title 解析
+- `selection_role` 按 moneyline slug + competition ordering + team abbreviation 解析为 `home/draw/away`
+- `start_ts` 来自 market/event startDate,`game_id` 等于 Gamma event `gameId`
 
-**验收**: 14 测试通过 + live smoke 用 `series_slug=atp` filter 35s load 100 events → 2026 instruments
+**验收**:`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖 teams/title 解析、role 解析和 `_load_moneyline_market` 写入完整 matching info;完整 Gamma HTTP 路径仍归 live smoke。
 
-### discovery-7B.2(slice 7B,#53):PM `event_slug_builder` 路径
+### discovery-7B.2(slice 7B,#57):PM series-based discovery 路径
 
 **前置**: `ArbContext.target_competitions_by_data_source["PMSPORTS"] = ["atp"]`(launcher 经 dispatcher 从 `data_sources.sports_status.sports` 或继承的 `cfg.discovery.polymarket.sports[].competitions` 派生)
 
-**输入**: 启动 PM Provider,upstream `_load_from_event_slugs` 触发 callable
+**输入**: 启动 PM Provider,`ArbPolymarketInstrumentProvider.load_all_async` 原生执行。
 
 **期望**:
-- `build_pm_event_slugs_from_arb_context` sync 调 gamma `/events?series_slug=atp&closed=false&limit=500` 返 100 events 的 slug 列表
-- 比起 `_load_all_using_gamma_markets` 路径(全量 crawl 50K+ markets / 5+ 分钟):event_slug_builder 路径 **35s 完成 100 events 加载** → 产 2026 instruments
-- 关键 audit:**`tag_slug=atp` 在 gamma `/events` 错配**(返 outright winners);**`series_slug=atp`** 才对(返 match-level)
+- 先调 Gamma `/sports`,按目标 competition 找到 series id 与 ordering。
+- 再调 `/events?series_id={id}&closed=false&active=true&limit=500`,一次拉该 series 内嵌 teams + markets。
+- 只取 `sportsMarketType=moneyline` 主市场生成 PM 可交易 legs;不再走上游 `event_slug_builder` 或全量 `_load_all_using_gamma_markets`。
 
-**验收**: live smoke 实测 PM 35s 完成 + InstrumentRefresher tick fire("refresh ok count=2026")
-
-### discovery-10d.E(slice 10d,#52):InstrumentRefresher clean shutdown
-
-**前置**: launcher 启 + InstrumentRefresher 注册 + tick 已 fire 至少一轮(`_tick_task` 已存)
-
-**输入**: `node.dispose()` 触发 actor on_stop
-
-**期望**:
-- `on_stop` cancel 未完成的 `_tick_task`(避免 "Task was destroyed but it is pending" warning)
-- `_cancel_alert` 也照常执行
-
-**验收**: slice 10d live smoke 实测 0 pending task warning(对比 #51 1 条),log tail 干净 dispose
+**验收**: `_load_moneyline_market` 离线测试锁定 info 写入;完整 Gamma HTTP 路径仍由 live smoke 验。
 
 ---
 
@@ -285,7 +270,7 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 **期望**: 两者的 `info` dict 都含 `sport` / `competition` / `home_team` / `away_team` / `start_ts` / `selection_role` 6 个 key,语义一致(MatchEngine 不需要 isinstance 区分类型即可读)
 
-**验收标准**: 取 6 个 key 不抛 KeyError;PM `selection_role` ∈ {"YES", "NO"} 或 {"home"/"away"}(取决于 PM 市场表达,需 Step 1 实施时确认);OE `selection_role` ∈ {"home", "draw", "away"}
+**验收标准**: 取 6 个 key 不抛 KeyError;PM/OE/SE `selection_role` 均使用 {"home", "draw", "away"} 语义集合(二元盘不含 draw)。
 
 ---
 
@@ -305,128 +290,16 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ---
 
-### discovery-2.1: Refresher 周期触发
+### discovery-2.x: DataClient 原生周期发现
 
-**前置**: `InstrumentRefresher` Actor 启动,`refresh_interval = 5s`(测试用短间隔)
+**前置**: 对应 venue/data source enabled,DataClient 已构造 Provider 并接入 DataEngine。
 
-**输入**: 启动 + 等待 12 秒
-
-**步骤**:
-1. Refresher `on_start` 启动 `_run` 后台任务
-2. `_run` 进入循环,每次 `await asyncio.sleep(self._refresh_interval)`
-3. 每次唤醒后调 `provider.load_all_async()`
-
-**期望**: 12 秒内 `provider.load_all_async` 被调用 2 次(t=5s, t=10s)
-
-**验收标准**: mock provider 的调用次数 == 2(允许 ±1 容忍调度 jitter)
-
----
-
-### discovery-2.2: refresh_interval 通过 MessageBus 命令运行时可变 (Q3)
-
-**前置**: Refresher 启动,初始 `refresh_interval = 30s`
-
-**输入**: 通过 MessageBus publish 命令 `config.{venue}.refresh_interval = 5`,等 7 秒
-
-**期望**: 改后下一次循环用新 interval(7 秒内 `load_all_async` 至少触发 1 次,因为新 interval 是 5s)
-
-**验收标准**: 改值生效不需要重启
-
----
-
-### discovery-2.3: refresh_interval 通过 NT on_save/on_load 持久化 (Q6)
-
-**前置**: Refresher 启动,通过 MessageBus 改 `refresh_interval = 60`
-
-**输入**:
-1. 触发 NT TradingNode 保存(模拟 stop)→ 验 `_shared_redis['actors:{actor_id}:state']` 含 `refresh_interval=60`
-2. 重启 Refresher(传同 actor_id)→ NT 调 `on_load(state)` → Refresher `_refresh_interval = 60`
-
-**期望**: 重启后 `refresh_interval` 自动恢复为 60(不是 default 30)
-
-**验收标准**: NT 持久化机制 + on_save / on_load 正常工作 AND `RuntimeConfig` 默认值在持久化值存在时不覆盖
-
----
-
-### discovery-2.4: 成功 refresh 后发布 InstrumentsRefreshed 事件 (Q4)
-
-**前置**: Refresher 启动,订阅者(测试 Actor)订阅 `DataType(InstrumentsRefreshed)`
-
-**输入**: 等 Refresher 跑完一次成功 refresh
-
-**期望**: 订阅者收到一条 `InstrumentsRefreshed`,字段:
-- `venue` == 该 Refresher 的 venue
-- `count` == provider.list_all() 返回的 instrument 数量
-- `ts_init` == 该 refresh 完成时刻
-
-**验收标准**: 事件字段完整,venue 正确
-
----
-
-### discovery-2.5: refresh 失败时不发事件 (Q4)
-
-**前置**: Refresher 启动,模拟 `provider.load_all_async()` 抛异常
-
-**输入**: 等一次 refresh 周期
+**输入**: DataClient `_connect` 首抓,以及后续 `_update_instruments` 周期任务。
 
 **期望**:
-- 异常被 Refresher 捕获
-- 不 publish `InstrumentsRefreshed`
-- 日志记录失败
-- 下一周期照常尝试
+- 首抓和周期重抓都调用 Provider 加载当前 instruments。
+- 成功结果经 `_handle_data` 进入 DataEngine/cache,并触发 NT 原生 `on_instrument`。
+- 单轮普通异常只记录 warning,下一轮继续;`CancelledError` 仅在组件 stop 时退出。
+- MatchingActor 不订 discovery 事件,由 timer 读 cache。
 
-**验收标准**: 失败 venue 静默,matching 自然 gate 住(由 MatchingActor 的 fresh_window 保证)
-
----
-
-### discovery-2.6: MIN_INTERVAL 强制下限 (Q3)
-
-**前置**: Refresher 启动
-
-**输入**: 通过 MessageBus 命令 `config.{venue}.refresh_interval = 0`(或负数)
-
-**期望**: Refresher 内部 clamp 到 `MIN_INTERVAL`(避免误设把场馆刷挂),记日志警告
-
-**验收标准**: `self._refresh_interval >= MIN_INTERVAL` 始终成立
-
----
-
-### discovery-2.7: 双 venue Refresher 隔离
-
-**前置**: PM Refresher + OE Refresher 同时跑
-
-**输入**: 模拟 PM Provider 抛异常,OE Provider 正常
-
-**期望**:
-- OE Refresher 继续正常发 `InstrumentsRefreshed(venue=ORBITEXCH)`
-- PM Refresher 静默,不发事件
-- 两者互不影响
-
-**验收标准**: 单 venue 失败不波及另一 venue
-
----
-
-### discovery-3.1: InstrumentsRefreshed Data 类型注册
-
-**前置**: NT TradingNode 启动
-
-**输入**: import `InstrumentsRefreshed` Data 类
-
-**期望**:
-- 通过 `@customdataclass` 装饰器注册
-- 含字段 `venue: Venue`, `count: int`, `ts_event: int`, `ts_init: int`
-- 可通过 `DataType(InstrumentsRefreshed)` 用于 `subscribe_data`
-
-**验收标准**: 类型可注册可订阅可发布
-
----
-
-### discovery-3.2: InstrumentsRefreshed MessageBus topic 契约
-
-**前置**: discovery-3.1 通过
-
-**输入**: 一个 Refresher publish `InstrumentsRefreshed(venue=POLYMARKET, ...)`
-
-**期望**: MessageBus topic 路径符合 NT 标准 data topic 命名(具体路径 Step 2 启动时与 NT 实现对齐确认)
-
-**验收标准**: 订阅 `DataType(InstrumentsRefreshed)` 的 actor 能收到事件
+**验收标准**: PM/OE/SE/PMSPORTS 各 adapter 的 DataClient/Provider 测试分别覆盖;全节点链路由 matching/e2e smoke 验证。

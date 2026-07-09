@@ -85,7 +85,6 @@ from src.arbitrage.strategy.checks.cross_venue import RequireCrossVenueCheck
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
-from src.arbitrage.strategy.checks.pre_match import PreMatchCheck
 from src.arbitrage.strategy.signals import SignalStore
 from nautilus_trader.adapters.polymarket.settlement import PolymarketSettlement
 from nautilus_trader.adapters.polymarket.common.conversion import usdce_from_units
@@ -105,7 +104,6 @@ def register_builtin_checks_and_actions() -> None:
     main() 顶部调一次;同名同类幂等(`register_check` / `register_action` 守门)。
     用户加自己的 Check / Action 类时,在 main 顶部追加同样的 register 调用即可。
     """
-    register_check("pre_match", PreMatchCheck)
     register_check("mean_rebate", MeanRebateCheck)
     register_check("mean_rebate_recovery", MeanRebateRecoveryCheck)
     register_check("one_side_rebate", OneSideRebateCheck)

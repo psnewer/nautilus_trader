@@ -52,6 +52,12 @@ class PlaceBetsAction(Action):
         opportunity_id = new_opportunity_id()
         prepared = []
         for idx, leg in enumerate(legs):
+            if _is_non_tradable_leg(leg):
+                _LOG.warning(
+                    f"PlaceBets: pair={ctx.pair_id} leg={leg.get('instrument_id')} "
+                    "is non-tradable anchor, abort opportunity",
+                )
+                return
             venue = leg["venue"]
             price = self._price_overrides.get(venue, leg["price"])
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
@@ -126,3 +132,7 @@ def _leg_key(leg: dict, idx: int) -> str:
     role = str(leg.get("role") or idx)
     venue = str(leg.get("venue") or "venue").lower()
     return f"{venue}:{role}:{idx}"
+
+
+def _is_non_tradable_leg(leg: dict) -> bool:
+    return leg.get("tradable") is False or leg.get("anchor") is True

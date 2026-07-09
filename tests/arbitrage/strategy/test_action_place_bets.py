@@ -264,3 +264,22 @@ def test_action_aborts_when_leg_missing_qty_and_share_if_wins(caplog):
 
     assert calls == []
     assert any("missing qty/share_if_wins" in r.message for r in caplog.records)
+
+
+def test_action_aborts_when_leg_is_non_tradable_anchor(caplog):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "5843495.PMSPORTS", "venue": "PMSPORTS", "side": "BUY",
+         "role": "event", "price": 1.0, "qty": 1.0, "tradable": False, "anchor": True},
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="src.arbitrage.strategy.actions.place_bets"):
+        _run(PlaceBetsAction().execute(ctx))
+
+    assert calls == []
+    assert any("non-tradable anchor" in r.message for r in caplog.records)

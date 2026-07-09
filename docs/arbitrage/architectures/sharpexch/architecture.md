@@ -1,7 +1,7 @@
 # SharpExch 接入详细设计
 
-> **状态**: 第一阶段 OE 型接入已落地:配置 schema/env/dispatcher、`sport/details` 解析与 browser fetcher、Provider 产 `BettingInstrument`、DataClient 订阅/WS 路由、ExecutionClient page/WS 生命周期与 place/cancel 边界、factory 与 launcher 显式 opt-in 接线、MatchingActor 多 tradable venue、Strategy OE 类 odds/size 接线、Risk liveness/probability/balance/portfolio 识别 SE。
-> 2026-07-01 已用独立 zero-order probe 验证真实 SE 登录、customer iframe、`sport/details`、competition prices/general WS;skip node smoke 已验证 PM↔SE matching、SE 订阅、routed price frame、OrderBookDeltas 发布、SE `BALANCE`/`CURRENT_BETS` execution 业务帧与 SHARPEXCH startup reconciliation;真单 place+cancel probe 已通过(BACK@100,size=12,venue_order_id=22157223,随后撤单且兜底活单 0);真成交 fill probe 已通过(BACK@1.01,size=12,offerId=22160783,`sizeMatched=12.0`,`averagePrice=4.5`,`generate_order_filled` 1 次,余量 0)。`venues.sharpexch.enabled` 默认 `false`,显式置 `true` 才注册进 runtime。第一阶段目标是把 SharpExch(SE) 按 OE 型 venue 接入 NT;第二阶段才做 venue 插拔化。
+> **状态**: 第一阶段 OE 型接入已落地:配置 schema/env/dispatcher、`sport/details` 解析与 browser fetcher、Provider 产 `BettingInstrument`、DataClient 订阅/WS 路由、ExecutionClient page/WS 生命周期与 place/cancel/fill 边界、factory 与 launcher opt-in 接线、MatchingActor 多 tradable venue、Strategy/Risk 通过 venue capability 识别 SE。
+> 2026-07-01 已用独立 zero-order probe 验证真实 SE 登录、customer iframe、`sport/details`、competition prices/general WS;skip node smoke 已验证 PM↔SE matching、SE 订阅、routed price frame、OrderBookDeltas 发布、SE `BALANCE`/`CURRENT_BETS` execution 业务帧与 SHARPEXCH startup reconciliation;真单 place+cancel probe 已通过(BACK@100,size=12,venue_order_id=22157223,随后撤单且兜底活单 0);真成交 fill probe 已通过(BACK@1.01,size=12,offerId=22160783,`sizeMatched=12.0`,`averagePrice=4.5`,`generate_order_filled` 1 次,余量 0)。`venues.sharpexch.enabled` 默认 `false`,显式置 `true` 才注册进 runtime。第二阶段静态 venue capability 已收口到横切设计,SE adapter 内部仍保留真实网站差异。
 > 决策理由与历史只在 `docs/arbitrage/refactor.md` 留指针,本文是 SE 接入设计真理源。
 > DevTools 探站时间:2026-06-30。
 
@@ -18,7 +18,7 @@
 | instrument 类型 | `BettingInstrument` |
 | InstrumentId | `{market_id}-{selection_id}.SHARPEXCH` |
 | 运行模型 | Playwright 浏览器 + portal API + SockJS WS,对齐 OE |
-| 账户币种 | SE 前端 / `BALANCE` / `CURRENT_BETS` 当前均为 USD;adapter runtime 不做 FX 换算 |
+| 账户币种 | SE 前端 / `CURRENT_BETS` / place payload 当前均为 USD;adapter runtime 不做 FX 换算。账户余额 runtime 从 HTTP profile/balance response 提取,不信 WS `BALANCE` 帧。 |
 | Strategy/Risk | 不新增 SE 特殊分支;继续只吃 NT 标准 order book / account / instrument 元数据 |
 
 第一阶段必须遵循三条硬原则:
@@ -317,8 +317,8 @@ runner → role 规则:
 
 `SharpExchExecutionClient` 第一阶段复制 OE 的执行模型:
 - 登录页从 `login_url` 进入,成功后真实 customer app 在 `portal.sharpxch.com/customer` iframe 内。
-- general WS 捕获 `BALANCE` / `CURRENT_BETS` 类帧。
-- `BALANCE` 入站按 USD 原值写 `AccountState(account_id="SHARPEXCH-001", base_currency=USD)`。
+- general WS 捕获 `BALANCE` / `CURRENT_BETS` 类帧;`CURRENT_BETS` 是 order/fill/reconcile 主输入。
+- `BALANCE` parser 保留,但 runtime 不再用 WS `BALANCE` 写 `AccountState`;账户余额改由登录后 page `response` 监听从 HTTP profile/balance API 响应中提取。未捕获时启动期写 0 USD 兜底账户状态。
 - `CURRENT_BETS` 入站金额/size 字段按 USD 原值保留。
 - 下单 payload 直接使用 NT order quantity 的 USD stake,不除以 fx。
 - `nt_order_to_legacy_order` 产物应使用 `Venue.SHARPEXCH` 或新增通用 order model 支持,不能复用 `Venue.ORBITEXCH`。
@@ -334,9 +334,8 @@ runner → role 规则:
   弹窗,再继续 API/WS 初始化。
   连接完成后先生成 0 USD 初始 `AccountState` 以注册账户;
   `_disconnect` 停止 WS handler 并清本地 page,不关闭共享 browser。
-- `_on_general_frame` 已接 parser:`BALANCE` 按 USD 原值生成
-  `AccountState`,首个有效 BALANCE 帧打印一次 `SE balance frame routed`;`CURRENT_BETS`
-  调 `_on_current_bets`。
+- `_on_general_frame` 已接 parser:WS `BALANCE` 忽略(实测可能返回 0.00,不作为账户事实);
+  `CURRENT_BETS` 调 `_on_current_bets`。
 - `_on_current_bets` 已维护 USD 口径 `_current_bets` 快照、刷新 `_last_current_bets_ns`,
   首帧打印一次 `SE CURRENT_BETS routed: bets=N`,可写 `VenueExecutionLiveness` 的
   order/position alive,并按原始 `sizeMatched` 累积值生成增量 `generate_order_filled`。
@@ -356,7 +355,7 @@ runner → role 规则:
   SE order liveness dead 并返回空/None。
 - `generate_position_status_reports` 已基于 `current_bets_to_positions(...)` 生成
   `PositionStatusReport`;无法获得可信快照时标记 SE position liveness dead 并返回空。
-  真实 zero-order probe 已验证登录/API/WS 与 `BALANCE` / `CURRENT_BETS` 业务帧。
+  真实 zero-order probe 已验证登录/API/WS 与 `BALANCE` / `CURRENT_BETS` 业务帧;runtime 余额事实以 HTTP response 为准。
 - `SharpExchMessageParser.parse_general_frame({"BALANCE": ...})` 输出
   `{"type": "balance", "balance": float|None, "av_balance": float|None}`。
 - `SharpExchMessageParser.parse_general_frame({"CURRENT_BETS": ...})` 输出
@@ -442,7 +441,7 @@ runner → role 规则:
 - `SharpExchLiveDataClientFactory`:复用/回写 `browser_manager_by_venue["SHARPEXCH"]`;若
   `discovery_config_by_venue["SHARPEXCH"]` 存在,构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` +
   `SharpExchInstrumentProvider`,并按 `ctx.arbitrage_params.fx` 注入 Provider;否则使用
-  `InstrumentProvider()` 占位。browser fetcher 会登录 `login_url`,在 customer iframe context
+  fallback `InstrumentProvider()`。browser fetcher 会登录 `login_url`,在 customer iframe context
   内调用 `sport/details`。创建后回写 `instrument_provider_by_venue["SHARPEXCH"]`。
 - `ArbSharpExchLiveExecClientFactory`:要求 `ctx.venue_liveness` 已准备,复用同一
   `browser_manager_by_venue["SHARPEXCH"]`,注入 `session_timeout_secs_by_venue["SHARPEXCH"]`、
@@ -555,7 +554,7 @@ NT 并发 connect data/exec clients
 | general WS endpoint | `general` | 同名 | 可共用 SockJS envelope parser |
 | price frame schema | OE parser 已知 | zero-order probe 已验证 BIAB/OE 型 frame 可解析 | `PriceFrameParser` protocol |
 | current bets schema | OE 已有实盘字段 | zero-order、真单 place+cancel 与真成交 fill probe 已验证 empty/working/matched 快照 | `CurrentBetsParser` protocol |
-| stake currency | OE 已按 USD 边界转换 | SE `BALANCE` / `CURRENT_BETS` / place payload 当前均按 USD 原生处理 | `money_normalizer` |
+| stake currency | OE 已按 USD 边界转换 | SE `CURRENT_BETS` / place payload 当前均按 USD 原生处理;账户余额走 HTTP response | `money_normalizer` |
 | min stake | OE 7 GBP | 12 venue stake | per-venue `min_stake` config |
 | page visibility | OE 需要 visibility spoof | SE 待观察,先复用 | shared browser init script |
 
@@ -597,12 +596,13 @@ class BrowserExchangeSpec(Protocol):
 
 ---
 
-## 6. 未决问题
+## 6. 当前剩余工作
 
 | 问题 | 处理 |
 |---|---|
-| SE 账户真实币种 | 登录后从 `api/account/info` / `BALANCE` 帧确认;页面未登录首屏显示 EUR,不能直接当事实 |
-| SE 最小 stake | 已由 2026-07-01 下单 preflight 确认为 12 |
+| SE 账户真实币种 | 已按实测 `CURRENT_BETS` / place payload USD 原生处理;runtime 余额以 HTTP profile/balance response 为准,WS `BALANCE` 不作为账户事实 |
+| SE 最小 stake | 已由 2026-07-01 下单 preflight 确认为 12 USD |
 | SE price WS 真实业务帧 | 已由 zero-order probe 与 skip node smoke 验证可解析并发布 `OrderBookDeltas` |
 | SE current bets schema | 已验证 empty/working/matched 快照;matched 字段 live 样本:`sizeMatched=12.0`,`averagePrice=4.5`,`sizeRemaining=0.0` |
 | 是否能完全 API discovery | 当前 sport details API 已足够 tennis/soccer match odds;其它运动后续再验证 |
+| 完整套利真钱 E2E | 等 PM+OE / PM+SE / OE+SE / PM+OE+SE skip smoke 组合验收后,再由用户单独授权执行 |

@@ -1,10 +1,9 @@
-"""
-OE DiscoveryClient 测试 —— 解析 `sport/details` API 响应。
+"""OE DiscoveryClient 测试 —— 解析 `sport/details` API 响应。
 
 2026-07-03: 迁移到 `sport/details` API,与 SE 对齐。
 """
 
-import pytest
+import asyncio
 
 from nautilus_trader.adapters.orbitexch.discovery_client import (
     OrbitExchDiscoveryClient,
@@ -177,34 +176,40 @@ def test_events_from_sport_details_teams_from_event_name():
 # ── OrbitExchDiscoveryClient ────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_discovery_client_with_json_fetcher():
+def test_discovery_client_with_json_fetcher():
     """json_fetcher 注入时正确调用并解析响应。"""
     async def mock_fetcher(request: OrbitExchSportDetailsRequest) -> dict:
         return _sample_payload()
 
-    client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
-    events = await client.discover_events()
+    async def run():
+        client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
+        return await client.discover_events()
+
+    events = asyncio.run(run())
     assert len(events) == 1
     assert events[0].sport == "Tennis"
 
 
-@pytest.mark.asyncio
-async def test_discovery_client_no_provider_returns_empty():
+def test_discovery_client_no_provider_returns_empty():
     """无 provider 和 fetcher 时返回空列表。"""
-    client = OrbitExchDiscoveryClient()
-    events = await client.discover_events()
+    async def run():
+        client = OrbitExchDiscoveryClient()
+        return await client.discover_events()
+
+    events = asyncio.run(run())
     assert events == []
 
 
-@pytest.mark.asyncio
-async def test_discovery_client_with_sport_details_provider():
+def test_discovery_client_with_sport_details_provider():
     """sport_details_provider 注入时正确调用。"""
     async def mock_provider(sport_config) -> dict:
         return _sample_payload()
 
-    client = OrbitExchDiscoveryClient(sport_details_provider=mock_provider)
-    events = await client.discover_events()
+    async def run():
+        client = OrbitExchDiscoveryClient(sport_details_provider=mock_provider)
+        return await client.discover_events()
+
+    events = asyncio.run(run())
     assert len(events) == 1
 
 
@@ -240,8 +245,7 @@ def _full_page_payload(market_id="1-123456", page_size=60):
     }
 
 
-@pytest.mark.asyncio
-async def test_discovery_client_pagination():
+def test_discovery_client_pagination():
     """json_fetcher 分页正确处理。"""
     call_count = 0
 
@@ -255,14 +259,16 @@ async def test_discovery_client_pagination():
             payload["marketCatalogueList"]["last"] = True
             return payload
 
-    client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
-    events = await client.discover_events()
+    async def run():
+        client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
+        return await client.discover_events()
+
+    events = asyncio.run(run())
     assert call_count == 2
     assert len(events) == 90  # 60 + 30
 
 
-@pytest.mark.asyncio
-async def test_discovery_client_stops_on_duplicate_markets():
+def test_discovery_client_stops_on_duplicate_markets():
     """第二页返回相同 market_id 时停止分页。"""
     call_count = 0
 
@@ -272,8 +278,11 @@ async def test_discovery_client_stops_on_duplicate_markets():
         # 每次都返回相同的满页 payload
         return _full_page_payload("same", page_size=60)
 
-    client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
-    events = await client.discover_events()
+    async def run():
+        client = OrbitExchDiscoveryClient(json_fetcher=mock_fetcher)
+        return await client.discover_events()
+
+    events = asyncio.run(run())
     # 第二页无新 market_id,分页应该停止
     assert call_count == 2
     assert len(events) == 60  # 只有第一页的数据

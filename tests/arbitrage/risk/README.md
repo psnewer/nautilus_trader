@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线,2026-07-01 Venue Registry helper,2026-07-02 ArbContext keyed helper)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(经 common helper 解析 expected_legs required venues,含 SHARPEXCH)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(经 Venue Registry 转换 PM probability / OE-SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(经 Venue Registry 判定 probability/decimal,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)、`ctx_map_get/require/set/get_or_create` keyed map helper,其中 `ctx_map_require` 缺必需 keyed 值会 fail-fast,`ctx_map_get_or_create` 只在缺失时创建并回写共享对象,`prepare_arb_context` 传旧 venue 专属字段会 TypeError。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
+**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线,2026-07-01 Venue Registry helper,2026-07-02 ArbContext keyed helper)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(经 common helper 解析 expected_legs required venues,含 SHARPEXCH;无法解析的 expected leg key fail-closed)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(经 Venue Registry 转换 PM probability / OE-SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(经 Venue Registry 判定 probability/decimal,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)、`ctx_map_get/require/set/get_or_create` keyed map helper,其中 `ctx_map_require` 缺必需 keyed 值会 fail-fast,`ctx_map_get_or_create` 只在缺失时创建并回写共享对象,`prepare_arb_context` 传旧 venue 专属字段会 TypeError。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -115,6 +115,12 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 - 输入: PM leg SubmitOrder。
 - 期望: 仍 deny,因为 required venues 包含 OE。
 - 验收: Risk 使用 `expected_legs` partner 信息解析 required venues;不新增 `required_venues` tag 也能工作。
+
+### risk-6.7.1c2: expected_legs 无法解析时 fail-closed
+- 前置: `expected_legs=("pm:home:0","pmsports:event:1")`,当前订单是 PM leg;PM alive。
+- 输入: PM leg SubmitOrder。
+- 期望: deny;reason 包含 unsupported expected leg sentinel,不能退回只检查 PM。
+- 验收:`test_liveness_gate_denies_unparseable_expected_leg_key`。
 
 ### risk-6.7.1d: 无 opportunity metadata 时退化为当前 venue liveness
 - 前置: 普通非套利订单无 `arb:opportunity_id` / `arb:expected_legs`;当前 `order.instrument_id.venue=POLYMARKET`;PM not alive,OE alive。
@@ -293,16 +299,16 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_checks_all_expected_leg_venues`
   - `tests/arbitrage/risk/test_engine.py::test_liveness_gate_passes_when_required_venues_alive`
 
-### risk-pmsports-anchor.1:PMSPORTS 不进入 required venues(待落地,#127)
+### risk-pmsports-anchor.1:PMSPORTS 不进入 required venues(已落地,#127/#191)
 
 - 前置:PairRegistry / MatchedPair 后续区分 anchor ids 与 tradable ids;某 pair 含
   `5843495.PMSPORTS` anchor id 和 PM/OE/SE tradable ids。
 - 输入:Strategy 生成普通套利 SubmitOrder,`arb:expected_legs` 只来自 tradable legs。
-- 期望:Risk `_check_required_venues_alive` 推导 required venues 时不包含 `PMSPORTS`。
+- 期望:Risk `_check_required_venues_alive` 推导 required venues 时不包含 `PMSPORTS`;若 tag 污染带入 `pmsports:*`,Risk fail-closed。
 - 验收:
   - `VenueExecutionLiveness` 初始化不包含 `PMSPORTS`。
   - `.PMSPORTS` 不触发余额、概率、profit gate 或 liveness gate。
-  - 若误把 `pmsports:*` 写进 `expected_legs`,Risk 应 fail closed 或明确拒绝 unsupported non-tradable venue,不能当交易 venue 放行。
+  - 若误把 `pmsports:*` 写进 `expected_legs`,Risk 明确拒绝 unsupported non-tradable venue,不能当交易 venue 放行;验收 `test_liveness_gate_denies_unparseable_expected_leg_key`。
 
 ---
 

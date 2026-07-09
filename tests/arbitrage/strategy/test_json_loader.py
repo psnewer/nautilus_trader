@@ -178,6 +178,12 @@ def test_unknown_check_type_in_condition_raises():
         condition_from_json({"checktion": [{"type": "nope"}]})
 
 
+def test_pre_match_checktion_is_rejected_signal_only():
+    """pre_match 是 self_hits signal,不再作为 Check 类型注册。"""
+    with pytest.raises(StrategyConfigError, match="unknown check type: 'pre_match'"):
+        condition_from_json({"checktion": [{"type": "pre_match"}]})
+
+
 def test_unknown_action_type_in_condition_raises():
     with pytest.raises(StrategyConfigError, match="unknown action type"):
         condition_from_json({"actions": [{"type": "nope"}]})

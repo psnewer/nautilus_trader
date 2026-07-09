@@ -104,8 +104,23 @@ def test_se_fetch_json_passes_timeout_to_browser_context():
     assert context.arg["body"] == {"id": "2"}
 
 
-def test_login_skips_form_when_customer_iframe_exists():
-    """When customer iframe already exists, skip login form (already authenticated)."""
+def test_login_submits_form_even_when_customer_iframe_exists():
+    """customer iframe 只能证明页面存在 app,不能证明 session 有效;表单可见时必须提交。"""
+
+    class FormControl:
+        def __init__(self, page, selector):
+            self._page = page
+            self._selector = selector
+
+        @property
+        def first(self):
+            return self
+
+        async def fill(self, value, *, timeout):
+            self._page.filled.append((self._selector, value, timeout))
+
+        async def click(self, *, timeout):
+            self._page.clicked.append((self._selector, timeout))
 
     class Popup:
         @property
@@ -117,7 +132,7 @@ def test_login_skips_form_when_customer_iframe_exists():
 
     class Mouse:
         async def click(self, x, y):
-            pass  # popup backdrop click is OK
+            raise AssertionError("no popup click expected")
 
     class Page:
         def __init__(self):
@@ -126,18 +141,18 @@ def test_login_skips_form_when_customer_iframe_exists():
             self.filled = []
             self.clicked = []
             self.mouse = Mouse()
-            self.goto_called = False
 
-        async def goto(self, url, *, wait_until, timeout):
-            self.goto_called = True
-            self.url = url
+        async def wait_for_selector(self, selector, **kwargs):
+            assert selector == 'input[name="username"], input[type="text"]'
 
         def locator(self, selector):
             if selector == 'div[class*="_postLoginPopup_"]':
                 return Popup()
-            if selector == "body":
-                return Popup()  # for backdrop click
-            raise AssertionError(f"should not access form controls: {selector}")
+            return FormControl(self, selector)
+
+        async def wait_for_url(self, pattern, *, timeout):
+            assert pattern == "**/customer**"
+            self.url = "https://portal.sharpxch.com/customer/"
 
     cfg = type(
         "Config",
@@ -148,10 +163,9 @@ def test_login_skips_form_when_customer_iframe_exists():
 
     asyncio.run(se_login(page, cfg))
 
-    # Customer iframe exists → skip form, no navigation, no form fill
-    assert not page.goto_called
-    assert page.filled == []
-    assert page.clicked == []
+    assert ('input[name="username"]', "u", 5000) in page.filled
+    assert ('input[name="password"]', "p", 5000) in page.filled
+    assert page.clicked
 
 
 def test_login_reuses_customer_iframe_only_when_login_form_missing():
@@ -195,6 +209,49 @@ def test_login_reuses_customer_iframe_only_when_login_form_missing():
     asyncio.run(se_login(page, cfg))
 
     assert page.clicked == []
+
+
+def test_login_uses_browser_lock_when_provided():
+    class Lock:
+        def __init__(self):
+            self.events = []
+
+        async def __aenter__(self):
+            self.events.append("enter")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.events.append("exit")
+
+    class Popup:
+        @property
+        def first(self):
+            return self
+
+        async def wait_for(self, *, state, timeout):
+            raise TimeoutError("missing")
+
+    class Page:
+        def __init__(self):
+            self.url = "https://portal.sharpxch.com/customer/"
+            self.frames = []
+            self.mouse = type("Mouse", (), {"click": lambda *args, **kwargs: None})()
+
+        async def wait_for_selector(self, *args, **kwargs):
+            raise TimeoutError("missing")
+
+        def locator(self, selector):
+            return Popup()
+
+    cfg = type(
+        "Config",
+        (),
+        {"login_url": "https://sharpxch.com/player/", "page_timeout": 120000, "username": "u", "password": "p"},
+    )()
+    lock = Lock()
+
+    asyncio.run(se_login(Page(), cfg, browser_lock=lock))
+
+    assert lock.events == ["enter", "exit"]
 
 
 def test_competition_counts_sorts_by_count_desc_then_name():

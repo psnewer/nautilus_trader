@@ -135,7 +135,7 @@ class SkipExecutionPolymarketClient(ArbPolymarketExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            await _mock_submit_with_timeline(self, command, USDC_POS)
+            _mock_submit_with_timeline(self, command, USDC_POS)
             return
         await super()._submit_order(command)
 
@@ -169,7 +169,7 @@ class SkipExecutionOrbitExchClient(OrbitExchExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            await _mock_submit_with_timeline(self, command, USD)
+            _mock_submit_with_timeline(self, command, USD)
             return
         await super()._submit_order(command)
 
@@ -202,7 +202,7 @@ class SkipExecutionSharpExchClient(SharpExchExecutionClient):
 
     async def _submit_order(self, command) -> None:
         if self._mock_orders():
-            await _mock_submit_with_timeline(self, command, USD)
+            _mock_submit_with_timeline(self, command, USD)
             return
         await super()._submit_order(command)
 

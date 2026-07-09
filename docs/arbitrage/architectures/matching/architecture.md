@@ -5,7 +5,7 @@
 > Venue 插拔第二阶段的能力/enablement 真理源见
 > `_cross-cutting/venues.md`;本文只描述 Matching 当前如何消费 anchor/tradable venue。
 > PMSPORTS synthetic event anchor 的后续设计见
-> `_cross-cutting/sports-event-anchor.md`;当前已落地 PMSPORTS synthetic discovery + Matching 聚合路径,`MatchedPair` 已有明确的 anchor/tradable/venue 分组字段,旧 PM/OE 字段仅兼容输出。
+> `_cross-cutting/sports-event-anchor.md`;当前已落地 PMSPORTS synthetic discovery + Matching 聚合路径,`MatchedPair` 已有明确的 anchor/tradable/venue 分组字段,旧 PM/OE 输出字段已删除。
 
 ---
 
@@ -23,7 +23,7 @@
 **不做**:
 - ❌ instrument 注册时不预填 pair_id(matching 是其唯一产出方)
 - ❌ 不依赖具体 instrument 类型(BinaryOption / BettingInstrument),只读 `info` 6-key,新增 venue 不改算法
-- ❌ 下游不应把 `oe_instrument_ids` 当真实多 venue 结构;真实归属以 `venue_instrument_ids` 为准
+- ❌ 下游不应读取旧 `pm_instrument_ids` / `oe_instrument_ids`;真实归属以 `venue_instrument_ids` 为准
 
 **已落地(#127)**:
 - `MarketMatchingConfig` 只接受 `anchor_venue` / `tradable_venues`;旧 `pm_venue` / `external_venues` / `oe_venue` 输入字段已删除。

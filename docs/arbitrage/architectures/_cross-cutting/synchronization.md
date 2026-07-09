@@ -4,7 +4,7 @@
 > 冲突时:**有把握 → 以本文为准并回写 `refactor.md` 修订记录;没把握 → 讨论**。
 > **这是横切协议**(P11:无单一归属)—— 由 **4 个组件共同实现同一契约**:Strategy、OE 健康检查(`OrbitExchDataClient`)、PM 健康检查(PM ExecClient 子类)、execution session。任一实现者以本文为准。
 
-> ⚠️ **失效指针(#105,2026-06-13,设计/待落地)**:§1–7 描述的是**自写 HealthCheckLoop 时代**的同步设计。**#105 决定把健康检查迁移到 NT 原生 reconciliation**,据此:
+> ⚠️ **失效指针(#105,2026-06-13,历史设计草案)**:§1–7 描述的是**自写 HealthCheckLoop 时代**的同步设计。**#105 决定把健康检查迁移到 NT 原生 reconciliation**,据此:
 > - **`health_check.*` 消息 + Strategy `_hc_running` + strategy⊥健康检查互斥(§1 第二条、§2.1 `_hc_running`、§3 Strategy 行、§7.6)→ ✅ 已退役删除(#108,2026-06-16)**(执行页 reload 撞下单的原始理由随执行页 reconcile 迁移消失;OE 下单 `page.evaluate` 与焦点无关);
 > - **健康检查⊥执行 per-venue 互斥(§1 第一条、§2.1 `_execution_active`、§3 健康检查行)→ ✅ 已退役删除(#108)**;OE `execution.*` ref-count 删。**PM 的 HealthCheckLoop 也已删(#110)**:merge/redeem 改由 NT 连续 position 对账驱动、fire-and-forget,**不再与执行互斥**(并发由 single-flight 守卫);
 > - **pair_inflight 兜底 `health_check→clear_all`(§7.6)+ max-hold(§7.3)已全部删除(#105 ②,2026-06-15)→ in-flight 出口靠结构保证:opportunity barrier 出口 + session `exec_started`↔watchdog 原子(§7.3)**。
@@ -106,13 +106,17 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 ---
 
-## 6. 落地清单
+## 6. 历史落地清单(已退役,不作为当前待办)
 
-- [ ] 定义 msgbus topic 常量:`health_check.started/finished`、`execution.started/finished`
-- [ ] Strategy:订 `health_check.*` 维护 ref-count 镜像 + submit pre-check + 发 `execution.*`
-- [ ] OE/PM 健康检查:订 `execution.*` 维护 ref-count 镜像 + tick 开头跳过判断 + 发 `health_check.*`
-- [ ] 置位在 await 前、清位在 finally(代码审查硬检查)
-- [ ] 对应测试:`strategy-4.{15,16}`、`pm-adapter-5.health.5`、`oe-adapter-2.health.5`
+本节属于 §1-6 的自写 HealthCheckLoop 时代设计。`health_check.*` / `execution.*`
+消息、Strategy `_hc_running`、健康检查⊥执行互斥已按 #108/#110 退役;当前真理源见
+§8.6。
+
+- ~~定义 msgbus topic 常量:`health_check.started/finished`、`execution.started/finished`~~
+- ~~Strategy:订 `health_check.*` 维护 ref-count 镜像 + submit pre-check + 发 `execution.*`~~
+- ~~OE/PM 健康检查:订 `execution.*` 维护 ref-count 镜像 + tick 开头跳过判断 + 发 `health_check.*`~~
+- ~~置位在 await 前、清位在 finally~~
+- ~~对应测试:`strategy-4.{15,16}`、`pm-adapter-5.health.5`、`oe-adapter-2.health.5`~~
 
 ---
 
@@ -180,7 +184,7 @@ NT `LiveClock` 回调、Actor handler、`msgbus` 派发**都在同一 asyncio ev
 
 ---
 
-## 8. 迁移:健康检查 → NT 原生 reconciliation 的同步影响(#105,设计/待落地 as-of 2026-06-13)
+## 8. 迁移:健康检查 → NT 原生 reconciliation 的同步影响(#105,当前真理源)
 
 > **本节是 §1–7 的现状真理源**(规则 6 失效就地标记已在文首挂出)。理由/决策史见 `refactor.md #105`。
 > 本节只收**横切同步**部分(页锁层次 / 状态位迁移 / pair_inflight 兜底 / "NT 不串行化"事实);OE 取 order/position 的 reload 接口、single-flight、`_current_bets` 双视图、WS 存活检测属 **OE ExecClient 组件家**,见 execution `architecture.md`。
@@ -371,8 +375,9 @@ required_venues={POLYMARKET, ORBITEXCH}
 |---|---|
 | `pm` / `polymarket` | `POLYMARKET` |
 | `oe` / `orbitexch` | `ORBITEXCH` |
+| `se` / `sharpexch` | `SHARPEXCH` |
 
-无 opportunity metadata 的普通订单可退化为只检查 `order.instrument_id.venue`。
+解析统一调用 `common.venues.venue_id_from_leg_key`,不在 Risk 内维护私有映射。若 `expected_legs` 中出现无法解析的 leg key(例如误把 `pmsports:*` non-tradable anchor 写入),Risk fail-closed,不能退化成只检查当前 order venue。无 opportunity metadata 的普通订单可退化为只检查 `order.instrument_id.venue`。
 
 #### 8.5.4 与 NT TradingState 的分工
 
@@ -407,7 +412,7 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 | `reconcile_in_progress` | **不引入** | —(PM 没有;OE 页锁解决资源串行,VenueExecutionLiveness 解决可交易门控) |
 | strategy venue-liveness 预闸 | **不引入** | Strategy 不看 liveness;统一由 Risk gate 拦截 |
 
-### 8.6 落地清单(设计/待落地)
+### 8.6 落地清单(当前状态)
 
 - [x] OE ExecClient 页锁(`asyncio.Lock`)串行碰页操作:**place/cancel ✅ 已落地(2026-06-13,`execution.py` `_page_lock` 包 `_place_via_executor`/`_cancel_one`;`test_orbitexch_client.py::test_page_lock_serializes_concurrent_page_ops`)**;reload + single-flight 已接入 reports 入口(2026-06-15,`test_reconcile_reports_stale_snapshot_*`)
 - [x] `place_bets` 顺序提交 → `gather`(**✅ 已落地 2026-06-13,`place_bets.py`;`test_action_place_bets.py`**);⚠️ **仍需 live 重验**两腿回执(页锁串行兜底,真盘确认不丢回执)
@@ -453,4 +458,4 @@ NT `TradingState` 保持原生语义,不扩展、不复用、不与 venue livene
 4. pair_inflight 无兜底(#105 ②):验**全 deny 一次机会后该 pair 能再次评估**(barrier `release_eval` 已清 in-flight)、以及 OE submit 抛异常时 session watchdog 收口、pair 不卡死(替代旧 execution-alive 兜底)。
 
 ### 回滚
-**无 flag,回滚 = `git revert` #105/#108 相关提交**。leg_settled / funnel mark / DataClient exec reload / max-hold / clear_all 均已**删除代码**,不存在"翻 flag 即恢复旧健康检查"的路径(原计划设想的 `oe_native_reconcile_enabled` 未落地)。若 live 验证发现回归,只能 revert 提交或前向修复,不能靠开关切回。
+**无 flag,回滚 = `git revert` #105/#108 相关提交**。leg_settled / funnel mark / DataClient exec reload / max-hold / clear_all 均已**删除代码**,不存在"翻 flag 即恢复旧健康检查"的路径(原计划设想的 `oe_native_reconcile_enabled` 已废弃)。若 live 验证发现回归,只能 revert 提交或前向修复,不能靠开关切回。

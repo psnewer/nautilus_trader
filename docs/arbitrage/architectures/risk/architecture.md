@@ -143,12 +143,13 @@ def _check_profit_gates(self, order: Order) -> bool:
 - Web 可热改上下界,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1`,非法区间不 apply。
 - recovery 下单不跳过该门控:极端赔率/概率属于订单本身风险,不是 profit gate。
 
-`_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;解析统一调用 `common.venues.venue_id_from_leg_key`,兼容 `pm/oe/se` 旧缩写与完整 venue/config key,不在 Risk 内维护私有映射。任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。
+`_check_required_venues_alive`(见横切 `synchronization.md §8.5`):若订单带 opportunity metadata,从 `arb:expected_legs` 解析本次机会所有真实腿并推导 required venues;解析统一调用 `common.venues.venue_id_from_leg_key`,兼容 `pm/oe/se` 旧缩写与完整 venue/config key,不在 Risk 内维护私有映射。任一 required venue 的 `order_alive && position_alive` 不成立 → **deny**。若 `expected_legs` 中出现无法解析的 leg key(例如误把 `pmsports:*` non-tradable anchor 写入),Risk 加入 unsupported sentinel 并 fail-closed,不能退化成只检查当前 order venue。无 metadata 的普通订单退化为只检查当前 `order.instrument_id.venue`。
 
 **补救下单 intent 例外(2026-06-11)**:
 - Strategy submitter 将 `spec["intent"]` 写入 NT `Order.tags=["arb:intent=<intent>"]`,详见 strategy 详设 §3.9。
 - `arb:intent=recovery` 表示该订单用于降低不完整持仓风险,不是新增套利开仓;Risk 仍执行 NT 父类基础检查和 `_check_balance`,但 `_check_profit_gates` 内部直接放行 recovery,跳过 `match_tp / match_sl`。
 - recovery **不跳过** `_check_required_venues_alive`:venue 执行真相不可信时,补救下单同样不能安全进入 venue。撤单仍不经 `_check_order`,不受 liveness gate 拦截。
+- PMSPORTS anchor 不属于 trading venue:`expected_legs` 正常只来自 Strategy tradable legs;若 tag 污染带入 `pmsports:*`,liveness gate fail-closed。
 - 默认无 tag 或未知 tag 按 `"arbitrage"` 处理,保持旧行为。
 - `CancelOrder` 本来不经 `_check_order`,不需要 intent。
 

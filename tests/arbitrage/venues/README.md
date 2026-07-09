@@ -6,11 +6,11 @@
 
 **前置**:代码侧 `VENUE_REGISTRY` 已落地。
 **输入**:读取 registry。
-**期望**:`POLYMARKET` 为 `display_group=primary, odds_model=probability`;`ORBITEXCH` 与
-`SHARPEXCH` 为 `display_group=external, odds_model=decimal`;SE/OE 保留真实 venue id,并在
-descriptor 上声明各自的 `discovery_config_builder`。
-`display_group` 只服务 Web 旧 PM/external 展示视图,不代表 PMSPORTS matching anchor。
-**验收**:已落地。`tests/arbitrage/common/test_venues.py` 覆盖静态 descriptor 与 display group 判断。
+**期望**:`POLYMARKET` 为 `odds_model=probability`;`ORBITEXCH` 与
+`SHARPEXCH` 为 `odds_model=decimal`;SE/OE 保留真实 venue id,并在 descriptor 上声明各自的
+`discovery_config_builder`。PMSPORTS matching anchor 由 data source descriptor 表达,不由
+venue descriptor 的展示字段表达。
+**验收**:已落地。`tests/arbitrage/common/test_venues.py` 覆盖静态 descriptor。
 
 ## venues-2:enabled venue 派生
 
@@ -55,3 +55,10 @@ PM+OE+SE 三家均注册;PMSPORTS sports anchor 由 `data_sources.sports_status`
 **输入**:默认 PM+OE 配置、PM disabled + OE+SE 配置。
 **期望**:`enabled_settlement_venues(cfg, "polymarket_ctf")` 只在声明该 capability 的 venue 已启用时返回 PM descriptor;PM disabled 时返回空,launcher 不再直接按 `POLYMARKET` 常量决定 settlement 是否初始化。
 **验收**:已落地。`tests/arbitrage/common/test_venues.py` 覆盖 capability + enablement 派生,`tests/arbitrage/launchers/test_arb_node.py` 覆盖 PM disabled 时不构造 settlement。
+
+## venues-8:skip_execution venue 组合 smoke matrix
+
+**前置**:配置分别启用 PM+OE、PM+SE、OE+SE、PM+OE+SE;`debug.skip_execution=true`;`data_sources.sports_status.enabled=true`。
+**输入**:经 `launchers/arb_node.py` 启动真实连接但跳过真实订单 IO。
+**期望**:每组只注册 enabled tradable venues 与 PMSPORTS data source;Matching 走 `.PMSPORTS` anchor 聚合 tradable venues;Strategy/Risk/Execution 不消费 `.PMSPORTS` anchor;无真实下单。
+**验收**:部分完成。PM+SE smoke 已由 SE README 记录;PM+OE、OE+SE-only、PM+OE+SE 仍待按用户明确要求启动后验收。

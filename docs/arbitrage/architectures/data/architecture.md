@@ -151,11 +151,11 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         return instrument
 ```
 
-> **实写已落地(superseded,2026-06-21 核实)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构占位。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events?series_id=`(内嵌 teams),`_build_instrument` 直接把完整 6-key(含 `start_ts` ← `_parse_start_ts(startDate)`、`selection_role` ← slug+ordering、`competition` 经 aliases 标准化)写入 `info`(`arb_provider.py:330-335`)。下面的 seam 版仅作历史参照,extraction 不再是 TODO。
+> **实写已落地(superseded,2026-06-21 核实)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构草案。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_all_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events?series_id=`(内嵌 teams),`_load_moneyline_market` 直接把完整 6-key(含 `start_ts` ← `_parse_start_ts(startDate)`、`selection_role` ← slug+ordering、`competition` 经 aliases 标准化)写入 `info`(`arb_provider.py:339-353`)。下面的 seam 版仅作历史参照,extraction 不再是当前待办。
 
 `enrich_pm_six_key_info(market_info, outcome) -> dict`(历史 seam,已被 arb_provider 取代):
 - `sport` ← `market_info.get("category")`(PM gamma 给的最接近字段)
-- `competition` / `home_team` / `away_team` / `selection_role` / `start_ts` 当时占位(seam 阶段空串/0)
+- `competition` / `home_team` / `away_team` / `selection_role` / `start_ts` 当时为空值(seam 阶段空串/0)
 
 PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_from_instruments` 见 4-key 任一空才跳过该 instrument。
 
@@ -163,7 +163,7 @@ PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_f
 
 - `ArbPolymarketLiveDataClientFactory.create()`:同上游 `PolymarketLiveDataClientFactory`,只把 provider 替为 `ArbPolymarketInstrumentProvider`(用上游 `PolymarketDataClient` 不变;P1 复用)。HTTP client 使用 `py_clob_client_v2.ClobClient`,与 PM execution 共用同一 factory 约束(#97)。构造完 provider 后回写 `instrument_provider_by_venue["POLYMARKET"]`。
 - `OrbitExchLiveDataClientFactory.create()`:只从 `ArbContext.discovery_config_by_venue["ORBITEXCH"]` / `*_aliases_by_venue["ORBITEXCH"]` / `browser_manager_by_venue["ORBITEXCH"]` 读取依赖;通过 `ctx_map_get_or_create` 复用或创建 `PlaywrightBrowserManager`,并把 `ArbContext.arbitrage_params.fx` 注入 `OrbitExchInstrumentProvider`,用于把 OE 最小 stake 7 GBP 写成 adapter 外 USD 口径的 `min_notional = Money(7 * fx, USD)`。构造完 provider 后回写 `instrument_provider_by_venue["ORBITEXCH"]`。
-- `SharpExchLiveDataClientFactory.create()`:仅在 `venues.sharpexch.enabled=true` 时由 launcher 注册;只从 `ArbContext.discovery_config_by_venue["SHARPEXCH"]` / `*_aliases_by_venue["SHARPEXCH"]` / `browser_manager_by_venue["SHARPEXCH"]` / `browser_lock_by_venue["SHARPEXCH"]` 读取依赖。browser manager / lock 通过 `ctx_map_get_or_create` 复用或创建;discovery config 存在时构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` + `SharpExchInstrumentProvider`;缺失时使用占位 `InstrumentProvider()`。构造完 provider 后回写 `instrument_provider_by_venue["SHARPEXCH"]`。
+- `SharpExchLiveDataClientFactory.create()`:仅在 `venues.sharpexch.enabled=true` 时由 launcher 注册;只从 `ArbContext.discovery_config_by_venue["SHARPEXCH"]` / `*_aliases_by_venue["SHARPEXCH"]` / `browser_manager_by_venue["SHARPEXCH"]` / `browser_lock_by_venue["SHARPEXCH"]` 读取依赖。browser manager / lock 通过 `ctx_map_get_or_create` 复用或创建;discovery config 存在时构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` + `SharpExchInstrumentProvider`;缺失时使用 fallback `InstrumentProvider()`。构造完 provider 后回写 `instrument_provider_by_venue["SHARPEXCH"]`。
 - **`PolymarketSportsLiveDataClientFactory.create()`(#60/#127)**:构造 `PolymarketSportsDataClient` + `PolymarketSportsInstrumentProvider`;provider 读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`,产出 PMSPORTS synthetic event anchors。
 
 ### 3.4 `PolymarketSportsDataClient`(`adapters/polymarket/sports.py`,#60)—— 比分 firehose
@@ -202,6 +202,6 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 - [x] OE `OrbitExchLiveDataClientFactory`(同目录 `factories.py`)
 - [x] PM `ArbPolymarketInstrumentProvider`(`arb_provider.py`)+ `ArbPolymarketLiveDataClientFactory`:真 6-key extraction 已实写(gamma `/sports`+`/events` → home/away/selection_role/competition/start_ts),实盘 discovery/matching 已跑
 - [x] PMSPORTS `PolymarketSportsInstrumentProvider` + `PolymarketSportsDataClient`:公开 Gamma discovery → non-tradable event anchors 入 cache;Sports WS 继续发布 `SportsGameUpdate`
-- [x] ~~真 PM 6-key extraction~~ 已落地(见上)。**OE scraper DOM 抽 `start_ts`:不做** —— `start_ts` 当前无任何 consumer(matching 按 (sport,competition)+队名相似度配对,eviction 由 sports `ended` 比分信号驱动,#60 已取代时间窗 reaper);需要时再补
+- [x] ~~真 PM 6-key extraction~~ 已落地(见上)。OE NT discovery 已迁移到 `OrbitExchDiscoveryClient` + `sport/details`;`start_ts` 从 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。旧 `OrbitExchScraper` DOM 路径仅供 services 栈使用,不再作为当前待办。
 - [x] OE competition 页存活封装进 `OrbitExchWebSocketHandler` + `on_disconnect` 事件化 reload;旧 `HealthCheckLoop` staleness / 补开已退役
 - [ ] /live-test:双 venue OrderBookDelta 全链路 → strategy 收

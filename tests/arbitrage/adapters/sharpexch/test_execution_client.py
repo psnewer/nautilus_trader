@@ -141,7 +141,7 @@ def test_execution_client_connects_with_fake_page_and_registers_ws_before_naviga
     assert client._ws_handler is None
 
 
-def test_execution_client_login_runs_inside_shared_browser_lock():
+def test_execution_client_connect_delegates_login_to_helper():
     class Lock:
         def __init__(self):
             self.events = []
@@ -164,7 +164,7 @@ def test_execution_client_login_runs_inside_shared_browser_lock():
 
     _run(client._connect())
 
-    assert lock.events == ["enter", "login", "exit"]
+    assert lock.events == ["login"]
 
 
 def test_on_general_frame_balance_is_ignored():

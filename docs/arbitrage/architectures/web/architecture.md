@@ -151,7 +151,7 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
-| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids`,不再输出旧 `pm_*` / `oe_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示分组只读 `venue_instrument_ids`,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底;`external_venue` 直接取 `venue_instrument_ids` 中第一个非 primary display group venue,`external_*` 仍是非 primary display group 可交易腿展示视图,`external_venues` / `venue_teams` 表达 3+ venue 聚合结果 |
+| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams`,不再输出旧 `pm_*` / `oe_*` / `external_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示分组只读 `venue_instrument_ids`,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底 |
 | GET | `/odds` | PairRegistry + `cache.order_book` 最优价;每条 leg 带 `venue` / `role` / `odds_model` / `bid` / `ask`,前端按 `odds_model=decimal` 将十进制赔率按 1/odds 换算成隐含概率,probability venue 原样展示 |
 | WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 
@@ -163,11 +163,11 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 
 ### 8.6 落地清单(控制台)
 
-- [ ] `src/arbitrage/common/control.py`:命令类型 + topic 常量
-- [ ] `ArbitrageLiveRiskEngine.configure_arb`:subscribe `command.arb.trading_state` + `command.arb.risk_params` + `command.arb.arbitrage_params`
-- [ ] `StrategyEvaluator.on_start`:subscribe `command.arb.arbitrage_params`
-- [ ] `MarketMatchingActor.on_start`:subscribe `command.arb.refresh_interval`
-- [ ] launcher:`web.enabled && web.start_halted` → build 后 `risk_engine.set_trading_state(HALTED)`;`WebSectionConfig` 加 `start_halted`
-- [ ] `app.py` 路由 + `actor.py` publish 命令 / 写 `arb_config.json`(注入 cfg 快照 + 配置文件路径)
-- [ ] 测试:命令 publish/consume apply、boot HALTED、PUT 写文件 + 热段发命令、HALTED deny 经 barrier 释放
+- [x] `src/arbitrage/common/control.py`:命令类型 + topic 常量
+- [x] `ArbitrageLiveRiskEngine.configure_arb`:subscribe `command.arb.trading_state` + `command.arb.risk_params` + `command.arb.arbitrage_params`
+- [x] `StrategyEvaluator.on_start`:subscribe `command.arb.arbitrage_params`
+- [x] `MarketMatchingActor.on_start`:subscribe `command.arb.refresh_interval`
+- [x] launcher:`web.enabled && web.start_halted` → build 后 `risk_engine.set_trading_state(HALTED)`;`WebSectionConfig` 加 `start_halted`
+- [x] `app.py` 路由 + `actor.py` publish 命令 / 写 `arb_config.json`(注入 cfg 快照 + 配置文件路径)
+- [x] 测试:命令 publish/consume apply、boot HALTED、PUT 写文件 + 热段发命令、HALTED deny 经 barrier 释放。详见 `tests/arbitrage/web/README.md` web-7.8~7.12、risk hot-update、matching refresh interval 与 launcher boot HALTED 用例。
 - [ ] **live 验证**:真节点 boot HALTED → 点 Start 转 ACTIVE → 下单放行;改 arbitrage/risk 参数热生效

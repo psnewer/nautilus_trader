@@ -42,6 +42,9 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
 
 
+_UNSUPPORTED_EXPECTED_LEG_VENUE = "__UNSUPPORTED_EXPECTED_LEG__"
+
+
 class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
     # ── 注入(launcher 在 kernel 原生构造后调用)─────────────────────
@@ -263,12 +266,16 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if meta is None:
             return {self._venue_from_order(order)}
 
-        venues = {
-            venue
-            for leg_key in meta.expected_legs
-            for venue in [self._venue_from_leg_key(leg_key)]
-            if venue is not None
-        }
+        venues = set()
+        unsupported = False
+        for leg_key in meta.expected_legs:
+            venue = self._venue_from_leg_key(leg_key)
+            if venue is None:
+                unsupported = True
+            else:
+                venues.add(venue)
+        if unsupported:
+            venues.add(_UNSUPPORTED_EXPECTED_LEG_VENUE)
         if venues:
             return venues
         return {self._venue_from_order(order)}

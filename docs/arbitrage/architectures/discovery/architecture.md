@@ -2,7 +2,7 @@
 
 > 设计理由 / 决策史(Q1/Q2/Q3/Q4/Q5/Q6/Q7/Q8/Q9)见初设 `refactor.md §5.1 / §5.2 / §6.3`。
 > 冲突时:**有把握 → 以本文为准并回写;没把握 → 提出讨论,不擅自定**。
-> 对应初设 Step 1(Provider)+ Step 2 调度(Refresher)。
+> 对应初设 Step 1(Provider)+ Step 2 周期发现。Step 2 已从 Refresher Actor 反转为 DataClient 原生 `_update_instruments`。
 
 ---
 
@@ -31,34 +31,25 @@ PM WS 配置约束:`ArbConfig.venues.polymarket.ws_url` 的推荐值是上游 ba
 
 ```mermaid
 flowchart LR
-  R[InstrumentRefresher Actor<br/>per venue] -->|周期 load_all_async| P[InstrumentProvider PM/OE]
-  P -->|add_instrument| C[(Cache.instruments)]
-  R -->|成功| EV["publish data:InstrumentsRefreshed.{venue}<br/>(count / ts / venue)"]
-  EV --> M[MatchingActor]
-  CFG["msgbus: config.{venue}.refresh_interval"] -.runtime 改值.-> R
-  R -.on_save/on_load.-> CDB[(Cache.kv:refresh_interval)]
+  DC[DataClient<br/>PM/PMSPORTS/OE/SE] -->|首抓 + 周期 load_all_async| P[InstrumentProvider]
+  P -->|provider snapshot| DC
+  DC -->|_handle_data / on_instrument| DE[DataEngine]
+  DE --> C[(Cache.instruments)]
+  M[MarketMatchingActor] -->|timer 读 cache| C
+  M -->|publish| MP[data.MatchedPair]
 ```
 
 要点:
-- **失败不发事件**(Q4):Refresher 单轮 `load_all_async` 抛 / 0 instrument → log + 不 publish → MatchingActor 失去本轮触发(2×interval 窗口外即 gate)。
-- **provider.add_instrument** 是 NT `InstrumentProvider` 基类自带,内部走 NT 标准入 cache 路径(下游 DataEngine / Strategy / Risk 经 cache 透明读)。
+- 周期发现由各 DataClient 拥有,与 NT adapter 范式一致;普通异常只影响本轮,不得杀死后续周期 task。
+- Matching 不再依赖 discovery 事件或 fresh window gate,而是 timer 读 cache + cache 非空 latch。
 
 ---
 
 ## 3. 接口设计
 
-### 3.1 `InstrumentsRefreshed`(事件,`src/arbitrage/discovery/events.py`)
+### 3.1 `InstrumentsRefreshed`(退役)
 
-NT `@customdataclass` 注册的 Data 子类(可走 NT msgbus + 持久化通路):
-
-```python
-@customdataclass
-class InstrumentsRefreshed:
-    venue: str            # "POLYMARKET" / "ORBITEXCH"(消费方按 venue gate)
-    count: int            # 本轮成功落库的 instrument 数(0 时不应被 publish)
-    ts_event: int         # 本轮完成时间(ns)
-    ts_init: int          # NT 标准字段
-```
+`InstrumentsRefreshed` 事件与 `InstrumentRefresher` Actor 已删除。当前 discovery 成功信号是 instruments 经 DataEngine 进入 cache;Matching 由 timer 主动读取 cache,不再订阅 discovery 事件。
 
 ### 3.2 `OrbitExchInstrumentProvider`(`nautilus_trader/adapters/orbitexch/providers.py`)
 
@@ -84,7 +75,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 | `competition` | `competition_aliases.get(event.competition, event.competition)` —— **slice 7A 规范化**(`"Men's Roland Garros 2026"` → `"ATP"`,#46) |
 | `home_team` | `event.home_team` |
 | `away_team` | `event.away_team` |
-| `start_ts` | **0(暂)**;待 scraper DOM 提取赛事开赛时间 |
+| `start_ts` | `OrbitExchDiscoveryClient.events_from_sport_details()` 从 `marketStartTime` / `event.openDate` 毫秒时间转 ns |
 | `selection_role` | `"home"` / `"draw"` / `"away"`(由本腿对应的 selection_id 决定) |
 
 > **#46 落实"Provider 填 info 时已 alias"假设**:normalizer 此前注释假设 Provider 已规范化 sport/competition,
@@ -147,38 +138,17 @@ synthetic `BettingInstrument`:
 - **灌 cache 路径**:`_handle_data(inst)` → DataEngine `_handle_instrument` → `cache.add_instrument` **且** 通知 `on_instrument` 订阅者(原生,替代旧 refresher 裸 `cache.add_instrument`)。
 - `InstrumentsRefreshed` 事件 + matching 的事件触发**一并退役**(matching 改自 timer,§matching §3.3/§4.4)。Q3/Q6 的运行时改 interval + 持久化**迁移中降级**(按需经 client config 恢复)。
 
-> 下方旧 `InstrumentRefresher` 设计**仅存档**(`refresher.py` 暂留 dead code,smoke 验后删):
-
-```python
-class InstrumentRefresher(Actor):
-    def __init__(self, config: InstrumentRefresherConfig): ...
-    # NT Actor 生命周期
-    def on_start(self): self._schedule_first()
-    def on_stop(self): self._cancel_loop()
-    # 周期循环(NT clock 自重排,§6.8.4.5 同节奏)
-    async def _tick(self) -> None: ...
-    # 持久化(Q3/Q6)
-    def on_save(self) -> dict[bytes, bytes]: return {b"refresh_interval": str(self._interval).encode()}
-    def on_load(self, state: dict[bytes, bytes]) -> None: ...
-    # 运行时改值(msgbus 命令)
-    def _on_config_command(self, msg) -> None: ...   # 订 config.{venue}.refresh_interval
-```
-
-**`InstrumentRefresherConfig`**:`venue`, `refresh_interval_default`(secs,默认 30), `min_interval`(secs,默认 5,运行时改值下界);Provider 实例经 `_RuntimeDeps(provider, loop)` 注入。
-
-**slice 10d(#52)Gap E:clean shutdown**:`_on_alert` 创建的 `_tick_task` 跟踪到 `self._tick_task`;`on_stop` cancel 未完成 task,避免 NT dispose 时 "Task was destroyed but it is pending" warning。**slice 10d live smoke 验:0 pending warning**(对比 #51 1 条)。
-
-**slice 8A(#47)Provider 共享机制**:Refresher 必须跟 DataClient 用**同一个 Provider 实例**(否则 add 的 instrument 双方各持一份,cache 视图分裂)。落地:
+**Provider 共享机制**:Provider 实例仍由对应 Data factory 构造并回写 `ArbContext.instrument_provider_by_venue`,供测试/观测/后续 adapter 迁移使用;不再供 Refresher 消费。落地:
 - PM `ArbPolymarketLiveDataClientFactory.create` + OE `OrbitExchLiveDataClientFactory.create` 构造完 Provider 后**只回写** `instrument_provider_by_venue["POLYMARKET"|"ORBITEXCH"]`。SE 在 `venues.sharpexch.enabled=true` 时由 `SharpExchLiveDataClientFactory` 同形回写 `instrument_provider_by_venue["SHARPEXCH"]`。PM/PMSPORTS targets、OE/SE discovery config 与 aliases 均从 keyed map 读取,不存在 `ctx.pm_*` / `ctx.oe_*` / `ctx.se_*` 兼容兜底。
 - launcher `add_actors` 在 `node.build()` 之后构造 Matching / Strategy / optional WebGateway;InstrumentRefresher 已退役,不会再从 `ArbContext` 读取 provider 构造 Refresher。Provider 回写只作为运行时共享/测试/后续 adapter 迁移入口保留;browser manager / lock 等 discovery 共享件通过 `ctx_map_get_or_create` 写入 keyed map;SE runtime 为显式 opt-in,默认 PM/OE discovery 流程不变。
-- **provider 缺失场景**(discovery 禁用 / 占位 `InstrumentProvider()`):launcher 跳过该 venue 的 Refresher 装载(不 raise)
+- **provider 缺失场景**(discovery 禁用 / fallback `InstrumentProvider()`):对应 DataClient 不产生该 venue instruments;Matching 由 cache 非空 latch 自然跳过。
 
 ### 3.4 消息接线
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `InstrumentRefresher` | `config.{venue}.refresh_interval` 命令(运行时改值) | `data:InstrumentsRefreshed`(成功后) |
-| `MatchingActor`(§matching) | `data:InstrumentsRefreshed`(两 venue 都订) | `data:MatchedPair` |
+| PM/PMSPORTS/OE/SE DataClient | client config + venue/data-source keyed context | instruments 经 DataEngine 入 cache;行情/体育状态按各自 Data 类型发布 |
+| `MatchingActor`(§matching) | NT clock timer + cache instruments + `data.SportsGameUpdate*` ended 事件 | `data:MatchedPair` / `MatchedPairRemoved` |
 
 ---
 
@@ -222,9 +192,9 @@ OE 的 `quantity` 在 adapter 外部表示 **USD stake**;`BettingInstrument.noti
 | 横切 | 约束 |
 |---|---|
 | Q9 六统一 key | Provider 层硬契约:OE 实现 + PM post-processor 都必须填全;matching 只读不写 |
-| §6.10 同步 | Refresher tick 与 execution 无关,不接 `_execution_active` |
-| §6.3 NT 持久化 | `on_save/on_load` 走 `CacheDatabaseAdapter`(Redis backing)→ refresh_interval 跨重启保留 |
-| P8 目录 | `src/arbitrage/discovery/` 装 Provider + Refresher + events;不再为单 Actor 单建子目录 |
+| §6.10 同步 | discovery 周期与 execution 无关,不接 `_execution_active` |
+| §6.3 NT 持久化 | 周期发现 interval 走 DataClient config;不再通过 Refresher `on_save/on_load` 热持久化 |
+| P8 目录 | `src/arbitrage/discovery/` 只保留 discovery capability 公共入口;具体 Provider/DataClient 归各 adapter |
 
 ---
 
@@ -232,33 +202,32 @@ OE 的 `quantity` 在 adapter 外部表示 **USD stake**;`BettingInstrument.noti
 
 ```mermaid
 sequenceDiagram
-  participant CK as NT Clock
-  participant RF as InstrumentRefresher
+  participant DC as DataClient
   participant PV as Provider(OE/PM)
+  participant DE as DataEngine
   participant CA as Cache
+  participant MM as MarketMatchingActor
   participant MB as MessageBus
 
-  CK->>RF: alert(interval)
-  RF->>PV: await load_all_async()
-  alt 成功 + count>0
-    PV->>CA: add_instrument × N(基类自动入库)
-    RF->>MB: publish data:InstrumentsRefreshed{venue,count,ts}
-  else 失败 / 0
-    RF->>RF: log warning(不 publish)
+  DC->>PV: await load_all_async()
+  alt 成功
+    DC->>DE: _handle_data(instrument) × N
+    DE->>CA: cache.add_instrument + on_instrument
+  else 普通异常
+    DC->>DC: warning;下一轮继续
   end
-  RF->>CK: 重排下次 alert(读 self._interval,改值即时生效)
+  MM->>CA: timer 读 cache
+  MM->>MB: publish MatchedPair/MatchedPairRemoved
 ```
 
 ---
 
 ## 7. 落地清单(Step 1/2 调度)
 
-- [x] `InstrumentsRefreshed` Data 类(`@customdataclass` from `model.custom`)+ 测构造/字段(`src/arbitrage/discovery/events.py`,3 passed)
-- [x] `OrbitExchInstrumentProvider`:`load_all_async` 包 scraper、`_build_legs` 填 info 6-key(start_ts=0 标 TODO)(`nautilus_trader/adapters/orbitexch/providers.py`,6 passed)
+- [x] `OrbitExchInstrumentProvider`:`load_all_async` 包 `OrbitExchDiscoveryClient`,`_build_legs` 填 info 6-key;`start_ts` 由 `sport/details` 的 `marketStartTime` / `event.openDate` 解析(`nautilus_trader/adapters/orbitexch/{discovery_client.py,providers.py}`)
 - [x] `PolymarketSportsInstrumentProvider`:公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchor(`tests/arbitrage/adapters/polymarket/test_sports.py`)
-- [x] `InstrumentRefresher` Actor:周期 NT clock 自重排 + try/finally + on_save/on_load + `config.{venue}.refresh_interval` 命令运行时改值 + Q4 静默失败(`src/arbitrage/discovery/refresher.py`,11 passed)
-- [ ] PM info 6-key post-processor(或上游 provider 子类)接线点 —— launcher 层,Step 1/2 全链路启动时定
-- [ ] **Step 1 待补**:scraper DOM 提取 `start_ts`(否则 matching 无法用时间窗过滤过期赛事)
-- [ ] /live-test 验:OE Provider 真抓(browser/page);双 venue Refresher 在 TradingNode 内并行;`InstrumentsRefreshed` msgbus 全链路被 MatchingActor 收到
+- [x] PM/PMSPORTS/OE/SE 周期发现迁入各 DataClient 原生 `_update_instruments`;Matching timer 读 cache,不订 `InstrumentsRefreshed`
+- [x] PM info 6-key 由 `ArbPolymarketInstrumentProvider` series-based discovery 注入
+- [ ] /live-test 或上层 e2e 验:DataClient 原生发现 → cache → matching timer → MatchedPair 全节点链路
 
-> **未决/讨论**:启动顺序(Refresher 首轮同步等 vs 异步等;MatchingActor 启动初无 InstrumentsRefreshed 时如何展示);PM info 6-key 注入方式(post-processor vs 子类化)—— Step 1 启动时定。
+> **未决/讨论**:MatchingActor 启动初 cache 为空时如何在 Web 上展示 discovery pending 状态;`start_ts` 是否继续作为 matching 过期过滤字段,还是完全交给 PMSPORTS ended eviction。

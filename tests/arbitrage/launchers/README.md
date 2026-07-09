@@ -24,7 +24,7 @@
 
 - ✅ `test_arb_node.py`:默认只装 Matching + Strategy 两个 actor / `web.enabled=true` 额外装 WebGatewayActor / StrategyEvaluator portfolio 取自 kernel / bootstrap_and_build 调 add_actors
 
-## Slice 8A 修正(2026-05-30 #48):Q19 `is_execution_active` 真接(撤"TODO")
+## Slice 8A 修正(2026-05-30 #48):Q19 `is_execution_active` 真接(撤旧 stub)
 
 **用户指正**:`is_execution_active = lambda: False` 是漏看 — Q19 机制(`_cross-cutting/synchronization.md`)早就存在,`ArbExecutionSessionMixin` 维护 `_execution_active` ref-count,健康检查已用同一 callable 语义。launcher 应该桥到具体 exec client,**不是新机制**。
 

@@ -24,7 +24,7 @@
       ]
     },
     "sharpexch": {
-      "enabled": true,
+      "enabled": false,
       "sports": [
         {
           "sport": "Tennis",
@@ -53,17 +53,18 @@
       "ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/"
     },
     "orbitexch": {
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://www.orbitexch.com",
       "headless": false,
       "page_load_timeout_sec": 120,
       "staleness_timeout_sec": 300
     },
     "sharpexch": {
-      "enabled": true,
+      "enabled": false,
       "base_url": "https://portal.sharpxch.com",
       "login_url": "https://sharpxch.com/player/",
       "headless": false,
+      "user_data_dir": "~/.config/browser",
       "page_load_timeout_sec": 120,
       "staleness_timeout_sec": 300
     }
@@ -99,7 +100,7 @@
             {
               "type": "mean_rebate",
               "params": {
-                "min_rate": -1
+                "min_rate": 0.01
               }
             },
             {
@@ -120,7 +121,7 @@
             {
               "type": "mean_rebate_recovery",
               "params": {
-                "min_repaired_rebate": 0.1
+                "min_repaired_rebate": -0.05
               }
             }
           ],
@@ -169,10 +170,10 @@
     ]
   },
   "debug": {
-    "enabled": true,
+    "enabled": false,
     "overrides": {
       "skip_execution": {
-        "enabled": false,
+        "enabled": true,
         "value": true,
         "description": "smoke 不真下单"
       }

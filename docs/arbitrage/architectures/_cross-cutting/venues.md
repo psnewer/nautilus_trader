@@ -1,7 +1,7 @@
 # 横切:Venue Registry / Capability 详细设计
 
 > **定位**:详细设计。本文是第二阶段 venue 插拔化的单一真理源(Q28)。
-> **成熟度**:落地中(2026-07-02)。静态 registry、launcher enablement、matching tradable venue 派生、strategy/risk 公式类 helper 已落地;完整 venue graph / 动态插件不在本阶段。
+> **成熟度**:第二阶段静态 venue capability 已落地(2026-07-08)。静态 registry、launcher enablement、factory 注册、ArbContext keyed map、PMSPORTS data source、matching tradable venue 派生、strategy/risk/web 公式与展示主路径已切到 capability/keyed map;完整 venue graph / 动态插件不在本阶段。
 > **归属判据**:venue 插拔同时约束 config、launcher、matching、strategy、risk、web 与 adapter factory,
 > 无单一自然归属,按 P11 放在横切章节。
 
@@ -53,7 +53,6 @@ venue capability。
 class VenueDescriptor:
     venue_id: str                         # "POLYMARKET" / "ORBITEXCH" / "SHARPEXCH"
     config_key: str                       # "polymarket" / "orbitexch" / "sharpexch"
-    display_group: Literal["primary", "external"]
     instrument_model: Literal["binary_option", "betting"]
     odds_model: Literal["probability", "decimal"]
     amounts_normalized_to_usd: bool
@@ -91,14 +90,14 @@ Venue 静态表:
 
 第一版静态表:
 
-| venue | display_group | instrument_model | odds_model | 金额口径 | 专属能力 |
-|---|---|---|---|---|---|
-| `POLYMARKET` | `primary` | `binary_option` | `probability` | USD/USDC.e | PM CTF settlement |
-| `ORBITEXCH` | `external` | `betting` | `decimal` | adapter 外 USD 归一 | Playwright BIAB/OE adapter |
-| `SHARPEXCH` | `external` | `betting` | `decimal` | USD 原生 | Playwright BIAB/SE adapter |
+| venue | instrument_model | odds_model | 金额口径 | 专属能力 |
+|---|---|---|---|---|
+| `POLYMARKET` | `binary_option` | `probability` | USD/USDC.e | PM CTF settlement |
+| `ORBITEXCH` | `betting` | `decimal` | adapter 外 USD 归一 | Playwright BIAB/OE adapter |
+| `SHARPEXCH` | `betting` | `decimal` | USD 原生 | Playwright BIAB/SE adapter |
 
-`display_group` 只服务 Web 旧 `pm_*` / `external_*` 展示字段,不表达 matching anchor。当前 matching anchor 是
-`DATA_SOURCE_REGISTRY["sports_status"]` 产出的 `.PMSPORTS` non-tradable instruments。
+Matching anchor 是 `DATA_SOURCE_REGISTRY["sports_status"]` 产出的 `.PMSPORTS`
+non-tradable instruments;不由 venue descriptor 的展示字段表达。
 
 `VENUE_REGISTRY` 只表达系统已支持的 venue;用户配置中的 `enabled=false` 不删除 descriptor,
 只让该 venue 不进入 runtime。
@@ -242,14 +241,26 @@ Web 可从 `enabled_venue_ids(cfg)` / cache account states 展示 enabled venues
 
 ## 6. 迁移顺序
 
-1. 新增 registry + helper + 单元测试,不接业务调用。
-2. 替换 launcher enablement / factory registration / liveness 初始化。
-3. 替换 dispatcher tradable venues 派生。
-4. 替换 strategy 中 decimal odds 集合判断。
-5. 替换 risk/portfolio 中公式类 venue 判断。
-6. 更新 web/config 展示中的 enabled venue 派生。
-7. 将 PMSPORTS 从 venue descriptor 剥离成 `DATA_SOURCE_REGISTRY`。
-8. 跑 PM+OE、PM+SE、OE+SE、PM+OE+SE 离线测试与 `skip_execution=true` smoke。
+1. [x] 新增 registry + helper + 单元测试。
+2. [x] 替换 launcher enablement / factory registration / liveness 初始化。
+3. [x] 替换 dispatcher tradable venues 派生。
+4. [x] 替换 strategy 中 decimal odds 集合判断。
+5. [x] 替换 risk/portfolio 中公式类 venue 判断。
+6. [x] 更新 web/config 展示中的 enabled venue 派生。
+7. [x] 将 PMSPORTS 从 venue descriptor 剥离成 `DATA_SOURCE_REGISTRY`。
+8. [ ] PM+OE、PM+SE、OE+SE、PM+OE+SE `skip_execution=true` smoke 逐组合验收。
+
+## 6.1 当前审计结论(2026-07-08)
+
+全局搜索当前 NT 主路径后,第二阶段剩余工作按类别归为:
+
+| 类别 | 当前状态 | 后续动作 |
+|---|---|---|
+| 运行主路径旧字段 | `pm_instrument_ids` / `oe_instrument_ids` / `external_*` 已从 `MatchedPair` 与 Web 输出删除;剩余引用主要是拒绝旧字段的测试与历史说明 | 不再保留兼容兜底;新增字段必须走 `venue_instrument_ids` / `tradable_instrument_ids` |
+| Enablement / factory | launcher 和 dispatcher 已从 registry 派生 data source / venue / factory / liveness;adapter 专属 config builder 仍保留在 adapter 边界 | 新 venue 接入时新增 descriptor + 专属 builder,不改 launcher 主流程 |
+| PMSPORTS anchor | 已独立为 data source,不依赖 PM trading venue enablement;matching 默认走 PMSPORTS anchor 聚合 enabled tradable venues | 仍需按组合跑 skip smoke,验证 `.PMSPORTS` 不进入 Strategy/Risk/Execution |
+| Web 配置 UI | 页面仍显式展示 Polymarket / OrbitExch / SharpExch 标签,因为 schema 当前就是显式字段;监控展示已按实际 venue 动态渲染 | 动态 schema-driven 配置 UI 属后续增强,不是第二阶段阻塞 |
+| PM settlement | 仍是 PM 专属 capability,由 `enabled_settlement_venues(..., "polymarket_ctf")` 触发 | 不在第二阶段抽象 settlement;只保证 PM disabled 时不构造 |
 
 ---
 
@@ -266,7 +277,10 @@ Web 可从 `enabled_venue_ids(cfg)` / cache account states 展示 enabled venues
 - strategy helper 对 OE/SE 使用相同 decimal odds 概率与 qty 公式。
 - Risk 概率门控对 PM/OE/SE 均经同一 helper。
 
-live / smoke 验收(本设计落地后再做):
+live / smoke 验收:
 
-- `skip_execution=true` PM+SE smoke:discovery/matching/strategy/risk submit intent 可达。
-- 真 SE 成交路径与完整套利 E2E 不作为 registry 设计阶段验收前置。
+- [ ] `skip_execution=true` PM+OE smoke。
+- [x] `skip_execution=true` PM+SE smoke 已有 SE 侧验证记录(见 SharpExch 设计与测试 README)。
+- [ ] `skip_execution=true` OE+SE-only smoke。
+- [ ] `skip_execution=true` PM+OE+SE smoke。
+- 真 SE 成交路径已由独立 probe 验证;完整套利 E2E 仍放在组合 smoke 后单独授权执行。

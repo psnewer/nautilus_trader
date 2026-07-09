@@ -119,12 +119,14 @@ def _timeline_context(order) -> dict:
     """构造 timeline mock_data conditions 的匹配上下文。"""
     instrument_id = str(order.instrument_id)
     venue = instrument_id.rsplit(".", 1)[-1].lower()
+    side = getattr(order, "side", None)
+    order_type = getattr(order, "order_type", None)
     return {
         "instrument_id": instrument_id,
         "venue": venue,
         "venue_upper": venue.upper(),
-        "order_side": str(order.side.name) if order.side else None,
-        "order_type": str(order.order_type.name) if order.order_type else None,
+        "order_side": str(getattr(side, "name", side)) if side else None,
+        "order_type": str(getattr(order_type, "name", order_type)) if order_type else None,
     }
 
 

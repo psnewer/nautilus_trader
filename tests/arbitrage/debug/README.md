@@ -12,7 +12,7 @@
 - ✅ `test_debug_data_factories.py`(6:PM 无 debug 且 provider 回写 `instrument_provider_by_venue["POLYMARKET"]` / PM disabled / PM enabled 装 Debug 子类 + 传 debug=cfg / OE 无 debug / **OE disabled**(#69 补,对齐 PM) / OE enabled 装 Debug 子类 + 传 debug=cfg)
 
 **Q11.3 SkipExecutionClient 落地(2026-05-26 #40,2026-06-10 #93 校准 session/gate 生命周期)**:跳真 venue IO + mock 全成交已落;skip submit 仍进入 `_begin_session`,保留 `execution.started/finished` 与 per-pair gate 释放。
-- ✅ `test_debug_execution_clients.py`(21:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE USD / market 单 0.5 兜底 / limit 用 order.price / `_mock_submit` 先 begin session 再 mock fill / cancel-only begin=False 时不 mock fill / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super / PM skip connect transport 容错 / OE+PM cancel no-op 对齐等)
+- ✅ `test_debug_execution_clients.py`(28:`_mock_fill` Accepted+Filled 顺序 / PM USDC commission=0 / OE USD / market 单 0.5 兜底 / limit 用 order.price / `_mock_submit` 先 begin session 再 mock fill / cancel-only begin=False 时不 mock fill / `_submit_order` skip 未激活走 super / skip 激活短路 mock fill / debug.enabled=False 走 super / PM skip connect transport 容错 / OE+PM cancel no-op 对齐 / timeline fallback 与 TimelineExecutor 分支 / ACCEPT→PARTIAL_FILL→FILL / REJECT / CANCEL / EXPIRE 时序等)
 - ✅ `test_debug_exec_factories.py`(5:PM 无 debug 装 prod 且 session timeout 只读 `session_timeout_secs_by_venue["POLYMARKET"]` / PM 缺 session timeout keyed 值 fail-fast / PM enabled 装 Skip + 传 debug=cfg / OE 无 debug 且 session timeout 只读 `session_timeout_secs_by_venue["ORBITEXCH"]` / OE enabled 装 Skip + 传 debug=cfg)
 
 **#69:mock 层 PM/OE 测试对齐**:此前 `test_debug_execution_clients.py` 只有 `_FakeSkipPM`、且只测 `_submit_order` 一条分支;OE skip 客户端的真分支与 cancel 系列均无测。补 +9(真类 `__new__` + monkeypatch 基类 async 当 super 探针,测真实 `SkipExecution{PM,OE}Client`,非复制逻辑):
@@ -38,8 +38,7 @@
 - ❌ **撤回** `DebugArbitrageStrategy` 整条 —— Q21 框架下 strategy 参数(min_rebate / price / size)是具体 `Check`/`Action` 的构造参数,**直接配置 debug 版 Strategy 实例**即可,**不需要任何 Strategy 层 Debug 子类**(候选 a/b 都取消)。Q21 拆出 Check/Action 后,参数已经 first-class。
 - ❌ "下单价格掉包"**不放 execution** —— execution 一直规划为透明传递层,改 order content 违反语义;由 Strategy 层 Action 参数化(如 `PMSubmitAction(price_override=0.01)`)处理。
 
-**仍待**(后续 slice):
-- ⬜ `timeline.py`(Q11.4 NT Clock 状态机;只在 SkipExecution 真要 mock 订单 lifecycle 时才需要 —— 当前"立即全成"足够链路测)
+**Q11.4 timeline 引擎(2026-07-08)**:`src/arbitrage/debug/timeline.py` 已接入 `SkipExecution{PM,OE,SE}Client`,有 timeline mock 配置时用 NT `Clock.set_time_alert_ns` 调度 ACCEPT / PARTIAL_FILL / FILL / REJECT / CANCEL / EXPIRE;无配置时保持立即全成。`test_debug_execution_clients.py` 已覆盖无 timeline fallback、TimelineExecutor 分支选择、部分成交后补足、拒单终止、撤单/过期终止。
 
 ## #66:skip_execution 语义统一 =「真连接 + mock 订单 IO」(取代 #51 的 OE `_connect` no-op)
 
@@ -90,7 +89,7 @@
 - debug-D.2: `skip_check_size=false` 时透传父类(包括 NT 自动检查的 `instrument.min_quantity`)
 
 ### Q11.4 - Mock timeline 引擎
-- debug-T.1: `MockPolymarketExecutionClient` 通过 `Clock.set_timer` 触发订单状态流转(live → partially_filled → filled)
+- debug-T.1: `TimelineExecutor` 通过 `Clock.set_time_alert_ns` 触发订单状态流转(accepted → partially_filled → filled)
 - debug-T.2: 拒绝场景(timeline 配为 reject)→ generate_order_rejected 触发
 - debug-T.3: 撤单场景
 

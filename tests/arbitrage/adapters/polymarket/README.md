@@ -17,13 +17,14 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 | 文件 | 范围 |
 |---|---|
-| `test_upstream_integration.py` | 上游 PM 适配器在我们配置下能正常加载 / 订阅 / 下单 / 事件回写 |
 | `test_arb_provider.py` | **#55/#57** series-based 发现纯函数:27 tests 覆盖 `_teams_from_event`(权威队名源,顺序无关 / abbr 小写 / 缺失或不全返 None)、`_parse_team_names`(fallback:vs./vs/正则、competition 前缀清洗、`-`/`?`/`, scheduled for` 清理、无 vs 返 None)、`_ticker_abbrs`、`_role_for_token`(2-way `ordering=home` 正排 / `ordering=away` 反排=MLB、单市场 3-outcome 正反排、3-way binary home/away/draw_yes、No token 跳过、未知后缀跳过、空 ticker 返空) |
 | `test_sports.py` | **#60/#127** PM Sports 比分信号 + PMSPORTS synthetic anchor(`sports.py`):6 tests —— `parse_sport_result`(实采 wnba live / atp ended+`finished_ts` / 缺 `gameId`→None)+ `SportsGameUpdate` to_dict/from_dict roundtrip + `PolymarketSportsInstrumentProvider` 产出 `.PMSPORTS` non-tradable anchor + `PolymarketSportsLiveDataClientFactory` 读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`。WS 连接(`PolymarketSportsDataClient`)经 /live-test 验(公开 firehose)。2026-06-29 live 诊断确认 PM Sports 发协议层 ping(约 15s),`websockets` 自动回 pong;生产代码关闭客户端主动 keepalive ping(`ping_interval=None`),避免本地 `keepalive ping timeout` 误杀连接。**映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` / PMSPORTS provider 抽入 `info["game_id"]`);eviction 由 `ended` 驱动(matching,见 matching README)|
 | `test_data_client_ws_retry.py` | PM DataClient market WS 启动连接失败后保留订阅并重试;disconnect/no subscriptions 不重试;首个 `OrderBookDeltas` 发布计数/日志锚点 |
 | `test_data_client_ws_retry.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:PM 周期 instrument rediscovery 单轮 `initialize(reload=True)` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 | `test_parsing_min_size.py` / `tests/integration_tests/adapters/polymarket/test_parsing.py` | 上游 PM market payload → `BinaryOption` 翻译;本项目要求 `minimum_order_size` 映射到 `min_quantity` |
-| `tests/arbitrage/config/test_dispatcher.py` / `test_loader.py` | PM adapter 接线前置:项目 `venues.polymarket.ws_url` 兼容旧 full endpoint(`/ws/market` / `/ws/user`),dispatcher 传给上游 `PolymarketWebSocketClient` 前归一化为 base URL(`/ws/`);`proxy_url` 从 JSON 或 env 注入并透传给 PM Data/Exec client |
+| `tests/arbitrage/config/test_dispatcher.py` / `test_loader.py` | PM adapter 接线前置:项目 `venues.polymarket.ws_url` 只接受上游 base URL(`/ws` 或 `/ws/`),dispatcher 传给上游 `PolymarketWebSocketClient` 前归一化为 base URL(`/ws/`);`proxy_url` 从 JSON 或 env 注入并透传给 PM Data/Exec client |
+
+早期 `test_upstream_integration.py` skipped 空壳已删除。PM discovery/info/min-size/WS retry 的离线主路径由上表测试覆盖;PM 真下单、撤单、reconcile 仍按下方 pm-adapter-5.* 用例经 live/preflight 验,不保留永久 skipped pytest。
 
 ---
 
@@ -36,12 +37,12 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: Cache 中有 PM `BinaryOption` 列表,字段完整
 **验收**: 不需要修改上游代码即可工作
 
-### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 结构落地,extraction TODO)
+### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 已落地)
 **落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖纯函数;`test_debug_data_factories.py` 覆盖 provider 回写 `instrument_provider_by_venue["POLYMARKET"]`)
 - 评估结果:**上游 info=market_info(gamma dict)缺 6-key** → 走"子类化 PolymarketInstrumentProvider 补"路径
-- `ArbPolymarketInstrumentProvider._parse_instrument` super 后调 `enrich_pm_six_key_info(market_info, outcome)` update info
-- 当前 enricher 是 **best-effort seam**:`sport ← market_info["category"]`(能拿就拿);其它 5-key 空字符串/0 占位
-- ⬜ **TODO live**:实写需 PM gamma `/events/{event_id}` HTTP + ticker 拆解(参旧 `odds_client.py:255+`);现 matching `events_from_instruments` 见空 key 跳过 → **PM 侧暂不参与匹配**(结构完整,extraction 实写时下游不动)
+- `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order,再按 series 调 `/events?series_id=...` 拉内嵌 teams + markets。
+- `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/start_ts/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`。
+- 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入;完整 Gamma HTTP 路径仍由 live smoke 验。
 
 ### pm-adapter-1.3: PM 最小下单 share 映射
 

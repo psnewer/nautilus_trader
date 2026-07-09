@@ -8,28 +8,32 @@
 
 ## 目录组织
 
-按 P8 capability 分组,镜像 `src/arbitrage/` 树形:
+按 P8 capability 分组,镜像 `src/arbitrage/` / `nautilus_trader/adapters/` 树形:
 
 | 目录 | 对应源码 / 设计章节 | 状态 |
 |---|---|---|
+| `config/` | `src/arbitrage/config/` / `_cross-cutting/configuration.md` | 详细(ArbConfig schema/dispatcher/loader) |
+| `venues/` | `src/arbitrage/common/venues.py` / `_cross-cutting/venues.md` | 详细(Venue Registry/capability) |
 | `discovery/` | `src/arbitrage/discovery/` + `nautilus_trader/adapters/{venue}/providers.py` / `refactor.md §5.1, §5.2.2` | **详细** (Step 1-2) |
-| `matching/` | `src/arbitrage/matching/` / `refactor.md §5.3, §6.4` | 摘要 (Step 3) |
+| `matching/` | `src/arbitrage/matching/` / `refactor.md §5.3, §6.4` | 详细(Step 3) |
 | `adapters/polymarket/` | 上游 `nautilus_trader/adapters/polymarket/*` / `refactor.md §6.5` | 详细(验证上游适配器满足需求) |
 | `adapters/orbitexch/` | `nautilus_trader/adapters/orbitexch/*` / `refactor.md §6.2` | 详细(自写适配器) |
-| `strategy/` | `src/arbitrage/strategy/` / `refactor.md §5.4` | 占位 (Step 4) |
-| `risk/` | `src/arbitrage/risk/` / `refactor.md §5.6` | 占位 (Step 6) |
-| `web/` | `src/arbitrage/web/` / `refactor.md §5.7` | 占位 (Step 7) |
-| `debug/` | `src/arbitrage/debug/` / `refactor.md §6.6` | 占位 (Q11 实施时填) |
-| `e2e/` | 端到端套利场景 | 占位 |
+| `adapters/sharpexch/` | `nautilus_trader/adapters/sharpexch/*` / `architectures/sharpexch/architecture.md` | 详细(SE adapter) |
+| `strategy/` | `src/arbitrage/strategy/` / `refactor.md §5.4` | 详细(Step 4) |
+| `risk/` | `src/arbitrage/risk/` / `refactor.md §5.6` | 详细(Step 6 离线门控;节点级/live 仍按子 README 标注) |
+| `execution/` | execution 横切 helpers / adapter factory 边界 | 摘要 |
+| `web/` | `src/arbitrage/web/` / `refactor.md §5.7` | 详细(Step 7 控制台) |
+| `debug/` | `src/arbitrage/debug/` / `refactor.md §6.6` | 详细(Q11 Debug 注入) |
+| `launchers/` | `launchers/arb_node.py` | 详细(Node wiring) |
+| `settlement/` | PM settlement 编排 / contract IO | 部分离线覆盖,链上/live 待验 |
+| `e2e/` | 端到端套利场景 | 部分离线覆盖,真钱 E2E 待验 |
 | `_helpers/` | 公共 fixture / 配置文件 / mock 数据 | 持续维护 |
 
 ## 形态
 
 每个 capability 目录:
 - `README.md` —— 用例清单(每个用例: 前置 / 输入 / 步骤 / 期望 / 验收标准)
-- `test_*.py` —— pytest 骨架,函数体目前 `pytest.skip("not implemented")`,docstring 引用 README 用例 ID
-
-实施时填实函数体,删 skip。
+- `test_*.py` —— 当前主路径多数已是可执行 pytest;少量需要全节点、浏览器或真钱的场景在对应 README 中显式标为 live/e2e 待验。
 
 ## 命名约定
 
@@ -44,7 +48,7 @@ pytest tests/arbitrage/
 # 跑某个 capability
 pytest tests/arbitrage/discovery/
 
-# 跑某个用例(目前都 skip)
+# 跑某个用例
 pytest tests/arbitrage/discovery/test_orbitexch_provider.py::test_oe_provider_cold_start
 ```
 

@@ -31,7 +31,7 @@ def provider():
     return OrbitExchInstrumentProvider(discovery)
 
 
-def _event(home_sel="1", draw_sel="2", away_sel="3"):
+def _event(home_sel="1", draw_sel="2", away_sel="3", start_ts=1704067200000000000):
     """创建测试用 MarketEvent,支持可选的 draw。"""
     runners = []
     if home_sel:
@@ -43,7 +43,7 @@ def _event(home_sel="1", draw_sel="2", away_sel="3"):
     return OrbitExchMarketEvent(
         sport="Soccer", competition="EPL", home_team="Arsenal", away_team="Chelsea",
         sport_id="1", competition_id="100", market_id="1-123456",
-        start_ts=0, runners=tuple(runners),
+        start_ts=start_ts, runners=tuple(runners),
     )
 
 
@@ -74,7 +74,7 @@ def test_build_legs_fills_six_info_keys(provider):
     assert leg.info["competition"] == "EPL"
     assert leg.info["sport"] == "Soccer"
     assert leg.info["home_team"] == "Arsenal" and leg.info["away_team"] == "Chelsea"
-    assert leg.info["start_ts"] == 0  # TODO Step 1:scraper 抽开赛时间
+    assert leg.info["start_ts"] == 1704067200000000000
 
 
 def test_build_legs_instrument_id_carries_market_and_selection(provider):
