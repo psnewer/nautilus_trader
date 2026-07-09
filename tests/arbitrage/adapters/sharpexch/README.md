@@ -45,8 +45,8 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 **前置**:SE/OE 型 `multiple-market-prices` frame fixture;真实 SE frame 后续 live smoke 再替换/补充。
 **输入**:`SharpExchMessageParser.parse_price_message(frame)` + `se_runner_to_book_deltas(iid, runner, ts)`。
-**期望**:BACK 档转 BUY;LAY 档转 SELL;每帧先 CLEAR 再 ADD;空档返回 None。
-**验收**:已落地。`test_message_parser.py` 覆盖 `bdatb/bdatl` dict 档、真实 SE 常见 `bdatb/bdatl={"0":[price,size]}` dict-of-levels、以及 `batb/batl` list 档;`test_data.py` 覆盖 CLEAR+BUY/SELL、空档、无效 size,以及 `se_price_message_to_book_deltas` 按 `selection_id -> InstrumentId` routing 生成多 runner deltas、跳过未订阅/空档 runner、坏消息返回空列表;同时覆盖 `se_market_price_message_to_book_deltas` 按 `market_id -> selection_id -> InstrumentId` routing 找 market、输出 `market_id/in_play/runners/subscribed_selections/deltas`、未路由 market/坏消息返回 None、已路由但空档时保留 frame 元信息并返回空 deltas;`se_publish_routed_book_deltas` 逐个调用注入 publish、可选写入 in_play、空 payload / 空 deltas no-op;`se_handle_price_frame` 组合 routing+publish,返回 `published_count`,未路由 no-op,空档返回 metadata 但不 publish。
+**期望**:只发布 top-of-book:BACK 最高赔率转 SELL/ask,LAY 最低赔率转 BUY/bid;每帧先 CLEAR 再 ADD;空档返回 None。
+**验收**:已落地。`test_message_parser.py` 覆盖 `bdatb/bdatl` dict 档、真实 SE 常见 `bdatb/bdatl={"0":[price,size]}` dict-of-levels、以及 `batb/batl` list 档;`test_data.py` 覆盖 CLEAR + top BACK/top LAY、空档、无效 size,以及 `se_price_message_to_book_deltas` 按 `selection_id -> InstrumentId` routing 生成多 runner deltas、跳过未订阅/空档 runner、坏消息返回空列表;同时覆盖 `se_market_price_message_to_book_deltas` 按 `market_id -> selection_id -> InstrumentId` routing 找 market、输出 `market_id/in_play/runners/subscribed_selections/deltas`、未路由 market/坏消息返回 None、已路由但空档时保留 frame 元信息并返回空 deltas;`se_publish_routed_book_deltas` 逐个调用注入 publish、可选写入 in_play、空 payload / 空 deltas no-op;`se_handle_price_frame` 组合 routing+publish,返回 `published_count`,未路由 no-op,空档返回 metadata 但不 publish。
 
 ### se-adapter-2.2:订阅即开 competition 页
 

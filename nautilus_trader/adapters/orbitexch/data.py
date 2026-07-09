@@ -85,20 +85,15 @@ def oe_runner_to_book_deltas(
         ),
     ]
     order_id = 1
-    # back = 卖方出价 (seller's price) → asks
-    for level in back:
-        price = level.get("price")
-        size = level.get("size")
-        if not price or not size or float(size) <= 0:
-            continue
+    # decimal odds 只发布 top-of-book:back 赔率越高越好,lay 赔率越低越好。
+    best_back = _best_level(back, highest=True)
+    if best_back is not None:
+        price, size = best_back
         deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
-    # lay = 买方出价 (buyer's price) → bids
-    for level in lay:
-        price = level.get("price")
-        size = level.get("size")
-        if not price or not size or float(size) <= 0:
-            continue
+    best_lay = _best_level(lay, highest=False)
+    if best_lay is not None:
+        price, size = best_lay
         deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
@@ -122,6 +117,22 @@ def _make_add(instrument_id, side, price, size, order_id, ts_init_ns, price_prec
         ts_event=ts_init_ns,
         ts_init=ts_init_ns,
     )
+
+
+def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
+    valid: list[tuple[float, float]] = []
+    for level in levels:
+        try:
+            price = float(level.get("price"))
+            size = float(level.get("size"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if price <= 0 or size <= 0:
+            continue
+        valid.append((price, size))
+    if not valid:
+        return None
+    return max(valid, key=lambda item: item[0]) if highest else min(valid, key=lambda item: item[0])
 
 
 class OrbitExchDataClient(LiveMarketDataClient):

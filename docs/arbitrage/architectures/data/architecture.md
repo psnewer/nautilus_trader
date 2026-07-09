@@ -12,7 +12,7 @@
 | PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
 | `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 Q9 6-key,matching 必需;#35) |
 | `PolymarketSportsDataClient` / `PolymarketSportsInstrumentProvider` | 自写 `LiveMarketDataClient` + `InstrumentProvider` | 公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchors + Sports WS firehose 产出 `SportsGameUpdate` |
-| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + ADDs);BACK→BUY 侧 / LAY→SELL 侧;路由 market_id+selection_id → InstrumentId |
+| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + top-of-book ADDs);BACK 最优价→SELL/ask 侧 / LAY 最优价→BUY/bid 侧;路由 market_id+selection_id → InstrumentId |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
 
 **位置**(refactor.md #33):venue-coupled 全在 `nautilus_trader/adapters/{polymarket,orbitexch}/`(P9 唯一例外)。
@@ -31,7 +31,7 @@ flowchart LR
   V[(OE WS multiple-market-prices)] --> WSH[OrbitExchWebSocketHandler]
   WSH -->|parse_price_message| DC[OrbitExchDataClient._on_price_frame]
   DC -->|routing market_id+sel_id → InstrumentId| MAP{命中订阅?}
-  MAP -->|是| CONV["oe_runner_to_book_deltas\n(CLEAR + N×BACK ADD(BUY) + M×LAY ADD(SELL))"]
+  MAP -->|是| CONV["oe_runner_to_book_deltas\n(CLEAR + best BACK ADD(SELL) + best LAY ADD(BUY))"]
   CONV --> HD["_handle_data(OrderBookDeltas)"]
   HD --> DE[NT DataEngine]
   DE --> C[(Cache.order_book)]
@@ -42,8 +42,8 @@ flowchart LR
 ```
 
 要点:
-- OE WS 给的是 **snapshot of best N levels**(`bdatb`/`bdatl` 各档),`oe_runner_to_book_deltas` 转为 `OrderBookDeltas`(1×CLEAR + N×ADD)入标准管道。
-- BACK ≡ 买入该方向 → BookOrder side = BUY;LAY ≡ 卖出该方向 → side = SELL。
+- OE WS 给的是 **snapshot of best N levels**(`bdatb`/`bdatl` 各档),但当前套利链路只消费 top-of-book;`oe_runner_to_book_deltas` 在源头归一为 `OrderBookDeltas`(1×CLEAR + 最优 BACK + 最优 LAY)入标准管道。
+- decimal odds 最优方向:BACK 取最高赔率并写入 `BookOrder side = SELL`(ask/back),LAY 取最低赔率并写入 `BookOrder side = BUY`(bid/lay)。这样 Web/Strategy 继续用 NT 标准 `best_ask_price()` / `best_bid_price()` 即可得到业务最优价。
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
 - PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
@@ -138,7 +138,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
   - ✅ **前提已验证(2026-06-16 `oe_heartbeat_probe.py` re-probe 空闲盘口)**:被动盯心跳依赖赔率(prices)WS 真发心跳——实测**空闲盘口** 600s 内 prices 仅 5 个 data 帧、却有 **23 个心跳 `'h'`(median 25.0s,max 35.4s)** → prices WS **空闲时照发心跳**,安静市场靠心跳保活、不误判 disconnect;`staleness_timeout=300s`(≈12 个心跳余量)充足。(此前据 2026-06-13 活跃盘口 probe 误以为 prices 无心跳,已证伪。)
   - **退役**:`HealthCheckLoop`(OE DataClient 不再用;**PM ExecClient 也已删 #110**,merge/redeem 改 NT 连续 position 对账驱动)、`_run_health_check` staleness 维度、DataClient 侧 `_comp_last_frame_ns`/`_mark_comp_frame`/`_on_comp_ws_close`/watchdog(全搬进 handler)。`leg_settled` 状态维度更早已退役(#108);执行真相可信度由 `OrbitExchExecutionClient` 写 `VenueExecutionLiveness`(见 execution §4.3bis / synchronization §8.5)。
 
-**纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。
+**纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。多档时只发布 top-of-book:BACK 最高价、LAY 最低价。
 
 ### 3.2 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)
 

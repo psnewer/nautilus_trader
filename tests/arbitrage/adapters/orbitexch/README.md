@@ -115,7 +115,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 **落地**:`nautilus_trader/adapters/orbitexch/data.py` 整体重写 + `factories.py` 加 `OrbitExchLiveDataClientFactory`(`test_data_client_step2.py`)
 - ✅ 继承 `LiveMarketDataClient`(取代旧 `LiveDataClient`);type-specific `_subscribe_order_book_deltas`
 - ✅ `manager.get_page("data")` 拿 page,**不**调 `start()`/`close()`(共享单例)
-- ✅ 输出 NT 标准 `OrderBookDeltas`(取代旧 `QuoteTick`):snapshot CLEAR + N×BACK ADD(BUY) + M×LAY ADD(SELL)
+- ✅ 输出 NT 标准 `OrderBookDeltas`(取代旧 `QuoteTick`):snapshot CLEAR + top BACK ADD(SELL/ask,最高赔率) + top LAY ADD(BUY/bid,最低赔率)
 - ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
 - ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
 - ✅ **competition 页存活(#109)**:封装进 WS handler(心跳超时 + close → `on_disconnect`),DataClient 事件驱动 reload、**无 HealthCheckLoop**;见上方"#109 WS 存活封装"用例(旧 #70 HealthCheckLoop 段已失效)

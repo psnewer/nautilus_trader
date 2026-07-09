@@ -12,7 +12,9 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.enums import BookAction
+from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -40,22 +42,35 @@ def _iid(): return InstrumentId(Symbol("1-123-2-None"), Venue("ORBITEXCH"))
 
 
 def test_runner_to_book_deltas_clears_then_adds_both_sides():
-    """data-2.snap.1: snapshot 帧 → 1 CLEAR + N BACK(SELL) + M LAY(BUY),包成 OrderBookDeltas。"""
+    """data-2.snap.1: snapshot 帧 → 1 CLEAR + best BACK(SELL) + best LAY(BUY)。"""
     runner = {
         "selection_id": "2",
         "back": [{"price": 2.26, "size": 80.59}, {"price": 2.24, "size": 50.0}],
-        "lay":  [{"price": 2.36, "size": 66.46}],
+        "lay":  [{"price": 2.36, "size": 66.46}, {"price": 2.34, "size": 40.0}],
     }
     out = oe_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000)
     assert isinstance(out, OrderBookDeltas)
     deltas = list(out.deltas)
-    assert len(deltas) == 4
+    assert len(deltas) == 3
     assert deltas[0].action == BookAction.CLEAR
-    # back 档 → SELL (卖方出价 = asks)
+    # back 档 → SELL (卖方出价 = asks),decimal odds 取最高赔率。
     assert deltas[1].order.side == OrderSide.SELL and float(deltas[1].order.price) == pytest.approx(2.26)
-    assert deltas[2].order.side == OrderSide.SELL and float(deltas[2].order.price) == pytest.approx(2.24)
-    # lay 档 → BUY (买方出价 = bids)
-    assert deltas[3].order.side == OrderSide.BUY and float(deltas[3].order.price) == pytest.approx(2.36)
+    # lay 档 → BUY (买方出价 = bids),decimal odds 取最低赔率。
+    assert deltas[2].order.side == OrderSide.BUY and float(deltas[2].order.price) == pytest.approx(2.34)
+
+
+def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
+    """decimal top-of-book 源头归一:NT best_ask=最高 back,best_bid=最低 lay。"""
+    runner = {
+        "back": [{"price": 1.85, "size": 10}, {"price": 1.82, "size": 20}],
+        "lay": [{"price": 1.90, "size": 30}, {"price": 1.88, "size": 40}],
+    }
+    deltas = oe_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000)
+    book = OrderBook(_iid(), BookType.L2_MBP)
+    book.apply_deltas(deltas)
+
+    assert float(book.best_ask_price()) == pytest.approx(1.85)
+    assert float(book.best_bid_price()) == pytest.approx(1.88)
 
 
 def test_runner_to_book_deltas_returns_none_when_empty():

@@ -25,8 +25,10 @@ from nautilus_trader.adapters.sharpexch.data import se_subscription_plan_from_in
 from nautilus_trader.adapters.sharpexch.data import se_update_market_routing
 from nautilus_trader.adapters.sharpexch.data import se_update_subscription_state
 from nautilus_trader.adapters.sharpexch.data import se_websocket_summary
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
+from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -1000,20 +1002,32 @@ def test_runner_to_book_deltas_clears_then_adds_both_sides():
     runner = {
         "selection_id": "111",
         "back": [{"price": 2.0, "size": 10}, {"price": 1.99, "size": 7}],
-        "lay": [{"price": 2.1, "size": 5}],
+        "lay": [{"price": 2.1, "size": 5}, {"price": 2.08, "size": 3}],
     }
     out = se_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000)
     assert isinstance(out, OrderBookDeltas)
     deltas = list(out.deltas)
-    assert len(deltas) == 4
+    assert len(deltas) == 3
     assert deltas[0].action == BookAction.CLEAR
-    # back → SELL (卖方出价 = asks)
+    # back → SELL (卖方出价 = asks),decimal odds 取最高赔率。
     assert deltas[1].order.side == OrderSide.SELL
     assert float(deltas[1].order.price) == pytest.approx(2.0)
-    assert deltas[2].order.side == OrderSide.SELL
-    # lay → BUY (买方出价 = bids)
-    assert deltas[3].order.side == OrderSide.BUY
-    assert float(deltas[3].order.price) == pytest.approx(2.1)
+    # lay → BUY (买方出价 = bids),decimal odds 取最低赔率。
+    assert deltas[2].order.side == OrderSide.BUY
+    assert float(deltas[2].order.price) == pytest.approx(2.08)
+
+
+def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
+    runner = {
+        "back": [{"price": 1.85, "size": 10}, {"price": 1.82, "size": 20}],
+        "lay": [{"price": 1.90, "size": 30}, {"price": 1.88, "size": 40}],
+    }
+    deltas = se_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000)
+    book = OrderBook(_iid(), BookType.L2_MBP)
+    book.apply_deltas(deltas)
+
+    assert float(book.best_ask_price()) == pytest.approx(1.85)
+    assert float(book.best_bid_price()) == pytest.approx(1.88)
 
 
 def test_runner_to_book_deltas_returns_none_when_empty():
