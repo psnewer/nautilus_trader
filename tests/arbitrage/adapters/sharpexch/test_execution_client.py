@@ -112,6 +112,7 @@ class FakeBrowserManager:
 def test_execution_client_connects_with_fake_page_and_registers_ws_before_navigation():
     browser = FakeBrowserManager()
     client = _client(browser_manager=browser)
+    client._connect_ready_timeout_secs = 0.001
     captured = {}
     client.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
         balances=balances,
@@ -155,6 +156,7 @@ def test_execution_client_connect_delegates_login_to_helper():
     lock = Lock()
     browser = FakeBrowserManager()
     client = _client(browser_manager=browser, browser_lock=lock)
+    client._connect_ready_timeout_secs = 0.001
 
     async def login():
         lock.events.append("login")
@@ -165,6 +167,35 @@ def test_execution_client_connect_delegates_login_to_helper():
     _run(client._connect())
 
     assert lock.events == ["login"]
+
+
+def test_execution_client_connect_waits_for_balance_and_current_bets_signals():
+    class Response:
+        url = "https://portal.sharpxch.com/customer/api/profile"
+
+        async def json(self):
+            return {"balance": "42.50"}
+
+    browser = FakeBrowserManager()
+    client = _client(browser_manager=browser)
+    captured = {}
+    client.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
+        balances=balances,
+        reported=reported,
+    )
+
+    async def login():
+        await client._on_response(Response())
+        client._on_current_bets([])
+
+    client._login = login
+
+    _run(client._connect())
+
+    assert captured["reported"] is True
+    assert captured["balances"][0].total.as_double() == pytest.approx(42.50)
+    assert client._balance_reported is True
+    assert client._last_current_bets_ns > 0
 
 
 def test_on_general_frame_balance_is_ignored():

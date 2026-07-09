@@ -322,6 +322,9 @@ runner → role 规则:
 - `CURRENT_BETS` 入站金额/size 字段按 USD 原值保留。
 - 下单 payload 直接使用 NT order quantity 的 USD stake,不除以 fx。
 - `nt_order_to_legacy_order` 产物应使用 `Venue.SHARPEXCH` 或新增通用 order model 支持,不能复用 `Venue.ORBITEXCH`。
+- `_connect` 登录后最多等待 30s 让两个业务就绪信号到达:HTTP profile/balance response 与
+  execution general WS `CURRENT_BETS`。超时 fail-soft 继续启动,但缺失项必须打 warning;余额缺失时仍按
+  0 USD 兜底注册账户,`CURRENT_BETS` 缺失则交后续 reload/reconcile 自愈。
 
 当前已落地的是 ExecutionClient runtime 接线、page/WS 生命周期、general 帧解析与 place/cancel 边界:
 - `SharpExchExecutionClient` 已接入 launcher 显式 opt-in runtime:继承
@@ -331,8 +334,9 @@ runner → role 规则:
   外层登录表单,有表单时必须提交凭据,只有确认没有登录表单时才把 `/customer` iframe
   视为可复用登录态,兼容 `sharpxch.com/player/` 外层页长期不跳转且未授权时也可能预加载
   customer iframe 的真实行为;customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
-  弹窗,再继续 API/WS 初始化。
-  连接完成后先生成 0 USD 初始 `AccountState` 以注册账户;
+  弹窗,再继续 API/WS 初始化。`_connect` 使用 Future 等待 profile/balance 与 `CURRENT_BETS`
+  两个业务信号,等待上限 30s,不再使用 8s 固定轮询只等余额。
+  若余额缺失,连接完成后生成 0 USD 初始 `AccountState` 以注册账户;
   `_disconnect` 停止 WS handler 并清本地 page,不关闭共享 browser。
 - `_on_general_frame` 已接 parser:WS `BALANCE` 忽略(实测可能返回 0.00,不作为账户事实);
   `CURRENT_BETS` 调 `_on_current_bets`。

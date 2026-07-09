@@ -518,6 +518,30 @@ def test_exec_first_frame_resolves_connect_waiter():
     assert c._exec_ws_fresh() is True
 
 
+def test_connect_ready_waits_for_balance_and_current_bets_signals():
+    c = _client()
+    captured = {}
+    c.generate_account_state = lambda *, balances, margins, reported, ts_event, info=None: captured.update(
+        balances=balances,
+        reported=reported,
+    )
+
+    async def _run_wait():
+        task = asyncio.create_task(c._wait_for_initial_business_state())
+        await asyncio.sleep(0)
+        assert not task.done()
+        c._on_general_frame({"BALANCE": {"balance": "37.49", "avBalance": None}})
+        assert not task.done()
+        c._on_current_bets([])
+        await task
+
+    _run(_run_wait())
+
+    assert captured["balances"][0].total.as_double() == pytest.approx(37.49)
+    assert c._balance_reported is True
+    assert c._last_current_bets_ns > 0
+
+
 # ── #105 A2 reload-then-report 机制(_reload_exec_page / _ensure_exec_snapshot_fresh)──
 class _FakePageReload:
     def __init__(self, on_reload=None):
@@ -530,12 +554,21 @@ class _FakePageReload:
             self._on_reload()              # 模拟 reload 后 CURRENT_BETS 重推
 
 
-def test_ensure_fresh_skips_reload_when_ws_fresh():
+def test_ensure_fresh_skips_reload_when_current_bets_and_ws_fresh():
     c = _client()
     c._page = _FakePageReload()
+    c._on_current_bets([])                            # 已有完整快照
     c._mark_exec_frame()                            # WS 新鲜
     assert _run(c._ensure_exec_snapshot_fresh()) is True
     assert c._page.reload_count == 0                # 新鲜 → 不 reload
+
+
+def test_ensure_fresh_reloads_when_ws_fresh_but_no_current_bets():
+    c = _client()
+    c._page = _FakePageReload(on_reload=lambda: c._on_current_bets([]))
+    c._mark_exec_frame()                            # 只有 WS 帧,还没有订单快照
+    assert _run(c._ensure_exec_snapshot_fresh()) is True
+    assert c._page.reload_count == 1
 
 
 def test_ensure_fresh_reloads_when_stale_and_succeeds():

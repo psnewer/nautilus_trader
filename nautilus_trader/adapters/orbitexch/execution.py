@@ -47,6 +47,7 @@ ORBITEXCH = "ORBITEXCH"
 
 # #105 §4.3bis(4):exec 页 WS 存活锚 idle_timeout(live 实测心跳 ≈35s,300s 保守;config-wire 待 cutover)
 _EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
+_CONNECT_READY_TIMEOUT_SECS = 30.0
 
 
 def oe_balance_to_account_balances(balance: float, currency=USD) -> list:
@@ -56,6 +57,11 @@ def oe_balance_to_account_balances(balance: float, currency=USD) -> list:
     (RiskEngine OE 分支直接信 free,不再减)。"""
     money = Money(balance, currency)
     return [AccountBalance(money, Money(0, currency), money)]
+
+
+def _resolve_future(fut) -> None:
+    if fut is not None and not fut.done():
+        fut.set_result(None)
 
 
 def _coerce_handicap(value) -> float:
@@ -326,6 +332,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._last_frame_ns = 0
         self._exec_ws_idle_timeout_ns = secs_to_nanos(_EXEC_WS_IDLE_TIMEOUT_SECS)
         self._first_frame_fut = None
+        self._balance_ready_fut = None
+        self._current_bets_ready_fut = None
+        self._connect_ready_timeout_secs = _CONNECT_READY_TIMEOUT_SECS
+        self._balance_reported = False
         # #105 A2 §4.3bis(3):reload-then-report 机制(单 flight + 存活闸)。reconcile 成功信号 =
         # reload 后 CURRENT_BETS 重推(刷 `_last_current_bets_ns`);order/position reports 共用该快照。
         self._last_current_bets_ns = 0
@@ -374,21 +384,40 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         )
         if "/customer/" not in (self._page.url or ""):  # 持久化 profile 未登录 → 填表单
             await self._login()
-        self._first_frame_fut = self._loop.create_future()
-        if self._last_frame_ns <= 0:
-            with suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._first_frame_fut, timeout=15.0)
-        self._first_frame_fut = None
+        await self._wait_for_initial_business_state()
         self._executor = OrbitExchExecutor(config=ExecutionConfig(), fx_getter=self._current_fx)
         self._executor.set_page("default", self._page)
-        # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
-        self.generate_account_state(
-            balances=oe_balance_to_account_balances(0.0),
-            margins=[],
-            reported=True,
-            ts_event=self._clock.timestamp_ns(),
-        )
+        if not self._balance_reported:
+            # 初始 account state(让账户注册;真实余额由 WS BALANCE 帧 `_on_general_frame` 更新)
+            self.generate_account_state(
+                balances=oe_balance_to_account_balances(0.0),
+                margins=[],
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
         self._log.info("OrbitExchExecutionClient connected (live)")
+
+    async def _wait_for_initial_business_state(self) -> None:
+        """登录后最多等待 OE execution 页两个业务真值:BALANCE + CURRENT_BETS。
+
+        超时不阻断连接:余额缺失时 `_connect` 仍发 0 兜底;CURRENT_BETS 后续由 reconcile reload 自愈。
+        """
+        loop = asyncio.get_running_loop()
+        self._balance_ready_fut = loop.create_future()
+        self._current_bets_ready_fut = loop.create_future()
+        futures = [self._balance_ready_fut, self._current_bets_ready_fut]
+        try:
+            await asyncio.wait_for(asyncio.gather(*futures), timeout=self._connect_ready_timeout_secs)
+        except asyncio.TimeoutError:
+            missing = []
+            if not self._balance_reported:
+                missing.append("BALANCE")
+            if self._last_current_bets_ns <= 0:
+                missing.append("CURRENT_BETS")
+            self._log.warning(f"OE connect ready timed out waiting for {', '.join(missing)}")
+        finally:
+            self._balance_ready_fut = None
+            self._current_bets_ready_fut = None
 
     async def _login(self) -> None:
         """OE 登录(平移自 `scraper.py:login`):填 username/password → 点 Log In → 等 `/customer/`
@@ -580,7 +609,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def _ensure_exec_snapshot_fresh(self) -> bool:
         """#105 §4.3bis(3):确保 `_current_bets` 新鲜(reconcile)。WS 活(`_exec_ws_fresh`)→ True 不 reload;
         否则 single-flight reload 一次(并发调用共享同一 future)。返回 True=快照可信,False=reconcile 失败(venue dead)。"""
-        if self._exec_ws_fresh():
+        if self._last_current_bets_ns > 0 and self._exec_ws_fresh():
             return True
         if self._reload_inflight is not None:
             return await self._reload_inflight
@@ -603,6 +632,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                     reported=True,
                     ts_event=self._clock.timestamp_ns(),
                 )
+                self._balance_reported = True
+                _resolve_future(self._balance_ready_fut)
         elif parsed["type"] == "current_bets":
             self._on_current_bets(parsed["bets"])
 
@@ -627,6 +658,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
         # #105 A2:CURRENT_BETS 重推时刻 = reconcile 成功信号(`_reload_exec_page` 等它越过 reload_ts)
         self._last_current_bets_ns = self._clock.timestamp_ns()
+        _resolve_future(self._current_bets_ready_fut)
         # CURRENT_BETS 是 OE 执行页的完整 order/position response;收到即认为 OE 执行端可对账。
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         self._venue_liveness.mark_position_alive(ORBITEXCH)

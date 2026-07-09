@@ -32,6 +32,7 @@ from src.arbitrage.execution.session import ArbExecutionSessionMixin
 
 SHARPEXCH = "SHARPEXCH"
 _EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
+_CONNECT_READY_TIMEOUT_SECS = 30.0
 
 _FX_AMOUNT_KEYS = {
     "liability",
@@ -124,6 +125,9 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._reload_bets_wait_ns = secs_to_nanos(8.0)
         self._current_bets_frames_seen = 0
         self._balance_reported = False
+        self._balance_ready_fut = None
+        self._current_bets_ready_fut = None
+        self._connect_ready_timeout_secs = _CONNECT_READY_TIMEOUT_SECS
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
 
     async def _connect(self) -> None:
@@ -149,14 +153,14 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._page.on("response", self._on_response)
 
         # se_login 内部使用 browser_lock 串行化登录,避免并发登录触发 Cloudflare
+        loop = asyncio.get_running_loop()
+        self._balance_ready_fut = loop.create_future()
+        self._current_bets_ready_fut = loop.create_future()
         await self._login()
 
-        # 余额通过 page.on("response") 监听从 SPA 的 profile/balance API 响应中提取;
-        # 等待最多 8s,超时则按 0.0 兜底。
-        for _ in range(16):
-            if self._balance_reported:
-                break
-            await asyncio.sleep(0.5)
+        # 连接就绪信号:profile/balance API + execution general WS CURRENT_BETS。
+        # 有限等待只用于避免 startup 过早进入 reconcile;超时后仍 fail-soft 交后续 reconnect/reconcile 自愈。
+        await self._wait_for_initial_business_state()
         if not self._balance_reported:
             self._log.warning("SE balance not captured from responses; reporting 0.0")
             self.generate_account_state(
@@ -166,6 +170,29 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
         self._log.info("SharpExchExecutionClient connected")
+
+    async def _wait_for_initial_business_state(self) -> None:
+        futures = [f for f in (self._balance_ready_fut, self._current_bets_ready_fut) if f is not None]
+        if not futures:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*futures),
+                timeout=self._connect_ready_timeout_secs,
+            )
+        except asyncio.TimeoutError:
+            missing = []
+            if not self._balance_reported:
+                missing.append("profile_balance")
+            if self._last_current_bets_ns <= 0:
+                missing.append("CURRENT_BETS")
+            if missing:
+                self._log.warning(
+                    f"SE execution initial business state timeout: missing={','.join(missing)}",
+                )
+        finally:
+            self._balance_ready_fut = None
+            self._current_bets_ready_fut = None
 
     async def _login(self) -> None:
         """SE 登录页操作。
@@ -218,6 +245,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
             self._balance_reported = True
+            _resolve_future(self._balance_ready_fut)
 
     def _mark_exec_frame(self) -> None:
         self._last_frame_ns = self._clock.timestamp_ns()
@@ -393,6 +421,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         usd_bets = normalize_current_bets_to_usd(bets, 1.0)
         self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
         self._last_current_bets_ns = self._clock.timestamp_ns()
+        _resolve_future(self._current_bets_ready_fut)
         self._current_bets_frames_seen += 1
         if self._current_bets_frames_seen == 1:
             self._log.info(f"SE CURRENT_BETS routed: bets={len(self._current_bets)}")
@@ -636,6 +665,11 @@ def _extract_balance_from_response(body: dict) -> float | None:
                 except (TypeError, ValueError):
                     pass
     return None
+
+
+def _resolve_future(fut) -> None:
+    if fut is not None and not fut.done():
+        fut.set_result(None)
 
 
 def se_order_to_place_bets_payload(

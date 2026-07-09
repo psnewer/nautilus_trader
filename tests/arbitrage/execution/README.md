@@ -77,6 +77,18 @@
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + execution §4.3bis/§4.4。
 
+### execution-4.3bis.1: OE connect 等待 BALANCE + CURRENT_BETS
+- 前置:OE ExecutionClient 已在导航前注册 general WS handler。
+- 输入:登录后 general WS 依次推送 `BALANCE` 与 `CURRENT_BETS`。
+- 期望:`_connect` 最多等待 30s;两者到齐时使用真实余额,不先生成 0 余额;若超时缺余额才生成 0 USD 兜底,缺 CURRENT_BETS 后续由 reconcile reload 自愈。
+- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_connect_ready_waits_for_balance_and_current_bets_signals`。
+
+### execution-4.3bis.2: OE snapshot fresh 必须已有 CURRENT_BETS
+- 前置:OE execution WS 已有任意帧,但 `_last_current_bets_ns==0`。
+- 输入:NT reconciliation 调 `_ensure_exec_snapshot_fresh()`。
+- 期望:不能仅凭 SockJS open/心跳/PROPERTIES 判 snapshot fresh;必须 reload execution 页并等 CURRENT_BETS 重推。
+- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_ensure_fresh_reloads_when_ws_fresh_but_no_current_bets`。
+
 ## OE fx 边界(已落地代码路径,2026-06-30)
 
 对应设计:execution §4.3bis(5c)。adapter 外部统一 USD 口径,OE adapter 自己负责 BALANCE/CURRENT_BETS 入站乘 fx、placeBets 出站除 fx。
