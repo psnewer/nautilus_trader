@@ -25,6 +25,7 @@ from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeRep
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
+from nautilus_trader.adapters.polymarket.contract import TxResult
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -32,6 +33,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from nautilus_trader.adapters.polymarket.settlement import SettlementResult
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
 
 
@@ -431,6 +433,54 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
     _run(scenario())
 
     assert calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
+
+
+def test_run_settlement_does_not_auto_sync_collateral_balance_after_successful_tx():
+    class _Settlement:
+        async def run(self, _positions):
+            return SettlementResult(merges=[TxResult(success=True, tx_hash="0xm")])
+
+    calls = []
+
+    def update_balance_allowance(params):
+        calls.append(params)
+        return {"ok": True}
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._settlement = _Settlement()
+        client._settlement_inflight = True
+        client._http_client = SimpleNamespace(update_balance_allowance=update_balance_allowance)
+        client._config = SimpleNamespace(signature_type=2)
+
+        await client._run_settlement([{"conditionId": "cond1", "size": "10"}])
+
+        assert client._settlement_inflight is False
+        assert calls == []
+
+    _run(scenario())
+
+
+def test_run_settlement_does_not_sync_collateral_balance_without_successful_tx():
+    class _Settlement:
+        async def run(self, _positions):
+            return SettlementResult(merges=[TxResult(success=False, message="reverted")])
+
+    calls = []
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._settlement = _Settlement()
+        client._settlement_inflight = True
+        client._http_client = SimpleNamespace(update_balance_allowance=lambda params: calls.append(params))
+        client._config = SimpleNamespace(signature_type=2)
+
+        await client._run_settlement([{"conditionId": "cond1", "size": "10"}])
+
+        assert client._settlement_inflight is False
+        assert calls == []
+
+    _run(scenario())
 
 
 def test_arb_generate_position_reports_failure_marks_dead(monkeypatch):

@@ -18,6 +18,8 @@ ArbPolymarketExecutionClient —— PM 执行客户端薄子类(Q18c 宿主层)�
 
 from __future__ import annotations
 
+import asyncio
+
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.core.uuid import UUID4
@@ -157,8 +159,30 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         tx 失败仅 log(settlement.run 内吞),不判 venue dead;`finally` 清 single-flight 守卫。"""
         try:
             await self._settlement.run([pm_raw_position_to_settlement(p) for p in raw_positions])
+            # 2026-07-10:collateral adapter 路径已直接产出 pUSD。先暂停主动 CLOB cache sync,
+            # 由下一轮账户刷新验证是否还需要 update_balance_allowance(COLLATERAL)。
+            # 如需恢复,取消下一行注释即可。
+            # await self._sync_collateral_balance_allowance_after_settlement()
         finally:
             self._settlement_inflight = False
+
+    async def _sync_collateral_balance_allowance_after_settlement(self) -> None:
+        """merge/redeem 成功后同步 CLOB 余额缓存,不主动刷新 NT AccountState。"""
+        from py_clob_client_v2 import AssetType
+        from py_clob_client_v2 import BalanceAllowanceParams
+
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=self._config.signature_type,
+        )
+        try:
+            await asyncio.to_thread(self._http_client.update_balance_allowance, params)
+        except Exception as exc:  # noqa: BLE001 — 下个 settlement/账户刷新周期可重试,不影响 liveness
+            log = getattr(self, "_log", None)
+            if log is not None:
+                log.warning(
+                    f"PM settlement succeeded but balance allowance sync failed: {exc!r}",
+                )
 
     async def generate_order_status_reports(self, command):
         recorder = _RetryFailureRecorder(

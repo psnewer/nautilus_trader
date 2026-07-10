@@ -11,6 +11,9 @@ import logging
 import time
 
 from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
+from nautilus_trader.adapters.polymarket.contract import CTF_COLLATERAL_ADAPTER_ADDRESS
+from nautilus_trader.adapters.polymarket.contract import NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
+from nautilus_trader.adapters.polymarket.contract import PUSD_ADDRESS
 
 
 _COND = "0x" + "11" * 32       # 合法 bytes32 condition id,供 encode 用
@@ -35,6 +38,21 @@ def _service() -> PolymarketContractService:
 
     svc._execute_with_proxy = _blocking_execute
     return svc
+
+
+def _recording_service():
+    svc = PolymarketContractService.__new__(PolymarketContractService)
+    svc._initialized = True
+    svc._client = object()
+    svc._log = logging.getLogger("test_contract_recording")
+    captured = []
+
+    def _execute(transactions, metadata=""):
+        captured.extend(transactions)
+        return _FakeResp()
+
+    svc._execute_with_proxy = _execute
+    return svc, captured
 
 
 async def _heartbeat(stop: asyncio.Event) -> int:
@@ -75,3 +93,22 @@ def test_redeem_does_not_block_event_loop():
     tx, ticks = _run(_drive(svc.redeem_positions(condition_id=_COND, neg_risk=False)))
     assert tx.success and tx.tx_hash == "0xabc"
     assert ticks > 10, f"event loop starved during redeem: only {ticks} heartbeats"
+
+
+def test_standard_merge_uses_ctf_collateral_adapter_and_pusd():
+    svc, captured = _recording_service()
+    tx = _run(svc.merge_positions(condition_id=_COND, amount=10.0, neg_risk=False))
+
+    assert tx.success
+    assert len(captured) == 1
+    assert captured[0].to == CTF_COLLATERAL_ADAPTER_ADDRESS
+    assert PUSD_ADDRESS.lower().replace("0x", "") in captured[0].data.lower()
+
+
+def test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter():
+    svc, captured = _recording_service()
+    tx = _run(svc.merge_positions(condition_id=_COND, amount=10.0, neg_risk=True))
+
+    assert tx.success
+    assert len(captured) == 1
+    assert captured[0].to == NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS

@@ -7,6 +7,7 @@
 ## 锁定的关键性约束(Q18 + Q18b 修正,2026-05-21)
 
 - merge / claim(redeem)是**链上 CTF 合约操作**,**上游 NT PM ExecutionClient 没有也无法表达**(只包 CLOB 订单簿)。本工程自研保留(`contract.py:PolymarketContractService`)。
+- 链上 IO 走 Polymarket 官方 collateral adapter:标准二元 target=`CtfCollateralAdapter`,negRisk target=`NegRiskCtfCollateralAdapter`,collateral 参数为 pUSD。旧的直接 CTF+USDC.e 路径会让资金落到 pending deposit/Activate Funds,不能直接恢复 CLOB buying power。
 - 归属/触发(**#110 修正,2026-06-16;推翻 Q18b 的"PM 健康检查 tick"**): **并入 NT 连续 position 对账**(`LiveExecEngineConfig.position_check_interval_secs=300`),复用对账那次 `/positions` 拉取。**PM 无 HealthCheckLoop**(健康检查彻底退役,对齐 OE #109);**无独立 Actor、无独立调度**。
 - **三层宿主(Q18c;#110 触发改 NT 对账)**:
   - 宿主/触发 = **PM `ExecutionClient` 薄子类**的 `generate_position_status_reports`(NT 周期调它):上游 `_fetch_user_positions` 拉一次、stash `_last_raw_positions`;override 用 stash 喂结算。
@@ -14,6 +15,7 @@
   - IO = **`contract.py:PolymarketContractService`**(保留)
   - **结算 fire-and-forget + single-flight**:`create_task(_run_settlement(raw))`,**不 `await`**(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);`_settlement_inflight` 守卫防并发重复提交。本目录用例针对 `PolymarketSettlement`(编排)+ contract IO;宿主触发见 pm-adapter README(pm-adapter-5.health.4)。
 - 结果不作健康判据: `TxResult` 失败仅 log + 下个对账周期重试,**不影响** `VenueExecutionLiveness`。
+- CLOB buying-power cache 同步当前默认关闭:切到 collateral adapter+pUSD 后,PM ExecClient 不主动调用 `update_balance_allowance(COLLATERAL)`。保留宿主 helper 便于 live 证明需要时恢复;本目录只测编排,宿主行为见 PM adapter README。
 - 数据源: **对账那次 PM Data API `/positions` 原始响应**(含 `redeemable`/`negativeRisk`/`conditionId`/`size`);**不能用 NT cache 持仓**(上游翻成 `PositionStatusReport` 时丢了 redeemable 等)。映射 = `pm_raw_position_to_settlement(item: dict)`。
 - 与执行**不互斥**(#110):结算 fire-and-forget、不阻塞对账;OE 下单是 page.evaluate 与对账互不冲突(synchronization §8)。并发由 single-flight 守卫,不靠互斥。
 - redeem 结算滞后: 由 NT position 对账周期(300s)兜住(每周期检查 `redeemable`),无需事件。
@@ -27,10 +29,10 @@
 - 期望: 调 `contract.merge_positions(condition_id, amount=50, neg_risk=false)`(amount=min)
 - 验收: amount 取两腿最小;negRisk 标志透传;只对 ≥2 outcome 的 condition 触发
 
-### settlement-8.3: merge —— negRisk 市场走 NegRiskAdapter
+### settlement-8.3: merge —— negRisk 市场走 NegRiskCtfCollateralAdapter
 - 前置: 某 condition `neg_risk=true`,两 outcome 都持仓
 - 输入: 健康检查 tick
-- 期望: 调 `merge_positions(..., neg_risk=true)` → `NegRiskAdapter.mergePositions(bytes32,uint256)` 编码路径
+- 期望: 调 `merge_positions(..., neg_risk=true)` → `NegRiskCtfCollateralAdapter.mergePositions(bytes32,uint256)` 编码路径
 - 验收: 与标准二元(CTF)路径区分正确
 
 ### settlement-8.4: redeem —— redeemable 门控
@@ -67,7 +69,19 @@
 - 前置: `contract.py` 的 `RelayClient.execute` / `resp.wait()` 是**同步阻塞**调用(提交 tx + 等链上确认数秒);settlement 经 `create_task` 跑在 NT event loop 上
 - 输入: `merge_positions` / `redeem_positions` 跑期间,并发一个每 10ms tick 的心跳协程
 - 期望: 阻塞调用经 `loop.run_in_executor(None, ...)` 丢线程池;阻塞那 ~0.6s 里心跳持续推进(>10 次)
-- 验收: 心跳计数远超 1(loop 未被冻);若退回直接同步调用,心跳会被饿死。文件 `test_contract_offload.py`(2 passed)。注:`create_task` 只解耦调度,**不**让同步调用变非阻塞,两层防阻塞缺一不可(execution §4.6)
+- 验收: 心跳计数远超 1(loop 未被冻);若退回直接同步调用,心跳会被饿死。文件 `test_contract_offload.py`。注:`create_task` 只解耦调度,**不**让同步调用变非阻塞,两层防阻塞缺一不可(execution §4.6)
+
+### settlement-8.10: 标准 merge 走 CtfCollateralAdapter + pUSD(2026-07-10)
+- 前置: 标准二元 condition 两 outcome 都持仓
+- 输入: `contract.merge_positions(condition_id, amount, neg_risk=false)`
+- 期望: SafeTransaction `to=CtfCollateralAdapter(0xAdA100...)`,calldata 内 collateral 为 pUSD `0xC011...DFB`
+- 验收: `test_contract_offload.py::test_standard_merge_uses_ctf_collateral_adapter_and_pusd`
+
+### settlement-8.11: negRisk merge 走 NegRiskCtfCollateralAdapter(2026-07-10)
+- 前置: negRisk condition 两 outcome 都持仓
+- 输入: `contract.merge_positions(condition_id, amount, neg_risk=true)`
+- 期望: SafeTransaction `to=NegRiskCtfCollateralAdapter(0xadA200...)`
+- 验收: `test_contract_offload.py::test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter`
 
 ## Debug 相关
 

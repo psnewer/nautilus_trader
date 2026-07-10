@@ -1,16 +1,20 @@
 """
 Polymarket 链上操作封装
 
-通过 Builder Relayer 执行 CTF 合约的 mergePositions 和 redeemPositions。
+通过 Builder Relayer 执行 Polymarket CTF collateral adapter 的 mergePositions 和 redeemPositions。
 支持标准二元市场 (negRisk=false) 和负风险多结果市场 (negRisk=true)。
 
 合约地址:
 - CTF: 0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
 - NegRiskAdapter: 0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296
 - USDC.e (collateral): 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+- pUSD (collateral): 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
+- CtfCollateralAdapter: 0xAdA100Db00Ca00073811820692005400218FcE1f
+- NegRiskCtfCollateralAdapter: 0xadA2005600Dec949baf300f4C6120000bDB6eAab
 
 参考:
-- https://docs.polymarket.com/developers/builders/relayer-client
+- https://docs.polymarket.com/trading/ctf/merge
+- https://docs.polymarket.com/resources/contracts
 - https://github.com/Polymarket/py-builder-relayer-client
 """
 
@@ -47,6 +51,9 @@ except ImportError:
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 NEG_RISK_ADAPTER_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+CTF_COLLATERAL_ADAPTER_ADDRESS = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
 
 # Polygon chain ID
 POLYGON_CHAIN_ID = 137
@@ -74,7 +81,7 @@ def _encode_merge_positions_ctf(
     amount: int,
 ) -> bytes:
     """
-    编码 CTF.mergePositions calldata (negRisk=false)
+    编码 CtfCollateralAdapter.mergePositions calldata (negRisk=false)
 
     mergePositions(address collateral, bytes32 parentCollectionId, bytes32 conditionId, uint256[] partition, uint256 amount)
     partition = [1, 2] 表示两个 outcome slots
@@ -87,7 +94,7 @@ def _encode_merge_positions_ctf(
     encoded = encode(
         ["address", "bytes32", "bytes32", "uint256[]", "uint256"],
         [
-            USDC_E_ADDRESS,
+            PUSD_ADDRESS,
             ZERO_BYTES32,
             bytes.fromhex(condition_id.replace("0x", "")),
             [1, 2],
@@ -119,7 +126,7 @@ def _encode_merge_positions_neg_risk(
 
 def _encode_redeem_positions_ctf(condition_id: str) -> bytes:
     """
-    编码 CTF.redeemPositions calldata (negRisk=false)
+    编码 CtfCollateralAdapter.redeemPositions calldata (negRisk=false)
 
     redeemPositions(address collateral, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)
     indexSets = [1, 2] 赎回所有 outcome slots
@@ -130,7 +137,7 @@ def _encode_redeem_positions_ctf(condition_id: str) -> bytes:
     encoded = encode(
         ["address", "bytes32", "bytes32", "uint256[]"],
         [
-            USDC_E_ADDRESS,
+            PUSD_ADDRESS,
             ZERO_BYTES32,
             bytes.fromhex(condition_id.replace("0x", "")),
             [1, 2],
@@ -164,8 +171,8 @@ class PolymarketContractService:
     通过 Builder Relayer 执行 Polymarket 链上操作
 
     主要功能:
-    - mergePositions: 合并同一 condition 下两个 outcome token 回 USDC.e
-    - redeemPositions: 赎回已结算市场的 winning tokens
+    - mergePositions: 经 collateral adapter 合并同一 condition 下两个 outcome token 回 pUSD
+    - redeemPositions: 经 collateral adapter 赎回已结算市场的 winning tokens 回 pUSD
     """
 
     def __init__(
@@ -283,9 +290,9 @@ class PolymarketContractService:
         neg_risk: bool = False,
     ) -> TxResult:
         """
-        合并仓位回 USDC.e
+        合并仓位回 pUSD
 
-        同一 condition 下持有两个 outcome token 时，可以 merge 回 collateral。
+        同一 condition 下持有两个 outcome token 时，可以经 collateral adapter merge 回 pUSD。
         merge_amount = min(token_0_size, token_1_size)
 
         Args:
@@ -307,11 +314,11 @@ class PolymarketContractService:
         try:
             if neg_risk:
                 calldata = _encode_merge_positions_neg_risk(condition_id, amount_raw)
-                target = NEG_RISK_ADAPTER_ADDRESS
+                target = NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"merge negRisk positions: condition={condition_id[:16]}..., amount={amount}"
             else:
                 calldata = _encode_merge_positions_ctf(condition_id, amount_raw)
-                target = CTF_ADDRESS
+                target = CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"merge CTF positions: condition={condition_id[:16]}..., amount={amount}"
 
             self._log.info(f"Executing {desc}")
@@ -374,11 +381,11 @@ class PolymarketContractService:
                     )
                 amounts_raw = [int(a * 1_000_000) for a in amounts]
                 calldata = _encode_redeem_positions_neg_risk(condition_id, amounts_raw)
-                target = NEG_RISK_ADAPTER_ADDRESS
+                target = NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"redeem negRisk: condition={condition_id[:16]}..."
             else:
                 calldata = _encode_redeem_positions_ctf(condition_id)
-                target = CTF_ADDRESS
+                target = CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"redeem CTF: condition={condition_id[:16]}..."
 
             self._log.info(f"Executing {desc}")
