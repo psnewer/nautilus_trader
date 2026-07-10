@@ -80,6 +80,42 @@ def test_connect_starts_browser_loads_provider_and_sends_instruments():
     assert client._disconnecting is False
 
 
+def test_connect_initial_load_failure_still_starts_periodic_retry():
+    class Browser:
+        def __init__(self):
+            self.started = 0
+
+        async def start(self):
+            self.started += 1
+
+    class Provider:
+        def __init__(self):
+            self.loaded = 0
+
+        async def load_all_async(self):
+            self.loaded += 1
+            raise RuntimeError("temporary csrf timeout")
+
+    browser = Browser()
+    provider = Provider()
+    client = _client(update_interval=1, browser_manager=browser)
+    client._instrument_provider = provider
+    tasks = []
+
+    def fake_create_task(coro):
+        coro.close()
+        tasks.append(coro)
+        return SimpleNamespace(cancel=lambda: None)
+
+    client.create_task = fake_create_task
+    client._loop.run_until_complete(client._connect())
+
+    assert browser.started == 1
+    assert provider.loaded == 1
+    assert len(tasks) == 1
+    assert client._disconnecting is False
+
+
 def test_disconnect_cancels_update_task_and_stops_handlers():
     class Task:
         def __init__(self):

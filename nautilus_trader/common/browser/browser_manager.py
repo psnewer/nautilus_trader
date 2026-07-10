@@ -132,6 +132,12 @@ class PlaywrightBrowserManager:
                 self._log.debug("Closed default blank page")
 
         self._log.info('✅ Browser started successfully')
+
+    @property
+    def context(self) -> Optional[BrowserContext]:
+        """Return the active Playwright browser context, if started."""
+
+        return self._context
     
     async def _setup_stealth(self) -> None:
         """Setup anti-detection measures."""

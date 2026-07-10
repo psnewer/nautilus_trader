@@ -185,8 +185,8 @@ class SharpExchDiscoveryClient:
   默认生成 `POST /customer/api/sport/details?page=0&size=60`,body 为
   `{"viewBy":"POPULARITY","timeFilter":"ALL","id":"2","contextFilter":"EVENT_TYPE"}`。
 - `SharpExchDiscoveryClient` 只有传入 `sport_details_provider` 或 `json_fetcher` 时才会产生事件;无注入时返回空列表。`json_fetcher` 路径会分页请求,直到空页、短页、下一页没有新 `marketId`,或 100 页保护上限。
-- `SharpExchLiveDataClientFactory` 在 `discovery_config_by_venue["SHARPEXCH"]` 存在时注入 browser `json_fetcher`:创建 `se-discovery` page、经 `se_login` 登录(见 §3.6 Login 串行化)、定位 `portal.sharpxch.com/customer` iframe,并在 iframe context 内执行 `sport/details` fetch。Data factory 会把该 discovery config 的 `sports` 同时注入 Provider 的 `sport_configs`,Provider `load_all_async()` 调用 `discover_events(sport_configs)`,避免 runtime 退回默认 sport。
-- Data discovery fetch 与 Exec login 共用 `browser_manager_by_venue["SHARPEXCH"]` 和 `browser_lock_by_venue["SHARPEXCH"]`。NT 启动期会并发连接 data/exec clients,SE/Cloudflare 对同一 browser context 内的并发登录敏感,因此 `se_login` 使用 `browser_lock` 串行化登录操作(见 §3.6);order book/WS 后续仍按各 client 自己的事件路径运行。
+- `SharpExchLiveDataClientFactory` 在 `discovery_config_by_venue["SHARPEXCH"]` 存在时注入 browser `json_fetcher`:不创建 discovery page、不登录、不导航;只等待共享 `PlaywrightBrowserManager.context` 中出现 `CSRF-TOKEN`(由 execution page 或其它 SE 页面产生),最多等待 `config.page_timeout`,随后用 BrowserContext request API 调 `sport/details`。Data factory 会把该 discovery config 的 `sports` 同时注入 Provider 的 `sport_configs`,Provider `load_all_async()` 调用 `discover_events(sport_configs)`,避免 runtime 退回默认 sport。
+- Data discovery fetch 与 Exec login 只共用 `browser_manager_by_venue["SHARPEXCH"]`。Discovery **不持任何锁**:CSRF 等待与 context request 对共享 context 只读;`browser_login_state_by_venue["SHARPEXCH"].lock` 仅串行化 execution 登录(若 discovery 持该锁等 CSRF,会把唯一的 CSRF 生产者——exec 登录——挡在锁外直到超时)。execution 登录仍是唯一会提交账号凭据的路径。order book/WS 后续仍按各 client 自己的事件路径运行。
 - 独立 probe 实测该路径可分页取回约 240 个 Tennis events(随 SE 当前赛事集变化);
   其中 `Men's Wimbledon 2026` 为 64 个、`Women's Wimbledon 2026` 为 64 个。
 
@@ -335,8 +335,11 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   视为可复用登录态,兼容 `sharpxch.com/player/` 外层页长期不跳转且未授权时也可能预加载
   customer iframe 的真实行为;同一 browser context 内若已有 page 完成登录,后续 page 在
   `SharpExchLoginState` 锁内优先复用 authenticated session,避免 discovery/execution 旧登录页二次提交;
-  customer app 出现后先按 OE #89 同款策略关闭 `postLoginPopup`
-  弹窗,再继续 API/WS 初始化。`_connect` 使用 Future 等待 profile/balance 与 `CURRENT_BETS`
+  `postLoginPopup` 弹窗在登录成功、customer app 启动完成后才渲染,因此由 `se_login`
+  在登录完成后(锁外)统一按 OE #89 同款策略关闭,总预算 10s,无弹窗时静默继续。
+  登录后 SE app 会 detach 重建 customer iframe(表现为 orders/prices WS 连两波),
+  dismiss 按 1s 分片、每片重新解析当前 customer context,不持旧 frame 引用。
+  `_connect` 使用 Future 等待 profile/balance 与 `CURRENT_BETS`
   两个业务信号,等待上限 30s,不再使用 8s 固定轮询只等余额。
   若余额缺失,连接完成后生成 0 USD 初始 `AccountState` 以注册账户;
   `_disconnect` 停止 WS handler 并清本地 page,不关闭共享 browser。
@@ -378,10 +381,14 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   zero-order probe 校准,SE execution `BALANCE` / `CURRENT_BETS` empty 快照与 startup reconciliation
   已由 SE skip node smoke 验证。
 - SE 是 iframe app,登录后主页面 URL 可能仍停在 `sharpxch.com/player/`。因此 `se_login`
-  以 customer iframe 出现作为优先完成信号,再 fallback 主 URL;post-login popup dismiss 支持
-  短超时调用,避免手动关闭弹窗后代码在两个 context 上各等完整超时。
-- `se_fetch_json` 在 customer iframe context 内执行 browser fetch,并带 AbortController 超时;
-  `sport/details` 被 Cloudflare/网络层挂起时返回 `status=0 + fetch_error:*`,由调用方 fail-fast,
+  以 customer iframe 出现作为优先完成信号,再 fallback 主 URL;post-login popup dismiss 的
+  `timeout_ms` 是总预算(deadline 制),按 1s 分片轮询,每片用 `se_customer_context`
+  重新解析当前 iframe/主页面(登录后 iframe 会 detach 重建,旧引用会失效),
+  runtime 默认 10s,probe 场景可传短超时。
+- `se_fetch_json` 保留为 page/frame context helper,供 probe 与 page-bound executor 场景使用;
+  `se_fetch_json_with_browser_context` 是 discovery runtime 路径,直接使用共享
+  BrowserContext request API 和 context cookies 中的 `CSRF-TOKEN`,不依赖 page/frame
+  execution context。`sport/details` 被 Cloudflare/网络层挂起时由调用方 fail-fast,
   不允许 discovery/probe 静默卡住而误以为已经进入下单阶段。
 
 当前也已落地 NT order → SE legacy order 纯映射:
@@ -441,14 +448,17 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
 - `ArbContext`:SE runtime 依赖只落在 `session_timeout_secs_by_venue["SHARPEXCH"]` /
   `discovery_config_by_venue["SHARPEXCH"]` / `sport_aliases_by_venue["SHARPEXCH"]` /
   `competition_aliases_by_venue["SHARPEXCH"]` / `instrument_provider_by_venue["SHARPEXCH"]` /
-  `browser_manager_by_venue["SHARPEXCH"]` / `browser_lock_by_venue["SHARPEXCH"]`。
+  `browser_manager_by_venue["SHARPEXCH"]` /
+  `browser_login_state_by_venue["SHARPEXCH"]`。`browser_lock_by_venue["SHARPEXCH"]`
+  仅作为旧 `se_login(..., browser_lock=...)` 兼容入口保留。
 - `to_arb_context_init_kwargs`:始终注入 `session_timeout_secs_by_venue["SHARPEXCH"]`;仅当
   `venues.sharpexch.enabled=true` 时注入 `discovery_config_by_venue["SHARPEXCH"]`,否则不写入该 venue discovery config。
 - `SharpExchLiveDataClientFactory`:复用/回写 `browser_manager_by_venue["SHARPEXCH"]`;若
   `discovery_config_by_venue["SHARPEXCH"]` 存在,构造带 browser `json_fetcher` 的 `SharpExchDiscoveryClient` +
   `SharpExchInstrumentProvider`,并按 `ctx.arbitrage_params.fx` 注入 Provider;否则使用
-  fallback `InstrumentProvider()`。browser fetcher 会登录 `login_url`,在 customer iframe context
-  内调用 `sport/details`。创建后回写 `instrument_provider_by_venue["SHARPEXCH"]`。
+  fallback `InstrumentProvider()`。browser fetcher 不开页、不登录,只等待共享 browser context
+  内的 `CSRF-TOKEN`,再用 context request 调 `sport/details`。创建后回写
+  `instrument_provider_by_venue["SHARPEXCH"]`。
 - `ArbSharpExchLiveExecClientFactory`:要求 `ctx.venue_liveness` 已准备,复用同一
   `browser_manager_by_venue["SHARPEXCH"]`,注入 `session_timeout_secs_by_venue["SHARPEXCH"]`、
   `ctx.pair_registry`、`ctx.pair_inflight` 与 `ctx.arbitrage_params.fx`。
@@ -484,19 +494,19 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   SE 余额按 adapter 入站后的 USD free 检查;`ArbitragePortfolio` 保留 SE venue
   identity,不会把 SE 持仓归到 OE。
 
-### 3.6 Login 串行化
+### 3.6 Login 串行化与 discovery CSRF 等待
 
-**问题**:NT 启动时并发连接 Data/Exec clients。Discovery 创建 `se-discovery` 页、Execution 创建 `execution` 页,两者并发调用 `se_login` 触发 Cloudflare 验证。仅用裸 lock 串行化还不够:第二个 page 可能在第一个 page 登录前已经打开旧登录页,拿到锁后仍会基于旧 DOM 二次提交表单。
+**历史问题**:NT 启动时并发连接 Data/Exec clients。旧 discovery 会创建 `se-discovery` 页并调用 `se_login`,Execution 也创建 `execution` 页并登录,两者并发登录会触发 Cloudflare 验证。仅用裸 lock 串行化还不够:第二个 page 可能在第一个 page 登录前已经打开旧登录页,拿到锁后仍会基于旧 DOM 二次提交表单。
 
-**解决方案**:在 `se_login` 中使用 browser context 级 `SharpExchLoginState`。它同时持有登录锁与 `authenticated` 标记:第一个 page 成功登录后标记 context 已认证;第二个 page 拿到锁后优先等待 customer app/session 复用,不再直接提交旧登录页。
+**当前方案**:Discovery 不再创建页面、不登录、不导航;只等待共享 BrowserContext 中已有 `CSRF-TOKEN`,最多等 `config.page_timeout`,拿到后用 context request 调 `sport/details`。Execution 仍是唯一会提交账号凭据的路径,并在 `se_login` 中使用 browser context 级 `SharpExchLoginState`:第一个 execution page 成功登录后标记 context 已认证;后续 execution 登录先等待 customer app/session 复用,不直接提交旧登录页。
 
 #### 3.6.1 原理
 
 Browser context 内 cookies/session 是共享的:
-1. 第一个 page 登录成功 → session cookies 写入 context,`SharpExchLoginState.authenticated=True`
-2. 第二个 page 调用 `se_login` → 拿到同一 `SharpExchLoginState.lock`
-3. 若 context 已认证,先导航/等待 customer app;成功则跳过表单提交
-4. 若 session 过期或 customer app 不可用,再退回普通表单登录路径
+1. Execution page 登录成功 → session cookies 与 `CSRF-TOKEN` 写入 context,`SharpExchLoginState.authenticated=True`
+2. Discovery `_se_browser_json_fetcher` → 不拿锁,只读 context cookies/request,不调用 `se_login`(持锁等 CSRF 会与步骤 1/3 的登录互相饿死:CSRF 只有登录才会产生)
+3. 其它 execution page 调用 `se_login` → 拿同一 lock;若 context 已认证,先等待 customer app/session 复用并跳过表单
+4. 若 session 过期或 customer app 不可用,execution 再退回普通表单登录路径
 
 #### 3.6.2 时序
 
@@ -504,10 +514,9 @@ Browser context 内 cookies/session 是共享的:
 NT 并发 connect data/exec clients
     │
     ├─ [Discovery] _se_browser_json_fetcher
-    │     ├─ create_page("se-discovery")
-    │     ├─ se_login(page, config, login_state) ← 持 context 登录锁
-    │     │     └─ 导航 → 填表单 → 登录成功 → cookies 写入 context → authenticated=True
-    │     └─ 释放锁 → fetch API
+    │     ├─ browser_manager.start()
+    │     ├─ 等 shared BrowserContext 内 CSRF-TOKEN ← 无锁轮询(cookie 只读)
+    │     └─ context.request.post(sport/details)
     │
     └─ [Execution] _connect
           ├─ create_page("execution")
@@ -521,11 +530,10 @@ NT 并发 connect data/exec clients
 
 | 页面 | 用途 | 创建者 |
 |---|---|---|
-| `se-discovery` | Discovery API fetch | DataClient json_fetcher |
 | `execution` | Execution orders/balance/WS | ExecutionClient |
 | `comp-{sport}_{competition}` | OrderBook 订阅 | DataClient |
 
-各 client 保持独立 page,只有 login 操作串行化。
+Discovery 不拥有 page;各 page-bound client 保持独立 page。串行化只发生在 execution 登录之间;discovery 的 CSRF 读取无锁。
 
 #### 3.6.4 代码落点
 
@@ -535,7 +543,7 @@ NT 并发 connect data/exec clients
 
 - `factories.py`:
   - `_shared_se_login_state(ctx)`:从 `ArbContext.browser_login_state_by_venue["SHARPEXCH"]` 取/建共享状态
-  - `_se_browser_json_fetcher()`:调用 `se_login(page, config, login_state=...)`
+  - `_se_browser_json_fetcher()`:等待共享 BrowserContext 的 `CSRF-TOKEN`,用 context request 调 `sport/details`
 
 - `execution.py`:
   - `_connect()`:调用 `se_login(self._page, self._config, login_state=...)`
@@ -595,7 +603,7 @@ class BrowserExchangeSpec(Protocol):
 3. Data 映射单测:SE price frame fixture → `OrderBookDeltas`。
 4. Factory 接线单测:TradingNode config 包含 SE data/exec client,factory 使用
    `ArbContext` keyed map(`session_timeout_secs_by_venue` / `discovery_config_by_venue` /
-   `browser_manager_by_venue` / `browser_lock_by_venue`)。
+   `browser_manager_by_venue` / `browser_login_state_by_venue`)。
 5. Matching 单测:PM + SE 同赛事可产 `MatchedPair`,PairRegistry 注册三方 instrument。
 6. Strategy 单测:SE 作为 OE 类 decimal odds venue 参与机会筛选、candidate、recovery、size 与 share limit。
 7. Risk 单测:metadata required venues 含 SE 时,venue liveness fail-closed/pass-open。

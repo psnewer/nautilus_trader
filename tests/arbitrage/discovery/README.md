@@ -6,19 +6,19 @@
 - 锁定决定: Q1 (InstrumentId 命名) / Q3 (refresh_interval mutable) / Q4 (单 venue 失败) / Q6 (NT 持久化) / Q8 (调度归 Refresher) / Q9 (异构 instrument 归一)
 
 > **#59(slice A)架构反转**:`InstrumentRefresher` Actor 与 `InstrumentsRefreshed` 事件已退役删除。周期发现迁回 **DataClient 原生 `_update_instruments`**(PM 上游已自带,arb factory 补 `load_all=True`;OE/SE 自写 DataClient 各自维护 `_send_all_instruments_to_data_engine` + `_update_instruments` task;PMSPORTS data-only client 同形首抓 + 周期重抓)。Matching 不再订 discovery 事件,而是 timer 读 cache。旧 refresher 相关 skipped 测试/README 条目不再作为当前验收。
-> **2026-06-29 overnight 修**:PM/OE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` 失败杀死整个 60min 周期 discovery task。验收落在 PM/OE adapter 测试: `test_update_instruments_continues_after_provider_error`。
+> **2026-06-29 overnight 修;2026-07-10 SE 对齐**:PM/OE/SE DataClient 的 `_update_instruments` 每轮单独吞普通异常并继续下一轮,避免一次断网 / DNS / Playwright `goto` / SE context CSRF 暂未就绪杀死整个 60min 周期 discovery task。验收落在 PM/OE/SE adapter 测试: `test_update_instruments_continues_after_provider_error` / `test_connect_initial_load_failure_still_starts_periodic_retry`。
 > **2026-07-02 venue/data-source keyed context**:PM/OE/SE Data factory 只从 `ArbContext` keyed map 读取 discovery/session/alias 相关配置并回写 `instrument_provider_by_venue`;PMSPORTS factory 只读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`;专属 `pm_*` / `oe_*` / `se_*` ArbContext 字段已删除。验收落在 PM/OE/SE adapter factory 测试。
 
 **落地状态(2026-07-08)**:发现路径以 adapter DataClient + Provider 测试为准:
 - ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
 - ✅ `test_orbitexch_discovery_scraper.py`(1.4.i:discovery 独立浏览器注入 document visibility + IntersectionObserver spoof,避免 OE competition 页懒加载只发现首屏 20 场)
-- ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、price frame 路由与 DataClient 生命周期。
+- ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、discovery 不开页不登录而等待共享 BrowserContext `CSRF-TOKEN`、price frame 路由与 DataClient 生命周期。
 - ⬜ PM Provider 冷启动 / 字段完整度 / API 失败保 cache 需 Gamma/CLOB live smoke 验;不保留 skipped pytest 空壳。
 - ⬜ DataClient 原生发现 → cache → matching timer → MatchedPair 的全节点路径仍归上层 e2e/live smoke 验;不再以 Refresher/msgbus 事件作为验收对象。
 
 **2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
-**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。PM 6-key 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
+**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。PM 6-key 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
@@ -126,11 +126,11 @@
 - `sport_details_request` 为 Tennis/Wimbledon 构造 `POST /customer/api/sport/details?page=0&size=60`,body `id="2"`。
 - `SharpExchDiscoveryClient` 默认不联网;只有显式注入 `sport_details_provider` / `json_fetcher` 时才拉取 payload。
 - `json_fetcher` 路径分页请求,直到短页、空页、下一页无新 `marketId`,或 100 页保护上限。
-- `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher`;该 fetcher 经 `login_url` 进入外层页,在 `portal.sharpxch.com/customer` iframe context 内执行 `sport/details`。
+- `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher`;该 fetcher 不创建 page、不登录、不导航,只等待共享 BrowserContext 中的 `CSRF-TOKEN`,随后用 context request 执行 `sport/details`。
 - 只保留 `Match Odds` market,按目标 competition 过滤。
 - 2 runner 映射 `home/away`;3 runner 映射 `home/draw/away`。
 - Provider 产 `BettingInstrument`,venue 为 `SHARPEXCH`,info 含 Q9 六统一 key。
-- `min_notional = Money(7 * fx, USD)` 作为第一阶段默认值。
+- `min_notional = Money(12, USD)` 作为 SE 第一阶段默认最小 stake。
 
 **验收标准**:`tests/arbitrage/adapters/sharpexch/test_discovery_client.py`、`test_provider.py`、`test_factories.py` 通过;2026-07-01 zero-order probe 实测 `sport/details` 分页返回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
 

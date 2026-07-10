@@ -25,14 +25,14 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:SE Data/Exec factory 使用 `SharpExch` 子树导出的 `PlaywrightBrowserManager`。
 **输入**:`venues.sharpexch.headless` / `venues.sharpexch.user_data_dir`。
 **期望**:生产 Data/Exec 与 probes 共用同一个 BrowserManager 实现;Chromium `AutomationControlled`、固定 user-agent、`navigator.webdriver` 隐藏、plugins 模拟、visible spoof 均在生产生效;probe 的 `--user-data-dir` 只有写入 `venues.sharpexch.user_data_dir` 后才被生产复用。
-**验收**:代码路径已确认:`SharpExchLiveDataClientFactory` / `ArbSharpExchLiveExecClientFactory` 经 `_shared_se_browser_manager` 构造 `PlaywrightBrowserManager`,该导出复用 OE browser manager 的 stealth/init-script;browser manager 与 browser lock 均经 `ctx_map_get_or_create` 读取/回写。`test_factories.py` 覆盖 Data+Exec 共享 browser manager,并断言 `browser_manager_by_venue["SHARPEXCH"]` / `browser_lock_by_venue["SHARPEXCH"]` 写回;`test_dispatcher.py` 覆盖 SE Data/Exec config 映射。
+**验收**:代码路径已确认:`SharpExchLiveDataClientFactory` / `ArbSharpExchLiveExecClientFactory` 经 `_shared_se_browser_manager` 构造 `PlaywrightBrowserManager`,该导出复用 OE browser manager 的 stealth/init-script;browser manager、login state 与兼容 browser lock 均经 `ctx_map_get_or_create` 读取/回写。`test_factories.py` 覆盖 Data+Exec 共享 browser manager 与 login state,并断言 `browser_manager_by_venue["SHARPEXCH"]` / `browser_login_state_by_venue["SHARPEXCH"]` 写回;`test_dispatcher.py` 覆盖 SE Data/Exec config 映射。
 
 ### se-adapter-1.2:API discovery 生成 BettingInstrument
 
 **前置**:fixture 来自 `POST /customer/api/sport/details?page=0&size=60`。
 **输入**:`SharpExchDiscoveryClient.discover_events()` 返回 market events。
 **期望**:只保留目标 competition 与 `Match Odds`;runner 映射为 `home/draw/away`;Provider 产出 `BettingInstrument`;InstrumentId 为 `{market_id}-{selection_id}.SHARPEXCH`。
-**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher`,并把 `discovery.sharpexch.sports` 原样传入 Provider;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 info 六字段完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测 browser fetcher 同源要求:必须在 customer iframe context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
+**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher`,并把 `discovery.sharpexch.sports` 原样传入 Provider,且 discovery fetcher 不创建 page、不登录、不导航,只等待共享 browser context 的 `CSRF-TOKEN` 后用 context request 调 `sport/details`;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 info 六字段完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测 browser fetcher 同源要求:必须在 customer context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
 
 ### se-adapter-1.3:SE 最小 stake 元数据
 
@@ -102,7 +102,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:`ArbContext` 已准备 SE discovery config / venue liveness / arbitrage params。
 **输入**:`SharpExchLiveDataClientFactory.create(...)` 与 `ArbSharpExchLiveExecClientFactory.create(...)`。
 **期望**:Data/Exec factory 复用同一个 keyed browser manager;discovery config 缺失时 Data factory 使用 fallback `InstrumentProvider`;discovery config 存在时只从 `discovery_config_by_venue["SHARPEXCH"]` 构造 `SharpExchDiscoveryClient + SharpExchInstrumentProvider` 并按 `fx` 注入 Provider;Exec factory 缺 `venue_liveness` 早失败,缺 `session_timeout_secs_by_venue["SHARPEXCH"]` 也 fail-fast,存在时从 keyed map 注入 session timeout/fx。
-**验收**:已落地。`test_factories.py` 覆盖 discovery 缺失/存在两条 Data factory 分支、discovery 存在时注入 browser `json_fetcher`、Data+Exec 共享 browser manager、共享 browser lock 串行化 data discovery fetch 与 exec login、Provider/Browser/Lock keyed map 写回、Exec factory 缺 context 早失败、缺 session timeout keyed 值 fail-fast、Exec factory 从 ArbContext keyed map 注入 `venue_liveness` / session timeout / `fx`。`test_arb_node.py` 覆盖 launcher 按 `venues.*.enabled` 注册 runtime:默认 PM+OE,至少两个 runtime venue,PM+SE smoke 不注册 OE,OE+SE 注册 PMSPORTS/OE/SE 且不注册 PM,PM+OE+SE 同时注册三个 tradable venue。
+**验收**:已落地。`test_factories.py` 覆盖 discovery 缺失/存在两条 Data factory 分支、discovery 存在时注入 browser `json_fetcher`、Data+Exec 共享 browser manager、discovery fetcher 无锁只读 context CSRF/request、不开 page 不登录(login state lock 仅串行化 exec login)、Provider/Browser/LoginState keyed map 写回、Exec factory 缺 context 早失败、缺 session timeout keyed 值 fail-fast、Exec factory 从 ArbContext keyed map 注入 `venue_liveness` / session timeout / `fx`。`test_arb_node.py` 覆盖 launcher 按 `venues.*.enabled` 注册 runtime:默认 PM+OE,至少两个 runtime venue,PM+SE smoke 不注册 OE,OE+SE 注册 PMSPORTS/OE/SE 且不注册 PM,PM+OE+SE 同时注册三个 tradable venue。
 
 ### se-adapter-live.0:独立 zero-order 网站事实 probe
 

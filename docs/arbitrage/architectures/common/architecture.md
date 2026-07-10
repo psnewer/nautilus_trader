@@ -90,7 +90,7 @@ factory 只读取 venue/data-source keyed map;旧 `ctx.pm_*` / `ctx.oe_*` / `ctx
 | `discovery_config_by_venue` | venue → discovery config;当前包含 enabled 且 discovery enabled 的 OE/SE |
 | `sport_aliases_by_venue` / `competition_aliases_by_venue` | enabled trading venue → Provider 写 Q9 字段前的 alias 表 |
 | `instrument_provider_by_venue` | venue → Data factory 回写 provider 的通用槽位;PM/OE/SE Data factory 已写入 |
-| `browser_manager_by_venue` / `browser_lock_by_venue` | venue → 浏览器共享件的通用槽位;OE/SE factory 读取/写入 browser manager,SE 另写 browser lock |
+| `browser_manager_by_venue` / `browser_lock_by_venue` | venue → 浏览器共享件的通用槽位;OE/SE factory 读取/写入 browser manager;browser lock 仅 SE exec factory 写(旧 `se_login(..., browser_lock=...)` 兼容入口),discovery 不用锁 |
 | `target_competitions_by_data_source` / `competition_to_sport_by_data_source` | data source → PMSPORTS 目标 competition 与 competition→sport map |
 | `ctx_map_get` / `ctx_map_require` / `ctx_map_set` / `ctx_map_get_or_create` | keyed map 读写 helper;session timeout 等必需项用 `ctx_map_require` fail-fast,provider/browser 等共享件用 `ctx_map_set` 或 `ctx_map_get_or_create` 回写 |
 

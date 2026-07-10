@@ -74,8 +74,13 @@ class SharpExchDataClient(LiveMarketDataClient):
         self._disconnecting = False
         await self._browser_manager.start()
 
-        await self._instrument_provider.load_all_async()
-        self._send_all_instruments_to_data_engine()
+        try:
+            await self._instrument_provider.load_all_async()
+            self._send_all_instruments_to_data_engine()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"SE initial instruments load failed: {exc!r}; retrying next cycle",
+            )
         if self._config.update_instruments_interval_mins:
             self._update_instruments_task = self.create_task(
                 self._update_instruments(self._config.update_instruments_interval_mins),

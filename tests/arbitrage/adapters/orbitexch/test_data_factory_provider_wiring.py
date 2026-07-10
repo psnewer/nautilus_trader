@@ -39,13 +39,54 @@ def _args():
 def _stub_heavy(monkeypatch, dc_class=None, discovery_class=None, prov_class=None):
     monkeypatch.setattr(oe_factories, "PlaywrightBrowserManager", MagicMock())
     monkeypatch.setattr(oe_factories, "OrbitExchDataClient", dc_class or MagicMock())
-    # stub browser lock and fetcher
-    monkeypatch.setattr(oe_factories, "_shared_oe_browser_lock", lambda ctx: MagicMock())
     monkeypatch.setattr(oe_factories, "_oe_browser_json_fetcher", lambda *args: MagicMock())
     if discovery_class is not None:
         monkeypatch.setattr(oe_factories, "OrbitExchDiscoveryClient", discovery_class)
     if prov_class is not None:
         monkeypatch.setattr(oe_factories, "OrbitExchInstrumentProvider", prov_class)
+
+
+def test_browser_json_fetcher_waits_for_context_csrf_without_page_or_login(monkeypatch):
+    """与 SE 对齐:discovery fetcher 不开页、不登录、无锁,只等共享 context CSRF 后走 context request。"""
+    import asyncio
+
+    from nautilus_trader.adapters.orbitexch.discovery_client import sport_details_request
+
+    calls = []
+
+    class BrowserManager:
+        context = object()
+
+        async def start(self):
+            calls.append(("start",))
+
+        async def create_page(self, name):
+            raise AssertionError("OE discovery must not open a page")
+
+    async def wait_for_csrf(context, *, timeout_ms):
+        calls.append(("wait_for_csrf", context is BrowserManager.context, timeout_ms))
+
+    async def fetch_json(context, url, *, params, body, timeout_ms):
+        calls.append(("fetch_json", context is BrowserManager.context, url, params, body, timeout_ms))
+        return {"ok": True, "json": {"marketCatalogueList": {"content": []}}}
+
+    def forbidden_login(*args, **kwargs):
+        raise AssertionError("OE discovery must not login")
+
+    monkeypatch.setattr(oe_factories, "oe_wait_for_context_csrf_token", wait_for_csrf)
+    monkeypatch.setattr(oe_factories, "oe_fetch_json_with_browser_context", fetch_json)
+    monkeypatch.setattr(oe_factories, "oe_login", forbidden_login, raising=False)
+    cfg = type("Cfg", (), {"base_url": "https://www.orbitexch.com", "page_timeout": 120000})()
+    fetcher = oe_factories._oe_browser_json_fetcher(BrowserManager(), cfg)
+    request = sport_details_request(cfg.base_url, SportConfig(sport="Tennis", competitions=[]))
+
+    result = asyncio.run(fetcher(request))
+
+    assert result == {"marketCatalogueList": {"content": []}}
+    assert calls[0] == ("start",)
+    assert calls[1] == ("wait_for_csrf", True, 120000)
+    assert calls[2][0:3] == ("fetch_json", True, "https://www.orbitexch.com/customer/api/sport/details")
+    assert calls[2][5] == 120000
 
 
 def test_factory_uses_placeholder_provider_when_scraper_config_missing(monkeypatch):

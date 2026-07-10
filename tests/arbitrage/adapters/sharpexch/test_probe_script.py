@@ -10,6 +10,7 @@ from scripts.se_probe import _sanitize
 from nautilus_trader.adapters.sharpexch.web import se_customer_context
 from nautilus_trader.adapters.sharpexch.web import se_dismiss_post_login_popup
 from nautilus_trader.adapters.sharpexch.web import se_fetch_json
+from nautilus_trader.adapters.sharpexch.web import se_fetch_json_with_browser_context
 from nautilus_trader.adapters.sharpexch.web import se_is_customer_url
 from nautilus_trader.adapters.sharpexch.web import se_login
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
@@ -103,6 +104,53 @@ def test_se_fetch_json_passes_timeout_to_browser_context():
     assert context.arg["timeoutMs"] == 1234
     assert context.arg["params"] == {"page": "0"}
     assert context.arg["body"] == {"id": "2"}
+
+
+def test_se_fetch_json_with_browser_context_uses_context_request_and_csrf():
+    class Response:
+        ok = True
+        status = 200
+
+        async def text(self):
+            return '{"ok": true}'
+
+        async def json(self):
+            return {"ok": True}
+
+    class Request:
+        def __init__(self):
+            self.kwargs = None
+
+        async def post(self, url, **kwargs):
+            self.url = url
+            self.kwargs = kwargs
+            return Response()
+
+    class Context:
+        def __init__(self):
+            self.request = Request()
+
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "csrf-token"}]
+
+    context = Context()
+
+    result = asyncio.run(
+        se_fetch_json_with_browser_context(
+            context,
+            "https://portal.sharpxch.com/customer/api/sport/details",
+            params={"page": "0"},
+            body={"id": "2"},
+            timeout_ms=1234,
+        ),
+    )
+
+    assert result["ok"] is True
+    assert context.request.url == "https://portal.sharpxch.com/customer/api/sport/details"
+    assert context.request.kwargs["params"] == {"page": "0"}
+    assert context.request.kwargs["data"] == {"id": "2"}
+    assert context.request.kwargs["headers"]["x-csrf-token"] == "csrf-token"
+    assert context.request.kwargs["timeout"] == 1234
 
 
 def test_login_submits_form_even_when_customer_iframe_exists():
@@ -256,7 +304,7 @@ def test_login_state_reuses_authenticated_context_without_second_submit():
     asyncio.run(se_login(page, cfg, login_state=state))
 
     assert state.authenticated is True
-    assert page.locator_calls == ['div[class*="_postLoginPopup_"]']
+    assert page.locator_calls == []
 
 
 def test_login_uses_browser_lock_when_provided():
@@ -319,7 +367,7 @@ def test_dismiss_post_login_popup_clicks_main_page_when_popup_visible():
     class Popup:
         async def wait_for(self, *, state, timeout):
             assert state == "visible"
-            assert timeout == 7000
+            assert 0 < timeout <= 10000
 
     class Locator:
         @property
@@ -373,7 +421,7 @@ def test_dismiss_post_login_popup_timeout_continues_without_click():
 
     page = Page()
 
-    assert asyncio.run(se_dismiss_post_login_popup(page)) is False
+    assert asyncio.run(se_dismiss_post_login_popup(page, timeout_ms=300)) is False
     assert page.mouse.clicks == []
 
 

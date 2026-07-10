@@ -8,7 +8,8 @@ OrbitExchDataClient —— OE 自写 `LiveMarketDataClient` 子类(Step 2,整体
 设计见 `docs/arbitrage/architectures/data/architecture.md`(refactor.md §5.2/§6.2,Q2)。
 
 = 自写 `LiveMarketDataClient` 子类:WS 价格帧(`multiple-market-prices`)→ NT 标准
-`OrderBookDeltas`(snapshot 一次 CLEAR + 多 ADD 入 NT 标准管道)。BACK=BUY 侧 / LAY=SELL 侧。
+`OrderBookDeltas`(snapshot 一次 CLEAR + top-of-book ADD 入 NT 标准管道)。
+BACK 最高赔率写入 SELL/ask 侧,LAY 最低赔率写入 BUY/bid 侧。
 
 **位置**:`nautilus_trader/adapters/orbitexch/`(P9 唯一例外:OE 适配器整套住 adapter 目录;#33)。
 **BrowserManager 仅消费**(Q2 共享单例;不再 start/close):`get_page("data")` 拿专属页。
@@ -62,8 +63,8 @@ def oe_runner_to_book_deltas(
 
     WS 给的是**snapshot of best N levels**(非增量),故每帧:
     - 1 个 `CLEAR`(刷掉旧本子)
-    - 每 back 档:`ADD(BUY)`(BACK = 买入该方向)
-    - 每 lay 档: `ADD(SELL)`(LAY = 卖出该方向)
+    - top back 档:`ADD(SELL)`(NT ask;decimal odds 最高 BACK 赔率)
+    - top lay 档: `ADD(BUY)`(NT bid;decimal odds 最低 LAY 赔率)
     包成 `OrderBookDeltas`(NT 标准 batch)入 DataEngine。
 
     返回 None 表示本 runner 无可用档(`back` + `lay` 都空)→ 调用方跳过 publish。
@@ -187,10 +188,16 @@ class OrbitExchDataClient(LiveMarketDataClient):
         await self._browser_manager.start()
 
         # #58(slice A):DataClient 拥有发现 —— 首次抓全 + 周期重抓(替代退役的 InstrumentRefresher)。
-        # 发现用 provider 自己的 scraper 浏览器(#62 解耦),不依赖 competition 页。
         # 直调 load_all_async(不走 initialize 的 load_all config 闸,Gap α);灌 cache 经 _handle_data→DataEngine。
-        await self._instrument_provider.load_all_async()
-        self._send_all_instruments_to_data_engine()
+        # 首轮失败不杀 DataClient(与 SE 对齐):discovery 等 exec 登录写入的 CSRF,
+        # 启动期可能等不到,warning 后交周期任务下一轮。
+        try:
+            await self._instrument_provider.load_all_async()
+            self._send_all_instruments_to_data_engine()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"OE initial instruments load failed: {exc!r}; retrying next cycle",
+            )
         if self._config.update_instruments_interval_mins:
             self._update_instruments_task = self.create_task(
                 self._update_instruments(self._config.update_instruments_interval_mins),

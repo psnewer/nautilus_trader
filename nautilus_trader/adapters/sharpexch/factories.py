@@ -22,9 +22,8 @@ from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchDiscove
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchSportDetailsRequest
 from nautilus_trader.adapters.sharpexch.execution import SharpExchExecutionClient
 from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
-from nautilus_trader.adapters.sharpexch.web import se_customer_context
-from nautilus_trader.adapters.sharpexch.web import se_fetch_json
-from nautilus_trader.adapters.sharpexch.web import se_login
+from nautilus_trader.adapters.sharpexch.web import se_fetch_json_with_browser_context
+from nautilus_trader.adapters.sharpexch.web import se_wait_for_context_csrf_token
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
 
 from src.arbitrage.bootstrap import ctx_map_get
@@ -51,11 +50,10 @@ def _shared_se_browser_manager(ctx, config) -> PlaywrightBrowserManager:
 
 
 def _shared_se_browser_lock(ctx) -> asyncio.Lock:
-    """SE browser context 级操作锁。
+    """SE browser context 级兼容锁。
 
-    Data discovery 与 Exec login 共用同一 browser context;启动期 NT 会并发 connect
-    data/exec clients。SE/Cloudflare 对同一 context 并发登录 + API fetch 敏感,因此把
-    login/fetch 这种会改变 customer session 状态的操作串行化。
+    仅传给 ExecutionClient,兼容旧 `se_login(..., browser_lock=...)` 调用面;
+    discovery 不使用任何锁(context cookie/request 只读)。
     """
 
     return ctx_map_get_or_create(ctx, "browser_lock_by_venue", SHARPEXCH, asyncio.Lock)
@@ -67,50 +65,29 @@ def _shared_se_login_state(ctx) -> SharpExchLoginState:
     return ctx_map_get_or_create(ctx, "browser_login_state_by_venue", SHARPEXCH, SharpExchLoginState)
 
 
-def _se_browser_json_fetcher(browser_manager, config, login_state: SharpExchLoginState):
+def _se_browser_json_fetcher(browser_manager, config):
     async def _fetch(request: SharpExchSportDetailsRequest) -> dict:
         await browser_manager.start()
-        page = await browser_manager.create_page("se-discovery")
-        page.set_default_timeout(config.page_timeout)
 
-        # se_login 内部使用 browser context 级状态串行化登录,避免并发/二次登录触发 Cloudflare
-        await se_login(page, config, login_state=login_state)
+        context = getattr(browser_manager, "context", None)
+        if context is None:
+            raise RuntimeError("SE browser context not available")
 
-        # Retry fetch up to 3 times for transient failures (including frame detachment)
-        last_error = None
-        for attempt in range(3):
-            # Re-acquire context on each attempt to handle frame detachment
-            frame_ctx = se_customer_context(page)
-            if frame_ctx is None:
-                if attempt < 2:
-                    _log.warning(f"SE fetch attempt {attempt + 1}: customer context not available, retrying")
-                    await asyncio.sleep(2.0)
-                    continue
-                raise RuntimeError("SE login completed but customer context not available after retries")
-            try:
-                payload = await se_fetch_json(
-                    frame_ctx,
-                    request.url,
-                    params=request.params,
-                    body=request.body,
-                )
-            except Exception as e:
-                # Handle frame detachment and other Playwright errors
-                err_msg = str(e).lower()
-                if "frame was detached" in err_msg or "frame" in err_msg:
-                    _log.warning(f"SE fetch attempt {attempt + 1}: frame detached, re-acquiring context")
-                    if attempt < 2:
-                        await asyncio.sleep(2.0)
-                        continue
-                raise
-            if payload.get("ok") and isinstance(payload.get("json"), dict):
-                return payload["json"]
-            last_error = payload
-            if attempt < 2:
-                await asyncio.sleep(2.0)  # Wait before retry
+        # 不持 login_state.lock:CSRF 等待/请求对共享 context 只读,持锁反而会把
+        # exec 登录(CSRF 的唯一生产者)挡在锁外直到本侧超时。
+        timeout_ms = int(config.page_timeout)
+        await se_wait_for_context_csrf_token(context, timeout_ms=timeout_ms)
+        payload = await se_fetch_json_with_browser_context(
+            context,
+            request.url,
+            params=request.params,
+            body=request.body,
+            timeout_ms=timeout_ms,
+        )
+        if payload.get("ok") and isinstance(payload.get("json"), dict):
+            return payload["json"]
         raise RuntimeError(
-            f"SE sport/details failed after 3 attempts: "
-            f"status={last_error.get('status')} text={last_error.get('text')!r}",
+            f"SE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
         )
 
     return _fetch
@@ -130,7 +107,6 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
     ) -> SharpExchDataClient:
         ctx = get_arb_context()
         browser_manager = _shared_se_browser_manager(ctx, config)
-        login_state = _shared_se_login_state(ctx)
         se_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", SHARPEXCH)
         if se_discovery_cfg is not None:
             sport_configs = list(getattr(se_discovery_cfg, "sports", []) or [])
@@ -141,7 +117,7 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
             ]
             discovery = SharpExchDiscoveryClient(
                 base_url=config.base_url,
-                json_fetcher=_se_browser_json_fetcher(browser_manager, config, login_state),
+                json_fetcher=_se_browser_json_fetcher(browser_manager, config),
                 target_competitions=target_competitions,
             )
             provider = SharpExchInstrumentProvider(

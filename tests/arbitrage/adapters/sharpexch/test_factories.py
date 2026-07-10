@@ -14,6 +14,7 @@ from nautilus_trader.adapters.sharpexch import factories as se_factories
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.config import SharpExchExecClientConfig
 from nautilus_trader.adapters.sharpexch.data import SharpExchDataClient
+from nautilus_trader.adapters.sharpexch.discovery_client import sport_details_request
 from nautilus_trader.adapters.sharpexch.execution import SharpExchExecutionClient
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -98,6 +99,57 @@ def test_data_factory_constructs_provider_when_discovery_config_present(monkeypa
     assert kwargs["sport_configs"] == se_venue.sports
     assert kwargs["fx"] == 1.25
     assert bootstrap.get_arb_context().instrument_provider_by_venue[SHARPEXCH] is provider.return_value
+
+
+def test_browser_json_fetcher_waits_for_context_csrf_without_page_or_login(monkeypatch):
+    calls = []
+
+    class BrowserManager:
+        context = object()
+
+        async def start(self):
+            calls.append(("start",))
+
+        async def create_page(self, name):
+            raise AssertionError("SE discovery must not open a page")
+
+    async def wait_for_csrf(context, *, timeout_ms):
+        calls.append(("wait_for_csrf", context is BrowserManager.context, timeout_ms))
+
+    async def fetch_json(context, url, *, params, body, timeout_ms):
+        calls.append(("fetch_json", context is BrowserManager.context, url, params, body, timeout_ms))
+        return {"ok": True, "json": {"marketCatalogueList": {"content": []}}}
+
+    def forbidden_login(*args, **kwargs):
+        raise AssertionError("SE discovery must not login")
+
+    monkeypatch.setattr(se_factories, "se_wait_for_context_csrf_token", wait_for_csrf)
+    monkeypatch.setattr(se_factories, "se_fetch_json_with_browser_context", fetch_json)
+    monkeypatch.setattr(se_factories, "se_login", forbidden_login, raising=False)
+    cfg = type("Cfg", (), {"base_url": "https://portal.sharpxch.com", "page_timeout": 120000})()
+    fetcher = se_factories._se_browser_json_fetcher(BrowserManager(), cfg)
+    request = sport_details_request(cfg.base_url, SportConfig(sport="Tennis", competitions=[]))
+
+    result = asyncio.run(fetcher(request))
+
+    assert result == {"marketCatalogueList": {"content": []}}
+    assert calls == [
+        ("start",),
+        ("wait_for_csrf", True, 120000),
+        (
+            "fetch_json",
+            True,
+            "https://portal.sharpxch.com/customer/api/sport/details",
+            {"page": "0", "size": "20"},
+            {
+                "viewBy": "POPULARITY",
+                "timeFilter": "ALL",
+                "id": "2",
+                "contextFilter": "EVENT_TYPE",
+            },
+            120000,
+        ),
+    ]
 
 
 def test_data_and_exec_factories_share_browser_manager(monkeypatch):

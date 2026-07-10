@@ -29,8 +29,8 @@ from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchDiscove
 from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchSportDetailsRequest
 from nautilus_trader.adapters.orbitexch.execution import OrbitExchExecutionClient
 from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
-from nautilus_trader.adapters.orbitexch.web import oe_fetch_json
-from nautilus_trader.adapters.orbitexch.web import oe_login
+from nautilus_trader.adapters.orbitexch.web import oe_fetch_json_with_browser_context
+from nautilus_trader.adapters.orbitexch.web import oe_wait_for_context_csrf_token
 
 from src.arbitrage.bootstrap import ctx_map_get
 from src.arbitrage.bootstrap import ctx_map_get_or_create
@@ -58,44 +58,36 @@ def _shared_oe_browser_manager(ctx, config) -> PlaywrightBrowserManager:
     )
 
 
-def _shared_oe_browser_lock(ctx) -> asyncio.Lock:
-    """OE browser context 级操作锁。
+def _oe_browser_json_fetcher(browser_manager, config):
+    """创建 OE sport/details API fetcher(与 SE discovery 对齐)。
 
-    Data discovery 与 Exec 共用同一 browser context;启动期 NT 会并发 connect
-    data/exec clients。把 discovery fetch 这种操作串行化,避免并发问题。
+    Discovery 不创建页面、不登录、不导航:OE API 需要的 CSRF-TOKEN cookie 由
+    execution 登录写入共享 BrowserContext,这里只等它出现(最长 `config.page_timeout`),
+    然后用 context request API 请求。不持任何锁:CSRF 等待/请求对共享 context 只读,
+    持锁会把 CSRF 的唯一生产者(exec 登录)挡在锁外直到本侧超时。
     """
-    return ctx_map_get_or_create(ctx, "browser_lock_by_venue", ORBITEXCH, asyncio.Lock)
-
-
-def _oe_browser_json_fetcher(browser_manager, config, browser_lock: asyncio.Lock):
-    """创建 OE sport/details API fetcher。
-
-    OE API 需要登录后的 CSRF token(从 CSRF-TOKEN cookie 读取)。
-    首次 fetch 时登录,后续复用已登录 session。
-    """
-    _logged_in = False
 
     async def _fetch(request: OrbitExchSportDetailsRequest) -> dict:
-        nonlocal _logged_in
         await browser_manager.start()
-        page = await browser_manager.create_page("oe-discovery")
-        page.set_default_timeout(config.page_timeout)
-        async with browser_lock:
-            # 首次 fetch 时登录,确保 CSRF token cookie 存在
-            if not _logged_in:
-                await oe_login(page, config)
-                _logged_in = True
-            payload = await oe_fetch_json(
-                page,
-                request.url,
-                params=request.params,
-                body=request.body,
-            )
-        if not payload.get("ok") or not isinstance(payload.get("json"), dict):
-            raise RuntimeError(
-                f"OE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
-            )
-        return payload["json"]
+
+        context = getattr(browser_manager, "context", None)
+        if context is None:
+            raise RuntimeError("OE browser context not available")
+
+        timeout_ms = int(config.page_timeout)
+        await oe_wait_for_context_csrf_token(context, timeout_ms=timeout_ms)
+        payload = await oe_fetch_json_with_browser_context(
+            context,
+            request.url,
+            params=request.params,
+            body=request.body,
+            timeout_ms=timeout_ms,
+        )
+        if payload.get("ok") and isinstance(payload.get("json"), dict):
+            return payload["json"]
+        raise RuntimeError(
+            f"OE sport/details failed: status={payload.get('status')} text={payload.get('text')!r}",
+        )
 
     return _fetch
 
@@ -118,7 +110,6 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
         ctx = get_arb_context()
         # OE 共享 BrowserManager(§6.2 单例;#62:exec factory 复用同一实例 → 一个浏览器)
         browser_manager = _shared_oe_browser_manager(ctx, config)
-        browser_lock = _shared_oe_browser_lock(ctx)
         oe_discovery_cfg = ctx_map_get(ctx, "discovery_config_by_venue", ORBITEXCH)
         if oe_discovery_cfg is not None:
             sport_configs = list(getattr(oe_discovery_cfg, "sports", []) or [])
@@ -129,7 +120,7 @@ class OrbitExchLiveDataClientFactory(LiveDataClientFactory):
             ]
             discovery = OrbitExchDiscoveryClient(
                 base_url=config.base_url,
-                json_fetcher=_oe_browser_json_fetcher(browser_manager, config, browser_lock),
+                json_fetcher=_oe_browser_json_fetcher(browser_manager, config),
                 target_competitions=target_competitions,
             )
             provider = OrbitExchInstrumentProvider(

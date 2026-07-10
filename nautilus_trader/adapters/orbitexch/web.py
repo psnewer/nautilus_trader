@@ -6,6 +6,9 @@ OrbitExch 浏览器辅助函数——登录、导航、弹窗处理。
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 
 async def oe_login(page, config) -> None:
     """登录 OE 并等待 `/customer/` URL。
@@ -65,6 +68,12 @@ async def oe_csrf_token(page) -> str:
     context = context_fn() if callable(context_fn) else context_fn
     if context is None:
         return ""
+    return await oe_csrf_token_from_browser_context(context)
+
+
+async def oe_csrf_token_from_browser_context(context) -> str:
+    """从 Playwright BrowserContext 读取 CSRF-TOKEN。"""
+
     cookies_fn = getattr(context, "cookies", None)
     if cookies_fn is None:
         return ""
@@ -81,65 +90,58 @@ async def oe_csrf_token(page) -> str:
     return ""
 
 
-async def oe_fetch_json(
-    page,
+async def oe_wait_for_context_csrf_token(context, *, timeout_ms: int) -> str:
+    """等待共享 browser context 中出现 OE CSRF-TOKEN cookie。"""
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        token = await oe_csrf_token_from_browser_context(context)
+        if token:
+            return token
+        await asyncio.sleep(0.2)
+    raise TimeoutError("OE browser context did not provide CSRF-TOKEN")
+
+
+async def oe_fetch_json_with_browser_context(
+    context,
     url: str,
     *,
     params: dict | None = None,
     body: dict | None = None,
     timeout_ms: int = 30000,
 ) -> dict:
-    """在 OE 页面 context 中执行 POST fetch。
+    """用 BrowserContext 的 request API 请求 OE JSON。
 
-    统一的 fetch 函数,自动处理 CSRF token。
+    Discovery 不依赖 page/frame execution context,避免页面跳转时 `Frame.evaluate`
+    被销毁。Cookie jar 仍来自同一个 browser context。
     """
-    csrf_token = await oe_csrf_token(page)
-    return await page.evaluate(
-        """async ({url, params, body, timeoutMs, csrfToken}) => {
-            const qs = new URLSearchParams(params || {}).toString();
-            let path = url;
-            try {
-                const parsed = new URL(url, window.location.origin);
-                if (parsed.origin === window.location.origin) {
-                    path = `${parsed.pathname}${parsed.search}`;
-                }
-            } catch (e) {}
-            const finalUrl = qs ? `${path}${path.includes('?') ? '&' : '?'}${qs}` : path;
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), timeoutMs);
-            try {
-                const res = await fetch(finalUrl, {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                        'accept': 'application/json, text/plain, */*',
-                        'content-type': 'application/json',
-                        'x-device': 'DESKTOP',
-                        'x-csrf-token': csrfToken || '',
-                    },
-                    body: JSON.stringify(body || {}),
-                    signal: controller.signal,
-                });
-                const text = await res.text();
-                let json = null;
-                try { json = JSON.parse(text); } catch (e) {}
-                return {ok: res.ok, status: res.status, text: text.slice(0, 500), json};
-            } catch (e) {
-                return {
-                    ok: false,
-                    status: 0,
-                    text: `fetch_error:${e && e.name ? e.name : 'Error'}:${e && e.message ? e.message : String(e)}`,
-                    json: null,
-                };
-            } finally {
-                clearTimeout(timeout);
-            }
-        }""",
-        {
-            "url": url,
-            "params": params or {},
-            "body": body or {},
-            "timeoutMs": max(1, int(timeout_ms)),
-            "csrfToken": csrf_token,
+
+    csrf_token = await oe_csrf_token_from_browser_context(context)
+    query = params or {}
+    request = getattr(context, "request", None)
+    if request is None:
+        raise RuntimeError("OE browser context has no request API")
+    response = await request.post(
+        url,
+        params=query,
+        data=body or {},
+        headers={
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/json",
+            "x-device": "DESKTOP",
+            "x-csrf-token": csrf_token,
         },
+        timeout=max(1, int(timeout_ms)),
     )
+    text = await response.text()
+    parsed = None
+    try:
+        parsed = await response.json()
+    except Exception:  # noqa: BLE001
+        parsed = None
+    return {
+        "ok": bool(getattr(response, "ok", False)),
+        "status": getattr(response, "status", 0),
+        "text": text[:500],
+        "json": parsed,
+    }

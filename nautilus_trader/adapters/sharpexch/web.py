@@ -73,6 +73,9 @@ async def se_login(page, config, browser_lock=None, login_state: SharpExchLoginS
             await _se_login_impl(page, config)
     else:
         await _se_login_impl(page, config)
+    # 弹窗在登录成功、customer app 启动完成后才渲染,必须在登录完成后再等;
+    # 放在锁外,避免持登录锁等弹窗。
+    await se_dismiss_post_login_popup(page)
 
 
 async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
@@ -82,7 +85,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
         if not (se_is_customer_url(getattr(page, "url", "") or "") or se_customer_frame(page) is not None):
             await page.goto(config.login_url, wait_until="domcontentloaded", timeout=config.page_timeout)
         if await _customer_app_available(page, timeout_ms=5000):
-            await se_dismiss_post_login_popup(page, timeout_ms=2500)
             await _settle_customer_app(page)
             return
 
@@ -94,7 +96,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
             await _submit_login_form(page, config)
             await _wait_after_login(page)
             return
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
 
@@ -106,7 +107,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
 
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
         _log.info("SE login: already authenticated via session cookies")
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
 
@@ -116,7 +116,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
             await _submit_login_form(page, config)
             await _wait_after_login(page)
             return
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
     except TimeoutError:
@@ -129,7 +128,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
             await _submit_login_form(page, config)
             await _wait_after_login(page)
             return
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
 
@@ -142,7 +140,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
             await _submit_login_form(page, config)
             await _wait_after_login(page)
             return
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
 
@@ -156,7 +153,6 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     # Wait a bit longer for manual challenge resolution, then re-check
     await asyncio.sleep(5.0)
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
-        await se_dismiss_post_login_popup(page, timeout_ms=2500)
         await _settle_customer_app(page)
         return
 
@@ -209,34 +205,40 @@ async def _wait_after_login(page) -> None:
         await se_wait_for_customer_frame(page, timeout_ms=10000)
     except Exception:
         await page.wait_for_url("**/customer**", timeout=10000)
-    await se_dismiss_post_login_popup(page, timeout_ms=2500)
     await _settle_customer_app(page)
 
 
-async def se_dismiss_post_login_popup(page, logger=None, *, timeout_ms: int = 7000) -> bool:
+_POPUP_WAIT_SLICE_MS = 1000
+
+
+async def se_dismiss_post_login_popup(page, *, timeout_ms: int = 10000) -> bool:
     """关闭 SE 登录后弹窗。
 
-    该弹窗可能挡住 customer app 初始化/接口请求。策略与 OE #89 一致:等容器出现后点
-    主页面区域关闭;没有弹窗时静默继续。
+    该弹窗可能挡住 customer app 初始化/接口请求,且在登录成功、app 启动完成后才渲染,
+    所以要在登录完成后等它出现。策略与 OE #89 一致:等容器出现后点主页面区域关闭;
+    没有弹窗时静默继续。`timeout_ms` 是总预算,按 `_POPUP_WAIT_SLICE_MS` 分片等待。
     """
 
-    for context in _popup_contexts(page):
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return False
+        # 登录后 SE app 会 detach 重建 customer iframe,旧 frame 引用会失效;
+        # 每个等待片重新解析当前 context,而不是入口处快照。
+        context = se_customer_context(page)
         try:
             popup = context.locator('div[class*="_postLoginPopup_"]').first
             if callable(popup):
                 popup = popup()
-            await popup.wait_for(state="visible", timeout=timeout_ms)
+            await popup.wait_for(
+                state="visible",
+                timeout=min(remaining_ms, _POPUP_WAIT_SLICE_MS),
+            )
             await _click_popup_backdrop(context, page)
-            if logger is not None:
-                logger.info("SharpExch post-login popup dismissed")
             return True
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-    if logger is not None:
-        debug = getattr(logger, "debug", None)
-        if debug is not None:
-            debug(f"SharpExch no post-login popup (error: {last_exc})")
-    return False
+        except Exception:  # noqa: BLE001
+            await asyncio.sleep(0.2)
 
 
 def _popup_contexts(page) -> list:
@@ -318,6 +320,81 @@ async def se_fetch_json(
             "timeoutMs": max(1, int(timeout_ms)),
         },
     )
+
+
+async def se_wait_for_context_csrf_token(context, *, timeout_ms: int) -> str:
+    """等待共享 browser context 中出现 SE CSRF-TOKEN cookie。"""
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        token = await se_csrf_token_from_browser_context(context)
+        if token:
+            return token
+        await asyncio.sleep(0.2)
+    raise TimeoutError("SE browser context did not provide CSRF-TOKEN")
+
+
+async def se_csrf_token_from_browser_context(context) -> str:
+    """从 Playwright BrowserContext 读取 CSRF-TOKEN。"""
+
+    cookies_fn = getattr(context, "cookies", None)
+    if cookies_fn is None:
+        return ""
+    try:
+        cookies = await cookies_fn()
+    except TypeError:
+        cookies = await cookies_fn([])
+    except Exception:
+        return ""
+    for cookie in cookies or []:
+        if cookie.get("name") == "CSRF-TOKEN":
+            return str(cookie.get("value") or "")
+    return ""
+
+
+async def se_fetch_json_with_browser_context(
+    context,
+    url: str,
+    *,
+    params: dict | None = None,
+    body: dict | None = None,
+    timeout_ms: int = 30000,
+) -> dict:
+    """用 BrowserContext 的 request API 请求 SE JSON。
+
+    Discovery 不依赖 page/frame execution context,避免页面跳转时 `Frame.evaluate`
+    被销毁。Cookie jar 仍来自同一个 browser context。
+    """
+
+    csrf_token = await se_csrf_token_from_browser_context(context)
+    query = params or {}
+    request = getattr(context, "request", None)
+    if request is None:
+        raise RuntimeError("SE browser context has no request API")
+    response = await request.post(
+        url,
+        params=query,
+        data=body or {},
+        headers={
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/json",
+            "x-device": "DESKTOP",
+            "x-csrf-token": csrf_token,
+        },
+        timeout=max(1, int(timeout_ms)),
+    )
+    text = await response.text()
+    parsed = None
+    try:
+        parsed = await response.json()
+    except Exception:  # noqa: BLE001
+        parsed = None
+    return {
+        "ok": bool(getattr(response, "ok", False)),
+        "status": getattr(response, "status", 0),
+        "text": text[:500],
+        "json": parsed,
+    }
 
 
 async def _settle_customer_app(page) -> None:

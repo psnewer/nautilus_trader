@@ -17,7 +17,8 @@ from nautilus_trader.config import LiveExecClientConfig
 class SharpExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True):
     """SharpExch data client 配置。
 
-    DataClient 使用 Playwright 登录 SE,经 `sport/details` 发现 instrument,再按 competition 页订阅 WS。
+    DataClient 不登录 SE;discovery 等共享 BrowserContext 的 CSRF 后请求 `sport/details`,
+    再按 competition 页订阅 WS。
     """
 
     username: str

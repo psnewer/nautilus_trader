@@ -118,6 +118,44 @@ def test_client_constructs_offline():
     assert c._market_to_instruments == {}
 
 
+def test_connect_initial_load_failure_still_starts_periodic_retry():
+    """与 SE 对齐:首轮 discovery 失败(如 CSRF 未出现)不杀 DataClient,仍启动周期重试。"""
+    from types import SimpleNamespace
+
+    class Browser:
+        def __init__(self):
+            self.started = 0
+
+        async def start(self):
+            self.started += 1
+
+    class Provider:
+        def __init__(self):
+            self.loaded = 0
+
+        async def load_all_async(self):
+            self.loaded += 1
+            raise RuntimeError("temporary csrf timeout")
+
+    c = _client()
+    c._browser_manager = Browser()
+    c._instrument_provider = Provider()
+    tasks = []
+
+    def fake_create_task(coro):
+        coro.close()
+        tasks.append(coro)
+        return SimpleNamespace(cancel=lambda: None)
+
+    c.create_task = fake_create_task
+    c._loop.run_until_complete(c._connect())
+
+    assert c._browser_manager.started == 1
+    assert c._instrument_provider.loaded == 1
+    assert len(tasks) == 1
+    assert c._disconnecting is False
+
+
 def test_register_routing_reads_market_and_selection_from_instrument():
     """data-2.client.2: 订阅时从 instrument(BettingInstrument)读 market_id/selection_id 建路由。"""
     from tests.arbitrage.risk._factories import oe_instrument

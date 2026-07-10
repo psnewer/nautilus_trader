@@ -33,14 +33,6 @@ from src.arbitrage.config.dispatcher import to_sharpexch_data_client_config
 _CAPTURE_PATHS = ("/customer/api/placeBets", "/customer/api/cancelBets")
 
 
-class _Log:
-    def info(self, msg: str) -> None:
-        print(msg, flush=True)
-
-    def debug(self, msg: str) -> None:
-        print(msg, flush=True)
-
-
 async def run(args) -> int:
     _load_dotenv()
     cfg = load_arb_config(args.config)
@@ -91,13 +83,14 @@ async def run(args) -> int:
 
     print("▶ SE request capture: login...", flush=True)
     await se_login(page, se_cfg)
-    dismissed = await se_dismiss_post_login_popup(page, logger=_Log())
+    dismissed = await se_dismiss_post_login_popup(page, timeout_ms=1500)
     print(f"▶ login ready; popup dismissed={dismissed}", flush=True)
 
     if args.url:
         print(f"▶ navigate: {args.url}", flush=True)
         await page.goto(args.url, wait_until="domcontentloaded", timeout=se_cfg.page_timeout)
-        await se_dismiss_post_login_popup(page, logger=_Log())
+        dismissed = await se_dismiss_post_login_popup(page, timeout_ms=1500)
+        print(f"▶ popup dismissed={dismissed}", flush=True)
 
     print("▶ READY: 请在打开的浏览器里手动下单/撤单；我会捕获 placeBets/cancelBets。Ctrl-C 结束。", flush=True)
     try:
