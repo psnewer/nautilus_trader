@@ -95,6 +95,52 @@ def test_sharpexch_candidate_uses_decimal_odds_qty():
     assert by_role["away"]["cost"] == 50.0
 
 
+def test_3way_generates_candidates_for_home_draw_away_targets():
+    books = {
+        "H.POLYMARKET": _fake_book(0.20),
+        "D.POLYMARKET": _fake_book(0.30),
+        "A.POLYMARKET": _fake_book(0.40),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "D.POLYMARKET": {"selection_role": "draw"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.20, share=100.0).passes(ctx) is True
+
+    candidates = ctx.scratch["candidates"]
+    assert len(candidates) == 3
+    assert {c["target_role"] for c in candidates} == {"home", "draw", "away"}
+    assert all(tuple(c["roles"]) == ("home", "draw", "away") for c in candidates)
+    assert all(len(c["legs"]) == 3 for c in candidates)
+
+
+def test_decimal_odds_target_qty_share_and_cost():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.SHARPEXCH": _fake_book(2.0),   # prob=0.50
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.SHARPEXCH": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.10, share=100.0).passes(ctx) is True
+
+    away_target = next(c for c in ctx.scratch["candidates"] if c["target_role"] == "away")
+    by_role = {leg["role"]: leg for leg in away_target["legs"]}
+    assert round(away_target["rate"], 6) == round((1.0 - 0.95) / 0.50, 6)
+    assert by_role["home"]["share_if_wins"] == 100.0
+    assert by_role["home"]["cost"] == 45.0
+    assert by_role["away"]["venue"] == "SHARPEXCH"
+    assert round(by_role["away"]["share_if_wins"], 6) == round(55.0 / 0.50, 6)
+    assert round(by_role["away"]["qty"], 6) == round((55.0 / 0.50) / 2.0, 6)
+    assert round(by_role["away"]["cost"], 6) == 55.0
+
+
 def test_rate_below_threshold_does_not_write_candidates():
     books = {
         "H.POLYMARKET": _fake_book(0.50),
@@ -125,3 +171,70 @@ def test_uses_strategy_default_share_when_param_absent():
     assert OneSideRebateCheck(min_rate=0.10).passes(ctx) is True
     candidate = ctx.scratch["candidates"][0]
     assert candidate["base_share"] == 40.0
+
+
+def test_missing_snapshot_does_not_write_candidates():
+    ctx = EvalContext(pair_id="p", snapshot=None, strategy_defaults={"share": 100.0})
+
+    assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
+    assert "candidates" not in ctx.scratch
+
+
+def test_missing_role_does_not_write_candidates():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
+    assert "candidates" not in ctx.scratch
+
+
+def test_missing_order_book_does_not_write_candidates():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+    ctx.snapshot.instrument_ids.append("A.POLYMARKET")
+
+    assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
+    assert "candidates" not in ctx.scratch
+
+
+def test_non_positive_price_does_not_write_candidates():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.0),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.01, share=100.0).passes(ctx) is False
+    assert "candidates" not in ctx.scratch
+
+
+def test_non_positive_share_does_not_write_candidates():
+    books = {
+        "H.POLYMARKET": _fake_book(0.45),
+        "A.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+    }
+    ctx = _ctx(books=books, infos=infos)
+
+    assert OneSideRebateCheck(min_rate=0.01, share=0.0).passes(ctx) is False
+    assert "candidates" not in ctx.scratch

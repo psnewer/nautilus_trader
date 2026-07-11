@@ -196,7 +196,7 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `pre_match` 只作为 `StrategyEvaluator` 从 snapshot 派生的 self_hits signal 使用,不再注册为 Check 类型;配置写 `{"type":"pre_match"}` 会 fail-fast
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:2-way 多 venue 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / SE candidate 经 Venue Registry 使用 decimal odds stake qty / target outcome 用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share
+- ✅ `test_check_one_side_rebate.py`:2-way 多 venue 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / 3-way home/draw/away candidate 生成 / SE candidate 经 Venue Registry 使用 decimal odds stake qty / decimal venue 作为 target outcome 时用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share / 缺 snapshot、缺 role、缺 order book、非正价格、非正 share 均 fail-fast 且不写 candidates
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
 - ✅ `test_action_place_bets.py`:PM size=share / OE/SE 经 Venue Registry size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / 用 `leg["share_if_wins"]` 推 qty,不再用 action share 兜底 / leg 缺 `qty/share_if_wins` 或 non-tradable anchor leg 时整次机会 abort / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
@@ -292,6 +292,16 @@ result / fire 分支输出 INFO 级低噪声日志,用于 skip=true NT-node smok
 - ✅ recovery config smoke:`compensation_tree` 引用 `mean_rebate_recovery` + `place_bets(intent="recovery")` 可经 JSON loader 构建
 - ✅ `arb_config.example.json`: `mean_rebate` 默认包含 `compensation_tree` recovery 链;`pre_match` 由 `StrategyEvaluator` 从 snapshot 写入 signal,并在 `arbitrage_tree.self_hits` 中作为 condition 级门控;套利树 `checktion` 在机会生成后接 `require_cross_venue`,过滤单 venue 覆盖全部套利腿的机会
 - **不依赖** PM enricher / NT TradingNode / Cache — 验证 framework + JSON 配置 + 3 个用户域 Check/Action 实际打通
+
+## 策略内组合场景
+
+目录约定:`tests/arbitrage/strategy/scenarios/<strategy_name>/`。这里放“单个策略内部”的组合场景测试:
+真实 Check/Action 可以串起来跑,但不启动 TradingNode,不进入 Risk/Execution/barrier,也不验证全链路真钱行为。
+
+`scenarios/one_side_rebate/test_one_side_rebate_scenarios.py`:
+- ✅ 已有仓位且 one_side 套利树与 mean_rebate_recovery 补偿树同轮命中时,套利树优先触发,补偿树不触发。
+- ✅ 已有仓位、某腿需要补偿且 one_side 套利未达阈值时,补偿树触发。
+- ✅ 已有仓位时,one_side candidates 先经 `ShareLimitModification` 按剩余 share 缩放,再由 `CandiSelectAction` 选择缩放后最大 candidate。
 
 ## Slice 5 落地(2026-05-28 #44):Check/Action registry + JSON loader
 
