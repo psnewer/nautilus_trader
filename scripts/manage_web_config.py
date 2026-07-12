@@ -94,7 +94,6 @@ def restore_default_config():
         },
         "matching": {
             "enabled": True,
-            "min_similarity": 1,
             "sport_aliases": {
                 "Football": "Soccer",
                 "football": "Soccer",
@@ -178,7 +177,6 @@ def show_config():
 
     # Matching
     print("\n[Matching]")
-    print(f"  Min Similarity: {config['matching']['min_similarity']}")
     print(f"  Sport Aliases: {len(config['matching']['sport_aliases'])} 个")
     print(f"  Competition Aliases: {len(config['matching']['competition_aliases'])} 个")
 

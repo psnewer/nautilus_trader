@@ -16,7 +16,7 @@
 | `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:读取 `anchor_venue` + 逐个 `tradable_venues` 跑归一+匹配 → publish `MatchedPair` + 注册 `PairRegistry`;dispatcher 显式配置 PMSPORTS anchor + enabled tradable venues |
 | `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;可交易腿与 non-tradable anchor id 分槽登记 |
 | `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue 的多腿(home/draw/away)反推一个事件视图(供算法用) |
-| `MatchEngine` | 普通类(算法平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名相似度匹配(`get_similar`)+ 贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
+| `MatchEngine` | 普通类(算法平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名 confidence 匹配(`get_similar` 命中数 / 两侧较长 token 数)+ 全候选贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
 
 **#34 修正**:`info["competition"]` 是**联赛名**(EPL/NFL/...),**不是** pair_id(老 `MatchedPair.pair_id` 是基于 PM event_id 生成的稳定 ID,是 matching 的产出)。`info` 的 6-key 是**匹配输入**;`pair_id` 由 matching 算出并通过 `PairRegistry` 暴露给下游。
 
@@ -88,7 +88,7 @@ class MatchedPair(Data):
     pair_id: str
     sport: str
     competition: str           # 联赛名(非 pair_id;#34)
-    confidence: float          # 队名相似度归一,0-1
+    confidence: float          # total_confidence = home_confidence + away_confidence
     anchor_instrument_ids: list[str]       # non-tradable anchor,如 .PMSPORTS
     tradable_instrument_ids: list[str]     # strategy/risk/portfolio 消费的可交易腿
     venue_instrument_ids: dict[str, list[str]]  # venue -> 可交易腿
@@ -131,14 +131,15 @@ class MarketMatchingActor(Actor):
 ```
 
 `MarketMatchingConfig`:字段为 `anchor_venue`、`tradable_venues`、
-`refresh_interval_secs`、`min_similarity`、`competition_max_matches`。旧 `pm_venue` /
+`refresh_interval_secs`、`competition_max_matches`。旧 `pm_venue` /
 `external_venues` / `oe_venue` 输入字段已删除,避免旧入口掩盖 dispatcher 的 keyed
 tradable venue 通路。
 
 当前 dispatcher 必须显式设置 `anchor_venue="PMSPORTS"`、`tradable_venues=enabled_tradable_venue_ids(cfg)`。
 缺配置时 MatchingActor 不匹配,不再隐式兜底到 PM/OE。
 
-`refresh_interval_secs` = matching 轮询间隔;`min_similarity`、`competition_max_matches` 保持不变。
+`refresh_interval_secs` = matching 轮询间隔;`competition_max_matches` 保持不变。当前匹配有效性由
+`home_confidence > 0 and away_confidence > 0 and total_confidence > 0` 决定。
 
 `_RuntimeDeps`:`pair_registry: PairRegistry`。
 
@@ -172,9 +173,9 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
 ### 4.2 跨 venue 匹配(平移自旧 `MatchEngine.match_events`)
 
 1. 按 `(sport, competition)` 分组(完全相等)
-2. 组内对每个 anchor 事件,在当前 tradable venue 候选中找最佳队名相似度匹配(`get_similar`)
-3. 贪心:每个 tradable venue 事件最多被匹配一次
-4. 阈值 `min_similarity` 过滤;`competition_max_matches[comp]` 限制单联赛上限
+2. 组内计算所有 anchor×tradable 候选的 home/away/total confidence(`get_similar` 命中 token 数 / 两侧较长 token 数)
+3. 按 `(total_confidence,total_matched_chars)` 降序贪心分配;每个 anchor/tradable 事件最多被匹配一次
+4. `home_confidence > 0 and away_confidence > 0 and total_confidence > 0` 过滤;`competition_max_matches[comp]` 限制单联赛上限
    `MatchResult.anchor_event` / `tradable_event` 是唯一语义字段。
 5. 若 anchor 是 non-tradable(PMSPORTS),MatchingActor 在所有 tradable venue 匹配完成后按 pair_id 聚合:
    `venue_instrument_ids` 按 PM/OE/SE 分组,`tradable_instrument_ids` 放全部可交易腿,

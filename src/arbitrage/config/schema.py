@@ -66,7 +66,6 @@ class DataSourcesConfig(ConfigStruct):
 
 
 class MatchingConfig(ConfigStruct):
-    min_similarity: float = 1.0
     sport_aliases: dict[str, str] = msgspec.field(default_factory=dict)
     competition_aliases: dict[str, str] = msgspec.field(default_factory=dict)
     competition_max_matches: dict[str, int] = msgspec.field(default_factory=dict)

@@ -180,7 +180,6 @@ def to_market_matching_actor_config(cfg: ArbConfig) -> MarketMatchingConfig:
         anchor_venue=SPORTS_CLIENT,
         tradable_venues=enabled_tradable_venue_ids(cfg),
         refresh_interval_secs=cfg.discovery.refresh_interval_secs,
-        min_similarity=int(m.min_similarity),
         competition_max_matches=m.competition_max_matches or None,
     )
 

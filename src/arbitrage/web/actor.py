@@ -87,6 +87,14 @@ def _venue_map_from_matched_pair(data: MatchedPair) -> dict[str, list[str]]:
     return {str(venue).upper(): list(ids) for venue, ids in data.venue_instrument_ids.items()}
 
 
+def _venue_map_from_instrument_ids(instrument_ids) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for iid_str in sorted(str(iid) for iid in instrument_ids):
+        iid = InstrumentId.from_str(iid_str)
+        grouped.setdefault(iid.venue.value.upper(), []).append(iid_str)
+    return grouped
+
+
 class WebGatewayActor(Actor):
     def __init__(self, config: WebGatewayConfig, deps: WebGatewayDeps) -> None:
         super().__init__(config=config)
@@ -96,11 +104,11 @@ class WebGatewayActor(Actor):
         self._risk_engine = deps.risk_engine          # 读 trading_state / live risk params
         self._arbitrage_params = deps.arbitrage_params or ArbitrageParams()
         self._config_path = deps.config_path           # PUT 写回 arb_config.json
-        self._pair_registry = deps.pair_registry       # /odds 遍历用
+        self._pair_registry = deps.pair_registry       # /odds + /matched_pairs 遍历用
         self._ws_clients: set[asyncio.Queue] = set()
         self._server: _NoSignalServer | None = None
         self._serve_task: asyncio.Task | None = None
-        self._matched_pairs: dict[str, dict] = {}   # Matching tab(MatchedPair 事件累积)
+        self._matched_pairs: dict[str, dict] = {}   # MatchedPair 元数据缓存;展示 membership 以 PairRegistry 为准
 
     # ── 生命周期 ──────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -279,15 +287,28 @@ class WebGatewayActor(Actor):
         }
 
     def matched_pairs(self) -> list[dict]:
-        """Matching tab:已匹配对(MatchedPair 累积);各 venue 的队名经 cache instrument.info 解析。"""
+        """Matching tab:当前已注册 pair;各 venue 的队名经 cache instrument.info 解析。"""
+        reg = self._pair_registry
+        if reg is None:
+            return []
         out: list[dict] = []
-        for p in self._matched_pairs.values():
+        for pair_id in sorted(reg.all_pair_ids()):
+            tradable_ids = sorted(reg.instrument_ids_for_pair(pair_id))
+            anchor_ids = sorted(reg.anchor_ids_for_pair(pair_id))
+            p = self._matched_pairs.get(pair_id, {})
+            venue_instrument_ids = _venue_map_from_instrument_ids(tradable_ids)
             venue_teams = {
                 venue: self._venue_teams(ids)
-                for venue, ids in p["venue_instrument_ids"].items()
+                for venue, ids in venue_instrument_ids.items()
             }
             out.append({
-                **p,
+                "pair_id": pair_id,
+                "sport": p.get("sport", ""),
+                "competition": p.get("competition", ""),
+                "anchor_instrument_ids": anchor_ids,
+                "tradable_instrument_ids": tradable_ids,
+                "venue_instrument_ids": venue_instrument_ids,
+                "confidence": p.get("confidence", 0.0),
                 "venue_teams": venue_teams,
             })
         return out

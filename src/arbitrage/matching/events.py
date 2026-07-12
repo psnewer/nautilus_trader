@@ -30,7 +30,7 @@ class MatchedPair(Data):
     - `anchor_instrument_ids` 非交易 anchor 腿(PMSPORTS 等),不参与套利
     - `tradable_instrument_ids` 所有可交易腿,供 strategy/risk 使用
     - `venue_instrument_ids` 按 venue 分组的可交易腿
-    - `confidence`        队名相似度归一(0-1)
+    - `confidence`        total_confidence = home_confidence + away_confidence
     """
 
     pair_id: str

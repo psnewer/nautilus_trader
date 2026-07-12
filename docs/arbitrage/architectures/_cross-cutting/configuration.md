@@ -83,7 +83,6 @@ class SportsStatusDataSourceConfig(Struct, kw_only=True):
 
 
 class MatchingConfig(Struct, kw_only=True):
-    min_similarity:         float = 1.0
     sport_aliases:          dict[str, str] = {}     # {"soccer": "Soccer"}
     competition_aliases:    dict[str, str] = {}     # {"atp": "ATP", "Men's Wimbledon 2026": "ATP"}
     competition_max_matches: dict[str, int] = {}    # {"ATP": 1}
@@ -219,7 +218,6 @@ Actor。原因:当前 `StrategyEvaluator` 同时承担 `MatchedPair → Subscrib
     "sharpexch":  {"enabled": true, "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]}
   },
   "matching": {
-    "min_similarity": 1,
     "competition_aliases": {"atp": "ATP", "Men's Wimbledon 2026": "ATP"},
     "competition_max_matches": {"ATP": 1}
   },

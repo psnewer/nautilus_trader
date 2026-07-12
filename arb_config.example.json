@@ -36,7 +36,6 @@
     }
   },
   "matching": {
-    "min_similarity": 1,
     "sport_aliases": {},
     "competition_aliases": {
       "wimbledon": "ATP",

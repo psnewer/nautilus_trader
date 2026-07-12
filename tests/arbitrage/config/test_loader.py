@@ -69,7 +69,6 @@ def test_full_json_parses(cfg_path):
             "sharpexch": {"enabled": True, "sports": [{"sport": "Tennis", "competitions": ["Men's Wimbledon 2026"]}]},
         },
         "matching": {
-            "min_similarity": 1,
             "competition_aliases": {"atp": "ATP", "Men's Roland Garros 2026": "ATP"},
         },
         "arbitrage": {"share": 50.0, "fx": 1.5, "max_leg_share": 75.0},
@@ -106,7 +105,7 @@ def test_example_config_omits_data_sources_but_gets_defaults():
     assert cfg.data_sources.sports_status.enabled is True
     assert cfg.data_sources.sports_status.provider == "polymarket_sports"
     assert cfg.data_sources.sports_status.sports == []
-    assert cfg.discovery.polymarket.sports[0].competitions == ["atp"]
+    assert cfg.discovery.polymarket.sports[0].competitions == ["wimbledon"]
 
 
 def test_unknown_risk_arbitrage_fields_raise_schema_mismatch(cfg_path):

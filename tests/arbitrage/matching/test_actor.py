@@ -126,7 +126,6 @@ def _harness(interval=30.0, *, anchor_venue="POLYMARKET", tradable_venues=("ORBI
     registry = PairRegistry()
     cfg = MarketMatchingConfig(
         refresh_interval_secs=interval,
-        min_similarity=1,
         anchor_venue=anchor_venue,
         tradable_venues=tradable_venues,
     )

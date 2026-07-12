@@ -151,7 +151,7 @@ WebGatewayActor **不直接调引擎方法**;它 publish 控制命令,**各 owne
 | PUT | `/config/{section}` | 校验 → 写回 `arb_config.json`;热段额外 publish 对应命令;重启段返回 `{"applied":"on_restart"}` |
 | GET | `/accounts` | `cache.accounts()` 序列化(余额)|
 | GET | `/instruments` | cache instruments 去重事件视图(发现表)|
-| GET | `/matched_pairs` | MatchedPair 累积(匹配表);输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams`,不再输出旧 `pm_*` / `oe_*` / `external_*` 字段;`tradable_instrument_ids` 原样来自 MatchedPair 主字段,Web 展示列按配置 enabled tradable venues 生成,每列从 `venue_teams[venue]` 取值,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底,也不显示 anchor;API 保留 `confidence`,但页面不展示 Confidence 列 |
+| GET | `/matched_pairs` | PairRegistry 当前注册 pair(匹配表);`data.MatchedPair*` 只缓存 `sport`/`competition`/`confidence` 等元数据,页面 membership 不再按事件累积。输出 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids` / `venue_teams` / `confidence`,不再输出旧 `pm_*` / `oe_*` / `external_*` 字段;`tradable_instrument_ids` / `anchor_instrument_ids` 来自 PairRegistry 当前态,因此 ended eviction / `unregister_pair()` 后页面同步消失;Web 展示列按配置 enabled tradable venues 生成,每列从 `venue_teams[venue]` 取值,不用旧 PM/OE 字段或 instrument id 后缀拼接兜底,也不显示 anchor/Confidence 列 |
 | GET | `/odds` | PairRegistry + `cache.order_book` 最优价;每条 leg 带 `venue` / `role` / `odds_model` / `bid` / `ask`,前端按配置 enabled tradable venues 生成列并过滤 anchor;`odds_model=decimal` 时将十进制赔率按 1/odds 换算成隐含概率,probability venue 原样展示 |
 | WS | `/ws` | 推 `TradingStateChanged`(订 `events.risk`)|
 

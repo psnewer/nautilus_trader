@@ -224,11 +224,10 @@ def test_sharpexch_exec_client_config_maps_credentials():
 def test_market_matching_actor_config_maps_fields():
     cfg = _cfg(
         discovery={"refresh_interval_secs": 60.0},
-        matching={"min_similarity": 1, "competition_max_matches": {"ATP": 1}},
+        matching={"competition_max_matches": {"ATP": 1}},
     )
     mc = to_market_matching_actor_config(cfg)
     assert mc.refresh_interval_secs == 60.0
-    assert mc.min_similarity == 1
     assert mc.competition_max_matches == {"ATP": 1}
     assert mc.anchor_venue == "PMSPORTS"
     assert mc.tradable_venues == ("POLYMARKET", "ORBITEXCH")

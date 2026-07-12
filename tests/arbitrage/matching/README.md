@@ -8,7 +8,7 @@
 - ✅ `test_pair_registry.py`(9:register/get/unregister/同 pair 覆盖/隔离/pair→legs 反查 + #127 anchor ids 分槽登记/覆盖)
 - ✅ `test_matched_pair_event.py`(7:Data 子类、anchor/tradable/venue 字段、keyed venue map 主通路、dict roundtrip、旧 pm/oe payload 不回填主字段、旧 payload 即使带后缀也不推断主字段、Arrow map roundtrip)
 - ✅ `test_normalizer.py`(7:`normalize_team_name` + `events_from_instruments` 反推/分组/Venue Registry 后缀解析/info 缺失跳过/venue 缺失跳过且不读 `info["venue"]` 兜底/group_key)
-- ✅ `test_engine.py`(7:同组队名匹/跨 competition 隔/相似度近似匹/贪心/`competition_max_matches`/`min_similarity` 过滤/空输入)
+- ✅ `test_engine.py`(9:同组队名匹/跨 competition 隔/相似度近似匹/全候选最高 confidence 优先贪心/confidence denominator/`competition_max_matches`/零 confidence 过滤/空输入)
 - ✅ `test_actor.py`(12:timer 驱动 + cache-非空 latch —— PM 单边 cache 空不配 / 未显式配置 anchor/tradable venue 时不做 PM/OE 兜底 / 显式 PM tradable anchor 下 PM↔OE 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **SE opt-in 多 tradable venue**:OE 缺失但 SE 存在时 PM↔SE 可匹配、OE+SE 同场在显式 PM tradable anchor 路径产两个不同 pair_id / **#127 `anchor_venue`+`tradable_venues` 配置覆盖显式 PM tradable anchor** / **#127 PMSPORTS non-tradable anchor 聚合 PM+OE 可交易腿到同一 pair** / **#127 PMSPORTS anchor ended eviction** / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair set → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
   > **#59→#60 演进**:旧 `on_data(InstrumentsRefreshed)`+2×window gate(#52)退役 → matching 自 clock timer 读 cache(#59,refresher 退役);eviction 从 #59 的 expiration 扫描换成 **#60 sports `ended` 事件驱动**(用户判 gamma expiration 不准)。`PairRegistry` key 归一 str(#58),#116 增 `instrument_ids_for_pair` 供 Portfolio 读取完整 outcome 集合。
 - ⬜ 全链路 wiring(DataClient 原生发现 → cache → matching timer → MatchedPair)经 /live-test 验:**#59 smoke10 已验**(PM Loaded 114 + MatchedPair mensik-zverev,refresher 未参与)
@@ -26,7 +26,7 @@
 - **MatchedPair 主字段**:`venue_instrument_ids` / `tradable_instrument_ids` 是唯一主通路;事件层不再携带 `pm_instrument_ids` / `oe_instrument_ids`,也不会由旧字段或 instrument id 后缀反推主字段。Strategy 等下游只读 `tradable_instrument_ids`,Web 展示分组只读 `venue_instrument_ids`,不再自行 fallback 到 PM/OE 字段。
 - **PMSPORTS event anchor(#127)**:`MarketMatchingConfig.anchor_venue/tradable_venues`、`PairRegistry.anchor_instrument_ids` 分槽、`.PMSPORTS` non-tradable synthetic event instruments、PMSPORTS anchor 聚合 PM/OE 可交易腿、以及 `MatchedPair` 的 `anchor_instrument_ids` / `tradable_instrument_ids` / `venue_instrument_ids` 明确 schema 已落地离线测。后续仍需 live smoke 与 Risk 跳过 anchor 的端到端验证。详细设计见 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 - **近期窗口**: `2 × refresh_interval`(Q5) 已退役;cache 非空 latch 取代
-- **算法**:`EventNormalizer` + `MatchEngine` 从 `services/market_matching/` 平移;算法保持,但 NT 路径字段命名已泛化为 anchor/tradable(`MatchResult.anchor_event/tradable_event`)
+- **算法**:`EventNormalizer` + `MatchEngine` 从 `services/market_matching/` 平移;NT 路径字段命名已泛化为 anchor/tradable(`MatchResult.anchor_event/tradable_event`)。`home_confidence` / `away_confidence` = `get_similar` 命中 token 数 / 两侧较长 token 数,`total_confidence = home_confidence + away_confidence`。组内匹配计算所有 anchor×tradable 候选后按 `(total_confidence,total_matched_chars)` 降序贪心分配。
 
 ## 文件分布
 
@@ -50,7 +50,7 @@
 
 输入: anchor `NormalizedEvent` 列表 + tradable `NormalizedEvent` 列表
 期望: 匹配引擎输出 `MatchResult` 列表,主字段为 `anchor_event` / `tradable_event`
-验收: `test_engine.py` 覆盖同名匹配 / 跨 competition 不配 / 模糊匹配 / 贪心 / cap / min_similarity / 空输入 / anchor/tradable 字段。
+验收: `test_engine.py` 覆盖同名匹配 / 跨 competition 不配 / 模糊匹配 / 全候选最高 confidence 优先贪心 / confidence denominator / cap / 零 confidence 过滤 / 空输入 / anchor/tradable 字段。
 
 ### matching-3.1: MarketMatchingActor timer 读 cache 触发匹配
 

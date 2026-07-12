@@ -52,7 +52,6 @@ def main():
     print("\n[Matching 配置]")
     matching_config = app_state.get_matching_config()
     print(f"  Enabled: {matching_config['enabled']}")
-    print(f"  Min Similarity: {matching_config['min_similarity']}")
     print(f"  Sport Aliases: {len(matching_config['sport_aliases'])} defined")
     print(f"  Competition Aliases: {len(matching_config['competition_aliases'])} defined")
 

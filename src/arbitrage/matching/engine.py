@@ -3,9 +3,9 @@ MatchEngine —— 跨 venue 队名相似度匹配(平移自旧 `services/market
 
 算法逻辑原样保留(P2 领域 IP 保留):
 1. 按 `(sport, competition)` 完全相等分组
-2. 组内对每个 anchor 事件,在 tradable 候选中找最佳队名相似度匹配(`get_similar`)
-3. 贪心:每个 tradable 事件最多被匹配一次
-4. `min_similarity` 阈值过滤;`competition_max_matches[comp]` 单联赛上限
+2. 组内计算所有 anchor×tradable 候选的队名 confidence(`get_similar` 命中数 / 较长 token 数)
+3. 全候选按 total_confidence 贪心:每个 anchor/tradable 事件最多被匹配一次
+4. home/away/total confidence 均 > 0 才有效;`competition_max_matches[comp]` 单联赛上限
 
 **输入改为 `NormalizedEvent[]`**(matching/normalizer.py,从 NT instruments 反推)。
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import re
 
 from src.arbitrage.common.utils import get_similar
 from src.arbitrage.matching.normalizer import NormalizedEvent
@@ -25,25 +26,23 @@ class MatchResult:
 
     anchor_event: NormalizedEvent
     tradable_event: NormalizedEvent
-    home_similarity: int
-    away_similarity: int
+    home_confidence: float
+    away_confidence: float
     home_matched_chars: int
     away_matched_chars: int
-    total_similarity: int
+    total_confidence: float
     total_matched_chars: int
 
     @property
     def is_valid(self) -> bool:
-        return self.home_similarity > 0 and self.away_similarity > 0
+        return self.home_confidence > 0 and self.away_confidence > 0 and self.total_confidence > 0
 
 
 class MatchEngine:
     def __init__(
         self,
-        min_similarity: int = 1,
         competition_max_matches: dict[str, int] | None = None,
     ) -> None:
-        self._min_similarity = min_similarity
         self._competition_max_matches = competition_max_matches or {}
 
     # ── public ────────────────────────────────────────────────────────
@@ -84,47 +83,56 @@ class MatchEngine:
             return []
 
         results: list[MatchResult] = []
-        used_tradable: set[int] = set()
         competition = anchor_events[0].competition
         cap = None if skip_cap else self._competition_max_matches.get(competition)
 
-        for anchor in anchor_events:
+        candidates: list[tuple[int, int, MatchResult]] = []
+        for ai, anchor in enumerate(anchor_events):
+            for ti, tradable in enumerate(tradable_events):
+                result = self._pair(anchor, tradable)
+                if result.is_valid:
+                    candidates.append((ai, ti, result))
+        candidates.sort(key=lambda x: (x[2].total_confidence, x[2].total_matched_chars), reverse=True)
+
+        used_anchor: set[int] = set()
+        used_tradable: set[int] = set()
+        for ai, ti, result in candidates:
             if cap is not None and len(results) >= cap:
                 break
-            candidates: list[tuple[int, MatchResult]] = []
-            for ti, tradable in enumerate(tradable_events):
-                if ti in used_tradable:
-                    continue
-                result = self._pair(anchor, tradable)
-                if result.is_valid and result.total_similarity >= self._min_similarity:
-                    candidates.append((ti, result))
-            if not candidates:
+            if ai in used_anchor or ti in used_tradable:
                 continue
-            # 先 total_similarity 降序,再 total_matched_chars 降序(平移自旧 _select_best_match)
-            candidates.sort(key=lambda x: (x[1].total_similarity, x[1].total_matched_chars), reverse=True)
-            best_ti, best_result = candidates[0]
-            results.append(best_result)
-            used_tradable.add(best_ti)
+            results.append(result)
+            used_anchor.add(ai)
+            used_tradable.add(ti)
         return results
 
     @staticmethod
     def _pair(anchor: NormalizedEvent, tradable: NormalizedEvent) -> MatchResult:
-        home_sim, home_chars = _team_similarity(anchor.home_team_normalized, tradable.home_team_normalized)
-        away_sim, away_chars = _team_similarity(anchor.away_team_normalized, tradable.away_team_normalized)
+        home_conf, home_chars = _team_confidence(anchor.home_team_normalized, tradable.home_team_normalized)
+        away_conf, away_chars = _team_confidence(anchor.away_team_normalized, tradable.away_team_normalized)
         return MatchResult(
             anchor_event=anchor,
             tradable_event=tradable,
-            home_similarity=home_sim,
-            away_similarity=away_sim,
+            home_confidence=home_conf,
+            away_confidence=away_conf,
             home_matched_chars=home_chars,
             away_matched_chars=away_chars,
-            total_similarity=home_sim + away_sim,
+            total_confidence=home_conf + away_conf,
             total_matched_chars=home_chars + away_chars,
         )
 
 
-def _team_similarity(t1: str, t2: str) -> tuple[int, int]:
-    """get_similar(shorten=False) + 匹配字符数估计(平移自旧 _calculate_team_similarity)。"""
-    similarity = get_similar(False, t1, t2)
-    matched_chars = min(len(t1), len(t2)) if similarity > 0 else 0
-    return similarity, matched_chars
+def _team_confidence(t1: str, t2: str) -> tuple[float, int]:
+    """返回归一化 confidence + 匹配字符数估计。
+
+    confidence = get_similar 命中 token 数 / 两侧拆分后较长 token 数。
+    """
+    matched_tokens = get_similar(False, t1, t2)
+    denominator = max(_token_count(t1), _token_count(t2))
+    confidence = (matched_tokens / denominator) if denominator > 0 else 0.0
+    matched_chars = min(len(t1), len(t2)) if confidence > 0 else 0
+    return confidence, matched_chars
+
+
+def _token_count(value: str) -> int:
+    return len([elem for elem in re.split(r"[^a-zA-Z0-9]", value) if elem])

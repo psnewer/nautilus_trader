@@ -41,7 +41,6 @@ class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
     anchor_venue: str | None = None
     tradable_venues: tuple[str, ...] = ()
     refresh_interval_secs: float = 30.0
-    min_similarity: int = 1
     competition_max_matches: dict = None
 
 
@@ -64,7 +63,6 @@ class MarketMatchingActor(Actor):
         self._pair_registry = deps.pair_registry
         self._competition_max_matches = config.competition_max_matches or {}
         self._engine = MatchEngine(
-            min_similarity=config.min_similarity,
             competition_max_matches=self._competition_max_matches,
         )
         self._emitted_pairs: set[str] = set()  # 已记 INFO 的 pair_id(每 tick 重 emit,日志只记新对)
@@ -183,10 +181,10 @@ class MarketMatchingActor(Actor):
                         "anchor_ev": anchor_ev,
                         "tradable_ids": [],
                         "venue_ids": {},
-                        "confidence": _confidence(result.total_similarity),
+                        "confidence": result.total_confidence,
                     },
                 )
-                entry["confidence"] = max(entry["confidence"], _confidence(result.total_similarity))
+                entry["confidence"] = max(entry["confidence"], result.total_confidence)
                 for leg in result.tradable_event.legs:
                     iid = str(leg.id)
                     if iid in entry["tradable_ids"]:
@@ -282,7 +280,7 @@ class MarketMatchingActor(Actor):
         if pair_id not in self._emitted_pairs:
             self._emitted_pairs.add(pair_id)
             self.log.info(
-                f"MatchedPair {pair_id} (conf={_confidence(result.total_similarity):.2f}, "
+                f"MatchedPair {pair_id} (conf={result.total_confidence:.2f}, "
                 f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} "
                 f"{tradable_venue.lower()}={len(tradable_ids)})",
             )
@@ -302,7 +300,7 @@ class MarketMatchingActor(Actor):
                 anchor_instrument_ids=anchor_registry_ids,
                 tradable_instrument_ids=tradable_anchor_ids + tradable_ids,
                 venue_instrument_ids=venue_ids,
-                confidence=_confidence(result.total_similarity),
+                confidence=result.total_confidence,
             ),
         )
 
@@ -321,11 +319,6 @@ def _pair_id_for(
         return base
     venue = str(tradable_venue or "").upper()
     return f"{base}|{venue}" if venue else base
-
-
-def _confidence(total_similarity: int) -> float:
-    """队名相似度 → 置信度(0-1)。沿用旧 `MatchedPair.from_match_result` 的简单评估。"""
-    return min(total_similarity / 10.0, 1.0)
 
 
 def _event_is_non_tradable(event) -> bool:

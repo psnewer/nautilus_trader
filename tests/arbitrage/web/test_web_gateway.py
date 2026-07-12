@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from nautilus_trader.model.enums import TradingState
 
+from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
@@ -47,6 +48,7 @@ def test_port_bindable_detects_free_and_occupied():
 def _bare_actor() -> WebGatewayActor:
     actor = WebGatewayActor.__new__(WebGatewayActor)
     actor._ws_clients = set()
+    actor._pair_registry = None
     return actor
 
 
@@ -159,9 +161,11 @@ def test_on_matched_pair_uses_explicit_venue_map_only():
 
 
 def test_matched_pairs_exposes_all_venue_teams():
-    """matched_pairs() 输出 venue_teams 字典,不再有 external_* 字段。"""
+    """matched_pairs() 从 PairRegistry 当前态输出 venue_teams 字典。"""
     actor = _bare_actor()
     actor._matched_pairs = {}
+    registry = PairRegistry()
+    actor._pair_registry = registry
     actor._venue_teams = lambda iids: f"{iids[0]} teams" if iids else ""
     data = MatchedPair(
         ts_event=1,
@@ -187,20 +191,55 @@ def test_matched_pairs_exposes_all_venue_teams():
     )
 
     actor._on_matched_pair(data)
+    registry.register(
+        data.pair_id,
+        data.tradable_instrument_ids,
+        anchor_instrument_ids=data.anchor_instrument_ids,
+    )
     row = actor.matched_pairs()[0]
 
-    # 每个 venue 都在 venue_teams 字典里
-    assert row["venue_teams"] == {
-        "POLYMARKET": "pm-home.POLYMARKET teams",
-        "ORBITEXCH": "oe-home.ORBITEXCH teams",
-        "SHARPEXCH": "se-home.SHARPEXCH teams",
-    }
+    # 每个 venue 都在 venue_teams 字典里;registry 内部是 set,不要求 home/away 顺序。
+    assert set(row["venue_teams"]) == {"POLYMARKET", "ORBITEXCH", "SHARPEXCH"}
+    assert row["venue_teams"]["POLYMARKET"].endswith("POLYMARKET teams")
+    assert row["venue_teams"]["ORBITEXCH"].endswith("ORBITEXCH teams")
+    assert row["venue_teams"]["SHARPEXCH"].endswith("SHARPEXCH teams")
     # 不再有 external_* 或 pm_*/oe_* 旧字段
     assert "external_venues" not in row
     assert "external_venue" not in row
     assert "external_teams" not in row
     assert "pm_teams" not in row
     assert "oe_teams" not in row
+
+
+def test_matched_pairs_hides_unregistered_pair():
+    """Matching 页面 membership 以 PairRegistry 为准,不会展示已 eviction 的旧 MatchedPair 事件。"""
+    actor = _bare_actor()
+    actor._matched_pairs = {}
+    registry = PairRegistry()
+    actor._pair_registry = registry
+    actor._venue_teams = lambda iids: ""
+    data = MatchedPair(
+        ts_event=1,
+        ts_init=1,
+        pair_id="ATP|a|b",
+        sport="Tennis",
+        competition="ATP",
+        tradable_instrument_ids=["pm-home.POLYMARKET", "oe-home.ORBITEXCH"],
+        venue_instrument_ids={
+            "POLYMARKET": ["pm-home.POLYMARKET"],
+            "ORBITEXCH": ["oe-home.ORBITEXCH"],
+        },
+        confidence=0.9,
+    )
+
+    actor._on_matched_pair(data)
+    assert actor.matched_pairs() == []
+
+    registry.register(data.pair_id, data.tradable_instrument_ids)
+    assert [row["pair_id"] for row in actor.matched_pairs()] == ["ATP|a|b"]
+
+    registry.unregister_pair(data.pair_id)
+    assert actor.matched_pairs() == []
 
 
 # ── 控制台:TradingState 启停 + 配置编辑(Actor 方法)──────────────────
