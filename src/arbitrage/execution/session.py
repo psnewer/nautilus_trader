@@ -25,8 +25,13 @@ from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.events import OrderExpired
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
+from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import descriptor_for
+from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 # submit 终态(OrderFilled 仅在全成时,见 _send_order_event);cancel 终态只看撤单完成/失败。
 _SUBMIT_TERMINAL = (OrderCanceled, OrderRejected, OrderExpired)
@@ -48,7 +53,7 @@ class ArbExecutionSessionMixin:
         self._pair_registry = pair_registry  # #34: matching 写,本类读;`_pair_id_for` 用
         self._pair_inflight = pair_inflight   # §6.10 §7:execution 段维护 per-pair session 计数,归 0 释放闸
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
-        # coid -> {kind, qty, filled, instrument_id, pair_id, venue_order_id}
+        # coid -> {kind, qty, price, filled, instrument_id, pair_id, venue_order_id}
         self._active_sessions: dict = {}
 
     @property
@@ -111,6 +116,7 @@ class ArbExecutionSessionMixin:
         self._active_sessions[coid] = {
             "kind": kind,
             "qty": order.quantity.as_double(),
+            "price": float(order.price) if order.has_price else None,
             "filled": 0.0,
             "instrument_id": instrument_id,
             "pair_id": pair_id,
@@ -132,6 +138,7 @@ class ArbExecutionSessionMixin:
             return
         kind = sess.get("kind", "submit")
         if kind == "submit" and isinstance(event, OrderAccepted):
+            self._reserve_available_balance_for_accepted_order(event, sess)
             self._log.info(
                 "Execution session accepted: "
                 f"client_order_id={event.client_order_id}, "
@@ -177,6 +184,50 @@ class ArbExecutionSessionMixin:
         if self._pair_registry is None:
             return None
         return self._pair_registry.get(instrument_id)
+
+    def _reserve_available_balance_for_accepted_order(self, event: OrderAccepted, sess: dict) -> None:
+        """accepted 后本地预扣可用余额。
+
+        adapter 外统一 USD/系统基准币口径:OE 已在入站乘 fx、出站 place 前再除 fx;这里不做 fx 分支。
+        """
+        order = self._cache.order(event.client_order_id)
+        if order is not None and order.has_price:
+            instrument_id = order.instrument_id
+            quantity = order.leaves_qty.as_double()
+            price = float(order.price)
+        else:
+            instrument_id = sess.get("instrument_id")
+            quantity = float(sess.get("qty") or 0.0)
+            price = sess.get("price")
+        if instrument_id is None or price is None or quantity <= 0:
+            return
+
+        instrument = self._cache.instrument(instrument_id)
+        if instrument is None:
+            return
+
+        account = self._cache.account_for_venue(instrument_id.venue)
+        if account is None:
+            return
+
+        currency = instrument.quote_currency
+        free = account.balance_free(currency)
+        if free is None:
+            return
+
+        reserved = accepted_order_reserved_notional(instrument_id, quantity, price)
+        available = max(0.0, free.as_double() - reserved)
+        balance = AccountBalance(
+            total=Money(available, free.currency),
+            locked=Money(0, free.currency),
+            free=Money(available, free.currency),
+        )
+        self.generate_account_state(
+            balances=[balance],
+            margins=[],
+            reported=True,
+            ts_event=self._clock.timestamp_ns(),
+        )
 
     def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
         """#105:撤残单 —— **每条残单的撤单都是一次 tracked execution**,纳入 per-pair `exec_count`
@@ -229,3 +280,16 @@ class ArbExecutionSessionMixin:
             for coid, sess in self._active_sessions.items()
             if sess.get("kind") == "cancel"
         ]
+
+
+def accepted_order_reserved_notional(instrument_id, quantity: float, price: float) -> float:
+    """OrderAccepted 后要从可用余额里保守预扣的金额。
+
+    公式只由 Venue Registry capability 决定:
+    - probability venue: quantity 是 share,成本 = share * probability
+    - decimal venue: quantity 已是系统基准币 stake
+    """
+    venue = venue_id_from_instrument_id(instrument_id)
+    if descriptor_for(venue).odds_model == "probability":
+        return quantity * probability_from_price(venue, price)
+    return quantity

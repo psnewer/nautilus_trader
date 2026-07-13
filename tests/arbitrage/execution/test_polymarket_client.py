@@ -493,12 +493,7 @@ def test_polymarket_realtime_fill_waits_for_confirmed_status():
         _wallet_address="0xwallet",
         PROCESSED_TRADES_LIMIT=100,
     )
-    async def update_account_state():
-        return None
-
     captured = []
-    client._update_account_state = update_account_state
-    client.create_task = lambda coro: coro.close()
     client.generate_order_filled = lambda **kwargs: captured.append(kwargs)
     client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
     client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
@@ -554,12 +549,7 @@ def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
         _wallet_address="0xwallet",
         PROCESSED_TRADES_LIMIT=100,
     )
-    async def update_account_state():
-        return None
-
     captured = []
-    client._update_account_state = update_account_state
-    client.create_task = lambda coro: coro.close()
     client.generate_order_filled = lambda **kwargs: captured.append(kwargs)
     client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
     client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
@@ -619,7 +609,8 @@ def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
 
 def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(monkeypatch):
     """#110:连续 position 对账进入 PM override 后,一次拉喂 report + settlement。"""
-    calls = []
+    settlement_calls = []
+    balance_calls = []
 
     async def fake_super(self, command):
         self._last_raw_positions = [
@@ -629,7 +620,7 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
 
     class _Settlement:
         async def run(self, positions):
-            calls.append(positions)
+            settlement_calls.append(positions)
 
     async def scenario():
         client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
@@ -637,6 +628,11 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
         client._settlement = _Settlement()
         client._settlement_inflight = False
         client._loop = asyncio.get_running_loop()
+
+        async def refresh_balance():
+            balance_calls.append("balance_refresh")
+
+        client._update_account_state = refresh_balance
 
         reports = await client.generate_position_status_reports(SimpleNamespace())
         assert reports == ["report"]
@@ -650,7 +646,35 @@ def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(mon
 
     _run(scenario())
 
-    assert calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
+    assert balance_calls == ["balance_refresh"]
+    assert settlement_calls == [[SettlementPosition("cond1", 10.0, neg_risk=True, redeemable=False)]]
+
+
+def test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile(monkeypatch):
+    async def fake_super(self, command):
+        self._last_raw_positions = []
+        return ["report"]
+
+    async def scenario():
+        client = ArbPolymarketExecutionClient.__new__(ArbPolymarketExecutionClient)
+        client._venue_liveness = VenueExecutionLiveness()
+        client._settlement = None
+        client._settlement_inflight = False
+        client._loop = asyncio.get_running_loop()
+
+        async def fail_balance():
+            raise RuntimeError("balance unavailable")
+
+        client._update_account_state = fail_balance
+
+        reports = await client.generate_position_status_reports(SimpleNamespace())
+
+        assert reports == ["report"]
+        assert client._venue_liveness.position_alive(POLYMARKET)
+
+    monkeypatch.setattr(PolymarketExecutionClient, "generate_position_status_reports", fake_super)
+
+    _run(scenario())
 
 
 def test_run_settlement_does_not_auto_sync_collateral_balance_after_successful_tx():

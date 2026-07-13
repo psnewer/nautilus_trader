@@ -34,7 +34,6 @@ from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.params import ArbitrageParams
-from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.common.venues import venue_id_from_leg_key
@@ -155,7 +154,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             },
         )
 
-    # ── 应用层:余额(venue 非对称,Q17)────────────────────────────
+    # ── 应用层:余额(Q17:ExecutionClient 维护可用余额,本层只读 free)────
     def _check_balance(self, instrument, order) -> bool:
         if not order.has_price:  # property(Python 侧;`has_price_c` 是 cdef 仅 Cython 可调)
             return True  # 无价单(市价)交给 NT 父类的 native 余额检查
@@ -165,18 +164,10 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         currency = instrument.quote_currency
         cost = self._order_cost(instrument, order)
 
-        if self._uses_probability_balance_model(order.instrument_id.venue.value):
-            # probability venue 上报 reported=True/locked=0/free=total 时,不能信 cache free,需自扣在途挂单。
-            total = account.balance_total(currency)
-            if total is None:
-                return True
-            available = total.as_double() - self._probability_open_notional(order.instrument_id.venue, currency)
-        else:
-            # decimal venue:WS 余额帧已含挂单占用,直接信 free。
-            free = account.balance_free(currency)
-            if free is None:
-                return True
-            available = free.as_double()
+        free = account.balance_free(currency)
+        if free is None:
+            return True
+        available = free.as_double()
 
         if cost > available:
             self._deny_order(
@@ -192,13 +183,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if isinstance(instrument, BinaryOption):
             return size * float(order.price)          # PM: size * price
         return size                                  # OE/SE: adapter 外部 size 已是 USD stake
-
-    def _probability_open_notional(self, venue, currency) -> float:
-        total = 0.0
-        for o in self._cache.orders_open(venue=venue):
-            if o.has_price:
-                total += o.leaves_qty.as_double() * float(o.price)
-        return total
 
     # ── 应用层:赔率/概率门控───────────────────────────────────────
     def _check_probability_gate(self, instrument, order) -> bool:
@@ -238,13 +222,6 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     @staticmethod
     def _valid_probability_bounds(params: ArbRiskParams) -> bool:
         return 0.0 <= params.min_probability < params.max_probability <= 1.0
-
-    @staticmethod
-    def _uses_probability_balance_model(venue: str) -> bool:
-        try:
-            return descriptor_for(venue).odds_model == "probability"
-        except KeyError:
-            return False
 
     # ── 应用层:venue execution liveness(跨 venue 同机会 fail-closed)────
     def _check_required_venues_alive(self, order) -> bool:

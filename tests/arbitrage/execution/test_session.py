@@ -12,6 +12,7 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
@@ -20,17 +21,31 @@ from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
 from src.arbitrage.common.pair_inflight import PairInFlightGate
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.execution.session import accepted_order_reserved_notional
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
+from tests.arbitrage.risk._factories import oe_account_state
+from tests.arbitrage.risk._factories import oe_instrument
+from tests.arbitrage.risk._factories import pm_account_state
 from tests.arbitrage.risk._factories import pm_instrument
+from tests.arbitrage.risk._factories import se_account_state
+from tests.arbitrage.risk._factories import se_instrument
 
 
 class _FakeCache:
     def __init__(self):
         self._open = []
         self._inst = {}
+        self._orders = {}
+        self._accounts = {}
 
     def add_instrument(self, inst):
         self._inst[inst.id] = inst
+
+    def add_order(self, order):
+        self._orders[order.client_order_id] = order
+
+    def add_account(self, venue, account):
+        self._accounts[venue] = account
 
     def add_residual(self, order):
         self._open.append(order)
@@ -40,6 +55,12 @@ class _FakeCache:
 
     def instrument(self, instrument_id):
         return self._inst.get(instrument_id)
+
+    def order(self, client_order_id):
+        return self._orders.get(client_order_id)
+
+    def account_for_venue(self, venue=None, account_id=None):
+        return self._accounts.get(venue)
 
 
 class _Base:
@@ -51,6 +72,7 @@ class _Base:
         self.sent = []
         self.rejected = []
         self.cancels = []
+        self.account_states = []
         self._loop = asyncio.new_event_loop()
 
     def _send_order_event(self, event):
@@ -58,6 +80,17 @@ class _Base:
 
     def generate_order_rejected(self, *, strategy_id, instrument_id, client_order_id, reason, ts_event):
         self.rejected.append((client_order_id, reason))
+
+    def generate_account_state(self, *, balances, margins, reported, ts_event, info=None):
+        self.account_states.append(
+            {
+                "balances": balances,
+                "margins": margins,
+                "reported": reported,
+                "ts_event": ts_event,
+                "info": info or {},
+            },
+        )
 
 
 class FakeSessionClient(ArbExecutionSessionMixin, _Base):
@@ -143,6 +176,60 @@ def test_accepted_keeps_session_active(caplog):
     assert client._execution_active                       # accepted 非终态,session 仍在
     assert "Execution session accepted" in caplog.text
     assert str(order.client_order_id) in caplog.text
+
+
+def test_accepted_reserves_probability_venue_available_balance():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    cache.add_account(pm.id.venue, AccountFactory.create(pm_account_state(100)))
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm, qty=50)  # price=0.4, reserved=20
+    cache.add_order(order)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_accepted(order))
+
+    assert client.account_states
+    balance = client.account_states[-1]["balances"][0]
+    assert balance.free.as_double() == 80.0
+    assert balance.total.as_double() == 80.0
+    assert balance.locked.as_double() == 0.0
+
+
+def test_accepted_reserves_decimal_venue_available_balance_without_fx():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    oe = oe_instrument("match_1", "away"); cache.add_instrument(oe)
+    cache.add_account(oe.id.venue, AccountFactory.create(oe_account_state(total=100, free=100)))
+    pair_registry.register("match_1", [oe.id])
+    order = _order(factory, oe, qty=12)  # decimal venue reserved=USD stake quantity, not qty/price/fx
+    cache.add_order(order)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_accepted(order))
+
+    assert client.account_states[-1]["balances"][0].free.as_double() == 88.0
+
+
+def test_accepted_reserves_sharpexch_available_balance_without_fx():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    se = se_instrument("match_1", "away"); cache.add_instrument(se)
+    cache.add_account(se.id.venue, AccountFactory.create(se_account_state(total=100, free=100)))
+    pair_registry.register("match_1", [se.id])
+    order = _order(factory, se, qty=12)
+    cache.add_order(order)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_accepted(order))
+
+    assert client.account_states[-1]["balances"][0].free.as_double() == 88.0
+
+
+def test_accepted_order_reserved_notional_uses_venue_capability():
+    pm = pm_instrument("match_1", "home")
+    oe = oe_instrument("match_1", "away")
+
+    assert accepted_order_reserved_notional(pm.id, quantity=50.0, price=0.2) == 10.0
+    assert accepted_order_reserved_notional(oe.id, quantity=12.0, price=1.8) == 12.0
 
 
 # ── 终态(全成 / 撤单 → 结束 + finished + 取消 watchdog）───────────

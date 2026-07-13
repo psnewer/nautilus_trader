@@ -69,6 +69,13 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **期望**:登录成功;捕获 general WS;HTTP profile/balance response 生成 `AccountState(account_id=SHARPEXCH-001, base_currency=USD)`;`CURRENT_BETS` 帧刷新 `_current_bets`。WS `BALANCE` parser 仍保留,但 runtime 不再信该帧写账户余额(实测可返回 0.00)。
 **验收**:general 帧纯 parser 已落地:`test_message_parser.py` 覆盖 `BALANCE` dict/嵌套 JSON、`CURRENT_BETS` list/嵌套 JSON、未知帧忽略、`parse_order_message` 兼容别名。余额纯映射已落地:`test_execution_translation.py` 覆盖 `se_balance_to_account_balances` 生成 USD 口径 `total=free=balance,locked=0`。SE runtime 现在按真实站点 USD 原生口径处理:`CURRENT_BETS` / fills / place payload 均不乘除 fx;`normalize_current_bets_to_usd` 纯函数保留,但 ExecutionClient 调用 `fx=1.0`。`SharpExchExecutionClient` 已接入 runtime,离线测试覆盖构造与生命周期:`test_execution_client.py` 覆盖 `_connect` 用 fake browser/page 启动共享 browser、创建 `"execution"` page、先注册 websocket/response handler 再经 `se_login` 导航、登录后最多等待 30s 让 HTTP profile/balance 与 WS `CURRENT_BETS` 两个业务信号到达、未捕获 HTTP 余额时生成 0 USD 兜底 `AccountState`,HTTP profile/balance response 会持续更新 `AccountState` 且同值去重,`_disconnect` 停 WS handler/移除 response listener 并清 page、WS `BALANCE` 不写账户状态、fx command 不改变 SE USD runtime、未知帧忽略、`CURRENT_BETS` 刷新 USD 快照、维护 `SE CURRENT_BETS routed` 一次性锚点计数并标记 execution liveness。`test_websocket_handler.py` 覆盖 `on_frame` 对 SockJS 心跳也触发,供 ExecutionClient 刷新 general WS 存活锚;`test_execution_client.py` 覆盖 report 入口在无可信快照时 reload execution page 并等待 CURRENT_BETS 重推、超时则 fail-closed 标记 SE liveness dead。`test_probe_script.py` 覆盖 customer iframe 与登录表单并存时仍必须提交凭据、无登录表单时才复用 customer iframe、`SharpExchLoginState.authenticated=True` 时第二个 page 优先复用 context session 不二次提交旧登录页、`browser_lock` 兼容旧调用、登录后 `postLoginPopup` 可见时点击主页面关闭、无弹窗时静默继续。`test_factories.py` 覆盖 Data/Exec 共享 `browser_login_state_by_venue["SHARPEXCH"]`。2026-07-01 zero-order probe 复验:真实登录后 competition 页 general WS 收到 `BALANCE` 2 帧与 `CURRENT_BETS` 2 帧,parser 识别 4 个 general 业务帧;`OPEN_BETS_COUNTER` 仍可能出现 `DENIED/CLOSED`,不作为 execution hard gate。
 
+### se-adapter-5.1b:accepted 后本地预扣 SE 可用余额(Q17 修订已落地)
+
+**前置**:SE account cache 已有 `free=100 USD`;SE 下单收到 `OrderAccepted`。
+**输入**:SE order `quantity=12`,`price=1.80`。
+**期望**:execution session 通用 helper 按 Venue Registry `odds_model=decimal` 预扣 `12`,写回 `AccountState(total=free=88 USD, locked=0)`;不请求 profile/balance。
+**验收**:SE 不写私有余额预扣逻辑;与 OE/PM 共享 `ArbExecutionSessionMixin._send_order_event()` 的 accepted hook。后续持续监听到 HTTP profile/balance response 时覆盖本地估算。公共 hook 由 `tests/arbitrage/execution/test_session.py::test_accepted_reserves_sharpexch_available_balance_without_fx` 覆盖。
+
 ### se-adapter-5.2:NT order 到 SE 下单 payload
 
 **前置**:SE instrument + NT `LimitOrder`。

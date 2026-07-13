@@ -14,7 +14,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - Q2: 沿用现有 `PlaywrightBrowserManager`,所有权抽到 NT factory 层(共享单例);三方按 page name `"discovery"` / `"data"` / `"execution"` 拿专属 page
 - Q9: instrument.info 必含 6 个统一 key
 - Q13(2026-05-19): OE adapter 内部承担健康检查,**吸收原 OE 网页监控**;两个刷新触发并存(时间维度 + `leg_settled=false`);**刷新后的持仓/挂单数据走 NT 标准 report 通路**(`generate_position_status_report` / `generate_order_status_report`),与 PM 对齐;execution session 单一职责(cancel-only 或 submit+track,都 track 到 terminal);移除 recovery loop。详见 `refactor.md §6.8`。⚠️ **2026-06-15 修正**:`leg_settled` 退役,状态维度改由 `VenueExecutionLiveness` 的 order/position alive + Risk gate 承担。
-- Q17(2026-05-19;2026-06-30 fx 口径校准): **健康检查不碰余额** —— OE 余额走 WS 被动推(reactive,**已含挂单占用**),健康检查只保 WS/页面活;OE 无 REST 不拉余额。ExecutionClient 在 `BALANCE` 入站时乘 `arbitrage.fx`,cache 余额数值按 USD 解释;可用余额 `_check_balance` 直接信 cache 上报值(不再减),与 PM 自扣非对称
+- Q17(2026-05-19;2026-06-30 fx 口径校准;2026-07-13 accepted 预扣设计): **健康检查不碰余额** —— OE 余额走 WS 被动推(reactive,**已含挂单占用**),健康检查只保 WS/页面活;OE 无 REST 不拉余额。ExecutionClient 在 `BALANCE` 入站时乘 `arbitrage.fx`,cache 余额数值按 USD 解释;accepted 后由 execution session 通用 helper 按 decimal venue `quantity` 本地预扣。Risk 统一读 cache `free`,不再和 PM 走非对称余额来源。
 
 ## 文件分布
 
@@ -313,7 +313,7 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **验收**:
 - **已**(✅):`general` 帧捕获 + BALANCE 解析(`balance` 字符串→float)
 - **已**(✅):OE ExecClient 把 parsed balance 乘 `fx` → `generate_account_state`;验收 `tests/arbitrage/execution/test_orbitexch_client.py::test_on_general_frame_balance_normalized_to_usd`
-- OE 余额经 WS 被动维护(对齐 §5.5/§5.6 "被动 WS" + Q17);cache 余额 = `Money(WS 上报 GBP 值 * fx, USD)`,`_check_balance` 直接信不再减;`get_balance()` 页面抓取作过渡兜底,权威源是 WS 帧
+- OE 余额经 WS 被动维护(对齐 §5.5/§5.6 "被动 WS" + Q17);cache 余额 = `Money(WS 上报 GBP 值 * fx, USD)`。accepted 后本地预扣 `order.quantity`(adapter 外 USD stake),下一次 WS BALANCE 覆盖估算;`get_balance()` 页面抓取作过渡兜底,权威源是 WS 帧。
 
 ---
 

@@ -187,28 +187,32 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `tests/arbitrage/config/test_dispatcher.py::test_polymarket_exec_client_config_maps_retry_params` / `test_polymarket_exec_client_config_retry_params_default_none` 覆盖 PM retry 参数显式透传与默认不变。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_order_reports_retry_failure_marks_dead` / `test_arb_generate_single_order_report_retry_failure_marks_dead` / `test_arb_generate_order_reports_fill_retry_failure_marks_dead` 覆盖上游吞掉 retry failure 的 order-liveness fail-closed 行为。
 
-### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
+### pm-adapter-5.account.1: 余额刷新触发(Q17)
 
 **前置**: PM ExecutionClient 启动
-**输入**: 分别触发 (a) `_connect()`;(b) 一笔成交达 `POLYMARKET_FINALIZED_TRADE_STATUSES`(`CONFIRMED` 终态)
-**期望**: 两种情形各调一次 `_update_account_state` → `get_balance_allowance` → `generate_account_state` 写 cache
+**输入**: 分别触发 (a) `_connect()`;(b) 显式 `QueryAccount`; (c) PM `generate_position_status_reports(...)` 成功返回 reports。
+**期望**: 三种情形各调一次 `_update_account_state` → `get_balance_allowance` → `generate_account_state` 写 cache;实时 `CONFIRMED` trade 只产 fill,不刷新余额。
 **验收**:
-- 上游 `execution.py` 内**无 `set_timer` / 周期轮询**;静态搜索确认
+- 上游 `execution.py` 内**无 `set_timer` 私有余额轮询**;周期刷新复用 NT 原生 position reconciliation。
 - NT 无默认 `QueryAccount` 周期发送(全库仅反序列化处实例化)
-- **健康检查不拉余额**(Q17):PM 余额完全靠这两个事件,§6.8.4 健康检查只对账持仓/挂单不碰余额;可用余额由 `_check_balance` 自扣在途挂单(risk-6.3b)
+- PM position reconciliation 成功后会刷新余额,用于覆盖 accepted 本地预扣后的保守 cache `free`。
+- position reports 成功但余额刷新失败时,只 warning;reports 原样返回,`pm_position_alive` 保持 true。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_fill_waits_for_confirmed_status` 覆盖实时 trade: `MATCHED` 不产 NT fill,`CONFIRMED` 才按成交量产 fill。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_marks_alive_and_dispatches_settlement` 覆盖 position reconcile 成功后余额刷新。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_balance_refresh_failure_does_not_fail_reconcile` 覆盖余额刷新失败不影响 position reconcile。
 
-### pm-adapter-5.account.2: free=total 陷阱 —— reported 快照清空 NT 自算 locked(Q17)
+### pm-adapter-5.account.2: free=total 陷阱已由 accepted 本地预扣替代(Q17 修订已落地)
 
 **前置**: PM `total=100`,一笔未成交挂单本应占用 60
 **输入**: `_update_account_state` 发 `generate_account_state(reported=True, locked=0, free=100)`
 **期望**:
 - `CashAccount.apply()` 见 `is_reported` → 清空 `_balances_locked`(cash.pyx:178-179)
-- cache 中 `account.balance_free()` = 100(未反映挂单占用)
+- 真值快照仍表示 PM CLOB 当前可用余额;accepted 后 execution session 会本地预扣并再次写 AccountState,使 cache `free` 成为保守可用余额
 **验收**:
 - 记录此为**已知行为**(Polymarket 链上不托管未撮合单,venue 视角 free=total 属实)
-- 因此可用余额的"扣挂单"责任落在 `ArbitrageRiskEngine._check_balance` 自算(见 risk-6.3b),**不在 adapter 改上游**
+- 不再把“扣挂单”责任放到 `ArbitrageRiskEngine._check_balance`;PM 与 OE/SE 一样通过 execution accepted 事件预扣,公式为 `quantity * probability_from_price(POLYMARKET, price)`
+- 风险侧只读 `account.balance_free(currency)`,避免 accepted 预扣与 Risk open-order 自扣双重扣减
 
 ---
 

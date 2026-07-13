@@ -308,31 +308,29 @@ def test_probability_bounds_hot_update_rejects_invalid_interval():
     assert ctx.engine._params.max_probability == 0.97
 
 
-# ── 余额 venue 非对称(risk-6.3b）──────────────────────────────────
-def test_balance_pm_self_deducts_open_orders():
+# ── 余额(Q17:统一读 account free,成本按 venue capability）────────────
+def test_balance_pm_uses_free_and_probability_cost():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
-    ctx.cache.add_account(_pm_account(ctx, total=100))
-    ctx.engine._probability_open_notional = lambda venue, currency: 60.0  # 在途挂单占 60
+    ctx.cache.add_account(_pm_account(ctx, total=40))
     denials = []
     ctx.engine._deny_order = lambda order, reason: denials.append(reason)
-    order = _DuckOrder(pm.id, price=0.4, qty=Quantity.from_int(125))  # cost = 125*0.4 = 50 > (100-60)=40
+    order = _DuckOrder(pm.id, price=0.9, qty=Quantity.from_int(50))  # cost = 45 > free 40
     assert ctx.engine._check_balance(pm, order) is False
     assert any("Insufficient balance" in d for d in denials)
 
 
-def test_balance_pm_passes_within_available():
+def test_balance_pm_does_not_self_deduct_open_orders():
     ctx = _Ctx()
     pm = pm_instrument("match_X", "home")
     ctx.cache.add_instrument(pm)
-    ctx.cache.add_account(_pm_account(ctx, total=100))
-    ctx.engine._pm_open_notional = lambda venue, currency: 60.0
-    order = _DuckOrder(pm.id, price=0.2, qty=Quantity.from_int(100))   # cost = 20 < 40
+    ctx.cache.add_account(_pm_account(ctx, total=30))
+    order = _DuckOrder(pm.id, price=0.2, qty=Quantity.from_int(100))   # cost = 20 < free 30
     assert ctx.engine._check_balance(pm, order) is True
 
 
-def test_balance_oe_trusts_free_no_extra_deduction():
+def test_balance_oe_uses_free_and_decimal_quantity_cost():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
     ctx.cache.add_instrument(oe)
@@ -344,7 +342,7 @@ def test_balance_oe_trusts_free_no_extra_deduction():
     assert any("Insufficient balance" in d for d in denials)
 
 
-def test_balance_sharpexch_trusts_usd_free_no_extra_deduction():
+def test_balance_sharpexch_uses_free_and_decimal_quantity_cost():
     ctx = _Ctx()
     se = se_instrument("match_X", "away", 2)
     ctx.cache.add_instrument(se)

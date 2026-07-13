@@ -374,6 +374,9 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
 - 支持 payload 为 dict/list 或嵌套 JSON 字符串;SE runtime 按 USD 原生口径保留金额/size 字段,不做 FX 换算。
 - `se_balance_to_account_balances(balance)` 已落地:在 SE 入站金额已归一成 USD 口径后,
   生成 `AccountBalance(total=free=balance USD, locked=0 USD)`,对齐 OE `BALANCE` 语义。
+- Q17 accepted 本地预扣已落地:SE 与其它 tradable venue 共用 execution session helper;
+  收到 `OrderAccepted` 后按 Venue Registry `odds_model=decimal` 预扣 `order.quantity`(USD stake),
+  不请求 profile/balance。后续持续监听到的 HTTP profile/balance response 会覆盖本地估算。
 - `normalize_current_bets_to_usd(bets, fx)` 保留为纯函数;SE runtime 调用时使用 `fx=1.0`,
   因真实 `CURRENT_BETS.currency=USD`。
 - `current_bets_to_fills(bets)` 已落地:把非增量 `CURRENT_BETS` 快照转累计成交意图,join key 为 `offerId`,只在 `sizeMatched > 0` 且 `averagePrice > 0` 时产出。

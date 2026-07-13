@@ -250,6 +250,7 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         if dispatch:
             self._settlement_inflight = True
             self._loop.create_task(self._run_settlement(raw))
+        await self._refresh_account_state_after_position_reconcile()
         # 低噪声验收/运维锚点:每次连续对账一条(生产约 5 分钟一条),确认 override 跑过 + venue 标活 + 结算派发决策。
         # 守卫 `_log`:离线单测经 `__new__` 绕过 NT init,`_log` 未初始化为 None;生产恒已注入。
         if self._log is not None:
@@ -258,3 +259,15 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 f"settlement {'dispatched' if dispatch else 'skipped'} ({len(raw)} raw positions)",
             )
         return reports
+
+    async def _refresh_account_state_after_position_reconcile(self) -> None:
+        """PM position reconciliation 成功后刷新账户可用余额。
+
+        余额刷新失败不改变 position liveness:position reports 已成功,余额下轮再试。
+        """
+        try:
+            await self._update_account_state()
+        except Exception as e:  # noqa: BLE001 — 余额刷新不能让 position reconcile 失败
+            log = getattr(self, "_log", None)
+            if log is not None:
+                log.warning(f"PM balance refresh after position reconcile failed: {e!r}")

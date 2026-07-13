@@ -2220,7 +2220,3 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts=ts_event,
         )
         self._record_processed_trade(trade_id, msg.status)
-
-        # Only update account balance after the trade reaches the CONFIRMED terminal state.
-        if msg.status in POLYMARKET_FINALIZED_TRADE_STATUSES:
-            self.create_task(self._update_account_state())

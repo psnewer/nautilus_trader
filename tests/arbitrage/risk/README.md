@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.6, §6.9, 修订记录 #23`;详细设计 `architectures/risk/architecture.md`
 
-**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线,2026-07-01 Venue Registry helper,2026-07-02 ArbContext keyed helper)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(经 common helper 解析 expected_legs required venues,含 SHARPEXCH;无法解析的 expected leg key fail-closed)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(经 Venue Registry 转换 PM probability / OE-SE decimal odds)、余额 venue 非对称(6.3b,含 SE USD free)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(经 Venue Registry 判定 probability/decimal,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)、`ctx_map_get/require/set/get_or_create` keyed map helper,其中 `ctx_map_require` 缺必需 keyed 值会 fail-fast,`ctx_map_get_or_create` 只在缺失时创建并回写共享对象,`prepare_arb_context` 传旧 venue 专属字段会 TypeError。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate 与全局止盈/止损已退役;share limit 现归 Strategy Action。
+**Step 6 落地状态(2026-06-22,2026-06-28 share limit 迁出,2026-06-30 SE 接线,2026-07-01 Venue Registry helper,2026-07-02 ArbContext keyed helper,2026-07-14 Q17 accepted 本地预扣)**:`src/arbitrage/risk/{engine,portfolio,config}.py` + `bootstrap.py` 已实现。覆盖:cpdef `_check_order` 覆盖经 `_handle_submit_order` 派发 + 自 emit deny + 不泄漏(risk-6.7.1)、VenueExecutionLiveness(经 common helper 解析 expected_legs required venues,含 SHARPEXCH;无法解析的 expected leg key fail-closed)、单场 profit gates(6.7.2/3/4)、概率/赔率门控(经 Venue Registry 转换 PM probability / OE-SE decimal odds)、余额统一读 account free + 成本按 venue capability 计算(6.3/6.3b/6.3c)、outcome_exposures/outcome_shares/outcome_shares_for_venue 公式(经 Venue Registry 判定 probability/decimal,含 OE/SE venue identity 分离)、导入名替换 + wire(6.9.1)、`ctx_map_get/require/set/get_or_create` keyed map helper,其中 `ctx_map_require` 缺必需 keyed 值会 fail-fast,`ctx_map_get_or_create` 只在缺失时创建并回写共享对象,`prepare_arb_context` 传旧 venue 专属字段会 TypeError。旧 `LegSettledRegistry` gate、way_rebate 接口、Risk share limit gate、旧 PM open-order 自扣余额与全局止盈/止损已退役;share limit 现归 Strategy Action。
 
 > ⚠️ **2026-06-15 设计变更**:上述 `leg_settled` / settled gate 用例是历史状态。新设计为 `VenueExecutionLiveness`:Portfolio 不再读执行健康;Risk 从 opportunity `expected_legs` 推导 required venues,用 `order_alive && position_alive` 做 fail-closed 门控。旧 settled 用例在代码迁移时应删除或改写为新 liveness 用例。
 
@@ -18,8 +18,8 @@ Risk 层在 NT `submit_order` 管道上**透明拦截**,Strategy **不引用** R
 
 ```
 ExecutionClient (维护账户)
-├── PM: 主动 timer 拉 → generate_account_state → Cache
-└── OE: 被动 WS 帧 → generate_account_state → Cache
+├── PM: 连接/显式 QueryAccount + accepted 本地预扣 → generate_account_state → Cache
+└── OE/SE: 余额真值帧/response + accepted 本地预扣 → generate_account_state → Cache
                 ↓
         ArbitrageLiveRiskEngine._check_order  ← 同步读 Cache 做余额检查
                 ↓
@@ -51,23 +51,29 @@ ExecutionClient (维护账户)
 - 期望: NT `RiskEngine` 父类自动拒绝,`Strategy.on_order_denied` 触发
 - 验收: 应用层无需任何 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` 代码;Provider 元数据由 `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size` / `tests/arbitrage/discovery/test_orbitexch_provider.py::test_build_legs_sets_orbitexch_min_stake` 锁定,全管道拒单仍待节点级 risk-6.2 集成测。NT core 拒单日志已降为 DEBUG,默认日志不再把预期 min-notional/min-size 拒单刷成 WARN;验收应看 `OrderDenied` / strategy 回调 / barrier deny 事件,不要依赖 WARN 行。
 
-### risk-6.3: 应用层余额检查(自算可用余额,扣在途挂单)
+### risk-6.3: 应用层余额检查(统一读可用余额,Q17 修订已落地)
 - 前置: ExecutionClient 已写入 cache.account_state
 - 输入: 提交一个超出**可用余额**的订单
 - 期望: `ArbitrageLiveRiskEngine._check_balance` 拒绝,`Strategy.on_order_denied` 触发
-- 验收: 检查依据 = `balance_total − Σ(cache.orders_open 在途名义额)`,**不直接信 `account.balance_free()`**(Q17,2026-05-19)
+- 验收: 检查依据 = `account.balance_free(currency)`。ExecutionClient 已把 venue 真值余额和 accepted 后本地预扣都写成 `total=free=available, locked=0`;Risk 不再按 venue 自己扣 open orders。
 
-### risk-6.3b: 可用余额按 venue capability 非对称(Q17,2026-05-19)
-- **probability venue(当前 PM) —— 自扣在途挂单(free=total 陷阱)**
-  - 前置: PM `total=100`,一笔未成交挂单占用 `60`;cache 上报 `reported=True/locked=0/free=100`(`CashAccount.apply` 已清空 NT 自算 locked)
-  - 输入: 再提交名义额 `50` 的开仓单
-  - 期望: `_check_balance` 算可用 = `100 − 60 = 40 < 50` → **拒绝**(误读 `free=100` 则误放行)
-  - 验收: probability venue 可用 = `total − Σ(cache.orders_open 在途名义额)`,**不依赖 `balance_free()`**
-- **decimal venue(当前 OE/SE) —— 直接信 WS 余额(入站已乘 fx,已含占用,不再减)**
-  - 前置: OE/SE WS 上报余额 `40` venue currency(**已扣**挂单占用),ExecutionClient 入站按 `fx` 写成 `Money(40 * fx, USD)`;该值即可用
-  - 输入: 提交名义额 `50` 的单
-  - 期望: `_check_balance` 用 `40 < 50` → 拒绝;**不再额外扣挂单**(否则双重扣减低估)
-  - 验收: OE/SE 可用 = cache 余额 USD 数值直接用;`_check_balance` 用 Venue Registry descriptor 判断 probability venue vs decimal venue,真实 venue identity 仍用于账户读取
+### risk-6.3b: 订单成本按 venue capability 计算,余额来源不按 venue 分支(Q17 修订已落地)
+- **probability venue(当前 PM)**
+  - 前置: PM cache `free=40`;订单 `quantity=50 shares`,`price=0.9`。
+  - 输入: 提交该订单。
+  - 期望: `_check_balance` 经 Venue Registry `probability_from_price` 算成本 `50*0.9=45`,因 `free=40` 拒绝。
+  - 验收: 成本公式按 `odds_model=probability` 派生;余额只读 `free`,不再 `total - open_orders`。
+- **decimal venue(当前 OE/SE)**
+  - 前置: OE/SE cache `free=40 USD`;订单 `quantity=50`,`price=2.0`。
+  - 输入: 提交该订单。
+  - 期望: `_check_balance` 算成本 `50`,因 `free=40` 拒绝。
+  - 验收: 成本公式按 `odds_model=decimal` 派生;新增 decimal venue 只需配置 Venue Registry,不改 Risk 分支。
+
+### risk-6.3c: accepted 本地预扣后 Risk 不双扣 PM open orders(Q17 修订已落地)
+- 前置:PM ExecutionClient 已在 `OrderAccepted` 后把账户从 `free=100` 本地预扣为 `free=90`;cache 中同时存在该 open order。
+- 输入:再提交成本 `95` 的 PM 订单。
+- 期望:`_check_balance` 只读 `free=90`,拒绝;不会再额外扫描 open orders 得到 `80/更低`。
+- 验收:旧 `_probability_open_notional` 路径已删除;测试证明 `_check_balance` 的可用余额来源只看 `free`。
 
 ### risk-6.4: cache stale 时由 venue 拒绝兜底
 - 前置: cache 余额过期,venue 真实余额已不够

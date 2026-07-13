@@ -57,11 +57,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  PMev["PM:连接 + CONFIRMED 成交确认"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
+  PMev["PM:连接 + 显式 QueryAccount + position reconcile 成功"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
   OEws["OE:WS 余额帧(已含挂单占用)"] -->|generate_account_state| C
+  ACCEPT["OrderAccepted<br/>本地预扣"] -->|generate_account_state| C
   C --> RISK["RiskEngine._check_balance 读 live"]
 ```
-> 健康检查**不拉余额**(Q17):PM 完全靠事件、OE 完全靠 WS。可用余额由 RiskEngine 按 venue 非对称自算(详见 risk 文档)。
+> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣;RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
 ---
 
@@ -364,10 +365,20 @@ async def _ensure_exec_snapshot_fresh():
 
 | Venue | 方式 | 触发 |
 |---|---|---|
-| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + `CONFIRMED` 终态成交确认**(`POLYMARKET_FINALIZED_TRADE_STATUSES`);**无周期 timer、健康检查不拉** |
+| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 显式 `QueryAccount` + PM position reconciliation 成功后**;**CONFIRMED trade 不拉** |
 | OE | WS 余额帧(已含挂单占用)→ `generate_account_state` | 被动 reactive(Step 5 实写第三类 WS 帧捕获) |
+| SE | HTTP profile/balance response → `generate_account_state` | 被动 reactive(response listener 捕获 profile/balance);WS `BALANCE` 不作为余额真值 |
 
-可用余额的"扣挂单"逻辑在 **RiskEngine**(PM 自扣 / OE 信 WS),非本组件。
+**已落地:accepted 后本地可用余额预扣(Q17 修订,venue-pluggable)**:
+- 三个 tradable venue 的 AccountState 统一表达“当前可用余额快照”:`total = free = available`,`locked = 0`。PM 的 CLOB `get_balance_allowance`、OE 的 WS `BALANCE.balance`、SE 的 profile/balance response 都按“可用余额”进入 cache。
+- accepted 后不请求 venue,只做本地计算并 `generate_account_state` 覆盖 cache free。真实余额帧/账户查询之后仍可覆盖本地估算。
+- 公式不按 venue 名硬编码,而是按 Venue Registry capability:
+  - `odds_model="probability"`: `reserved = order.leaves_qty * probability_from_price(venue, order.price)`。当前 PM price 本身是概率,等价于 `share * 概率`。
+  - `odds_model="decimal"`: `reserved = order.leaves_qty`。当前 OE/SE adapter 外部 quantity 已是 USD stake。
+- fx 不在 accepted 预扣层处理:OE 的 `BALANCE/CURRENT_BETS` 入站已乘 `arbitrage.fx` 归一成 USD,Strategy/Risk/Execution session 看到的 OE `order.quantity` 也是 USD stake;只有 OE 出站 `placeBets` payload 前再除以 fx 转回 venue stake。SE 当前 USD 原生,同样不做 fx。若未来接入非 USD decimal venue,也应先在 adapter 边界归一到系统基准币,而不是在预扣 helper 里写 venue/fx 分支。
+- 实现落点:在 `ArbExecutionSessionMixin._send_order_event()` 看到 `OrderAccepted` 后调用共用 helper。helper 通过 `venue_id_from_instrument_id(instrument_id)` 取 `VenueDescriptor`,再算 `reserved`,读取当前 account `balance_free(currency)`,写回 `max(0, old_free - reserved)`。为避免依赖 ExecEngine apply event 的时序,helper 优先读 cache order,读不到时使用 session 入口保存的 `instrument_id/qty/price`。
+- 第一阶段不处理 cancel 加回。这样余额会偏保守;后续 venue 真实余额刷新会覆盖。若后续要加回,应仍由 execution 的 order terminal 事件驱动,不能在 Risk 中倒推。
+- Risk 消费端对应调整:不再对 probability venue 做 `total - open_orders` 自扣,统一读 `account.balance_free(currency)`。否则 accepted 后本地预扣 + Risk 自扣会双重扣减。
 
 ### 4.6 settlement: merge / claim(§5.8,Q18)
 
@@ -379,16 +390,16 @@ PM ExecClient 子类(宿主+触发:NT 连续 position reconcile 内 fire-and-for
 ```
 > **落地**:编排层 = `src/arbitrage/settlement/settlement.py`(app 代码,`run(positions) → SettlementResult`;失败吞进 `result.errors` / `TxResult.success=False` 仅 log,不抛、不作健康判据);IO 层 `contract.py` 在 adapter 目录。
 
-- **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。
+- **#110 触发 = NT 连续 position reconcile**(`LiveExecEngineConfig.position_check_interval_secs=300`,全局):NT 周期调 PM `generate_position_status_reports(instrument_id=None)`,**PM 彻底无 `HealthCheckLoop`/`_run_health_check`**(对齐 OE #109,健康检查全退役)。该成功路径同时刷新 PM AccountState(`_update_account_state`),用于覆盖 accepted 本地预扣后的保守余额。
 - **一次拉喂两用(省一次 REST)**:`generate_position_status_reports` 内上游 `_fetch_user_positions` 全量拉一次 /positions,上游把**原始响应** stash 到 `_last_raw_positions`(含 `redeemable`/`neg_risk`/`condition_id`——NT 规范化 report 丢了这些);override 用 stash 喂 settlement,不再二次拉、不再需要注入 `_positions_fetcher`。
 - **路由约束(#111)**:`_fetch_user_positions` 使用的 Data API async `HttpClient` 必须传 `PolymarketExecClientConfig.proxy_url`,与 PM WS、CLOB REST 同一路由;否则周期 `/positions` 对账可能绕过代理直连失败,导致 `pm_position_alive=false`。
-- **liveness**:拉成功 → `mark_position_alive`;**拉失败(REST 报错/超时)→ `mark_position_dead` 并抛给 NT**(venue dead 逻辑,与 §4.3bis(4) 一致)。
+- **liveness**:position reports 拉成功 → `mark_position_alive`;position reports 拉失败(REST 报错/超时)→ `mark_position_dead` 并返回空(#122,不再 raise,与 §4.3bis(4) 一致)。position reports 成功但随后余额刷新失败时,只 warning,不改变 position liveness、不丢弃 reports;下一轮 position reconciliation 再重试余额刷新。
 - **结算 fire-and-forget + single-flight(安全关键)**:settlement 是链上 tx(提交 + `contract.wait()` 可能数秒)。两层防阻塞缺一不可:(1)`create_task(_run_settlement(raw))` 把派发从对账方法返回路径上解耦,`_settlement_inflight` 守卫前一次没跑完则本轮跳过(防并发重复提交);(2)**`contract.py` 的 `RelayClient.execute` / `resp.wait()` 是同步阻塞调用**,必须在 `merge_positions`/`redeem_positions` 内经 `loop.run_in_executor(None, ...)` 丢线程池——否则即便 `create_task`,协程跑起来仍会在同步 `.wait()` 处卡死整个 NT loop(data/exec WS + inflight 2s 检测全停)。`create_task` 只解耦调度,不让同步调用变非阻塞;两者都要(2026-06-21 修)。线程池里 `_execute_with_proxy` 对 `derive` 做全局 monkeypatch,由 single-flight + `_run_merges/_run_redeems` 顺序 await 保证同一时刻仅一个在跑,不自相竞争。
 - **launcher 接线(2026-06-21 已落地)**:`launchers/arb_node.py` 在 `prepare_arb_context` 前构造 `PolymarketContractService` + `PolymarketSettlement` 并注入 `ctx.pm_settlement`。`execution.cleanup_enabled=false` 或缺 `POLYMARKET_PRIVATE_KEY` / `POLYMARKET_FUNDER` 时跳过 settlement;`PolymarketContractService.initialize()` 失败也只 warning + 注入 None,不阻塞节点启动。`cleanup_merge_enabled` / `cleanup_claim_enabled` 透传给 `PolymarketSettlement`。
 - **merge**:同 condition ≥2 outcome 持仓 → `merge_positions(condition, min(sizes), neg_risk)`;**redeem**:`redeemable=true` → `redeem_positions(...)`。
 - **链上 target(2026-07-10)**:标准二元市场不再直接打底层 CTF 合约,而是调用官方 `CtfCollateralAdapter(0xAdA100...)`;negRisk 调 `NegRiskCtfCollateralAdapter(0xadA200...)`。calldata 的 collateral 参数使用 pUSD `0xC011...DFB`,由 adapter 处理 CTF collateral plumbing,避免 merge/redeem 后只得到 USDC.e pending deposit。adapter 授权(`CTF.setApprovalForAll(adapter,true)`)不在本轮自动处理,未授权时链上 tx 会 revert,可由页面授权。
 - **`TxResult` 不作健康判据**:tx 失败仅 log + 下个 reconcile 周期重试(幂等 min(size)),不影响 `VenueExecutionLiveness`。
-- **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态与 CLOB buying power 交由下一轮账户刷新/Polymarket 自身同步验证。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不主动 `_update_account_state`。
+- **CLOB 余额缓存同步实验(2026-07-10)**:切到 collateral adapter+pUSD 后,宿主 PM ExecClient 默认**不再主动**调用 `update_balance_allowance(COLLATERAL)`;账户状态由每轮成功的 PM position reconciliation 调 `_update_account_state()` 刷新。保留 `_sync_collateral_balance_allowance_after_settlement()` helper,若 live 证明仍需手动同步,可在 `_run_settlement` 中恢复一行调用；恢复时仍不在 settlement 完成后立即 `_update_account_state`,由下一轮 position reconciliation 覆盖。
 - 结果回流靠下次 reconcile + Portfolio outcome 指标 pull,不发事件、不直接改 cache。
 - **验收锚点(低噪声)**:override 每轮对账打一条 INFO `PM position reconcile OK: N report(s), settlement dispatched/skipped (M raw positions)`(生产约 5 分钟一条),作"对账+结算子系统心跳"+ 可见暴露 settlement 是否真接线。
 - ⚠️ **验证边界(2026-06-21)**:live 节点(skip_execution,interval 临时 60s)已实测 NT 连续 position 对账**周期触发 → 调到 override → `mark_position_alive` → dispatch 判定**,锚点稳定每周期一条 ✅。本次补齐 launcher settlement 对象接线与离线单测;**真实链上 merge/redeem 尚未 live 验证**(需要具备可 merge/redeem 持仓 + 用户明确授权,因为会提交 Builder Relayer 链上 tx)。

@@ -158,3 +158,35 @@
 - 输入:普通 submit+track session 开始。
 - 期望:不因“每次下单”把 alive 置 false;session 生命周期仍由 `PairInFlightGate` + watchdog 管。
 - 验收:只有 stuck/reconcile failure 等真相不可信路径才置 false。
+
+## AccountState accepted 本地预扣(Q17 修订,已落地)
+
+对应设计:execution §4.5 + risk §3.1。AccountState 统一表达可用余额快照:
+`total = free = available`,`locked = 0`。accepted 后不请求 venue,只按订单本身本地预扣并写
+`generate_account_state`;后续真实余额帧/账户查询可覆盖该估算。
+
+### execution-4.5.5: accepted 后按 venue capability 本地预扣余额
+- 前置:任意 tradable venue account cache 已有 `free=100 USD`;订单进入 submit session 并收到 `OrderAccepted`。
+- 输入:
+  - PM/probability venue:`quantity=50`,`price=0.20`。
+  - OE/SE/decimal venue:`quantity=12`,`price=1.80`。
+- 期望:
+  - PM 预扣 `50 * probability_from_price(POLYMARKET, 0.20) = 10`,写回 `free=90`。
+  - OE/SE 预扣 `quantity=12`,写回 `free=88`。
+- 验收:
+  - 预扣逻辑挂在 `ArbExecutionSessionMixin._send_order_event()` 的 `OrderAccepted` 处理后,三方 ExecutionClient 不各自写重复逻辑。
+  - 公式只读 Venue Registry `VenueDescriptor.odds_model`,不写死 `POLYMARKET/ORBITEXCH/SHARPEXCH`。
+  - accepted 预扣不发外部 HTTP/WS 请求。
+  - 已由 `tests/arbitrage/execution/test_session.py::test_accepted_reserves_probability_venue_available_balance` / `test_accepted_reserves_decimal_venue_available_balance_without_fx` / `test_accepted_reserves_sharpexch_available_balance_without_fx` / `test_accepted_order_reserved_notional_uses_venue_capability` 覆盖。
+
+### execution-4.5.6: accepted 预扣后真实余额更新可覆盖本地估算
+- 前置:accepted 本地预扣已把账户 `free=88`。
+- 输入:随后 venue 真值来源到达:PM 显式 QueryAccount、OE WS `BALANCE`、或 SE profile/balance response。
+- 期望:ExecutionClient 按真值再次 `generate_account_state`,覆盖本地估算。
+- 验收:本地预扣只是短期保守值,不是独立 balance ledger;不维护 `reserved` 累计表。
+
+### execution-4.5.7: 第一阶段不在 cancel terminal 加回余额
+- 前置:accepted 本地预扣后,该订单被 cancel。
+- 输入:收到 `OrderCanceled` / OE-SE `CURRENT_BETS` 确认撤单。
+- 期望:第一阶段不主动加回余额;等待下一次 venue 真值余额更新覆盖。
+- 验收:余额可能短期偏保守,但不会因本地推断和 venue 真值重复加回。若未来要加回,也必须由 execution terminal 事件驱动,不能由 Risk 倒推。

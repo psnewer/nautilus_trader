@@ -24,7 +24,10 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 - ❌ 无独立熔断 Actor / 不翻 `TradingState`(单场 profit gates 与 venue liveness = 逐 submit deny,见 §4.3/§4.4)
 - ❌ Strategy **不引用** Risk —— 透明拦截,Strategy 只通过 `on_order_denied` 感知结果
 
-**账户状态来源**:由各 venue 的 `ExecutionClient` 维护写入 NT `Cache`(PM 事件驱动 / OE/SE 被动 WS),Risk 层**只读 Cache**,对来源透明。
+**账户状态来源**:由各 venue 的 `ExecutionClient` 维护写入 NT `Cache`。AccountState 统一表达
+“当前可用余额快照”:`total = free = available`,`locked = 0`。venue 真值来源(PM CLOB
+`get_balance_allowance`、OE WS `BALANCE`、SE profile/balance response)与 accepted 后本地预扣都在
+ExecutionClient/执行 session 层完成;Risk 层**只读 Cache**,对来源透明。
 Venue capability / enablement 的横切真理源见 `_cross-cutting/venues.md`;Risk 只消费
 概率模型、金额口径与真实 venue identity,不拥有 venue registry。
 
@@ -55,8 +58,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  PM[PM ExecutionClient<br/>事件驱动:连接+链上成交确认] -->|generate_account_state| CACHE[(Cache.account_state)]
-  DEC[OE/SE ExecutionClient<br/>被动 WS 余额帧] -->|generate_account_state| CACHE
+  PM[PM ExecutionClient<br/>连接/显式 QueryAccount + accepted 本地预扣] -->|generate_account_state| CACHE[(Cache.account_state)]
+  DEC[OE/SE ExecutionClient<br/>余额真值帧/response + accepted 本地预扣] -->|generate_account_state| CACHE
   CACHE --> RB[_check_balance 同步读]
   CACHE --> WG[WebGatewayActor 订阅推前端]
 ```
@@ -87,7 +90,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return False
         if not self._check_required_venues_alive(order):  # 应用层:venue 执行真相可信
             return False
-        if not self._check_balance(instrument, order):    # 应用层:余额(venue 非对称)
+        if not self._check_balance(instrument, order):    # 应用层:余额(统一读 account free)
             return False
         if not self._check_profit_gates(order):           # 应用层:单场 profit gates
             return False
@@ -106,7 +109,7 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **NT 检查分两步,本类只覆盖第一步**(Step 6 核实修正):
 - `_check_order`(本类覆盖点):仅 **price / quantity / GTD**。
-- `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT 的 native 余额读 cache `free`——对 probability venue 因 `free==total` 可能偏宽松(不会误拒,只是不够紧),故本类在 `_check_order` 内**前置**更严的 probability venue 自扣余额检查(它先于 native 跑、先拒)。
+- `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT native 余额读 cache `free`。Q17 修订后,ExecutionClient accepted 本地预扣会把 `free` 写成保守可用余额,因此本类不再对 probability venue 额外扣 open orders,避免双重扣减。
 
 **venue 最小下单门控来源**:
 - PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
@@ -115,15 +118,15 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 
-**`_check_balance` —— 可用余额按 venue 非对称(Q17)**:
+**`_check_balance` —— 统一读 AccountState.free(Q17 修订,已落地)**:
 
-| Venue | 可用余额 | 理由 |
+| 输入 | Risk 行为 | 说明 |
 |---|---|---|
-| probability venue(当前 PM) | `account.balance_total − Σ(cache.orders_open 在途名义额)` 自扣 | PM 上报 `reported=True/locked=0/free=total`,`CashAccount.apply` 清空 NT 自算 locked → cache `free` 恒 total,不能信 |
-| decimal venue(当前 OE/SE) | 直接信 cache 余额(WS 已含挂单占用,不再减);BALANCE 入站已乘 fx,cache 数值按 USD 解释;订单 size 在 adapter 外为 USD stake | 再减会双重扣减低估;adapter 只在出站 placeBets payload 前转 venue stake |
+| 任意 tradable venue | `available = account.balance_free(currency)` | AccountState 的 `free` 已由 ExecutionClient 维护为可用余额;Risk 不再关心余额真值来自 REST、WS、profile response 还是 accepted 本地预扣 |
+| probability venue(当前 PM) | 订单成本仍按 `leaves_qty * probability_from_price(venue, price)` 算 | PM `quantity` 是 share,成本是 `share * 概率`;公式经 Venue Registry `odds_model` 派生,不写死 PM |
+| decimal venue(当前 OE/SE) | 订单成本按 `leaves_qty` 算 | OE/SE adapter 外部 quantity 是 USD stake;若未来新增 decimal venue,只需在 Venue Registry 声明 capability |
 
-→ 实现内用 Venue Registry descriptor 的 `odds_model` 判断 probability venue vs decimal venue。
-读 **live** cache(非快照)。真实 venue identity 仍用于账户、持仓和 liveness 查询。
+Risk 读 **live** cache(非快照)。真实 venue identity 仍用于账户、持仓和 liveness 查询;Venue Registry 只负责成本公式/概率模型,不负责“哪个 venue 要特殊扣余额”。旧实现中的 probability venue `total - open_orders` 自扣已删除,避免和 ExecutionClient accepted 预扣重复。
 
 **`_check_profit_gates` —— 单场止盈/止损硬停(Q16 修订)**:逐 submit deny = "别开新仓",与 Strategy 的机会评估正交。Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损;`global_sl` 字段已从 NT 配置 schema / `ArbRiskParams` 删除。
 
@@ -297,7 +300,7 @@ NT `TradingState` 是全局互斥状态:
 
 | 横切 | 对 Risk 的约束 |
 |---|---|
-| Q17 账户状态 | Risk 只读 cache;PM 余额事件驱动、OE/SE WS(余额帧 Step 5 实写),健康检查不拉余额 |
+| Q17 账户状态 | Risk 只读 cache `account.balance_free`;ExecutionClient 负责连接/真值帧/PM position reconcile 成功/accepted 本地预扣后写 AccountState |
 | Q19 同步(§6.10) | RiskEngine 读 **live** cache;不参与健康检查 ⊥ 执行互斥(它是 submit 管道上的同步拦截,无自身 await 循环) |
 | Q20 快照 | Risk **不读** Strategy 快照(快照是规划私有);余额/profit 门限都用 live 最新值 |
 | VenueExecutionLiveness | Risk 从 opportunity `expected_legs` 推导 required venues 并 fail-closed;Strategy/Portfolio 不读 |
@@ -322,7 +325,7 @@ sequenceDiagram
   RE->>RE: super()._check_order  (min/max qty, notional, rate, TradingState)
   RE->>RE: _check_probability_gate (Venue Registry probability_from_price)
   RE->>RE: _check_required_venues_alive(expected_legs → venues)
-  RE->>C: 读 account_state（venue 分支算可用余额）
+  RE->>C: 读 account_state.free（ExecutionClient 已维护可用余额）
   RE->>RE: _check_balance
   RE->>AP: outcome_exposures(pair_id)
   AP->>C: 读 positions（pull 现算）
@@ -339,7 +342,7 @@ sequenceDiagram
 ## 7. 落地清单(Step 6 实施)
 
 - [x] `ArbitrageLiveRiskEngine` 子类(基类 `LiveRiskEngine`)+ `_check_order` 两参签名 + super 先行 + 自 emit `_deny_order`
-- [x] `_check_balance` venue 分支(probability venue 自扣在途挂单 / decimal venue 信 cache free);无价单交父类
+- [x] `_check_balance` Q17 修订:统一读 `account.balance_free`;订单成本仍经 Venue Registry capability 计算;移除旧 probability venue `total - open_orders` 自扣
 - [x] `_check_profit_gates` 单场止盈/止损;Risk 不再执行全局止盈/止损
 - [x] `_check_required_venues_alive`:注入 `VenueExecutionLiveness`,从 `expected_legs` 推导 required venues,任一不 alive 则 deny
 - [x] `ArbitragePortfolio` 四方法 + `_legs_for_pair` + `_resolve_pair_id` + `_leg_from_position`(从 cache Position 反推)
@@ -356,4 +359,4 @@ sequenceDiagram
 
 **NT 子类化两个 cdef 可见性陷阱(写测试时发现,已修;production-affecting)**:
 1. **`Portfolio._cache` 是私有 `cdef`(非 `readonly`)→ Python 子类方法 `self._cache` 抛 AttributeError**(`RiskEngine._cache` 是 `readonly` 故引擎侧无此问题)。`ArbitragePortfolio` 改为**覆盖 `__init__`**(签名 `msgbus/cache/clock/config`,与 kernel 原生构造一致)`super().__init__(...)` 后自存 `self._arb_cache = cache`,所有腿提取走 `_arb_cache`。
-2. **`order.has_price_c()` 是 `cdef` 方法,Python 侧不可调** → `_check_balance` / `_probability_open_notional` 必须用 **`order.has_price`(property)**。同理价格/数量用 `order.price` / `order.leaves_qty`(均 Python 可见)。
+2. **`order.has_price_c()` 是 `cdef` 方法,Python 侧不可调** → `_check_balance` 必须用 **`order.has_price`(property)**。同理价格/数量用 `order.price` / `order.leaves_qty`(均 Python 可见)。旧 `_probability_open_notional` 属 probability venue 自扣实现,已随 Q17 accepted 本地预扣删除。
