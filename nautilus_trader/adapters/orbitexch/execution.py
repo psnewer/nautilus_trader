@@ -515,6 +515,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         nt_order = self._cache.order(client_order_id)
         voi = venue_order_id or (nt_order.venue_order_id if nt_order is not None else None)
         now = self._clock.timestamp_ns()
+        if nt_order is not None and not self._begin_cancel_session(nt_order):
+            return
         if self._executor is None or voi is None:
             self.generate_order_cancel_rejected(
                 strategy_id, instrument_id, client_order_id, voi,
@@ -532,7 +534,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         async with self._page_lock:  # #105:页锁(同 place,串行碰页)
             result = await self._executor.cancel_order(legacy, self._page)
         if result is not None and getattr(result, "success", False):
-            self.generate_order_canceled(strategy_id, instrument_id, client_order_id, voi, now)
+            self._log.info(
+                f"OE cancel request accepted: client_order_id={client_order_id}, "
+                f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
+            )
         else:
             reason = (getattr(result, "message", None) if result is not None else None) or "cancel failed"
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
@@ -659,6 +664,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         self._venue_liveness.mark_position_alive(ORBITEXCH)
 
+        self._emit_cancel_events_from_current_bets()
+
         # `sizeMatched` 是 OE 原始 GBP 累计成交量。这里不维护 prevMatched;生成 NT fill 时用
         # 当前 NT order.filled_qty 推出本次 last_qty,避免累计快照被重复累加。reconcile 快照仍使用上方
         # usd_bets。
@@ -693,6 +700,37 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 quote_currency=USD,
                 commission=Money(0, USD),
                 liquidity_side=LiquiditySide.MAKER,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+    @staticmethod
+    def _bet_is_cancelled(bet: dict) -> bool:
+        state = bet.get("offerState") or bet.get("offer_state") or bet.get("state") or bet.get("status")
+        return str(state or "").upper() in {"CANCELLED", "CANCELED"}
+
+    def _emit_cancel_events_from_current_bets(self) -> None:
+        """新 CURRENT_BETS 快照确认撤单完成:订单消失或 offerState=CANCELLED。"""
+        from nautilus_trader.model.identifiers import VenueOrderId
+
+        for client_order_id, sess in self._active_cancel_sessions_snapshot():
+            venue_order_id = sess.get("venue_order_id")
+            nt_order = self._cache.order(client_order_id)
+            if venue_order_id is None and nt_order is not None:
+                venue_order_id = nt_order.venue_order_id
+            if venue_order_id is None:
+                venue_order_id = self._cache.venue_order_id(client_order_id)
+            if venue_order_id is None:
+                continue
+            bet = self._current_bets.get(str(venue_order_id))
+            if bet is not None and not self._bet_is_cancelled(bet):
+                continue
+            if nt_order is None:
+                continue
+            self.generate_order_canceled(
+                strategy_id=nt_order.strategy_id,
+                instrument_id=nt_order.instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=VenueOrderId(str(venue_order_id)),
                 ts_event=self._clock.timestamp_ns(),
             )
 

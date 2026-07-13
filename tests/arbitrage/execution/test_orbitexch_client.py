@@ -241,7 +241,20 @@ def test_submit_order_cancel_only_discards():
 
 def test_cancel_order_passes_market_id_from_current_bets():
     """Gap C live 暴露:cancel_order 只带 venue_order_id 会被 executor 拒绝 missing market_id。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
     c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
+    c._cache.add_instrument(inst)
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    voi = VenueOrderId("221972467")
+    c._cache.add_venue_order_id(order.client_order_id, voi)
     captured = {}
 
     class _FakeExecutor:
@@ -254,25 +267,29 @@ def test_cancel_order_passes_market_id_from_current_bets():
     c._current_bets = {
         "221972467": {
             "offerId": "221972467",
-            "marketId": "1.258977638",
+            "marketId": inst.market_id,
             "selectionId": "8266399",
             "sizeRemaining": "7.00",
         },
     }
-    c.generate_order_canceled = lambda *args, **kwargs: captured.update(canceled=True)
+    c.generate_order_canceled = lambda *args, **kwargs: captured.update(canceled=True, canceled_kwargs=kwargs)
 
     _run(c._cancel_order(SimpleNamespace(
         strategy_id="S",
-        instrument_id=InstrumentId.from_str("1-258977638-8266399-None.ORBITEXCH"),
-        client_order_id=ClientOrderId("O-1"),
-        venue_order_id=VenueOrderId("221972467"),
+        instrument_id=inst.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=voi,
     )))
 
     legacy = captured["order"]
     assert legacy.venue_order_id == "221972467"
-    assert legacy.market_id == "1.258977638"
+    assert legacy.market_id == inst.market_id
     assert legacy.selection_id == "8266399"
+    assert "canceled" not in captured
+
+    c._on_current_bets([])                            # 新快照中订单消失 → 撤单完成
     assert captured["canceled"] is True
+    assert captured["canceled_kwargs"]["client_order_id"] == order.client_order_id
 
 
 # ── #105 页锁:并发碰页操作串行 ──────────────────────────────────
@@ -664,7 +681,13 @@ class _CollectLoop:
 
 
 def test_cancel_residual_tracked_clears_inflight_when_all_done():
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from nautilus_trader.test_kit.stubs.events import TestEventStubs
+
     from src.arbitrage.common.pair_inflight import PairInFlightGate
+    from tests.arbitrage.risk._factories import oe_instrument
 
     c = _client()
     gate = PairInFlightGate()
@@ -673,11 +696,13 @@ def test_cancel_residual_tracked_clears_inflight_when_all_done():
     loop = _CollectLoop()
     c._loop = loop
     c._cancel_residual_one = _noop_cancel
-    iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+    inst = oe_instrument("ATP Stuttgart 2026", "home")
+    iid = inst.id
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
 
     gate.try_enter("P1")        # strategy fire 持 in-flight
-    o1 = SimpleNamespace(instrument_id=iid)
-    o2 = SimpleNamespace(instrument_id=iid)
+    o1 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    o2 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
     c._cancel_residual_orders(iid, [o1, o2])
 
     assert gate.is_in_flight("P1") is True                     # exec_started ×2(同步),in-flight 仍持有
@@ -688,12 +713,22 @@ def test_cancel_residual_tracked_clears_inflight_when_all_done():
             await coro
     _run(_drain())
 
-    assert gate.is_in_flight("P1") is False                    # 撤单跑完 exec_finished ×2 → exec_count→0 → 清
+    assert gate.is_in_flight("P1") is True                     # 撤单请求完成不代表撤单终态
+    c._send_order_event(TestEventStubs.order_canceled(o1))
+    assert gate.is_in_flight("P1") is True
+    c._send_order_event(TestEventStubs.order_canceled(o2))
+    assert gate.is_in_flight("P1") is False                    # 两条 cancel terminal 到齐才清
 
 
 def test_cancel_residual_inflight_held_until_last_cancel():
     """撤单 task 还在跑时 in-flight 不提前清(你指出的"session 结束时撤单还在执行"问题已堵)。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from nautilus_trader.test_kit.stubs.events import TestEventStubs
+
     from src.arbitrage.common.pair_inflight import PairInFlightGate
+    from tests.arbitrage.risk._factories import oe_instrument
 
     c = _client()
     gate = PairInFlightGate()
@@ -702,13 +737,19 @@ def test_cancel_residual_inflight_held_until_last_cancel():
     loop = _CollectLoop()
     c._loop = loop
     c._cancel_residual_one = _noop_cancel
-    iid = InstrumentId.from_str("1-1-1-None.ORBITEXCH")
+    inst = oe_instrument("ATP Stuttgart 2026", "home")
+    iid = inst.id
+    factory = OrderFactory(trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock())
+    o1 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    o2 = factory.limit(iid, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
 
     gate.try_enter("P1")
-    c._cancel_residual_orders(iid, [SimpleNamespace(instrument_id=iid), SimpleNamespace(instrument_id=iid)])
+    c._cancel_residual_orders(iid, [o1, o2])
 
     async def _drain_one():
         await loop.tasks[0]                                    # 只跑完第一个撤单
     _run(_drain_one())
     assert gate.is_in_flight("P1") is True                     # 还有一个撤单没跑完 → in-flight 不清
+    c._send_order_event(TestEventStubs.order_canceled(o1))
+    assert gate.is_in_flight("P1") is True                     # 第二条 cancel terminal 未到 → 仍不清
     loop.tasks[1].close()                                      # 测试只验证半程,收尾未 await coroutine

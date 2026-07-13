@@ -146,8 +146,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 **前置**: 已下一笔挂单
 **输入**: `Strategy.cancel_order(...)`
-**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)` → 响应 `canceled[]` 中的订单立即 `generate_order_canceled` 回写;`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态;若第一条 cancel terminal 已发出但 cache 尚未 apply,也必须用 client 侧有界去重窗口跳过重复终态。
-**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_generates_canceled_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
+**期望**: `_cancel_order` → CLOB `cancel_order(OrderPayload)`。响应 `canceled[]` 只表示撤单请求被 CLOB 接收,不立即 `generate_order_canceled`;真实完成以 USER WS `CANCELLATION` 事件为准。`not_canceled` 中的订单走 `generate_order_cancel_rejected`(其中 `already canceled or matched` 保持抑制,等待 WS/成交终态)。REST cancel 与 USER WS cancellation 可能重复到达,若 cache 中订单已是 `CANCELED` 必须跳过重复终态;若第一条 cancel terminal 已发出但 cache 尚未 apply,也必须用 client 侧有界去重窗口跳过重复终态。
+**验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_cancel_order_success_waits_for_ws_cancellation_event` / `test_polymarket_cancel_success_skips_duplicate_canceled_order` / `test_polymarket_cancel_success_skips_duplicate_before_cache_updates` / `test_polymarket_cancel_order_reject_generates_cancel_rejected_event`;live cancel-only 需同时看到 `Execution session cancel-only` 与 `Cancel confirmed ...` / `OrderCanceled`,最后 venue `open_order_count=0`
 
 ### pm-adapter-5.3: Reconciliation(启动重连对账)
 

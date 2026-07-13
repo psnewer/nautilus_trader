@@ -88,7 +88,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:已有 `market_id` 与 `venue_order_id`。
 **输入**:`se_order_to_cancel_bets_payload(market_id, venue_order_id)` 与 `parse_cancel_bets_response(response)`。
 **期望**:payload 为 `/customer/api/cancelBets` 同源结构 `{market_id:[{"offerId": venue_order_id,"betType":"EXCHANGE"}]}`;缺 market/offer id 返回 None;无 error 的 dict 视为成功,空/非法/带 error 响应视为失败。
-**验收**:已落地。`test_execution_translation.py` 覆盖 payload 正常结构、缺 market/offer id、完整 open bet 透传、成功响应、空响应、非法响应、error 响应。`SharpExchExecutor.cancel_order` page-bound 薄封装已离线落地:`test_executor.py` 用 fake page 覆盖 payload 发送、CSRF 从 `page.context().cookies()` 注入且 JS 不读 `document.cookie`、成功解析、无 page、缺 ids、完整 open bet 透传;`test_probe_script.py` 覆盖 `se_customer_context` 优先使用 customer iframe;`test_execution_client.py` 覆盖 `_cancel_order` 从 instrument 取 market_id、executor 成功后生成 canceled;也覆盖 `_cancel_residual_one` 复用正常 cancel 路径,保证 cancel-only 残单会真实撤。2026-07-01 手动 DevTools capture 已验证 SE 前端 cancelBets 发送完整 open bet 对象并返回 `status=OK`。
+**验收**:已落地。`test_execution_translation.py` 覆盖 payload 正常结构、缺 market/offer id、完整 open bet 透传、成功响应、空响应、非法响应、error 响应。`SharpExchExecutor.cancel_order` page-bound 薄封装已离线落地:`test_executor.py` 用 fake page 覆盖 payload 发送、CSRF 从 `page.context().cookies()` 注入且 JS 不读 `document.cookie`、成功解析、无 page、缺 ids、完整 open bet 透传;`test_probe_script.py` 覆盖 `se_customer_context` 优先使用 customer iframe;`test_execution_client.py` 覆盖 `_cancel_order` 从 instrument 取 market_id、executor 成功后只记录请求已接收,不立即生成 canceled,后续新 `CURRENT_BETS` 中 offer 消失才 `generate_order_canceled`;也覆盖 `_cancel_residual_one` 复用正常 cancel 路径,保证 cancel-only 残单会真实撤。2026-07-01 手动 DevTools capture 已验证 SE 前端 cancelBets 发送完整 open bet 对象并返回 `status=OK`。
 
 ### se-adapter-6.1:Risk required venues 支持 SE
 

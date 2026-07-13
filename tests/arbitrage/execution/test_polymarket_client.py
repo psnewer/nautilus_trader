@@ -113,6 +113,7 @@ def _cancel_test_client(response):
     client._log = _Log()
     client._http_client = SimpleNamespace(cancel_order=lambda payload: response)
     client._maintain_active_market = lambda instrument_id: _noop_async()
+    client._begin_cancel_session = lambda order: True
 
     captured = {}
     client.generate_order_canceled = lambda **kwargs: captured.update(canceled=kwargs)
@@ -130,6 +131,9 @@ def _cancel_test_client(response):
     client._generate_cancel_event = PolymarketExecutionClient._generate_cancel_event.__get__(client)
     client._generate_cancel_success_event = (
         PolymarketExecutionClient._generate_cancel_success_event.__get__(client)
+    )
+    client._log_cancel_request_accepted = (
+        PolymarketExecutionClient._log_cancel_request_accepted.__get__(client)
     )
     client._cancel_terminal_already_emitted = (
         PolymarketExecutionClient._cancel_terminal_already_emitted.__get__(client)
@@ -229,7 +233,7 @@ def test_polymarket_execution_uses_py_clob_client_v2_surface():
     assert "OrderPayload(orderID=venue_order_id.value)" in cancel_source
 
 
-def test_polymarket_cancel_order_success_generates_canceled_event():
+def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
     venue_order_id = "0x" + "a" * 64
     client, command, captured, expected_venue_order_id = _cancel_test_client({
         "canceled": [venue_order_id],
@@ -237,6 +241,17 @@ def test_polymarket_cancel_order_success_generates_canceled_event():
     })
 
     _run(client._cancel_order(command))
+
+    assert "canceled" not in captured
+    assert "rejected" not in captured
+
+    client._generate_cancel_success_event(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=expected_venue_order_id,
+        ts_event=123,
+    )
 
     assert captured["canceled"]["client_order_id"] == ClientOrderId("O-1")
     assert captured["canceled"]["venue_order_id"] == expected_venue_order_id

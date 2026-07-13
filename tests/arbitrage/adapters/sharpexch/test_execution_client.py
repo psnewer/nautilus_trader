@@ -428,6 +428,10 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     client = _client()
     inst = _instrument("home")
     client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.0, price=1.01)
+    client._cache.add_order(order)
+    voi = VenueOrderId("SE-OFFER-1")
+    client._cache.add_venue_order_id(order.client_order_id, voi)
     captured = {}
 
     class Executor:
@@ -443,8 +447,8 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
             SimpleNamespace(
                 strategy_id="S",
                 instrument_id=inst.id,
-                client_order_id=ClientOrderId("COID-1"),
-                venue_order_id=VenueOrderId("SE-OFFER-1"),
+                client_order_id=order.client_order_id,
+                venue_order_id=voi,
             ),
         ),
     )
@@ -452,6 +456,9 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     assert captured["market_id"] == inst.market_id
     assert captured["venue_order_id"] == "SE-OFFER-1"
     assert captured["bet"] == {}
+    assert "canceled" not in captured
+
+    client._on_current_bets([])
     assert captured["canceled"] is True
 
 

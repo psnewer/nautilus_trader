@@ -300,7 +300,7 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 - **#63 Gap C:`_connect` + 翻译 + 撤单结构接通**(原 `NotImplementedError` seam → 实现;仅非 skip 触达):
   - `nt_order_to_legacy_order` 纯映射(`test_execution_translation.py` 5 case)+ `_place_via_executor`(守卫 + executor.place_order)
   - `_connect`:共享 BM `create_page("execution")` + 持久化 profile 未登录才 `_login`(填 user/pwd 等 `/customer/`)+ `OrbitExchExecutor` + `OrbitExchWebSocketHandler.on_order_update(_on_general_frame)` + 最多 30s 等 `BALANCE`/`CURRENT_BETS`;缺余额才发 0 USD 兜底 account state;`_disconnect` 停 ws_handler(不 close 共享 BM,#62)
-  - `_cancel_order`→`_cancel_one`(executor.cancel_order + `generate_order_canceled/_cancel_rejected`;#77 必须带 `market_id`/`selection_id`,优先 instrument,缺则 CURRENT_BETS 回填)/ `_cancel_all_orders`→`cancel_all_unmatched` / `_cancel_residual_one`→`_cancel_one`
+  - `_cancel_order`→`_cancel_one`(先建 cancel session;executor.cancel_order 成功只表示请求已接收,不立即发 `OrderCanceled`;后续新 `CURRENT_BETS` 快照中 offer 消失或 `offerState=CANCELLED/CANCELED` 才 `generate_order_canceled`;失败走 `generate_order_cancel_rejected`;#77 必须带 `market_id`/`selection_id`,优先 instrument,缺则 CURRENT_BETS 回填)/ `_cancel_all_orders`→`cancel_all_unmatched` / `_cancel_residual_one`→`_cancel_one`
   - **订单回执已实写**:`current_bets_to_fills`(CURRENT_BETS 快照→`offerId` 读取累计 `sizeMatched`)+ `_on_current_bets`→`generate_order_filled`。**2026-06-06 live 抓帧确认** item schema(`offerId`==venue_order_id 是 join key,修正旧 `marketId` 假设);matched 态以 `sizeMatched`/`averagePrice` 直接产回执。
   - **live 已分档验证**:连接/余额、place+cancel、真成交 matched 帧均已验;2026-06-09 `launchers/arb_node.py`
     真执行校准 #85:OE `placeBets` venue 回执返回 offerIds;下一轮 cancel-only 能撤旧 open order,说明

@@ -21,14 +21,16 @@ from __future__ import annotations
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.model.events import OrderAccepted
 from nautilus_trader.model.events import OrderCanceled
+from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.events import OrderExpired
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 
 from src.arbitrage.common.pair_registry import PairRegistry
 
-# 终态(结束 session;OrderFilled 仅在全成时,见 _send_order_event)
-_TERMINAL = (OrderCanceled, OrderRejected, OrderExpired)
+# submit 终态(OrderFilled 仅在全成时,见 _send_order_event);cancel 终态只看撤单完成/失败。
+_SUBMIT_TERMINAL = (OrderCanceled, OrderRejected, OrderExpired)
+_CANCEL_TERMINAL = (OrderCanceled, OrderCancelRejected, OrderRejected, OrderExpired)
 
 _TIMEOUT_PREFIX = "arb_exec_timeout:"
 
@@ -46,7 +48,7 @@ class ArbExecutionSessionMixin:
         self._pair_registry = pair_registry  # #34: matching 写,本类读;`_pair_id_for` 用
         self._pair_inflight = pair_inflight   # §6.10 §7:execution 段维护 per-pair session 计数,归 0 释放闸
         self._session_timeout_ns = secs_to_nanos(session_timeout_secs)
-        # coid -> {qty, filled, instrument_id, pair_id}
+        # coid -> {kind, qty, filled, instrument_id, pair_id, venue_order_id}
         self._active_sessions: dict = {}
 
     @property
@@ -79,7 +81,23 @@ class ArbExecutionSessionMixin:
             )
             return False
 
+        return self._begin_order_session(order, kind="submit")
+
+    def _begin_cancel_session(self, order) -> bool:
+        """True = 已建立 cancel session;False = 同 order 已有 session,调用方不再重复撤。"""
+        return self._begin_order_session(order, kind="cancel")
+
+    def _begin_order_session(self, order, *, kind: str) -> bool:
         coid = order.client_order_id
+        if coid in self._active_sessions:
+            self._log.info(
+                "Execution session already active: "
+                f"kind={self._active_sessions[coid].get('kind')}, "
+                f"client_order_id={coid}; skip duplicate {kind}",
+            )
+            return False
+
+        instrument_id = order.instrument_id
         pair_id = self._pair_id_for(instrument_id)
         # #105 ②:watchdog 必须在 `exec_started` **之前**且与之原子 —— 保证"只要 exec_count++ 了,
         # 就一定有人(终态或看门狗)来减"。顺序:(1) 先 arm watchdog(本块唯一可能抛的操作,若抛则
@@ -91,10 +109,12 @@ class ArbExecutionSessionMixin:
             callback=self._on_session_timeout,
         )
         self._active_sessions[coid] = {
+            "kind": kind,
             "qty": order.quantity.as_double(),
             "filled": 0.0,
             "instrument_id": instrument_id,
             "pair_id": pair_id,
+            "venue_order_id": getattr(order, "venue_order_id", None),
         }
         if pair_id is not None:
             # §6.10 §7:per-pair session 计数 ++(套利已由 strategy fire,所有权进入执行)
@@ -110,15 +130,19 @@ class ArbExecutionSessionMixin:
         sess = self._active_sessions.get(event.client_order_id)
         if sess is None:
             return
-        if isinstance(event, OrderAccepted):
+        kind = sess.get("kind", "submit")
+        if kind == "submit" and isinstance(event, OrderAccepted):
             self._log.info(
                 "Execution session accepted: "
                 f"client_order_id={event.client_order_id}, "
                 f"venue_order_id={event.venue_order_id}, "
                 f"instrument_id={event.instrument_id}; tracking continues until terminal/timeout",
             )
-        terminal = isinstance(event, _TERMINAL)
-        if isinstance(event, OrderFilled):
+        if kind == "cancel":
+            terminal = isinstance(event, _CANCEL_TERMINAL)
+        else:
+            terminal = isinstance(event, _SUBMIT_TERMINAL)
+        if kind == "submit" and isinstance(event, OrderFilled):
             sess["filled"] += event.last_qty.as_double()
             if sess["filled"] >= sess["qty"]:
                 terminal = True  # 全成才终态;partial 不重置/不结束(绝对超时,§4.2)
@@ -157,22 +181,29 @@ class ArbExecutionSessionMixin:
     def _cancel_residual_orders(self, instrument_id, residual: list) -> None:
         """#105:撤残单 —— **每条残单的撤单都是一次 tracked execution**,纳入 per-pair `exec_count`
         (`exec_count→0` 才清 in-flight)。这样 cancel-only 这次执行(撤单)与 submit+track 一样有头有尾,
-        **撤单 task 还在跑时 in-flight 不会被提前清**;一条 session 都没起的 cancel-only 也由 exec_count 兜到底
-        (无需 max-hold 等兜底)。`exec_started` 在本同步段先为所有残单加完(避免某条先完成就提前清),撤单 task
-        在 `finally` `exec_finished`。子类实现 `_cancel_residual_one(order)`(真实 venue 撤单,async)。"""
-        pair_id = self._pair_id_for(instrument_id)
+        **撤单请求发出但 venue 终态未到时 in-flight 不会被提前清**;一条 session 都没起的 cancel-only
+        也由 watchdog 兜底(无需 max-hold 等兜底)。子类实现 `_cancel_residual_one(order)`
+        (真实 venue 撤单请求,async),最终由 `OrderCanceled`/`OrderCancelRejected` 或 timeout 收口。"""
         for order in residual:
-            if pair_id is not None and self._pair_inflight is not None:
-                self._pair_inflight.exec_started(pair_id)
-            self._loop.create_task(self._tracked_residual_cancel(order, pair_id))
+            if self._begin_cancel_session(order):
+                self._loop.create_task(self._tracked_residual_cancel(order))
 
-    async def _tracked_residual_cancel(self, order, pair_id) -> None:
-        """#105:撤一条残单 + 保证 `exec_finished`(finally,无论成败/超时)→ 撤单纳入 exec_count 收尾。"""
+    async def _tracked_residual_cancel(self, order) -> None:
+        """#105:撤一条残单;session 由后续 NT cancel terminal 或 watchdog 收尾。"""
         try:
             await self._cancel_residual_one(order)
-        finally:
-            if pair_id is not None and self._pair_inflight is not None:
-                self._pair_inflight.exec_finished(pair_id)
+        except Exception as e:  # noqa: BLE001 — 撤单 IO 异常必须生成 NT cancel reject 来释放 session
+            self._log.error(
+                f"cancel-only: residual cancel failed for {getattr(order, 'client_order_id', '')}: {e!r}",
+            )
+            self.generate_order_cancel_rejected(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=getattr(order, "venue_order_id", None),
+                reason=f"residual cancel exception: {e!r}",
+                ts_event=self._clock.timestamp_ns(),
+            )
 
     async def _cancel_residual_one(self, order) -> None:
         """子类实现真实 venue 撤单(OE Playwright / PM CLOB)。base 占位告警。"""
@@ -189,4 +220,12 @@ class ArbExecutionSessionMixin:
                 "venue_order_id": str(getattr(order, "venue_order_id", "")),
             }
             for order in residual
+        ]
+
+    def _active_cancel_sessions_snapshot(self) -> list[tuple[object, dict]]:
+        """给 adapter 把 venue 真值转换成 NT cancel terminal 用;返回浅拷贝避免迭代中变更。"""
+        return [
+            (coid, dict(sess))
+            for coid, sess in self._active_sessions.items()
+            if sess.get("kind") == "cancel"
         ]

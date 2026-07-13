@@ -73,6 +73,18 @@
 - 期望:`exec_finished` 已先行 → `_exec_count→0` → in-flight 被清(publish 抛之前已落)。
 - 验收:`test_session.py::test_end_session_clears_inflight_even_if_publish_throws`。
 
+### execution-4.2.4: cancel session 只由撤单终态收口
+- 前置:一笔 cancel session 已建立。
+- 输入:先收到该订单的 `OrderFilled`,再收到 `OrderCanceled`。
+- 期望:fill 事件不结束 cancel session;只有 `OrderCanceled` / `OrderCancelRejected` / timeout 能结束 cancel session。
+- 验收:`test_session.py::test_cancel_session_ignores_fill_until_cancel_terminal`。
+
+### execution-4.2.5: cancel-only 残单撤单进入同一 watchdog / exec_count
+- 前置:strategy 已持有 pair in-flight;同 pair 有两条 residual open order。
+- 输入:cancel-only 发出两条残单撤单请求,撤单 coroutine 先完成,随后两条 `OrderCanceled` 到达。
+- 期望:撤单请求完成不释放 pair;每条 cancel terminal 到齐后才逐条 `exec_finished`,最后一条后释放 in-flight。
+- 验收:`test_session.py::test_base_cancel_only_tracks_residual_until_cancel_terminal` / `test_orbitexch_client.py::test_cancel_residual_tracked_clears_inflight_when_all_done` / `test_cancel_residual_inflight_held_until_last_cancel`。
+
 ## VenueExecutionLiveness 写入(已落地代码路径,2026-06-15)
 
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + execution §4.3bis/§4.4。

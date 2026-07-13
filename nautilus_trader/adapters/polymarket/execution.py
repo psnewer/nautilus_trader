@@ -896,6 +896,16 @@ class PolymarketExecutionClient(LiveExecutionClient):
             ts_event=ts_event,
         )
 
+    def _log_cancel_request_accepted(
+        self,
+        client_order_id,
+        venue_order_id,
+    ) -> None:
+        self._log.info(
+            f"Cancel request accepted for {client_order_id!r}: "
+            f"venue_order_id={venue_order_id}; awaiting WS CANCELLATION",
+        )
+
     def _cancel_terminal_already_emitted(self, client_order_id) -> bool:
         if client_order_id is None:
             return False
@@ -966,6 +976,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
             )
             return
 
+        begin_cancel_session = getattr(self, "_begin_cancel_session", None)
+        if begin_cancel_session is not None and not begin_cancel_session(order):
+            return
+
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             response: JSON | None = await retry_manager.run(
@@ -996,13 +1010,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
             elif response and venue_order_id.value in (response.get("canceled") or []):
-                self._generate_cancel_success_event(
-                    strategy_id=order.strategy_id,
-                    instrument_id=order.instrument_id,
-                    client_order_id=order.client_order_id,
-                    venue_order_id=venue_order_id,
-                    ts_event=self._clock.timestamp_ns(),
-                )
+                self._log_cancel_request_accepted(order.client_order_id, venue_order_id)
         finally:
             await self._retry_manager_pool.release(retry_manager)
 
@@ -1041,13 +1049,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
             elif response and venue_order_id.value in (response.get("canceled") or []):
-                self._generate_cancel_success_event(
-                    strategy_id=order.strategy_id,
-                    instrument_id=order.instrument_id,
-                    client_order_id=order.client_order_id,
-                    venue_order_id=venue_order_id,
-                    ts_event=self._clock.timestamp_ns(),
-                )
+                self._log_cancel_request_accepted(order.client_order_id, venue_order_id)
         finally:
             await self._retry_manager_pool.release(retry_manager)
 

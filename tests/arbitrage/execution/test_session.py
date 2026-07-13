@@ -4,6 +4,7 @@ mixin 只触及 cache.orders_open + cache.instrument → 用 FakeCache 轻量化
 order event 须真实(mixin 用 isinstance)→ 经 TestEventStubs 构造。
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
 
@@ -50,6 +51,7 @@ class _Base:
         self.sent = []
         self.rejected = []
         self.cancels = []
+        self._loop = asyncio.new_event_loop()
 
     def _send_order_event(self, event):
         self.sent.append(event)  # 充当 NT 基类 super()._send_order_event
@@ -69,6 +71,11 @@ class FakeSessionClient(ArbExecutionSessionMixin, _Base):
 
     def _cancel_residual_orders(self, instrument_id, residual):
         self.cancels.append((instrument_id, list(residual)))
+
+
+class FakeTrackedCancelClient(FakeSessionClient):
+    async def _cancel_residual_one(self, order):
+        self.cancels.append(("residual_one", order))
 
 
 def _harness(timeout_secs=30.0, pair_inflight=None):
@@ -177,6 +184,51 @@ def test_canceled_is_terminal():
 
     assert not client._execution_active
     assert published == []                               # #108:execution.* 退役
+
+
+def test_cancel_session_ignores_fill_until_cancel_terminal():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm, qty=10)
+
+    assert client._begin_cancel_session(order) is True
+    client._send_order_event(TestEventStubs.order_filled(order, instrument=pm, last_qty=Quantity.from_int(10)))
+
+    assert client._execution_active                       # cancel session 不由成交事件收口
+
+    client._send_order_event(TestEventStubs.order_canceled(order))
+
+    assert not client._execution_active
+
+
+def test_base_cancel_only_tracks_residual_until_cancel_terminal():
+    clock = TestClock()
+    msgbus = MessageBus(trader_id=TraderId("T-000"), clock=clock)
+    cache = _FakeCache()
+    pair_registry = PairRegistry()
+    gate = PairInFlightGate()
+    client = FakeTrackedCancelClient(clock, msgbus, cache, pair_registry, 30.0, gate)
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    pair_registry.register("match_1", [pm.id])
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=clock,
+    )
+    residual = _order(factory, pm)
+    cache.add_residual(residual)
+    gate.try_enter("match_1")
+
+    ArbExecutionSessionMixin._cancel_residual_orders(client, pm.id, [residual])
+
+    assert client._execution_active
+    assert _exec_count(gate, "match_1") == 1
+
+    client._send_order_event(TestEventStubs.order_canceled(residual))
+
+    assert not client._execution_active
+    assert _exec_count(gate, "match_1") == 0
 
 
 # ── 超时(NT clock 绝对超时 → 结束,不补救）───────────────────────
