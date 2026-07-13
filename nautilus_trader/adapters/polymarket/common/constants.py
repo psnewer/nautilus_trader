@@ -41,7 +41,6 @@ POLYMARKET_INVALID_API_KEY: Final[str] = "Unauthorized/Invalid api key"
 POLYMARKET_CANCEL_ALREADY_DONE: Final[str] = "already canceled or matched"
 
 POLYMARKET_FINALIZED_TRADE_STATUSES: Final[tuple[PolymarketTradeStatus, ...]] = (
-    PolymarketTradeStatus.MINED,
     PolymarketTradeStatus.CONFIRMED,
 )
 

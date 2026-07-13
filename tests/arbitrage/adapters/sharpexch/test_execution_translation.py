@@ -262,40 +262,35 @@ def _bet(offer_id="221832455", size_matched=0.0, avg_price=0.0):
 
 
 def test_empty_snapshot_no_fills():
-    assert current_bets_to_fills([], {}) == []
+    assert current_bets_to_fills([]) == []
 
 
 def test_unmatched_bet_no_fill():
-    assert current_bets_to_fills([_bet(size_matched=0.0, avg_price=0.0)], {}) == []
+    assert current_bets_to_fills([_bet(size_matched=0.0, avg_price=0.0)]) == []
 
 
-def test_newly_matched_emits_full_delta():
-    fills = current_bets_to_fills([_bet(size_matched=5.0, avg_price=2.0)], {})
+def test_matched_emits_cumulative_size_matched():
+    fills = current_bets_to_fills([_bet(size_matched=5.0, avg_price=2.0)])
     assert len(fills) == 1
     assert fills[0] == {
         "offer_id": "221832455",
-        "delta_qty": 5.0,
         "avg_price": 2.0,
         "size_matched": 5.0,
     }
 
 
-def test_incremental_match_emits_only_delta():
-    fills = current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)], {"221832455": 5.0})
+def test_larger_snapshot_still_emits_full_cumulative_size():
+    fills = current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)])
     assert len(fills) == 1
-    assert fills[0]["delta_qty"] == 3.0
-
-
-def test_no_new_match_no_fill():
-    assert current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)], {"221832455": 8.0}) == []
+    assert fills[0]["size_matched"] == 8.0
 
 
 def test_matched_size_without_price_skipped():
-    assert current_bets_to_fills([_bet(size_matched=5.0, avg_price=0.0)], {}) == []
+    assert current_bets_to_fills([_bet(size_matched=5.0, avg_price=0.0)]) == []
 
 
 def test_missing_offer_id_skipped():
-    assert current_bets_to_fills([_bet(offer_id="", size_matched=5.0, avg_price=2.0)], {}) == []
+    assert current_bets_to_fills([_bet(offer_id="", size_matched=5.0, avg_price=2.0)]) == []
 
 
 def _pbet(offer_id="221832455", size_remaining=0.0, size_matched=0.0, avg_price=0.0, **extra):

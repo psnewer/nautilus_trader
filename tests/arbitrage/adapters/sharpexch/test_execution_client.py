@@ -194,8 +194,49 @@ def test_execution_client_connect_waits_for_balance_and_current_bets_signals():
 
     assert captured["reported"] is True
     assert captured["balances"][0].total.as_double() == pytest.approx(42.50)
-    assert client._balance_reported is True
+    assert client._balance_seen is True
     assert client._last_current_bets_ns > 0
+
+
+def test_on_response_keeps_updating_profile_balance_after_startup():
+    class Response:
+        url = "https://portal.sharpxch.com/customer/api/profile"
+
+        def __init__(self, balance):
+            self._balance = balance
+
+        async def json(self):
+            return {"balance": str(self._balance)}
+
+    client = _client()
+    captured_balances = []
+
+    def capture_account_state(*, balances, margins, reported, ts_event, info=None):
+        captured_balances.append(balances[0].total.as_double())
+
+    client.generate_account_state = capture_account_state
+
+    _run(client._on_response(Response(42.5)))
+    _run(client._on_response(Response(40.0)))
+
+    assert captured_balances == pytest.approx([42.5, 40.0])
+
+
+def test_on_response_ignores_duplicate_profile_balance():
+    class Response:
+        url = "https://portal.sharpxch.com/customer/api/profile"
+
+        async def json(self):
+            return {"balance": "42.50"}
+
+    client = _client()
+    calls = []
+    client.generate_account_state = lambda **kwargs: calls.append(kwargs)
+
+    _run(client._on_response(Response()))
+    _run(client._on_response(Response()))
+
+    assert len(calls) == 1
 
 
 def test_on_general_frame_balance_is_ignored():

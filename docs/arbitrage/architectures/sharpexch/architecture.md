@@ -347,7 +347,8 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   `CURRENT_BETS` 调 `_on_current_bets`。
 - `_on_current_bets` 已维护 USD 口径 `_current_bets` 快照、刷新 `_last_current_bets_ns`,
   首帧打印一次 `SE CURRENT_BETS routed: bets=N`,可写 `VenueExecutionLiveness` 的
-  order/position alive,并按原始 `sizeMatched` 累积值生成增量 `generate_order_filled`。
+  order/position alive。`sizeMatched` 是累计成交量;`_on_current_bets` 不维护 `prevMatched`,
+  而是用累计 `sizeMatched` 与 NT order 当前 `filled_qty` 推出本次 `generate_order_filled.last_qty`。
 - `SharpExchWebSocketHandler.on_frame(...)` 已落地:任意非空 WS 帧(含 SockJS 心跳)都会刷新
   ExecutionClient 的 `_last_frame_ns`。SE reconcile 与 OE 一样只信“有 CURRENT_BETS 快照且 general
   WS 新鲜”的状态;否则 `_ensure_exec_snapshot_fresh()` 触发 single-flight `_reload_exec_page()`,
@@ -364,7 +365,8 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   SE order liveness dead 并返回空/None。
 - `generate_position_status_reports` 已基于 `current_bets_to_positions(...)` 生成
   `PositionStatusReport`;无法获得可信快照时标记 SE position liveness dead 并返回空。
-  真实 zero-order probe 已验证登录/API/WS 与 `BALANCE` / `CURRENT_BETS` 业务帧;runtime 余额事实以 HTTP response 为准。
+  真实 zero-order probe 已验证登录/API/WS 与 `BALANCE` / `CURRENT_BETS` 业务帧;runtime 余额事实以持续监听
+  HTTP profile/balance response 为准,同值去重后写入 `AccountState`。
 - `SharpExchMessageParser.parse_general_frame({"BALANCE": ...})` 输出
   `{"type": "balance", "balance": float|None, "av_balance": float|None}`。
 - `SharpExchMessageParser.parse_general_frame({"CURRENT_BETS": ...})` 输出
@@ -374,7 +376,7 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   生成 `AccountBalance(total=free=balance USD, locked=0 USD)`,对齐 OE `BALANCE` 语义。
 - `normalize_current_bets_to_usd(bets, fx)` 保留为纯函数;SE runtime 调用时使用 `fx=1.0`,
   因真实 `CURRENT_BETS.currency=USD`。
-- `current_bets_to_fills(bets, prev_matched)` 已落地:把非增量 `CURRENT_BETS` 快照转新增成交 delta,join key 为 `offerId`,只在 `sizeMatched` 累积值增加且 `averagePrice > 0` 时产出。
+- `current_bets_to_fills(bets)` 已落地:把非增量 `CURRENT_BETS` 快照转累计成交意图,join key 为 `offerId`,只在 `sizeMatched > 0` 且 `averagePrice > 0` 时产出。
 - `bet_order_progress(bet)` 已落地:从单条 bet 派生 `accepted` / `partially_filled` / `filled` / `unknown`,并透出 `market_id` / `selection_id` / `side` / `original_qty` / `filled_qty` / `avg_px` / `price`。
 - `current_bets_to_positions(bets)` 已落地:按 `(marketId, selectionId)` 聚合 matched 注单,BACK=LONG、LAY=SHORT,反向 matched 只抵减净额、不进入主方向均价;净额为 0 或 matched 为 0 时跳过。
 - reload-then-report 与 launcher opt-in 已接线。真实登录 selector/post-login 行为已由

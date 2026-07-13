@@ -77,7 +77,7 @@ ExecutionClient (维护账户)
 
 ### risk-6.5: PM ExecutionClient 事件驱动维护账户状态
 - 前置: PolymarketExecutionClient 启动
-- 输入: 触发任一上游事件(连接时 / 链上成交确认 `POLYMARKET_FINALIZED_TRADE_STATUSES`)
+- 输入: 触发任一上游事件(连接时 / `CONFIRMED` 成交确认 `POLYMARKET_FINALIZED_TRADE_STATUSES`)
 - 期望: cache.account_state(POLYMARKET) 自动更新
 - 验收: 路径完全在 ExecutionClient 内,无独立监控 Actor;**上游无周期 timer、NT 无默认 QueryAccount 轮询、健康检查也不拉余额**(Q17,完全靠事件)
 

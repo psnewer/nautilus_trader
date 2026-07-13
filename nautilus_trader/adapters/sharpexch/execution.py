@@ -118,7 +118,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._page_lock = asyncio.Lock()
         self._browser_lock = browser_lock or asyncio.Lock()
         self._login_state = login_state
-        self._bet_matched: dict[str, float] = {}
         self._bet_fill_seq: dict[str, int] = {}
         self._current_bets: dict[str, dict] = {}
         self._last_current_bets_ns = 0
@@ -127,7 +126,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._reload_inflight = None
         self._reload_bets_wait_ns = secs_to_nanos(8.0)
         self._current_bets_frames_seen = 0
-        self._balance_reported = False
+        self._balance_seen = False
+        self._last_balance_value: float | None = None
         self._balance_ready_fut = None
         self._current_bets_ready_fut = None
         self._connect_ready_timeout_secs = _CONNECT_READY_TIMEOUT_SECS
@@ -164,7 +164,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # 连接就绪信号:profile/balance API + execution general WS CURRENT_BETS。
         # 有限等待只用于避免 startup 过早进入 reconcile;超时后仍 fail-soft 交后续 reconnect/reconcile 自愈。
         await self._wait_for_initial_business_state()
-        if not self._balance_reported:
+        if not self._balance_seen:
             self._log.warning("SE balance not captured from responses; reporting 0.0")
             self.generate_account_state(
                 balances=se_balance_to_account_balances(0.0),
@@ -185,7 +185,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             )
         except asyncio.TimeoutError:
             missing = []
-            if not self._balance_reported:
+            if not self._balance_seen:
                 missing.append("profile_balance")
             if self._last_current_bets_ns <= 0:
                 missing.append("CURRENT_BETS")
@@ -223,8 +223,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
     async def _on_response(self, response) -> None:
         """response 监听器: 从登录后 SPA 的 profile/balance API 响应中提取余额。"""
-        if self._balance_reported:
-            return
         url = response.url
         # 只看 API 请求(排除静态资源)
         if "/api/" not in url:
@@ -240,6 +238,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             return
         balance_val = _extract_balance_from_response(body)
         if balance_val is not None:
+            if self._last_balance_value is not None and abs(balance_val - self._last_balance_value) < 1e-9:
+                self._balance_seen = True
+                _resolve_future(self._balance_ready_fut)
+                return
             self._log.info("SE balance from %s: %.2f" % (url, balance_val))
             self.generate_account_state(
                 balances=se_balance_to_account_balances(balance_val),
@@ -247,7 +249,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 reported=True,
                 ts_event=self._clock.timestamp_ns(),
             )
-            self._balance_reported = True
+            self._balance_seen = True
+            self._last_balance_value = balance_val
             _resolve_future(self._balance_ready_fut)
 
     def _mark_exec_frame(self) -> None:
@@ -432,18 +435,22 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self._venue_liveness.mark_order_alive(SHARPEXCH)
             self._venue_liveness.mark_position_alive(SHARPEXCH)
 
-        for fill in current_bets_to_fills(bets, self._bet_matched):
+        for fill in current_bets_to_fills(bets):
             offer_id = fill["offer_id"]
             voi = VenueOrderId(offer_id)
             client_order_id = self._cache.client_order_id(voi)
             nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
             if nt_order is None:
                 self._log.warning(f"CURRENT_BETS fill offerId={offer_id} has no NT order; skip")
-                self._bet_matched[offer_id] = fill["size_matched"]
                 continue
             inst = self._cache.instrument(nt_order.instrument_id)
             if inst is None:
-                self._bet_matched[offer_id] = fill["size_matched"]
+                continue
+            matched_qty = fill["size_matched"]
+            already_filled = nt_order.filled_qty.as_double()
+            remaining_qty = nt_order.quantity.as_double() - already_filled
+            last_qty = min(matched_qty - already_filled, remaining_qty)
+            if last_qty <= 0:
                 continue
             seq = self._bet_fill_seq.get(offer_id, 0) + 1
             self._bet_fill_seq[offer_id] = seq
@@ -456,14 +463,13 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 trade_id=TradeId(f"SE-{offer_id}-{seq}"),
                 order_side=nt_order.side,
                 order_type=nt_order.order_type,
-                last_qty=inst.make_qty(fill["delta_qty"]),
+                last_qty=inst.make_qty(last_qty),
                 last_px=inst.make_price(fill["avg_price"]),
                 quote_currency=USD,
                 commission=Money(0, USD),
                 liquidity_side=LiquiditySide.MAKER,
                 ts_event=self._clock.timestamp_ns(),
             )
-            self._bet_matched[offer_id] = fill["size_matched"]
 
     async def generate_fill_reports(self, command) -> list:
         return []
@@ -873,10 +879,10 @@ def normalize_current_bets_to_usd(bets, fx: float) -> list:
     return [_normalize_bet_amounts_to_usd(bet, fx) for bet in (bets or [])]
 
 
-def current_bets_to_fills(bets, prev_matched: dict) -> list:
-    """SE `CURRENT_BETS` 快照 → 新增成交 delta 列表。
+def current_bets_to_fills(bets) -> list:
+    """SE `CURRENT_BETS` 快照 → 累计成交列表。
 
-    `sizeMatched` 是累积成交量;只有 `delta > 0` 且 `averagePrice > 0` 时才产生成交。
+    `sizeMatched` 本身是累计成交量;只有 `sizeMatched > 0` 且 `averagePrice > 0` 时才产生成交。
     """
 
     fills = []
@@ -885,14 +891,11 @@ def current_bets_to_fills(bets, prev_matched: dict) -> list:
         if not offer_id:
             continue
         size_matched = float(bet.get("sizeMatched", 0) or 0)
-        prev = float(prev_matched.get(offer_id, 0.0))
-        delta = size_matched - prev
         avg_price = float(bet.get("averagePrice", 0) or 0)
-        if delta > 0 and avg_price > 0:
+        if size_matched > 0 and avg_price > 0:
             fills.append(
                 {
                     "offer_id": offer_id,
-                    "delta_qty": delta,
                     "avg_price": avg_price,
                     "size_matched": size_matched,
                 },

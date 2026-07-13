@@ -190,12 +190,14 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 ### pm-adapter-5.account.1: 余额刷新是事件驱动,无周期 timer(Q17)
 
 **前置**: PM ExecutionClient 启动
-**输入**: 分别触发 (a) `_connect()`;(b) 一笔成交达 `POLYMARKET_FINALIZED_TRADE_STATUSES`(链上确认)
+**输入**: 分别触发 (a) `_connect()`;(b) 一笔成交达 `POLYMARKET_FINALIZED_TRADE_STATUSES`(`CONFIRMED` 终态)
 **期望**: 两种情形各调一次 `_update_account_state` → `get_balance_allowance` → `generate_account_state` 写 cache
 **验收**:
 - 上游 `execution.py` 内**无 `set_timer` / 周期轮询**;静态搜索确认
 - NT 无默认 `QueryAccount` 周期发送(全库仅反序列化处实例化)
 - **健康检查不拉余额**(Q17):PM 余额完全靠这两个事件,§6.8.4 健康检查只对账持仓/挂单不碰余额;可用余额由 `_check_balance` 自扣在途挂单(risk-6.3b)
+- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_fill_waits_for_confirmed_status` 覆盖实时 trade: `MATCHED` 不产 NT fill,`CONFIRMED` 才按成交量产 fill。
+- `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_realtime_maker_fill_uses_maker_order_fields` 覆盖实时 maker trade:按 `maker_orders` 中属于本账户的 `order_id` / `matched_amount` / `price` 产 fill。
 
 ### pm-adapter-5.account.2: free=total 陷阱 —— reported 快照清空 NT 自算 locked(Q17)
 

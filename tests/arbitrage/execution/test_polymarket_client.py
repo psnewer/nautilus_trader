@@ -17,24 +17,38 @@ from py_clob_client_v2 import PostOrdersArgs as TopLevelPostOrdersArgs
 from py_clob_client_v2.clob_types import OrderPayload
 from py_clob_client_v2.clob_types import PostOrdersV2Args
 
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.http import transport as pm_transport
+from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
 from nautilus_trader.adapters.polymarket.schemas.trade import PolymarketTradeReport
+from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
 
 from nautilus_trader.adapters.polymarket.arb_execution import ArbPolymarketExecutionClient
 from nautilus_trader.adapters.polymarket.arb_execution import pm_raw_position_to_settlement
 from nautilus_trader.adapters.polymarket.contract import TxResult
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.factories import OrderFactory
+from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.execution.session import ArbExecutionSessionMixin
 from nautilus_trader.adapters.polymarket.settlement import SettlementResult
 from nautilus_trader.adapters.polymarket.settlement import SettlementPosition
+from tests.arbitrage.risk._factories import pm_instrument
 
 
 @dataclass
@@ -397,6 +411,195 @@ def test_polymarket_fill_history_unknown_instrument_is_debug_noise():
     assert reports == []
     assert log.warnings == []
     assert len(log.debugs) == 1
+
+
+class _PMFillTracker:
+    def __init__(self):
+        self.recorded = []
+
+    def snap_fill_qty(self, _venue_order_id, fill_qty):
+        return fill_qty
+
+    def record_fill(self, *, venue_order_id, qty, px, ts):
+        self.recorded.append((venue_order_id, qty, px, ts))
+
+
+class _PMTradeMsg:
+    id = "trade-1"
+    market = "0xcond"
+    match_time = "1710000000"
+
+    def __init__(self, status):
+        self.status = status
+
+    def venue_order_id(self, _order_id):
+        return VenueOrderId("PM-OID-1")
+
+    def get_asset_id(self, _order_id):
+        return "tok1"
+
+    def last_qty(self, _order_id):
+        return Decimal("5")
+
+    def last_px(self, _order_id):
+        return Decimal("0.42")
+
+    def liquidity_side(self):
+        return LiquiditySide.TAKER
+
+    def to_dict(self):
+        return {"status": self.status.value}
+
+
+def test_polymarket_realtime_fill_waits_for_confirmed_status():
+    """PM 实时成交只在 CONFIRMED 终态发 NT fill;MATCHED 只记录状态,不释放完全成交 session。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(5), inst.make_price(0.42))
+    cache.add_order(order)
+    cache.add_venue_order_id(order.client_order_id, VenueOrderId("PM-OID-1"))
+
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _fill_tracker=_PMFillTracker(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    async def update_account_state():
+        return None
+
+    captured = []
+    client._update_account_state = update_account_state
+    client.create_task = lambda coro: coro.close()
+    client.generate_order_filled = lambda **kwargs: captured.append(kwargs)
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+
+    client._handle_user_trade_in_ws_trade_msg(
+        _PMTradeMsg(PolymarketTradeStatus.MATCHED),
+        trade_id="trade-1",
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+    assert captured == []
+
+    client._handle_user_trade_in_ws_trade_msg(
+        _PMTradeMsg(PolymarketTradeStatus.CONFIRMED),
+        trade_id="trade-1",
+        wait_for_ack=False,
+        order_id="PM-OID-1",
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["last_qty"].as_double() == pytest.approx(5.0)
+    assert captured[0]["last_px"].as_double() == pytest.approx(0.42)
+
+
+def test_polymarket_realtime_maker_fill_uses_maker_order_fields():
+    """PM maker 成交用 maker_orders 中属于本账户的 order_id/matched_amount/price。"""
+    cache = TestComponentStubs.cache()
+    inst = pm_instrument("ATP", "home", token="tok1")
+    cache.add_instrument(inst)
+    factory = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    )
+    order = factory.limit(inst.id, OrderSide.BUY, inst.make_qty(3.25), inst.make_price(0.37))
+    cache.add_order(order)
+    cache.add_venue_order_id(order.client_order_id, VenueOrderId("PM-MAKER-OID"))
+
+    client = SimpleNamespace(
+        account_id=AccountId("POLYMARKET-001"),
+        _api_key="api-key",
+        _cache=cache,
+        _clock=_Clock(),
+        _fill_tracker=_PMFillTracker(),
+        _finalized_trades=OrderedDict(),
+        _log=_Log(),
+        _processed_fills=OrderedDict(),
+        _processed_trades=OrderedDict(),
+        _wallet_address="0xwallet",
+        PROCESSED_TRADES_LIMIT=100,
+    )
+    async def update_account_state():
+        return None
+
+    captured = []
+    client._update_account_state = update_account_state
+    client.create_task = lambda coro: coro.close()
+    client.generate_order_filled = lambda **kwargs: captured.append(kwargs)
+    client._truncate_ordered_dict = PolymarketExecutionClient._truncate_ordered_dict.__get__(client)
+    client._record_processed_fill = PolymarketExecutionClient._record_processed_fill.__get__(client)
+    client._record_processed_trade = PolymarketExecutionClient._record_processed_trade.__get__(client)
+    client._handle_user_trade_in_ws_trade_msg = (
+        PolymarketExecutionClient._handle_user_trade_in_ws_trade_msg.__get__(client)
+    )
+
+    maker_order = PolymarketMakerOrder(
+        asset_id="tok1",
+        fee_rate_bps="",
+        maker_address="0xwallet",
+        matched_amount="3.25",
+        order_id="PM-MAKER-OID",
+        outcome="Alexander Zverev",
+        owner="api-key",
+        price="0.37",
+    )
+    msg = PolymarketUserTrade(
+        asset_id="other-token",
+        bucket_index=0,
+        fee_rate_bps="0",
+        id="trade-maker-1",
+        last_update="1710000000",
+        maker_address="0xwallet",
+        maker_orders=[maker_order],
+        market="0xcond",
+        match_time="1710000000",
+        outcome="Jannik Sinner",
+        owner="other-owner",
+        price="0.63",
+        side=PolymarketOrderSide.SELL,
+        size="3.25",
+        status=PolymarketTradeStatus.CONFIRMED,
+        taker_order_id="PM-TAKER-OID",
+        timestamp="1710000000000",
+        trade_owner="other-owner",
+        trader_side=PolymarketLiquiditySide.MAKER,
+        type=PolymarketEventType.TRADE,
+    )
+
+    assert msg.get_filled_user_order_ids("0xwallet", "api-key") == ["PM-MAKER-OID"]
+
+    client._handle_user_trade_in_ws_trade_msg(
+        msg,
+        trade_id="trade-maker-1",
+        wait_for_ack=False,
+        order_id="PM-MAKER-OID",
+    )
+
+    assert len(captured) == 1
+    assert str(captured[0]["venue_order_id"]) == "PM-MAKER-OID"
+    assert captured[0]["last_qty"].as_double() == pytest.approx(3.25)
+    assert captured[0]["last_px"].as_double() == pytest.approx(0.37)
+    assert captured[0]["liquidity_side"] == LiquiditySide.MAKER
 
 
 def test_arb_generate_position_reports_marks_alive_and_dispatches_settlement(monkeypatch):

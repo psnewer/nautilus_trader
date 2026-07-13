@@ -121,7 +121,7 @@ def test_current_bets_amount_fields_normalized_to_usd():
     assert out["price"] == "2.30"
 
 
-# ─── current_bets_to_fills:CURRENT_BETS 快照 → 成交 delta(回执核心)─────────────
+# ─── current_bets_to_fills:CURRENT_BETS 快照 → 累计成交(回执核心)─────────────
 #
 # 实测 schema(2026-06-06 抓帧,offerId==venue_order_id):unmatched item =
 #   {"offerId":"221832455","selectionId":"19924823","averagePrice":0.0,"profitNet":"0.00","liability":"0.00"}
@@ -134,40 +134,36 @@ def _bet(offer_id="221832455", size_matched=0.0, avg_price=0.0):
 
 
 def test_empty_snapshot_no_fills():
-    assert current_bets_to_fills([], {}) == []
+    assert current_bets_to_fills([]) == []
 
 
 def test_unmatched_bet_no_fill():
     """实测 unmatched 帧(sizeMatched=0/averagePrice=0)→ 不产成交。"""
-    assert current_bets_to_fills([_bet(size_matched=0.0, avg_price=0.0)], {}) == []
+    assert current_bets_to_fills([_bet(size_matched=0.0, avg_price=0.0)]) == []
 
 
-def test_newly_matched_emits_full_delta():
-    fills = current_bets_to_fills([_bet(size_matched=5.0, avg_price=2.0)], {})
+def test_matched_emits_cumulative_size_matched():
+    fills = current_bets_to_fills([_bet(size_matched=5.0, avg_price=2.0)])
     assert len(fills) == 1
     f = fills[0]
     assert f["offer_id"] == "221832455"
-    assert f["delta_qty"] == 5.0 and f["avg_price"] == 2.0 and f["size_matched"] == 5.0
+    assert f["avg_price"] == 2.0 and f["size_matched"] == 5.0
+    assert "delta_qty" not in f
 
 
-def test_incremental_match_emits_only_delta():
-    """快照非增量:prev 累积 5,本次 8 → delta=3。"""
-    fills = current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)], {"221832455": 5.0})
-    assert len(fills) == 1 and fills[0]["delta_qty"] == 3.0
-
-
-def test_no_new_match_no_fill():
-    """同一累积值再推一次 → 无新增 → 不重复发成交。"""
-    assert current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)], {"221832455": 8.0}) == []
+def test_larger_snapshot_still_emits_full_cumulative_size():
+    """`sizeMatched` 是累计成交量,helper 不再持有 prevMatched 状态。"""
+    fills = current_bets_to_fills([_bet(size_matched=8.0, avg_price=2.0)])
+    assert len(fills) == 1 and fills[0]["size_matched"] == 8.0
 
 
 def test_matched_size_without_price_skipped():
-    """delta>0 但 averagePrice<=0(矛盾/未填价)→ 跳过(下帧价填充后再发)。"""
-    assert current_bets_to_fills([_bet(size_matched=5.0, avg_price=0.0)], {}) == []
+    """sizeMatched>0 但 averagePrice<=0(矛盾/未填价)→ 跳过(下帧价填充后再发)。"""
+    assert current_bets_to_fills([_bet(size_matched=5.0, avg_price=0.0)]) == []
 
 
 def test_missing_offer_id_skipped():
-    assert current_bets_to_fills([_bet(offer_id="", size_matched=5.0, avg_price=2.0)], {}) == []
+    assert current_bets_to_fills([_bet(offer_id="", size_matched=5.0, avg_price=2.0)]) == []
 
 
 # ─── bet_order_progress:CURRENT_BETS 单 bet → 订单进度(reconcile 派生)────────────

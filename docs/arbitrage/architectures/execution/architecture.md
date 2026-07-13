@@ -57,7 +57,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  PMev["PM:连接 + 链上成交确认"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
+  PMev["PM:连接 + CONFIRMED 成交确认"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
   OEws["OE:WS 余额帧(已含挂单占用)"] -->|generate_account_state| C
   C --> RISK["RiskEngine._check_balance 读 live"]
 ```
@@ -128,7 +128,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
   {"offerId":"221832455","selectionId":"19924823","averagePrice":0.0,"profitNet":"0.00","liability":"0.00"}
   ```
   - **修正旧假设**:订单 join key 是 **`offerId`(== NT order 的 `venue_order_id`**,executor 下单时从响应 `offerIds` map 写入),**不是** `marketId`(`marketId` 是分组键)。
-  - **完整字段(权威来源 = 老 `orchestrator`/`tracker`/`odds_client` 实读,非精选 debug log)**:`offerId`/`marketId`/`selectionId`/**`side`(BACK/LAY)**/**`sizePlaced`(原始量)**/`sizeRemaining`(>0 → working)/`sizeMatched`(累积成交,>0 → position)/`averagePrice`/`price`/`placedDate`/`profitNet`/`liability`。⚠️ 早先误判"bet 无 side"(只看了 odds_client 那条**精选 5 字段** debug log)——实际 bet **自带 `side`/`sizePlaced`**,reconcile 可直接用、无需反查 NT order(支持外部/重启单)。**字段语义单一真理源 = 老代码**;exec 侧先将 `size*`/`liability`/`profit*` 字段乘 `fx` 转成 USD,再由 `current_bets_to_fills`/`bet_order_progress` 复用语义、产 NT 事件/report。
+  - **完整字段(权威来源 = 老 `orchestrator`/`tracker`/`odds_client` 实读,非精选 debug log)**:`offerId`/`marketId`/`selectionId`/**`side`(BACK/LAY)**/**`sizePlaced`(原始量)**/`sizeRemaining`(>0 → working)/`sizeMatched`(累积成交,>0 → position)/`averagePrice`/`price`/`placedDate`/`profitNet`/`liability`。⚠️ 早先误判"bet 无 side"(只看了 odds_client 那条**精选 5 字段** debug log)——实际 bet **自带 `side`/`sizePlaced`**,reconcile 可直接用、无需反查 NT order(支持外部/重启单)。**字段语义单一真理源 = 老代码**;exec 侧先将 `size*`/`liability`/`profit*` 字段乘 `fx` 转成 USD,再由 `current_bets_to_fills`/`bet_order_progress` 复用语义、产 NT 事件/report。`current_bets_to_fills` 不再维护 `prevMatched`: `sizeMatched` 本身就是累计成交量;`_on_current_bets` 用累计值判断成交进度,并结合 NT order 当前 `filled_qty` 推出本次 `last_qty`。
   - **仅 unmatched 态已实测**;**matched 态填充值**(sizeMatched>0/averagePrice>0)待**真成交**确认([[gap_c_oe_exec_live_validated]])。
 ```python
 # (上方 OrbitExchExecutionClient 续)
@@ -359,7 +359,7 @@ async def _ensure_exec_snapshot_fresh():
 
 | Venue | 方式 | 触发 |
 |---|---|---|
-| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + 链上成交确认**(`POLYMARKET_FINALIZED_TRADE_STATUSES`);**无周期 timer、健康检查不拉** |
+| PM | 主动 REST `get_balance_allowance` → `generate_account_state` | **连接时 + `CONFIRMED` 终态成交确认**(`POLYMARKET_FINALIZED_TRADE_STATUSES`);**无周期 timer、健康检查不拉** |
 | OE | WS 余额帧(已含挂单占用)→ `generate_account_state` | 被动 reactive(Step 5 实写第三类 WS 帧捕获) |
 
 可用余额的"扣挂单"逻辑在 **RiskEngine**(PM 自扣 / OE 信 WS),非本组件。
@@ -465,7 +465,7 @@ sequenceDiagram
 - [x] `class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient)`(离线可构造:super 只需 instrument_provider+标准 NT 依赖,browser 仅 `_connect` 用);`_submit_order` 接 `_begin_session` + 结果映射(成功→`generate_order_accepted`/失败→`rejected`);`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单)
 - [x] **`general` 帧分型 + BALANCE 解析**(`parse_general_frame`,8 passed)+ **`_on_general_frame`:BALANCE→乘 fx 后 `generate_account_state`**(`oe_balance_to_account_balances`:WS 已净挂单 → total=free,数值按 USD 解释;已测)
 - [x] **Gap C 接线已写(#63)+ 连接路径 live 验证通过(#67/#89/#216)**:`_connect`(共享 BM `create_page("execution")` + 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置 page timeout + 登录 `/customer/` + `OrbitExchExecutor` + general WS `on_order_update(_on_general_frame)` + 最多 30s 等 `BALANCE`/`CURRENT_BETS`,缺余额才发 0 USD 兜底 account state)、`_login`(+ `_dismiss_post_login_popup` 关登录后弹窗)、`_place_via_executor`(`nt_order_to_legacy_order`:market_id/selection_id 取自 OE instrument)、`_cancel_order`/`_cancel_all_orders`/`_cancel_residual_one`(executor + `generate_order_canceled/_cancel_rejected`)。**登录后弹窗语义(#89)**:不靠固定 sleep,而是在有限 timeout 内等待 `postLoginPopup` 容器可见;出现后点击主页面区域关闭,超时/无弹窗则静默继续,不阻断连接。**#67 关键时序**:`ws_handler.start()`(挂 `page.on('websocket')`)**必须早于 `goto/_login`**,否则错过登录导航期间建立的 general WS → 收不到 BALANCE/CURRENT_BETS。**live 验证**(`launchers/arb_node.py` + skip=true,2026-06-07):登录✓/关弹窗✓/general WS✓/真 BALANCE 帧 `0.00→37.49 GBP`✓。**#77 修正**:`_cancel_order` 传给 `executor.cancel_order` 的 legacy Order 必须带 `market_id`/`selection_id`;若 instrument 不足,从 `_current_bets[venue_order_id]` 回填。**注**:`place_and_cancel` scenario 跑老 `services/` 栈,**不验 NT client**([[gap_c_oe_exec_live_validated]])
-- [x] **`_on_current_bets` → `generate_order_filled` + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 算 `sizeMatched` delta;`test_execution_translation.py` 7 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查 NT order → `generate_order_filled`,last_px=averagePrice,liquidity=MAKER 假设);accepted 由 `_submit_order` 同步发、撤单由 `_cancel_*` 发,此处只补成交;任一完整 CURRENT_BETS 快照同时标记 OE `order_alive`/`position_alive`
+- [x] **`_on_current_bets` → `generate_order_filled` + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 读取累计 `sizeMatched`;`test_execution_translation.py` 6 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查 NT order → 用累计 `sizeMatched` 与 NT order `filled_qty` 推出本次 `last_qty`,last_px=averagePrice,liquidity=MAKER 假设);accepted 由 `_submit_order` 同步发、撤单由 `_cancel_*` 发,此处只补成交;任一完整 CURRENT_BETS 快照同时标记 OE `order_alive`/`position_alive`
 - [x] **#85 live 校准:venue 回执已到;未成交等待 30s timeout 属 Q15 默认语义**。`launchers/arb_node.py`
   真执行复验显示 OE 两笔 `placeBets` 均返回 `status=OK + offerIds`;NT accepted 事件本身无独立日志锚点,
   但下一轮机会先 cancel-only 撤旧 open order(`222032569`/`222032570`)再丢弃当次 submit,说明 cache 中已有

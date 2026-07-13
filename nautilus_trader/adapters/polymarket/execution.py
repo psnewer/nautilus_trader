@@ -2095,13 +2095,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
             and msg.status in POLYMARKET_FINALIZED_TRADE_STATUSES
             and previous_status not in POLYMARKET_FINALIZED_TRADE_STATUSES
         ):
-            self._record_processed_trade(trade_id, msg.status)
             self._log.debug(
                 f"Trade {trade_id} transitioned from {previous_status.value} "
-                f"to {msg.status.value} - refreshing account state",
+                f"to {msg.status.value} - processing confirmed fill",
             )
-            self.create_task(self._update_account_state())
-            return
 
         # For same status or new trades, process fills (per-fill dedup handles duplicates)
 
@@ -2133,6 +2130,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         if wait_for_ack:
             self.create_task(self._wait_for_ack_trade(msg, venue_order_id))
+            return
+
+        if msg.status not in POLYMARKET_FINALIZED_TRADE_STATUSES:
+            self._record_processed_trade(trade_id, msg.status)
             return
 
         # Check if this specific fill was already processed (handles multi-order trades)
@@ -2218,6 +2219,6 @@ class PolymarketExecutionClient(LiveExecutionClient):
         )
         self._record_processed_trade(trade_id, msg.status)
 
-        # Only update account balance after trade is mined on-chain
+        # Only update account balance after the trade reaches the CONFIRMED terminal state.
         if msg.status in POLYMARKET_FINALIZED_TRADE_STATUSES:
             self.create_task(self._update_account_state())

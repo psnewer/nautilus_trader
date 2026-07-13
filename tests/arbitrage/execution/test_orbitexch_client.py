@@ -316,7 +316,7 @@ def test_page_lock_serializes_concurrent_page_ops():
 def test_on_current_bets_matched_fires_generate_order_filled():
     """Gap C Tier 2(2026-06-09 live offerId=222016509 的**真实 matched 帧值**:
     `sizeMatched=7.00`/`averagePrice=2.3`)→ `_on_current_bets` → `generate_order_filled`
-    (`last_qty=delta`, `last_px=avg`)。需 cache 有 order + voi 索引——生产由 ExecEngine apply
+    (`last_qty=sizeMatched`, `last_px=avg`)。需 cache 有 order + voi 索引——生产由 ExecEngine apply
     `OrderAccepted` 建该索引;`gapc_fill_probe` 无 ExecEngine 故事件路径未触发(探针局限,非 bug),
     此处离线补全。`liquidity_side=MAKER` 无条件硬编码,**已评估无害**(#83):OE 无 maker/taker 概念、
     fill commission=0、rebate 不读此字段 → 纯名义。"""
@@ -347,13 +347,13 @@ def test_on_current_bets_matched_fires_generate_order_filled():
     assert len(captured) == 1
     f = captured[0]
     assert f["venue_order_id"] == voi
-    assert f["last_qty"].as_double() == 7.0       # delta = sizeMatched - prev(0)
+    assert f["last_qty"].as_double() == 7.0       # sizeMatched 是累计成交量
     assert f["last_px"].as_double() == 2.3        # averagePrice(成交均价,非 1.01 限价)
     assert f["liquidity_side"] == LiquiditySide.MAKER    # 硬编码假设
 
 
-def test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes():
-    """成交 delta 用 OE 原始 GBP 累积值算;fx 热改不应制造虚假新增成交。"""
+def test_on_current_bets_fill_uses_cumulative_raw_matched_and_clamps_remaining():
+    """成交判断使用 OE 原始 GBP 累计 sizeMatched,NT last_qty 按剩余量裁剪。"""
     from nautilus_trader.common.factories import OrderFactory
     from nautilus_trader.model.enums import OrderSide
     from nautilus_trader.model.identifiers import StrategyId
@@ -378,8 +378,7 @@ def test_on_current_bets_fill_delta_uses_raw_matched_when_fx_changes():
         "sizeRemaining": "0.00", "averagePrice": "2.3", "price": "1.01",
     }
 
-    c._on_current_bets([bet])
-    c._fx = 1.4
+    bet = dict(bet, sizeMatched="8.00")
     c._on_current_bets([bet])
 
     assert len(captured) == 1

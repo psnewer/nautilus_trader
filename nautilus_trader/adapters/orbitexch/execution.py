@@ -110,17 +110,17 @@ def nt_order_to_legacy_order(nt_order, inst):
     )
 
 
-def current_bets_to_fills(bets, prev_matched: dict) -> list:
-    """OE `CURRENT_BETS` 快照(**非增量**)→ 新增成交意图列表(纯函数,可单测,无 NT 依赖)。
+def current_bets_to_fills(bets) -> list:
+    """OE `CURRENT_BETS` 快照(**非增量**)→ 累计成交意图列表(纯函数,可单测,无 NT 依赖)。
 
     设计见 `architectures/execution/architecture.md §3.2`。字段语义复用 odds_client(单一真理源):
     - join key:`offerId`(== NT order 的 `venue_order_id`,executor 下单时从响应 `offerIds` 写入)。
-    - `sizeMatched` 是**累积**已成交量 → 本次新增 `delta = sizeMatched − prev_matched[offerId]`。
+    - `sizeMatched` 是**累积**已成交量;调用方用它判断全成,并结合 NT order 已成交量推出本次
+      `last_qty`。
     - `averagePrice` = 成交均价(unmatched 时 0)。
 
-    仅当 `delta > 0 且 averagePrice > 0` 才产出一条成交意图;调用方据此发 `generate_order_filled`
-    并把 `size_matched` 写回 `prev_matched`。返回 `list[dict]`:
-    `{"offer_id","delta_qty","avg_price","size_matched"}`。
+    仅当 `sizeMatched > 0 且 averagePrice > 0` 才产出一条累计成交意图;调用方据此发
+    `generate_order_filled`。返回 `list[dict]`:`{"offer_id","avg_price","size_matched"}`。
 
     **实测确认**(2026-06-06 抓帧):unmatched item = `{offerId, selectionId, averagePrice:0,
     profitNet, liability}`(+ 派生用的 `marketId`/`sizeRemaining`/`sizeMatched`)。**matched 态填充值
@@ -132,13 +132,10 @@ def current_bets_to_fills(bets, prev_matched: dict) -> list:
         if not offer_id:
             continue
         size_matched = float(bet.get("sizeMatched", 0) or 0)
-        prev = float(prev_matched.get(offer_id, 0.0))
-        delta = size_matched - prev
         avg_price = float(bet.get("averagePrice", 0) or 0)
-        if delta > 0 and avg_price > 0:
+        if size_matched > 0 and avg_price > 0:
             fills.append({
                 "offer_id": offer_id,
-                "delta_qty": delta,
                 "avg_price": avg_price,
                 "size_matched": size_matched,
             })
@@ -321,7 +318,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._fx = float(fx) if fx > 0 else 1.0
         self._page = None
         self._ws_handler = None
-        self._bet_matched: dict = {}    # offerId → 累积 sizeMatched(CURRENT_BETS 快照算 delta)
         self._bet_fill_seq: dict = {}   # offerId → 成交序号(trade_id 唯一)
         self._current_bets: dict = {}   # offerId → 最新 bet(快照,供 reconcile reports)
         # #105:页锁 —— 串行所有"碰 OE execution 页"的操作(place / cancel / 未来 reload),
@@ -640,8 +636,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     def _on_current_bets(self, bets) -> None:
         """CURRENT_BETS 快照 → NT 成交事件(`generate_order_filled`)。
 
-        `current_bets_to_fills` 算新增成交;每条按 `offerId == venue_order_id` 反查 NT order →
-        发 `generate_order_filled`(last_qty=delta, last_px=averagePrice)。accepted 已由 `_submit_order`
+        `current_bets_to_fills` 读取累计成交;每条按 `offerId == venue_order_id` 反查 NT order →
+        发 `generate_order_filled`(last_qty=sizeMatched, last_px=averagePrice)。accepted 已由 `_submit_order`
         同步生成、撤单由 `_cancel_*` 生成,这里只补成交。**matched 帧填充值已 live 验**
         (#82,offerId=222016509:sizeMatched/averagePrice)。
         `liquidity_side=MAKER` 无条件硬编码:**已评估无害**——OE 是博彩交易所、CURRENT_BETS 无 maker/taker
@@ -663,18 +659,24 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         self._venue_liveness.mark_position_alive(ORBITEXCH)
 
-        # 成交增量必须用 OE 原始 GBP 累积值算,避免 web 热改 fx 时把换汇变化误判成新增成交。
-        # 生成 NT fill 前再把本次 delta 转成 USD;reconcile 快照仍使用上方 usd_bets。
-        for fill in current_bets_to_fills(bets, self._bet_matched):
+        # `sizeMatched` 是 OE 原始 GBP 累计成交量。这里不维护 prevMatched;生成 NT fill 时用
+        # 当前 NT order.filled_qty 推出本次 last_qty,避免累计快照被重复累加。reconcile 快照仍使用上方
+        # usd_bets。
+        for fill in current_bets_to_fills(bets):
             offer_id = fill["offer_id"]
             voi = VenueOrderId(offer_id)
             client_order_id = self._cache.client_order_id(voi)
             nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
             if nt_order is None:
                 self._log.warning(f"CURRENT_BETS 成交 offerId={offer_id} 无对应 NT order;跳过")
-                self._bet_matched[offer_id] = fill["size_matched"]
                 continue
             inst = self._cache.instrument(nt_order.instrument_id)
+            matched_qty = fill["size_matched"] * self._current_fx()
+            already_filled = nt_order.filled_qty.as_double()
+            remaining_qty = nt_order.quantity.as_double() - already_filled
+            last_qty = min(matched_qty - already_filled, remaining_qty)
+            if last_qty <= 0:
+                continue
             seq = self._bet_fill_seq.get(offer_id, 0) + 1
             self._bet_fill_seq[offer_id] = seq
             self.generate_order_filled(
@@ -686,14 +688,13 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 trade_id=TradeId(f"OE-{offer_id}-{seq}"),
                 order_side=nt_order.side,
                 order_type=nt_order.order_type,
-                last_qty=inst.make_qty(fill["delta_qty"] * self._current_fx()),
+                last_qty=inst.make_qty(last_qty),
                 last_px=inst.make_price(fill["avg_price"]),
                 quote_currency=USD,
                 commission=Money(0, USD),
                 liquidity_side=LiquiditySide.MAKER,
                 ts_event=self._clock.timestamp_ns(),
             )
-            self._bet_matched[offer_id] = fill["size_matched"]
 
     def _resolve_oe_instrument(self, market_id: str, selection_id: str):
         """按 `market_id`+`selection_id` 在 cache 反查 OE instrument(外部/重启单无 NT order 时用)。"""
