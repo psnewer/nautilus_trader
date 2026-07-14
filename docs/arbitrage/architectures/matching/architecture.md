@@ -13,7 +13,7 @@
 
 | 件 | 基类 | 职责 |
 |---|---|---|
-| `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:读取 `anchor_venue` + 逐个 `tradable_venues` 跑归一+匹配 → publish `MatchedPair` + 注册 `PairRegistry`;dispatcher 显式配置 PMSPORTS anchor + enabled tradable venues |
+| `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:读取 `anchor_venue` + 逐个 `tradable_venues` 跑归一+匹配 → 生成 pair candidate → 概率校验通过后 publish `MatchedPair` + 注册 `PairRegistry`;dispatcher 显式配置 PMSPORTS anchor + enabled tradable venues |
 | `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;可交易腿与 non-tradable anchor id 分槽登记 |
 | `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue 的多腿(home/draw/away)反推一个事件视图(供算法用) |
 | `MatchEngine` | 普通类(算法平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名 confidence 匹配(`get_similar` 命中数 / 两侧较长 token 数)+ 全候选贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
@@ -41,8 +41,10 @@ flowchart LR
   MA -->|anchor + tradable venues 当前态| C[(Cache.instruments)]
   C -->|按 info 6-key 读| MA
   MA -->|reconstruct events + anchor×tradable match| MATCH["NormalizedEvent[anchor][] × NormalizedEvent[tradable][]"]
-  MATCH -->|emit| EV["publish data:MatchedPair"]
-  MATCH -->|register| REG["PairRegistry.register(pair_id, instrument_ids)"]
+  MATCH -->|candidate| PV["概率校验:临时订阅 OBD + 读 best ask"]
+  PV -->|pass| EV["publish data:MatchedPair"]
+  PV -->|pass| REG["PairRegistry.register(pair_id, instrument_ids)"]
+  PV -->|pending/fail| HOLD["不 publish / 不 register"]
   REG --> RPS["risk / portfolio / session / strategy 读"]
   EV --> ST[Strategy 订阅]
 ```
@@ -50,7 +52,8 @@ flowchart LR
 要点:
 - **触发**:#59 后由 NT clock 自重排 timer 驱动,不再订 `InstrumentsRefreshed`。
 - **anchor + tradable venue latch**:`anchor_venue` cache 非空才配;每个 `tradable_venues` 各自非空即可与 anchor 匹配,某个 tradable venue 缺失不阻塞其它 tradable venue。未配置 anchor/tradable 时不匹配。PMSPORTS non-tradable anchor 路径会把同一 anchor 下的所有 tradable venue 腿聚合成同一个 pair。
-- **PairRegistry 写**:matching 是**唯一写者**;register 时把可交易腿 instrument_id → 同一 pair_id;若 anchor 是 non-tradable,通过 `anchor_instrument_ids` 单独登记。
+- **PairRegistry 写**:matching 是**唯一写者**;只有概率校验通过的 pair 才 register。register 时把可交易腿 instrument_id → 同一 pair_id;若 anchor 是 non-tradable,通过 `anchor_instrument_ids` 单独登记。
+- **概率校验**:匹配 candidate 先由 MatchingActor 临时订阅对应可交易腿 OBD;各 venue 的互斥腿 ask 概率和都 `<= probability_validation_clean_sum` 后,再用跨 venue 各 outcome 最优 ask 概率和校验。通过后 publish/register,失败后保持 failed 记录并不再重复发布。
 
 ---
 
@@ -114,9 +117,11 @@ class MarketMatchingActor(Actor):
         msgbus.subscribe(f"data.{SportsGameUpdate.__name__}*", self.on_data)  # #60 ended → eviction
         msgbus.subscribe("command.arb.refresh_interval", self._on_set_refresh_interval_cmd)  # #119 控制台热改(consumer;契约见 web §8.3)
     def on_stop(self):  self._cancel_alert()
-    def on_data(self, data):                                   # #60
+    def on_data(self, data):                                   # #60 + 概率校验
         if isinstance(data, SportsGameUpdate) and data.ended:
-            self._evict_game(data.game_id)                     # gameId→pair_id → unregister + _ended_games
+            self._evict_game(data.game_id)                     # gameId→pair_id → unregister + _ended_games + 清 validation
+        elif isinstance(data, OrderBookDeltas):
+            self._try_validate_pair_by_instrument(data.instrument_id)
     def _on_alert(self, event):
         try: self._maybe_match()
         finally: self._schedule_next()                         # clock 自重排(读 refresh_interval_secs)
@@ -127,7 +132,8 @@ class MarketMatchingActor(Actor):
         for venue in config.tradable_venues:
             tradable = list(cache.instruments(venue=venue))
             if not tradable: continue                         # 单 tradable venue 缺失不阻塞其它
-            # 反推 events → anchor×tradable 匹配 → emit + register(_emit_pair 填 game_id→pair_ids;_emitted_pairs 去重日志)
+            # 反推 events → anchor×tradable 匹配 → candidate → 概率校验通过后 emit + register
+            # _handle_pair_candidate 填 game_id→pair_ids;_emitted_pairs 只在真正 publish 后记录
 ```
 
 `MarketMatchingConfig`:字段为 `anchor_venue`、`tradable_venues`、
@@ -140,6 +146,9 @@ tradable venue 通路。
 
 `refresh_interval_secs` = matching 轮询间隔;`competition_max_matches` 保持不变。当前匹配有效性由
 `home_confidence > 0 and away_confidence > 0 and total_confidence > 0` 决定。
+`probability_validation_enabled` 默认开启;`probability_validation_clean_sum` 默认 `1.05`,
+`probability_validation_min_best_sum` 默认 `0.95`。它们只控制 Matching→Strategy 之间的
+pair 发布门槛,不进入 RiskEngine。
 
 `_RuntimeDeps`:`pair_registry: PairRegistry`。
 
@@ -149,7 +158,7 @@ tradable venue 通路。
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `MarketMatchingActor` | —(#59:自 clock timer 驱动,不再订 `InstrumentsRefreshed`;发现迁 DataClient) | `data:MatchedPair`(成功匹配) |
+| `MarketMatchingActor` | `data.OrderBookDeltas*`(概率校验临时订阅),`data.SportsGameUpdate*`(ended eviction) | `data:MatchedPair`(匹配且概率校验通过) |
 | consumers | strategy 订 `data.MatchedPair*`(NT 带尾 `*` 通配,#58);risk/portfolio/session pull `PairRegistry` | — |
 
 ---
@@ -182,6 +191,32 @@ events_by_venue.setdefault((venue, key), []).append(instrument)
    `anchor_instrument_ids` 放 `.PMSPORTS`;actor 不再维护 `pm_instrument_ids` /
    `oe_instrument_ids` 旧事件字段,真实分组统一以 `venue_instrument_ids` 为准。
    `PairRegistry.instrument_ids_for_pair()` 默认只登记这些可交易腿,`anchor_ids_for_pair()` 单独登记 `.PMSPORTS`。
+6. 聚合后的 pair candidate 进入概率校验。校验通过前不写 PairRegistry,也不 publish
+   `MatchedPair`,因此 Strategy 不会订阅未校验 pair。
+
+### 4.2.1 概率校验门控(Matching→Strategy)
+
+目标是挡住明显错配的 MatchedPair,不把它交给 Strategy/Risk。该门控属于 Matching,不是
+Risk 门控。
+
+状态按 `pair_id` 保存在 `_pair_validations`:
+- `PENDING`:已生成 candidate,MatchingActor 对 candidate 的可交易腿临时订阅 OBD,等待可用于校验的 best ask。
+- `PASSED`:已通过,已 register + publish,并取消 Matching 自己的临时 OBD 订阅。
+- `FAILED`:已失败,不 register、不 publish,并取消 Matching 自己的临时 OBD 订阅。进程内 sticky;同 `pair_id` 后续 candidate 直接跳过。
+
+同一个 `pair_id` 已存在于 `_pair_validations` 时,新的 matching candidate 直接跳过,不更新
+candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pair 也直接跳过。
+
+校验算法:
+1. 对 candidate 中每个可交易 instrument 读取 cache order book 的 best ask,转换为概率。
+2. 按 venue 聚合其互斥腿 ask 概率和。若任一 venue 缺 role、缺 book、缺 ask,或 ask 和
+   `> probability_validation_clean_sum`(默认 `1.05`),保持 `PENDING`,继续等待后续 OBD。
+3. 若所有 venue 的 ask 和都可校验,按 outcome 取跨 venue 最小 ask 概率,再求和。
+4. 若该 best sum `>= probability_validation_min_best_sum`(默认 `0.95`),置 `PASSED`,
+   register + publish;否则置 `FAILED` 并不再发布。
+
+ended eviction 会清理对应 `pair_id` 的 validation 状态和临时 OBD 订阅,避免结束赛事的
+failed/pending 记录阻塞未来生命周期。
 
 ### 4.3 pair_id 生成
 
@@ -205,7 +240,7 @@ def on_data(d): if isinstance(d, SportsGameUpdate) and d.ended: self._evict_game
 def _evict_game(gid):
     self._ended_games.add(gid)
     pids = self._game_to_pair.pop(gid, set())
-    for pid in pids: registry.unregister_pair(pid); _emitted_pairs.discard(pid)
+    for pid in pids: registry.unregister_pair(pid); _emitted_pairs.discard(pid); _clear_pair_validation(pid)
 # _emit_pair 填 game_to_pair[anchor 腿 info["game_id"]].add(pair_id);_maybe_match 排除 game_id ∈ _ended_games 的 anchor 腿
 ```
 - **映射键 `game_id`**:`arb_provider` / 后续 PMSPORTS provider 发现时抽 `event["gameId"]` 入 `info["game_id"]`(== sports WS gameId,§5.9 实采证实)。
@@ -241,9 +276,20 @@ sequenceDiagram
       MA->>CA: 读 instruments(tradable)
       alt tradable cache 非空
         MA->>MA: events_from_instruments → anchor×tradable 匹配
-        loop 每个匹配
-          MA->>PR: register(pair_id, tradable legs, anchor_instrument_ids=...)
-          MA->>MB: publish MatchedPair
+        loop 每个 candidate
+          alt pair 未校验过
+            MA->>MA: 临时订阅 candidate 可交易腿 OBD
+            MA->>CA: 读 best ask 做概率校验
+            alt 校验通过
+              MA->>PR: register(pair_id, tradable legs, anchor_instrument_ids=...)
+              MA->>MB: publish MatchedPair
+              MA->>MA: 取消临时 OBD 订阅
+            else 校验失败
+              MA->>MA: 标记 FAILED,取消临时 OBD 订阅
+            else 暂不可校验
+              MA->>MA: 保持 PENDING,等待后续 OBD
+            end
+          end
         end
       end
     end
@@ -260,6 +306,7 @@ sequenceDiagram
 - [x] `events_from_instruments` + `normalize_team_name`(平移自旧)+ 单测;venue 只从 InstrumentId / `instrument.id.venue` 解析,不读 `info["venue"]` 兜底
 - [x] `MatchEngine.match_events`(平移,改输入为 `NormalizedEvent[from instruments]`)+ 单测
 - [x] `MarketMatchingActor`:clock tick + anchor×tradable venues + register + publish + sports ended eviction + 测;SE opt-in 多 tradable venue 已离线覆盖;#127 PMSPORTS 默认 anchor 与显式 PM tradable anchor 配置已离线覆盖
+- [x] `MarketMatchingActor` 概率校验门控:matching candidate 先临时订阅 OBD,通过后才 register/publish;pending/failed/passed/ended 清理已离线覆盖
 - [x] **#34 修正联动**:`risk._resolve_pair_id` 改读 `PairRegistry`;`session._pair_id_for` 同;`configure_arb` / `_init_arb_session` 加 `pair_registry` 参;factories 经 ArbContext 传;**discovery oe_provider 删 "competition = pair_id" 错注释**
 - [x] 各 test 修:risk/portfolio/engine/session 用 `PairRegistry.register` 而非 `info["competition"]`
 - [ ] /live-test 待补:启动顺序 + 真实双 venue refresh 触发匹配

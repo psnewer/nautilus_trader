@@ -12,8 +12,14 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC
+from nautilus_trader.model.book import OrderBook
+from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.enums import BookAction
+from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -118,7 +124,13 @@ def _pmsports(comp, home, away, game_id=777):
     )
 
 
-def _harness(interval=30.0, *, anchor_venue="POLYMARKET", tradable_venues=("ORBITEXCH",)):
+def _harness(
+    interval=30.0,
+    *,
+    anchor_venue="POLYMARKET",
+    tradable_venues=("ORBITEXCH",),
+    probability_validation_enabled=False,
+):
     clock = TestClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     cache = TestComponentStubs.cache()
@@ -128,6 +140,7 @@ def _harness(interval=30.0, *, anchor_venue="POLYMARKET", tradable_venues=("ORBI
         refresh_interval_secs=interval,
         anchor_venue=anchor_venue,
         tradable_venues=tradable_venues,
+        probability_validation_enabled=probability_validation_enabled,
     )
     actor = MarketMatchingActor(cfg, _RuntimeDeps(pair_registry=registry))
     actor.register_base(portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock)
@@ -140,6 +153,35 @@ def _populate_match(cache, comp="EPL", home="Arsenal", away="Chelsea"):
     cache.add_instrument(_pm(comp, home, away, "away", f"pma{comp}"))
     cache.add_instrument(_oe(comp, home, away, "home", 1))
     cache.add_instrument(_oe(comp, home, away, "away", 2))
+
+
+def _wire_validation_books(actor, cache, books: dict[str, float]):
+    subscribed = []
+    unsubscribed = []
+    actor.subscribe_order_book_deltas = lambda iid, *a, **k: subscribed.append(str(iid))
+    actor.unsubscribe_order_book_deltas = lambda iid, *a, **k: unsubscribed.append(str(iid))
+    for iid, ask in books.items():
+        _add_order_book(cache, InstrumentId.from_str(iid), ask)
+    return subscribed, unsubscribed
+
+
+def _add_order_book(cache, instrument_id, ask):
+    book = OrderBook(instrument_id, BookType.L2_MBP)
+    book.apply_delta(OrderBookDelta(
+        instrument_id=instrument_id,
+        action=BookAction.ADD,
+        order=BookOrder(
+            side=OrderSide.SELL,
+            price=Price.from_str(str(ask)),
+            size=Quantity.from_int(100),
+            order_id=1,
+        ),
+        flags=0,
+        sequence=1,
+        ts_event=0,
+        ts_init=0,
+    ))
+    cache.add_order_book(book)
 
 
 # ── 触发:_maybe_match(timer 回调驱动)+ cache-非空 latch ──────────────
@@ -251,6 +293,145 @@ def test_pmsports_anchor_aggregates_enabled_tradable_venues_into_one_pair():
     assert registry.anchor_ids_for_pair(mp.pair_id) == {str(anchor.id)}
     assert registry.instrument_ids_for_pair(mp.pair_id) == set(mp.tradable_instrument_ids)
     assert str(anchor.id) not in registry.instrument_ids_for_pair(mp.pair_id)
+
+
+def test_probability_validation_passes_then_registers_and_publishes():
+    """matching-prob.1:概率校验通过后才 register + publish,并取消 Matching 临时订阅。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("ATP", "Rafael Jodar", "Felix Gill")
+    pm_home = _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h")
+    pm_away = _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a")
+    oe_home = _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11)
+    oe_away = _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12)
+    for instrument in [anchor, pm_home, pm_away, oe_home, oe_away]:
+        cache.add_instrument(instrument)
+    subscribed, unsubscribed = _wire_validation_books(actor, cache, {
+        str(pm_home.id): 0.50,
+        str(pm_away.id): 0.50,
+        str(oe_home.id): 2.00,
+        str(oe_away.id): 2.00,
+    })
+    published = []
+    actor.publish_data = lambda **k: published.append(k)
+
+    actor._maybe_match()
+
+    assert len(published) == 1
+    pair_id = published[0]["data"].pair_id
+    assert actor._pair_validations[pair_id].status == "PASSED"
+    assert registry.instrument_ids_for_pair(pair_id) == set(published[0]["data"].tradable_instrument_ids)
+    assert set(subscribed) == {str(pm_home.id), str(pm_away.id), str(oe_home.id), str(oe_away.id)}
+    assert set(unsubscribed) == set(subscribed)
+
+
+def test_probability_validation_waits_when_venue_sum_not_clean():
+    """matching-prob.2:任一 venue 自身 ask 概率和 > 1.05 时保持 PENDING,不 publish。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("ATP", "Rafael Jodar", "Felix Gill")
+    pm_home = _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h")
+    pm_away = _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a")
+    oe_home = _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11)
+    oe_away = _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12)
+    for instrument in [anchor, pm_home, pm_away, oe_home, oe_away]:
+        cache.add_instrument(instrument)
+    subscribed, unsubscribed = _wire_validation_books(actor, cache, {
+        str(pm_home.id): 0.60,
+        str(pm_away.id): 0.60,
+        str(oe_home.id): 2.00,
+        str(oe_away.id): 2.00,
+    })
+    published = []
+    actor.publish_data = lambda **k: published.append(k)
+
+    actor._maybe_match()
+    actor._maybe_match()  # 同 pair_id 已在 validation 中,新 candidate 直接跳过
+
+    assert published == []
+    assert len(registry) == 0
+    assert list(actor._pair_validations.values())[0].status == "PENDING"
+    assert len(subscribed) == 4
+    assert unsubscribed == []
+
+
+def test_probability_validation_failed_is_sticky_and_not_published():
+    """matching-prob.3:校验失败转 FAILED,不 register/publish;同 pair 再出现直接跳过。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("ATP", "Rafael Jodar", "Felix Gill")
+    pm_home = _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h")
+    pm_away = _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a")
+    oe_home = _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11)
+    oe_away = _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12)
+    for instrument in [anchor, pm_home, pm_away, oe_home, oe_away]:
+        cache.add_instrument(instrument)
+    subscribed, unsubscribed = _wire_validation_books(actor, cache, {
+        str(pm_home.id): 0.48,
+        str(pm_away.id): 0.48,
+        str(oe_home.id): 2.20,
+        str(oe_away.id): 2.20,
+    })
+    published = []
+    actor.publish_data = lambda **k: published.append(k)
+
+    actor._maybe_match()
+    actor._maybe_match()
+
+    state = list(actor._pair_validations.values())[0]
+    assert state.status == "FAILED"
+    assert state.best_sum < 0.95
+    assert published == []
+    assert len(registry) == 0
+    assert len(subscribed) == 4
+    assert set(unsubscribed) == set(subscribed)
+
+
+def test_probability_validation_ended_game_clears_state_and_subscription():
+    """matching-prob.4:ended eviction 同时清 PairRegistry 与 _pair_validations。"""
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("ATP", "Rafael Jodar", "Felix Gill", game_id=888)
+    pm_home = _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h")
+    pm_away = _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a")
+    oe_home = _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11)
+    oe_away = _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12)
+    for instrument in [anchor, pm_home, pm_away, oe_home, oe_away]:
+        cache.add_instrument(instrument)
+    subscribed, unsubscribed = _wire_validation_books(actor, cache, {
+        str(pm_home.id): 0.60,
+        str(pm_away.id): 0.60,
+        str(oe_home.id): 2.00,
+        str(oe_away.id): 2.00,
+    })
+    actor.publish_data = lambda **k: None
+
+    actor._maybe_match()
+    assert actor._pair_validations
+
+    actor.on_data(SportsGameUpdate(
+        ts_event=0, ts_init=0, game_id=888, league="x", home_team="", away_team="",
+        status="", score="", period="", elapsed="", live=False, ended=True,
+        finished_ts="2030-01-01T00:00:00Z",
+    ))
+
+    assert actor._pair_validations == {}
+    assert actor._validation_pairs_by_instrument == {}
+    assert set(unsubscribed) == set(subscribed)
 
 
 def test_pmsports_anchor_ended_evicts_aggregated_pair():

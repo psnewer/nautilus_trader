@@ -9,7 +9,7 @@
 - ✅ `test_matched_pair_event.py`(7:Data 子类、anchor/tradable/venue 字段、keyed venue map 主通路、dict roundtrip、旧 pm/oe payload 不回填主字段、旧 payload 即使带后缀也不推断主字段、Arrow map roundtrip)
 - ✅ `test_normalizer.py`(7:`normalize_team_name` + `events_from_instruments` 反推/分组/Venue Registry 后缀解析/info 缺失跳过/venue 缺失跳过且不读 `info["venue"]` 兜底/group_key)
 - ✅ `test_engine.py`(9:同组队名匹/跨 competition 隔/相似度近似匹/全候选最高 confidence 优先贪心/confidence denominator/`competition_max_matches`/零 confidence 过滤/空输入)
-- ✅ `test_actor.py`(12:timer 驱动 + cache-非空 latch —— PM 单边 cache 空不配 / 未显式配置 anchor/tradable venue 时不做 PM/OE 兜底 / 显式 PM tradable anchor 下 PM↔OE 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **SE opt-in 多 tradable venue**:OE 缺失但 SE 存在时 PM↔SE 可匹配、OE+SE 同场在显式 PM tradable anchor 路径产两个不同 pair_id / **#127 `anchor_venue`+`tradable_venues` 配置覆盖显式 PM tradable anchor** / **#127 PMSPORTS non-tradable anchor 聚合 PM+OE 可交易腿到同一 pair** / **#127 PMSPORTS anchor ended eviction** / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair set → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
+- ✅ `test_actor.py`(16:timer 驱动 + cache-非空 latch —— PM 单边 cache 空不配 / 未显式配置 anchor/tradable venue 时不做 PM/OE 兜底 / 显式 PM tradable anchor 下 PM↔OE 双边都有→匹配+register+publish / `_on_alert` 触发匹配+重排 / 不同 competition 不配 / **SE opt-in 多 tradable venue**:OE 缺失但 SE 存在时 PM↔SE 可匹配、OE+SE 同场在显式 PM tradable anchor 路径产两个不同 pair_id / **#127 `anchor_venue`+`tradable_venues` 配置覆盖显式 PM tradable anchor** / **#127 PMSPORTS non-tradable anchor 聚合 PM+OE 可交易腿到同一 pair** / **Matching 概率校验门控**:通过后 register+publish、venue ask 和不干净时 pending、best sum 过低时 failed sticky、ended 清 pending 订阅 / **#127 PMSPORTS anchor ended eviction** / **#60 `test_sports_ended_evicts_pair`**(`SportsGameUpdate.ended` 经 gameId 查 pair set → unregister + 不再 re-match)/ **#60 `test_sports_update_non_ended_ignored`**(live 不触发))
   > **#59→#60 演进**:旧 `on_data(InstrumentsRefreshed)`+2×window gate(#52)退役 → matching 自 clock timer 读 cache(#59,refresher 退役);eviction 从 #59 的 expiration 扫描换成 **#60 sports `ended` 事件驱动**(用户判 gamma expiration 不准)。`PairRegistry` key 归一 str(#58),#116 增 `instrument_ids_for_pair` 供 Portfolio 读取完整 outcome 集合。
 - ⬜ 全链路 wiring(DataClient 原生发现 → cache → matching timer → MatchedPair)经 /live-test 验:**#59 smoke10 已验**(PM Loaded 114 + MatchedPair mensik-zverev,refresher 未参与)
 
@@ -27,6 +27,7 @@
 - **PMSPORTS event anchor(#127)**:`MarketMatchingConfig.anchor_venue/tradable_venues`、`PairRegistry.anchor_instrument_ids` 分槽、`.PMSPORTS` non-tradable synthetic event instruments、PMSPORTS anchor 聚合 PM/OE 可交易腿、以及 `MatchedPair` 的 `anchor_instrument_ids` / `tradable_instrument_ids` / `venue_instrument_ids` 明确 schema 已落地离线测。后续仍需 live smoke 与 Risk 跳过 anchor 的端到端验证。详细设计见 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 - **近期窗口**: `2 × refresh_interval`(Q5) 已退役;cache 非空 latch 取代
 - **算法**:`EventNormalizer` + `MatchEngine` 从 `services/market_matching/` 平移;NT 路径字段命名已泛化为 anchor/tradable(`MatchResult.anchor_event/tradable_event`)。`home_confidence` / `away_confidence` = `get_similar` 命中 token 数 / 两侧较长 token 数,`total_confidence = home_confidence + away_confidence`。组内匹配计算所有 anchor×tradable 候选后按 `(total_confidence,total_matched_chars)` 降序贪心分配。
+- **概率校验门控**:matching candidate 先进入 MatchingActor 内部 `_pair_validations`;通过前不写 `PairRegistry`,不 publish `MatchedPair`。校验读各腿 best ask:每个 venue 的互斥腿 ask 和必须 `<= 1.05`,再按 outcome 取跨 venue 最小 ask 概率求和,若 `>= 0.95` 才发布;否则 failed sticky。
 
 ## 文件分布
 
@@ -141,6 +142,67 @@
 - 清理同时覆盖 anchor/tradable 映射。
 
 **验收**:`test_pmsports_anchor_ended_evicts_aggregated_pair`。
+
+### matching-prob-validation.1:概率校验通过后才注册和发布(已落地)
+
+**前置**:`MarketMatchingConfig(probability_validation_enabled=True)`,cache 含 PMSPORTS anchor + PM/OE tradable legs,且每条 tradable leg 已有 order book best ask。
+
+**输入**:触发 `MarketMatchingActor._maybe_match()`。
+
+**步骤**:
+1. Matching 先生成 candidate。
+2. MatchingActor 对 candidate 的可交易腿临时订阅 OBD。
+3. 概率校验读取 best ask;每个 venue 的互斥腿 ask 和 `<= 1.05`,跨 venue 各 outcome 最优 ask 概率和 `>= 0.95`。
+
+**期望**:
+- `PairRegistry.register()` 被调用。
+- publish 一个 `MatchedPair`。
+- `_pair_validations[pair_id].status == "PASSED"`。
+- Matching 自己的临时 OBD 订阅被取消。
+
+**验收**:`test_probability_validation_passes_then_registers_and_publishes`。
+
+### matching-prob-validation.2:venue ask 和不干净时保持 pending(已落地)
+
+**前置**:同一 candidate 的某个 venue 互斥腿 ask 概率和 `> 1.05`。
+
+**输入**:触发 `_maybe_match()`。
+
+**期望**:
+- 不 register、不 publish。
+- `_pair_validations[pair_id].status == "PENDING"`。
+- 临时 OBD 订阅保留,等待后续 OBD。
+- 同 `pair_id` 再次进入 matching candidate 时直接跳过,不重复订阅。
+
+**验收**:`test_probability_validation_waits_when_venue_sum_not_clean`。
+
+### matching-prob-validation.3:best sum 过低时 failed sticky(已落地)
+
+**前置**:所有 venue ask 和都 `<= 1.05`,但按 outcome 取跨 venue最小 ask 概率后的 best sum `< 0.95`。
+
+**输入**:触发 `_maybe_match()`。
+
+**期望**:
+- 不 register、不 publish。
+- `_pair_validations[pair_id].status == "FAILED"`。
+- 临时 OBD 订阅被取消。
+- 同 `pair_id` 后续 candidate 直接跳过,不重新订阅、不重新校验。
+
+**验收**:`test_probability_validation_failed_is_sticky_and_not_published`。
+
+### matching-prob-validation.4:ended 清理 validation 状态和临时订阅(已落地)
+
+**前置**:某 `game_id` 对应 pair 处于 `PENDING`。
+
+**输入**:收到 `SportsGameUpdate(game_id=..., ended=True)`。
+
+**期望**:
+- PairRegistry unregister 该 pair。
+- `_pair_validations` 删除该 pair。
+- `_validation_pairs_by_instrument` 删除该 pair 的反向索引。
+- 未取消的临时 OBD 订阅全部取消。
+
+**验收**:`test_probability_validation_ended_game_clears_state_and_subscription`。
 
 ### matching-3.3: 异构 instrument 归一(Q9 关键)
 

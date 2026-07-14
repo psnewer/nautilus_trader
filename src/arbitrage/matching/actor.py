@@ -1,7 +1,7 @@
 """
 MarketMatchingActor —— NT `Actor` 子类(#59 slice A:自 clock timer 周期触发,gate = anchor + tradable
-venue cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venue 匹配 → publish `MatchedPair`
-+ 注册 `PairRegistry`;过期 instrument 经 `_reap_stale_pairs` eviction。
+venue cache 非空 latch)→ 读 cache.instruments → 反推事件 → 跨 venue 匹配 → 生成 pair candidate
+→ 概率校验通过后 publish `MatchedPair` + 注册 `PairRegistry`;sports ended 事件驱动 eviction。
 
 设计见 `docs/arbitrage/architectures/matching/architecture.md §3.3 / §4`。
 (发现迁 DataClient 原生 `_update_instruments`,InstrumentRefresher 已退役,见 refactor.md §5.2.3/#59。)
@@ -18,12 +18,15 @@ from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.core.datetime import secs_to_nanos
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
@@ -42,6 +45,9 @@ class MarketMatchingConfig(ActorConfig, frozen=True, kw_only=True):
     tradable_venues: tuple[str, ...] = ()
     refresh_interval_secs: float = 30.0
     competition_max_matches: dict = None
+    probability_validation_enabled: bool = True
+    probability_validation_clean_sum: float = 1.05
+    probability_validation_min_best_sum: float = 0.95
 
 
 @dataclass(slots=True)
@@ -49,6 +55,36 @@ class _RuntimeDeps:
     """非 msgspec config 可放对象的字段(PairRegistry 由 launcher 经 ArbContext 注入)。"""
 
     pair_registry: PairRegistry
+
+
+@dataclass(slots=True)
+class _PairCandidate:
+    pair_id: str
+    sport: str
+    competition: str
+    confidence: float
+    anchor_instrument_ids: list[str]
+    tradable_instrument_ids: list[str]
+    venue_instrument_ids: dict[str, list[str]]
+    registry_instrument_ids: list[str]
+    registry_anchor_ids: list[str]
+    game_id: int | None = None
+
+
+@dataclass(slots=True)
+class _PairValidationState:
+    candidate: _PairCandidate
+    status: str = "PENDING"
+    subscribed_instrument_ids: set[str] = None
+    venue_sums: dict[str, float] = None
+    best_sum: float | None = None
+    fail_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.subscribed_instrument_ids is None:
+            self.subscribed_instrument_ids = set()
+        if self.venue_sums is None:
+            self.venue_sums = {}
 
 
 class MarketMatchingActor(Actor):
@@ -68,6 +104,8 @@ class MarketMatchingActor(Actor):
         self._emitted_pairs: set[str] = set()  # 已记 INFO 的 pair_id(每 tick 重 emit,日志只记新对)
         self._game_to_pair: dict[int, set[str]] = {}  # #60:gameId → pair_id set(emit 时填,sports ended 时查)
         self._ended_games: set[int] = set()      # #60:已结束 gameId(matching 排除,不再 re-emit)
+        self._pair_validations: dict[str, _PairValidationState] = {}
+        self._validation_pairs_by_instrument: dict[str, set[str]] = {}
 
     # ── 生命周期(#58 slice A:自 timer 触发,替代 InstrumentsRefreshed 订阅)──────
     def on_start(self) -> None:
@@ -86,23 +124,41 @@ class MarketMatchingActor(Actor):
         if self._log is not None:  # 守卫:离线 __new__ 单测未注册 logger(同 #110 PM 守卫)
             self.log.info(f"matching refresh_interval hot-updated: {cmd.secs}s")
 
-    # ── sports 信号入口(#60:ended → eviction;替 #59 expiration reaper)────────
-    def on_data(self, data) -> None:
-        if not isinstance(data, SportsGameUpdate):
-            return
-        if data.ended:
-            self._evict_game(data.game_id)
-
     def _evict_game(self, game_id: int) -> None:
         self._ended_games.add(game_id)
         pair_ids = self._game_to_pair.pop(game_id, set())
         for pair_id in pair_ids:
-            self._pair_registry.unregister_pair(pair_id)
-            self._emitted_pairs.discard(pair_id)
-            self.log.info(f"Evicted pair {pair_id} (game {game_id} ended)")
+            self._evict_pair(pair_id, reason=f"game {game_id} ended")
+
+    def _evict_pair(self, pair_id: str, *, reason: str) -> None:
+        self._pair_registry.unregister_pair(pair_id)
+        self._emitted_pairs.discard(pair_id)
+        self._clear_pair_validation(pair_id)
+        self.log.info(f"Evicted pair {pair_id} ({reason})")
+
+    def _clear_pair_validation(self, pair_id: str) -> None:
+        state = self._pair_validations.pop(pair_id, None)
+        if state is None:
+            return
+        self._unsubscribe_validation_books(pair_id, state)
+
+    def _unsubscribe_validation_books(self, pair_id: str, state: _PairValidationState) -> None:
+        for iid in list(state.subscribed_instrument_ids):
+            pair_ids = self._validation_pairs_by_instrument.get(iid)
+            if pair_ids is not None:
+                pair_ids.discard(pair_id)
+                if not pair_ids:
+                    self._validation_pairs_by_instrument.pop(iid, None)
+            try:
+                self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid))
+            except Exception as e:  # noqa: BLE001
+                self._log.warning(f"matching validation unsubscribe {iid} failed: {e!r}")
+            state.subscribed_instrument_ids.discard(iid)
 
     def on_stop(self) -> None:
         self._cancel_alert()
+        for pair_id in list(self._pair_validations):
+            self._clear_pair_validation(pair_id)
 
     def _schedule_next(self) -> None:
         self._cancel_alert()
@@ -231,26 +287,22 @@ class MarketMatchingActor(Actor):
         gid = self._game_id_of(anchor_ev.legs[0]) if anchor_ev.legs else None
         if gid is not None:
             self._game_to_pair.setdefault(gid, set()).add(pair_id)
-        self._pair_registry.register(pair_id, tradable_ids, anchor_instrument_ids=anchor_ids)
-        if pair_id not in self._emitted_pairs:
-            self._emitted_pairs.add(pair_id)
-            self.log.info(
-                f"MatchedPair {pair_id} (conf={confidence:.2f}, "
-                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} tradable={len(tradable_ids)})",
-            )
-        now = self.clock.timestamp_ns()
-        self.publish_data(
-            data_type=DataType(MatchedPair),
-            data=MatchedPair(
-                ts_event=now,
-                ts_init=now,
+        self._handle_pair_candidate(
+            _PairCandidate(
                 pair_id=pair_id,
                 sport=anchor_ev.sport,
                 competition=anchor_ev.competition,
+                confidence=confidence,
                 anchor_instrument_ids=anchor_ids,
                 tradable_instrument_ids=tradable_ids,
                 venue_instrument_ids=venue_ids,
-                confidence=confidence,
+                registry_instrument_ids=tradable_ids,
+                registry_anchor_ids=anchor_ids,
+                game_id=gid,
+            ),
+            log_message=(
+                f"MatchedPair {pair_id} (conf={confidence:.2f}, "
+                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} tradable={len(tradable_ids)})"
             ),
         )
 
@@ -271,38 +323,186 @@ class MarketMatchingActor(Actor):
         gid = self._game_id_of(anchor_ev.legs[0]) if anchor_ev.legs else None
         if gid is not None:
             self._game_to_pair.setdefault(gid, set()).add(pair_id)
-        # 1. 注册到 PairRegistry(下游 pull;同 tick 同步发布前完成)
-        self._pair_registry.register(
-            pair_id,
-            tradable_anchor_ids + tradable_ids,
-            anchor_instrument_ids=anchor_registry_ids,
-        )
-        if pair_id not in self._emitted_pairs:
-            self._emitted_pairs.add(pair_id)
-            self.log.info(
-                f"MatchedPair {pair_id} (conf={result.total_confidence:.2f}, "
-                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} "
-                f"{tradable_venue.lower()}={len(tradable_ids)})",
-            )
-        # 2. publish 事件(strategy 订阅)
-        now = self.clock.timestamp_ns()
         venue_ids: dict[str, list[str]] = {}
         if tradable_anchor_ids:
             venue_ids[self._anchor_venue_str] = tradable_anchor_ids
         venue_ids[str(tradable_venue).upper()] = tradable_ids
-        self.publish_data(
-            data_type=DataType(MatchedPair),
-            data=MatchedPair(
-                ts_event=now, ts_init=now,
+        self._handle_pair_candidate(
+            _PairCandidate(
                 pair_id=pair_id,
                 sport=anchor_ev.sport,
                 competition=anchor_ev.competition,
+                confidence=result.total_confidence,
                 anchor_instrument_ids=anchor_registry_ids,
                 tradable_instrument_ids=tradable_anchor_ids + tradable_ids,
                 venue_instrument_ids=venue_ids,
-                confidence=result.total_confidence,
+                registry_instrument_ids=tradable_anchor_ids + tradable_ids,
+                registry_anchor_ids=anchor_registry_ids,
+                game_id=gid,
+            ),
+            log_message=(
+                f"MatchedPair {pair_id} (conf={result.total_confidence:.2f}, "
+                f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} "
+                f"{tradable_venue.lower()}={len(tradable_ids)})"
             ),
         )
+
+    def _handle_pair_candidate(self, candidate: _PairCandidate, *, log_message: str) -> None:
+        if not self.config.probability_validation_enabled:
+            self._finalize_pair(candidate, log_message=log_message)
+            return
+        if self._pair_registry.instrument_ids_for_pair(candidate.pair_id):
+            return
+        if candidate.pair_id in self._pair_validations:
+            return
+        state = _PairValidationState(candidate=candidate)
+        self._pair_validations[candidate.pair_id] = state
+        for iid in candidate.tradable_instrument_ids:
+            self._validation_pairs_by_instrument.setdefault(iid, set()).add(candidate.pair_id)
+            state.subscribed_instrument_ids.add(iid)
+            try:
+                self.subscribe_order_book_deltas(InstrumentId.from_str(iid))
+            except Exception as e:  # noqa: BLE001
+                self._log.warning(f"matching validation subscribe {iid} failed: {e!r}")
+        self._try_validate_pair(candidate.pair_id)
+
+    def _finalize_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
+        # 1. 注册到 PairRegistry(下游 pull;同 tick 同步发布前完成)
+        self._pair_registry.register(
+            candidate.pair_id,
+            candidate.registry_instrument_ids,
+            anchor_instrument_ids=candidate.registry_anchor_ids,
+        )
+        if candidate.pair_id not in self._emitted_pairs:
+            self._emitted_pairs.add(candidate.pair_id)
+            if log_message:
+                self.log.info(log_message)
+        # 2. publish 事件(strategy 订阅)
+        now = self.clock.timestamp_ns()
+        self.publish_data(
+            data_type=DataType(MatchedPair),
+            data=MatchedPair(
+                ts_event=now,
+                ts_init=now,
+                pair_id=candidate.pair_id,
+                sport=candidate.sport,
+                competition=candidate.competition,
+                anchor_instrument_ids=candidate.anchor_instrument_ids,
+                tradable_instrument_ids=candidate.tradable_instrument_ids,
+                venue_instrument_ids=candidate.venue_instrument_ids,
+                confidence=candidate.confidence,
+            ),
+        )
+
+    def on_order_book_deltas(self, deltas) -> None:
+        instrument_id = str(getattr(deltas, "instrument_id", "") or "")
+        for pair_id in list(self._validation_pairs_by_instrument.get(instrument_id, set())):
+            self._try_validate_pair(pair_id)
+
+    def on_data(self, data) -> None:
+        if isinstance(data, SportsGameUpdate):
+            if data.ended:
+                self._evict_game(data.game_id)
+            return
+        if isinstance(data, OrderBookDeltas):
+            self.on_order_book_deltas(data)
+
+    def _try_validate_pair(self, pair_id: str) -> None:
+        state = self._pair_validations.get(pair_id)
+        if state is None or state.status != "PENDING":
+            return
+        result = _validate_pair_probability(
+            state.candidate,
+            cache=self.cache,
+            clean_sum_threshold=self.config.probability_validation_clean_sum,
+            min_best_sum=self.config.probability_validation_min_best_sum,
+        )
+        if result is None:
+            return
+        state.venue_sums = result["venue_sums"]
+        state.best_sum = result["best_sum"]
+        if result["passed"]:
+            state.status = "PASSED"
+            self._finalize_pair(state.candidate, log_message=(
+                f"MatchedPair {state.candidate.pair_id} "
+                f"(conf={state.candidate.confidence:.2f}, probability_validated best_sum={state.best_sum:.4f})"
+            ))
+            self._unsubscribe_validation_books(pair_id, state)
+            return
+        state.status = "FAILED"
+        state.fail_reason = result["reason"]
+        self._unsubscribe_validation_books(pair_id, state)
+        self.log.info(
+            f"MatchedPair {pair_id} probability validation failed: "
+            f"best_sum={state.best_sum:.4f}, venue_sums={state.venue_sums}",
+        )
+
+
+def _validate_pair_probability(
+    candidate: _PairCandidate,
+    *,
+    cache,
+    clean_sum_threshold: float,
+    min_best_sum: float,
+) -> dict | None:
+    venue_sums: dict[str, float] = {}
+    best_by_outcome: dict[str, float] = {}
+    for venue, instrument_ids in candidate.venue_instrument_ids.items():
+        probs: list[float] = []
+        for iid in instrument_ids:
+            instrument = cache.instrument(InstrumentId.from_str(iid))
+            outcome = _selection_role(instrument)
+            probability = _ask_probability(cache.order_book(InstrumentId.from_str(iid)), venue)
+            if outcome is None or probability is None:
+                return None
+            probs.append(probability)
+            best_by_outcome[outcome] = min(best_by_outcome.get(outcome, probability), probability)
+        if not probs:
+            return None
+        venue_sums[str(venue).upper()] = sum(probs)
+
+    if any(total > clean_sum_threshold for total in venue_sums.values()):
+        return None
+    if not best_by_outcome:
+        return None
+    best_sum = sum(best_by_outcome.values())
+    return {
+        "passed": best_sum >= min_best_sum,
+        "reason": "best_sum_below_threshold",
+        "venue_sums": venue_sums,
+        "best_sum": best_sum,
+    }
+
+
+def _selection_role(instrument) -> str | None:
+    info = getattr(instrument, "info", None)
+    if not isinstance(info, dict):
+        return None
+    role = info.get("selection_role")
+    return str(role).lower() if role else None
+
+
+def _ask_probability(book, venue: str) -> float | None:
+    price = _best_ask(book)
+    if price is None or price <= 0:
+        return None
+    try:
+        return probability_from_price(venue, price)
+    except (KeyError, ZeroDivisionError):
+        return None
+
+
+def _best_ask(book) -> float | None:
+    if book is None:
+        return None
+    fn = getattr(book, "best_ask_price", None)
+    if callable(fn):
+        price = fn()
+        return float(price) if price is not None else None
+    if isinstance(book, dict):
+        value = book.get("ask") or book.get("best_ask")
+        return float(value) if value not in (None, "") else None
+    return None
 
 
 def _pair_id_for(
