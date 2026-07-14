@@ -336,7 +336,7 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   customer iframe 的真实行为;同一 browser context 内若已有 page 完成登录,后续 page 在
   `SharpExchLoginState` 锁内优先复用 authenticated session,避免 discovery/execution 旧登录页二次提交;
   `postLoginPopup` 弹窗在登录成功、customer app 启动完成后才渲染,因此由 `se_login`
-  在登录完成后(锁外)统一按 OE #89 同款策略关闭,总预算 10s,无弹窗时静默继续。
+  在登录完成后(锁外)统一按 OE #89 同款策略关闭,总预算 120s,无弹窗时静默继续。
   登录后 SE app 会 detach 重建 customer iframe(表现为 orders/prices WS 连两波),
   dismiss 按 1s 分片、每片重新解析当前 customer context,不持旧 frame 引用。
   `_connect` 使用 Future 等待 profile/balance 与 `CURRENT_BETS`

@@ -367,7 +367,7 @@ def test_dismiss_post_login_popup_clicks_main_page_when_popup_visible():
     class Popup:
         async def wait_for(self, *, state, timeout):
             assert state == "visible"
-            assert 0 < timeout <= 10000
+            assert 0 < timeout <= 1000
 
     class Locator:
         @property

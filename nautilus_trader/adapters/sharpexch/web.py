@@ -209,9 +209,10 @@ async def _wait_after_login(page) -> None:
 
 
 _POPUP_WAIT_SLICE_MS = 1000
+_POST_LOGIN_POPUP_TIMEOUT_MS = 120000
 
 
-async def se_dismiss_post_login_popup(page, *, timeout_ms: int = 10000) -> bool:
+async def se_dismiss_post_login_popup(page, *, timeout_ms: int = _POST_LOGIN_POPUP_TIMEOUT_MS) -> bool:
     """关闭 SE 登录后弹窗。
 
     该弹窗可能挡住 customer app 初始化/接口请求,且在登录成功、app 启动完成后才渲染,
