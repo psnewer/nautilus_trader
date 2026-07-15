@@ -187,7 +187,7 @@ def test_subscribe_registers_state_and_opens_page_via_injected_method():
 
     asyncio.run(client._subscribe_order_book_deltas(SimpleNamespace(instrument_id=inst.id)))
 
-    assert client._market_to_instruments[inst.market_id][str(inst.selection_id)] == inst.id
+    assert client._market_to_instruments[inst.market_id][str(inst.selection_id)] == [(inst.id, "yes")]
     assert client._market_to_page_key[inst.market_id] == "2_12597512"
     assert client._comp_page_refs == {"2_12597512": ("2", "12597512")}
     assert open_calls == [{"page_key": "2_12597512", "sport_id": "2", "competition_id": "12597512"}]
@@ -217,8 +217,8 @@ def test_concurrent_subscribe_same_competition_dedups_page():
 
     asyncio.run(subscribe_both())
 
-    assert client._market_to_instruments[home.market_id][str(home.selection_id)] == home.id
-    assert client._market_to_instruments[away.market_id][str(away.selection_id)] == away.id
+    assert client._market_to_instruments[home.market_id][str(home.selection_id)] == [(home.id, "yes")]
+    assert client._market_to_instruments[away.market_id][str(away.selection_id)] == [(away.id, "yes")]
     assert open_calls == [{"page_key": "2_12597512", "sport_id": "2", "competition_id": "12597512"}]
     assert set(client._comp_pages) == {"2_12597512"}
 
@@ -250,7 +250,7 @@ def test_unsubscribe_removes_subscription_state():
     client = _client()
     inst = _instrument("home")
     client._cache.add_instrument(inst)
-    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): inst.id}}
+    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): [(inst.id, "yes")]}}
     client._market_to_page_key = {inst.market_id: "2_12597512"}
     client._comp_page_refs = {"2_12597512": ("2", "12597512")}
 
@@ -312,7 +312,7 @@ def test_on_price_frame_publishes_deltas_and_writes_in_play():
     client = _client()
     inst = _instrument("home")
     client._cache.add_instrument(inst)
-    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): inst.id}}
+    client._market_to_instruments = {inst.market_id: {str(inst.selection_id): [(inst.id, "yes")]}}
     captured = []
     client._handle_data = captured.append
 

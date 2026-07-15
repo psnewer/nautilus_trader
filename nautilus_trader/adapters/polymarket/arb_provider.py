@@ -3,7 +3,7 @@
 # -------------------------------------------------------------------------------------------------
 
 """
-ArbPolymarketInstrumentProvider —— PM 端市场发现 + 6-key 补全(matching 必需)。
+ArbPolymarketInstrumentProvider —— PM 端市场发现 + matching info 补全。
 
 设计见 `docs/arbitrage/architectures/discovery/architecture.md §3.2`。
 
@@ -33,8 +33,8 @@ selection_role:
 
 home_abbr/away_abbr 优先 teams.abbreviation,缺则 event ticker 拆 `-` 的 parts[1]/parts[2]。
 
-6-key:home/away←teams;selection_role←slug+ordering;competition←config 原名(matching aliases 标准化);
-       sport←config competition→sport map;start_ts←market/event startDate。
+matching info:home/away←teams;selection_role←slug+ordering;competition←config 原名(matching aliases 标准化);
+       sport←config competition→sport map。
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ def _ticker_abbrs(event_ticker: str) -> tuple[str, str]:
 # ─── selection_role 解析(moneyline slug vs ticker 后缀,平移旧 get_event_tokens）──
 
 
-def _role_for_token(
+def _role_and_claim_for_token(
     *,
     market_slug: str,
     event_ticker: str,
@@ -147,16 +147,18 @@ def _role_for_token(
     ordering: str,
     home_abbr: str,
     away_abbr: str,
-) -> str:
-    """返该 token 的 selection_role;返空字符串表示跳过(No token / 非 moneyline 主市场)。
+) -> tuple[str, str]:
+    """返该 token 的 (selection_role, claim);role 为空表示跳过(非 moneyline 主市场方向)。
 
+    claim(#228):3-way binary(slug == ticker-{abbr})的 YES/NO token 都取该 market 的
+    role,claim="yes"/"no" 区分;2-way / 单市场路径 claim 恒为空(不引入 claim)。
     `ordering`:competition 特异(/sports 字段)—— "home" → outcomes 排 [home,(draw),away];
     "away" → 反排 [away,(draw),home](如 MLB)。`home_abbr`/`away_abbr` 优先 teams.abbreviation。
     """
     market_slug = (market_slug or "").lower()
     event_ticker = (event_ticker or "").lower()
     if not event_ticker:
-        return ""
+        return "", ""
 
     # 2-way / 单市场 3-outcome:slug == ticker。outcomes 排列由 competition ordering 决定
     # (MLB ordering=away → [away, home],按固定下标会错位),故按 ordering 选映射。
@@ -164,30 +166,31 @@ def _role_for_token(
         try:
             idx = outcomes.index(outcome)
         except ValueError:
-            return ""
+            return "", ""
         home_first = (ordering or "home").lower() != "away"
         if len(outcomes) == 2:
             roles = ("home", "away") if home_first else ("away", "home")
-            return roles[idx] if idx < 2 else ""
+            return (roles[idx], "") if idx < 2 else ("", "")
         if len(outcomes) == 3:
             roles = ("home", "draw", "away") if home_first else ("away", "draw", "home")
-            return roles[idx] if idx < 3 else ""
-        return ""
+            return (roles[idx], "") if idx < 3 else ("", "")
+        return "", ""
 
-    # 3-way binary:slug == ticker-{abbr},仅 "Yes" token 取 role
-    if outcome != "Yes":
-        return ""
+    # 3-way binary:slug == ticker-{abbr};#228 起 YES/NO token 都产腿(claim 区分)
+    claim = {"Yes": "yes", "No": "no"}.get(outcome, "")
+    if not claim:
+        return "", ""
     if home_abbr and market_slug == f"{event_ticker}-{home_abbr}":
-        return "home"
+        return "home", claim
     if away_abbr and market_slug == f"{event_ticker}-{away_abbr}":
-        return "away"
+        return "away", claim
     if market_slug == f"{event_ticker}-draw":
-        return "draw"
-    return ""
+        return "draw", claim
+    return "", ""
 
 
 class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
-    """PM series-based 发现 + 6-key 补全(#55 重写)。`load_all_async` 整体 override。"""
+    """PM series-based 发现 + matching info 补全(#55 重写)。`load_all_async` 整体 override。"""
 
     async def load_all_async(self, filters: dict | None = None) -> None:
         from src.arbitrage.bootstrap import get_arb_context
@@ -274,7 +277,6 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
             home_team, away_team = parsed
             home_abbr, away_abbr = _ticker_abbrs(event_ticker)   # fallback abbr 拆 ticker
 
-        event_start = event.get("startDate") or ""
         game_id = event.get("gameId")   # #60:== sports WS gameId(eviction/strategy 映射键)
         count = 0
         for market in event.get("markets", []):
@@ -290,7 +292,6 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 away_team=away_team,
                 home_abbr=home_abbr,
                 away_abbr=away_abbr,
-                event_start=event_start,
                 ordering=ordering,
                 game_id=game_id,
             )
@@ -307,22 +308,19 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         away_team: str,
         home_abbr: str,
         away_abbr: str,
-        event_start: str,
         ordering: str,
         game_id=None,
     ) -> int:
         normalized = normalize_gamma_market_to_clob_format(market)
         market_slug = market.get("slug", "")
         outcomes = self._parse_outcomes(market)
-        start_ts = self._parse_start_ts(market.get("startDate") or event_start)
-
         count = 0
         for token_info in normalized.get("tokens", []):
             token_id = token_info.get("token_id")
             outcome = token_info.get("outcome")
             if not token_id:
                 continue
-            role = _role_for_token(
+            role, claim = _role_and_claim_for_token(
                 market_slug=market_slug,
                 event_ticker=event_ticker,
                 outcome=outcome,
@@ -332,7 +330,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                 outcomes=outcomes,
             )
             if not role:
-                continue   # No token / 非 moneyline 主市场方向 → 跳过
+                continue   # 非 moneyline 主市场方向 → 跳过
             # 每 token 传 normalized 的浅拷贝:`parse_polymarket_instrument` 把 market_info 直接设为
             # instrument.info,**多 token 共享同一 dict 会让后写的 role 覆盖前一个**(2-way home/away
             # 都成 away)。拷贝隔离每个 instrument 的 info。
@@ -348,10 +346,11 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                     "competition": comp_name,
                     "home_team": home_team,
                     "away_team": away_team,
-                    "start_ts": start_ts,
                     "selection_role": role,
                     "game_id": game_id,   # #60:sports WS 映射键(== gamma event gameId)
                 })
+                if claim:   # #228:3-way binary 腿(含 yes)显式 claim;2-way 不填
+                    instrument.info["claim"] = claim
             self.add(instrument)
             count += 1
         return count
@@ -377,13 +376,3 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
             except (ValueError, TypeError):
                 return []
         return list(raw or [])
-
-    @staticmethod
-    def _parse_start_ts(date_str: str) -> int:
-        if not date_str:
-            return 0
-        try:
-            import pandas as pd
-            return int(pd.Timestamp(date_str).value)
-        except (ValueError, TypeError):
-            return 0

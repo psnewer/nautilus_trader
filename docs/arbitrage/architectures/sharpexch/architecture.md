@@ -195,7 +195,8 @@ runner → role 规则:
 - 3 runner soccer:按 `[home, draw, away]`,draw 名称可为 `Draw` / `X`。
 - 若 runner 无法映射 role,该 runner 不产 instrument,并记录低噪声 warning。
 
-`info` 必须填 Q9 统一字段:`sport`、`competition`、`home_team`、`away_team`、`start_ts`、`selection_role`。
+`info` 必须填 matching 字段:`sport`、`competition`、`home_team`、`away_team`、`selection_role`。
+`start_ts` 只用于 NT instrument 时间字段,不写入 matching info。
 
 最小下单元数据:
 - SE 最小 stake 已在 2026-07-01 真单 preflight 中确认为 12 USD,Provider 写入

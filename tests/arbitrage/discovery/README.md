@@ -10,7 +10,7 @@
 > **2026-07-02 venue/data-source keyed context**:PM/OE/SE Data factory 只从 `ArbContext` keyed map 读取 discovery/session/alias 相关配置并回写 `instrument_provider_by_venue`;PMSPORTS factory 只读取 `target_competitions_by_data_source["PMSPORTS"]` / `competition_to_sport_by_data_source["PMSPORTS"]`;专属 `pm_*` / `oe_*` / `se_*` ArbContext 字段已删除。验收落在 PM/OE/SE adapter factory 测试。
 
 **落地状态(2026-07-08)**:发现路径以 adapter DataClient + Provider 测试为准:
-- ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、info 6-key、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
+- ✅ `test_orbitexch_provider.py`(1.4.a-f:三方向/两方向腿构造、matching info、InstrumentId 含 market+selection、load_all_async 接 mock scraper、空返回不抛)
 - ✅ `test_orbitexch_discovery_scraper.py`(1.4.i:discovery 独立浏览器注入 document visibility + IntersectionObserver spoof,避免 OE competition 页懒加载只发现首屏 20 场)
 - ✅ SE discovery/provider/data 相关测试在 `tests/arbitrage/adapters/sharpexch/` 下维护,覆盖 `sport/details` 分页、Provider、discovery 不开页不登录而等待共享 BrowserContext `CSRF-TOKEN`、price frame 路由与 DataClient 生命周期。
 - ⬜ PM Provider 冷启动 / 字段完整度 / API 失败保 cache 需 Gamma/CLOB live smoke 验;不保留 skipped pytest 空壳。
@@ -18,7 +18,7 @@
 
 **2026-06-14 最小下单元数据修正;2026-06-30 fx 口径校准**:PM 最小值是 share 数量,Provider 产物 `BinaryOption.min_quantity=5`;OE 最小值是 stake 7 GBP,但 adapter 外部 OE quantity 是 USD stake,Provider 产物 `BettingInstrument.min_notional=Money(7 * arbitrage.fx, USD)`。Risk 组件不维护 venue 常量,由 NT 父类读取这些 instrument 字段做本地门控。
 
-**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。PM 6-key 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
+**OE discovery 当前状态**:NT 路径已迁移到 `OrbitExchDiscoveryClient` + `sport/details` API;旧 `OrbitExchScraper` 仅供旧 services 栈使用。2026-07-10 起 OE discovery fetcher 与 SE 同构:不开 `oe-discovery` 页、不登录、不持锁,等共享 BrowserContext `CSRF-TOKEN`(exec 登录写入)后用 context request 调 `sport/details`;首轮失败 warning 不杀 DataClient(`test_data_factory_provider_wiring.py` 覆盖 fetcher 不开页不登录,`test_data_client_step2.py` 覆盖首轮失败仍启动周期重试)。OE `start_ts` 已由 `marketStartTime` / `event.openDate` 解析并用于 NT instrument 时间字段,不写入 `instrument.info`。PM matching info 已由 `ArbPolymarketInstrumentProvider` 经 Gamma `/sports` + `/events?series_id=...` 写入,不再是旧 enricher seam 待办。
 
 **#35(2026-05-24)Step 2 + PM enricher**:OE DataClient 整体重写 + PM ArbProvider seam(详见 data architecture.md §3)。
 
@@ -129,7 +129,7 @@
 - `SharpExchLiveDataClientFactory` 在 discovery config 存在时注入 browser `json_fetcher`;该 fetcher 不创建 page、不登录、不导航,只等待共享 BrowserContext 中的 `CSRF-TOKEN`,随后用 context request 执行 `sport/details`。
 - 只保留 `Match Odds` market,按目标 competition 过滤。
 - 2 runner 映射 `home/away`;3 runner 映射 `home/draw/away`。
-- Provider 产 `BettingInstrument`,venue 为 `SHARPEXCH`,info 含 Q9 六统一 key。
+- Provider 产 `BettingInstrument`,venue 为 `SHARPEXCH`,info 含 matching key。
 - `min_notional = Money(12, USD)` 作为 SE 第一阶段默认最小 stake。
 
 **验收标准**:`tests/arbitrage/adapters/sharpexch/test_discovery_client.py`、`test_provider.py`、`test_factories.py` 通过;2026-07-01 zero-order probe 实测 `sport/details` 分页返回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
@@ -145,7 +145,7 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 **期望**:
 - 每场比赛产出一个 `{game_id}.PMSPORTS` synthetic instrument。
-- `instrument.info` 含 `sport/competition/home_team/away_team/start_ts/game_id`。
+- `instrument.info` 含 `sport/competition/home_team/away_team/game_id`。
 - `instrument.info["tradable"] is False` 且 `instrument.info["anchor"] is True`。
 - 不产出 `.POLYMARKET` instrument,不写 PM token/order book/min order 字段。
 
@@ -156,9 +156,9 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ---
 
-### discovery-7B.1(slice 7B,#53/#57):PM moneyline provider 写 6-key
+### discovery-7B.1(slice 7B,#53/#57):PM moneyline provider 写 matching info
 
-**前置**: `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order，再走 `/events?series_id=...` 拉内嵌 teams + markets;`_load_moneyline_market` 创建每个 PM token 后补 info 6-key。
+**前置**: `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order，再走 `/events?series_id=...` 拉内嵌 teams + markets;`_load_moneyline_market` 创建每个 PM token 后补 matching info。
 
 **输入**: PM Gamma event + moneyline market(含 `teams`/`ticker`/`markets[].sportsMarketType=moneyline` / `clobTokenIds` / `outcomes`)。
 
@@ -167,7 +167,7 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 - `info["competition"]` 使用 PM venue competition alias 标准化后的名字
 - `home_team` / `away_team` 优先来自 `event["teams"]`,缺失时 fallback title 解析
 - `selection_role` 按 moneyline slug + competition ordering + team abbreviation 解析为 `home/draw/away`
-- `start_ts` 来自 market/event startDate,`game_id` 等于 Gamma event `gameId`
+- `game_id` 等于 Gamma event `gameId`;`start_ts` 不写入 matching info。
 
 **验收**:`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖 teams/title 解析、role 解析和 `_load_moneyline_market` 写入完整 matching info;完整 Gamma HTTP 路径仍归 live smoke。
 
@@ -242,21 +242,20 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ---
 
-### discovery-1.5: OE Provider info dict 必含 6 个统一 key (Q9)
+### discovery-1.5: OE Provider info dict 必含 matching key (Q9)
 
 **前置**: discovery-1.4 通过
 
 **输入**: 取一个 OE `BettingInstrument`
 
-**期望**: `instrument.info` dict 必须包含以下 6 个 key(全部非空):
+**期望**: `instrument.info` dict 必须包含以下 key(全部非空):
 - `info["sport"]` (str) —— 运动类型
 - `info["competition"]` (str) —— 联赛名
 - `info["home_team"]` (str)
 - `info["away_team"]` (str)
-- `info["start_ts"]` (int, ns timestamp)
 - `info["selection_role"]` (str: "home" / "draw" / "away")
 
-**验收标准**: 6 个 key 全部存在且类型正确(`MarketMatchingActor` 跨 venue 归一依赖此)
+**验收标准**: matching key 全部存在且类型正确(`MarketMatchingActor` 跨 venue 归一依赖此)。`start_ts` 是 discovery event / NT instrument 时间字段,不属于 matching info。
 
 **对应章节**: `refactor.md §6.4`
 
@@ -268,9 +267,9 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 **输入**: 任取 PM `BinaryOption` 与 OE `BettingInstrument`
 
-**期望**: 两者的 `info` dict 都含 `sport` / `competition` / `home_team` / `away_team` / `start_ts` / `selection_role` 6 个 key,语义一致(MatchEngine 不需要 isinstance 区分类型即可读)
+**期望**: 两者的 `info` dict 都含 `sport` / `competition` / `home_team` / `away_team` / `selection_role` key,语义一致(MatchEngine 不需要 isinstance 区分类型即可读)
 
-**验收标准**: 取 6 个 key 不抛 KeyError;PM/OE/SE `selection_role` 均使用 {"home", "draw", "away"} 语义集合(二元盘不含 draw)。
+**验收标准**: 取 matching key 不抛 KeyError;PM/OE/SE `selection_role` 均使用 {"home", "draw", "away"} 语义集合(二元盘不含 draw)。
 
 ---
 
@@ -303,3 +302,7 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 - MatchingActor 不订 discovery 事件,由 timer 读 cache。
 
 **验收标准**: PM/OE/SE/PMSPORTS 各 adapter 的 DataClient/Provider 测试分别覆盖;全节点链路由 matching/e2e smoke 验证。
+
+## #228:3-way 每 selection 产 yes/no 两腿(2026-07-15)
+
+- `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no)),合成 no 腿 market/selection 真值 + handicap 哨兵 id + `claim`/`exec_instrument_id`;`test_build_legs_two_way_drops_missing_draw` 断言 2-way 不引入 claim。PM 侧见 `tests/arbitrage/adapters/polymarket/README.md`,SE 侧见 `tests/arbitrage/adapters/sharpexch/README.md`。

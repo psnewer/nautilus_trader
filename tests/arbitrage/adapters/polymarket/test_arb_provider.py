@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from nautilus_trader.adapters.polymarket.arb_provider import ArbPolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.arb_provider import _parse_team_names
-from nautilus_trader.adapters.polymarket.arb_provider import _role_for_token
+from nautilus_trader.adapters.polymarket.arb_provider import _role_and_claim_for_token
 from nautilus_trader.adapters.polymarket.arb_provider import _teams_from_event
 from nautilus_trader.adapters.polymarket.arb_provider import _ticker_abbrs
 
@@ -108,83 +108,96 @@ def test_ticker_abbrs_short():
     assert _ticker_abbrs("foo") == ("", "")
 
 
-# ─── _role_for_token: 2-way(slug == ticker;ordering 决定映射)──────
+def _role(**kwargs) -> str:
+    """兼容包装:只取 role(2-way / 单市场用例不关心 claim)。"""
+    return _role_and_claim_for_token(**kwargs)[0]
+
+
+# ─── _role_and_claim_for_token: 2-way(slug == ticker;ordering 决定映射)──────
 
 
 def test_2way_ordering_home():
     """ordering=home(如 ATP)→ outcomes=[home, away]。"""
     t = "atp-topo-nava-2026-06-03"
     outcomes = ["Marko Topo", "Emilio Nava"]
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Marko Topo", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == "home"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Emilio Nava", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == "away"
+    assert _role(market_slug=t, event_ticker=t, outcome="Marko Topo", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == "home"
+    assert _role(market_slug=t, event_ticker=t, outcome="Emilio Nava", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == "away"
 
 
 def test_2way_ordering_away_reversed():
     """ordering=away(如 MLB)→ outcomes=[away, home];competition 特异,下标反排仍正确。"""
     t = "mlb-mil-stl-2026-05-05"
     outcomes = ["Milwaukee Brewers", "St. Louis Cardinals"]  # [away, home]
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Milwaukee Brewers", outcomes=outcomes, ordering="away", home_abbr="stl", away_abbr="mil") == "away"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="St. Louis Cardinals", outcomes=outcomes, ordering="away", home_abbr="stl", away_abbr="mil") == "home"
+    assert _role(market_slug=t, event_ticker=t, outcome="Milwaukee Brewers", outcomes=outcomes, ordering="away", home_abbr="stl", away_abbr="mil") == "away"
+    assert _role(market_slug=t, event_ticker=t, outcome="St. Louis Cardinals", outcomes=outcomes, ordering="away", home_abbr="stl", away_abbr="mil") == "home"
 
 
 def test_2way_outcome_not_in_list():
     t = "atp-topo-nava-2026-06-03"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Nobody", outcomes=["A", "B"], ordering="home", home_abbr="topo", away_abbr="nava") == ""
+    assert _role(market_slug=t, event_ticker=t, outcome="Nobody", outcomes=["A", "B"], ordering="home", home_abbr="topo", away_abbr="nava") == ""
 
 
 def test_3way_single_market_ordering_home():
     """3-way 多结果主市场(slug==ticker,ordering=home → [home,draw,away])。"""
     t = "epl-bur-wol-2026-05-24"
     outcomes = ["Burnley", "Draw", "Wolves"]
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Burnley", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "home"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Draw", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "draw"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Wolves", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "away"
+    assert _role(market_slug=t, event_ticker=t, outcome="Burnley", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "home"
+    assert _role(market_slug=t, event_ticker=t, outcome="Draw", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "draw"
+    assert _role(market_slug=t, event_ticker=t, outcome="Wolves", outcomes=outcomes, ordering="home", home_abbr="bur", away_abbr="wol") == "away"
 
 
 def test_3way_single_market_ordering_away_reversed():
     """ordering=away → 单市场 3-outcome 反排 [away,draw,home],draw 仍居中。"""
     t = "x-aa-bb-2026-01-01"
     outcomes = ["AwayTeam", "Draw", "HomeTeam"]
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="AwayTeam", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "away"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="Draw", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "draw"
-    assert _role_for_token(market_slug=t, event_ticker=t, outcome="HomeTeam", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "home"
+    assert _role(market_slug=t, event_ticker=t, outcome="AwayTeam", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "away"
+    assert _role(market_slug=t, event_ticker=t, outcome="Draw", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "draw"
+    assert _role(market_slug=t, event_ticker=t, outcome="HomeTeam", outcomes=outcomes, ordering="away", home_abbr="bb", away_abbr="aa") == "home"
 
 
-# ─── _role_for_token: 3-way binary(slug == ticker-{abbr};不受 ordering 影响)──
+# ─── _role_and_claim_for_token: 3-way binary(slug == ticker-{abbr};不受 ordering 影响)──
 
 
 def test_3way_binary_home_yes():
     t = "epl-bur-wol-2026-05-24"
-    assert _role_for_token(market_slug=f"{t}-bur", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == "home"
+    assert _role_and_claim_for_token(market_slug=f"{t}-bur", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("home", "yes")
 
 
 def test_3way_binary_away_yes():
     t = "epl-bur-wol-2026-05-24"
-    assert _role_for_token(market_slug=f"{t}-wol", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == "away"
+    assert _role_and_claim_for_token(market_slug=f"{t}-wol", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("away", "yes")
 
 
 def test_3way_binary_draw_yes():
     t = "epl-bur-wol-2026-05-24"
-    assert _role_for_token(market_slug=f"{t}-draw", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == "draw"
+    assert _role_and_claim_for_token(market_slug=f"{t}-draw", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("draw", "yes")
 
 
-def test_3way_binary_no_token_skipped():
-    """"No" token 不取 role(只买 Yes 方向)。"""
+def test_3way_binary_no_token_gets_same_role_with_no_claim():
+    """#228:NO token 也产腿,role 同 YES(所属 market 的 role),claim="no"。"""
     t = "epl-bur-wol-2026-05-24"
-    assert _role_for_token(market_slug=f"{t}-bur", event_ticker=t, outcome="No", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
+    assert _role_and_claim_for_token(market_slug=f"{t}-bur", event_ticker=t, outcome="No", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("home", "no")
+    assert _role_and_claim_for_token(market_slug=f"{t}-draw", event_ticker=t, outcome="No", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("draw", "no")
+
+
+def test_2way_tokens_carry_no_claim():
+    """#228:2-way / 单市场路径 claim 恒为空(不引入 claim)。"""
+    t = "atp-topo-nava-2026-06-03"
+    outcomes = ["Marko Topo", "Emilio Nava"]
+    assert _role_and_claim_for_token(market_slug=t, event_ticker=t, outcome="Marko Topo", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == ("home", "")
 
 
 def test_unknown_suffix_skipped():
     """非 home/away/draw 后缀(防御)→ 跳过。"""
     t = "epl-bur-wol-2026-05-24"
-    assert _role_for_token(market_slug=f"{t}-foobar", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
+    assert _role(market_slug=f"{t}-foobar", event_ticker=t, outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
 
 
 def test_empty_ticker_returns_empty():
-    assert _role_for_token(market_slug="x", event_ticker="", outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
+    assert _role(market_slug="x", event_ticker="", outcome="Yes", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ""
 
 
-# ─── _load_moneyline_market: PM 6-key + game_id 写入 ──────────────
+# ─── _load_moneyline_market: PM matching info + game_id 写入 ──────────────
 
 
 def test_load_moneyline_market_writes_matching_info_keys():
@@ -224,7 +237,6 @@ def test_load_moneyline_market_writes_matching_info_keys():
         away_team="B",
         home_abbr="aaa",
         away_abbr="bbb",
-        event_start="2026-06-03T10:00:00Z",
         ordering="home",
         game_id=5843495,
     )
@@ -236,5 +248,55 @@ def test_load_moneyline_market_writes_matching_info_keys():
         assert inst.info["competition"] == "ATP"
         assert inst.info["home_team"] == "A"
         assert inst.info["away_team"] == "B"
-        assert inst.info["start_ts"] == 1780480800000000000
+        assert "start_ts" not in inst.info
         assert inst.info["game_id"] == 5843495
+        assert "claim" not in inst.info   # #228:2-way 不引入 claim
+
+
+def test_load_moneyline_market_3way_binary_exposes_yes_and_no():
+    """#228:3-way binary market(slug=ticker-{abbr})YES/NO 都产 instrument,claim 显式。"""
+    provider = object.__new__(ArbPolymarketInstrumentProvider)
+    provider._clock = SimpleNamespace(timestamp_ns=lambda: 0)
+    added = []
+    provider.add = lambda inst: added.append(inst)
+
+    market = {
+        "conditionId": "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110918",
+        "questionID": "q",
+        "question": "EPL: Will Burnley win?",
+        "description": "",
+        "slug": "epl-bur-wol-2026-05-24-bur",
+        "enableOrderBook": True,
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5,
+        "acceptingOrders": True,
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "endDateIso": "2026-05-24T00:00:00Z",
+        "startDateIso": "2026-05-24T10:00:00Z",
+        "marketMakerAddress": "",
+        "outcomes": '["Yes","No"]',
+        "outcomePrices": '["0.5","0.5"]',
+        "clobTokenIds": '["11","12"]',
+        "sportsMarketType": "moneyline",
+    }
+
+    count = provider._load_moneyline_market(
+        market=market,
+        event_ticker="epl-bur-wol-2026-05-24",
+        comp_name="EPL",
+        sport="Soccer",
+        home_team="Burnley",
+        away_team="Wolves",
+        home_abbr="bur",
+        away_abbr="wol",
+        ordering="home",
+        game_id=777,
+    )
+
+    assert count == 2
+    assert [(inst.info["selection_role"], inst.info["claim"]) for inst in added] == [
+        ("home", "yes"),
+        ("home", "no"),
+    ]

@@ -39,9 +39,9 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 
 ### pm-adapter-1.2: 套利系统自定义 info 字段填充(✅ 已落地)
 **落地**: `nautilus_trader/adapters/polymarket/arb_provider.py` + `arb_factories.py:ArbPolymarketLiveDataClientFactory`(`tests/arbitrage/adapters/polymarket/test_arb_provider.py` 覆盖纯函数;`test_debug_data_factories.py` 覆盖 provider 回写 `instrument_provider_by_venue["POLYMARKET"]`)
-- 评估结果:**上游 info=market_info(gamma dict)缺 6-key** → 走"子类化 PolymarketInstrumentProvider 补"路径
+- 评估结果:**上游 info=market_info(gamma dict)缺 matching key** → 走"子类化 PolymarketInstrumentProvider 补"路径
 - `ArbPolymarketInstrumentProvider.load_all_async` 走 Gamma `/sports` 取 series/order,再按 series 调 `/events?series_id=...` 拉内嵌 teams + markets。
-- `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/start_ts/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`。
+- `_load_moneyline_market` 只接 moneyline 主市场,创建 PM token 后写 `sport/competition/home_team/away_team/selection_role/game_id`;`selection_role` 与 OE/SE 对齐为 `home/draw/away`;`start_ts` 不写入 matching info。
 - 验收:`test_arb_provider.py` 覆盖 teams/title 解析、role 解析、moneyline instrument info 写入;完整 Gamma HTTP 路径仍由 live smoke 验。
 
 ### pm-adapter-1.3: PM 最小下单 share 映射
@@ -418,3 +418,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - timeout alert 仍在 `submit_ts + 30s` fire,与最后 partial 时刻无关
 - 绝对超时语义:alert 一次性设在 submit 时刻 + timeout,partial 事件不重设
 **验收**: 静态检查:partial fill 处理路径无 `set_time_alert_ns` 重设超时 alert 的调用
+
+## #228:PM 3-way 暴露 NO token(2026-07-15)
+
+- `test_arb_provider.py`:`_role_and_claim_for_token`(原 `_role_for_token`)3-way binary 路径 YES/NO 都产腿,role 同为所属 market 的 role,claim="yes"/"no" 区分;2-way / 单市场路径 claim 恒空。`test_load_moneyline_market_3way_binary_exposes_yes_and_no` 覆盖一个 binary market 产 2 条 instrument(info 带 claim);2-way 用例断言 `"claim" not in info`。

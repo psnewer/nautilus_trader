@@ -96,7 +96,7 @@
                     <div class="col-md-8"><div class="card"><div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-table me-1"></i>Live Odds</span><span class="badge bg-info" id="odds-upd">Never</span></div>
                         <div class="card-body" style="max-height:600px;overflow-y:auto">
-	                        <table class="table table-sm table-hover"><thead id="odds-data-head"><tr><th>Match</th></tr></thead>
+	                        <table class="table table-sm table-hover"><thead id="odds-data-head"><tr><th>Match</th><th>Role</th></tr></thead>
                         <tbody id="odds-data-table"><tr><td colspan="1" class="text-center text-muted">加载中…</td></tr></tbody></table>
                     </div></div></div>
                 </div>
@@ -256,24 +256,28 @@
     async function refreshOdds(){ try{ const pairs=await api('GET','/odds'); $('odds-upd').textContent=new Date().toLocaleTimeString();
       const venueFallback=pairs.flatMap(p=>(p.legs||[]).map(l=>l.venue));
       const venues=enabledVenueIds(venueFallback);
-      $('odds-data-head').innerHTML=`<tr><th>Match</th>${venues.map(v=>`<th>${v} 概率 (bid/ask)</th>`).join('')}</tr>`;
-      if(!pairs.length){ $('odds-data-table').innerHTML=tableEmpty(venues.length+1,'暂无 matched pair'); return; }
+      $('odds-data-head').innerHTML=`<tr><th>Match</th><th>Role</th>${venues.map(v=>`<th>${v} 概率 (bid/ask)</th>`).join('')}</tr>`;
+      if(!pairs.length){ $('odds-data-table').innerHTML=tableEmpty(venues.length+2,'暂无 matched pair'); return; }
       let rows='';
       for(const p of pairs){ const byRole={};
-        for(const l of p.legs){ if(venues.includes(l.venue)) (byRole[l.role||'?']=byRole[l.role||'?']||{})[l.venue]=l; }
-        // home 在上,away 在下
-        const roles=Object.keys(byRole).sort((a,b)=>a==='home'?-1:b==='home'?1:0); let first=true;
+        // #228:分组键 = claim 优先(3-way 拆分 pair 的腿带 yes/no),fallback role(2-way)。
+        for(const l of p.legs){ if(venues.includes(l.venue)){ const key=l.claim||l.role||'?'; (byRole[key]=byRole[key]||{})[l.venue]=l; } }
+        const roleRank={home:0,draw:1,away:2,yes:0,no:1};
+        const roles=Object.keys(byRole).sort((a,b)=>(roleRank[a]??99)-(roleRank[b]??99)||a.localeCompare(b)); let first=true;
 	        for(const role of roles){
-	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率。
+	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率;
+	          // decimal 的 claim=no 腿(book 存 lay 原值)→ 1−1/赔率(#228)。
 	          const decProb = o => o ? (1/o).toFixed(3) : null;
+	          const decNoProb = o => o ? (1-1/o).toFixed(3) : null;
 	          const cells = venues.map(venue=>{
 	            const leg=byRole[role][venue]||{};
 	            const isDecimal = leg.odds_model==='decimal';
-	            const bid = isDecimal ? decProb(leg.bid) : leg.bid;
-	            const ask = isDecimal ? decProb(leg.ask) : leg.ask;
+	            const conv = isDecimal ? (leg.claim==='no' ? decNoProb : decProb) : (x=>x);
+	            const bid = conv(leg.bid);
+	            const ask = conv(leg.ask);
 	            return `<td>${fmt(bid)} / ${fmt(ask)}</td>`;
 	          }).join('');
-	          rows+=`<tr><td>${first?p.pair_id:''}</td>${cells}</tr>`; first=false; } }
+	          rows+=`<tr><td>${first?p.pair_id:''}</td><td>${fmt(role)}</td>${cells}</tr>`; first=false; } }
       $('odds-data-table').innerHTML=rows; }catch(e){} }
 
     // ── Config:读 /config 填表 + 按段保存 ──

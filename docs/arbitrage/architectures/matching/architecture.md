@@ -15,14 +15,14 @@
 |---|---|---|
 | `MarketMatchingActor` | NT `Actor` | 自 clock timer 读 cache:读取 `anchor_venue` + 逐个 `tradable_venues` 跑归一+匹配 → 生成 pair candidate → 概率校验通过后 publish `MatchedPair` + 注册 `PairRegistry`;dispatcher 显式配置 PMSPORTS anchor + enabled tradable venues |
 | `PairRegistry` | 普通类(`src/arbitrage/common/`) | **横切共享件**(P11,共享 registry 模式):MatchingActor 写、risk/portfolio/strategy/session 读;可交易腿与 non-tradable anchor id 分槽登记 |
-| `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue 的多腿(home/draw/away)反推一个事件视图(供算法用) |
+| `_event_from_legs` | 模块函数 | 从同 instrument.info 同 venue、同 event 的多条腿反推一个事件视图(供算法用) |
 | `MatchEngine` | 普通类(算法平移自旧 `services/market_matching/engine.py`) | sport+competition 分组 → 组内 anchor↔单个 tradable venue 队名 confidence 匹配(`get_similar` 命中数 / 两侧较长 token 数)+ 全候选贪心 + competition max_matches;`MatchResult` 只暴露 `anchor_event` / `tradable_event` |
 
-**#34 修正**:`info["competition"]` 是**联赛名**(EPL/NFL/...),**不是** pair_id(老 `MatchedPair.pair_id` 是基于 PM event_id 生成的稳定 ID,是 matching 的产出)。`info` 的 6-key 是**匹配输入**;`pair_id` 由 matching 算出并通过 `PairRegistry` 暴露给下游。
+**#34 修正**:`info["competition"]` 是**联赛名**(EPL/NFL/...),**不是** pair_id(老 `MatchedPair.pair_id` 是基于 PM event_id 生成的稳定 ID,是 matching 的产出)。`info` 的 matching key 是**匹配输入**;`pair_id` 由 matching 算出并通过 `PairRegistry` 暴露给下游。
 
 **不做**:
 - ❌ instrument 注册时不预填 pair_id(matching 是其唯一产出方)
-- ❌ 不依赖具体 instrument 类型(BinaryOption / BettingInstrument),只读 `info` 6-key,新增 venue 不改算法
+- ❌ 不依赖具体 instrument 类型(BinaryOption / BettingInstrument),只读 `info` matching key,新增 venue 不改算法
 - ❌ 下游不应读取旧 `pm_instrument_ids` / `oe_instrument_ids`;真实归属以 `venue_instrument_ids` 为准
 
 **已落地(#127)**:
@@ -39,7 +39,7 @@
 flowchart LR
   T["clock alert"] --> MA[MarketMatchingActor]
   MA -->|anchor + tradable venues 当前态| C[(Cache.instruments)]
-  C -->|按 info 6-key 读| MA
+  C -->|按 info matching key 读| MA
   MA -->|reconstruct events + anchor×tradable match| MATCH["NormalizedEvent[anchor][] × NormalizedEvent[tradable][]"]
   MATCH -->|candidate| PV["概率校验:临时订阅 OBD + 读 best ask"]
   PV -->|pass| EV["publish data:MatchedPair"]
@@ -70,6 +70,9 @@ class PairRegistry:
         self._by_anchor: dict[str, str] = {}       # non-tradable anchor,key = str(instrument_id)
     # matching 写
     def register(self, pair_id: str, instrument_ids: list, *, anchor_instrument_ids=()) -> None: ...
+    # #228:内部 `_by_anchor` 为 anchor iid → set[pair_id] 多值(PMSPORTS 唯一锚在 3-way
+    # 拆出的多个 role pair 重复登记);可交易腿仍严格一对一。`get(anchor_id)` 兜底返回
+    # 排序后第一个 pair(确定性)。
     def unregister_pair(self, pair_id: str) -> None: ...
     # consumers 读
     def get(self, instrument_id) -> str | None: ...                # 可交易腿 / anchor 均可反查
@@ -79,6 +82,7 @@ class PairRegistry:
 ```
 > **#58 key 归一 str**:matching 写 `str(leg.id)`,消费者(risk/portfolio/session)用 `InstrumentId` 对象查 → `register`/`get` 两侧 `str()` 归一才命中(否则 dict 恒 miss)。snapshot 反查后在 cache 边界转回 `InstrumentId`(`strategy/snapshot.py:_as_instrument_id`)。
 > **#116 pair→instrument 反查**:`instrument_ids_for_pair(pair_id)` 供 Portfolio 从 cache instrument.info 读取该 pair 的完整 outcome 集合,避免三元盘某 outcome 暂无持仓时被 Risk profit gate 漏算。
+> ⚠️ 受 #228 影响,"三元盘一个 pair 含 3 outcome"的假设失效:3-way 拆为 3 个二元 pair 后,每个 pair 恰好 2 个 outcome,盈亏在 market 内闭合;反查接口保留,但"三元盘漏算"场景不复存在(见 risk 架构对应节)。
 > **#127 anchor 分槽**:`instrument_ids_for_pair()` 默认只返回可交易腿;PMSPORTS synthetic event anchor 等 non-tradable id 只通过 `anchor_ids_for_pair` 或 `tradable_only=False` 暴露给 matching/lifecycle。
 
 ### 3.2 `MatchedPair`(`src/arbitrage/matching/events.py`)
@@ -89,13 +93,22 @@ NT `@customdataclass` Data 类,走 msgbus pub/sub:
 @customdataclass
 class MatchedPair(Data):
     pair_id: str
+    event_key: str             # 所属 event(#228:`competition|home|away`;2-way 时 == pair_id 基础部分)
     sport: str
     competition: str           # 联赛名(非 pair_id;#34)
+    outcomes: list[str]        # #228:pair 的互斥 outcome 集,2-way `["home","away"]`,3-way 拆分 pair `["yes","no"]`
     confidence: float          # total_confidence = home_confidence + away_confidence
     anchor_instrument_ids: list[str]       # non-tradable anchor,如 .PMSPORTS
     tradable_instrument_ids: list[str]     # strategy/risk/portfolio 消费的可交易腿
     venue_instrument_ids: dict[str, list[str]]  # venue -> 可交易腿
 ```
+
+> **#228 pair=market 不变量**:`pair_id` 是 **market 级**语义(strategy/risk/execution 的套利单位),
+> 每个 pair 恰好两个互斥 outcome(`outcomes` 声明),pair 内**每 venue 每 outcome 恰好一条**可交易
+> instrument 腿。event 级聚合(一场比赛)由 `event_key` 表达,仅用于匹配、连坐 eviction 与展示分组。
+> 2-way:一场比赛一个 market,pair_id=event_key(现状不变)。3-way:一场比赛 3 个 market
+> (home/draw/away 各一),拆 3 个 pair(§4.2.2);PMSPORTS 每场唯一的合成锚在每个 role pair 的
+> `anchor_instrument_ids` 重复登记(锚是 event 级的,一对多复用)。已落地 2026-07-15。
 
 `venue_instrument_ids` 是当前主通路;`MarketMatchingActor` 发布事件时只维护
 `venue_instrument_ids` / `tradable_instrument_ids` / `anchor_instrument_ids`。
@@ -218,13 +231,40 @@ candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pa
 ended eviction 会清理对应 `pair_id` 的 validation 状态和临时 OBD 订阅,避免结束赛事的
 failed/pending 记录阻塞未来生命周期。
 
+> **#228 pair 级化(已落地 2026-07-15)**:3-way 拆分(§4.2.2)后门控按拆出的 pair 独立走上述
+> 状态机;"互斥腿 ask 概率和"即 pair `outcomes` 两侧的 ask 概率和(outcome 标签 = `claim or
+> selection_role`),decimal venue 的 no 腿 ask 概率经 Venue Registry
+> `probability_from_price(venue, price, claim)` 换算(与 strategy 同一个家,见 strategy §3.7)。
+> **FAIL 连坐(双向)**:任一 role pair FAIL,同 `event_key` 的全部 pair 一并置 FAIL 并走
+> eviction——门控抓的是 event 级错配(队名配错不会只错一个 market)。已存在的兄弟由
+> `_fail_event_siblings` 反注册+置 sticky FAILED;**后到的兄弟 candidate 在
+> `_handle_pair_candidate` 入场时检查 `_event_has_failed_pair` 直接置 FAILED**(不订阅不校验),
+> 覆盖"home 先 FAIL 时 draw/away candidate 尚未出现"的时序。
+
+### 4.2.2 3-way 多 market 拆分(#228,已落地 2026-07-15)
+
+event 级名称匹配成功后、进入概率校验(§4.2.1)前,按 market 拆 pair:
+
+- 判据:匹配到的 legs 中含 `selection_role == "draw"` → 3-way;否则 2-way(单 pair,现状路径)。
+- 3-way 拆分:按 `selection_role` 把 event 的腿分到 3 个 pair candidate
+  (`event_key|home / |draw / |away`,§4.3),每个 pair `outcomes=["yes","no"]`:
+  - PM 腿:该 role 对应 binary market 的 YES + NO 两个 token instrument(role 相同,`claim` 区分);
+  - OE/SE 腿:该 role selection 的 yes instrument + 合成 no instrument(data 架构"OE/SE 3-way 腿模型"节);
+  - PMSPORTS 锚:同一条锚 instrument 进每个 pair 的 `anchor_instrument_ids`。
+- 2-way pair `outcomes=["home","away"]`,腿集合与现状一致,pair_id 不变。
+- Matching 维护 `event_key → set[pair_id]`(供 §4.2.1 FAIL 连坐与 ended eviction);
+  `game_to_pair[game_id]` 本就是 set,天然容纳多 pair。
+
 ### 4.3 pair_id 生成
 
 稳定、确定性:
-- 显式 `anchor_venue="POLYMARKET"` 路径中,只要按单个 tradable venue 发 pair,就追加 venue 后缀:`...|ORBITEXCH` / `...|SHARPEXCH`;不再有无后缀的 external 兜底。
+- 基础 key = `event_key = competition|home_normalized|away_normalized`(#228 起 `event_key` 是独立概念,见 §3.2)。
+- **#228 role 后缀(3-way,已落地 2026-07-15)**:3-way 拆分 pair 在 event_key 后追加 role:
+  `event_key|home / |draw / |away`;2-way 不加 role 后缀(pair_id == 基础形态,零迁移)。
+- 显式 `anchor_venue="POLYMARKET"` 路径中,只要按单个 tradable venue 发 pair,就追加 venue 后缀:`...|ORBITEXCH` / `...|SHARPEXCH`;不再有无后缀的 external 兜底。**venue 后缀在 role 后缀之后**(`event_key|home|ORBITEXCH`)。
 - PMSPORTS non-tradable anchor 路径中,同一 anchor event 下所有 tradable venues 共用基础 pair_id,由聚合路径一次 register/publish;实现上显式关闭 venue suffix,不借用 OE 作为哨兵。
 - 重匹配同一对得同 ID(幂等,registry 整组覆盖)
-- 同联赛同 fixture 罕见(若发生,加 `start_ts` 维度;暂不引入)
+- `start_ts` 不参与 pair_id;同联赛同队名 fixture 罕见,当前仍按 event 名称归一后的基础 key 幂等覆盖。
 
 ### 4.4 latch + eviction(#59,替 Q5 2×window gate)
 
@@ -255,7 +295,7 @@ def _evict_game(gid):
 |---|---|
 | `PairRegistry`(P11) | matching 是**唯一写者**;其它只读;launcher 经 `ArbContext` 注入同一实例 |
 | ~~`LegSettledRegistry`~~ | **#108 退役**:`leg_settled` 已删除;执行健康现由 `VenueExecutionLiveness` 表达(synchronization §8.5),matching 本就不参与,仍不参与 |
-| Q9 6-key | matching 只读 info 6-key + venue type,不依赖具体 instrument 子类(P1) |
+| Q9 matching key | matching 只读 `sport/competition/home_team/away_team/selection_role` + venue type,不依赖具体 instrument 子类(P1) |
 
 ---
 

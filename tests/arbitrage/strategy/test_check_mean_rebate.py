@@ -13,46 +13,74 @@ def _fake_book(ask_price):
     return book
 
 
-def _ctx(*, books: dict, infos: dict, instrument_ids: list | None = None) -> EvalContext:
+def _ctx(*, books: dict, infos: dict, instrument_ids: list | None = None, outcomes: list | None = None) -> EvalContext:
     snap = OpportunitySnapshot(
         pair_id="p",
         instrument_ids=instrument_ids or list(books.keys()),
         order_books=books,
         instrument_info=infos,
+        outcomes=outcomes or ["home", "away"],
     )
     ctx = EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 40.0})
     return ctx
 
 
-# ── 基础:三方向套利场景 + rate > 阈值 ────────────────────────
+# ── #228:3-way 拆分后的 [yes,no] pair(旧"三 role 一 pair"分支退役)──
 
-def test_3way_arb_triggers_above_threshold():
-    """每方向取 min(PM_prob, OE_prob):0.25*3=0.75 → rate=0.25 > 0.05 → 命中。"""
+def test_3way_split_pair_yes_no_arb_triggers_above_threshold():
+    """#228:3-way 拆分 pair 内按 claim 分组([yes,no]);decimal no 腿概率 = 1−1/lay。
+
+    yes: min(PM 0.40, OE 1/2.86≈0.3497)≈0.3497;no: min(PM 0.45, OE no 1−1/2.5=0.60)=0.45
+    → rate = 1 − 0.7997 ≈ 0.20 > 0.05 命中。
+    """
     books = {
-        "H.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "D.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "A.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "H.ORBITEXCH":  _fake_book(4.0),     # prob 0.25 ← 各方向 OE 更便宜
-        "D.ORBITEXCH":  _fake_book(4.0),     # prob 0.25
-        "A.ORBITEXCH":  _fake_book(4.0),     # prob 0.25
+        "HY.POLYMARKET": _fake_book(0.40),    # home market YES token
+        "HN.POLYMARKET": _fake_book(0.45),    # home market NO token(独立盘口)
+        "H.ORBITEXCH":   _fake_book(2.86),    # yes 腿(back)prob≈0.3497
+        "HNO.ORBITEXCH": _fake_book(2.5),     # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
     }
     infos = {
-        "H.POLYMARKET": {"selection_role": "home"},
-        "D.POLYMARKET": {"selection_role": "draw"},
-        "A.POLYMARKET": {"selection_role": "away"},
-        "H.ORBITEXCH":  {"selection_role": "home"},
-        "D.ORBITEXCH":  {"selection_role": "draw"},
-        "A.ORBITEXCH":  {"selection_role": "away"},
+        "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
+        "H.ORBITEXCH":   {"selection_role": "home", "claim": "yes"},
+        "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "exec_instrument_id": "H.ORBITEXCH"},
     }
-    ctx = _ctx(books=books, infos=infos)
+    ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
     ok = MeanRebateCheck(min_rate=0.05).passes(ctx)
     assert ok is True
     legs = ctx.scratch["legs"]
-    assert len(legs) == 3
-    assert {l["role"] for l in legs} == {"home", "draw", "away"}
+    assert len(legs) == 2
+    assert {l["role"] for l in legs} == {"yes", "no"}
     assert {l["share_if_wins"] for l in legs} == {40.0}
+    chosen_no = next(l for l in legs if l["role"] == "no")
+    assert chosen_no["instrument_id"] == "HN.POLYMARKET"   # PM no 0.45 < OE no 0.60
+    assert chosen_no["claim"] == "no"
     rate = ctx.scratch["mean_rebate_rate"]
-    assert rate > 0.05
+    assert abs(rate - (1.0 - (1.0 / 2.86 + 0.45))) < 1e-9
+
+
+def test_3way_split_pair_decimal_no_leg_carries_lay_and_exec_redirect():
+    """#228:decimal no 腿被选中时,leg 带 claim/lay_price/exec_instrument_id 直通 place_bets。"""
+    books = {
+        "HY.POLYMARKET": _fake_book(0.40),
+        "HN.POLYMARKET": _fake_book(0.62),     # PM no 更贵
+        "H.ORBITEXCH":   _fake_book(2.86),
+        "HNO.ORBITEXCH": _fake_book(2.5),      # OE no prob=0.60 ← 被选中
+    }
+    infos = {
+        "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
+        "H.ORBITEXCH":   {"selection_role": "home", "claim": "yes"},
+        "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "exec_instrument_id": "H.ORBITEXCH"},
+    }
+    ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
+    assert MeanRebateCheck(min_rate=0.01).passes(ctx) is True
+    chosen_no = next(l for l in ctx.scratch["legs"] if l["role"] == "no")
+    assert chosen_no["instrument_id"] == "HNO.ORBITEXCH"
+    assert chosen_no["lay_price"] == 2.5
+    assert chosen_no["exec_instrument_id"] == "H.ORBITEXCH"
 
 
 # ── 阈值控制:rate < min_rate → False,不写 scratch ──

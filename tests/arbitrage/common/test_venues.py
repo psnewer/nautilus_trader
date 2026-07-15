@@ -116,10 +116,19 @@ def test_decimal_helpers_are_shared_for_oe_and_se(venue):
     assert qty_from_share(venue, 100.0, 4.0) == 25.0
 
 
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+def test_decimal_no_claim_probability_is_complement(venue):
+    """#228:decimal venue claim=no 腿 book 存 lay 原值,隐含概率 = 1 − 1/price。"""
+    assert probability_from_price(venue, 4.0, claim="no") == 0.75
+    assert probability_from_price(venue, 4.0, claim="yes") == 0.25
+    assert probability_from_price(venue, 4.0) == 0.25  # 默认 yes,向后兼容
+
+
 def test_polymarket_helpers_use_probability_share_semantics():
     assert is_decimal_odds_venue(POLYMARKET) is False
     assert is_probability_odds_venue(POLYMARKET) is True
     assert probability_from_price(POLYMARKET, 0.25) == 0.25
+    assert probability_from_price(POLYMARKET, 0.25, claim="no") == 0.25  # probability venue 不受 claim 影响
     assert qty_from_share(POLYMARKET, 100.0, 0.25) == 100.0
 
 

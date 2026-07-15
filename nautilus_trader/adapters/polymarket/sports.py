@@ -194,7 +194,6 @@ class PolymarketSportsInstrumentProvider(InstrumentProvider):
                 "competition": comp_name,
                 "home_team": home_team,
                 "away_team": away_team,
-                "start_ts": start_ts,
                 "selection_role": "event",
                 "game_id": game_id,
                 "tradable": False,

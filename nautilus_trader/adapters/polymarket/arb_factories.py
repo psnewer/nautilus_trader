@@ -98,7 +98,7 @@ class PolymarketSportsLiveDataClientFactory(LiveDataClientFactory):
 
 class ArbPolymarketLiveDataClientFactory(LiveDataClientFactory):
     """替代上游 `PolymarketLiveDataClientFactory`,用 `ArbPolymarketInstrumentProvider`
-    给 instrument.info 补 Q9 6-key(matching 必需)。"""
+    给 instrument.info 补 matching 字段。"""
 
     @staticmethod
     def create(  # type: ignore[override]

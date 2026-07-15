@@ -202,7 +202,10 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return False
 
         try:
-            probability = probability_from_price(order.instrument_id.venue.value, float(order.price))
+            # #228:decimal venue 的 SELL 即 lay(合成 no 腿执行已重定向回真 selection instrument,
+            # instrument.info 的 claim 不可用作订单级判别),获得的敞口隐含概率是补集 1−1/price。
+            claim = "no" if _is_lay_order(order) else "yes"
+            probability = probability_from_price(order.instrument_id.venue.value, float(order.price), claim)
         except (KeyError, ZeroDivisionError):
             self._deny_order(order=order, reason=f"probability gate: unsupported venue={order.instrument_id.venue}")
             return False
@@ -303,3 +306,16 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if registry is None:
             return None
         return registry.get(order.instrument_id)
+
+
+def _is_lay_order(order) -> bool:
+    """#228:decimal venue 的 SELL 订单即 lay(买 no 敞口)。"""
+    from src.arbitrage.common.venues import is_decimal_odds_venue
+
+    side = getattr(order, "side", None)
+    if str(getattr(side, "name", side) or "").upper() != "SELL":
+        return False
+    try:
+        return is_decimal_odds_venue(order.instrument_id.venue.value)
+    except KeyError:
+        return False

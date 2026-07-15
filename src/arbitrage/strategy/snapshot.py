@@ -37,8 +37,11 @@ class OpportunitySnapshot:
     # 由 OE DataClient 写入 cache.instrument.info)。任一 OE leg in_play=True → pair in_play。
     in_play: bool = False
     # slice 9(#49):per-instrument info 冻结副本(每 iid → cache.instrument.info dict 浅拷贝)。
-    # Check/Action 经 snapshot 读 `selection_role` / 其他 6-key,**不直接调 cache**(decouple)。
+    # Check/Action 经 snapshot 读 `selection_role` / 其他 matching key,**不直接调 cache**(decouple)。
     instrument_info: dict = field(default_factory=dict)
+    # #228:pair 互斥 outcome 集。builder 从腿的 claim 派生(3-way 腿全部显式带 claim,
+    # 2-way 一律不带 → 任一腿有 claim 即 [yes,no],否则 [home,away]),与 MatchedPair.outcomes 一致。
+    outcomes: list = field(default_factory=lambda: ["home", "away"])
 
 
 def build_snapshot(
@@ -67,8 +70,9 @@ def build_snapshot(
     # position.instrument_id 是 InstrumentId(live);经 str() 归一与 registry str id 比对。
     id_set = set(instrument_ids)
     positions = [p for p in cache.positions_open() if str(getattr(p, "instrument_id", None)) in id_set]
-    # in_play 派生 + instrument_info 冻结(slice 9 / #49):一次遍历搞两件
+    # in_play 派生 + instrument_info 冻结(slice 9 / #49)+ outcomes 派生(#228):一次遍历
     in_play = False
+    has_claim = False
     instrument_info: dict = {}
     for iid in instrument_ids:
         inst = cache.instrument(iid_objs[iid])
@@ -77,6 +81,8 @@ def build_snapshot(
             instrument_info[iid] = dict(info)  # 浅拷贝 freeze(后续 cache 写不影响)
             if info.get("in_play"):
                 in_play = True
+            if info.get("claim"):
+                has_claim = True
         else:
             instrument_info[iid] = {}
     return OpportunitySnapshot(
@@ -86,6 +92,7 @@ def build_snapshot(
         positions=positions,
         in_play=in_play,
         instrument_info=instrument_info,
+        outcomes=["yes", "no"] if has_claim else ["home", "away"],
     )
 
 

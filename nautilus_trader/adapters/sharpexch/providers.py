@@ -1,6 +1,6 @@
 """SharpExch InstrumentProvider。
 
-第一阶段复用 OE 型结构:发现事件 → home/draw/away `BettingInstrument`,并填 Q9 六统一 key。
+第一阶段复用 OE 型结构:发现事件 → 多条 `BettingInstrument`,并填 matching 必需字段。
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchDiscoveryClient
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketEvent
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
+
+# #228:合成 no 腿的 handicap 哨兵(只为 InstrumentId 唯一;不进 venue payload)
+NO_LEG_HANDICAP = -1.0
 
 
 class SharpExchInstrumentProvider(InstrumentProvider):
@@ -53,16 +56,29 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         _log.info(f"SE InstrumentProvider: loaded {self.count} instruments")
 
     def _build_legs(self, event: SharpExchMarketEvent) -> Iterable[BettingInstrument]:
+        """#228:3-way(runners 含 draw)每 selection 产 yes + 合成 no 两条腿(no 是同
+        selection 的 lay 投影,下单经 `exec_instrument_id` 重定向回 yes instrument);2-way 不变。"""
         info_base = {
             "sport": self._sport_aliases.get(event.sport, event.sport),
             "competition": self._competition_aliases.get(event.competition, event.competition),
             "home_team": event.home_team,
             "away_team": event.away_team,
-            "start_ts": event.start_ts,
         }
+        is_three_way = any(runner.role == "draw" for runner in event.runners)
         for runner in event.runners:
             info = dict(info_base, selection_role=runner.role)
-            yield self._betting_instrument(event, runner, info, self._fx)
+            if not is_three_way:
+                yield self._betting_instrument(event, runner, info, self._fx)
+                continue
+            yes = self._betting_instrument(event, runner, dict(info, claim="yes"), self._fx)
+            yield yes
+            yield self._betting_instrument(
+                event,
+                runner,
+                dict(info, claim="no", exec_instrument_id=str(yes.id)),
+                self._fx,
+                no_leg=True,
+            )
 
     @staticmethod
     def _betting_instrument(
@@ -70,6 +86,8 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         runner: SharpExchRunner,
         info: dict,
         fx: float,
+        *,
+        no_leg: bool = False,
     ) -> BettingInstrument:
         min_stake_usd = Decimal("12")
         market_start_time = pd.Timestamp(event.start_ts, unit="ns", tz="UTC")
@@ -85,10 +103,12 @@ class SharpExchInstrumentProvider(InstrumentProvider):
             event_type_id=_to_int_or_zero(event.sport_id),
             event_type_name=event.sport,
             market_id=str(event.market_id),
-            market_name=runner.role,
+            market_name=f"{runner.role}-NO" if no_leg else runner.role,
             market_start_time=market_start_time,
             market_type="MATCH_ODDS",
-            selection_handicap=null_handicap(),
+            # #228:no 腿 handicap 哨兵只为 InstrumentId 唯一;market/selection 保持真值,
+            # 该腿不直接下单(执行经 exec_instrument_id 重定向),哨兵不进 venue payload。
+            selection_handicap=NO_LEG_HANDICAP if no_leg else null_handicap(),
             selection_id=int(runner.selection_id),
             selection_name=runner.role,
             currency="USD",

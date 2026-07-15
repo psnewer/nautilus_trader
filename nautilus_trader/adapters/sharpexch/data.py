@@ -57,7 +57,8 @@ class SharpExchDataClient(LiveMarketDataClient):
         )
         self._config = config
         self._browser_manager = browser_manager
-        self._market_to_instruments: dict[str, dict[str, InstrumentId]] = {}
+        # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
+        self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
         self._market_to_page_key: dict[str, str] = {}
         self._comp_page_refs: dict[str, tuple[str, str]] = {}
         self._comp_pages: dict[str, object] = {}
@@ -318,30 +319,36 @@ def se_routing_entry_from_instrument(inst) -> tuple[str, str] | None:
 
 
 def se_update_market_routing(
-    routing: dict[str, dict[str, InstrumentId]],
+    routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     instrument_id: InstrumentId,
     inst,
 ) -> bool:
-    """把一个 SE instrument 加入 `market_id -> selection_id -> InstrumentId` routing。"""
+    """把一个 SE instrument 加入 `market_id -> selection_id -> [(InstrumentId, claim)]` routing(#228 多值)。"""
 
     entry = se_routing_entry_from_instrument(inst)
     if entry is None:
         return False
     market_id, selection_id = entry
-    routing.setdefault(market_id, {})[selection_id] = instrument_id
+    claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+    entries = routing.setdefault(market_id, {}).setdefault(selection_id, [])
+    if not any(iid == instrument_id for iid, _ in entries):
+        entries.append((instrument_id, claim))
     return True
 
 
 def se_remove_market_routing(
-    routing: dict[str, dict[str, InstrumentId]],
+    routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     instrument_id: InstrumentId,
 ) -> None:
     """从 routing 中移除一个 instrument id。"""
 
     for selection_map in list(routing.values()):
-        stale = [selection_id for selection_id, iid in selection_map.items() if iid == instrument_id]
-        for selection_id in stale:
-            del selection_map[selection_id]
+        for selection_id, entries in list(selection_map.items()):
+            remaining = [(iid, c) for iid, c in entries if iid != instrument_id]
+            if remaining:
+                selection_map[selection_id] = remaining
+            else:
+                del selection_map[selection_id]
 
 
 def se_subscription_plan_from_instrument(inst) -> dict | None:
@@ -364,7 +371,7 @@ def se_subscription_plan_from_instrument(inst) -> dict | None:
 
 def se_update_subscription_state(
     *,
-    market_routing: dict[str, dict[str, InstrumentId]],
+    market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     market_to_page_key: dict[str, str],
     comp_page_refs: dict[str, tuple[str, str]],
     instrument_id: InstrumentId,
@@ -373,7 +380,7 @@ def se_update_subscription_state(
     """注册 SE instrument 的订阅状态。
 
     更新:
-    - `market_id -> selection_id -> InstrumentId`
+    - `market_id -> selection_id -> [(InstrumentId, claim)]`(#228:同 selection 可有 yes+no 两条)
     - `market_id -> page_key`
     - `page_key -> (sport_id, competition_id)`
     """
@@ -384,7 +391,10 @@ def se_update_subscription_state(
     market_id = plan["market_id"]
     selection_id = plan["selection_id"]
     page_key = plan["page_key"]
-    market_routing.setdefault(market_id, {})[selection_id] = instrument_id
+    claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+    entries = market_routing.setdefault(market_id, {}).setdefault(selection_id, [])
+    if not any(iid == instrument_id for iid, _ in entries):
+        entries.append((instrument_id, claim))
     market_to_page_key[market_id] = page_key
     comp_page_refs[page_key] = (plan["sport_id"], plan["competition_id"])
     return plan
@@ -392,7 +402,7 @@ def se_update_subscription_state(
 
 def se_remove_subscription_state(
     *,
-    market_routing: dict[str, dict[str, InstrumentId]],
+    market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     market_to_page_key: dict[str, str],
     comp_page_refs: dict[str, tuple[str, str]],
     instrument_id: InstrumentId,
@@ -401,9 +411,12 @@ def se_remove_subscription_state(
 
     removed_markets: list[str] = []
     for market_id, selection_map in list(market_routing.items()):
-        stale = [selection_id for selection_id, iid in selection_map.items() if iid == instrument_id]
-        for selection_id in stale:
-            del selection_map[selection_id]
+        for selection_id, entries in list(selection_map.items()):
+            remaining = [(iid, c) for iid, c in entries if iid != instrument_id]
+            if remaining:
+                selection_map[selection_id] = remaining
+            else:
+                del selection_map[selection_id]
         if not selection_map:
             del market_routing[market_id]
             removed_markets.append(market_id)
@@ -660,7 +673,7 @@ async def se_reload_competition_on_disconnect(
 
 def se_price_message_to_book_deltas(
     message,
-    routing: dict[str, InstrumentId],
+    routing: dict[str, list[tuple[InstrumentId, str]]],
     ts_init_ns: int,
     *,
     price_precision: int = 2,
@@ -668,7 +681,7 @@ def se_price_message_to_book_deltas(
 ) -> list[OrderBookDeltas]:
     """SE price WS message + selection routing → `OrderBookDeltas` 列表。
 
-    `routing` 是 DataClient 维护的 `selection_id -> InstrumentId`;未订阅 runner 跳过。
+    `routing` 是 DataClient 维护的 `selection_id -> [(InstrumentId, claim)]`;未订阅 runner 跳过。
     """
 
     parsed = SharpExchMessageParser().parse_price_message(message)
@@ -678,24 +691,23 @@ def se_price_message_to_book_deltas(
     out = []
     for runner in parsed.get("runners", []):
         selection_id = str(runner.get("selection_id", "") or "")
-        instrument_id = routing.get(selection_id)
-        if instrument_id is None:
-            continue
-        deltas = se_runner_to_book_deltas(
-            instrument_id,
-            runner,
-            ts_init_ns,
-            price_precision=price_precision,
-            size_precision=size_precision,
-        )
-        if deltas is not None:
-            out.append(deltas)
+        for instrument_id, claim in routing.get(selection_id, []):
+            deltas = se_runner_to_book_deltas(
+                instrument_id,
+                runner,
+                ts_init_ns,
+                price_precision=price_precision,
+                size_precision=size_precision,
+                claim=claim,
+            )
+            if deltas is not None:
+                out.append(deltas)
     return out
 
 
 def se_market_price_message_to_book_deltas(
     message,
-    market_routing: dict[str, dict[str, InstrumentId]],
+    market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     ts_init_ns: int,
     *,
     price_precision: int = 2,
@@ -703,7 +715,7 @@ def se_market_price_message_to_book_deltas(
 ) -> dict | None:
     """SE price WS message + market routing → routed book-delta payload。
 
-    `market_routing` 是 DataClient 维护的 `market_id -> selection_id -> InstrumentId`。
+    `market_routing` 是 DataClient 维护的 `market_id -> selection_id -> [(InstrumentId, claim)]`。
     """
 
     parsed = SharpExchMessageParser().parse_price_message(message)
@@ -716,18 +728,18 @@ def se_market_price_message_to_book_deltas(
     deltas: list[OrderBookDeltas] = []
     for runner in parsed.get("runners", []):
         selection_id = str(runner.get("selection_id", "") or "")
-        instrument_id = routing.get(selection_id)
-        if instrument_id is None:
-            continue
-        item = se_runner_to_book_deltas(
-            instrument_id,
-            runner,
-            ts_init_ns,
-            price_precision=price_precision,
-            size_precision=size_precision,
-        )
-        if item is not None:
-            deltas.append(item)
+        # #228:同一 selection 可有 yes + 合成 no 两条 instrument,同帧各发一份 deltas
+        for instrument_id, claim in routing.get(selection_id, []):
+            item = se_runner_to_book_deltas(
+                instrument_id,
+                runner,
+                ts_init_ns,
+                price_precision=price_precision,
+                size_precision=size_precision,
+                claim=claim,
+            )
+            if item is not None:
+                deltas.append(item)
     return {
         "market_id": market_id,
         "in_play": bool(parsed.get("in_play", False)),
@@ -797,8 +809,12 @@ def se_runner_to_book_deltas(
     *,
     price_precision: int = 2,
     size_precision: int = 2,
+    claim: str = "yes",
 ) -> Optional[OrderBookDeltas]:
-    """SE WS 一个 runner 的 back/lay 快照 → `OrderBookDeltas`(CLEAR + N×ADD)。"""
+    """SE WS 一个 runner 的 back/lay 快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
+
+    #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列原值、bid ← BACK 列原值。
+    """
 
     back = runner.get("back") or []
     lay = runner.get("lay") or []
@@ -817,15 +833,19 @@ def se_runner_to_book_deltas(
         ),
     ]
     order_id = 1
+    is_no = str(claim or "").lower() == "no"
     # decimal odds 只发布 top-of-book:back 赔率越高越好,lay 赔率越低越好。
     best_back = _best_level(back, highest=True)
-    if best_back is not None:
-        price, size = best_back
+    best_lay = _best_level(lay, highest=False)
+    # yes 腿:ask=back / bid=lay;no 腿:ask=lay / bid=back(原值换位)。
+    ask_level = best_lay if is_no else best_back
+    bid_level = best_back if is_no else best_lay
+    if ask_level is not None:
+        price, size = ask_level
         deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
-    best_lay = _best_level(lay, highest=False)
-    if best_lay is not None:
-        price, size = best_lay
+    if bid_level is not None:
+        price, size = bid_level
         deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 

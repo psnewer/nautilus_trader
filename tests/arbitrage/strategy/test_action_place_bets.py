@@ -170,6 +170,91 @@ def test_action_uses_sharpexch_leg_share_if_wins_without_action_share():
     assert calls[0]["leg_key"] == "sharpexch:away:0"
 
 
+def test_decimal_no_claim_uses_lay_side_price_and_size():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "A.SHARPEXCH",
+            "venue": "SHARPEXCH",
+            "side": "BUY",
+            "role": "away",
+            "claim": "no",
+            "price": 2.0,      # back/ask,不能用于 no claim 执行
+            "bid": 2.1,        # lay/bid
+            "qty": 999.0,      # claim=no 时必须按 lay price 重新计算
+            "share_if_wins": 21.0,
+        },
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["side"] == "SELL"
+    assert calls[0]["price"] == 2.1
+    assert calls[0]["qty"] == 10.0
+
+
+def test_decimal_no_claim_redirects_to_exec_instrument():
+    """#228:合成 no 腿(-NO instrument)带 exec_instrument_id → 真单落在同 selection 的 yes instrument。"""
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "1-123-42--1.0.ORBITEXCH",       # 合成 no instrument(行情/身份载体)
+            "exec_instrument_id": "1-123-42-None.ORBITEXCH",  # 同 selection 的 yes instrument
+            "venue": "ORBITEXCH",
+            "side": "BUY",
+            "role": "no",
+            "claim": "no",
+            "price": 2.5,        # no book ask = lay 原值
+            "lay_price": 2.5,
+            "share_if_wins": 25.0,
+        },
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["instrument_id"] == "1-123-42-None.ORBITEXCH"
+    assert calls[0]["side"] == "SELL"
+    assert calls[0]["price"] == 2.5
+    assert calls[0]["qty"] == 10.0   # share_if_wins / lay = 25 / 2.5
+
+
+def test_probability_no_claim_keeps_buy_path():
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {
+            "instrument_id": "H.POLYMARKET",
+            "venue": "POLYMARKET",
+            "side": "BUY",
+            "role": "home",
+            "claim": "no",
+            "price": 0.4,
+            "bid": 0.39,
+            "share_if_wins": 21.0,
+        },
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["side"] == "BUY"
+    assert calls[0]["price"] == 0.4
+    assert calls[0]["qty"] == 21.0
+
+
 def test_action_can_override_venue_price_and_qty_for_live_probe():
     """临时 live 验证可覆盖 OE 下单价/量,但不影响 Check 使用真实 order book 算机会。"""
     calls = []

@@ -42,7 +42,7 @@
 |---|---|
 | `PMSPORTS` 是 data source / event venue | 它不是 trading venue,无 exec client,无 account,无 position |
 | `.PMSPORTS` instruments 非交易 | `info["tradable"] == False`,不能进入 Strategy snapshot 的 tradable instruments |
-| Matching 可读 `.PMSPORTS` | Matching 用它作为 canonical event anchor,读 6-key + `game_id` |
+| Matching 可读 `.PMSPORTS` | Matching 用它作为 canonical event anchor,读 matching key + `game_id` |
 | PairRegistry 区分 anchor 与 tradable | 下游从 pair 查 instruments 时必须能只取 tradable ids |
 | Strategy 只消费 tradable ids | MatchedPair 触发 OBD 订阅与 snapshot 构造时跳过 anchor ids |
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
@@ -143,6 +143,9 @@ PMSPORTS event anchor × enabled tradable venues
 3. 对每个 tradable venue,从 instruments 反推 venue event。
 4. 以 `(sport, competition)` 分组,按队名相似度把 tradable event 匹配到 PMSPORTS anchor event。
 5. 每个 `pair_id` 由 anchor event 决定,同一 anchor 下不同 tradable venue 共享同一个 event identity。
+   受 #228 影响(已落地 2026-07-15):anchor event 决定的是 **`event_key`**;3-way 由 event
+   拆出 3 个 market 级 `pair_id`(matching §4.2.2),同一条 PMSPORTS 锚在每个拆分 pair 的
+   `anchor_instrument_ids` 重复登记,`game_id → pair_ids` 一对多。2-way 仍是一 event 一 pair。
 
 `pair_id` 建议:
 

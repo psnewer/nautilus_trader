@@ -58,6 +58,7 @@ def oe_runner_to_book_deltas(
     *,
     price_precision: int = 2,
     size_precision: int = 2,
+    claim: str = "yes",
 ) -> Optional[OrderBookDeltas]:
     """OE WS 一个 runner 的 back/lay 快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
 
@@ -66,6 +67,9 @@ def oe_runner_to_book_deltas(
     - top back 档:`ADD(SELL)`(NT ask;decimal odds 最高 BACK 赔率)
     - top lay 档: `ADD(BUY)`(NT bid;decimal odds 最低 LAY 赔率)
     包成 `OrderBookDeltas`(NT 标准 batch)入 DataEngine。
+
+    #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列原值、bid ← BACK 列
+    原值(cache 只存 venue 原始价;隐含概率在读侧经 `probability_from_price(..., claim)`)。
 
     返回 None 表示本 runner 无可用档(`back` + `lay` 都空)→ 调用方跳过 publish。
     """
@@ -86,15 +90,19 @@ def oe_runner_to_book_deltas(
         ),
     ]
     order_id = 1
+    is_no = str(claim or "").lower() == "no"
     # decimal odds 只发布 top-of-book:back 赔率越高越好,lay 赔率越低越好。
     best_back = _best_level(back, highest=True)
-    if best_back is not None:
-        price, size = best_back
+    best_lay = _best_level(lay, highest=False)
+    # yes 腿:ask=back / bid=lay;no 腿:ask=lay / bid=back(原值换位)。
+    ask_level = best_lay if is_no else best_back
+    bid_level = best_back if is_no else best_lay
+    if ask_level is not None:
+        price, size = ask_level
         deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
-    best_lay = _best_level(lay, highest=False)
-    if best_lay is not None:
-        price, size = best_lay
+    if bid_level is not None:
+        price, size = bid_level
         deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
@@ -165,7 +173,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
         self._comp_handlers: dict[str, OrbitExchWebSocketHandler] = {}    # page_key -> WS handler
         self._comp_pages_lock = asyncio.Lock()                            # 防并发订阅双开同一 competition
         # 路由:market_id(str) -> {selection_id(str): InstrumentId}(全局,跨所有 competition 页)
-        self._market_to_instruments: dict[str, dict[str, InstrumentId]] = {}
+        # #228:同一 (market, selection) 可路由到多条 instrument(yes + 合成 no),值为 (iid, claim) 列表
+        self._market_to_instruments: dict[str, dict[str, list[tuple[InstrumentId, str]]]] = {}
         # market_id(str) -> page_key:`_delayed_reopen` 据此判断页是否仍被订阅(决定是否继续重试开页)
         self._market_to_page_key: dict[str, str] = {}
         self._price_frames_seen = 0
@@ -353,7 +362,10 @@ class OrbitExchDataClient(LiveMarketDataClient):
         if market_id is None or selection_id is None:
             self._log.warning(f"OE subscribe: {instrument_id} missing market_id/selection_id; skip")
             return
-        self._market_to_instruments.setdefault(str(market_id), {})[str(selection_id)] = instrument_id
+        claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+        entries = self._market_to_instruments.setdefault(str(market_id), {}).setdefault(str(selection_id), [])
+        if not any(iid == instrument_id for iid, _ in entries):
+            entries.append((instrument_id, claim))
         # market → page_key(§6.8.3 时间维度:_on_price_frame 廉价定位帧所属 competition 页)
         sport_id = str(getattr(inst, "event_type_id", "") or "")
         competition_id = str(getattr(inst, "competition_id", "") or "")
@@ -362,9 +374,12 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
     def _unregister_instrument_routing(self, instrument_id: InstrumentId) -> None:
         for sel_map in list(self._market_to_instruments.values()):
-            stale = [k for k, v in sel_map.items() if v == instrument_id]
-            for k in stale:
-                del sel_map[k]
+            for sel_key, entries in list(sel_map.items()):
+                remaining = [(iid, c) for iid, c in entries if iid != instrument_id]
+                if remaining:
+                    sel_map[sel_key] = remaining
+                else:
+                    del sel_map[sel_key]
 
     # ── #109:WS handler on_disconnect(close 或心跳超时)→ reload(对称 PM `_schedule_delayed_connect`)──
     def _on_comp_disconnect(self, page_key: str, reason: str) -> None:
@@ -417,19 +432,18 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # #109:WS 存活由 handler 内部封装(心跳超时 + close → on_disconnect),此处不写任何存活锚。
         for runner in parsed.get("runners", []):
             sel_id = str(runner.get("selection_id", ""))
-            instrument_id = routing.get(sel_id)
-            if instrument_id is None:
-                continue
-            write_inplay_to_instrument_info(self._cache, instrument_id, in_play)
-            deltas = oe_runner_to_book_deltas(instrument_id, runner, ts)
-            if deltas is not None:
-                self._price_deltas_published += 1
-                if self._price_deltas_published == 1:
-                    self._log.info(
-                        f"OE OrderBookDeltas published: instrument_id={instrument_id}, "
-                        f"deltas={len(deltas.deltas)}",
-                    )
-                self._handle_data(deltas)
+            # #228:同一 selection 可有 yes + 合成 no 两条 instrument,同帧各发一份 deltas
+            for instrument_id, claim in routing.get(sel_id, []):
+                write_inplay_to_instrument_info(self._cache, instrument_id, in_play)
+                deltas = oe_runner_to_book_deltas(instrument_id, runner, ts, claim=claim)
+                if deltas is not None:
+                    self._price_deltas_published += 1
+                    if self._price_deltas_published == 1:
+                        self._log.info(
+                            f"OE OrderBookDeltas published: instrument_id={instrument_id}, "
+                            f"deltas={len(deltas.deltas)}",
+                        )
+                    self._handle_data(deltas)
 
 
 def write_inplay_to_instrument_info(cache, instrument_id, in_play: bool) -> None:

@@ -59,6 +59,22 @@ def test_runner_to_book_deltas_clears_then_adds_both_sides():
     assert deltas[2].order.side == OrderSide.BUY and float(deltas[2].order.price) == pytest.approx(2.34)
 
 
+def test_runner_to_book_deltas_no_claim_swaps_sides_with_raw_prices():
+    """#228:claim=no(合成 no 腿)两侧换位,ask=LAY 原值 / bid=BACK 原值,不做任何换算。"""
+    runner = {
+        "selection_id": "2",
+        "back": [{"price": 2.26, "size": 80.59}],
+        "lay":  [{"price": 2.36, "size": 66.46}],
+    }
+    out = oe_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000, claim="no")
+    deltas = list(out.deltas)
+    assert deltas[0].action == BookAction.CLEAR
+    # no 腿 ask ← LAY 列原值(下单价零换算不变量)
+    assert deltas[1].order.side == OrderSide.SELL and float(deltas[1].order.price) == pytest.approx(2.36)
+    # no 腿 bid ← BACK 列原值
+    assert deltas[2].order.side == OrderSide.BUY and float(deltas[2].order.price) == pytest.approx(2.26)
+
+
 def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
     """decimal top-of-book 源头归一:NT best_ask=最高 back,best_bid=最低 lay。"""
     runner = {
@@ -163,8 +179,8 @@ def test_register_routing_reads_market_and_selection_from_instrument():
     inst = oe_instrument("EPL", "home", selection_id=42)
     c._cache.add_instrument(inst)
     c._register_instrument_routing(inst.id)
-    # 路由:market_id "1-123"(factories 默认) → selection_id "42" → inst.id
-    assert c._market_to_instruments["1-123"]["42"] == inst.id
+    # 路由(#228 多值):market_id "1-123"(factories 默认) → selection_id "42" → [(inst.id, claim)]
+    assert c._market_to_instruments["1-123"]["42"] == [(inst.id, "yes")]
 
 
 def test_register_routing_skips_unknown_instrument():

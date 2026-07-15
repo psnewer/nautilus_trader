@@ -10,9 +10,9 @@
 
 | 件 | 基类 | 职责 |
 |---|---|---|
-| PM InstrumentProvider | 上游 `PolymarketInstrumentProvider` | **零代码**,配置即用(P1)。产出 `BinaryOption`(`info` 由上游 + 我们配置补 6-key) |
+| PM InstrumentProvider | 上游 `PolymarketInstrumentProvider` | **零代码**,配置即用(P1)。产出 `BinaryOption`(`info` 由上游 + 我们配置补 matching 字段) |
 | PMSPORTS InstrumentProvider | 自写 `PolymarketSportsInstrumentProvider` | 公开 Gamma sports discovery → 每场一个 `.PMSPORTS` non-tradable synthetic event anchor,供 matching 做事件锚点 |
-| OE InstrumentProvider | 自写 `OrbitExchInstrumentProvider(InstrumentProvider)` | Playwright 抓赛事(包 `OrbitExchScraper.discover_events`)→ 每场 ≥2 个 `BettingInstrument`(home/draw/away),`info` 填全 6-key |
+| OE InstrumentProvider | 自写 `OrbitExchInstrumentProvider(InstrumentProvider)` | `sport/details` 发现赛事 → 每场 ≥2 个 `BettingInstrument`, `info` 填全 matching 字段 |
 | ~~InstrumentRefresher~~ **(退役,#59)** | — | **已退役**:周期发现迁回 DataClient 原生 `_update_instruments`(NT bybit/binance 范式)。详见 §3.3 + refactor.md §5.2.3/#59。 |
 | 周期发现(#59) | PM/OE **DataClient** | `_connect` 首抓 + `_update_instruments(interval)` task 周期 `provider.load_all_async()` → `_send_all_instruments_to_data_engine()`(`_handle_data`→DataEngine→cache + `on_instrument`);interval 经 client config `update_instruments_interval_mins` |
 
@@ -53,10 +53,14 @@ flowchart LR
 
 ### 3.2 `OrbitExchInstrumentProvider`(`nautilus_trader/adapters/orbitexch/providers.py`)
 
+> **#228(已落地 2026-07-15)**:3-way 赛事每个 selection 产 yes + 合成 no **两条** instrument
+> (no 为同 selection 的 lay 投影,id 加 `-NO` 后缀,`claim="no"`);2-way 不变。PM 3-way 同步
+> 暴露 NO token。腿模型/book 写入的真理源在 data 架构 §3.1b 与 §3.2 的 #228 注记,此处不复述。
+
 ```python
 class OrbitExchInstrumentProvider(InstrumentProvider):
-    """包 OrbitExchScraper,每场赛事产出 home/draw/away 各一个 BettingInstrument,
-    `info` 填 Q9 六统一 key:sport/competition/home_team/away_team/start_ts/selection_role。"""
+    """包 OrbitExchDiscoveryClient,每场赛事产出多条 BettingInstrument,
+    `info` 填 matching key:sport/competition/home_team/away_team/selection_role。"""
 
     def __init__(
         self,
@@ -68,15 +72,17 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
     ) -> None: ...
 ```
 
-**`info` 6-key 映射**(MatchEvent → 每条腿):
+**`info` matching key 映射**(MatchEvent → 每条腿):
 | info key | 来源 |
 |---|---|
 | `sport` | `sport_aliases.get(event.sport, event.sport)` —— **slice 7A 规范化**(`"soccer"` → `"Soccer"`)|
 | `competition` | `competition_aliases.get(event.competition, event.competition)` —— **slice 7A 规范化**(`"Men's Roland Garros 2026"` → `"ATP"`,#46) |
 | `home_team` | `event.home_team` |
 | `away_team` | `event.away_team` |
-| `start_ts` | `OrbitExchDiscoveryClient.events_from_sport_details()` 从 `marketStartTime` / `event.openDate` 毫秒时间转 ns |
 | `selection_role` | `"home"` / `"draw"` / `"away"`(由本腿对应的 selection_id 决定) |
+
+`start_ts` 仍保留在 discovery event model 内,用于设置 NT `BettingInstrument.event_open_date` /
+`market_start_time`;它不写入 `instrument.info`,也不参与 matching key。
 
 > **#46 落实"Provider 填 info 时已 alias"假设**:normalizer 此前注释假设 Provider 已规范化 sport/competition,
 > 但旧 Provider 不查 aliases。slice 7A 加 `sport_aliases` / `competition_aliases` 构造参,
@@ -89,7 +95,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 `role="row"`;注入后 Wimbledon competition live probe 从 20 行提升到 96 行。该逻辑只影响 discovery 页面渲染,不改变后续
 `extract_matches()` 的 selector/字段提取规则。
 
-> **PM 端市场发现 + 6-key(slice 7B → #55 series-based → #57 修发现链路)**:`ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider)`
+> **PM 端市场发现 + matching info(slice 7B → #55 series-based → #57 修发现链路)**:`ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider)`
 > **整体 override `load_all_async`**。撤掉 #53/#54 的 `_parse_instrument` enricher + upstream `event_slug_builder` 路径
 > (ticker 拆队名对 3-way Yes/No 市场不成立);#55 改 series-based;#57 修"发现链路漏主赛事"。
 > `PolymarketInstrumentProvider` 持有的 CLOB HTTP client 由 factory 统一构造为 `py_clob_client_v2.ClobClient`(#97);
@@ -104,13 +110,13 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 >    - **`series_slug` 不通用**:只 atp/wta 的 series slug 恰好 == league slug;足球/棒球查 == 0,故必须走 `/sports` 取 series **id**。
 > 3. 每 event 筛 `markets` 内 `sportsMarketType == "moneyline"` 建 instrument(其余 tennis/soccer props 跳过)。
 >
-> 6-key:
+> matching info:
 > - **home/away 队名**:权威源 `event["teams"]`(`name`+`ordering`+`abbreviation`,列表顺序无关);缺则 fallback `_parse_team_names(title)`。
 > - **selection_role**:
 >   - 2-way / 单市场 3-outcome(`slug == ticker`):按 **competition `ordering`** 选映射 —— `home`→`[home,(draw),away]`;`away`→反排 `[away,(draw),home]`(如 MLB)。**不赌 outcomes 固定顺序**(MLB `ordering=away` 时 `[away,home]`,按固定下标会错位)。
 >   - 3-way binary(`slug == ticker-{abbr}`):仅 `Yes` token;`abbr` 取自 `teams.abbreviation`;`-{home_abbr}`→home / `-{away_abbr}`→away / `-draw`→draw;其它(`No` token / 未知后缀)→ 跳过。
 > - **sport**:`ArbContext.competition_to_sport_by_data_source["PMSPORTS"]` 查表(config 派生)。
-> - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。**start_ts** 从 market/event `startDate` → ns。
+> - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
@@ -121,7 +127,7 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 `competition_to_sport_by_data_source["PMSPORTS"]`,competition aliases),但每个 `event["gameId"]` 只产一条 `.PMSPORTS`
 synthetic `BettingInstrument`:
 - `venue=PMSPORTS`, `market_type=EVENT_ANCHOR`, `selection_name="event"`。
-- `info` 填 Q9 6-key + `game_id` + `tradable=False` + `anchor=True`。
+- `info` 填 matching key + `game_id` + `tradable=False` + `anchor=True`。
 - 不解析 PM token / outcome / order size,不产出可交易腿;PM 可交易腿仍由 `ArbPolymarketInstrumentProvider`
   产出 `.POLYMARKET`。
 - `PolymarketSportsDataClient._connect` 首轮 load 后 `_handle_data` 灌 cache,并按
@@ -170,7 +176,7 @@ for role, sel_id in [("home", event.home_selection_id),
             currency="USD",
             min_notional=Money(Decimal("7") * Decimal(str(fx)), USD),  # OE 最小 stake 的 USD 数值
             info={"sport": ..., "competition": ..., "home_team": ..., "away_team": ...,
-                  "start_ts": 0, "selection_role": role},
+                  "selection_role": role},
         )
 ```
 
@@ -191,7 +197,7 @@ OE 的 `quantity` 在 adapter 外部表示 **USD stake**;`BettingInstrument.noti
 
 | 横切 | 约束 |
 |---|---|
-| Q9 六统一 key | Provider 层硬契约:OE 实现 + PM post-processor 都必须填全;matching 只读不写 |
+| Q9 matching key | Provider 层硬契约:OE/SE/PM/PMSPORTS 都必须填全 sport/competition/home_team/away_team/selection_role;matching 只读不写 |
 | §6.10 同步 | discovery 周期与 execution 无关,不接 `_execution_active` |
 | §6.3 NT 持久化 | 周期发现 interval 走 DataClient config;不再通过 Refresher `on_save/on_load` 热持久化 |
 | P8 目录 | `src/arbitrage/discovery/` 只保留 discovery capability 公共入口;具体 Provider/DataClient 归各 adapter |
@@ -224,10 +230,10 @@ sequenceDiagram
 
 ## 7. 落地清单(Step 1/2 调度)
 
-- [x] `OrbitExchInstrumentProvider`:`load_all_async` 包 `OrbitExchDiscoveryClient`,`_build_legs` 填 info 6-key;`start_ts` 由 `sport/details` 的 `marketStartTime` / `event.openDate` 解析(`nautilus_trader/adapters/orbitexch/{discovery_client.py,providers.py}`)
+- [x] `OrbitExchInstrumentProvider`:`load_all_async` 包 `OrbitExchDiscoveryClient`,`_build_legs` 填 matching info;`start_ts` 由 `sport/details` 的 `marketStartTime` / `event.openDate` 解析后只用于 NT instrument 时间字段(`nautilus_trader/adapters/orbitexch/{discovery_client.py,providers.py}`)
 - [x] `PolymarketSportsInstrumentProvider`:公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchor(`tests/arbitrage/adapters/polymarket/test_sports.py`)
 - [x] PM/PMSPORTS/OE/SE 周期发现迁入各 DataClient 原生 `_update_instruments`;Matching timer 读 cache,不订 `InstrumentsRefreshed`
-- [x] PM info 6-key 由 `ArbPolymarketInstrumentProvider` series-based discovery 注入
+- [x] PM matching info 由 `ArbPolymarketInstrumentProvider` series-based discovery 注入
 - [ ] /live-test 或上层 e2e 验:DataClient 原生发现 → cache → matching timer → MatchedPair 全节点链路
 
-> **未决/讨论**:MatchingActor 启动初 cache 为空时如何在 Web 上展示 discovery pending 状态;`start_ts` 是否继续作为 matching 过期过滤字段,还是完全交给 PMSPORTS ended eviction。
+> **未决/讨论**:MatchingActor 启动初 cache 为空时如何在 Web 上展示 discovery pending 状态。

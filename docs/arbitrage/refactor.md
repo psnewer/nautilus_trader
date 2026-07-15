@@ -100,7 +100,7 @@
 | Q6 | 持久化用 NT `CacheDatabaseAdapter`(Redis) | §6.3 |
 | Q7 | runtime-mutable 参数每 Step 自管 | §6.3 |
 | Q8 | 调度归独立 `InstrumentRefresher` Actor | §5.2 |
-| Q9 ✅ | 异构 instrument 经 `instrument.info` 6 个统一 key 归一 | §6.4 |
+| Q9 ✅ | 异构 instrument 经 `instrument.info` matching key 归一(`sport/competition/home_team/away_team/selection_role`;`start_ts` 不参与 matching) | §6.4 |
 | Q10 ✅ | 上游 ClobClient 不加外层锁,直接用裸版 | §6.7 |
 | Q11 ✅ | Debug 全走子类化 + 工厂层选择,生产代码零 `if debug` | §6.6 |
 | Q12 ✅ | 无 LiquidityRiskActor;深度缩放归 Strategy、最小限额用 NT 自带、余额归 RiskEngine | §5.6 |
@@ -228,7 +228,7 @@ def get_orbitexch_instrument_id(market_id: str, selection_id: str) -> Instrument
 **Step 1 阻塞项**:
 - ~~Q1: InstrumentId 命名规则~~ ✅ 已锁定
 - ~~Q2: OE Playwright Browser 共享方式~~ ✅ 已锁定
-- Q9 (新): MatchingActor 跨类型语义归一(影响 OE Provider 的 `info` dict 字段设计) ✅ 已锁定方案 A,但 Step 1 OE Provider 实现时需把 §6.4 表格中的 6 个统一 key 都填好
+- Q9 (新): MatchingActor 跨类型语义归一(影响各 Provider 的 `info` dict 字段设计) ✅ 已锁定方案 A,Provider 需填 §6.4 表格中的 matching key
 
 ---
 
@@ -397,10 +397,10 @@ class InstrumentRefresher(Actor):
 
 **Q9 (新) 处理: 异构 instrument 类型的语义归一**
 
-PM 用 `BinaryOption`,OE 用 `BettingInstrument`,字段不直接对齐。MatchingActor 不能依赖具体类型。**方案 A**(已锁定): Actor 内部做语义归一,通过 `instrument.info` dict 中的通用字段(`event_id` / 队伍名 / 开赛时间 / 运动类型)做匹配。
+PM 用 `BinaryOption`,OE/SE 用 `BettingInstrument`,字段不直接对齐。MatchingActor 不能依赖具体类型。**方案 A**(已锁定): Actor 内部做语义归一,通过 `instrument.info` dict 中的通用字段(运动类型 / 联赛名 / 队伍名 / selection role)做 event 级匹配。
 
 实现要点:
-- 两家 venue 的 `InstrumentProvider` 加载时,将原始字段塞进 `instrument.info`,使用统一的 key 命名(如 `info["sport"]`、`info["home_team"]`、`info["away_team"]`、`info["start_ts"]`)
+- 各 venue 的 `InstrumentProvider` 加载时,将匹配字段塞进 `instrument.info`,使用统一 key:`info["sport"]`、`info["competition"]`、`info["home_team"]`、`info["away_team"]`、`info["selection_role"]`
 - `MatchEngine` 读 `info` dict 做匹配,不 isinstance 检查类型
 - 这样保证 Step 3 的算法对 PM/OE 完全对称,不为新增 venue 改 MatchingActor
 
@@ -941,16 +941,17 @@ PM 用 NT 现成的 `BinaryOption`(二元期权),OE 用 NT 现成的 `BettingIns
 
 **已锁定方案**: **A) MatchingActor 内部做语义归一,不依赖具体类型**。
 
-**实现约定**: 两家 venue 的 `InstrumentProvider` 在加载时,把跨场馆匹配所需的通用字段以**统一 key 命名**塞进 `instrument.info` dict:
+**实现约定**: 各 venue 的 `InstrumentProvider` 在加载时,把跨场馆匹配所需的通用字段以**统一 key 命名**塞进 `instrument.info` dict:
 
-| 通用 key | PM 数据源 | OE 数据源 |
+| 通用 key | PM 数据源 | OE/SE 数据源 |
 |---|---|---|
-| `info["sport"]` | Gamma API `event.tags` | OE 赛事页运动分类 |
-| `info["competition"]` | Gamma API `event.title` 解析 | OE 赛事页联赛名 |
-| `info["home_team"]` | Gamma API `event.outcomes` 解析 | OE selection 名称 |
-| `info["away_team"]` | Gamma API `event.outcomes` 解析 | OE selection 名称 |
-| `info["start_ts"]` | Gamma API `event.startDate` | OE 赛事页开赛时间 |
-| `info["selection_role"]` | "YES" / "NO" | "home" / "draw" / "away" |
+| `info["sport"]` | Gamma `/sports` + config 派生 | sport/details 运动分类 |
+| `info["competition"]` | Gamma `/sports` competition + aliases | sport/details competition + aliases |
+| `info["home_team"]` | Gamma event teams / title fallback | sport/details event home team |
+| `info["away_team"]` | Gamma event teams / title fallback | sport/details event away team |
+| `info["selection_role"]` | moneyline slug + ordering | runner role:home/draw/away |
+
+`start_ts` 不是 matching key。OE/SE discovery event 仍解析它来设置 NT instrument 时间字段;PMSPORTS ended eviction 用 `game_id`。
 
 `MatchEngine` 只读 `instrument.info`,不 `isinstance` 检查类型,也不 import `BinaryOption` / `BettingInstrument` 任一具体类。
 
@@ -1713,7 +1714,7 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 | Q6 | 持久化存储用什么 | 路径 A: 启用 NT `CacheDatabaseAdapter`(Redis) | Step 2 |
 | Q7 | 哪些参数 runtime-mutable + 持久化 | 每 Step 自管;Step 2 范围内只 `refresh_interval` | (per-step) |
 | Q8 | 调度逻辑放 DataClient 还是单独 Actor | 单独 `InstrumentRefresher` Actor | Step 2 |
-| **Q9** | **PM/OE 异构 instrument 类型如何在 MatchingActor 中归一** | ✅ **已锁定**: 方案 A,Actor 内通过 `instrument.info` dict 中的统一 key(sport / competition / home_team / away_team / start_ts / selection_role)做匹配,不依赖具体类型 | Step 1 (OE Provider 字段映射) + Step 3 |
+| **Q9** | **PM/OE/SE 异构 instrument 类型如何在 MatchingActor 中归一** | ✅ **已锁定**: 方案 A,Actor 内通过 `instrument.info` dict 中的 matching key(sport / competition / home_team / away_team / selection_role)做匹配,不依赖具体类型;`start_ts` 不参与 matching | Step 1 (Provider 字段映射) + Step 3 |
 | **Q10** | **上游 PM ExecutionClient 是否需要外层 lock 包装(用户原 `_api_lock` 是否保留)** | ✅ **已锁定**: 不加锁,直接用上游裸版;遇到问题再子类化只对写操作加锁。WS `_ws_lock` 直接删除(上游用引用计数) | Step 5 (后备方案) |
 | **Q11** | **Debug 注入框架的迁移设计** | ✅ **已锁定(P10 / §6.6)**: 所有 debug 行为变化通过子类化 + 工厂层选择;生产代码零 `if self._debug` 分支。子问题 Q11.1-Q11.5 已逐项锁定。**关联边界修正(Q12)**: `_check_and_adjust_size` 拆解 —— Step 1 深度缩放归 Strategy 内部 hook,Step 2 最小限额由 NT `instrument.min_quantity` 自动处理(应用层删除);Strategy 不引用 Risk;skip_check_size 落点是 `DebugArbitrageRiskEngine` | Step 4-7 |
 | **Q12** | **Risk 层架构: LiquidityRiskActor 是否需要** | ✅ **已锁定: 不需要**。深度缩放归 Strategy 内部职责(算应该下多少 share);最小限额检查由 NT RiskEngine 自动处理(`instrument.min_quantity`);余额检查由 `ArbitrageRiskEngine`(NT RiskEngine 子类)在 `submit_order` 管道上透明拦截。Strategy 不引用 Risk。venue 偶发拒绝(cache stale)由 NT 标准 `on_order_rejected` 处理,不是设计层"双兜底" | Step 4-6 |
@@ -1766,6 +1767,9 @@ Debug 子类化机制可叠加:`DebugArbitragePortfolio(ArbitragePortfolio)` 可
 
 | 日期 | 变更 |
 |---|---|
+| 2026-07-15 (#229) | **#228 落码完成 + 实现细化 4 点**。全链路落地:Venue Registry `probability_from_price(claim)`;PM 3-way NO token 暴露(`_role_and_claim_for_token`);OE/SE 3-way 每 selection 产 yes+合成 no(providers `NO_LEG_HANDICAP`);OE/SE 写入口双份 deltas + 路由多值 `[(iid, claim)]`;matching 拆分(`_emit_pair` role 循环 / `_emit_anchor_pairs_for_event`)+ MatchedPair `event_key/outcomes` + pair 级门控 + FAIL 连坐;strategy snapshot `outcomes` + mean_rebate/one_side_rebate 换 outcome 分组键;risk 概率门控 lay 单补集;web /odds leg 带 claim + 前端 claim-or-role 分组。**实现细化(设计→落码时确定,真理源已按实现改写)**:① 合成 no instrument 的 id 用 **handicap 哨兵 -1.0**(非 "-NO" 后缀)——`BettingInstrument` symbol 由 (market,selection,handicap) 决定,而 executor 直接读 `inst.market_id/selection_id` 且 handicap 进 venue payload,market/selection 必须保持真值 → data §3.1b;② **执行重定向**:no 腿 info 带 `exec_instrument_id`,place_bets 真单落在同 selection 的 yes instrument(SELL@lay)——venue 对账 CURRENT_BETS 的 LAY=SHORT 天然落在真 selection,若下在 -NO id 上 NT 持仓与对账会分裂 → data §3.1b / strategy §3.7;③ risk 概率门控判别子 = `order.side==SELL`(重定向后订单 instrument 的 claim 恒 yes,不可用)→ risk §4.1b;④ snapshot `outcomes` 由 builder 从腿 claim 派生(自足,不依赖 evaluator 留存 MatchedPair)→ strategy §3.7。**连坐时序补强**:后到的兄弟 candidate 入场即查 `_event_has_failed_pair` 置 FAILED(matching §4.2.1)。**PairRegistry `_by_anchor` 多值化**(唯一锚挂 3 个 role pair,单值会互相覆盖)→ matching §3.1。**显式未落**(原处已标):mean_rebate_recovery 对 `[yes,no]` pair bail、risk profit gate 的 claim 感知持仓归属(no 敞口=SHORT/lay 头寸核算)——同批另行设计;OE/SE 3-way 的 1X2 发现依赖 venue runner 含 draw role,live 未验。测试:`pytest tests/arbitrage/` → 1029 passed(新增 PM/OE/SE provider claim 用例、OE/SE no-book 换位、matching 3-way 拆分×2 + 连坐、mean_rebate/one_side [yes,no]、place_bets 重定向、risk lay 门控;e2e fixture 改 [yes,no];修复 `tests/arbitrage/adapters/sharpexch/` 缺 `__init__.py` 导致 conftest 模块名冲突)。 |
+| 2026-07-15 (#228) | **3-way 赛事拆多 market 多 pair_id + "每 venue 每 outcome 一条腿"统一腿模型(设计定稿,未落码)**。背景:PM 的 3-way 是 3 个独立 `[YES,NO]` binary market(provider 历史上只暴露 YES,`arb_provider` 跳过 No token,b7b0581bd9/2026-06-05);若沿用 event 级 pair_id,补上 NO 后同一 pair 下 6 条腿会被 strategy 当成一个互斥集合,语义打乱。用户裁定:**匹配仍按 event,strategy/risk/execution 的 pair_id 必须是 market 级;3-way 带出 3 个 market = 3 个 pair_id**。设计要点(真理源在各组件章节,此处只记结论+指针):① `event_key`(`competition\|home\|away`)与 `pair_id` 分离,2-way pair_id=event_key 零变化,3-way = `event_key\|home/draw/away`(role 后缀在 venue 后缀之前)→ matching §4.3;② 拆分后每个 pair 恰好二元,`outcomes` 按 pair 声明(2-way `[home,away]`、3-way `[yes,no]`),**用户裁定不统一命名成 yes/no**(claim 标签在两类 pair 的执行语义会分裂:2-way 的 away 腿是 back 对面 selection,不可 lay)→ matching §3.2;③ 腿模型:pair 内每 venue 每 outcome 恰好一条 instrument,PM 3-way 暴露 NO 真 token(执行需要 NO token_id,盘口是独立信息),OE/SE 3-way 每 selection 产 yes+合成 no 两条 instrument(no 是同 market/selection 的 lay 投影,id 加 `-NO` 后缀),2-way 一律不动 → data/discovery 各节;④ **cache 只存 venue 原始价 + 下单价零换算**不变量保持:合成 no book 的 ask=lay 列原值、bid=back 列原值,由写入口 `oe_runner_to_book_deltas`(每帧全量重建)同帧原子产出两份 deltas;概率换算全部在读侧,Venue Registry `probability_from_price` 增加 claim 感知(decimal+claim=no → `1−1/price`),matching 门控与 strategy checks 共用这一个家;⑤ strategy 分组键 = `info.get("claim") or info.get("selection_role")`,合法集合从硬编码 role 组合改为 pair 声明的 `outcomes`,3-way 腿(含 yes)全部显式填 claim、2-way 一律不填;mean_rebate 的 home/draw/away 三 role 分支退役(3-way 不再做跨 market 三腿组合,改为每 market 内 yes/no 套利×3)→ strategy §3.7;⑥ 概率校验门控降为 pair 级,任一 role pair FAIL 连坐 evict 同 event 全部 pair(错配是 event 级证据)→ matching §4.2.1;⑦ PMSPORTS 每场唯一合成锚在各 role pair 重复登记 `anchor_instrument_ids`,`game_to_pair` 天然多值;⑧ Risk #116"三元盘 outcome 反查"假设失效(pair 已是 market 级,盈亏在 market 内闭合)→ risk 原处挂失效标记。 |
+| 2026-07-14 (#227) | **matching info 契约移除 `start_ts`**。用户裁定市场匹配仍按 event 级名称规则做,不引入 `start_ts`,也不需要 home/draw/away 视图重定义;3 元比赛只是同一 event 带出多个 market/leg。落地:PM/OE/SE Provider 不再把 `start_ts` 写入 `instrument.info`;PM `_load_moneyline_market` 删除 `event_start` / `_parse_start_ts`;normalizer/Matching 只要求 `sport/competition/home_team/away_team/selection_role`;OE/SE/PMSPORTS 仍可在 discovery event 内解析 `start_ts` 用于 NT instrument 时间字段。同步 discovery/data/matching/current Q9 文档和对应测试 README。 |
 | 2026-07-10 (#226) | **PM settlement 成功后暂停主动 `update_balance_allowance(COLLATERAL)` 做 live 验证**。用户在 #225 collateral adapter+pUSD 路径 live 后确认资金已可用,怀疑 CLOB cache sync 不再必要。按用户要求,`ArbPolymarketExecutionClient._run_settlement` 暂停调用 `_sync_collateral_balance_allowance_after_settlement()`(helper 保留,注释一行可恢复),成功 merge/redeem 后不主动刷新 CLOB cache、不主动 `_update_account_state`;账户显示/可用余额交下一轮账户刷新和 live 验证。测试改为成功 tx 后默认不自动 sync。 |
 | 2026-07-10 (#225) | **PM merge/redeem 链上 target 从底层 CTF 切到 collateral adapter + pUSD**。#224 live 后日志显示 `balance-allowance/update` 已 200,但页面仍需 `Confirm pending deposit / Activate Funds`;tx `to=CTF_ADDRESS` 且 calldata collateral=USDC.e,说明旧路径直接释放 USDC.e,未进入 pUSD buying power。按官方 CTF 文档和 Contracts 地址表修正:`contract.py` 标准二元 target 改 `CtfCollateralAdapter(0xAdA100...)`,collateral 参数改 `pUSD(0xC011...)`;negRisk target 改 `NegRiskCtfCollateralAdapter(0xadA200...)`。授权先不自动做,若未授权由页面弹窗处理。测试新增标准 merge target+pUSD、negRisk target;`pytest tests/arbitrage/settlement/test_contract_offload.py tests/arbitrage/settlement/test_settlement.py tests/arbitrage/execution/test_polymarket_client.py` → 38 passed。 |
 | 2026-07-10 (#224) | **PM merge/redeem 成功后同步 CLOB collateral balance allowance**。用户实盘发现 merge 后必须在 Polymarket 页面点 Deposit,merge 回来的金额才重新进入可下单余额。核实官方文档:merge/redeem 释放 pUSD/USDC.e 到钱包,但 CLOB buying-power cache 需要 balance allowance update 同步。落地在 PM ExecClient 宿主 `_run_settlement`:`PolymarketSettlement.run` 返回结果后,若本轮 `merges+redeems` 中任一 `TxResult.success=True`,只调用一次 `update_balance_allowance(BalanceAllowanceParams(asset_type=COLLATERAL, signature_type=当前 PM 配置))`;失败仅 warning,不判 venue dead;不调用 `_update_account_state`,余额显示交下一轮账户刷新。测试新增成功 tx 后 sync / 无成功 tx 不 sync;`pytest tests/arbitrage/execution/test_polymarket_client.py tests/arbitrage/settlement/test_settlement.py` → 34 passed。 |

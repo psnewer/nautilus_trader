@@ -15,16 +15,12 @@ from __future__ import annotations
 
 from itertools import product
 
-from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
-
-
-_ROLE_ORDER = ("home", "draw", "away")
 
 
 class OneSideRebateCheck(Check):
@@ -40,7 +36,7 @@ class OneSideRebateCheck(Check):
             return False
 
         legs_by_role = _legs_by_role(snap)
-        roles = _roles_present(legs_by_role)
+        roles = _roles_present(legs_by_role, snap)
         if roles is None:
             return False
         share = self._configured_share(ctx)
@@ -109,7 +105,7 @@ class OneSideRebateCheck(Check):
                 share_if_wins=share_if_wins,
                 cost=cost,
             )
-            candidate_legs.append({
+            candidate_leg = {
                 "instrument_id": leg["instrument_id"],
                 "venue": leg["venue"],
                 "side": "BUY",
@@ -119,7 +115,12 @@ class OneSideRebateCheck(Check):
                 "qty": qty,
                 "share_if_wins": share_if_wins,
                 "cost": cost,
-            })
+            }
+            # #228:claim=no 腿透传执行字段(place_bets SELL@lay 转换 + 重定向)
+            for key in ("claim", "lay_price", "exec_instrument_id"):
+                if key in leg:
+                    candidate_leg[key] = leg[key]
+            candidate_legs.append(candidate_leg)
 
         combo_key = ",".join(f"{leg['venue'].lower()}:{leg['role']}" for leg in combo)
         return {
@@ -140,11 +141,14 @@ class OneSideRebateCheck(Check):
 
 
 def _legs_by_role(snap) -> dict[str, list[dict]]:
+    """#228:分组键 = claim 优先(3-way 腿),fallback selection_role(2-way);合法集 = snap.outcomes。"""
+    valid_outcomes = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
     result: dict[str, list[dict]] = {}
     for iid in snap.instrument_ids:
         info = snap.instrument_info.get(iid) or {}
-        role = info.get("selection_role")
-        if role not in _VALID_ROLES:
+        claim = str(info.get("claim") or "").lower()
+        outcome = claim or str(info.get("selection_role") or "").lower()
+        if outcome not in valid_outcomes:
             continue
         book = snap.order_books.get(iid)
         if book is None:
@@ -153,27 +157,33 @@ def _legs_by_role(snap) -> dict[str, list[dict]]:
         price = _best_ask(book)
         if price is None or price <= 0:
             continue
-        prob = _to_prob(venue, price)
+        prob = _to_prob(venue, price, claim)
         if prob <= 0:
             continue
-        result.setdefault(role, []).append({
+        leg = {
             "instrument_id": iid,
             "venue": venue,
             "side": "BUY",
             "price": price,
             "prob": prob,
-            "role": role,
-        })
+            "role": outcome,
+        }
+        if claim:
+            leg["claim"] = claim
+        if claim == "no":
+            leg["lay_price"] = price   # no 腿 price 即 lay 原值(#228)
+            exec_iid = info.get("exec_instrument_id")
+            if exec_iid:
+                leg["exec_instrument_id"] = str(exec_iid)
+        result.setdefault(outcome, []).append(leg)
     return result
 
 
-def _roles_present(legs_by_role: dict[str, list[dict]]) -> tuple[str, ...] | None:
-    present = tuple(role for role in _ROLE_ORDER if role in legs_by_role)
-    if present == ("home", "away"):
-        return present
-    if present == ("home", "draw", "away"):
-        return present
-    return None
+def _roles_present(legs_by_role: dict[str, list[dict]], snap) -> tuple[str, ...] | None:
+    """#228:outcome 集合必须与 snap.outcomes 声明完全一致(有序稳定)。"""
+    declared = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
+    present = tuple(outcome for outcome in declared if outcome in legs_by_role)
+    return present if present == declared else None
 
 
 def _leg_for_role(legs: tuple[dict, ...], role: str) -> dict | None:

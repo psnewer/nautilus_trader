@@ -117,7 +117,7 @@ def test_update_and_remove_market_routing():
     inst = SimpleNamespace(market_id="1.259502313", selection_id=111)
 
     assert se_update_market_routing(routing, _iid(), inst) is True
-    assert routing == {"1.259502313": {"111": _iid()}}
+    assert routing == {"1.259502313": {"111": [(_iid(), "yes")]}}
 
     se_remove_market_routing(routing, _iid())
     assert routing == {"1.259502313": {}}
@@ -182,7 +182,7 @@ def test_update_subscription_state_writes_all_data_client_indexes():
         "sport_id": "2",
         "competition_id": "12597512",
     }
-    assert market_routing == {"1.259502313": {"111": _iid()}}
+    assert market_routing == {"1.259502313": {"111": [(_iid(), "yes")]}}
     assert market_to_page_key == {"1.259502313": "2_12597512"}
     assert comp_page_refs == {"2_12597512": ("2", "12597512")}
 
@@ -207,7 +207,7 @@ def test_update_subscription_state_returns_none_without_side_effects_for_bad_ins
 
 
 def test_remove_subscription_state_keeps_market_and_page_when_other_selection_remains():
-    market_routing = {"1.259502313": {"111": _iid(), "222": _iid_away()}}
+    market_routing = {"1.259502313": {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}}
     market_to_page_key = {"1.259502313": "2_12597512"}
     comp_page_refs = {"2_12597512": ("2", "12597512")}
 
@@ -218,13 +218,13 @@ def test_remove_subscription_state_keeps_market_and_page_when_other_selection_re
         instrument_id=_iid(),
     )
 
-    assert market_routing == {"1.259502313": {"222": _iid_away()}}
+    assert market_routing == {"1.259502313": {"222": [(_iid_away(), "yes")]}}
     assert market_to_page_key == {"1.259502313": "2_12597512"}
     assert comp_page_refs == {"2_12597512": ("2", "12597512")}
 
 
 def test_remove_subscription_state_prunes_empty_market_and_unreferenced_page():
-    market_routing = {"1.259502313": {"111": _iid()}}
+    market_routing = {"1.259502313": {"111": [(_iid(), "yes")]}}
     market_to_page_key = {"1.259502313": "2_12597512"}
     comp_page_refs = {"2_12597512": ("2", "12597512")}
 
@@ -242,8 +242,8 @@ def test_remove_subscription_state_prunes_empty_market_and_unreferenced_page():
 
 def test_remove_subscription_state_keeps_page_ref_when_other_market_uses_same_page():
     market_routing = {
-        "1.259502313": {"111": _iid()},
-        "1.259502314": {"222": _iid_away()},
+        "1.259502313": {"111": [(_iid(), "yes")]},
+        "1.259502314": {"222": [(_iid_away(), "yes")]},
     }
     market_to_page_key = {
         "1.259502313": "2_12597512",
@@ -258,7 +258,7 @@ def test_remove_subscription_state_keeps_page_ref_when_other_market_uses_same_pa
         instrument_id=_iid(),
     )
 
-    assert market_routing == {"1.259502314": {"222": _iid_away()}}
+    assert market_routing == {"1.259502314": {"222": [(_iid_away(), "yes")]}}
     assert market_to_page_key == {"1.259502314": "2_12597512"}
     assert comp_page_refs == {"2_12597512": ("2", "12597512")}
 
@@ -822,7 +822,7 @@ def test_price_message_to_book_deltas_routes_subscribed_runners():
             {"id": 222, "bdatb": [{"index": 0, "odds": 1.9, "amount": 7.0}], "bdatl": []},
         ],
     }
-    routing = {"111": _iid(), "222": _iid_away()}
+    routing = {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}
 
     out = se_price_message_to_book_deltas(message, routing, ts_init_ns=1000)
 
@@ -848,7 +848,7 @@ def test_market_price_message_to_book_deltas_routes_by_market_id():
             {"id": 333, "bdatb": [{"index": 0, "odds": 1.8, "amount": 3.0}], "bdatl": []},
         ],
     }
-    market_routing = {"1.259502313": {"111": _iid(), "222": _iid_away()}}
+    market_routing = {"1.259502313": {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}}
 
     out = se_market_price_message_to_book_deltas(message, market_routing, ts_init_ns=1000)
 
@@ -866,7 +866,7 @@ def test_market_price_message_to_book_deltas_returns_none_for_unrouted_or_bad_me
     }
 
     assert se_market_price_message_to_book_deltas(message, {}, ts_init_ns=1000) is None
-    assert se_market_price_message_to_book_deltas({}, {"1.259502313": {"111": _iid()}}, ts_init_ns=1000) is None
+    assert se_market_price_message_to_book_deltas({}, {"1.259502313": {"111": [(_iid(), "yes")]}}, ts_init_ns=1000) is None
 
 
 def test_market_price_message_to_book_deltas_keeps_frame_metadata_when_no_deltas():
@@ -876,7 +876,7 @@ def test_market_price_message_to_book_deltas_keeps_frame_metadata_when_no_deltas
         "rc": [{"id": 111, "bdatb": [], "bdatl": []}],
     }
 
-    out = se_market_price_message_to_book_deltas(message, {"1.259502313": {"111": _iid()}}, ts_init_ns=1000)
+    out = se_market_price_message_to_book_deltas(message, {"1.259502313": {"111": [(_iid(), "yes")]}}, ts_init_ns=1000)
 
     assert out["market_id"] == "1.259502313"
     assert out["in_play"] is False
@@ -896,7 +896,7 @@ def test_publish_routed_book_deltas_publishes_and_writes_in_play():
     }
     routed = se_market_price_message_to_book_deltas(
         message,
-        {"1.259502313": {"111": _iid(), "222": _iid_away()}},
+        {"1.259502313": {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}},
         ts_init_ns=1000,
     )
     published = []
@@ -941,7 +941,7 @@ def test_handle_price_frame_routes_publishes_and_returns_summary():
 
     out = se_handle_price_frame(
         message,
-        {"1.259502313": {"111": _iid(), "222": _iid_away()}},
+        {"1.259502313": {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}},
         1000,
         published.append,
         write_in_play=lambda instrument_id, in_play: in_play_writes.append((instrument_id, in_play)),
@@ -970,7 +970,7 @@ def test_handle_price_frame_returns_summary_without_publish_for_empty_book():
     published = []
     out = se_handle_price_frame(
         {"id": "1.259502313", "marketDefinition": {"inPlay": False}, "rc": [{"id": 111, "bdatb": [], "bdatl": []}]},
-        {"1.259502313": {"111": _iid()}},
+        {"1.259502313": {"111": [(_iid(), "yes")]}},
         1000,
         published.append,
     )
@@ -989,13 +989,13 @@ def test_price_message_to_book_deltas_skips_unsubscribed_and_empty_runners():
             {"id": 333, "bdatb": [{"index": 0, "odds": 1.8, "amount": 7.0}], "bdatl": []},
         ],
     }
-    out = se_price_message_to_book_deltas(message, {"222": _iid_away()}, ts_init_ns=1000)
+    out = se_price_message_to_book_deltas(message, {"222": [(_iid_away(), "yes")]}, ts_init_ns=1000)
     assert len(out) == 1
     assert out[0].instrument_id == _iid_away()
 
 
 def test_price_message_to_book_deltas_returns_empty_for_bad_message():
-    assert se_price_message_to_book_deltas({}, {"111": _iid()}, ts_init_ns=1000) == []
+    assert se_price_message_to_book_deltas({}, {"111": [(_iid(), "yes")]}, ts_init_ns=1000) == []
 
 
 def test_runner_to_book_deltas_clears_then_adds_both_sides():

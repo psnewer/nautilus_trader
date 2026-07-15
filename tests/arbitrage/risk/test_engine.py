@@ -73,7 +73,7 @@ class _Ctx:
 
 
 class _DuckOrder:
-    def __init__(self, instrument_id, account_id=None, price=None, qty=None, tags=None):
+    def __init__(self, instrument_id, account_id=None, price=None, qty=None, tags=None, side="BUY"):
         self.instrument_id = instrument_id
         self.account_id = account_id
         self._price = price
@@ -81,6 +81,7 @@ class _DuckOrder:
         self.leaves_qty = qty
         self.tags = tags or []
         self.client_order_id = "COID-DUCK"
+        self.side = side
 
     @property
     def has_price(self):
@@ -298,6 +299,20 @@ def test_probability_gate_converts_sharpexch_decimal_odds_to_probability():
     assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=2.0)) is True
     assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=40.0)) is False
     assert ctx.engine._check_probability_gate(se, _DuckOrder(se.id, price=1.02)) is False
+    assert len(denials) == 2
+
+
+def test_probability_gate_lay_order_uses_complement_probability():
+    """#228:decimal venue 的 SELL(lay)单,隐含概率 = 1−1/price(获得的是 no 敞口)。"""
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.97))
+    oe = oe_instrument("match_X", "away", 2)
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    # lay@2.0 → prob=0.50 通过;lay@1.02 → prob≈0.0196 < 0.03 拒;lay@40 → prob=0.975 > 0.97 拒
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=2.0, side="SELL")) is True
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=1.02, side="SELL")) is False
+    assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=40.0, side="SELL")) is False
     assert len(denials) == 2
 
 

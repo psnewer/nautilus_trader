@@ -28,7 +28,8 @@ class PairRegistry:
 
     def __init__(self) -> None:
         self._by_instrument: dict[Hashable, str] = {}
-        self._by_anchor: dict[Hashable, str] = {}
+        # #228:anchor → pair_ids 多值(PMSPORTS 每场唯一锚在 3-way 拆出的多个 role pair 重复登记)
+        self._by_anchor: dict[Hashable, set[str]] = {}
 
     # ── matching 写入侧 ──────────────────────────────────────────────
     def register(self, pair_id: str, instrument_ids, *, anchor_instrument_ids=()) -> None:
@@ -49,20 +50,23 @@ class PairRegistry:
             self._by_instrument[iid] = pair_id
 
         new_anchor_set = {str(iid) for iid in anchor_instrument_ids}
-        stale_anchor = [iid for iid, pid in self._by_anchor.items() if pid == pair_id and iid not in new_anchor_set]
-        for iid in stale_anchor:
-            del self._by_anchor[iid]
+        for iid, pids in list(self._by_anchor.items()):
+            if pair_id in pids and iid not in new_anchor_set:
+                pids.discard(pair_id)
+                if not pids:
+                    del self._by_anchor[iid]
         for iid in new_anchor_set:
-            self._by_anchor[iid] = pair_id
+            self._by_anchor.setdefault(iid, set()).add(pair_id)
 
     def unregister_pair(self, pair_id: str) -> None:
         """清除该 pair 所有腿映射(可选,主要给重匹配 / 测试用)。"""
         stale = [iid for iid, pid in self._by_instrument.items() if pid == pair_id]
         for iid in stale:
             del self._by_instrument[iid]
-        stale_anchor = [iid for iid, pid in self._by_anchor.items() if pid == pair_id]
-        for iid in stale_anchor:
-            del self._by_anchor[iid]
+        for iid, pids in list(self._by_anchor.items()):
+            pids.discard(pair_id)
+            if not pids:
+                del self._by_anchor[iid]
 
     # ── consumers 读取侧 ─────────────────────────────────────────────
     def get(self, instrument_id: Hashable) -> str | None:
@@ -71,10 +75,19 @@ class PairRegistry:
         查询侧同样 `str(instrument_id)` 归一 —— 消费者多传 `InstrumentId` 对象,而 key 以 str 存。
         """
         key = str(instrument_id)
-        return self._by_instrument.get(key) or self._by_anchor.get(key)
+        direct = self._by_instrument.get(key)
+        if direct is not None:
+            return direct
+        anchor_pids = self._by_anchor.get(key)
+        if anchor_pids:
+            return sorted(anchor_pids)[0]   # 锚可属多 pair(#228),兜底返回确定性一个
+        return None
 
     def all_pair_ids(self) -> set[str]:
-        return set(self._by_instrument.values()) | set(self._by_anchor.values())
+        out = set(self._by_instrument.values())
+        for pids in self._by_anchor.values():
+            out |= pids
+        return out
 
     def instrument_ids_for_pair(self, pair_id: str, *, tradable_only: bool = True) -> set[str]:
         """返回该 pair 当前注册的 instrument_id 字符串。
@@ -89,7 +102,7 @@ class PairRegistry:
 
     def anchor_ids_for_pair(self, pair_id: str) -> set[str]:
         """返回该 pair 当前注册的 anchor instrument_id 字符串。"""
-        return {iid for iid, pid in self._by_anchor.items() if pid == pair_id}
+        return {iid for iid, pids in self._by_anchor.items() if pair_id in pids}
 
     def __len__(self) -> int:
         return len(self._by_instrument) + len(self._by_anchor)

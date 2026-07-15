@@ -32,7 +32,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:fixture 来自 `POST /customer/api/sport/details?page=0&size=60`。
 **输入**:`SharpExchDiscoveryClient.discover_events()` 返回 market events。
 **期望**:只保留目标 competition 与 `Match Odds`;runner 映射为 `home/draw/away`;Provider 产出 `BettingInstrument`;InstrumentId 为 `{market_id}-{selection_id}.SHARPEXCH`。
-**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher`,并把 `discovery.sharpexch.sports` 原样传入 Provider,且 discovery fetcher 不创建 page、不登录、不导航,只等待共享 browser context 的 `CSRF-TOKEN` 后用 context request 调 `sport/details`;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 info 六字段完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测 browser fetcher 同源要求:必须在 customer context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
+**验收**:已落地。`test_discovery_client.py` 覆盖 API fixture 解析、competition 过滤、`sport_details_request` 生成 Wimbledon `sport/details` 请求、指定 page/size、`json_fetcher` 分页直到短页、重复页停机保护;`test_factories.py` 覆盖 Data factory 在 discovery config 存在时注入 browser `json_fetcher`,并把 `discovery.sharpexch.sports` 原样传入 Provider,且 discovery fetcher 不创建 page、不登录、不导航,只等待共享 browser context 的 `CSRF-TOKEN` 后用 context request 调 `sport/details`;`test_provider.py` 覆盖 Provider 产 `BettingInstrument`、`.SHARPEXCH` venue、Q9 matching info 完整,以及 `load_all_async()` 把配置的 sport configs 传给 discovery。2026-07-01 zero-order probe 实测 browser fetcher 同源要求:必须在 customer context 内执行 `sport/details` fetch;分页取回 242 个 Tennis events,其中 `Men's Wimbledon 2026` 为 64 个。
 
 ### se-adapter-1.3:SE 最小 stake 元数据
 
@@ -138,3 +138,8 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **输入**:`python3 -m scripts.se_fill_probe --config arb_config.json --headed --confirm --size 12`。默认 discovery timeout 为 120s,覆盖 Cloudflare challenge 等待窗口;discovery 与 runtime DataClient 一样分页读取 `sport/details`。若临时 context 反复触发 Cloudflare,可加 `--user-data-dir /tmp/se-playwright-profile` 使用专用持久 profile 复用人工验证后的 cookie。
 **期望**:脚本真登录并选取 SE instrument;构造 `BUY/BACK @ 1.01` 最小 stake 市价单;`CURRENT_BETS` 出现 `sizeMatched > 0` 与 `averagePrice > 0`;direct-client probe 在 accepted spy 中写入 `venue_order_id` cache 映射后,`_on_current_bets` 触发 `generate_order_filled`;若有未成交余量,finally 兜底撤 remaining working 单。
 **验收**:已 live 通过。2026-07-01 用户明确授权后,使用持久 profile `/tmp/se-playwright-profile`,先 dry-run 确认目标 market `1.259595081` price frame `OPEN/in_play=True` 且 runner ids 包含 `19931702`,再执行真成交:`BUY/BACK @ 1.01,size=12` → offerId `22160783`;`CURRENT_BETS` 收到 3 帧,该单 `sizeMatched=12.0,averagePrice=4.5,sizeRemaining=0.0,price=1.01`;`bet_order_progress` 派生 `filled/12.0/4.5`;`generate_order_filled` 触发 1 次(`last_qty=12.00,last_px=4.50`);finally 兜底活单数 0。脚本仍默认 dry-run,不带 `--confirm` 不调用 placeBets;成交仓位不会自动平仓。
+
+## #228:SE 3-way 合成 no 腿(与 OE 同构,2026-07-15)
+
+- `test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`:3-way 每 selection 产 yes + 合成 no(handicap 哨兵 id + `claim`/`exec_instrument_id` info);2-way 不变。
+- `test_data.py` / `test_data_client.py`:`se_update_subscription_state` / `se_*_market_routing` / `se_*_message_to_book_deltas` 路由多值化(`[(iid, claim)]`),`se_runner_to_book_deltas(claim="no")` 两侧换位存原始值。

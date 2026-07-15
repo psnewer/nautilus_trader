@@ -1,9 +1,11 @@
 """
-MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
+MeanRebateCheck —— 平均返水套利检查(slice 9 / #49;#228 outcome 化)。
 
 算法(对应 requirements §8):
-  1. 按 `instrument.info["selection_role"]` 分组(home / draw / away),每方向取所有 venue 中
-     概率最小者(即 best_ask 最便宜方)
+  1. 按 outcome 标签分组(#228:`info.get("claim") or info.get("selection_role")`,
+     合法集合 = `snapshot.outcomes` —— 2-way `[home,away]`,3-way 拆分 pair `[yes,no]`),
+     每方向取所有 venue 中概率最小者(即 best_ask 最便宜方;decimal claim=no 腿的
+     概率经 `probability_from_price(venue, price, claim)` 取补集)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
   3. >= `min_rate` 阈值 → True;同时写带 `share_if_wins` 的 `ctx.scratch["legs"]`
      供 Action 消费。`share` 可在本 Check params 中显式配置;未配置则读 Web Arbitrage 默认。
@@ -13,10 +15,12 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49)。
     "instrument_id": InstrumentId,
     "venue": str,
     "side": "BUY",
-    "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds),
+    "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds;no 腿 = lay 原值),
     "prob": float,
-    "role": "home" | "draw" | "away",
+    "role": outcome 标签(2-way home/away;3-way 拆分 pair yes/no),
     "share_if_wins": float,
+    # claim=no 腿另带(#228,place_bets SELL@lay 转换 + 执行重定向):
+    "claim": "no", "lay_price": float, "exec_instrument_id": str,
   }
 
 PlaceBetsAction 用 leg 自带 `share_if_wins` 经 Venue Registry 推 qty。
@@ -31,9 +35,6 @@ from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
 
-_VALID_ROLES = ("home", "draw", "away")
-
-
 class MeanRebateCheck(Check):
     """平均返水检查。"""
 
@@ -46,45 +47,57 @@ class MeanRebateCheck(Check):
         if snap is None:
             return False
 
-        # 经 snapshot.instrument_info 给每 leg 打 venue+role 标签(decouple from cache)
-        legs_by_role: dict[str, list] = {}
+        # 经 snapshot.instrument_info 给每 leg 打 venue+outcome 标签(decouple from cache)
+        # #228:分组键 = claim 优先(3-way 腿),fallback selection_role(2-way);合法集 = snap.outcomes。
+        valid_outcomes = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
+        legs_by_outcome: dict[str, list] = {}
         for iid in snap.instrument_ids:
             book = snap.order_books.get(iid)
             if book is None:
                 continue
             info = snap.instrument_info.get(iid) or {}
-            role = info.get("selection_role")
-            if role not in _VALID_ROLES:
+            claim = str(info.get("claim") or "").lower()
+            outcome = claim or str(info.get("selection_role") or "").lower()
+            if outcome not in valid_outcomes:
                 continue
             venue = _venue_of(iid)
             best_ask = _best_ask(book)
             if best_ask is None or best_ask <= 0:
                 continue
-            prob = _to_prob(venue, best_ask)
+            prob = _to_prob(venue, best_ask, claim)
             if prob <= 0:
                 continue
-            legs_by_role.setdefault(role, []).append({
+            leg = {
                 "instrument_id": iid,
                 "venue": venue,
                 "side": "BUY",
                 "price": best_ask,
                 "prob": prob,
-                "role": role,
-            })
+                "role": outcome,
+            }
+            if claim:
+                leg["claim"] = claim
+            if claim == "no":
+                # #228:no 腿 price 即 lay 原值;place_bets 经 lay_price 转 SELL,
+                # 经 exec_instrument_id 重定向到同 selection 的 yes instrument(如有)。
+                leg["lay_price"] = best_ask
+                exec_iid = info.get("exec_instrument_id")
+                if exec_iid:
+                    leg["exec_instrument_id"] = str(exec_iid)
+            legs_by_outcome.setdefault(outcome, []).append(leg)
 
-        # 必须 home + away(2-way)或 home + draw + away(3-way);每方向至少 2 条可比腿。
-        roles_present = sorted(legs_by_role.keys())
-        if not (roles_present == ["away", "home"] or roles_present == ["away", "draw", "home"]):
+        # 必须 outcome 集合齐(#228:snap.outcomes 声明);每方向至少 2 条可比腿。
+        if sorted(legs_by_outcome.keys()) != sorted(valid_outcomes):
             return False
-        for role in roles_present:
-            if len(legs_by_role[role]) < 2:
+        for outcome in valid_outcomes:
+            if len(legs_by_outcome[outcome]) < 2:
                 return False  # 缺一边 → 算不了 mean_rebate
 
         # 每方向取 min(prob);相同 prob 时按 venue capability 稳定排序。
         chosen_legs = []
         total_prob = 0.0
-        for role in roles_present:
-            cands = legs_by_role[role]
+        for outcome in sorted(valid_outcomes):
+            cands = legs_by_outcome[outcome]
             best = min(cands, key=lambda lg: (lg["prob"], venue_preference_rank(lg["venue"])))
             chosen_legs.append(best)
             total_prob += best["prob"]
@@ -134,8 +147,8 @@ def _best_ask(book) -> float | None:
     return None
 
 
-def _to_prob(venue: str, price: float) -> float:
+def _to_prob(venue: str, price: float, claim: str = "yes") -> float:
     try:
-        return probability_from_price(venue, price)
+        return probability_from_price(venue, price, claim or "yes")
     except KeyError:
         return 0.0

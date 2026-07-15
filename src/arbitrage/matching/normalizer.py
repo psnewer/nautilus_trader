@@ -2,7 +2,7 @@
 Matching 归一:从 NT instruments(每条腿一个 instrument)反推每 venue 的事件视图。
 
 NormalizedEvent 形态平移自旧 `services/market_matching/normalizer.py`,但
-**输入改为 NT instruments**(读 instrument.info 6-key,Q9)。
+**输入改为 NT instruments**(读 instrument.info 的 event matching 字段)。
 
 `normalize_team_name`:队名预处理(去 / 去空格),平移自旧 `EventNormalizer.normalize_team_name`,
 独立成模块函数(无需 venue-aware 配置对象,sport/competition 别名由 Provider 在填 info 时已应用)。
@@ -30,7 +30,7 @@ def normalize_team_name(team_name: str | None) -> str:
 
 @dataclass
 class NormalizedEvent:
-    """从同 venue 的多腿(home/draw/away)反推的事件视图(matching 输入)。"""
+    """从同 venue、同 event 的多条腿反推的事件视图(matching 输入)。"""
 
     venue: str                          # 真实 venue id,如 "POLYMARKET" / "ORBITEXCH" / "SHARPEXCH"
     sport: str                          # 标准化 sport(Provider 填 info 时已 alias)
@@ -50,7 +50,7 @@ class NormalizedEvent:
 def events_from_instruments(instruments) -> list[NormalizedEvent]:
     """instrument 列表 → NormalizedEvent 列表(同 (sport, competition, home_team, away_team) 聚为一事件)。
 
-    Q9 契约:`instrument.info` 必含 6-key(sport/competition/home_team/away_team/start_ts/selection_role);
+    契约:`instrument.info` 必含 sport/competition/home_team/away_team/selection_role;
     缺 key 的 instrument 跳过(防御 Provider 漏填)。
     """
     by_event: dict[tuple, NormalizedEvent] = {}

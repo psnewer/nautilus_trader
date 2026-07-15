@@ -1,6 +1,6 @@
 """MarketMatchingActor —— #58(slice A):timer 触发 + cache-非空 latch + 匹配 + register + publish。
 
-用 risk 的 _factories 模板构造带 info 6-key 的 PM BinaryOption + OE BettingInstrument。
+用 risk 的 _factories 模板构造带 matching info 的 PM BinaryOption + OE BettingInstrument。
 （旧 on_data(InstrumentsRefreshed) + 2×window gate 已退役:发现迁 DataClient,matching 自 timer 读 cache。）
 """
 
@@ -41,9 +41,14 @@ from src.arbitrage.matching.actor import _RuntimeDeps
 from src.arbitrage.matching.events import MatchedPair
 
 
-# ── 6-key 完整的 instrument 构造器(matching 用)───────────────────
-def _pm(comp, home, away, role, token):
+# ── matching info 完整的 instrument 构造器 ───────────────────
+def _pm(comp, home, away, role, token, claim=None):
     raw = Symbol(f"0xcond-{token}")
+    info = {"sport": "Soccer", "competition": comp,
+            "home_team": home, "away_team": away,
+            "selection_role": role, "game_id": 777}
+    if claim:
+        info["claim"] = claim
     return BinaryOption(
         instrument_id=InstrumentId(symbol=raw, venue=Venue("POLYMARKET")),
         raw_symbol=raw, outcome=role, description="t",
@@ -54,13 +59,11 @@ def _pm(comp, home, away, role, token):
         max_quantity=None, min_quantity=Quantity.from_int(5),
         maker_fee=Decimal(0), taker_fee=Decimal(0),
         ts_event=0, ts_init=0,
-        info={"sport": "Soccer", "competition": comp,
-              "home_team": home, "away_team": away,
-              "start_ts": 0, "selection_role": role, "game_id": 777},
+        info=info,
     )
 
 
-def _oe(comp, home, away, role, sel_id):
+def _oe(comp, home, away, role, sel_id, claim=None):
     return BettingInstrument(
         venue_name="ORBITEXCH", betting_type="ODDS",
         competition_id=1, competition_name=comp,
@@ -75,9 +78,15 @@ def _oe(comp, home, away, role, sel_id):
         currency="USD", price_precision=2, size_precision=2,
         min_notional=Money(Decimal("1"), USD),
         ts_event=0, ts_init=0,
-        info={"sport": "Soccer", "competition": comp,
-              "home_team": home, "away_team": away,
-              "start_ts": 0, "selection_role": role},
+        info=(
+            {"sport": "Soccer", "competition": comp,
+             "home_team": home, "away_team": away,
+             "selection_role": role, "claim": claim}
+            if claim else
+            {"sport": "Soccer", "competition": comp,
+             "home_team": home, "away_team": away,
+             "selection_role": role}
+        ),
     )
 
 
@@ -98,7 +107,7 @@ def _se(comp, home, away, role, sel_id):
         ts_event=0, ts_init=0,
         info={"sport": "Soccer", "competition": comp,
               "home_team": home, "away_team": away,
-              "start_ts": 0, "selection_role": role},
+              "selection_role": role},
     )
 
 
@@ -119,7 +128,7 @@ def _pmsports(comp, home, away, game_id=777):
         ts_event=0, ts_init=0,
         info={"sport": "Soccer", "competition": comp,
               "home_team": home, "away_team": away,
-              "start_ts": 0, "selection_role": "event", "game_id": game_id,
+              "selection_role": "event", "game_id": game_id,
               "tradable": False, "anchor": True},
     )
 
@@ -578,3 +587,110 @@ def test_sports_update_non_ended_ignored():
 def _match_alert_name() -> str:
     from src.arbitrage.matching.actor import _MATCH_ALERT
     return _MATCH_ALERT
+
+
+# ── #228:3-way 拆多 market 多 pair_id + FAIL 连坐 ─────────────────────────
+
+
+def _populate_three_way(cache, comp="EPL", home="Arsenal", away="Chelsea"):
+    """PM 3-way(3 binary market × yes/no token)+ OE 3-way(每 selection yes + 合成 no)。"""
+    legs = {}
+    for role, tok in (("home", "h"), ("draw", "d"), ("away", "a")):
+        legs[f"pm_{role}_yes"] = _pm(comp, home, away, role, f"{tok}y", claim="yes")
+        legs[f"pm_{role}_no"] = _pm(comp, home, away, role, f"{tok}n", claim="no")
+    for role, sel in (("home", 11), ("draw", 12), ("away", 13)):
+        legs[f"oe_{role}_yes"] = _oe(comp, home, away, role, sel, claim="yes")
+        legs[f"oe_{role}_no"] = _oe(comp, home, away, role, sel + 100, claim="no")
+    for leg in legs.values():
+        cache.add_instrument(leg)
+    return legs
+
+
+def test_three_way_pm_anchor_splits_into_role_pairs():
+    """matching-228.1:PM-anchor 路径 3-way → 3 个 role pair,role 后缀在 venue 后缀之前。"""
+    actor, clock, cache, registry, _ = _harness()
+    _populate_three_way(cache)
+    published = []
+    actor.publish_data = lambda **k: published.append(k["data"])
+
+    actor._maybe_match()
+
+    pair_ids = {p.pair_id for p in published}
+    assert pair_ids == {
+        "EPL|Arsenal|Chelsea|home|ORBITEXCH",
+        "EPL|Arsenal|Chelsea|draw|ORBITEXCH",
+        "EPL|Arsenal|Chelsea|away|ORBITEXCH",
+    }
+    for p in published:
+        assert p.event_key == "EPL|Arsenal|Chelsea"
+        assert p.outcomes == ["yes", "no"]
+        # 每 venue 每 outcome 恰好一条腿:PM yes/no + OE yes/no
+        assert len(p.venue_instrument_ids["POLYMARKET"]) == 2
+        assert len(p.venue_instrument_ids["ORBITEXCH"]) == 2
+        assert registry.instrument_ids_for_pair(p.pair_id) == set(p.tradable_instrument_ids)
+
+
+def test_three_way_pmsports_anchor_splits_and_duplicates_anchor():
+    """matching-228.2:PMSPORTS 聚合路径 3-way → 3 个无 venue 后缀 pair,唯一锚一对多登记。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+    )
+    anchor = _pmsports("EPL", "Arsenal", "Chelsea")
+    cache.add_instrument(anchor)
+    _populate_three_way(cache)
+    published = []
+    actor.publish_data = lambda **k: published.append(k["data"])
+
+    actor._maybe_match()
+
+    pair_ids = {p.pair_id for p in published}
+    assert pair_ids == {
+        "EPL|Arsenal|Chelsea|home",
+        "EPL|Arsenal|Chelsea|draw",
+        "EPL|Arsenal|Chelsea|away",
+    }
+    for p in published:
+        assert p.anchor_instrument_ids == [str(anchor.id)]
+        assert p.outcomes == ["yes", "no"]
+        assert registry.anchor_ids_for_pair(p.pair_id) == {str(anchor.id)}
+    # game ended → 3 个 pair 同 game_id,一次 evict 全清
+    assert actor._game_to_pair[777] == pair_ids
+
+
+def test_three_way_validation_fail_evicts_event_siblings():
+    """matching-228.3:任一 role pair 校验 FAIL → 同 event 其余 pair 连坐(已注册的反注册,后到的直接 FAILED)。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("EPL", "Arsenal", "Chelsea")
+    cache.add_instrument(anchor)
+    legs = _populate_three_way(cache)
+    # home pair 通过(≈1.0);draw pair 失败(best sum ≈ 0.85 < 0.95);away 后到被 event FAIL 拦截。
+    books = {
+        str(legs["pm_home_yes"].id): 0.50, str(legs["pm_home_no"].id): 0.52,
+        str(legs["oe_home_yes"].id): 2.00, str(legs["oe_home_no"].id): 2.10,   # no 腿 ask=lay 原值 → prob=1−1/2.1
+        str(legs["pm_draw_yes"].id): 0.40, str(legs["pm_draw_no"].id): 0.45,
+        str(legs["oe_draw_yes"].id): 2.50, str(legs["oe_draw_no"].id): 1.90,
+        str(legs["pm_away_yes"].id): 0.50, str(legs["pm_away_no"].id): 0.52,
+        str(legs["oe_away_yes"].id): 2.00, str(legs["oe_away_no"].id): 2.10,
+    }
+    _wire_validation_books(actor, cache, books)
+    published = []
+    actor.publish_data = lambda **k: published.append(k["data"])
+
+    actor._maybe_match()
+
+    home_pair = "EPL|Arsenal|Chelsea|home"
+    draw_pair = "EPL|Arsenal|Chelsea|draw"
+    away_pair = "EPL|Arsenal|Chelsea|away"
+    # home 先 PASS 并发布;draw FAIL → 连坐:home 被反注册、away 后到直接 FAILED 不发布
+    assert [p.pair_id for p in published] == [home_pair]
+    assert actor._pair_validations[home_pair].status == "FAILED"
+    assert actor._pair_validations[draw_pair].status == "FAILED"
+    assert actor._pair_validations[away_pair].status == "FAILED"
+    assert registry.instrument_ids_for_pair(home_pair) == set()
+    assert registry.instrument_ids_for_pair(draw_pair) == set()
+    assert registry.instrument_ids_for_pair(away_pair) == set()

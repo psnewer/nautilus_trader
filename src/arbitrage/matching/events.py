@@ -24,9 +24,11 @@ class MatchedPair(Data):
     """跨 venue 匹配上的一个事件 + 各 venue 方向腿的 instrument_id。
 
     Fields(`@customdataclass` 自动注入 `ts_event` / `ts_init`):
-    - `pair_id`           稳定 ID(matching 算出,见架构 §4.3)
+    - `pair_id`           稳定 ID(matching 算出,见架构 §4.3;#228 market 级)
+    - `event_key`         所属 event(#228:`competition|home|away`;2-way == pair_id 基础部分)
     - `sport`             标准化 sport
     - `competition`       联赛名(**不是** pair_id,#34)
+    - `outcomes`          #228:pair 互斥 outcome 集(2-way `["home","away"]`,3-way 拆分 pair `["yes","no"]`)
     - `anchor_instrument_ids` 非交易 anchor 腿(PMSPORTS 等),不参与套利
     - `tradable_instrument_ids` 所有可交易腿,供 strategy/risk 使用
     - `venue_instrument_ids` 按 venue 分组的可交易腿
@@ -37,6 +39,8 @@ class MatchedPair(Data):
     sport: str
     competition: str
     confidence: float
+    event_key: str = ""
+    outcomes: list[str] = field(default_factory=list)
     anchor_instrument_ids: list[str] = field(default_factory=list)
     tradable_instrument_ids: list[str] = field(default_factory=list)
     venue_instrument_ids: dict[str, list[str]] = field(default_factory=dict)
@@ -44,8 +48,10 @@ class MatchedPair(Data):
     _schema = pa.schema(
         {
             "pair_id": pa.string(),
+            "event_key": pa.string(),
             "sport": pa.string(),
             "competition": pa.string(),
+            "outcomes": pa.list_(pa.string()),
             "anchor_instrument_ids": pa.list_(pa.string()),
             "tradable_instrument_ids": pa.list_(pa.string()),
             "venue_instrument_ids": pa.map_(pa.string(), pa.list_(pa.string())),
@@ -59,12 +65,18 @@ class MatchedPair(Data):
     def __post_init__(self) -> None:
         if not self.tradable_instrument_ids and self.venue_instrument_ids:
             self.tradable_instrument_ids = _flatten_venue_ids(self.venue_instrument_ids)
+        if not self.outcomes:
+            self.outcomes = ["home", "away"]   # #228 兼容默认:2-way outcome 集
+        if not self.event_key:
+            self.event_key = self.pair_id      # #228 兼容默认:2-way 基础形态下两者一致
 
     def to_dict(self, to_arrow: bool = False) -> dict[str, Any]:
         return {
             "pair_id": self.pair_id,
+            "event_key": self.event_key,
             "sport": self.sport,
             "competition": self.competition,
+            "outcomes": list(self.outcomes),
             "anchor_instrument_ids": list(self.anchor_instrument_ids),
             "tradable_instrument_ids": list(self.tradable_instrument_ids),
             "venue_instrument_ids": {
@@ -88,8 +100,10 @@ class MatchedPair(Data):
             ts_event=values["ts_event"],
             ts_init=values["ts_init"],
             pair_id=values["pair_id"],
+            event_key=str(values.get("event_key") or ""),
             sport=values["sport"],
             competition=values["competition"],
+            outcomes=list(values.get("outcomes") or []),
             confidence=float(values["confidence"]),
             anchor_instrument_ids=anchor_ids,
             tradable_instrument_ids=tradable_ids,

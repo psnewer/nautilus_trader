@@ -4,6 +4,7 @@ PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整计划腿),经 Venue Registry 按 odds model 算 size:
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
+  - decimal odds venue 若 `claim=no`:最终下单转为 SELL/LAY,price 使用 bid/lay,size 按 lay price 重算
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
 """
@@ -14,6 +15,7 @@ import asyncio
 import logging
 
 from src.arbitrage.common.opportunity import new_opportunity_id
+from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
@@ -59,7 +61,13 @@ class PlaceBetsAction(Action):
                 )
                 return
             venue = leg["venue"]
-            price = self._price_overrides.get(venue, leg["price"])
+            side, price = _resolve_side_and_price(leg, venue, self._price_overrides)
+            if price is None:
+                _LOG.warning(
+                    f"PlaceBets: pair={ctx.pair_id} leg={leg.get('instrument_id')} "
+                    "missing executable price, abort opportunity",
+                )
+                return
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
             if size is None:
                 _LOG.warning(
@@ -68,8 +76,10 @@ class PlaceBetsAction(Action):
                 )
                 return
             spec = {
-                "instrument_id": leg["instrument_id"],
-                "side": leg["side"],
+                # #228:合成 no 腿(-NO instrument)只作行情/身份载体,真单落在同 selection 的
+                # yes instrument 上(SELL@lay),保证 venue 对账 LAY=SHORT 落在真 selection。
+                "instrument_id": leg.get("exec_instrument_id") or leg["instrument_id"],
+                "side": side,
                 "qty": size,
                 "price": price,
                 "intent": self._intent,
@@ -87,9 +97,9 @@ class PlaceBetsAction(Action):
             await asyncio.gather(*(submitter(spec) for (_, _, _, _, spec) in prepared))
         else:
             # log-only fallback(无 submitter 注入;单测 / smoke)
-            for leg, venue, size, price, _spec in prepared:
+            for leg, venue, size, price, spec in prepared:
                 _LOG.info(
-                    f"  would submit: instrument={leg['instrument_id']} side={leg['side']} "
+                    f"  would submit: instrument={leg['instrument_id']} side={spec['side']} "
                     f"role={leg['role']} venue={venue} qty={size:.4f} price={price}",
                 )
 
@@ -113,12 +123,66 @@ def _compute_leg_size(
     """按优先级决定最终 qty:显式 override > leg qty > leg share_if_wins。"""
     if venue in qty_overrides:
         return qty_overrides[venue]
+    if _is_decimal_no_claim(leg, venue) and leg.get("share_if_wins") is not None:
+        return _compute_size(venue, float(leg["share_if_wins"]), price)
     if "qty" in leg:
         return float(leg["qty"])
     leg_share = leg.get("share_if_wins")
     if leg_share is not None:
         return _compute_size(venue, float(leg_share), price)
     return None
+
+
+def _resolve_side_and_price(
+    leg: dict,
+    venue: str,
+    price_overrides: dict[str, float],
+) -> tuple[str, float | None]:
+    """将语义 leg 转成最终 submit side/price。
+
+    decimal venue 的 `claim=no` 表示 lay 该 outcome,因此最终 NT order 为 SELL @ bid/lay。
+    其它情况保持现有买入路径。
+    """
+    venue_key = str(venue).upper()
+    if venue_key in price_overrides:
+        price = price_overrides[venue_key]
+        return _execution_side(leg, venue), price
+    if _is_decimal_no_claim(leg, venue):
+        return "SELL", _leg_bid_price(leg)
+    return str(leg.get("side") or "BUY").upper(), _try_float(leg.get("price"))
+
+
+def _execution_side(leg: dict, venue: str) -> str:
+    if _is_decimal_no_claim(leg, venue):
+        return "SELL"
+    return str(leg.get("side") or "BUY").upper()
+
+
+def _is_decimal_no_claim(leg: dict, venue: str) -> bool:
+    claim = str(leg.get("claim") or "").strip().lower()
+    if claim != "no":
+        return False
+    try:
+        return is_decimal_odds_venue(venue)
+    except KeyError:
+        return False
+
+
+def _leg_bid_price(leg: dict) -> float | None:
+    for key in ("bid", "best_bid", "lay", "lay_price"):
+        value = _try_float(leg.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _try_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]:

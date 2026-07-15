@@ -23,7 +23,7 @@ def _instrument(venue, sport, comp, home, away, role, iid):
         info={
             "sport": sport, "competition": comp,
             "home_team": home, "away_team": away,
-            "selection_role": role, "start_ts": 0,
+            "selection_role": role,
         },
     )
 
@@ -59,7 +59,7 @@ def test_events_from_instruments_uses_registry_venue_from_instrument_id_suffix()
         info={
             "sport": "Tennis", "competition": "Wimbledon",
             "home_team": "A", "away_team": "B",
-            "selection_role": "home", "start_ts": 0,
+            "selection_role": "home",
         },
     )
 
@@ -70,7 +70,7 @@ def test_events_from_instruments_uses_registry_venue_from_instrument_id_suffix()
 
 
 def test_events_from_instruments_skips_missing_info():
-    """matching-1.event.4: info 缺 6-key → 跳过该腿(防御 Provider 漏填,不进 matching)。"""
+    """matching-1.event.4: info 缺 matching 必需 key → 跳过该腿(防御 Provider 漏填)。"""
     legs = [
         _instrument("POLYMARKET", "Soccer", "EPL", "A", "B", "home", "1"),
         SimpleNamespace(id=SimpleNamespace(venue="POLYMARKET"), info=None),
@@ -87,7 +87,7 @@ def test_events_from_instruments_skips_missing_venue():
         info={
             "sport": "Tennis", "competition": "Wimbledon",
             "home_team": "A", "away_team": "B",
-            "selection_role": "home", "start_ts": 0,
+            "selection_role": "home",
             "venue": "SHARPEXCH",
         },
     )

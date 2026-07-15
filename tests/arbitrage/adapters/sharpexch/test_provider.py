@@ -35,7 +35,7 @@ def _run(coro):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-def test_build_legs_fills_q9_keys_and_venue():
+def test_build_legs_fills_matching_info_keys_and_venue():
     provider = SharpExchInstrumentProvider(SimpleNamespace())
     legs = list(provider._build_legs(_event()))
     assert len(legs) == 2
@@ -43,10 +43,40 @@ def test_build_legs_fills_q9_keys_and_venue():
     assert str(legs[0].id).endswith(".SHARPEXCH")
     assert legs[0].market_id == "1.259502313"
     assert "111" in str(legs[0].id)
-    required = {"sport", "competition", "home_team", "away_team", "start_ts", "selection_role"}
+    required = {"sport", "competition", "home_team", "away_team", "selection_role"}
     assert required <= set(legs[0].info.keys())
     assert legs[0].info["competition"] == "Men's Wimbledon 2026"
-    assert legs[0].info["start_ts"] == 1782768600000 * 1_000_000
+
+
+def test_build_legs_three_way_exposes_yes_and_no_legs():
+    """#228:3-way(含 draw)每 selection 产 yes + 合成 no 两条腿;2-way 不受影响(见上)。"""
+    event = SharpExchMarketEvent(
+        sport="Soccer",
+        competition="EPL",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        sport_id="1",
+        competition_id="10932509",
+        market_id="1.259502399",
+        start_ts=1782768600000 * 1_000_000,
+        runners=(
+            SharpExchRunner(selection_id="111", runner_name="Arsenal", role="home"),
+            SharpExchRunner(selection_id="333", runner_name="The Draw", role="draw"),
+            SharpExchRunner(selection_id="222", runner_name="Chelsea", role="away"),
+        ),
+    )
+    provider = SharpExchInstrumentProvider(SimpleNamespace())
+    legs = list(provider._build_legs(event))
+    assert [(leg.info["selection_role"], leg.info["claim"]) for leg in legs] == [
+        ("home", "yes"), ("home", "no"),
+        ("draw", "yes"), ("draw", "no"),
+        ("away", "yes"), ("away", "no"),
+    ]
+    yes_home, no_home = legs[0], legs[1]
+    assert no_home.market_id == yes_home.market_id
+    assert no_home.selection_id == yes_home.selection_id
+    assert no_home.id != yes_home.id
+    assert no_home.info["exec_instrument_id"] == str(yes_home.id)
 
 
 def test_build_legs_sets_usd_min_stake():

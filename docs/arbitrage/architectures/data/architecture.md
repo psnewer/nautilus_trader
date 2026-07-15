@@ -10,7 +10,7 @@
 | 件 | 基类 | 职责 |
 |---|---|---|
 | PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
-| `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 Q9 6-key,matching 必需;#35) |
+| `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 matching 字段;#35) |
 | `PolymarketSportsDataClient` / `PolymarketSportsInstrumentProvider` | 自写 `LiveMarketDataClient` + `InstrumentProvider` | 公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchors + Sports WS firehose 产出 `SportsGameUpdate` |
 | `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + top-of-book ADDs);BACK 最优价→SELL/ask 侧 / LAY 最优价→BUY/bid 侧;路由 market_id+selection_id → InstrumentId |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
@@ -140,6 +140,44 @@ class OrbitExchDataClient(LiveMarketDataClient):
 
 **纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。多档时只发布 top-of-book:BACK 最高价、LAY 最低价。
 
+### 3.1b OE/SE 3-way 腿模型:合成 no instrument(#228,已落地 2026-07-15)
+
+OE/SE 的 3-way(1X2)在 venue 上是一个 market 三个 selection,每个 selection 一个 back/lay 盘口;
+不存在 "xx-NO" 产品——**买 no 的动作就是对同一 selection 下 lay 单**。为满足 #228 的
+"pair 内每 venue 每 outcome 恰好一条 instrument 腿"(matching §3.2 不变量),discovery 对
+**3-way 的每个 selection 产两条 instrument**(2-way 一律不变):
+
+- **yes instrument**:现状那条,id 不变,info 增 `claim="yes"`(3-way 腿全部显式带 claim,strategy §3.7 约定)。
+- **合成 no instrument**(已落地形态,2026-07-15):`BettingInstrument` 的 symbol 由
+  `(market_id, selection_id, handicap)` 决定,而 executor 下单直接读 `inst.market_id/selection_id`
+  且 handicap 会进 venue payload——因此 **market/selection 保持真值,id 唯一性用 handicap 哨兵
+  `NO_LEG_HANDICAP=-1.0`** 实现(id 如 `1-259837227-10372253--1.0.ORBITEXCH`),`market_name`
+  带 `-NO` 后缀供人读。info = 同 4-key + 同 `selection_role` + `claim="no"` +
+  **`exec_instrument_id`(= 同 selection 的 yes instrument id)**。
+  它是同一 selection 的 **lay 投影,只作行情/身份载体**:无独立 venue 产品、无独立订阅、
+  **不直接下单**——执行时 place_bets 经 `exec_instrument_id` 把 SELL@lay 重定向到 yes
+  instrument,保证 venue 对账(CURRENT_BETS 的 LAY=SHORT 落在真 selection)与 NT 订单/持仓
+  在同一 instrument 上闭合;哨兵 handicap 因此永不进 venue payload。
+
+**book 写入(cache 只存 venue 原始价不变量)**:`oe_runner_to_book_deltas` 收到同一 runner frame
+时产**两份** `OrderBookDeltas`(同帧原子,每帧全量 CLEAR+ADD 故无镜像同步问题):
+
+```text
+yes book(现状):ask ← BACK 列原值,bid ← LAY 列原值
+no  book(新)  :ask ← LAY 列原值, bid ← BACK 列原值(两侧换位重挂,size 跟随对应列)
+```
+
+价格**不做任何换算**:下单价永远取 book 原值(claim=no 腿选中后 `price` 即 lay 原值,直通
+place_bets 的 SELL@lay 转换,无浮点往返/tick 风险);隐含概率在读侧经 Venue Registry
+`probability_from_price(venue, price, claim)` 换算(claim=no → `1−1/price`,真理源 venues.md §4)。
+
+**路由**:data client 的 `_market_to_instruments[market_id][selection_id]` 从单值改多值
+(同一 selection → yes/no 两条),price frame 回调对两条各 publish 一份 deltas。
+某侧列为空(如 lay 无报价)时该侧对应 book 一侧为空,消费端按"该腿本轮无报价"自然处理
+(strategy §3.7 ≥2 条腿规则 / matching §4.2.1 PENDING)。
+
+SE 同构(`sharpexch/data.py` 的 price frame → deltas 路径)。
+
 ### 3.2 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)
 
 ```python
@@ -151,13 +189,21 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
         return instrument
 ```
 
-> **实写已落地(superseded,2026-06-21 核实)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构草案。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_all_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events?series_id=`(内嵌 teams),`_load_moneyline_market` 直接把完整 6-key(含 `start_ts` ← `_parse_start_ts(startDate)`、`selection_role` ← slug+ordering、`competition` 经 aliases 标准化)写入 `info`(`arb_provider.py:339-353`)。下面的 seam 版仅作历史参照,extraction 不再是当前待办。
+> **实写已落地(superseded,2026-06-21 核实;2026-07-14 更新)**:本节描述的 `enrich_pm_six_key_info` best-effort seam(只填 `sport`、其余空串)是早期结构草案。**实际 wired 的是 `ArbPolymarketInstrumentProvider`(`adapters/polymarket/arb_provider.py`)**,`load_all_async` 走 gamma `/sports`(competition→sport + ordering)+ `/events?series_id=`(内嵌 teams),`_load_moneyline_market` 直接把 matching 字段(`sport/competition/home_team/away_team/selection_role`)和 `game_id` 写入 `info`;`start_ts` 不再是 matching info 字段。下面的 seam 版仅作历史参照,extraction 不再是当前待办。
 
 `enrich_pm_six_key_info(market_info, outcome) -> dict`(历史 seam,已被 arb_provider 取代):
 - `sport` ← `market_info.get("category")`(PM gamma 给的最接近字段)
-- `competition` / `home_team` / `away_team` / `selection_role` / `start_ts` 当时为空值(seam 阶段空串/0)
+- `competition` / `home_team` / `away_team` / `selection_role` 当时为空值(seam 阶段空串)
 
-PM 侧现已**正常参与匹配**(arb_provider 填全 6-key);matching `events_from_instruments` 见 4-key 任一空才跳过该 instrument。
+PM 侧现已**正常参与匹配**(arb_provider 填全 matching 字段);matching `events_from_instruments` 见必需字段任一空才跳过该 instrument。
+
+**#228 PM 3-way 暴露 NO token(已落地 2026-07-15)**:PM 3-way 是 3 个独立 `[YES,NO]` binary market
+(slug `ticker-{abbr}` 聚合);历史上 `_load_moneyline_market` 跳过 `outcome != "Yes"` 的 token
+(b7b0581bd9)。#228 起 3-way 的 NO token 也产 instrument(真 token、真盘口、独立订阅——PM 的
+NO 盘口是独立流动性,且下买 NO 单需要 NO token_id):info = 同 4-key + 同 `selection_role`
+(= 所属 market 的 role;role 是"属于哪个 market"的维度)+ `claim="no"`;同 market 的 YES token
+info 增 `claim="yes"`。**2-way 完全不动**(不暴露 claim/NO;2-way 的 no≡对面 yes,无新信息)。
+一场 3-way 比赛 PM 共 6 条 instrument,按 role 两两落进 3 个拆分 pair(matching §4.2.2)。
 
 ### 3.3 Factory(`adapters/polymarket/arb_factories.py` + `adapters/orbitexch/factories.py` + `adapters/sharpexch/factories.py`)
 
@@ -174,7 +220,7 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 它不拥有 execution/account/position,也不进入套利下单流。
 
 - `_connect` 先 `PolymarketSportsInstrumentProvider.load_all_async()` + `_handle_data(instrument)` 灌入 NT cache,再开 WS firehose;`update_instruments_interval_mins` 默认 60min,单轮失败只 warning,下一轮重试。
-- synthetic anchor 每场一条 `BettingInstrument(venue=PMSPORTS, market_type=EVENT_ANCHOR)`, `info` 含 Q9 6-key + `game_id` + `tradable=False` + `anchor=True`。它只给 Matching 识别 event,不代表可交易 selection。
+- synthetic anchor 每场一条 `BettingInstrument(venue=PMSPORTS, market_type=EVENT_ANCHOR)`, `info` 含 matching 字段 + `game_id` + `tradable=False` + `anchor=True`。它只给 Matching 识别 event,不代表可交易 selection。
 - WS firehose 无 instrument 订阅;服务端协议层 ping 由 `websockets` 自动回 pong,客户端主动 keepalive ping 关闭(`ping_interval=None`),避免 PM Sports / 代理链路不回客户端 ping 时被本地 `keepalive ping timeout` 误杀;仍兼容 app-level text `"ping"`→`"pong"`;断线重连;`_disconnect` cancel task。
 - 每 `sport_result` → `parse_sport_result` → `SportsGameUpdate` → **`msgbus.publish` 裸发到 `data.SportsGameUpdate*`**(同 MatchedPair/InstrumentsRefreshed 的 publish_data 风格;消费者 `msgbus.subscribe("data.{Type}*")` 带 #58 的 `*` 通配)。**注**:`_handle_data` 走 DataEngine.process 只认内置/CustomData,裸自定义 Data 报 "unrecognized type"(#60 smoke 抓出 → 改裸 publish)。
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
@@ -186,8 +232,8 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 
 | 横切 | 约束 |
 |---|---|
-| Q9 6-key | OE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider`(`arb_provider.py`)`load_async` 走 gamma `/sports`+`/events` 填全 6-key(extraction 已实写,2026-06-21 核实)|
-| PMSPORTS event anchor | `PolymarketSportsInstrumentProvider` 复用公开 Gamma discovery 目标,产出 non-tradable `.PMSPORTS` 6-key instrument;Matching 负责把 anchor 与真实 tradable venues 聚合成 pair |
+| Q9 matching key | OE/SE Provider 填全;PM 经 `ArbPolymarketInstrumentProvider`(`arb_provider.py`)`load_async` 走 gamma `/sports`+`/events` 填全 matching 字段(extraction 已实写,2026-06-21 核实;`start_ts` 不参与 matching info)|
+| PMSPORTS event anchor | `PolymarketSportsInstrumentProvider` 复用公开 Gamma discovery 目标,产出 non-tradable `.PMSPORTS` matching instrument;Matching 负责把 anchor 与真实 tradable venues 聚合成 pair |
 | §4.3 OE 健康检查 | **历史设计已失效**:execution 页 reload 宿主已迁到 `OrbitExchExecutionClient`;本文件只保留 competition 页健康检查,见 execution §4.3bis |
 | 订阅去重 | NT `DataEngine` 引用计数自动,客户端不自管 |
 | **Q11.A Debug 行情掉包**(#39) | `Debug{PM,OE}DataClient`(`src/arbitrage/debug/data_clients.py`)子类化 `_handle_data`,按 `DebugConfig.mock_data(ODDS)` 替换 / 注入;两 factory 读 `ArbContext.debug_config`,`enabled` → 装 Debug 子类,否则装生产。框架只提供 `_maybe_substitute(data) → data|None` 钩子(默认 passthrough),具体替换算法由 user 按 mock_data schema 子类化覆盖。详见 `_cross-cutting/debug-injection.md` |
@@ -200,8 +246,8 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 
 - [x] OE `LiveMarketDataClient` 子类(整体重写,`data.py`)+ `oe_runner_to_book_deltas` 纯映射 + routing(`tests/arbitrage/adapters/orbitexch/test_data_client_step2.py` 10 passed)
 - [x] OE `OrbitExchLiveDataClientFactory`(同目录 `factories.py`)
-- [x] PM `ArbPolymarketInstrumentProvider`(`arb_provider.py`)+ `ArbPolymarketLiveDataClientFactory`:真 6-key extraction 已实写(gamma `/sports`+`/events` → home/away/selection_role/competition/start_ts),实盘 discovery/matching 已跑
+- [x] PM `ArbPolymarketInstrumentProvider`(`arb_provider.py`)+ `ArbPolymarketLiveDataClientFactory`:真 matching info extraction 已实写(gamma `/sports`+`/events` → home/away/selection_role/competition),实盘 discovery/matching 已跑
 - [x] PMSPORTS `PolymarketSportsInstrumentProvider` + `PolymarketSportsDataClient`:公开 Gamma discovery → non-tradable event anchors 入 cache;Sports WS 继续发布 `SportsGameUpdate`
-- [x] ~~真 PM 6-key extraction~~ 已落地(见上)。OE NT discovery 已迁移到 `OrbitExchDiscoveryClient` + `sport/details`;`start_ts` 从 `marketStartTime` / `event.openDate` 解析并经 Provider 写入 `instrument.info`。旧 `OrbitExchScraper` DOM 路径仅供 services 栈使用,不再作为当前待办。
+- [x] ~~真 PM matching info extraction~~ 已落地(见上)。OE NT discovery 已迁移到 `OrbitExchDiscoveryClient` + `sport/details`;`start_ts` 从 `marketStartTime` / `event.openDate` 解析后只用于 NT instrument 时间字段,不写入 `instrument.info`。旧 `OrbitExchScraper` DOM 路径仅供 services 栈使用,不再作为当前待办。
 - [x] OE competition 页存活封装进 `OrbitExchWebSocketHandler` + `on_disconnect` 事件化 reload;旧 `HealthCheckLoop` staleness / 补开已退役
 - [ ] /live-test:双 venue OrderBookDelta 全链路 → strategy 收

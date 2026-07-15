@@ -3,7 +3,7 @@ OE InstrumentProvider 测试(用例见 README.md)。
 
 OE 自写 `OrbitExchInstrumentProvider` 包 `OrbitExchDiscoveryClient.discover_events`。
 本测试用 mock discovery client 验证:每场 MarketEvent → 各方向 BettingInstrument(只对有 selection_id 的
-方向产腿)、info 6-key 完整、命名 + venue 正确。Browser/page 路径属 live(/live-test 验)。
+方向产腿)、matching info 完整、命名 + venue 正确。Browser/page 路径属 live(/live-test 验)。
 
 2026-07-03: 迁移到 `sport/details` API,与 SE 对齐。
 
@@ -55,26 +55,36 @@ def _run(coro):
 
 
 def test_build_legs_three_way(provider):
-    """discovery-1.4.a: 三方向(含 draw)各出一条腿,顺序 home/draw/away。"""
+    """discovery-1.4.a(#228): 3-way 每 selection 产 yes + 合成 no 两条腿,共 6 条。"""
     legs = list(provider._build_legs(_event()))
-    assert [leg.info["selection_role"] for leg in legs] == ["home", "draw", "away"]
+    assert [(leg.info["selection_role"], leg.info["claim"]) for leg in legs] == [
+        ("home", "yes"), ("home", "no"),
+        ("draw", "yes"), ("draw", "no"),
+        ("away", "yes"), ("away", "no"),
+    ]
+    yes_home, no_home = legs[0], legs[1]
+    # no 腿:market/selection 真值不变,InstrumentId 经 handicap 哨兵唯一,执行重定向回 yes
+    assert no_home.market_id == yes_home.market_id
+    assert no_home.selection_id == yes_home.selection_id
+    assert no_home.id != yes_home.id
+    assert no_home.info["exec_instrument_id"] == str(yes_home.id)
 
 
 def test_build_legs_two_way_drops_missing_draw(provider):
-    """discovery-1.4.b: 无 draw_selection_id 时只产 home/away,不强插 draw。"""
+    """discovery-1.4.b: 无 draw_selection_id 时只产 home/away,不强插 draw;#228 不引入 claim。"""
     legs = list(provider._build_legs(_event(draw_sel="")))
     assert [leg.info["selection_role"] for leg in legs] == ["home", "away"]
+    assert all("claim" not in leg.info for leg in legs)
 
 
-def test_build_legs_fills_six_info_keys(provider):
-    """discovery-1.4.c: info 必含 Q9 六统一 key(sport/competition/home_team/away_team/start_ts/selection_role)。"""
+def test_build_legs_fills_matching_info_keys(provider):
+    """discovery-1.4.c: info 必含 matching 统一 key。"""
     leg = next(iter(provider._build_legs(_event())))
-    required = {"sport", "competition", "home_team", "away_team", "start_ts", "selection_role"}
+    required = {"sport", "competition", "home_team", "away_team", "selection_role"}
     assert required <= set(leg.info.keys())
     assert leg.info["competition"] == "EPL"
     assert leg.info["sport"] == "Soccer"
     assert leg.info["home_team"] == "Arsenal" and leg.info["away_team"] == "Chelsea"
-    assert leg.info["start_ts"] == 1704067200000000000
 
 
 def test_build_legs_instrument_id_carries_market_and_selection(provider):
@@ -112,7 +122,7 @@ def test_load_all_async_invokes_discovery_and_adds_instruments():
 
     discovery.discover_events.assert_awaited_once()
     instruments = prov.get_all()
-    assert len(instruments) == 3  # home/draw/away
+    assert len(instruments) == 6  # #228:3-way = (home/draw/away) × (yes/no)
 
 
 def test_load_all_async_empty_does_not_raise():

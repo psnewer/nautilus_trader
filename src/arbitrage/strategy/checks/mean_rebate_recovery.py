@@ -14,7 +14,6 @@ from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.common.venues import venue_preference_rank
-from src.arbitrage.strategy.checks.mean_rebate import _VALID_ROLES
 from src.arbitrage.strategy.checks.mean_rebate import _best_ask
 from src.arbitrage.strategy.checks.mean_rebate import _to_prob
 from src.arbitrage.strategy.checks.mean_rebate import _venue_of
@@ -23,6 +22,8 @@ from src.arbitrage.strategy.condition import EvalContext
 
 
 _EPS = 1e-9
+# 本 Check 仍按 role 归属持仓/候选(2-way 语义;#228 的 [yes,no] 拆分 pair 在 passes 入口 bail)。
+_VALID_ROLES = ("home", "draw", "away")
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,10 @@ class MeanRebateRecoveryCheck(Check):
     def passes(self, ctx: EvalContext) -> bool:
         snap = ctx.snapshot
         if snap is None:
+            return False
+        # #228:3-way 拆分 pair([yes,no])的补救未建模——no 侧敞口以 SHORT/lay 头寸存在,
+        # `share_if_wins`/缺口归属需要 claim 感知的持仓核算,另行设计;先显式不支持。
+        if "yes" in tuple(getattr(snap, "outcomes", None) or ()):
             return False
 
         existing = _existing_legs(snap)

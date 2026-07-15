@@ -121,14 +121,34 @@ def enabled_sports_client_ids(cfg: ArbConfig) -> tuple[str, ...]: ...
 
 def descriptor_for(venue: str) -> VenueDescriptor: ...
 def is_decimal_odds_venue(venue: str) -> bool: ...
-def probability_from_price(venue: str, price: float) -> float: ...
+def probability_from_price(venue: str, price: float, claim: str = "yes") -> float: ...
 def qty_from_share(venue: str, share: float, price: float) -> float: ...
+def leg_economics(venue: str, price: float, size: float, *, is_lay: bool = False) -> LegEconomics: ...
 ```
+
+`leg_economics`(#230,单腿经济量唯一的家;`LegEconomics(share_if_wins, profit_if_wins, loss_if_loses)`):
+
+| 腿型 | share_if_wins | profit_if_wins | loss_if_loses |
+|---|---|---|---|
+| probability(PM,LONG) | `size` | `size × (1−price)` | `size × price` |
+| decimal back(LONG) | `size × price` | `size × (price−1)` | `size` |
+| decimal lay(`is_lay=True`;size=lay size,price=lay odds) | `size × price` | `size` | `size × (price−1)` |
+
+lay 行推导:lay size q 押 liability `q(L−1)`;互补 outcome 赢时收回 liability 并赢得 q →
+回收 `qL`,与 back 的 share_if_wins 同形(这也是 `qty_from_share(venue, share, lay)` = `share/lay`
+对 no 腿直接成立的原因)。消费者:`ArbitragePortfolio._Leg` 与 `mean_rebate_recovery._CalcLeg`
+均委托本函数,禁止各自维护公式。
 
 约束:
 
 - `probability_from_price("POLYMARKET", price)` 使用 PM 概率价格公式。
 - `probability_from_price(decimal venue, odds)` 使用 decimal odds 概率公式。
+- **#228 claim 感知(已落地 2026-07-15)**:`probability_from_price(decimal venue, price, claim="no")`
+  返回 `1 − 1/price`——decimal venue 的合成 no 腿 book 存的是 **lay 列原值**(cache 只存 venue
+  原始价、下单价零换算的不变量,见 data 架构"OE/SE 3-way 腿模型"),其隐含概率是补集。
+  probability venue 与 `claim="yes"`(默认)行为不变。本函数是全系统唯一的 claim 概率换算家:
+  strategy checks(strategy §3.7)、matching 概率校验门控(matching §4.2.1)、risk 概率门控
+  (risk §4.1b)一律经它,禁止各自换算。
 - `qty_from_share("POLYMARKET", share, price)` 返回 `share`。
 - `qty_from_share(decimal venue, share, odds)` 返回 `share / odds`。
 - helper 内部通过 `odds_model` 分支,禁止调用方自己维护 `{"ORBITEXCH","SHARPEXCH"}` 集合。

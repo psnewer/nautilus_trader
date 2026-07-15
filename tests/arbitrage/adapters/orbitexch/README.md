@@ -12,7 +12,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 - Q1: InstrumentId = `{market_id}-{selection_id}.ORBITEXCH`
 - Q2: 沿用现有 `PlaywrightBrowserManager`,所有权抽到 NT factory 层(共享单例);三方按 page name `"discovery"` / `"data"` / `"execution"` 拿专属 page
-- Q9: instrument.info 必含 6 个统一 key
+- Q9: instrument.info 必含 matching key
 - Q13(2026-05-19): OE adapter 内部承担健康检查,**吸收原 OE 网页监控**;两个刷新触发并存(时间维度 + `leg_settled=false`);**刷新后的持仓/挂单数据走 NT 标准 report 通路**(`generate_position_status_report` / `generate_order_status_report`),与 PM 对齐;execution session 单一职责(cancel-only 或 submit+track,都 track 到 terminal);移除 recovery loop。详见 `refactor.md §6.8`。⚠️ **2026-06-15 修正**:`leg_settled` 退役,状态维度改由 `VenueExecutionLiveness` 的 order/position alive + Risk gate 承担。
 - Q17(2026-05-19;2026-06-30 fx 口径校准;2026-07-13 accepted 预扣设计): **健康检查不碰余额** —— OE 余额走 WS 被动推(reactive,**已含挂单占用**),健康检查只保 WS/页面活;OE 无 REST 不拉余额。ExecutionClient 在 `BALANCE` 入站时乘 `arbitrage.fx`,cache 余额数值按 USD 解释;accepted 后由 execution session 通用 helper 按 decimal venue `quantity` 本地预扣。Risk 统一读 cache `free`,不再和 PM 走非对称余额来源。
 
@@ -90,7 +90,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 参考 `discovery/README.md` discovery-1.4。
 
-### oe-adapter-1.2: OE Provider info 6 key (Q9)
+### oe-adapter-1.2: OE Provider matching info (Q9)
 
 参考 `discovery/README.md` discovery-1.5(Q9 关键)。
 
@@ -119,7 +119,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 - ✅ WS price 帧解析复用 `OrbitExchMessageParser.parse_price_message`(原有)
 - ✅ 路由表 `market_id+selection_id → InstrumentId`,未订阅市场静默丢弃
 - ✅ **competition 页存活(#109)**:封装进 WS handler(心跳超时 + close → `on_disconnect`),DataClient 事件驱动 reload、**无 HealthCheckLoop**;见上方"#109 WS 存活封装"用例(旧 #70 HealthCheckLoop 段已失效)
-- ✅ `start_ts` 已由 NT 路径 `OrbitExchDiscoveryClient` 从 `sport/details.marketStartTime` / `event.openDate` 解析;旧 scraper DOM 路径仅供 services 栈使用
+- ✅ `start_ts` 已由 NT 路径 `OrbitExchDiscoveryClient` 从 `sport/details.marketStartTime` / `event.openDate` 解析,但只用于 NT instrument 时间字段;旧 scraper DOM 路径仅供 services 栈使用
 
 ---
 
@@ -479,3 +479,9 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 - live #85 复验:两笔 `placeBets` 返回 offerIds 后 30s timeout;下一轮 cancel-only 成功撤
   `222032569`/`222032570`,反证 cache 已有 open order + venue_order_id。
 - 诊断候选 `_page_write_lock` / request-response 日志已撤回。
+
+## #228:OE 3-way 合成 no 腿(2026-07-15)
+
+- `../discovery/test_orbitexch_provider.py::test_build_legs_three_way`:3-way 每 selection 产 yes + 合成 no 两条腿(共 6);no 腿 market/selection 真值不变、id 经 handicap 哨兵唯一、info 带 `claim="no"` + `exec_instrument_id`(执行重定向回 yes);2-way 不引入 claim。
+- `test_data_client_step2.py::test_runner_to_book_deltas_no_claim_swaps_sides_with_raw_prices`:claim=no 的 deltas 两侧换位,ask=LAY 原值 / bid=BACK 原值(下单价零换算不变量)。
+- 路由多值:`_market_to_instruments[market][selection]` = `[(iid, claim)]`,同帧对 yes/no 各发一份 deltas。

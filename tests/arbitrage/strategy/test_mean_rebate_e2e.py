@@ -79,22 +79,23 @@ def _build_mean_rebate_strategy():
 
 
 def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
-    """构造 3-way 套利 snapshot(OE 各方向更便宜 → mean_rebate 命中)。"""
+    """#228:3-way 拆分后的 [yes,no] pair snapshot(OE 两侧更便宜 → mean_rebate 命中)。
+
+    best yes = OE back 4.0 → 0.25;best no = OE 合成 no(ask=lay 原值 2.0)→ 1−1/2=0.50;
+    sum 0.75 → rate 0.25。
+    """
     books = {
-        "H.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "D.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "A.POLYMARKET": _fake_book(0.30),    # prob 0.30
-        "H.ORBITEXCH":  _fake_book(4.0),     # prob 0.25
-        "D.ORBITEXCH":  _fake_book(4.0),     # prob 0.25
-        "A.ORBITEXCH":  _fake_book(4.0),     # prob 0.25
+        "HY.POLYMARKET":  _fake_book(0.30),   # home market YES token
+        "HN.POLYMARKET":  _fake_book(0.55),   # home market NO token
+        "H.ORBITEXCH":    _fake_book(4.0),    # yes(back)prob 0.25
+        "HNO.ORBITEXCH":  _fake_book(2.0),    # 合成 no:prob=1−1/2.0=0.50
     }
     infos = {
-        "H.POLYMARKET": {"selection_role": "home", "in_play": in_play},
-        "D.POLYMARKET": {"selection_role": "draw", "in_play": in_play},
-        "A.POLYMARKET": {"selection_role": "away", "in_play": in_play},
-        "H.ORBITEXCH":  {"selection_role": "home", "in_play": in_play},
-        "D.ORBITEXCH":  {"selection_role": "draw", "in_play": in_play},
-        "A.ORBITEXCH":  {"selection_role": "away", "in_play": in_play},
+        "HY.POLYMARKET":  {"selection_role": "home", "claim": "yes", "in_play": in_play},
+        "HN.POLYMARKET":  {"selection_role": "home", "claim": "no", "in_play": in_play},
+        "H.ORBITEXCH":    {"selection_role": "home", "claim": "yes", "in_play": in_play},
+        "HNO.ORBITEXCH":  {"selection_role": "home", "claim": "no",
+                           "exec_instrument_id": "H.ORBITEXCH", "in_play": in_play},
     }
     return OpportunitySnapshot(
         pair_id="pair_X",
@@ -102,6 +103,7 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
         order_books=books,
         instrument_info=infos,
         in_play=in_play,
+        outcomes=["yes", "no"],
     )
 
 
@@ -129,10 +131,10 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
     assert len(res.pending_actions) == 1
     assert isinstance(res.pending_actions[0], PlaceBetsAction)
 
-    # 2. Check 写 scratch
+    # 2. Check 写 scratch(#228:[yes,no] pair → 2 条腿)
     assert "legs" in ctx.scratch
-    assert len(ctx.scratch["legs"]) == 3
-    assert ctx.scratch["mean_rebate_rate"] == 0.25  # 1 - 0.75
+    assert len(ctx.scratch["legs"]) == 2
+    assert ctx.scratch["mean_rebate_rate"] == 0.25  # 1 - (0.25 + 0.50)
 
     # 3. fire action(log-only smoke)
     with caplog.at_level(logging.INFO, logger="src.arbitrage.strategy.actions.place_bets"):
@@ -140,9 +142,9 @@ def test_mean_rebate_full_pipeline_logs_three_submits(caplog):
 
     msgs = [r.message for r in caplog.records]
     # header log
-    assert any("PlaceBets[smoke]" in m and "pair=pair_X" in m and "legs=3" in m for m in msgs)
-    # 3 个 leg 各一行(选 OE 因更便宜)
-    assert sum("ORBITEXCH" in m and "would submit" in m for m in msgs) == 3
+    assert any("PlaceBets[smoke]" in m and "pair=pair_X" in m and "legs=2" in m for m in msgs)
+    # 2 个 leg 各一行(yes/no 都选 OE 因更便宜)
+    assert sum("ORBITEXCH" in m and "would submit" in m for m in msgs) == 2
 
 
 def test_in_play_blocks_mean_rebate(caplog):

@@ -176,7 +176,7 @@ class ArbitragePortfolio(Portfolio):
 
 **腿来源(平移自旧 `position.py`,但不再自维护 `_positions`)**:从 NT Cache 的 `positions_open()` 反推 `_Leg`。
 - **pair_id 经 `PairRegistry`**(matching 写、本类读;#34 修正,原误用 `info["competition"]` 是联赛名非 pair_id)。`outcome_exposures` 会通过 `PairRegistry.instrument_ids_for_pair(pair_id)` 读取该 pair 的完整 instrument 集合,再从 cache instrument.info 得到完整 outcome 集合;若 registry 不可用才回退到持仓腿推断。
-- **`instrument.info` 契约**(由 **discovery** 填充,本类只读,单一 seam 在 `_leg_from_position`):`info["selection_role"]`→home/draw/away(Q9 标准 key;旧 `info["market_type"]` 作 fallback 兼容);其它 Q9 6-key 是 matching 输入。
+- **`instrument.info` 契约**(由 **discovery** 填充,本类只读,单一 seam 在 `_leg_from_position`):`info["selection_role"]`→home/draw/away(Q9 标准 key;旧 `info["market_type"]` 作 fallback 兼容);其它 Q9 matching key 是 matching 输入。
 - **venue / 公式分支**: `_Leg` 按 Venue Registry `odds_model` 分流 probability / decimal odds 公式;`_Leg.venue` 必须取 `instrument.id.venue.value.lower()` 保留真实 venue identity,避免 SE 持仓被归到 OE。
 
 **接线 —— 导入名替换(`src/arbitrage/bootstrap.py`),取代旧"构造后 swap"方案**(Step 6 改进,见 refactor.md 修订记录):
@@ -245,6 +245,7 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 - `match_sl`:若所有 outcome 的 `net_profit < share * match_sl`,deny 新开仓。
 - 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数。
 - outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,保证三元盘某 outcome 暂无持仓时仍参与“所有 outcome”判断;无 registry 时回退到持仓腿中的 `home/away/draw`。
+  ⚠️ 受 #228 影响:"三元盘一个 pair 含 3 outcome"的前提失效——3-way 拆为 3 个二元 pair(matching §4.2.2),每个 pair 恰好 2 个 outcome,盈亏在 market 内闭合(2026-07-15 已落地)。**本节 profit gate 的 claim 感知持仓归属未落码**:`[yes,no]` pair 的 no 敞口以真 selection instrument 上的 SHORT/lay 头寸存在,`market_type==outcome` 归属需要 claim/side 感知的核算——与 mean_rebate_recovery 的 `[yes,no]` bail(strategy §3.7)同批另行设计;当前 3-way pair 的 profit gate 语义未建模。
 - 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
 
 ### 4.1b 概率/赔率门控
@@ -256,6 +257,12 @@ probability = probability_from_price(order.instrument_id.venue.value, float(orde
 ```
 
 若 `probability < min_probability` 或 `probability > max_probability`,调用 `_deny_order` 并阻止订单继续进入 execution。默认闭区间为 `[0.03, 0.97]`,等于边界允许通过。
+
+> **#228 已落地(2026-07-15)**:decimal venue 的 lay 单隐含概率是 `1−1/price` 而非 `1/price`。
+> 订单级判别子是 **`order.side == SELL`**(不是 instrument.info 的 claim——合成 no 腿的执行已
+> 重定向回真 selection 的 yes instrument,其 info.claim 为 yes,见 data §3.1b):
+> `claim = "no" if SELL+decimal else "yes"` 后调 `probability_from_price(venue, price, claim)`
+> (Venue Registry 单一家,strategy §3.7 / matching §4.2.1 同源)。
 
 `outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share(所有 venue 合并),供止盈止损门控参考。
 

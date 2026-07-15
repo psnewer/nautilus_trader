@@ -420,6 +420,7 @@ def test_index_serves_html():
     r = _client().get("/")
     assert r.status_code == 200 and "Arbitrage Dashboard" in r.text and "text/html" in r.headers["content-type"]
     assert "SharpExch" in r.text and "enabledVenueIds" in r.text and "odds-data-head" in r.text
+    assert "<th>Match</th><th>Role</th>" in r.text
     assert "matching-results-head" in r.text and "PMSPORTS" not in r.text and "Confidence" not in r.text
     assert 'id="d-sharp"' in r.text and "browser discovery" in r.text
 

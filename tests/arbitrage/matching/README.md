@@ -19,7 +19,7 @@
 
 ## 锁定决定
 
-- **Q9**: PM `BinaryOption` + OE `BettingInstrument` 异构,通过 `instrument.info` dict 6 个统一 key 归一(`sport` / `competition` / `home_team` / `away_team` / `start_ts` / `selection_role`)
+- **Q9**: PM `BinaryOption` + OE/SE `BettingInstrument` 异构,通过 `instrument.info` dict matching key 归一(`sport` / `competition` / `home_team` / `away_team` / `selection_role`);`start_ts` 不参与 matching。
 - **venue 解析**:`events_from_instruments` 先经 `venue_id_from_instrument_id()` 解析真实 venue id,再兼容测试 fixture 的 `instrument.id.venue`;不从 `instrument.info["venue"]` 兜底,缺 venue 直接跳过。
 - **触发**: #59 后由 NT clock timer 周期读 cache,不再订 `InstrumentsRefreshed`
 - **tradable venues**:dispatcher 当前输出 PMSPORTS anchor + `tradable_venues=enabled_tradable_venue_ids(cfg)`;`MarketMatchingConfig` 旧 `pm_venue` / `external_venues` / `oe_venue` 输入字段已删除。
@@ -217,3 +217,10 @@
 
 ## 控制台命令 consumer(#119)
 - `command.arb.refresh_interval`:`MarketMatchingActor.on_start` 内 subscribe → 热改 `_refresh_interval_secs`。用例 `test_pair_registry.py::test_refresh_interval_command_hot_updates` / `test_refresh_interval_command_rejects_nonpositive`。契约见 web §8.3。
+
+## #228:3-way 拆多 market 多 pair_id(2026-07-15)
+
+- `test_actor.py::test_three_way_pm_anchor_splits_into_role_pairs`:PM-anchor 路径 3-way 拆 3 个 role pair(role 后缀在 venue 后缀之前),每 pair `outcomes=["yes","no"]`、每 venue 每 outcome 恰好一条腿、event_key 正确。
+- `test_actor.py::test_three_way_pmsports_anchor_splits_and_duplicates_anchor`:PMSPORTS 聚合路径拆 3 个无 venue 后缀 pair;每场唯一合成锚在各 pair `anchor_instrument_ids` 重复登记(`PairRegistry._by_anchor` 多值);`game_to_pair[gid]` 覆盖 3 个 pair。
+- `test_actor.py::test_three_way_validation_fail_evicts_event_siblings`:门控 pair 级 + FAIL 连坐双向——先到 pair(已 PASS 注册)被反注册置 sticky FAILED;后到 pair 入场即 FAILED 不订阅不发布;decimal no 腿 ask 概率经 claim 感知换算(1−1/lay)。
+- 2-way 存量用例全部不变(pair_id 零迁移回归锚)。

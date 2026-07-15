@@ -13,12 +13,13 @@ def _fake_book(ask_price):
     return book
 
 
-def _ctx(*, books: dict, infos: dict) -> EvalContext:
+def _ctx(*, books: dict, infos: dict, outcomes: list | None = None) -> EvalContext:
     snap = OpportunitySnapshot(
         pair_id="p",
         instrument_ids=list(books.keys()),
         order_books=books,
         instrument_info=infos,
+        outcomes=outcomes or ["home", "away"],
     )
     return EvalContext(pair_id="p", snapshot=snap, strategy_defaults={"share": 100.0})
 
@@ -95,26 +96,36 @@ def test_sharpexch_candidate_uses_decimal_odds_qty():
     assert by_role["away"]["cost"] == 50.0
 
 
-def test_3way_generates_candidates_for_home_draw_away_targets():
+def test_3way_split_pair_yes_no_generates_candidates():
+    """#228:3-way 拆分 pair([yes,no])按 claim 分组枚举 candidate;旧三 role 一 pair 分支退役。"""
     books = {
-        "H.POLYMARKET": _fake_book(0.20),
-        "D.POLYMARKET": _fake_book(0.30),
-        "A.POLYMARKET": _fake_book(0.40),
+        "HY.POLYMARKET": _fake_book(0.20),
+        "HN.POLYMARKET": _fake_book(0.30),
+        "HNO.ORBITEXCH": _fake_book(2.5),   # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
     }
     infos = {
-        "H.POLYMARKET": {"selection_role": "home"},
-        "D.POLYMARKET": {"selection_role": "draw"},
-        "A.POLYMARKET": {"selection_role": "away"},
+        "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
+        "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "exec_instrument_id": "H.ORBITEXCH"},
     }
-    ctx = _ctx(books=books, infos=infos)
+    ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
 
     assert OneSideRebateCheck(min_rate=0.20, share=100.0).passes(ctx) is True
 
     candidates = ctx.scratch["candidates"]
-    assert len(candidates) == 3
-    assert {c["target_role"] for c in candidates} == {"home", "draw", "away"}
-    assert all(tuple(c["roles"]) == ("home", "draw", "away") for c in candidates)
-    assert all(len(c["legs"]) == 3 for c in candidates)
+    assert {c["target_role"] for c in candidates} <= {"yes", "no"}
+    assert all(tuple(c["roles"]) == ("yes", "no") for c in candidates)
+    assert all(len(c["legs"]) == 2 for c in candidates)
+    # 含 OE 合成 no 腿的 candidate,其 no leg 带 claim(place_bets 转 SELL@lay)
+    oe_no_candidates = [
+        c for c in candidates
+        if any(leg["instrument_id"] == "HNO.ORBITEXCH" for leg in c["legs"])
+    ]
+    assert oe_no_candidates
+    for c in oe_no_candidates:
+        no_leg = next(leg for leg in c["legs"] if leg["instrument_id"] == "HNO.ORBITEXCH")
+        assert no_leg["claim"] == "no"
 
 
 def test_decimal_odds_target_qty_share_and_cost():

@@ -223,8 +223,15 @@ def venue_preference_rank(venue: str) -> tuple[int, int, str]:
     return (odds_rank, registry_rank, descriptor.venue_id)
 
 
-def probability_from_price(venue: str, price: float) -> float:
+def probability_from_price(venue: str, price: float, claim: str = "yes") -> float:
+    """价格 → 隐含概率(venues.md §4;#228 claim 感知)。
+
+    decimal venue 的 claim="no" 腿 book 存的是 lay 列原值(cache 只存 venue 原始价),
+    其隐含概率是补集 1 − 1/price;全系统 claim 概率换算唯一的家。
+    """
     if descriptor_for(venue).odds_model == "decimal":
+        if str(claim or "").strip().lower() == "no":
+            return 1.0 - 1.0 / price
         return 1.0 / price
     return price
 

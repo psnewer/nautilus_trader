@@ -335,3 +335,8 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 
 ## 控制台命令 consumer(#119)
 - `command.arb.trading_state` / `command.arb.risk_params`:`ArbitrageLiveRiskEngine.configure_arb` 内 subscribe → `set_trading_state` / 热改 `_arb_params`。用例 `test_engine.py::test_trading_state_command_halts_and_resumes` / `test_invalid_trading_state_command_ignored` / `test_risk_params_command_hot_updates_only_given_fields`。契约 + 完整控制台用例见 web §8 / `tests/arbitrage/web/README.md` web-7.8~7.12。
+
+## #228:概率门控 lay 单补集概率(2026-07-15)
+
+- `test_engine.py::test_probability_gate_lay_order_uses_complement_probability`:decimal venue 的 SELL(lay)单隐含概率 = 1−1/price(判别子 = order.side,非 instrument claim——no 腿执行已重定向回真 selection);lay@1.02 / lay@40 被拒,lay@2.0 通过。
+- profit gate 的 claim 感知持仓归属未落码(risk 架构 §4.1 注记),与 recovery 同批另行设计。
