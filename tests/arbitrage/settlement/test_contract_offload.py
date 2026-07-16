@@ -10,6 +10,8 @@ import asyncio
 import logging
 import time
 
+from eth_utils import keccak
+
 from nautilus_trader.adapters.polymarket.contract import PolymarketContractService
 from nautilus_trader.adapters.polymarket.contract import CTF_COLLATERAL_ADAPTER_ADDRESS
 from nautilus_trader.adapters.polymarket.contract import NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
@@ -112,3 +114,22 @@ def test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter():
     assert tx.success
     assert len(captured) == 1
     assert captured[0].to == NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
+    selector = keccak(
+        text="mergePositions(address,bytes32,bytes32,uint256[],uint256)",
+    )[:4].hex()
+    assert captured[0].data.startswith("0x" + selector)
+    assert PUSD_ADDRESS.lower().replace("0x", "") in captured[0].data.lower()
+
+
+def test_neg_risk_redeem_uses_inherited_collateral_adapter_abi():
+    svc, captured = _recording_service()
+    tx = _run(svc.redeem_positions(condition_id=_COND, neg_risk=True))
+
+    assert tx.success
+    assert len(captured) == 1
+    assert captured[0].to == NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
+    selector = keccak(
+        text="redeemPositions(address,bytes32,bytes32,uint256[])",
+    )[:4].hex()
+    assert captured[0].data.startswith("0x" + selector)
+    assert PUSD_ADDRESS.lower().replace("0x", "") in captured[0].data.lower()

@@ -10,7 +10,7 @@ PolymarketSettlement —— merge / redeem 编排(Q18c 三层结构的中间层)
 代码位置反映真实依赖(选项 A)。
 
 - merge:同 condition ≥2 持仓 → `merge_positions(condition, min(sizes), neg_risk=any)`。
-- redeem:任一持仓 `redeemable=True` → `redeem_positions(...)`(negRisk 传 amounts)。
+- redeem:任一持仓 `redeemable=True` → `redeem_positions(...)`。
 - `TxResult` 失败**只 log,不作健康判据**,下次 tick 幂等重试(详见 §4.6)。
 """
 
@@ -117,15 +117,9 @@ class PolymarketSettlement:
                 continue  # 用 Data API 的 redeemable 标记门控
             neg_risk = any(p.neg_risk for p in positions)
             try:
-                if neg_risk:
-                    tx = await self._contract.redeem_positions(
-                        condition_id=condition_id, neg_risk=True,
-                        amounts=[p.size for p in positions],
-                    )
-                else:
-                    tx = await self._contract.redeem_positions(
-                        condition_id=condition_id, neg_risk=False,
-                    )
+                tx = await self._contract.redeem_positions(
+                    condition_id=condition_id, neg_risk=neg_risk,
+                )
                 result.redeems.append(tx)
                 if not tx.success:
                     self._log.warning(f"Redeem failed: condition={condition_id[:16]}..., {tx.message}")

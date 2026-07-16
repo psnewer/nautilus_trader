@@ -22,8 +22,8 @@ class FakeContract:
         self.merge_calls.append((condition_id, amount, neg_risk))
         return self._merge_result
 
-    async def redeem_positions(self, condition_id, neg_risk, amounts=None):
-        self.redeem_calls.append((condition_id, neg_risk, amounts))
+    async def redeem_positions(self, condition_id, neg_risk):
+        self.redeem_calls.append((condition_id, neg_risk))
         return self._redeem_result
 
 
@@ -76,17 +76,14 @@ def test_redeem_only_when_redeemable():
 def test_redeem_standard_market_no_amounts():
     c = FakeContract()
     _run(_settlement(c).run([SettlementPosition("cond1", 80.0, redeemable=True)]))
-    assert c.redeem_calls == [("cond1", False, None)]
+    assert c.redeem_calls == [("cond1", False)]
 
 
-def test_redeem_neg_risk_passes_amounts():
+def test_redeem_neg_risk_uses_adapter_managed_balances():
     c = FakeContract()
-    pos = [
-        SettlementPosition("cond1", 80.0, neg_risk=True, redeemable=True),
-        SettlementPosition("cond1", 50.0, neg_risk=True, redeemable=True),
-    ]
+    pos = [SettlementPosition("cond1", 80.0, neg_risk=True, redeemable=True)]
     _run(_settlement(c).run(pos))
-    assert c.redeem_calls == [("cond1", True, [80.0, 50.0])]
+    assert c.redeem_calls == [("cond1", True)]
 
 
 # ── 结果 / 失败(settlement-8.7）────────────────────────────────────

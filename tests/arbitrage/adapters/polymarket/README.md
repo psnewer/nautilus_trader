@@ -247,8 +247,8 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - 上游 `_fetch_user_positions` 全量拉一次 /positions,stash `_last_raw_positions`(**一次拉喂两用**:报告 + 结算,不另起请求)
 - 拉成功 → `mark_position_alive`;**拉失败 → `mark_position_dead` 并抛**(venue dead)
 - **结算 fire-and-forget + single-flight**:`if _settlement and not _settlement_inflight: create_task(_run_settlement(raw))` —— 不 `await`(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);前一次未完成则本轮跳过
-- `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:`conditionId`/`size`/`negativeRisk`/`redeemable`)→ `PolymarketSettlement.run` → merge/redeem
-- `PolymarketContractService` 对标准二元走 `CtfCollateralAdapter + pUSD`,对 negRisk 走 `NegRiskCtfCollateralAdapter`;不再直接打底层 CTF+USDC.e,避免 merge 后资金停在页面 `Confirm pending deposit / Activate Funds`。
+- `_run_settlement` 用 `pm_raw_position_to_settlement(item)`(原始 dict 键:`conditionId`/`size`/`negativeRisk`/`redeemable`)→ `PolymarketSettlement.run` → merge/redeem。
+- `PolymarketContractService` 对标准二元走 `CtfCollateralAdapter + pUSD`,对 negRisk 走 `NegRiskCtfCollateralAdapter`;两者使用 inherited collateral-adapter ABI,negRisk redeem 由 adapter 自行读取调用者 YES/NO 链上余额。不再直接打底层 CTF+USDC.e,避免 merge 后资金停在页面 `Confirm pending deposit / Activate Funds`。
 - 成功 merge/redeem 后当前默认不主动调用 `update_balance_allowance(COLLATERAL)`;切到 collateral adapter+pUSD 后先由 live 验证是否仍需手动同步。代码保留 `_sync_collateral_balance_allowance_after_settlement()` helper,恢复时也不主动 `_update_account_state`。
 - 决策细节见 `tests/arbitrage/settlement/README.md`(settlement-8.x)
 **验收**:
@@ -259,6 +259,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 - `tests/arbitrage/execution/test_polymarket_client.py::test_run_settlement_does_not_sync_collateral_balance_without_successful_tx`:证明没有成功 tx 时不触发同步。
 - `tests/arbitrage/settlement/test_contract_offload.py::test_standard_merge_uses_ctf_collateral_adapter_and_pusd`:证明标准 merge 发往 collateral adapter 且使用 pUSD。
 - `tests/arbitrage/settlement/test_contract_offload.py::test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter`:证明 negRisk merge 发往 negRisk collateral adapter。
+- `tests/arbitrage/settlement/test_contract_offload.py::test_neg_risk_redeem_uses_inherited_collateral_adapter_abi`:证明 negRisk redeem 使用 collateral adapter 的 inherited selector、pUSD 参数与正确 target。
 - `tests/arbitrage/execution/test_polymarket_client.py::test_arb_generate_position_reports_failure_marks_dead`:证明 `/positions` report 失败会 `mark_position_dead` 并抛给 NT 对账。
 - `tests/arbitrage/launchers/test_arb_node.py::test_make_pm_settlement_initializes_contract_and_flags`:证明 launcher 将 PM 链上凭证 / relayer 配置映射到 `PolymarketContractService`,并把 cleanup flags 传给 `PolymarketSettlement`。
 - merge/redeem `TxResult` 失败:**仅 log,不判 `VenueExecutionLiveness` dead**;下个对账周期幂等重试(min(size))

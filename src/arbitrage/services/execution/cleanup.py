@@ -228,18 +228,10 @@ class PostSessionCleanup:
                     f"neg_risk={neg_risk}"
                 )
 
-                if neg_risk:
-                    amounts = [p.size for p in cond_positions]
-                    tx_result = await self._contract.redeem_positions(
-                        condition_id=condition_id,
-                        neg_risk=True,
-                        amounts=amounts,
-                    )
-                else:
-                    tx_result = await self._contract.redeem_positions(
-                        condition_id=condition_id,
-                        neg_risk=False,
-                    )
+                tx_result = await self._contract.redeem_positions(
+                    condition_id=condition_id,
+                    neg_risk=neg_risk,
+                )
 
                 result.redeems.append(tx_result)
 
@@ -255,4 +247,3 @@ class PostSessionCleanup:
                     )
 
         return result
-

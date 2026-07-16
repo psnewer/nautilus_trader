@@ -76,12 +76,12 @@ def _function_selector(signature: str) -> bytes:
     return keccak(text=signature)[:4]
 
 
-def _encode_merge_positions_ctf(
+def _encode_merge_positions_collateral_adapter(
     condition_id: str,
     amount: int,
 ) -> bytes:
     """
-    编码 CtfCollateralAdapter.mergePositions calldata (negRisk=false)
+    编码 CtfCollateralAdapter 及其 NegRisk 子类的 mergePositions calldata
 
     mergePositions(address collateral, bytes32 parentCollectionId, bytes32 conditionId, uint256[] partition, uint256 amount)
     partition = [1, 2] 表示两个 outcome slots
@@ -104,29 +104,9 @@ def _encode_merge_positions_ctf(
     return selector + encoded
 
 
-def _encode_merge_positions_neg_risk(
-    condition_id: str,
-    amount: int,
-) -> bytes:
+def _encode_redeem_positions_collateral_adapter(condition_id: str) -> bytes:
     """
-    编码 NegRiskAdapter.mergePositions calldata (negRisk=true)
-
-    mergePositions(bytes32 conditionId, uint256 amount)
-    """
-    selector = _function_selector("mergePositions(bytes32,uint256)")
-    encoded = encode(
-        ["bytes32", "uint256"],
-        [
-            bytes.fromhex(condition_id.replace("0x", "")),
-            amount,
-        ],
-    )
-    return selector + encoded
-
-
-def _encode_redeem_positions_ctf(condition_id: str) -> bytes:
-    """
-    编码 CtfCollateralAdapter.redeemPositions calldata (negRisk=false)
+    编码 CtfCollateralAdapter 及其 NegRisk 子类的 redeemPositions calldata
 
     redeemPositions(address collateral, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)
     indexSets = [1, 2] 赎回所有 outcome slots
@@ -141,26 +121,6 @@ def _encode_redeem_positions_ctf(condition_id: str) -> bytes:
             ZERO_BYTES32,
             bytes.fromhex(condition_id.replace("0x", "")),
             [1, 2],
-        ],
-    )
-    return selector + encoded
-
-
-def _encode_redeem_positions_neg_risk(
-    condition_id: str,
-    amounts: list[int],
-) -> bytes:
-    """
-    编码 NegRiskAdapter.redeemPositions calldata (negRisk=true)
-
-    redeemPositions(bytes32 conditionId, uint256[] amounts)
-    """
-    selector = _function_selector("redeemPositions(bytes32,uint256[])")
-    encoded = encode(
-        ["bytes32", "uint256[]"],
-        [
-            bytes.fromhex(condition_id.replace("0x", "")),
-            amounts,
         ],
     )
     return selector + encoded
@@ -312,12 +272,13 @@ class PolymarketContractService:
             return TxResult(success=False, message=f"Invalid amount: {amount}")
 
         try:
+            # NegRiskCtfCollateralAdapter 继承 CtfCollateralAdapter 的外部 ABI；
+            # 两者只切换 target，calldata 结构相同。
+            calldata = _encode_merge_positions_collateral_adapter(condition_id, amount_raw)
             if neg_risk:
-                calldata = _encode_merge_positions_neg_risk(condition_id, amount_raw)
                 target = NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"merge negRisk positions: condition={condition_id[:16]}..., amount={amount}"
             else:
-                calldata = _encode_merge_positions_ctf(condition_id, amount_raw)
                 target = CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"merge CTF positions: condition={condition_id[:16]}..., amount={amount}"
 
@@ -356,7 +317,6 @@ class PolymarketContractService:
         self,
         condition_id: str,
         neg_risk: bool = False,
-        amounts: list[float] | None = None,
     ) -> TxResult:
         """
         赎回已结算市场的 winning tokens
@@ -364,7 +324,6 @@ class PolymarketContractService:
         Args:
             condition_id: 市场 condition ID
             neg_risk: 是否为负风险市场
-            amounts: (仅 negRisk) 各 outcome slot 的赎回量
 
         Returns:
             交易结果
@@ -373,18 +332,13 @@ class PolymarketContractService:
             return TxResult(success=False, message="Service not initialized")
 
         try:
+            # NegRiskCtfCollateralAdapter 继承同一外部 redeem ABI，并在合约内部读取
+            # 调用者当前的 YES/NO token balances；不能用旧 NegRiskAdapter 的两参数 ABI。
+            calldata = _encode_redeem_positions_collateral_adapter(condition_id)
             if neg_risk:
-                if not amounts:
-                    return TxResult(
-                        success=False,
-                        message="amounts required for negRisk redeem",
-                    )
-                amounts_raw = [int(a * 1_000_000) for a in amounts]
-                calldata = _encode_redeem_positions_neg_risk(condition_id, amounts_raw)
                 target = NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"redeem negRisk: condition={condition_id[:16]}..."
             else:
-                calldata = _encode_redeem_positions_ctf(condition_id)
                 target = CTF_COLLATERAL_ADAPTER_ADDRESS
                 desc = f"redeem CTF: condition={condition_id[:16]}..."
 

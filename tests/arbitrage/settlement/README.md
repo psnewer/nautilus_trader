@@ -2,7 +2,7 @@
 
 对应章节: `refactor.md §5.8`;详细设计 `architectures/execution/architecture.md §4.6`
 
-**落地状态(2026-05-22)**:`PolymarketSettlement` 已实现于 `src/arbitrage/settlement/settlement.py`(编排;IO 仍是 `nautilus_trader/adapters/polymarket/contract.py`)。`tests/arbitrage/settlement/test_settlement.py` **11 passed**(用 FakeContract 录调用,不上链):merge min 取量 + negRisk 透传 + ≥2 门槛(8.2/8.3)、redeem redeemable 门控 + negRisk amounts(8.4/8.5)、失败仅记录不抛 + 异常吞进 errors(8.7)、空/零持仓 no-op。**仍待**:8.6(数据源=Data API 原始而非 NT cache)与"在 tick 内被调用 / 结果不作健康判据"属 PM 健康检查宿主,跟 PM 子类落地一起验(见 pm-adapter README)。
+**落地状态(2026-07-16)**:`PolymarketSettlement` 已实现于 `nautilus_trader/adapters/polymarket/settlement.py`(编排;IO 为同目录 `contract.py`)。`tests/arbitrage/settlement/test_settlement.py` **11 passed**(用 FakeContract 录调用,不上链):merge min 取量 + negRisk 透传 + ≥2 门槛(8.2/8.3)、redeem redeemable 门控 + collateral adapter 自管链上余额(8.4/8.5)、失败仅记录不抛 + 异常吞进 errors(8.7)、空/零持仓 no-op。宿主调度与 liveness 验收见 PM adapter README。
 
 ## 锁定的关键性约束(Q18 + Q18b 修正,2026-05-21)
 
@@ -11,7 +11,7 @@
 - 归属/触发(**#110 修正,2026-06-16;推翻 Q18b 的"PM 健康检查 tick"**): **并入 NT 连续 position 对账**(`LiveExecEngineConfig.position_check_interval_secs=300`),复用对账那次 `/positions` 拉取。**PM 无 HealthCheckLoop**(健康检查彻底退役,对齐 OE #109);**无独立 Actor、无独立调度**。
 - **三层宿主(Q18c;#110 触发改 NT 对账)**:
   - 宿主/触发 = **PM `ExecutionClient` 薄子类**的 `generate_position_status_reports`(NT 周期调它):上游 `_fetch_user_positions` 拉一次、stash `_last_raw_positions`;override 用 stash 喂结算。
-  - 编排 = **`PolymarketSettlement` 普通类**(`src/arbitrage/settlement/settlement.py`;非 ExecutionClient 方法)
+  - 编排 = **`PolymarketSettlement` 普通类**(`nautilus_trader/adapters/polymarket/settlement.py`;非 ExecutionClient 方法)
   - IO = **`contract.py:PolymarketContractService`**(保留)
   - **结算 fire-and-forget + single-flight**:`create_task(_run_settlement(raw))`,**不 `await`**(链上 tx 数秒,绝不阻塞 NT 对账循环 / inflight check);`_settlement_inflight` 守卫防并发重复提交。本目录用例针对 `PolymarketSettlement`(编排)+ contract IO;宿主触发见 pm-adapter README(pm-adapter-5.health.4)。
 - 结果不作健康判据: `TxResult` 失败仅 log + 下个对账周期重试,**不影响** `VenueExecutionLiveness`。
@@ -32,14 +32,14 @@
 ### settlement-8.3: merge —— negRisk 市场走 NegRiskCtfCollateralAdapter
 - 前置: 某 condition `neg_risk=true`,两 outcome 都持仓
 - 输入: 健康检查 tick
-- 期望: 调 `merge_positions(..., neg_risk=true)` → `NegRiskCtfCollateralAdapter.mergePositions(bytes32,uint256)` 编码路径
+- 期望: 调 `merge_positions(..., neg_risk=true)` → `NegRiskCtfCollateralAdapter` target + inherited `mergePositions(address,bytes32,bytes32,uint256[],uint256)` ABI
 - 验收: 与标准二元(CTF)路径区分正确
 
 ### settlement-8.4: redeem —— redeemable 门控
 - 前置: 某 condition 持仓,Data API `redeemable=true`
 - 输入: 健康检查 tick
-- 期望: 调 `redeem_positions(...)`;negRisk 时传 `amounts=[各 outcome size]`,标准时不传
-- 验收: 仅 `redeemable=true` 才 redeem;`redeemable=false` 跳过(不报错)
+- 期望: 调 `redeem_positions(condition_id, neg_risk)`；negRisk 只切换 collateral adapter target，不传 outcome amounts，adapter 在链上读取调用者当前 YES/NO balances
+- 验收: 仅 `redeemable=true` 才 redeem;`redeemable=false` 跳过；negRisk calldata 使用 inherited `redeemPositions(address,bytes32,bytes32,uint256[])` selector，不得使用旧两参数 selector
 
 ### settlement-8.5: redeem 时机 —— 结算前不触发
 - 前置: 刚下完单、赛事**未结算**,Data API `redeemable=false`
@@ -80,8 +80,14 @@
 ### settlement-8.11: negRisk merge 走 NegRiskCtfCollateralAdapter(2026-07-10)
 - 前置: negRisk condition 两 outcome 都持仓
 - 输入: `contract.merge_positions(condition_id, amount, neg_risk=true)`
-- 期望: SafeTransaction `to=NegRiskCtfCollateralAdapter(0xadA200...)`
+- 期望: SafeTransaction `to=NegRiskCtfCollateralAdapter(0xadA200...)`,calldata 使用 inherited collateral-adapter merge selector 并包含 pUSD
 - 验收: `test_contract_offload.py::test_neg_risk_merge_uses_neg_risk_ctf_collateral_adapter`
+
+### settlement-8.12: negRisk redeem 使用 inherited collateral-adapter ABI(2026-07-16)
+- 前置: Data API 返回 negRisk condition `redeemable=true`
+- 输入: `contract.redeem_positions(condition_id, neg_risk=true)`
+- 期望: target 为 `NegRiskCtfCollateralAdapter`,calldata 使用 `redeemPositions(address,bytes32,bytes32,uint256[])`;合约自行读取调用者 YES/NO balances
+- 验收: `test_contract_offload.py::test_neg_risk_redeem_uses_inherited_collateral_adapter_abi`
 
 ## Debug 相关
 
