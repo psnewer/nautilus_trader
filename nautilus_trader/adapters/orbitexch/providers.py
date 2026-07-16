@@ -26,10 +26,6 @@ from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchDiscove
 from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchMarketEvent
 from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchRunner
 
-# #228:合成 no 腿的 handicap 哨兵(只为 InstrumentId 唯一;不进 venue payload)
-NO_LEG_HANDICAP = -0.125
-
-
 class OrbitExchInstrumentProvider(InstrumentProvider):
     """OE 自写 Provider。`discovery` 由 factory 注入。
 
@@ -87,7 +83,13 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
             yield self._betting_instrument(
                 event,
                 runner,
-                dict(info, claim="no", quote_claim="no", exec_instrument_id=str(yes.id)),
+                dict(
+                    info,
+                    claim="no",
+                    quote_claim="no",
+                    exec_instrument_id=str(yes.id),
+                    venue_selection_id=int(runner.selection_id),
+                ),
                 self._fx,
                 no_leg=True,
             )
@@ -118,11 +120,10 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
             market_name=f"{runner.role}-NO" if no_leg else runner.role,
             market_start_time=market_start_time,
             market_type="MATCH_ODDS",
-            # #228:合成 no 腿用 handicap 哨兵让 InstrumentId 唯一(symbol 含 handicap),
-            # market_id/selection_id 保持真值(data 路由与 venue 对账都要真值);
-            # 该腿不直接下单(执行经 exec_instrument_id 重定向),哨兵不会进 venue payload。
-            selection_handicap=NO_LEG_HANDICAP if no_leg else null_handicap(),
-            selection_id=int(runner.selection_id),
+            # 合成 no 只作缓存身份/行情载体。负 selection 不含小数点，避免 NT 将 Symbol
+            # 误判为 composite；真实 selection 保存在 info，执行仍重定向到 yes instrument。
+            selection_handicap=null_handicap(),
+            selection_id=-(int(runner.selection_id) + 1) if no_leg else int(runner.selection_id),
             selection_name=runner.role,
             currency="USD",
             price_precision=2,

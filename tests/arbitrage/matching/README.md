@@ -27,7 +27,7 @@
 - **PMSPORTS event anchor(#127)**:`MarketMatchingConfig.anchor_venue/tradable_venues`、`PairRegistry.anchor_instrument_ids` 分槽、`.PMSPORTS` non-tradable synthetic event instruments、PMSPORTS anchor 聚合 PM/OE 可交易腿、以及 `MatchedPair` 的 `anchor_instrument_ids` / `tradable_instrument_ids` / `venue_instrument_ids` 明确 schema 已落地离线测。后续仍需 live smoke 与 Risk 跳过 anchor 的端到端验证。详细设计见 `docs/arbitrage/architectures/_cross-cutting/sports-event-anchor.md`。
 - **近期窗口**: `2 × refresh_interval`(Q5) 已退役;cache 非空 latch 取代
 - **算法**:`EventNormalizer` + `MatchEngine` 从 `services/market_matching/` 平移;NT 路径字段命名已泛化为 anchor/tradable(`MatchResult.anchor_event/tradable_event`)。`home_confidence` / `away_confidence` = `get_similar` 命中 token 数 / 两侧较长 token 数,`total_confidence = home_confidence + away_confidence`。组内匹配计算所有 anchor×tradable 候选后按 `(total_confidence,total_matched_chars)` 降序贪心分配。
-- **概率校验门控**:matching candidate 先进入 MatchingActor 内部 `_pair_validations`;通过前不写 `PairRegistry`,不 publish `MatchedPair`。校验读各腿 best ask:每个 venue 的互斥腿 ask 和必须 `<= 1.05`,再按 outcome 取跨 venue 最小 ask 概率求和,若 `>= 0.95` 才发布;否则 failed sticky。
+- **概率校验门控**:matching candidate 先进入 MatchingActor 内部 `_pair_validations`;通过前不写 `PairRegistry`,不 publish `MatchedPair`。校验读各腿 best ask:每个 venue 的互斥腿 ask 和必须 `<= 1.05`,再按 outcome 取跨 venue 最小 ask 概率求和,若 `>= 0.95` 才发布;否则 failed sticky。PASS 后按“整组全部 register → 同步 publish → Strategy 接管后统一 unsubscribe”交接 managed feed；二元与 3-way 测试均断言 publish 发生时尚未退订且整组 registry 已完整。
 
 ## 文件分布
 

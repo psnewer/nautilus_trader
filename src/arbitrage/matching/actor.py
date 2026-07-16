@@ -441,8 +441,8 @@ class MarketMatchingActor(Actor):
                 self._log.warning(f"matching validation subscribe {iid} failed: {e!r}")
         self._try_validate_pair(candidate.pair_id)
 
-    def _finalize_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
-        # 1. 注册到 PairRegistry(下游 pull;同 tick 同步发布前完成)
+    def _register_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
+        """先完成 PairRegistry 写入，保证同批事件发布前 registry 已完整。"""
         self._pair_registry.register(
             candidate.pair_id,
             candidate.registry_instrument_ids,
@@ -452,7 +452,9 @@ class MarketMatchingActor(Actor):
             self._emitted_pairs.add(candidate.pair_id)
             if log_message:
                 self.log.info(log_message)
-        # 2. publish 事件(strategy 订阅)
+
+    def _publish_pair(self, candidate: _PairCandidate, *, order_books_managed: bool = False) -> None:
+        """同步发布 MatchedPair；MessageBus 返回时 Strategy handler 已执行。"""
         now = self.clock.timestamp_ns()
         self.publish_data(
             data_type=DataType(MatchedPair),
@@ -467,9 +469,14 @@ class MarketMatchingActor(Actor):
                 anchor_instrument_ids=candidate.anchor_instrument_ids,
                 tradable_instrument_ids=candidate.tradable_instrument_ids,
                 venue_instrument_ids=candidate.venue_instrument_ids,
+                order_books_managed=order_books_managed,
                 confidence=candidate.confidence,
             ),
         )
+
+    def _finalize_pair(self, candidate: _PairCandidate, *, log_message: str | None = None) -> None:
+        self._register_pair(candidate, log_message=log_message)
+        self._publish_pair(candidate)
 
     def on_order_book_deltas(self, deltas) -> None:
         instrument_id = str(getattr(deltas, "instrument_id", "") or "")
@@ -500,7 +507,6 @@ class MarketMatchingActor(Actor):
         state.best_sum = result["best_sum"]
         if result["passed"]:
             state.status = "PASSED"
-            self._unsubscribe_validation_books(pair_id, state)
             self._finalize_validation_group_if_passed(state.candidate)
             return
         state.status = "FAILED"
@@ -518,8 +524,14 @@ class MarketMatchingActor(Actor):
         states = [self._pair_validations.get(pair_id) for pair_id in pair_ids]
         if any(state is None or state.status != "PASSED" for state in states):
             return
+        # 三阶段同步交接：整组先注册，再 publish 让 Strategy 以 managed=False 接管，最后释放
+        # Matching 的 managed 订阅。publish_data 同步调用 handler，循环结束时接管已完成。
         for state in states:
-            self._finalize_pair(state.candidate, log_message=state.log_message)
+            self._register_pair(state.candidate, log_message=state.log_message)
+        for state in states:
+            self._publish_pair(state.candidate, order_books_managed=True)
+        for state in states:
+            self._unsubscribe_validation_books(state.candidate.pair_id, state)
 
     def _event_has_failed_pair(self, event_key: str) -> bool:
         if not event_key:

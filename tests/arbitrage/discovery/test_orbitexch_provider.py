@@ -21,7 +21,6 @@ from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchMarketE
 from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchRunner
 
 from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
-from nautilus_trader.adapters.orbitexch.providers import NO_LEG_HANDICAP
 
 
 @pytest.fixture
@@ -64,11 +63,12 @@ def test_build_legs_three_way(provider):
         ("away", "yes"), ("away", "no"),
     ]
     yes_home, no_home = legs[0], legs[1]
-    # no 腿:market/selection 真值不变,InstrumentId 经 handicap 哨兵唯一,执行重定向回 yes
+    # no 腿:缓存 identity 使用负 selection,真实 selection 单独保留,执行重定向回 yes
     assert no_home.market_id == yes_home.market_id
-    assert no_home.selection_id == yes_home.selection_id
-    assert no_home.selection_handicap == pytest.approx(NO_LEG_HANDICAP)
+    assert no_home.selection_id == -(yes_home.selection_id + 1)
+    assert no_home.info["venue_selection_id"] == yes_home.selection_id
     assert no_home.id != yes_home.id
+    assert no_home.id.symbol.is_composite() is False
     assert no_home.info["quote_claim"] == "no"
     assert no_home.info["exec_instrument_id"] == str(yes_home.id)
 

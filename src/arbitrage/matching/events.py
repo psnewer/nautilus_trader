@@ -32,6 +32,7 @@ class MatchedPair(Data):
     - `anchor_instrument_ids` 非交易 anchor 腿(PMSPORTS 等),不参与套利
     - `tradable_instrument_ids` 所有可交易腿,供 strategy/risk 使用
     - `venue_instrument_ids` 按 venue 分组的可交易腿
+    - `order_books_managed` Matching 是否已建立 managed order books，供 Strategy 无缝接管
     - `confidence`        total_confidence = home_confidence + away_confidence
     """
 
@@ -44,6 +45,7 @@ class MatchedPair(Data):
     anchor_instrument_ids: list[str] = field(default_factory=list)
     tradable_instrument_ids: list[str] = field(default_factory=list)
     venue_instrument_ids: dict[str, list[str]] = field(default_factory=dict)
+    order_books_managed: bool = False
 
     _schema = pa.schema(
         {
@@ -55,6 +57,7 @@ class MatchedPair(Data):
             "anchor_instrument_ids": pa.list_(pa.string()),
             "tradable_instrument_ids": pa.list_(pa.string()),
             "venue_instrument_ids": pa.map_(pa.string(), pa.list_(pa.string())),
+            "order_books_managed": pa.bool_(),
             "confidence": pa.float64(),
             "ts_event": pa.int64(),
             "ts_init": pa.int64(),
@@ -83,6 +86,7 @@ class MatchedPair(Data):
                 str(venue).upper(): list(ids)
                 for venue, ids in (self.venue_instrument_ids or {}).items()
             },
+            "order_books_managed": self.order_books_managed,
             "confidence": self.confidence,
             "ts_event": self.ts_event,
             "ts_init": self.ts_init,
@@ -108,6 +112,7 @@ class MatchedPair(Data):
             anchor_instrument_ids=anchor_ids,
             tradable_instrument_ids=tradable_ids,
             venue_instrument_ids=venue_ids,
+            order_books_managed=bool(values.get("order_books_managed", False)),
         )
 
 

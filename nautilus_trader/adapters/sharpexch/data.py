@@ -312,7 +312,11 @@ def se_routing_entry_from_instrument(inst) -> tuple[str, str] | None:
     """
 
     market_id = str(getattr(inst, "market_id", "") or "")
-    selection_id = str(getattr(inst, "selection_id", "") or "")
+    info = getattr(inst, "info", None) or {}
+    venue_selection_id = info.get("venue_selection_id")
+    selection_id = str(
+        venue_selection_id if venue_selection_id is not None else getattr(inst, "selection_id", "") or "",
+    )
     if not market_id or not selection_id:
         return None
     return market_id, selection_id

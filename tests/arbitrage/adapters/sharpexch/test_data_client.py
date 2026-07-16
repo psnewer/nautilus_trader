@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.data import SharpExchDataClient
+from nautilus_trader.adapters.sharpexch.data import se_update_market_routing
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
@@ -191,6 +192,20 @@ def test_subscribe_registers_state_and_opens_page_via_injected_method():
     assert client._market_to_page_key[inst.market_id] == "2_12597512"
     assert client._comp_page_refs == {"2_12597512": ("2", "12597512")}
     assert open_calls == [{"page_key": "2_12597512", "sport_id": "2", "competition_id": "12597512"}]
+
+
+def test_synthetic_no_routing_uses_real_venue_selection_id():
+    """合成 no 的负 selection 只用于缓存身份，WS 路由必须使用真实 selection。"""
+    instrument_id = _instrument("home").id
+    inst = SimpleNamespace(
+        market_id="1.259502399",
+        selection_id=-112,
+        info={"venue_selection_id": 111, "quote_claim": "no"},
+    )
+    routing = {}
+
+    assert se_update_market_routing(routing, instrument_id, inst) is True
+    assert routing == {"1.259502399": {"111": [(instrument_id, "no")]}}
 
 
 def test_concurrent_subscribe_same_competition_dedups_page():

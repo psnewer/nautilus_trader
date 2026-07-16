@@ -54,8 +54,9 @@ flowchart LR
 ### 3.2 `OrbitExchInstrumentProvider`(`nautilus_trader/adapters/orbitexch/providers.py`)
 
 > **#228(已落地 2026-07-15)**:3-way 赛事每个 selection 产 yes + 合成 no **两条** instrument
-> (no 为同 selection 的 lay 投影,保持真实 market/selection,用非合法 handicap `-0.125` 生成唯一
-> id,`claim="no"`,`quote_claim="no"`);2-way 仍只产两个真实 runner,但统一标
+> (no 为同 selection 的 lay 投影；缓存 identity 用负 selection + null handicap 保证非 composite，
+> 真实 selection 存 `info.venue_selection_id`，并带 `claim="no"`/`quote_claim="no"`);
+> 2-way 仍只产两个真实 runner,但统一标
 > home=`claim=yes`、away=`claim=no`,二者都没有执行重定向。
 > 暴露 NO token。腿模型/book 写入的真理源在 data 架构 §3.1b 与 §3.2 的 #228 注记,此处不复述。
 

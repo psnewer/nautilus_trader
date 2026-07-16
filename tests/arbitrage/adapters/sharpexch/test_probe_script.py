@@ -7,6 +7,7 @@ from scripts.se_probe import _ProbeSamples
 from scripts.se_probe import _competition_counts
 from scripts.se_probe import _competition_url
 from scripts.se_probe import _sanitize
+from nautilus_trader.adapters.sharpexch import web as se_web
 from nautilus_trader.adapters.sharpexch.web import se_customer_context
 from nautilus_trader.adapters.sharpexch.web import se_dismiss_post_login_popup
 from nautilus_trader.adapters.sharpexch.web import se_fetch_json
@@ -14,6 +15,24 @@ from nautilus_trader.adapters.sharpexch.web import se_fetch_json_with_browser_co
 from nautilus_trader.adapters.sharpexch.web import se_is_customer_url
 from nautilus_trader.adapters.sharpexch.web import se_login
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
+
+
+def test_wait_after_login_uses_configured_timeout_for_frame_and_url(monkeypatch):
+    calls = []
+
+    async def wait_for_frame(page, *, timeout_ms):
+        calls.append(("frame", timeout_ms))
+        raise TimeoutError("no iframe")
+
+    class Page:
+        async def wait_for_url(self, pattern, *, timeout):
+            calls.append((pattern, timeout))
+
+    monkeypatch.setattr(se_web, "se_wait_for_customer_frame", wait_for_frame)
+
+    asyncio.run(se_web._wait_after_login(Page(), timeout_ms=120000))
+
+    assert calls == [("frame", 120000), ("**/customer**", 120000)]
 
 
 def test_probe_sanitize_redacts_sensitive_nested_keys():

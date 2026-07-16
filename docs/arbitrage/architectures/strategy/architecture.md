@@ -198,7 +198,8 @@ class StrategyEvaluator(Actor):
         # MatchedPair 是 Actor-to-Actor 事件(MarketMatchingActor publish),走 msgbus broker。
         self._msgbus.subscribe(topic=f"data.{MatchedPair.__name__}", handler=self.on_data)
         # OrderBookDeltas 是 venue/instrument-tied,**slice 10d MVP 不预订**(MatchedPair 触发足以验全链路);
-        # 需要 OBD-driven 重评时改 per-iid `subscribe_order_book_deltas(iid)` MatchedPair fire 后调
+        # MatchedPair fire 后按 per-iid 订阅；概率校验通路按 matching 的 managed handoff 契约
+        # 使用 managed=False，关闭校验时使用 managed=True 首次建立 book。
         # 只订 tradable_instrument_ids;PMSPORTS 等 non-tradable anchor 不订,旧 PM/OE 字段不作为 fallback。
         # 外部事件(比分 / 比赛开始):自建 topic 或 custom Data type,具体接入点 Step 4 落地时定
 

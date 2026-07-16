@@ -211,10 +211,16 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 
 `StrategyEvaluator` 收 `MatchedPair` → `_ensure_obd_subscribed`:按 `tradable_instrument_ids`
 订各可交易腿,首次见到时
-`subscribe_order_book_deltas(InstrumentId)`(去重 `_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
+`subscribe_order_book_deltas(InstrumentId, managed=not event.order_books_managed)`(去重
+`_obd_subscribed`)→ PM CLOB / OE WS 把真实赔率
 流进 cache → `build_snapshot` 读到非空 `order_book` → mean_rebate 能算机会。订阅的 OBD 由 NT 投到
 `on_order_book_deltas` → `_route_eval`(经 `instrument_id→PairRegistry→pair_id` 评估,OBD-driven 重评)。
-- ✅ `test_evaluator.py` +1 `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿订 OBD,同 pair 再来去重;测试显式提供 `tradable_instrument_ids`,Strategy 不从旧 PM/OE 字段 fallback。
+- 概率校验已建立 managed books 时，Strategy 只注册自己的 handler，不重建 DataEngine OrderBook；
+  Matching 在同步 publish 全组后才统一退订，完整交接契约见 matching architecture §4.2.1。
+- ✅ `test_evaluator.py` `test_matched_pair_subscribes_obd_deduped`:MatchedPair → 两边各腿以
+  `managed=False` 订 OBD，同 pair 再来去重。
+- ✅ `test_evaluator.py` `test_matched_pair_without_managed_books_creates_strategy_books`:关闭概率校验时
+  事件不携带 managed feed，Strategy 使用 `managed=True` 建 book。
 - ✅ `test_evaluator.py` +1 `test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids`:PMSPORTS anchor id 不触发 OBD 订阅。
 - ✅ 旧 PM/OE projection 字段已从 `MatchedPair` schema 删除;Strategy 当前只消费 `tradable_instrument_ids`,不再有 projection fallback 分支需要覆盖。
 

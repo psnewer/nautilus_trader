@@ -311,5 +311,5 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ## #228:3-way 每 selection 产 yes/no 两腿(2026-07-15)
 
-- `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no)),合成 no 腿保持 market/selection 真值,使用 handicap `-0.125` 哨兵并携带 `claim=no/quote_claim=no/exec_instrument_id`。
+- `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no));合成 no 使用负 selection + null handicap 的非 composite identity，真实 selection 存 `venue_selection_id`，并携带 `claim=no/quote_claim=no/exec_instrument_id`。
 - `test_build_legs_two_way_drops_missing_draw`:2-way 只产真实 home/away 两腿，但 claim 统一为 yes/no，且无执行重定向。

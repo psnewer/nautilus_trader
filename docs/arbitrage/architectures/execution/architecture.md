@@ -64,6 +64,9 @@ flowchart LR
 ```
 > 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣;RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
+SE 登录提交表单后等待 customer iframe/URL 的单次上限统一取
+`venues.sharpexch.page_load_timeout_sec`；不是固定 10 秒等待。任一 customer 信号到达即继续，等待失败才判登录失败。
+
 ---
 
 ## 3. 接口设计

@@ -94,7 +94,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     if se_is_customer_url(current_url) or se_customer_frame(page) is not None:
         if await _login_form_visible(page, timeout_ms=1000):
             await _submit_login_form(page, config)
-            await _wait_after_login(page)
+            await _wait_after_login(page, timeout_ms=config.page_timeout)
             return
         await _settle_customer_app(page)
         return
@@ -102,7 +102,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     await page.goto(config.login_url, wait_until="domcontentloaded", timeout=config.page_timeout)
     if await _login_form_visible(page, timeout_ms=5000):
         await _submit_login_form(page, config)
-        await _wait_after_login(page)
+        await _wait_after_login(page, timeout_ms=config.page_timeout)
         return
 
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
@@ -114,7 +114,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
         await se_wait_for_customer_frame(page, timeout_ms=5000)
         if await _login_form_visible(page, timeout_ms=1000):
             await _submit_login_form(page, config)
-            await _wait_after_login(page)
+            await _wait_after_login(page, timeout_ms=config.page_timeout)
             return
         await _settle_customer_app(page)
         return
@@ -126,7 +126,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     if se_is_customer_url(current_url_after) or se_customer_frame(page) is not None:
         if await _login_form_visible(page, timeout_ms=1000):
             await _submit_login_form(page, config)
-            await _wait_after_login(page)
+            await _wait_after_login(page, timeout_ms=config.page_timeout)
             return
         await _settle_customer_app(page)
         return
@@ -138,7 +138,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
         if await _login_form_visible(page, timeout_ms=1000):
             await _submit_login_form(page, config)
-            await _wait_after_login(page)
+            await _wait_after_login(page, timeout_ms=config.page_timeout)
             return
         await _settle_customer_app(page)
         return
@@ -146,7 +146,7 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
     # If login form is visible, submit it; otherwise page might be stuck on challenge
     if await _login_form_visible(page, timeout_ms=3000):
         await _submit_login_form(page, config)
-        await _wait_after_login(page)
+        await _wait_after_login(page, timeout_ms=config.page_timeout)
         return
 
     # Page is neither login form nor customer app - might be Cloudflare challenge or error
@@ -200,11 +200,11 @@ async def _submit_login_form(page, config) -> None:
     )
 
 
-async def _wait_after_login(page) -> None:
+async def _wait_after_login(page, *, timeout_ms: int) -> None:
     try:
-        await se_wait_for_customer_frame(page, timeout_ms=10000)
+        await se_wait_for_customer_frame(page, timeout_ms=timeout_ms)
     except Exception:
-        await page.wait_for_url("**/customer**", timeout=10000)
+        await page.wait_for_url("**/customer**", timeout=timeout_ms)
     await _settle_customer_app(page)
 
 

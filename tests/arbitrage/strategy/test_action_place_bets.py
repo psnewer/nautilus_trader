@@ -211,7 +211,7 @@ def test_decimal_no_claim_redirects_to_exec_instrument():
     ctx = EvalContext(pair_id="p", submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {
-            "instrument_id": "1-123-42--0.125.ORBITEXCH",       # 合成 no instrument(行情/身份载体)
+            "instrument_id": "1-123--43-None.ORBITEXCH",       # 合成 no instrument(行情/身份载体)
             "exec_instrument_id": "1-123-42-None.ORBITEXCH",  # 同 selection 的 yes instrument
             "venue": "ORBITEXCH",
             "side": "BUY",

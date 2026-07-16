@@ -302,7 +302,7 @@ def test_pmsports_anchor_aggregates_enabled_tradable_venues_into_one_pair():
 
 
 def test_probability_validation_passes_then_registers_and_publishes():
-    """matching-prob.1:概率校验通过后才 register + publish,并取消 Matching 临时订阅。"""
+    """matching-prob.1:先 register/publish，再取消 Matching 临时订阅。"""
     actor, clock, cache, registry, _ = _harness(
         anchor_venue="PMSPORTS",
         tradable_venues=("POLYMARKET", "ORBITEXCH"),
@@ -322,7 +322,15 @@ def test_probability_validation_passes_then_registers_and_publishes():
         str(oe_away.id): 2.00,
     })
     published = []
-    actor.publish_data = lambda **k: published.append(k)
+
+    def publish_after_register_before_unsubscribe(**kwargs):
+        pair = kwargs["data"]
+        assert pair.order_books_managed is True
+        assert registry.instrument_ids_for_pair(pair.pair_id) == set(pair.tradable_instrument_ids)
+        assert unsubscribed == []
+        published.append(kwargs)
+
+    actor.publish_data = publish_after_register_before_unsubscribe
 
     actor._maybe_match()
 
@@ -656,7 +664,7 @@ def test_three_way_pmsports_anchor_splits_and_duplicates_anchor():
 
 
 def test_three_way_validation_publishes_only_after_all_roles_pass():
-    """matching-228.3:全部 role PASS 后才统一发布。"""
+    """matching-228.3:全部 role PASS 后整组注册、发布，再统一退订。"""
     actor, clock, cache, registry, _ = _harness(
         anchor_venue="PMSPORTS",
         tradable_venues=("POLYMARKET", "ORBITEXCH"),
@@ -671,28 +679,32 @@ def test_three_way_validation_publishes_only_after_all_roles_pass():
         books[str(legs[f"pm_{role}_no"].id)] = 0.52
         books[str(legs[f"oe_{role}_yes"].id)] = 2.00
         books[str(legs[f"oe_{role}_no"].id)] = 2.10
-    _wire_validation_books(actor, cache, books)
+    subscribed, unsubscribed = _wire_validation_books(actor, cache, books)
     published = []
-    actor.publish_data = lambda **k: published.append(k["data"])
-    original_finalize = actor._finalize_pair
-
-    def assert_group_passed_before_finalize(candidate, *, log_message=None):
-        assert all(
-            actor._pair_validations[pair_id].status == "PASSED"
-            for pair_id in candidate.validation_group_pair_ids
-        )
-        original_finalize(candidate, log_message=log_message)
-
-    actor._finalize_pair = assert_group_passed_before_finalize
-
-    actor._maybe_match()
-
-    assert {pair.pair_id for pair in published} == {
+    expected_pair_ids = {
         "EPL|Arsenal|Chelsea|home",
         "EPL|Arsenal|Chelsea|draw",
         "EPL|Arsenal|Chelsea|away",
     }
+
+    def publish_after_group_registered_before_unsubscribe(**kwargs):
+        candidate = kwargs["data"]
+        assert candidate.order_books_managed is True
+        assert all(
+            actor._pair_validations[pair_id].status == "PASSED"
+            for pair_id in expected_pair_ids
+        )
+        assert set(registry.all_pair_ids()) == expected_pair_ids
+        assert unsubscribed == []
+        published.append(candidate)
+
+    actor.publish_data = publish_after_group_registered_before_unsubscribe
+
+    actor._maybe_match()
+
+    assert {pair.pair_id for pair in published} == expected_pair_ids
     assert all(registry.instrument_ids_for_pair(pair.pair_id) for pair in published)
+    assert set(unsubscribed) == set(subscribed)
 
 
 def test_three_way_tradable_anchor_skips_event_when_role_has_only_one_venue():

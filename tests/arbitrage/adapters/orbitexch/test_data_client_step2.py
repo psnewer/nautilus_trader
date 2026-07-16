@@ -183,6 +183,20 @@ def test_register_routing_reads_market_and_selection_from_instrument():
     assert c._market_to_instruments["1-123"]["42"] == [(inst.id, "yes")]
 
 
+def test_register_synthetic_no_routing_uses_real_venue_selection_id():
+    """合成 no 的负 selection 只用于缓存身份，WS 路由必须使用真实 selection。"""
+    from tests.arbitrage.risk._factories import oe_instrument
+    c = _client()
+    inst = oe_instrument("EPL", "home", selection_id=-43)
+    inst.info["venue_selection_id"] = 42
+    inst.info["quote_claim"] = "no"
+    c._cache.add_instrument(inst)
+
+    c._register_instrument_routing(inst.id)
+
+    assert c._market_to_instruments["1-123"]["42"] == [(inst.id, "no")]
+
+
 def test_register_routing_skips_unknown_instrument():
     """data-2.client.3: cache 没该 instrument → 不崩,routing 不变。"""
     c = _client()

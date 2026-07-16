@@ -9,7 +9,6 @@ import pytest
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketEvent
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
 from nautilus_trader.adapters.sharpexch.providers import SharpExchInstrumentProvider
-from nautilus_trader.adapters.sharpexch.providers import NO_LEG_HANDICAP
 
 
 def _event() -> SharpExchMarketEvent:
@@ -77,9 +76,10 @@ def test_build_legs_three_way_exposes_yes_and_no_legs():
     ]
     yes_home, no_home = legs[0], legs[1]
     assert no_home.market_id == yes_home.market_id
-    assert no_home.selection_id == yes_home.selection_id
-    assert no_home.selection_handicap == pytest.approx(NO_LEG_HANDICAP)
+    assert no_home.selection_id == -(yes_home.selection_id + 1)
+    assert no_home.info["venue_selection_id"] == yes_home.selection_id
     assert no_home.id != yes_home.id
+    assert no_home.id.symbol.is_composite() is False
     assert no_home.info["quote_claim"] == "no"
     assert no_home.info["exec_instrument_id"] == str(yes_home.id)
 

@@ -101,6 +101,7 @@ class MatchedPair(Data):
     anchor_instrument_ids: list[str]       # non-tradable anchor,如 .PMSPORTS
     tradable_instrument_ids: list[str]     # strategy/risk/portfolio 消费的可交易腿
     venue_instrument_ids: dict[str, list[str]]  # venue -> 可交易腿
+    order_books_managed: bool              # Matching 是否已建立 managed books，供 Strategy 接管
 ```
 
 > **#228 pair=market 不变量**:`pair_id` 是 **market 级**语义(strategy/risk/execution 的套利单位),
@@ -214,8 +215,8 @@ Risk 门控。
 
 状态按 `pair_id` 保存在 `_pair_validations`:
 - `PENDING`:已生成 candidate,MatchingActor 对 candidate 的可交易腿临时订阅 OBD,等待可用于校验的 best ask。
-- `PASSED`:该 pair 自身已通过，并立即取消该 pair 的 Matching 临时 OBD 订阅。2-way 可立即交接；
-  3-way 仍须等待同一 validation group 的 home/draw/away 全部 `PASSED`。
+- `PASSED`:该 pair 自身已通过，但保留 Matching 临时 managed OBD 订阅；2-way 立即进入交接，
+  3-way 等待同一 validation group 的 home/draw/away 全部 `PASSED` 后整组交接。
 - `FAILED`:已失败,不 register、不 publish,并取消 Matching 自己的临时 OBD 订阅。进程内 sticky;同 `pair_id` 后续 candidate 直接跳过。
 
 同一个 `pair_id` 已存在于 `_pair_validations` 时,新的 matching candidate 直接跳过,不更新
@@ -245,8 +246,13 @@ failed/pending 记录阻塞未来生命周期。
 >
 > **3-way 原子可见性(#231)**:同一拆分批次的三个 candidate 保存相同
 > `validation_group_pair_ids=(home,draw,away)`。单个 role PASS 不得 register/publish;只有三者状态全部
-> `PASSED` 后才统一逐 pair register+publish。每个 role pair 在自身转为 `PASSED` 时已经单独释放
-> 自己的 Matching 临时 OBD 订阅，不等待同 event 其余 role，也不等待统一 publish。
+> `PASSED` 后才统一交接。交接在一个同步调用栈内分三阶段完成:① 全部 pair 先写
+> `PairRegistry`;② 全部 pair 逐个 publish `MatchedPair(order_books_managed=True)`,NT MessageBus
+> 同步执行 Strategy handler；③ publish 全部返回后才统一释放 Matching 临时订阅。Strategy 以
+> `managed=False` 加入已有 feed，因此 DataEngine 不重建空 OrderBook；Matching 退订时仍有 Strategy
+> subscriber，DataClient feed、routing、内部 book updater 与 cache 首帧连续保留。2-way 的 group
+> 只有自身，也严格按相同三阶段顺序交接。关闭概率校验时没有 Matching managed feed，事件携带
+> `order_books_managed=False`，由 Strategy 以 `managed=True` 首次建 book。
 > PM anchor 与 PMSPORTS anchor 两条聚合路径
 > 都要求每个 role 至少包含两个 tradable venue；任一 role 不满足时整批不进入门控。
 > 因此后续 sibling FAIL 前不存在 Strategy 已收到早到 role 的真钱窗口。
@@ -318,6 +324,7 @@ sequenceDiagram
   participant CA as Cache
   participant PR as PairRegistry
   participant MB as MessageBus
+  participant ST as StrategyEvaluator
 
   CLK->>MA: _MATCH_ALERT
   MA->>CA: 读 instruments(anchor,排除 ended game)
@@ -331,10 +338,13 @@ sequenceDiagram
             MA->>MA: 临时订阅 candidate 可交易腿 OBD
             MA->>CA: 读 best ask 做概率校验
             alt 校验通过
-              MA->>MA: 标记 PASSED,取消该 pair 临时 OBD 订阅
+              MA->>MA: 标记 PASSED,保留该 pair 临时 OBD 订阅
               opt validation group 全部 PASSED
-                MA->>PR: 逐 pair register(...)
-                MA->>MB: 逐 pair publish MatchedPair
+                MA->>PR: 先注册全部 pair
+                MA->>MB: 逐 pair 同步 publish MatchedPair(managed=true)
+                MB->>ST: 同步调用 handler
+                ST->>MB: 以 managed=false 加入现有 feed
+                MA->>MA: 最后统一取消 Matching 临时 OBD 订阅
               end
             else 校验失败
               MA->>MA: 标记 FAILED,取消临时 OBD 订阅

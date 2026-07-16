@@ -234,7 +234,12 @@ class StrategyEvaluator(Actor):
                 continue
             self._obd_subscribed.add(iid_str)
             try:
-                self.subscribe_order_book_deltas(InstrumentId.from_str(iid_str))
+                # 概率校验通路已由 Matching 建好 managed book；这里只加入现有 feed，避免
+                # DataEngine 再建空 OrderBook 覆盖 cache 首帧。关闭校验时仍由 Strategy 建 book。
+                self.subscribe_order_book_deltas(
+                    InstrumentId.from_str(iid_str),
+                    managed=not mp.order_books_managed,
+                )
             except Exception as e:  # noqa: BLE001 — 单腿订阅失败不挡其它
                 self._log.warning(f"OBD subscribe {iid_str} failed: {e!r}")
 

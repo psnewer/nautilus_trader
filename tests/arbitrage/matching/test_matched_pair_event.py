@@ -22,6 +22,7 @@ def test_matched_pair_fields_intact():
         anchor_instrument_ids=["anchor.PMSPORTS"],
         tradable_instrument_ids=["A_h.PM", "A_a.PM", "X_h.OE", "X_a.OE"],
         venue_instrument_ids={"PM": ["A_h.PM", "A_a.PM"], "OE": ["X_h.OE", "X_a.OE"]},
+        order_books_managed=True,
     )
     assert e.pair_id == "EPL|A|B"
     assert e.competition == "EPL"             # league,非 pair_id(#34 强调)
@@ -29,6 +30,7 @@ def test_matched_pair_fields_intact():
     assert e.tradable_instrument_ids == ["A_h.PM", "A_a.PM", "X_h.OE", "X_a.OE"]
     assert e.venue_instrument_ids["PM"] == ["A_h.PM", "A_a.PM"]
     assert e.confidence == 0.85
+    assert e.order_books_managed is True
     assert e.ts_event == 10 and e.ts_init == 20
 
 
@@ -70,6 +72,7 @@ def test_matched_pair_dict_roundtrip():
         anchor_instrument_ids=["anchor.PMSPORTS"],
         tradable_instrument_ids=["a", "b"],
         venue_instrument_ids={"POLYMARKET": ["a"], "ORBITEXCH": ["b"]},
+        order_books_managed=True,
     )
     out = src.to_dict()
     rebuilt = MatchedPair.from_dict(out)
@@ -77,6 +80,7 @@ def test_matched_pair_dict_roundtrip():
     assert rebuilt.anchor_instrument_ids == src.anchor_instrument_ids
     assert rebuilt.tradable_instrument_ids == src.tradable_instrument_ids
     assert rebuilt.venue_instrument_ids == src.venue_instrument_ids
+    assert rebuilt.order_books_managed is True
 
 
 def test_matched_pair_from_legacy_dict_ignores_old_projection_fields():

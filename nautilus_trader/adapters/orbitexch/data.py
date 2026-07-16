@@ -358,11 +358,14 @@ class OrbitExchDataClient(LiveMarketDataClient):
             self._log.warning(f"OE subscribe: instrument {instrument_id} not in cache; skip")
             return
         market_id = getattr(inst, "market_id", None)
-        selection_id = getattr(inst, "selection_id", None)
+        info = getattr(inst, "info", None) or {}
+        selection_id = info.get("venue_selection_id")
+        if selection_id is None:
+            selection_id = getattr(inst, "selection_id", None)
         if market_id is None or selection_id is None:
             self._log.warning(f"OE subscribe: {instrument_id} missing market_id/selection_id; skip")
             return
-        claim = str((getattr(inst, "info", None) or {}).get("quote_claim") or "yes").lower()
+        claim = str(info.get("quote_claim") or "yes").lower()
         entries = self._market_to_instruments.setdefault(str(market_id), {}).setdefault(str(selection_id), [])
         if not any(iid == instrument_id for iid, _ in entries):
             entries.append((instrument_id, claim))

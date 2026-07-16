@@ -159,6 +159,7 @@ def _mp(
     tradable_instrument_ids: list[str] | None = None,
     venue_instrument_ids: dict[str, list[str]] | None = None,
     anchor_instrument_ids: list[str] | None = None,
+    order_books_managed: bool = False,
 ) -> MatchedPair:
     """构造当前主 schema 的 MatchedPair;测试不再构造旧 PM/OE 投影字段。"""
     if tradable_instrument_ids is None and venue_instrument_ids is not None:
@@ -173,6 +174,7 @@ def _mp(
         anchor_instrument_ids=list(anchor_instrument_ids or []),
         tradable_instrument_ids=list(tradable_instrument_ids or []),
         venue_instrument_ids=dict(venue_instrument_ids or {}),
+        order_books_managed=order_books_managed,
     )
 
 
@@ -423,16 +425,33 @@ def test_matched_pair_subscribes_obd_deduped():
     """slice 10e:MatchedPair fire → 两边各腿订 OrderBookDeltas;同 pair 再来不重复订。"""
     actor, *_ = _harness()
     calls = []
-    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append(str(iid))
+    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append((str(iid), k))
     mp = _mp(
         tradable_instrument_ids=["A.PM", "B.PM", "X.OE"],
         venue_instrument_ids={"PM": ["A.PM", "B.PM"], "OE": ["X.OE"]},
+        order_books_managed=True,
     )
     assert mp.tradable_instrument_ids == ["A.PM", "B.PM", "X.OE"]
     actor.on_data(mp)
-    assert set(calls) == {"A.PM", "B.PM", "X.OE"}
+    assert {iid for iid, _ in calls} == {"A.PM", "B.PM", "X.OE"}
+    assert all(kwargs == {"managed": False} for _, kwargs in calls)
     actor.on_data(mp)                                  # 再来同 pair → 去重,不再订
     assert len(calls) == 3
+
+
+def test_matched_pair_without_managed_books_creates_strategy_books():
+    """关闭 matching 概率校验时，Strategy 仍以 managed=True 建立 order books。"""
+    actor, *_ = _harness()
+    calls = []
+    actor.subscribe_order_book_deltas = lambda iid, *a, **k: calls.append((str(iid), k))
+
+    actor.on_data(_mp(
+        tradable_instrument_ids=["A.PM"],
+        venue_instrument_ids={"PM": ["A.PM"]},
+        order_books_managed=False,
+    ))
+
+    assert calls == [("A.PM", {"managed": True})]
 
 
 def test_matched_pair_obd_subscription_uses_tradable_ids_not_anchor_ids():

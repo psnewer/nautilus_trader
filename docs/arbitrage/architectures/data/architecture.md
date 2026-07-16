@@ -148,18 +148,18 @@ OE/SE 的 3-way(1X2)在 venue 上是一个 market 三个 selection,每个 select
 **3-way 的每个 selection 产两条 instrument**(2-way 一律不变):
 
 - **yes instrument**:现状那条,id 不变,info 增 `claim="yes"`(3-way 腿全部显式带 claim,strategy §3.7 约定)。
-- **合成 no instrument**(已落地形态,2026-07-15):`BettingInstrument` 的 symbol 由
-  `(market_id, selection_id, handicap)` 决定,而 executor 下单直接读 `inst.market_id/selection_id`
-  且 handicap 会进 venue payload——因此 **market/selection 保持真值,id 唯一性用 handicap 哨兵
-  `NO_LEG_HANDICAP=-0.125`** 实现(id 如 `1-259837227-10372253--0.125.ORBITEXCH`);`-0.125`
-  按 OE/SE 业务约束不是合法 handicap,且可被 C float 精确表示,避免与真实 `-1.0` handicap
-  instrument 冲突以及 `-0.1` 展开成长小数导致 NT Symbol 超过 32 字符。`market_name`
+- **合成 no instrument**(当前形态,#237):`BettingInstrument` 的 symbol 由
+  `(market_id, selection_id, handicap)` 决定。fractional handicap 会让 Symbol 含 `.`，而 NT 会把
+  这类 Symbol 当成 composite，DataEngine 不会为其创建普通 OrderBook。因此合成 no 的缓存 identity
+  使用 **`selection_id=-(venue_selection_id+1)` + null handicap**，真实 selection 写入
+  `info["venue_selection_id"]` 供 DataClient 路由；id 示例
+  `1-259837227--10372254-None.ORBITEXCH`，且 `symbol.is_composite()==False`。`market_name`
   带 `-NO` 后缀供人读。info = 同 4-key + 同 `selection_role` + `claim="no"` +
-  `quote_claim="no"` + **`exec_instrument_id`(= 同 selection 的 yes instrument id)**。
+  `quote_claim="no"` + `venue_selection_id` + **`exec_instrument_id`(= 同真实 selection 的 yes instrument id)**。
   它是同一 selection 的 **lay 投影,只作行情/身份载体**:无独立 venue 产品、无独立订阅、
   **不直接下单**——执行时 place_bets 经 `exec_instrument_id` 把 SELL@lay 重定向到 yes
   instrument。执行重定向保证 venue 对账(CURRENT_BETS 的 LAY=SHORT 落在真 selection)与 NT 订单/持仓
-  在同一 instrument 上闭合;哨兵 handicap 因此永不进 venue payload。
+  在同一 instrument 上闭合；合成 selection 只存在于不可执行的行情 identity，不进入 venue payload。
 
 **book 写入(cache 只存 venue 原始价不变量)**:`oe_runner_to_book_deltas` 收到同一 runner frame
 时产**两份** `OrderBookDeltas`(同帧原子,每帧全量 CLEAR+ADD 故无镜像同步问题):

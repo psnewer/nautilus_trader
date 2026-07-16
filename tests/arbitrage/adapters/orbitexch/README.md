@@ -484,4 +484,4 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 
 - 3-way 合成 no 腿 info 带 `claim=no/quote_claim=no/exec_instrument_id`;2-way 真实 home/away runner 分别带 `claim=yes/no`，但没有 `quote_claim=no` 或执行重定向。
 - `test_data_client_step2.py::test_runner_to_book_deltas_no_claim_swaps_sides_with_raw_prices`:claim=no 的 deltas 两侧换位,ask=LAY 原值 / bid=BACK 原值(下单价零换算不变量)。
-- 路由多值:`_market_to_instruments[market][selection]` = `[(iid, claim)]`,同帧对 yes/no 各发一份 deltas。
+- 路由多值:`_market_to_instruments[market][selection]` = `[(iid, claim)]`,同帧对 yes/no 各发一份 deltas；合成 no 的缓存 selection 为负值，路由读取 `info.venue_selection_id` 命中真实 runner。
