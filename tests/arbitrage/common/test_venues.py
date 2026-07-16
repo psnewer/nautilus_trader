@@ -1,11 +1,11 @@
 import msgspec
 import pytest
 
-from src.arbitrage.common.venues import POLYMARKET
+from src.arbitrage.common.venues import DATA_SOURCE_REGISTRY
 from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import SPORTS_CLIENT
-from src.arbitrage.common.venues import DATA_SOURCE_REGISTRY
 from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import enabled_data_source_client_ids
 from src.arbitrage.common.venues import enabled_settlement_venues
@@ -16,6 +16,8 @@ from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import is_venue_enabled
+from src.arbitrage.common.venues import leg_economics
+from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -130,6 +132,61 @@ def test_polymarket_helpers_use_probability_share_semantics():
     assert probability_from_price(POLYMARKET, 0.25) == 0.25
     assert probability_from_price(POLYMARKET, 0.25, claim="no") == 0.25  # probability venue 不受 claim 影响
     assert qty_from_share(POLYMARKET, 100.0, 0.25) == 100.0
+
+
+def test_position_outcome_maps_pm_no_long_to_no():
+    assert outcome_for_position(
+        POLYMARKET,
+        ["yes", "no"],
+        selection_role="home",
+        claim="no",
+        position_side="LONG",
+    ) == "no"
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+def test_position_outcome_maps_decimal_short_to_binary_complement(venue):
+    assert outcome_for_position(
+        venue,
+        ["yes", "no"],
+        selection_role="home",
+        claim="yes",
+        position_side="SHORT",
+    ) == "no"
+
+
+def test_position_outcome_rejects_probability_short_and_nonbinary_decimal_short():
+    assert outcome_for_position(
+        POLYMARKET,
+        ["yes", "no"],
+        selection_role="home",
+        claim="yes",
+        position_side="SHORT",
+    ) is None
+    assert outcome_for_position(
+        ORBITEXCH,
+        ["home", "draw", "away"],
+        selection_role="home",
+        claim=None,
+        position_side="SHORT",
+    ) is None
+
+
+def test_leg_economics_covers_probability_back_decimal_back_and_lay():
+    pm = leg_economics(POLYMARKET, price=0.4, size=10.0)
+    assert pm.share_if_wins == pytest.approx(10.0)
+    assert pm.profit_if_wins == pytest.approx(6.0)
+    assert pm.loss_if_loses == pytest.approx(4.0)
+
+    back = leg_economics(ORBITEXCH, price=2.5, size=4.0)
+    assert back.share_if_wins == pytest.approx(10.0)
+    assert back.profit_if_wins == pytest.approx(6.0)
+    assert back.loss_if_loses == pytest.approx(4.0)
+
+    lay = leg_economics(SHARPEXCH, price=2.5, size=4.0, is_lay=True)
+    assert lay.share_if_wins == pytest.approx(10.0)
+    assert lay.profit_if_wins == pytest.approx(4.0)
+    assert lay.loss_if_loses == pytest.approx(6.0)
 
 
 def test_is_known_venue_checks_static_registry():

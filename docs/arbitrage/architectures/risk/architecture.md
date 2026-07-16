@@ -19,7 +19,7 @@ Risk 层 = **两个 NT 子类**,无独立服务、无 Actor:
 
 **明确不做**(对照旧微服务架构,全部砍掉):
 
-- ❌ 无 `LiquidityRiskActor` / `check_min_size`(最小限额由 NT instrument 元数据自动管:PM `min_quantity=5 shares`,OE `min_notional=Money(7 * fx, USD)`)
+- ❌ 无 `LiquidityRiskActor` / 独立 `check_min_size`；通用最小限额由 NT instrument 元数据处理，PM BUY-only 1 USD 因 `BinaryOption` 无 side-specific notional 字段，由本 RiskEngine 读取 instrument info 补充检查
 - ❌ 无 `BalanceMonitorActor` / 余额阈值告警 publish(告警让前端订阅 `AccountState` 自己看)
 - ❌ 无独立熔断 Actor / 不翻 `TradingState`(单场 profit gates 与 venue liveness = 逐 submit deny,见 §4.3/§4.4)
 - ❌ Strategy **不引用** Risk —— 透明拦截,Strategy 只通过 `on_order_denied` 感知结果
@@ -112,9 +112,9 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 - `_check_orders_risk → _check_orders_risk_for_account`(本类**不覆盖**,父类原样跑):**notional / submit_rate / native 余额**。NT native 余额读 cache `free`。Q17 修订后,ExecutionClient accepted 本地预扣会把 `free` 写成保守可用余额,因此本类不再对 probability venue 额外扣 open orders,避免双重扣减。
 
 **venue 最小下单门控来源**:
-- PM:最小值是 share 数量,由 PM Provider/解析层写入 `BinaryOption.min_quantity=5`;NT `_check_order_quantity` 拦 `quantity < 5`。
+- PM:所有订单的最小 share 由 Provider/解析层写入 `BinaryOption.min_quantity`(当前通常 5),NT 父类拦 `quantity < min_quantity`。仅 BUY 另要求 `quantity × price >= info["min_buy_notional"]`(当前 1 USD),由 `_check_min_buy_notional` 在 NT 基础检查后逐实际订单拦截；SELL 不应用该金额下限。
 - OE/SE:最小值是 stake。adapter 外部的 order quantity 是 USD stake,所以 Provider 写入 `BettingInstrument.currency="USD"` 与 `min_notional=Money(min_stake * arbitrage.fx, USD)`;`BettingInstrument.notional_value(quantity, price)` 返回 stake notional,NT `_check_orders_risk_for_account` 拦小于 min_notional 的订单。
-- Risk 组件不再维护 `MIN_SIZE_POLYMARKET` / `MIN_SIZE_ORBITEXCH` / `MIN_SIZE_SHARPEXCH` 常量;最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
+- Risk 组件不维护 venue 最小值常量；PM BUY-only 金额值也由 instrument info 提供。最小下单门控失效时,优先检查 instrument 元数据是否正确进入 cache。
 
 **自定义拒绝必须自己 emit denied 事件**:父类 `_handle_submit_order` 见 `_check_order` 返 False 仅 `return`,指望它已调 `self._deny_order(order, reason)`。漏调 → 订单静默丢弃,`Strategy.on_order_denied` 不触发。(已 end-to-end 验证:覆盖被派发 + deny 事件发出 + 订单不泄漏到 execution)
 
@@ -124,9 +124,17 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 |---|---|---|
 | 任意 tradable venue | `available = account.balance_free(currency)` | AccountState 的 `free` 已由 ExecutionClient 维护为可用余额;Risk 不再关心余额真值来自 REST、WS、profile response 还是 accepted 本地预扣 |
 | probability venue(当前 PM) | 订单成本仍按 `leaves_qty * probability_from_price(venue, price)` 算 | PM `quantity` 是 share,成本是 `share * 概率`;公式经 Venue Registry `odds_model` 派生,不写死 PM |
-| decimal venue(当前 OE/SE) | 订单成本按 `leaves_qty` 算 | OE/SE adapter 外部 quantity 是 USD stake;若未来新增 decimal venue,只需在 Venue Registry 声明 capability |
+| probability SELL 减仓 | `0` | 卖已有 outcome token 释放仓位,不占 quote balance |
+| decimal BACK(当前 OE/SE) | 订单成本按 `leaves_qty` 算 | adapter 外部 quantity 是 USD stake |
+| decimal LAY(SELL) | 订单成本按 `leaves_qty * (odds - 1)` 算 | LAY 占用是 liability,不能按 stake 低估;与 Portfolio 持仓经济公式同源 |
 
-Risk 读 **live** cache(非快照)。真实 venue identity 仍用于账户、持仓和 liveness 查询;Venue Registry 只负责成本公式/概率模型,不负责“哪个 venue 要特殊扣余额”。旧实现中的 probability venue `total - open_orders` 自扣已删除,避免和 ExecutionClient accepted 预扣重复。
+Risk 读 **live** cache(非快照)。订单成本统一调用 Venue Registry `order_liability`,真实 venue identity
+仍用于账户、持仓和 liveness 查询。旧实现中的 probability venue `total - open_orders` 自扣已删除,
+避免和 ExecutionClient accepted 预扣重复。
+
+套利订单若带 `OpportunityMeta.venue_required_balance`,它表示同一 opportunity 在当前 venue
+全部实际订单的合计资金需求。Risk 对该 venue 每条腿都用此合计值与 live free 比较,防止同 venue
+多条订单分别通过但总额超限；Risk 不收集订单也不二次累加。
 
 **`_check_profit_gates` —— 单场止盈/止损硬停(Q16 修订)**:逐 submit deny = "别开新仓",与 Strategy 的机会评估正交。Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损;`global_sl` 字段已从 NT 配置 schema / `ArbRiskParams` 删除。
 
@@ -244,8 +252,18 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 - `match_tp`:若所有 outcome 的 `net_profit > share * match_tp`,deny 新开仓。
 - `match_sl`:若所有 outcome 的 `net_profit < share * match_sl`,deny 新开仓。
 - 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数。
-- outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,保证三元盘某 outcome 暂无持仓时仍参与“所有 outcome”判断;无 registry 时回退到持仓腿中的 `home/away/draw`。
-  ⚠️ 受 #228 影响:"三元盘一个 pair 含 3 outcome"的前提失效——3-way 拆为 3 个二元 pair(matching §4.2.2),每个 pair 恰好 2 个 outcome,盈亏在 market 内闭合(2026-07-15 已落地)。**本节 profit gate 的 claim 感知持仓归属未落码**:`[yes,no]` pair 的 no 敞口以真 selection instrument 上的 SHORT/lay 头寸存在,`market_type==outcome` 归属需要 claim/side 感知的核算——与 mean_rebate_recovery 的 `[yes,no]` bail(strategy §3.7)同批另行设计;当前 3-way pair 的 profit gate 语义未建模。
+- outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,标签使用
+  `claim or selection_role`;保证某 outcome 暂无持仓时仍参与“所有 outcome”判断。
+- **#230 已落地(2026-07-15)**:Portfolio 不再把 Position 的
+  `abs(quantity)` 一律当作该 instrument role 的 BACK/LONG。它必须将 pair outcomes 连同
+  `instrument.info.claim/selection_role`、`position.side` 交给 Venue Registry
+  `outcome_for_position` 和 `leg_economics`:
+  - PM NO token = `LONG claim=no`,归 no;
+  - OE/SE LAY = 真 yes instrument 上的 `SHORT`,归二元 complement no,使用 lay 损益公式;
+  - 2-way 外部 SHORT 同理映射到另一个 role。
+  `_outcomes_from_registry` 已同步改为 claim 优先;`outcome_shares_for_venue` 也使用 pair 的完整
+  outcome 集合,因此 share limit 能看到 decimal LAY 归属的 complement share。详细公式唯一真理源见 venues §4.1。
+  RiskEngine `_check_profit_gates` 本身不改,仍只消费修正后的 `outcome_exposures`。
 - 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
 
 ### 4.1b 概率/赔率门控
@@ -272,11 +290,10 @@ probability = probability_from_price(order.instrument_id.venue.value, float(orde
 outcome_share[outcome] = Σ share_if_wins(leg) for leg.market_type == outcome AND leg.venue == venue
 ```
 
-- `profit_if_wins`:probability venue = `size*(1-price)`;decimal odds venue = `size*(price-1)`
-- `loss_if_loses`:probability venue = `size*price`;decimal odds venue = `size`
-- `share_if_wins`:probability venue = `size`;decimal odds venue = `size*price`(adapter 外 OE/SE size 已是 USD stake)
-- `outcome ∈ {home, draw, away}`,draw 由 PairRegistry/instrument info 或已有腿推导
+- 单腿 outcome 归属与 `profit/loss/share` 公式统一委托 venues §4.1;decimal SHORT 不得继续套 BACK 公式。
+- `outcome ∈ pair.outcomes`:所有 binary pair 均为 `{yes,no}`。
 - 不依赖 mark price,只依赖成交落库的 `size/price`;OE/SE `CURRENT_BETS` 的 `size*`/`liability`/`profit*` 字段由 adapter 入站时乘 `fx` 归一为 USD
+- 当前输入是 NT 净 Position;已平仓部分的 realized PnL 不在本轮 outcome exposure 重建范围。
 
 ### 4.2 Portfolio 不再做 settled gate(2026-06-15)
 

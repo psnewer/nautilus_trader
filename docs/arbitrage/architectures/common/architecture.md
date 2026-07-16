@@ -11,7 +11,7 @@
 
 | API | 用途 |
 |---|---|
-| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / intent` 结构化视图 |
+| `OpportunityMeta` | `opportunity_id / pair_id / leg_key / expected_legs / intent / venue_required_balance`；最后一项是该 opportunity 在本订单 venue 的整组资金需求 |
 | `new_opportunity_id()` | `PlaceBetsAction` 为一次 action fire 生成机会 ID |
 | `tags_from_meta(meta)` | submitter 把 spec metadata 写入 `Order.tags` |
 | `meta_from_order(order)` / `meta_from_tags(tags)` | Risk / Execution 从 `Order.tags` 读取 metadata |
@@ -122,6 +122,9 @@ runtime 流程。
 | `venue_preference_rank(venue)` | 同概率/同价时的稳定排序 key:probability venue 先于 decimal venue,再按 registry 顺序 |
 | `probability_from_price(venue, price)` | PM probability price / decimal odds venue 的统一概率转换入口 |
 | `qty_from_share(venue, share, price)` | PM share qty / decimal odds stake qty 的统一推导入口 |
+| `outcome_for_position(venue, outcomes, selection_role, claim, position_side)` | 将 NT 当前净 Position 归属到 pair 的经济 outcome;decimal SHORT 映射到二元 complement,其它无法确认的 side fail-closed |
+| `LegEconomics` / `leg_economics(venue, price, size, is_lay=False)` | 统一计算 probability BACK、decimal BACK/LAY 的 `share_if_wins/profit_if_wins/loss_if_loses` |
+| `order_liability(venue, quantity, price, is_lay=False)` | 统一返回订单最大本金占用:probability=`qty×price`,decimal BACK=`qty`,decimal LAY=`qty×(price−1)`;Risk 余额门控与 Execution accepted 预扣共用 |
 
 **约束**:
 - registry 不抹平真实 venue identity;account、instrument、position、liveness 仍按真实 venue 记录。
@@ -138,3 +141,6 @@ runtime 流程。
   `pm/oe/se` → venue 的私有映射。
 - strategy/risk 消费 helper,不再维护 `{ORBITEXCH, SHARPEXCH}` 集合;同概率 tie-break 等稳定性规则也经
   registry helper 表达,不在策略里写具体 venue 名。
+- Portfolio 与 recovery 不自行解释 `Position.side`:统一先调用 `outcome_for_position`,再调用
+  `leg_economics`。PM NO token 的 LONG 直接归 `no`;decimal LAY 的 SHORT 归二元 complement。
+  probability SHORT、未知 side 和非二元 SHORT 返回 `None`,调用方跳过该腿,禁止猜测。

@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Literal
 
 from src.arbitrage.config.schema import ArbConfig
+
 
 POLYMARKET = "POLYMARKET"
 ORBITEXCH = "ORBITEXCH"
@@ -48,6 +50,13 @@ class DataSourceDescriptor:
     provider: str
     data_config_builder: str
     data_factory: str
+
+
+@dataclass(frozen=True, slots=True)
+class LegEconomics:
+    share_if_wins: float
+    profit_if_wins: float
+    loss_if_loses: float
 
 
 VENUE_REGISTRY: dict[str, VenueDescriptor] = {
@@ -240,3 +249,66 @@ def qty_from_share(venue: str, share: float, price: float) -> float:
     if descriptor_for(venue).odds_model == "decimal":
         return share / price
     return share
+
+
+def outcome_for_position(
+    venue: str,
+    outcomes: Collection[str],
+    *,
+    selection_role: str | None,
+    claim: str | None,
+    position_side: str,
+) -> str | None:
+    """将 NT 净 Position 映射到 pair 内的经济 outcome。"""
+    normalized_outcomes = tuple(str(value).strip().lower() for value in outcomes)
+    base_outcome = str(claim or selection_role or "").strip().lower()
+    side = str(getattr(position_side, "name", position_side) or "").rsplit(".", 1)[-1].upper()
+    if not base_outcome or base_outcome not in normalized_outcomes:
+        return None
+    if side == "LONG":
+        return base_outcome
+    if side != "SHORT" or not is_decimal_odds_venue(venue):
+        return None
+    if len(normalized_outcomes) != 2:
+        return None
+    return next(outcome for outcome in normalized_outcomes if outcome != base_outcome)
+
+
+def leg_economics(
+    venue: str,
+    price: float,
+    size: float,
+    *,
+    is_lay: bool = False,
+) -> LegEconomics:
+    """计算已完成 outcome 归属的单腿 share、盈利和亏损。"""
+    if is_decimal_odds_venue(venue):
+        if is_lay:
+            return LegEconomics(
+                share_if_wins=size * price,
+                profit_if_wins=size,
+                loss_if_loses=size * (price - 1.0),
+            )
+        return LegEconomics(
+            share_if_wins=size * price,
+            profit_if_wins=size * (price - 1.0),
+            loss_if_loses=size,
+        )
+    if is_lay:
+        raise ValueError("probability venue does not support lay position economics")
+    return LegEconomics(
+        share_if_wins=size,
+        profit_if_wins=size * (1.0 - price),
+        loss_if_loses=size * price,
+    )
+
+
+def order_liability(
+    venue: str,
+    quantity: float,
+    price: float,
+    *,
+    is_lay: bool = False,
+) -> float:
+    """订单可能占用的最大本金,与持仓敞口使用同一 venue 经济口径。"""
+    return leg_economics(venue, price, quantity, is_lay=is_lay).loss_if_loses

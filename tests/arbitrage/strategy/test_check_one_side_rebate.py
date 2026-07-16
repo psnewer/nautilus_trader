@@ -107,6 +107,7 @@ def test_3way_split_pair_yes_no_generates_candidates():
         "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
         "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
         "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "quote_claim": "no",
                           "exec_instrument_id": "H.ORBITEXCH"},
     }
     ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])

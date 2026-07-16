@@ -30,7 +30,7 @@ from nautilus_trader.model.objects import Money
 
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venues import descriptor_for
-from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import order_liability
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 # submit 终态(OrderFilled 仅在全成时,见 _send_order_event);cancel 终态只看撤单完成/失败。
@@ -117,6 +117,7 @@ class ArbExecutionSessionMixin:
             "kind": kind,
             "qty": order.quantity.as_double(),
             "price": float(order.price) if order.has_price else None,
+            "side": order.side,
             "filled": 0.0,
             "instrument_id": instrument_id,
             "pair_id": pair_id,
@@ -195,10 +196,12 @@ class ArbExecutionSessionMixin:
             instrument_id = order.instrument_id
             quantity = order.leaves_qty.as_double()
             price = float(order.price)
+            side = order.side
         else:
             instrument_id = sess.get("instrument_id")
             quantity = float(sess.get("qty") or 0.0)
             price = sess.get("price")
+            side = sess.get("side")
         if instrument_id is None or price is None or quantity <= 0:
             return
 
@@ -215,7 +218,7 @@ class ArbExecutionSessionMixin:
         if free is None:
             return
 
-        reserved = accepted_order_reserved_notional(instrument_id, quantity, price)
+        reserved = accepted_order_reserved_notional(instrument_id, quantity, price, side=side)
         available = max(0.0, free.as_double() - reserved)
         balance = AccountBalance(
             total=Money(available, free.currency),
@@ -282,14 +285,18 @@ class ArbExecutionSessionMixin:
         ]
 
 
-def accepted_order_reserved_notional(instrument_id, quantity: float, price: float) -> float:
+def accepted_order_reserved_notional(instrument_id, quantity: float, price: float, *, side="BUY") -> float:
     """OrderAccepted 后要从可用余额里保守预扣的金额。
 
     公式只由 Venue Registry capability 决定:
     - probability venue: quantity 是 share,成本 = share * probability
-    - decimal venue: quantity 已是系统基准币 stake
+    - decimal BACK:quantity 已是系统基准币 stake
+    - decimal LAY:liability = quantity * (odds - 1)
     """
     venue = venue_id_from_instrument_id(instrument_id)
-    if descriptor_for(venue).odds_model == "probability":
-        return quantity * probability_from_price(venue, price)
-    return quantity
+    side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
+    descriptor = descriptor_for(venue)
+    if descriptor.odds_model == "probability" and side_name == "SELL":
+        return 0.0
+    is_lay = descriptor.odds_model == "decimal" and side_name == "SELL"
+    return order_liability(venue, quantity, price, is_lay=is_lay)

@@ -3,7 +3,7 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49;#228 outcome 化)�
 
 算法(对应 requirements §8):
   1. 按 outcome 标签分组(#228:`info.get("claim") or info.get("selection_role")`,
-     合法集合 = `snapshot.outcomes` —— 2-way `[home,away]`,3-way 拆分 pair `[yes,no]`),
+     合法集合 = `snapshot.outcomes` —— 所有 binary pair 均为 `[yes,no]`),
      每方向取所有 venue 中概率最小者(即 best_ask 最便宜方;decimal claim=no 腿的
      概率经 `probability_from_price(venue, price, claim)` 取补集)
   2. mean_rebate_rate = 1 - sum_outcomes(min_prob)
@@ -17,9 +17,9 @@ MeanRebateCheck —— 平均返水套利检查(slice 9 / #49;#228 outcome 化)�
     "side": "BUY",
     "price": float (原始价 — PM 是 0-1 概率,OE 是 stake odds;no 腿 = lay 原值),
     "prob": float,
-    "role": outcome 标签(2-way home/away;3-way 拆分 pair yes/no),
+    "role": canonical outcome 标签 yes/no,
     "share_if_wins": float,
-    # claim=no 腿另带(#228,place_bets SELL@lay 转换 + 执行重定向):
+    # 合成 no 腿另带(place_bets SELL@lay 转换 + 执行重定向):
     "claim": "no", "lay_price": float, "exec_instrument_id": str,
   }
 
@@ -57,6 +57,7 @@ class MeanRebateCheck(Check):
                 continue
             info = snap.instrument_info.get(iid) or {}
             claim = str(info.get("claim") or "").lower()
+            quote_claim = str(info.get("quote_claim") or "yes").lower()
             outcome = claim or str(info.get("selection_role") or "").lower()
             if outcome not in valid_outcomes:
                 continue
@@ -64,7 +65,7 @@ class MeanRebateCheck(Check):
             best_ask = _best_ask(book)
             if best_ask is None or best_ask <= 0:
                 continue
-            prob = _to_prob(venue, best_ask, claim)
+            prob = _to_prob(venue, best_ask, quote_claim)
             if prob <= 0:
                 continue
             leg = {
@@ -77,7 +78,7 @@ class MeanRebateCheck(Check):
             }
             if claim:
                 leg["claim"] = claim
-            if claim == "no":
+            if info.get("exec_instrument_id"):
                 # #228:no 腿 price 即 lay 原值;place_bets 经 lay_price 转 SELL,
                 # 经 exec_instrument_id 重定向到同 selection 的 yes instrument(如有)。
                 leg["lay_price"] = best_ask

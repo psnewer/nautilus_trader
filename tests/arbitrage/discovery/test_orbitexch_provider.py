@@ -21,6 +21,7 @@ from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchMarketE
 from nautilus_trader.adapters.orbitexch.discovery_client import OrbitExchRunner
 
 from nautilus_trader.adapters.orbitexch.providers import OrbitExchInstrumentProvider
+from nautilus_trader.adapters.orbitexch.providers import NO_LEG_HANDICAP
 
 
 @pytest.fixture
@@ -66,15 +67,18 @@ def test_build_legs_three_way(provider):
     # no 腿:market/selection 真值不变,InstrumentId 经 handicap 哨兵唯一,执行重定向回 yes
     assert no_home.market_id == yes_home.market_id
     assert no_home.selection_id == yes_home.selection_id
+    assert no_home.selection_handicap == pytest.approx(NO_LEG_HANDICAP)
     assert no_home.id != yes_home.id
+    assert no_home.info["quote_claim"] == "no"
     assert no_home.info["exec_instrument_id"] == str(yes_home.id)
 
 
 def test_build_legs_two_way_drops_missing_draw(provider):
-    """discovery-1.4.b: 无 draw_selection_id 时只产 home/away,不强插 draw;#228 不引入 claim。"""
+    """无 draw 时只产两个真实 runner，并统一映射为 yes/no。"""
     legs = list(provider._build_legs(_event(draw_sel="")))
     assert [leg.info["selection_role"] for leg in legs] == ["home", "away"]
-    assert all("claim" not in leg.info for leg in legs)
+    assert [leg.info["claim"] for leg in legs] == ["yes", "no"]
+    assert all("exec_instrument_id" not in leg.info for leg in legs)
 
 
 def test_build_legs_fills_matching_info_keys(provider):

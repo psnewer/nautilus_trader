@@ -22,7 +22,6 @@ from dataclasses import replace
 
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.enums import TradingState
-from nautilus_trader.model.instruments import BinaryOption
 
 from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
 from src.arbitrage.common.opportunity import meta_from_order
@@ -35,6 +34,8 @@ from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import is_probability_odds_venue
+from src.arbitrage.common.venues import order_liability
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.common.venues import venue_id_from_leg_key
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
@@ -128,6 +129,8 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _check_order(self, instrument, order) -> bool:
         if not super()._check_order(instrument, order):  # NT: price/quantity/GTD
             return False
+        if not self._check_min_buy_notional(instrument, order):
+            return False
         if not self._check_probability_gate(instrument, order):
             return False
         if not self._check_required_venues_alive(order):
@@ -137,6 +140,29 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if not self._check_profit_gates(order):
             return False
         return True
+
+    def _check_min_buy_notional(self, instrument, order) -> bool:
+        """检查 instrument 声明的 BUY-only quote notional 下限。"""
+        if not order.has_price:
+            return True
+        side = getattr(order, "side", None)
+        if str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper() != "BUY":
+            return True
+        info = getattr(instrument, "info", None) or {}
+        try:
+            minimum = float(info.get("min_buy_notional") or 0.0)
+        except (TypeError, ValueError):
+            minimum = 0.0
+        if minimum <= 0:
+            return True
+        notional = order.leaves_qty.as_double() * float(order.price)
+        if notional + 1e-9 >= minimum:
+            return True
+        self._deny_order(
+            order=order,
+            reason=f"BUY_NOTIONAL_LESS_THAN_MIN: min_buy_notional={minimum:.4f}, notional={notional:.4f}",
+        )
+        return False
 
     def _deny_order(self, order, reason: str) -> None:
         super()._deny_order(order, reason)
@@ -162,7 +188,12 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if account is None:
             return True  # 账户未就绪,不在此处拦(NT 会处理)
         currency = instrument.quote_currency
-        cost = self._order_cost(instrument, order)
+        meta = meta_from_order(order)
+        cost = (
+            meta.venue_required_balance
+            if meta is not None and meta.venue_required_balance is not None
+            else self._order_cost(instrument, order)
+        )
 
         free = account.balance_free(currency)
         if free is None:
@@ -180,9 +211,16 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _order_cost(self, instrument, order) -> float:
         """新单的潜在占用(= 输掉时的 liability,与 outcome exposure 口径对齐)。"""
         size = order.leaves_qty.as_double()
-        if isinstance(instrument, BinaryOption):
-            return size * float(order.price)          # PM: size * price
-        return size                                  # OE/SE: adapter 外部 size 已是 USD stake
+        side = getattr(order, "side", None)
+        side_name = str(getattr(side, "name", side) or "").upper()
+        if side_name == "SELL" and is_probability_odds_venue(order.instrument_id.venue.value):
+            return 0.0  # 卖已有 outcome token 只释放仓位,不占用 quote balance
+        return order_liability(
+            order.instrument_id.venue.value,
+            size,
+            float(order.price),
+            is_lay=_is_lay_order(order),
+        )
 
     # ── 应用层:赔率/概率门控───────────────────────────────────────
     def _check_probability_gate(self, instrument, order) -> bool:

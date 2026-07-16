@@ -28,7 +28,7 @@ class MatchedPair(Data):
     - `event_key`         所属 event(#228:`competition|home|away`;2-way == pair_id 基础部分)
     - `sport`             标准化 sport
     - `competition`       联赛名(**不是** pair_id,#34)
-    - `outcomes`          #228:pair 互斥 outcome 集(2-way `["home","away"]`,3-way 拆分 pair `["yes","no"]`)
+    - `outcomes`          pair 互斥 outcome 集,统一为 `["yes","no"]`
     - `anchor_instrument_ids` 非交易 anchor 腿(PMSPORTS 等),不参与套利
     - `tradable_instrument_ids` 所有可交易腿,供 strategy/risk 使用
     - `venue_instrument_ids` 按 venue 分组的可交易腿
@@ -66,7 +66,7 @@ class MatchedPair(Data):
         if not self.tradable_instrument_ids and self.venue_instrument_ids:
             self.tradable_instrument_ids = _flatten_venue_ids(self.venue_instrument_ids)
         if not self.outcomes:
-            self.outcomes = ["home", "away"]   # #228 兼容默认:2-way outcome 集
+            self.outcomes = ["yes", "no"]
         if not self.event_key:
             self.event_key = self.pair_id      # #228 兼容默认:2-way 基础形态下两者一致
 

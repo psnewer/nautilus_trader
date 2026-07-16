@@ -151,12 +151,14 @@ OE/SE 的 3-way(1X2)在 venue 上是一个 market 三个 selection,每个 select
 - **合成 no instrument**(已落地形态,2026-07-15):`BettingInstrument` 的 symbol 由
   `(market_id, selection_id, handicap)` 决定,而 executor 下单直接读 `inst.market_id/selection_id`
   且 handicap 会进 venue payload——因此 **market/selection 保持真值,id 唯一性用 handicap 哨兵
-  `NO_LEG_HANDICAP=-1.0`** 实现(id 如 `1-259837227-10372253--1.0.ORBITEXCH`),`market_name`
+  `NO_LEG_HANDICAP=-0.125`** 实现(id 如 `1-259837227-10372253--0.125.ORBITEXCH`);`-0.125`
+  按 OE/SE 业务约束不是合法 handicap,且可被 C float 精确表示,避免与真实 `-1.0` handicap
+  instrument 冲突以及 `-0.1` 展开成长小数导致 NT Symbol 超过 32 字符。`market_name`
   带 `-NO` 后缀供人读。info = 同 4-key + 同 `selection_role` + `claim="no"` +
-  **`exec_instrument_id`(= 同 selection 的 yes instrument id)**。
+  `quote_claim="no"` + **`exec_instrument_id`(= 同 selection 的 yes instrument id)**。
   它是同一 selection 的 **lay 投影,只作行情/身份载体**:无独立 venue 产品、无独立订阅、
   **不直接下单**——执行时 place_bets 经 `exec_instrument_id` 把 SELL@lay 重定向到 yes
-  instrument,保证 venue 对账(CURRENT_BETS 的 LAY=SHORT 落在真 selection)与 NT 订单/持仓
+  instrument。执行重定向保证 venue 对账(CURRENT_BETS 的 LAY=SHORT 落在真 selection)与 NT 订单/持仓
   在同一 instrument 上闭合;哨兵 handicap 因此永不进 venue payload。
 
 **book 写入(cache 只存 venue 原始价不变量)**:`oe_runner_to_book_deltas` 收到同一 runner frame
@@ -169,7 +171,8 @@ no  book(新)  :ask ← LAY 列原值, bid ← BACK 列原值(两侧换位重挂
 
 价格**不做任何换算**:下单价永远取 book 原值(claim=no 腿选中后 `price` 即 lay 原值,直通
 place_bets 的 SELL@lay 转换,无浮点往返/tick 风险);隐含概率在读侧经 Venue Registry
-`probability_from_price(venue, price, claim)` 换算(claim=no → `1−1/price`,真理源 venues.md §4)。
+`probability_from_price(venue, price, quote_claim)` 换算(`quote_claim=no` → `1−1/price`,真理源 venues.md §4)。
+真实 2-way away runner 虽然逻辑 `claim=no`,但没有 `quote_claim=no`,book 和概率仍按普通 BACK 处理。
 
 **路由**:data client 的 `_market_to_instruments[market_id][selection_id]` 从单值改多值
 (同一 selection → yes/no 两条),price frame 回调对两条各 publish 一份 deltas。

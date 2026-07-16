@@ -44,6 +44,7 @@ def test_3way_split_pair_yes_no_arb_triggers_above_threshold():
         "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
         "H.ORBITEXCH":   {"selection_role": "home", "claim": "yes"},
         "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "quote_claim": "no",
                           "exec_instrument_id": "H.ORBITEXCH"},
     }
     ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
@@ -73,6 +74,7 @@ def test_3way_split_pair_decimal_no_leg_carries_lay_and_exec_redirect():
         "HN.POLYMARKET": {"selection_role": "home", "claim": "no"},
         "H.ORBITEXCH":   {"selection_role": "home", "claim": "yes"},
         "HNO.ORBITEXCH": {"selection_role": "home", "claim": "no",
+                          "quote_claim": "no",
                           "exec_instrument_id": "H.ORBITEXCH"},
     }
     ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
@@ -81,6 +83,29 @@ def test_3way_split_pair_decimal_no_leg_carries_lay_and_exec_redirect():
     assert chosen_no["instrument_id"] == "HNO.ORBITEXCH"
     assert chosen_no["lay_price"] == 2.5
     assert chosen_no["exec_instrument_id"] == "H.ORBITEXCH"
+
+
+def test_real_decimal_no_claim_uses_its_back_probability():
+    """2-way 真实 away=no 不是合成 lay；odds=4 应按 1/4，而不是 1-1/4。"""
+    books = {
+        "Y.POLYMARKET": _fake_book(0.45),
+        "N.POLYMARKET": _fake_book(0.40),
+        "Y.ORBITEXCH": _fake_book(2.0),
+        "N.ORBITEXCH": _fake_book(4.0),
+    }
+    infos = {
+        "Y.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "N.POLYMARKET": {"selection_role": "away", "claim": "no"},
+        "Y.ORBITEXCH": {"selection_role": "home", "claim": "yes"},
+        "N.ORBITEXCH": {"selection_role": "away", "claim": "no"},
+    }
+    ctx = _ctx(books=books, infos=infos, outcomes=["yes", "no"])
+
+    assert MeanRebateCheck(min_rate=0.1).passes(ctx) is True
+    chosen_no = next(leg for leg in ctx.scratch["legs"] if leg["role"] == "no")
+    assert chosen_no["instrument_id"] == "N.ORBITEXCH"
+    assert chosen_no["prob"] == 0.25
+    assert "exec_instrument_id" not in chosen_no
 
 
 # ── 阈值控制:rate < min_rate → False,不写 scratch ──

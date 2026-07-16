@@ -9,9 +9,9 @@ import pytest
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
+from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.risk.portfolio import _Leg
 from tests.arbitrage.risk._factories import DuckPosition
@@ -144,6 +144,73 @@ def test_outcome_shares_for_venue_keeps_oe_and_se_separate():
 
     assert pf.outcome_shares_for_venue("match_1", "orbitexch")["home"] == pytest.approx(6.0)
     assert pf.outcome_shares_for_venue("match_1", "sharpexch")["home"] == pytest.approx(10.0)
+
+
+def test_claim_aware_positions_include_pm_no_long_and_decimal_lay_short():
+    cache = TestComponentStubs.cache()
+    pm_yes = pm_instrument("match_1", "home", token="yes")
+    pm_yes.info.update({"selection_role": "home", "claim": "yes"})
+    pm_no = pm_instrument("match_1", "home", token="no")
+    pm_no.info.update({"selection_role": "home", "claim": "no"})
+    oe_yes = oe_instrument("match_1", "home", 2)
+    oe_yes.info.update({"selection_role": "home", "claim": "yes"})
+    for instrument in (pm_yes, pm_no, oe_yes):
+        cache.add_instrument(instrument)
+
+    pf = _portfolio(cache=cache)
+    from src.arbitrage.common.pair_registry import PairRegistry
+
+    registry = PairRegistry()
+    registry.register("match_1", [pm_yes.id, pm_no.id, oe_yes.id])
+    pf.configure_arb(pair_registry=registry)
+    positions = [
+        DuckPosition(pm_yes.id, 10.0, 0.4),
+        DuckPosition(pm_no.id, 10.0, 0.3),
+        DuckPosition(oe_yes.id, 4.0, 2.5, side=PositionSide.SHORT),
+    ]
+    legs = [
+        pf._leg_from_position(position, outcomes={"yes", "no"})
+        for position in positions
+    ]
+    assert all(leg is not None for leg in legs)
+    _stub_legs(pf, legs)
+
+    exposures = pf.outcome_exposures("match_1")
+    shares = pf.outcome_shares("match_1")
+
+    assert exposures["yes"].net_profit == pytest.approx(-3.0)
+    assert exposures["yes"].liability == pytest.approx(9.0)
+    assert exposures["no"].net_profit == pytest.approx(7.0)
+    assert exposures["no"].liability == pytest.approx(4.0)
+    assert shares == pytest.approx({"yes": 10.0, "no": 20.0})
+    assert pf.outcome_shares_for_venue("match_1", "orbitexch")["no"] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    ("instrument_factory", "expected_venue"),
+    [(oe_instrument, "orbitexch"), (se_instrument, "sharpexch")],
+)
+def test_decimal_short_in_two_way_pair_maps_to_other_role(
+    instrument_factory,
+    expected_venue,
+):
+    cache = TestComponentStubs.cache()
+    instrument = instrument_factory("match_1", "home", 2)
+    instrument.info.update({"selection_role": "home"})
+    cache.add_instrument(instrument)
+    pf = _portfolio(cache=cache)
+
+    leg = pf._leg_from_position(
+        DuckPosition(instrument.id, 4.0, 2.5, side=PositionSide.SHORT),
+        outcomes={"home", "away"},
+    )
+
+    assert leg is not None
+    assert leg.venue == expected_venue
+    assert leg.market_type == "away"
+    assert leg.share_if_wins() == pytest.approx(10.0)
+    assert leg.profit_if_wins() == pytest.approx(4.0)
+    assert leg.loss_if_loses() == pytest.approx(6.0)
 
 
 def test_leg_from_position_missing_info_returns_none():

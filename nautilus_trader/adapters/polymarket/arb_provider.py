@@ -150,8 +150,8 @@ def _role_and_claim_for_token(
 ) -> tuple[str, str]:
     """返该 token 的 (selection_role, claim);role 为空表示跳过(非 moneyline 主市场方向)。
 
-    claim(#228):3-way binary(slug == ticker-{abbr})的 YES/NO token 都取该 market 的
-    role,claim="yes"/"no" 区分;2-way / 单市场路径 claim 恒为空(不引入 claim)。
+    claim:每个 binary pair 都统一为 yes/no。2-way 单市场按 selection_role 定向
+    home=yes、away=no；3-way binary market 使用 venue 原生 Yes/No token。
     `ordering`:competition 特异(/sports 字段)—— "home" → outcomes 排 [home,(draw),away];
     "away" → 反排 [away,(draw),home](如 MLB)。`home_abbr`/`away_abbr` 优先 teams.abbreviation。
     """
@@ -170,7 +170,10 @@ def _role_and_claim_for_token(
         home_first = (ordering or "home").lower() != "away"
         if len(outcomes) == 2:
             roles = ("home", "away") if home_first else ("away", "home")
-            return (roles[idx], "") if idx < 2 else ("", "")
+            if idx >= 2:
+                return "", ""
+            role = roles[idx]
+            return role, "yes" if role == "home" else "no"
         if len(outcomes) == 3:
             roles = ("home", "draw", "away") if home_first else ("away", "draw", "home")
             return (roles[idx], "") if idx < 3 else ("", "")
@@ -349,7 +352,7 @@ class ArbPolymarketInstrumentProvider(PolymarketInstrumentProvider):
                     "selection_role": role,
                     "game_id": game_id,   # #60:sports WS 映射键(== gamma event gameId)
                 })
-                if claim:   # #228:3-way binary 腿(含 yes)显式 claim;2-way 不填
+                if claim:
                     instrument.info["claim"] = claim
             self.add(instrument)
             count += 1

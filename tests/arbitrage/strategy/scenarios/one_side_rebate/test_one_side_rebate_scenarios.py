@@ -7,6 +7,7 @@ candi_select。它们不启动 TradingNode,不进入 Risk/Execution/barrier。
 import asyncio
 from unittest.mock import MagicMock
 
+from nautilus_trader.model.enums import PositionSide
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.bool_expr import AndExpr
@@ -41,10 +42,17 @@ class _Qty:
 
 
 class _Position:
-    def __init__(self, instrument_id: str, quantity: float, avg_px_open: float):
+    def __init__(
+        self,
+        instrument_id: str,
+        quantity: float,
+        avg_px_open: float,
+        side=PositionSide.LONG,
+    ):
         self.instrument_id = instrument_id
         self.quantity = _Qty(quantity)
         self.avg_px_open = avg_px_open
+        self.side = side
 
 
 class _Portfolio:
@@ -77,8 +85,8 @@ def _snapshot(*, positions=None) -> OpportunitySnapshot:
         "A.SHARPEXCH": _fake_book(2.0),
     }
     infos = {
-        "H.POLYMARKET": {"selection_role": "home"},
-        "A.SHARPEXCH": {"selection_role": "away"},
+        "H.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "A.SHARPEXCH": {"selection_role": "away", "claim": "no"},
     }
     return OpportunitySnapshot(
         pair_id="p",
@@ -150,7 +158,7 @@ def test_existing_position_share_limit_scales_candidates_before_selection():
     ctx = EvalContext(
         pair_id="p",
         snapshot=_snapshot(),
-        portfolio=_Portfolio(pm={"home": 30.0}),
+        portfolio=_Portfolio(pm={"yes": 30.0, "no": 0.0}),
         strategy_defaults={"share": 30.0, "max_leg_share": 40.0},
     )
 
@@ -160,8 +168,8 @@ def test_existing_position_share_limit_scales_candidates_before_selection():
 
     selected = ctx.scratch["selected_candidate"]
     by_role = {leg["role"]: leg for leg in ctx.scratch["legs"]}
-    assert selected["target_role"] == "away"
-    assert round(by_role["home"]["share_if_wins"], 6) == 10.0
-    assert round(by_role["home"]["qty"], 6) == 10.0
-    assert round(by_role["away"]["share_if_wins"], 6) == 11.0
-    assert round(by_role["away"]["qty"], 6) == 5.5
+    assert selected["target_role"] == "no"
+    assert round(by_role["yes"]["share_if_wins"], 6) == 10.0
+    assert round(by_role["yes"]["qty"], 6) == 10.0
+    assert round(by_role["no"]["share_if_wins"], 6) == 11.0
+    assert round(by_role["no"]["qty"], 6) == 5.5

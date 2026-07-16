@@ -658,8 +658,48 @@ def test_three_way_pmsports_anchor_splits_and_duplicates_anchor():
     assert actor._game_to_pair[777] == pair_ids
 
 
-def test_three_way_validation_fail_evicts_event_siblings():
-    """matching-228.3:任一 role pair 校验 FAIL → 同 event 其余 pair 连坐(已注册的反注册,后到的直接 FAILED)。"""
+def test_three_way_validation_publishes_only_after_all_roles_pass():
+    """matching-228.3:全部 role PASS 后才统一发布。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    anchor = _pmsports("EPL", "Arsenal", "Chelsea")
+    cache.add_instrument(anchor)
+    legs = _populate_three_way(cache)
+    books = {}
+    for role in ("home", "draw", "away"):
+        books[str(legs[f"pm_{role}_yes"].id)] = 0.50
+        books[str(legs[f"pm_{role}_no"].id)] = 0.52
+        books[str(legs[f"oe_{role}_yes"].id)] = 2.00
+        books[str(legs[f"oe_{role}_no"].id)] = 2.10
+    _wire_validation_books(actor, cache, books)
+    published = []
+    actor.publish_data = lambda **k: published.append(k["data"])
+    original_finalize = actor._finalize_pair
+
+    def assert_group_passed_before_finalize(candidate, *, log_message=None):
+        assert all(
+            actor._pair_validations[pair_id].status == "PASSED"
+            for pair_id in candidate.validation_group_pair_ids
+        )
+        original_finalize(candidate, log_message=log_message)
+
+    actor._finalize_pair = assert_group_passed_before_finalize
+
+    actor._maybe_match()
+
+    assert {pair.pair_id for pair in published} == {
+        "EPL|Arsenal|Chelsea|home",
+        "EPL|Arsenal|Chelsea|draw",
+        "EPL|Arsenal|Chelsea|away",
+    }
+    assert all(registry.instrument_ids_for_pair(pair.pair_id) for pair in published)
+
+
+def test_three_way_validation_fail_never_publishes_event_siblings():
+    """matching-228.3:三个 role 未全部 PASS 前不发布;任一 FAIL 后整组 sticky FAILED。"""
     actor, clock, cache, registry, _ = _harness(
         anchor_venue="PMSPORTS",
         tradable_venues=("POLYMARKET", "ORBITEXCH"),
@@ -686,8 +726,8 @@ def test_three_way_validation_fail_evicts_event_siblings():
     home_pair = "EPL|Arsenal|Chelsea|home"
     draw_pair = "EPL|Arsenal|Chelsea|draw"
     away_pair = "EPL|Arsenal|Chelsea|away"
-    # home 先 PASS 并发布;draw FAIL → 连坐:home 被反注册、away 后到直接 FAILED 不发布
-    assert [p.pair_id for p in published] == [home_pair]
+    # home 虽先 PASS,但须等整组;draw FAIL 后整组均不得进入真钱策略流。
+    assert published == []
     assert actor._pair_validations[home_pair].status == "FAILED"
     assert actor._pair_validations[draw_pair].status == "FAILED"
     assert actor._pair_validations[away_pair].status == "FAILED"

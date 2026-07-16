@@ -25,7 +25,7 @@ from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchMarketE
 from nautilus_trader.adapters.sharpexch.discovery_client import SharpExchRunner
 
 # #228:合成 no 腿的 handicap 哨兵(只为 InstrumentId 唯一;不进 venue payload)
-NO_LEG_HANDICAP = -1.0
+NO_LEG_HANDICAP = -0.125
 
 
 class SharpExchInstrumentProvider(InstrumentProvider):
@@ -68,6 +68,7 @@ class SharpExchInstrumentProvider(InstrumentProvider):
         for runner in event.runners:
             info = dict(info_base, selection_role=runner.role)
             if not is_three_way:
+                info["claim"] = "yes" if runner.role == "home" else "no"
                 yield self._betting_instrument(event, runner, info, self._fx)
                 continue
             yes = self._betting_instrument(event, runner, dict(info, claim="yes"), self._fx)
@@ -75,7 +76,7 @@ class SharpExchInstrumentProvider(InstrumentProvider):
             yield self._betting_instrument(
                 event,
                 runner,
-                dict(info, claim="no", exec_instrument_id=str(yes.id)),
+                dict(info, claim="no", quote_claim="no", exec_instrument_id=str(yes.id)),
                 self._fx,
                 no_leg=True,
             )

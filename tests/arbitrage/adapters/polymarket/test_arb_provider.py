@@ -180,11 +180,10 @@ def test_3way_binary_no_token_gets_same_role_with_no_claim():
     assert _role_and_claim_for_token(market_slug=f"{t}-draw", event_ticker=t, outcome="No", outcomes=["Yes", "No"], ordering="home", home_abbr="bur", away_abbr="wol") == ("draw", "no")
 
 
-def test_2way_tokens_carry_no_claim():
-    """#228:2-way / 单市场路径 claim 恒为空(不引入 claim)。"""
+def test_2way_tokens_use_canonical_yes_no_claims():
     t = "atp-topo-nava-2026-06-03"
     outcomes = ["Marko Topo", "Emilio Nava"]
-    assert _role_and_claim_for_token(market_slug=t, event_ticker=t, outcome="Marko Topo", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == ("home", "")
+    assert _role_and_claim_for_token(market_slug=t, event_ticker=t, outcome="Marko Topo", outcomes=outcomes, ordering="home", home_abbr="topo", away_abbr="nava") == ("home", "yes")
 
 
 def test_unknown_suffix_skipped():
@@ -250,7 +249,7 @@ def test_load_moneyline_market_writes_matching_info_keys():
         assert inst.info["away_team"] == "B"
         assert "start_ts" not in inst.info
         assert inst.info["game_id"] == 5843495
-        assert "claim" not in inst.info   # #228:2-way 不引入 claim
+    assert [inst.info["claim"] for inst in added] == ["yes", "no"]
 
 
 def test_load_moneyline_market_3way_binary_exposes_yes_and_no():

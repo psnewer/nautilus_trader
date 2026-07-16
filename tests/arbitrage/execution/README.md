@@ -170,16 +170,22 @@
 - 输入:
   - PM/probability venue:`quantity=50`,`price=0.20`。
   - OE/SE/decimal venue:`quantity=12`,`price=1.80`。
+  - OE/SE decimal LAY:`quantity=10`,`price=5.00`。
 - 期望:
   - PM 预扣 `50 * probability_from_price(POLYMARKET, 0.20) = 10`,写回 `free=90`。
   - OE/SE 预扣 `quantity=12`,写回 `free=88`。
+  - decimal LAY 预扣 liability `10*(5-1)=40`,写回 `free=60`,不能只扣 stake 10。
 - 验收:
   - 预扣逻辑挂在 `ArbExecutionSessionMixin._send_order_event()` 的 `OrderAccepted` 处理后,三方 ExecutionClient 不各自写重复逻辑。
   - 公式只读 Venue Registry `VenueDescriptor.odds_model`,不写死 `POLYMARKET/ORBITEXCH/SHARPEXCH`。
   - accepted 预扣不发外部 HTTP/WS 请求。
-  - 已由 `tests/arbitrage/execution/test_session.py::test_accepted_reserves_probability_venue_available_balance` / `test_accepted_reserves_decimal_venue_available_balance_without_fx` / `test_accepted_reserves_sharpexch_available_balance_without_fx` / `test_accepted_order_reserved_notional_uses_venue_capability` 覆盖。
+  - 已由 `tests/arbitrage/execution/test_session.py::test_accepted_reserves_probability_venue_available_balance` / `test_accepted_reserves_decimal_venue_available_balance_without_fx` / `test_accepted_reserves_decimal_lay_liability` / `test_accepted_reserves_sharpexch_available_balance_without_fx` / `test_accepted_order_reserved_notional_uses_venue_capability` 覆盖。
 
 ### execution-4.5.6: accepted 预扣后真实余额更新可覆盖本地估算
+
+### execution-4.5.7: probability SELL accepted 零预扣(#233)
+
+- `test_accepted_probability_sell_reduction_does_not_reserve_cash` 与 helper 断言锁定 PM SELL 不降低 cached free；BUY、decimal BACK/LAY 公式保持原样。
 - 前置:accepted 本地预扣已把账户 `free=88`。
 - 输入:随后 venue 真值来源到达:PM 显式 QueryAccount、OE WS `BALANCE`、或 SE profile/balance response。
 - 期望:ExecutionClient 按真值再次 `generate_account_state`,覆盖本地估算。

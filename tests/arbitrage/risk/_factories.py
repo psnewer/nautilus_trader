@@ -11,6 +11,7 @@ from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -47,7 +48,7 @@ def pm_instrument(competition: str, market_type: str, token: str = "tok1") -> Bi
         taker_fee=Decimal(0),
         ts_event=0,
         ts_init=0,
-        info={"competition": competition, "market_type": market_type},
+        info={"competition": competition, "market_type": market_type, "min_buy_notional": 1.0},
     )
 
 
@@ -98,10 +99,17 @@ def se_instrument(competition: str, market_type: str, selection_id: int = 1) -> 
 class DuckPosition:
     """只暴露 ArbitragePortfolio._leg_from_position / _resolve_pair_id 触及的字段。"""
 
-    def __init__(self, instrument_id: InstrumentId, qty: float, avg_px: float) -> None:
+    def __init__(
+        self,
+        instrument_id: InstrumentId,
+        qty: float,
+        avg_px: float,
+        side: PositionSide = PositionSide.LONG,
+    ) -> None:
         self.instrument_id = instrument_id
         self.quantity = Quantity(qty, 2)
         self.avg_px_open = avg_px
+        self.side = side
 
 
 def pm_account_state(total: float, account_id: str = "POLYMARKET-001") -> AccountState:

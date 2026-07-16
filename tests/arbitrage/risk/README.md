@@ -68,8 +68,18 @@ ExecutionClient (维护账户)
   - 输入: 提交该订单。
   - 期望: `_check_balance` 算成本 `50`,因 `free=40` 拒绝。
   - 验收: 成本公式按 `odds_model=decimal` 派生;新增 decimal venue 只需配置 Venue Registry,不改 Risk 分支。
+- **decimal LAY**
+  - 前置:cache `free=30 USD`;SELL/LAY 订单 `quantity=10`,`price=5.0`。
+  - 输入:提交该订单。
+  - 期望:`_check_balance` 按 liability `10*(5-1)=40` 拒绝,不能按 stake 10 放行。
+  - 验收:`test_balance_decimal_lay_uses_liability_not_stake`。
 
 ### risk-6.3c: accepted 本地预扣后 Risk 不双扣 PM open orders(Q17 修订已落地)
+
+### risk-6.3d: opportunity 同 venue 整组余额门控(#233)
+
+- `test_balance_uses_opportunity_venue_total_for_each_leg`:单腿 cost 虽小于 free，只要 metadata 中同 venue 整组需求超过 free 即拒绝。
+- `test_balance_pm_sell_reduction_requires_no_quote_balance`:probability SELL 减仓不占 quote balance。
 - 前置:PM ExecutionClient 已在 `OrderAccepted` 后把账户从 `free=100` 本地预扣为 `free=90`;cache 中同时存在该 open order。
 - 输入:再提交成本 `95` 的 PM 订单。
 - 期望:`_check_balance` 只读 `free=90`,拒绝;不会再额外扫描 open orders 得到 `80/更低`。
@@ -339,4 +349,15 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
 ## #228:概率门控 lay 单补集概率(2026-07-15)
 
 - `test_engine.py::test_probability_gate_lay_order_uses_complement_probability`:decimal venue 的 SELL(lay)单隐含概率 = 1−1/price(判别子 = order.side,非 instrument claim——no 腿执行已重定向回真 selection);lay@1.02 / lay@40 被拒,lay@2.0 通过。
-- profit gate 的 claim 感知持仓归属未落码(risk 架构 §4.1 注记),与 recovery 同批另行设计。
+- profit gate 的 claim/side 感知持仓归属已按 #230 落地(risk §4.1 / venues §4.1),覆盖:
+  - PM NO token LONG 归 `no`;OE/SE 真 selection SHORT(LAY)也归 `no`,但使用 lay 的 profit/loss。
+  - `[yes,no]` 混合持仓的 `outcome_exposures` 同时返回两侧正确 `net_profit/liability`。
+  - `outcome_shares` / `outcome_shares_for_venue` 将 LAY gross share=`qty*odds` 计入 complement outcome,使 share limit 同步正确。
+  - 2-way 外部 SHORT 映射到另一个 role;既有 LONG/BACK 和 probability LONG 用例不回归。
+
+## #234:PM BUY-only 1 USD 门控
+
+- `test_pm_buy_below_minimum_notional_is_denied`:BUY 5 @ 0.10 的 0.50 USD 订单被拒。
+- `test_pm_buy_at_minimum_notional_passes`:BUY 5 @ 0.20 恰好 1 USD 放行。
+- `test_pm_sell_does_not_apply_buy_notional_minimum`:SELL 5 @ 0.10 不应用 BUY 金额下限；最小 5 shares 仍由 NT `min_quantity` 处理。
+- `test_pm_buy_minimum_notional_denies_on_real_submit_path`:真实 `SubmitOrder → RiskEngine` 派发产生 deny，且订单不泄漏到 ExecutionEngine。

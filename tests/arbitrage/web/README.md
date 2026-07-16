@@ -56,3 +56,6 @@
 
 - **删除(NT 无对应)**:legacy Run Discovery/Matching、Subscribe Odds、pipeline start/stop;Execution market_order/discount/take_off;Risk global_sl/健康检查间隔/返水率面板。`/positions/{pair_id}` way_rebate 端点不恢复(way_rebate #121 退役)。
 - **延后**:OrderBookDelta firehose 实时推(现用 /odds 周期快照);strategy 可视化 Condition 树编辑(现 JSON 原始编辑)。
+## #233 Live Odds claim/quote_claim
+
+- `/odds` 同时输出逻辑 `claim` 与行情 `quote_claim`。页面按 claim 分 yes/no 行；只有 `quote_claim=no` 的 decimal 合成腿按补集概率展示。

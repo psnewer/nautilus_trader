@@ -238,6 +238,12 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 - 配套 helper `get_orbitexch_market_id(inst.id)` / `get_orbitexch_selection_id(inst.id)` 可逆解析
 - 默认 `fx=1` 时 `min_notional=7 USD`;非默认 fx 时为 `Money(7 * fx, USD)`(例如 `fx=1.3` → `9.1 USD`),表达 OE 最小 stake 的 USD 口径门控。由 `test_build_legs_sets_orbitexch_min_stake` / `test_build_legs_sets_orbitexch_min_stake_with_fx` 锁定
 
+### discovery-pm-minimum.2:PM BUY-only 最小金额(#234)
+
+- PM `minimum_order_size` 继续映射为 `BinaryOption.min_quantity`，同时 parsing 在 instrument info 写 `min_buy_notional=1.0`。
+- 不写通用 `BinaryOption.min_notional`，因为 1 USD 仅约束 BUY、SELL 只受最小 shares 约束。
+- 验收：`tests/arbitrage/adapters/polymarket/test_parsing_min_size.py`。
+
 **验收标准**: instrument 列表非空 AND helper 可逆 AND page name 是 `"discovery"`(不是 `"data"` / `"execution"`)
 
 ---
@@ -305,4 +311,5 @@ tradable discovery 分离时,才显式配置 `data_sources.sports_status.sports`
 
 ## #228:3-way 每 selection 产 yes/no 两腿(2026-07-15)
 
-- `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no)),合成 no 腿 market/selection 真值 + handicap 哨兵 id + `claim`/`exec_instrument_id`;`test_build_legs_two_way_drops_missing_draw` 断言 2-way 不引入 claim。PM 侧见 `tests/arbitrage/adapters/polymarket/README.md`,SE 侧见 `tests/arbitrage/adapters/sharpexch/README.md`。
+- `test_orbitexch_provider.py::test_build_legs_three_way`:OE 3-way = 6 条腿((home/draw/away)×(yes/no)),合成 no 腿保持 market/selection 真值,使用 handicap `-0.125` 哨兵并携带 `claim=no/quote_claim=no/exec_instrument_id`。
+- `test_build_legs_two_way_drops_missing_draw`:2-way 只产真实 home/away 两腿，但 claim 统一为 yes/no，且无执行重定向。

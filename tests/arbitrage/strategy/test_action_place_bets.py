@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
+from types import SimpleNamespace
 
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.place_bets import _compute_size
 from src.arbitrage.strategy.condition import EvalContext
+from src.arbitrage.strategy.snapshot import OpportunitySnapshot
 
 
 def _run(coro):
@@ -129,6 +131,7 @@ def test_action_uses_leg_qty_when_check_precomputes_size():
         "pair_id": "p",
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
+        "venue_required_balance": 3.25,
     }]
 
 
@@ -170,7 +173,7 @@ def test_action_uses_sharpexch_leg_share_if_wins_without_action_share():
     assert calls[0]["leg_key"] == "sharpexch:away:0"
 
 
-def test_decimal_no_claim_uses_lay_side_price_and_size():
+def test_decimal_real_no_claim_keeps_back_side_price_and_size():
     calls = []
 
     async def fake_submitter(spec: dict) -> None:
@@ -184,18 +187,18 @@ def test_decimal_no_claim_uses_lay_side_price_and_size():
             "side": "BUY",
             "role": "away",
             "claim": "no",
-            "price": 2.0,      # back/ask,不能用于 no claim 执行
-            "bid": 2.1,        # lay/bid
-            "qty": 999.0,      # claim=no 时必须按 lay price 重新计算
+            "price": 2.0,
+            "bid": 2.1,
+            "qty": 999.0,
             "share_if_wins": 21.0,
         },
     ]
 
     _run(PlaceBetsAction().execute(ctx))
 
-    assert calls[0]["side"] == "SELL"
-    assert calls[0]["price"] == 2.1
-    assert calls[0]["qty"] == 10.0
+    assert calls[0]["side"] == "BUY"
+    assert calls[0]["price"] == 2.0
+    assert calls[0]["qty"] == 999.0
 
 
 def test_decimal_no_claim_redirects_to_exec_instrument():
@@ -208,7 +211,7 @@ def test_decimal_no_claim_redirects_to_exec_instrument():
     ctx = EvalContext(pair_id="p", submitter=fake_submitter)
     ctx.scratch["legs"] = [
         {
-            "instrument_id": "1-123-42--1.0.ORBITEXCH",       # 合成 no instrument(行情/身份载体)
+            "instrument_id": "1-123-42--0.125.ORBITEXCH",       # 合成 no instrument(行情/身份载体)
             "exec_instrument_id": "1-123-42-None.ORBITEXCH",  # 同 selection 的 yes instrument
             "venue": "ORBITEXCH",
             "side": "BUY",
@@ -284,7 +287,127 @@ def test_action_can_override_venue_price_and_qty_for_live_probe():
         "pair_id": "p",
         "leg_key": "orbitexch:away:0",
         "expected_legs": ("orbitexch:away:0",),
+        "venue_required_balance": 7.0,
     }]
+
+
+class _Qty:
+    def __init__(self, value):
+        self._value = value
+
+    def as_double(self):
+        return self._value
+
+
+def _pm_inventory_snapshot(
+    *,
+    held_qty: float,
+    min_quantity: float = 5.0,
+    min_buy_notional: float = 1.0,
+):
+    target = "ALCARAZ.POLYMARKET"
+    opposite = "SINNER.POLYMARKET"
+    return OpportunitySnapshot(
+        pair_id="p",
+        instrument_ids=[target, opposite],
+        positions=[SimpleNamespace(instrument_id=opposite, side="LONG", quantity=_Qty(held_qty))],
+        instrument_info={
+            target: {"selection_role": "away"},
+            opposite: {"selection_role": "home"},
+        },
+        instrument_constraints={
+            target: {
+                "min_quantity": min_quantity,
+                "min_notional": None,
+                "min_buy_notional": min_buy_notional,
+                "size_increment": 0.01,
+            },
+            opposite: {
+                "min_quantity": min_quantity,
+                "min_notional": None,
+                "min_buy_notional": min_buy_notional,
+                "size_increment": 0.01,
+            },
+        },
+        outcomes=["home", "away"],
+    )
+
+
+def _pm_target_ctx(snapshot, *, price: float = 0.2):
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.scratch["legs"] = [{
+        "instrument_id": "ALCARAZ.POLYMARKET",
+        "venue": "POLYMARKET",
+        "side": "BUY",
+        "role": "away",
+        "price": price,
+        "share_if_wins": 100.0,
+    }]
+    return ctx, calls
+
+
+def test_probability_buy_splits_into_opposite_sell_and_remainder_buy():
+    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=60))
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("SINNER.POLYMARKET", "SELL", 60.0, 0.8),
+        ("ALCARAZ.POLYMARKET", "BUY", 40.0, 0.2),
+    ]
+    assert calls[0]["expected_legs"] == calls[1]["expected_legs"]
+    assert set(calls[0]["expected_legs"]) == {
+        "polymarket:away:0:reduce",
+        "polymarket:away:0:buy",
+    }
+    assert calls[0]["venue_required_balance"] == 8.0
+    assert calls[1]["venue_required_balance"] == 8.0
+
+
+def test_probability_split_adjusts_reduction_to_keep_minimum_buy_quantity():
+    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=97))
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert [(c["side"], c["qty"]) for c in calls] == [("SELL", 95.0), ("BUY", 5.0)]
+
+
+def test_probability_split_keeps_minimum_buy_notional_at_low_price():
+    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=97), price=0.02)
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert [(c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("SELL", 50.0, 0.98),
+        ("BUY", 50.0, 0.02),
+    ]
+
+
+def test_probability_split_falls_back_to_direct_buy_when_reduction_is_below_minimum():
+    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=3))
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert [(c["instrument_id"], c["side"], c["qty"]) for c in calls] == [
+        ("ALCARAZ.POLYMARKET", "BUY", 100.0),
+    ]
+    assert calls[0]["venue_required_balance"] == 20.0
+
+
+def test_probability_buy_fully_replaced_by_opposite_sell():
+    ctx, calls = _pm_target_ctx(_pm_inventory_snapshot(held_qty=100))
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert [(c["instrument_id"], c["side"], c["qty"], c["price"]) for c in calls] == [
+        ("SINNER.POLYMARKET", "SELL", 100.0, 0.8),
+    ]
+    assert calls[0]["venue_required_balance"] == 0.0
 
 
 def test_action_qty_override_beats_leg_qty():

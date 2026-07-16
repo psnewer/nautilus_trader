@@ -266,13 +266,13 @@
         const roles=Object.keys(byRole).sort((a,b)=>(roleRank[a]??99)-(roleRank[b]??99)||a.localeCompare(b)); let first=true;
 	        for(const role of roles){
 	          // 统一成隐含概率:probability venue 价本来就是概率;decimal venue 是十进制赔率 → 1/赔率;
-	          // decimal 的 claim=no 腿(book 存 lay 原值)→ 1−1/赔率(#228)。
+	          // 只有合成 no 行情的 quote_claim=no 使用 lay 补集概率。
 	          const decProb = o => o ? (1/o).toFixed(3) : null;
 	          const decNoProb = o => o ? (1-1/o).toFixed(3) : null;
 	          const cells = venues.map(venue=>{
 	            const leg=byRole[role][venue]||{};
 	            const isDecimal = leg.odds_model==='decimal';
-	            const conv = isDecimal ? (leg.claim==='no' ? decNoProb : decProb) : (x=>x);
+	            const conv = isDecimal ? (leg.quote_claim==='no' ? decNoProb : decProb) : (x=>x);
 	            const bid = conv(leg.bid);
 	            const ask = conv(leg.ask);
 	            return `<td>${fmt(bid)} / ${fmt(ask)}</td>`;

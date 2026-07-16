@@ -95,6 +95,7 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
         "HN.POLYMARKET":  {"selection_role": "home", "claim": "no", "in_play": in_play},
         "H.ORBITEXCH":    {"selection_role": "home", "claim": "yes", "in_play": in_play},
         "HNO.ORBITEXCH":  {"selection_role": "home", "claim": "no",
+                           "quote_claim": "no",
                            "exec_instrument_id": "H.ORBITEXCH", "in_play": in_play},
     }
     return OpportunitySnapshot(

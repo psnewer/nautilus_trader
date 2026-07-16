@@ -329,7 +329,7 @@ def se_update_market_routing(
     if entry is None:
         return False
     market_id, selection_id = entry
-    claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+    claim = str((getattr(inst, "info", None) or {}).get("quote_claim") or "yes").lower()
     entries = routing.setdefault(market_id, {}).setdefault(selection_id, [])
     if not any(iid == instrument_id for iid, _ in entries):
         entries.append((instrument_id, claim))
@@ -391,7 +391,7 @@ def se_update_subscription_state(
     market_id = plan["market_id"]
     selection_id = plan["selection_id"]
     page_key = plan["page_key"]
-    claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+    claim = str((getattr(inst, "info", None) or {}).get("quote_claim") or "yes").lower()
     entries = market_routing.setdefault(market_id, {}).setdefault(selection_id, [])
     if not any(iid == instrument_id for iid, _ in entries):
         entries.append((instrument_id, claim))

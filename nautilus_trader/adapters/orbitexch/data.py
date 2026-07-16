@@ -362,7 +362,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
         if market_id is None or selection_id is None:
             self._log.warning(f"OE subscribe: {instrument_id} missing market_id/selection_id; skip")
             return
-        claim = str((getattr(inst, "info", None) or {}).get("claim") or "yes").lower()
+        claim = str((getattr(inst, "info", None) or {}).get("quote_claim") or "yes").lower()
         entries = self._market_to_instruments.setdefault(str(market_id), {}).setdefault(str(selection_id), [])
         if not any(iid == instrument_id for iid, _ in entries):
             entries.append((instrument_id, claim))

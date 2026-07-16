@@ -123,10 +123,42 @@ def descriptor_for(venue: str) -> VenueDescriptor: ...
 def is_decimal_odds_venue(venue: str) -> bool: ...
 def probability_from_price(venue: str, price: float, claim: str = "yes") -> float: ...
 def qty_from_share(venue: str, share: float, price: float) -> float: ...
+def outcome_for_position(
+    venue: str,
+    outcomes: Collection[str],
+    *,
+    selection_role: str | None,
+    claim: str | None,
+    position_side: str,
+) -> str | None: ...
 def leg_economics(venue: str, price: float, size: float, *, is_lay: bool = False) -> LegEconomics: ...
+def order_liability(venue: str, quantity: float, price: float, *, is_lay: bool = False) -> float: ...
 ```
 
-`leg_economics`(#230,单腿经济量唯一的家;`LegEconomics(share_if_wins, profit_if_wins, loss_if_loses)`):
+### 4.1 净 Position → outcome 经济腿(#230)
+
+> **成熟度**:已落地(2026-07-15)。
+
+`outcome_for_position` 与 `leg_economics` 共同构成**单腿持仓经济量唯一的家**。
+`ArbitragePortfolio`、Strategy `mean_rebate_recovery` 和间接消费 Portfolio 的 `share_limit`
+必须委托这两个 helper,禁止各自维护 claim/side/赔率公式。
+
+`outcome_for_position` 先决定 NT 净 Position 经济上属于 pair 的哪个互斥 outcome:
+
+| Position | outcome 归属 |
+|---|---|
+| LONG | `claim or selection_role`,且必须存在于 `outcomes` |
+| decimal SHORT(LAY) | `claim or selection_role` 在二元 `outcomes` 中的**另一个 outcome** |
+| probability SHORT / FLAT / 未知 side / 非二元 complement | 返回 `None`,调用方跳过该腿,不猜测 |
+
+这同时覆盖两类二元 pair:
+
+- 3-way 拆分 pair:`outcomes=[yes,no]`;OE/SE no 腿真单重定向到 yes instrument 后形成
+  `SHORT`,因此 `yes → no`。PM NO token 是独立 instrument 的 `LONG claim=no`,直接归 `no`。
+- 2-way 与 3-way 拆分 pair 均为 `outcomes=[yes,no]`;`selection_role` 只用于匹配和展示。
+  真实 home/away runner 分别映射为 yes/no；decimal SHORT 仍映射到其 instrument claim 的互补 outcome。
+
+`leg_economics` 只计算已经完成 outcome 归属后的金额:
 
 | 腿型 | share_if_wins | profit_if_wins | loss_if_loses |
 |---|---|---|---|
@@ -136,14 +168,23 @@ def leg_economics(venue: str, price: float, size: float, *, is_lay: bool = False
 
 lay 行推导:lay size q 押 liability `q(L−1)`;互补 outcome 赢时收回 liability 并赢得 q →
 回收 `qL`,与 back 的 share_if_wins 同形(这也是 `qty_from_share(venue, share, lay)` = `share/lay`
-对 no 腿直接成立的原因)。消费者:`ArbitragePortfolio._Leg` 与 `mean_rebate_recovery._CalcLeg`
-均委托本函数,禁止各自维护公式。
+对 no 腿直接成立的原因)。
+
+`order_liability` 是下单前余额门控与 `OrderAccepted` 后本地预扣的统一入口,直接返回相同经济模型的
+`loss_if_loses`:probability 为 `quantity × price`,decimal BACK 为 `quantity`,decimal LAY 为
+`quantity × (price−1)`。Risk 与 Execution 禁止各自重写该公式。
+
+输入边界是 **NT 当前净 Position**(`side/quantity/avg_px_open`),不是历史 bet 明细。OE/SE
+reconciliation 已把同 selection 的 BACK/LAY 聚合为一个 LONG/SHORT 净 Position;本模型正确计算
+该净 Position 的未实现 outcome 敞口,但不尝试从净额还原已经平仓部分的历史锁利或 realized PnL。
 
 约束:
 
 - `probability_from_price("POLYMARKET", price)` 使用 PM 概率价格公式。
 - `probability_from_price(decimal venue, odds)` 使用 decimal odds 概率公式。
-- **#228 claim 感知(已落地 2026-07-15)**:`probability_from_price(decimal venue, price, claim="no")`
+- `claim` 是经济 outcome,不再兼任行情类型。只有合成 no instrument 带 `quote_claim="no"`；
+  真实 decimal NO runner 的 `quote_claim` 默认 yes,因此仍按自身 BACK 赔率 `1/price` 解释。
+- `probability_from_price(decimal venue, price, claim="no")`
   返回 `1 − 1/price`——decimal venue 的合成 no 腿 book 存的是 **lay 列原值**(cache 只存 venue
   原始价、下单价零换算的不变量,见 data 架构"OE/SE 3-way 腿模型"),其隐含概率是补集。
   probability venue 与 `claim="yes"`(默认)行为不变。本函数是全系统唯一的 claim 概率换算家:

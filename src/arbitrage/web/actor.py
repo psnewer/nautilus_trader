@@ -352,15 +352,18 @@ class WebGatewayActor(Actor):
                 inst = self.cache.instrument(iid)
                 role = None
                 claim = None
+                quote_claim = None
                 if inst is not None and inst.info:
                     role = inst.info.get("selection_role") or inst.info.get("market_type")
-                    claim = inst.info.get("claim") or None   # #228:3-way 腿显式 claim,2-way 无
+                    claim = inst.info.get("claim") or None
+                    quote_claim = inst.info.get("quote_claim") or None
                 bid = book.best_bid_price() if book is not None else None
                 ask = book.best_ask_price() if book is not None else None
                 legs.append({
                     "venue": iid.venue.value,
                     "role": role,
                     "claim": claim,
+                    "quote_claim": quote_claim,
                     "odds_model": descriptor_for(iid.venue.value).odds_model if is_known_venue(iid.venue.value) else "",
                     "bid": float(bid) if bid is not None else None,
                     "ask": float(ask) if ask is not None else None,

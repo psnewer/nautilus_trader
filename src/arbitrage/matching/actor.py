@@ -70,12 +70,14 @@ class _PairCandidate:
     registry_anchor_ids: list[str]
     game_id: int | None = None
     event_key: str = ""                      # #228:所属 event(FAIL 连坐 / 展示分组)
-    outcomes: tuple[str, ...] = ("home", "away")   # #228:pair 互斥 outcome 集
+    outcomes: tuple[str, ...] = ("yes", "no")
+    validation_group_pair_ids: tuple[str, ...] = ()  # 3-way 同批 role 必须全部 PASS 后发布
 
 
 @dataclass(slots=True)
 class _PairValidationState:
     candidate: _PairCandidate
+    log_message: str | None = None
     status: str = "PENDING"
     subscribed_instrument_ids: set[str] = None
     venue_sums: dict[str, float] = None
@@ -293,6 +295,7 @@ class MarketMatchingActor(Actor):
         is_three_way, _ = _partition_legs_by_role(all_legs)
         roles = ("home", "draw", "away") if is_three_way else (None,)
 
+        candidates: list[tuple[_PairCandidate, str]] = []
         for role in roles:
             pair_id = (
                 f"{event_key}|{role}" if role else event_key
@@ -305,28 +308,33 @@ class MarketMatchingActor(Actor):
             if len(venue_ids) < 2:
                 continue   # 该 role 不足 2 个 venue → 本 pair 无套利面,跳过
             tradable_ids = [iid for ids in venue_ids.values() for iid in ids]
-            if gid is not None:
-                self._game_to_pair.setdefault(gid, set()).add(pair_id)
-            self._handle_pair_candidate(
-                _PairCandidate(
-                    pair_id=pair_id,
-                    sport=anchor_ev.sport,
-                    competition=anchor_ev.competition,
-                    confidence=confidence,
-                    anchor_instrument_ids=anchor_ids,
-                    tradable_instrument_ids=tradable_ids,
-                    venue_instrument_ids=venue_ids,
-                    registry_instrument_ids=tradable_ids,
-                    registry_anchor_ids=anchor_ids,
-                    game_id=gid,
-                    event_key=event_key,
-                    outcomes=("yes", "no") if is_three_way else ("home", "away"),
-                ),
-                log_message=(
+            candidate = _PairCandidate(
+                pair_id=pair_id,
+                sport=anchor_ev.sport,
+                competition=anchor_ev.competition,
+                confidence=confidence,
+                anchor_instrument_ids=anchor_ids,
+                tradable_instrument_ids=tradable_ids,
+                venue_instrument_ids=venue_ids,
+                registry_instrument_ids=tradable_ids,
+                registry_anchor_ids=anchor_ids,
+                game_id=gid,
+                event_key=event_key,
+                outcomes=("yes", "no"),
+            )
+            candidates.append((
+                candidate,
+                (
                     f"MatchedPair {pair_id} (conf={confidence:.2f}, "
                     f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} tradable={len(tradable_ids)})"
                 ),
-            )
+            ))
+
+        if is_three_way and len(candidates) != len(roles):
+            return
+        if gid is not None:
+            self._game_to_pair.setdefault(gid, set()).update(candidate.pair_id for candidate, _ in candidates)
+        self._handle_pair_candidates(candidates)
 
     def _emit_pair(self, result: MatchResult, *, tradable_venue: str) -> None:
         anchor_ev = result.anchor_event
@@ -345,6 +353,7 @@ class MarketMatchingActor(Actor):
         is_three_way, _ = _partition_legs_by_role(all_tradable_legs)
         roles = ("home", "draw", "away") if is_three_way else (None,)
 
+        candidates: list[tuple[_PairCandidate, str]] = []
         for role in roles:
             pair_id = _pair_id_for(
                 anchor_ev.competition,
@@ -363,34 +372,44 @@ class MarketMatchingActor(Actor):
             )
             tradable_anchor_ids = anchor_leg_ids   # 可交易 anchor(PM)按 role 拆后的腿
             anchor_registry_ids = anchor_ids if anchor_is_non_tradable else []
-            # #60:记 gameId → pair_id(anchor 腿 info["game_id"];sports `ended` 时经此 evict)
-            if gid is not None:
-                self._game_to_pair.setdefault(gid, set()).add(pair_id)
             venue_ids: dict[str, list[str]] = {}
             if tradable_anchor_ids:
                 venue_ids[self._anchor_venue_str] = tradable_anchor_ids
             venue_ids[str(tradable_venue).upper()] = tradable_ids
-            self._handle_pair_candidate(
-                _PairCandidate(
-                    pair_id=pair_id,
-                    sport=anchor_ev.sport,
-                    competition=anchor_ev.competition,
-                    confidence=result.total_confidence,
-                    anchor_instrument_ids=anchor_registry_ids,
-                    tradable_instrument_ids=tradable_anchor_ids + tradable_ids,
-                    venue_instrument_ids=venue_ids,
-                    registry_instrument_ids=tradable_anchor_ids + tradable_ids,
-                    registry_anchor_ids=anchor_registry_ids,
-                    game_id=gid,
-                    event_key=event_key,
-                    outcomes=("yes", "no") if is_three_way else ("home", "away"),
-                ),
-                log_message=(
+            candidate = _PairCandidate(
+                pair_id=pair_id,
+                sport=anchor_ev.sport,
+                competition=anchor_ev.competition,
+                confidence=result.total_confidence,
+                anchor_instrument_ids=anchor_registry_ids,
+                tradable_instrument_ids=tradable_anchor_ids + tradable_ids,
+                venue_instrument_ids=venue_ids,
+                registry_instrument_ids=tradable_anchor_ids + tradable_ids,
+                registry_anchor_ids=anchor_registry_ids,
+                game_id=gid,
+                event_key=event_key,
+                outcomes=("yes", "no"),
+            )
+            candidates.append((
+                candidate,
+                (
                     f"MatchedPair {pair_id} (conf={result.total_confidence:.2f}, "
                     f"anchor={self._anchor_venue_str.lower()}:{len(anchor_ids)} "
                     f"{tradable_venue.lower()}={len(tradable_ids)})"
                 ),
-            )
+            ))
+
+        if is_three_way and len(candidates) != len(roles):
+            return
+        if gid is not None:
+            self._game_to_pair.setdefault(gid, set()).update(candidate.pair_id for candidate, _ in candidates)
+        self._handle_pair_candidates(candidates)
+
+    def _handle_pair_candidates(self, candidates: list[tuple[_PairCandidate, str]]) -> None:
+        group_pair_ids = tuple(candidate.pair_id for candidate, _ in candidates)
+        for candidate, log_message in candidates:
+            candidate.validation_group_pair_ids = group_pair_ids
+            self._handle_pair_candidate(candidate, log_message=log_message)
 
     def _handle_pair_candidate(self, candidate: _PairCandidate, *, log_message: str) -> None:
         if candidate.event_key:
@@ -410,6 +429,7 @@ class MarketMatchingActor(Actor):
             )
             return
         state = _PairValidationState(candidate=candidate)
+        state.log_message = log_message
         self._pair_validations[candidate.pair_id] = state
         for iid in candidate.tradable_instrument_ids:
             self._validation_pairs_by_instrument.setdefault(iid, set()).add(candidate.pair_id)
@@ -479,11 +499,8 @@ class MarketMatchingActor(Actor):
         state.best_sum = result["best_sum"]
         if result["passed"]:
             state.status = "PASSED"
-            self._finalize_pair(state.candidate, log_message=(
-                f"MatchedPair {state.candidate.pair_id} "
-                f"(conf={state.candidate.confidence:.2f}, probability_validated best_sum={state.best_sum:.4f})"
-            ))
             self._unsubscribe_validation_books(pair_id, state)
+            self._finalize_validation_group_if_passed(state.candidate)
             return
         state.status = "FAILED"
         state.fail_reason = result["reason"]
@@ -494,6 +511,14 @@ class MarketMatchingActor(Actor):
         )
         # #228 FAIL 连坐:错配是 event 级证据,同 event 的其余 pair 一并置 FAIL 并 evict。
         self._fail_event_siblings(state.candidate.event_key, pair_id)
+
+    def _finalize_validation_group_if_passed(self, candidate: _PairCandidate) -> None:
+        pair_ids = candidate.validation_group_pair_ids or (candidate.pair_id,)
+        states = [self._pair_validations.get(pair_id) for pair_id in pair_ids]
+        if any(state is None or state.status != "PASSED" for state in states):
+            return
+        for state in states:
+            self._finalize_pair(state.candidate, log_message=state.log_message)
 
     def _event_has_failed_pair(self, event_key: str) -> bool:
         if not event_key:
@@ -573,7 +598,7 @@ def _claim_of(instrument) -> str:
     info = getattr(instrument, "info", None)
     if not isinstance(info, dict):
         return "yes"
-    return str(info.get("claim") or "yes").lower()
+    return str(info.get("quote_claim") or "yes").lower()
 
 
 def _ask_probability(book, venue: str, *, claim: str = "yes") -> float | None:

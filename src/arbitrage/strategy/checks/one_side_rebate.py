@@ -116,7 +116,7 @@ class OneSideRebateCheck(Check):
                 "share_if_wins": share_if_wins,
                 "cost": cost,
             }
-            # #228:claim=no 腿透传执行字段(place_bets SELL@lay 转换 + 重定向)
+            # 合成 no 腿透传执行字段(place_bets SELL@lay 转换 + 重定向)
             for key in ("claim", "lay_price", "exec_instrument_id"):
                 if key in leg:
                     candidate_leg[key] = leg[key]
@@ -147,6 +147,7 @@ def _legs_by_role(snap) -> dict[str, list[dict]]:
     for iid in snap.instrument_ids:
         info = snap.instrument_info.get(iid) or {}
         claim = str(info.get("claim") or "").lower()
+        quote_claim = str(info.get("quote_claim") or "yes").lower()
         outcome = claim or str(info.get("selection_role") or "").lower()
         if outcome not in valid_outcomes:
             continue
@@ -157,7 +158,7 @@ def _legs_by_role(snap) -> dict[str, list[dict]]:
         price = _best_ask(book)
         if price is None or price <= 0:
             continue
-        prob = _to_prob(venue, price, claim)
+        prob = _to_prob(venue, price, quote_claim)
         if prob <= 0:
             continue
         leg = {
@@ -170,7 +171,7 @@ def _legs_by_role(snap) -> dict[str, list[dict]]:
         }
         if claim:
             leg["claim"] = claim
-        if claim == "no":
+        if info.get("exec_instrument_id"):
             leg["lay_price"] = price   # no 腿 price 即 lay 原值(#228)
             exec_iid = info.get("exec_instrument_id")
             if exec_iid:

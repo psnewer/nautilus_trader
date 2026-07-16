@@ -22,3 +22,5 @@ def test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size():
     )
 
     assert instrument.min_quantity.as_double() == 5.0
+    assert instrument.min_notional is None
+    assert instrument.info["min_buy_notional"] == 1.0

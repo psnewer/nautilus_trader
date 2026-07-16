@@ -39,9 +39,11 @@ class OpportunitySnapshot:
     # slice 9(#49):per-instrument info 冻结副本(每 iid → cache.instrument.info dict 浅拷贝)。
     # Check/Action 经 snapshot 读 `selection_role` / 其他 matching key,**不直接调 cache**(decouple)。
     instrument_info: dict = field(default_factory=dict)
-    # #228:pair 互斥 outcome 集。builder 从腿的 claim 派生(3-way 腿全部显式带 claim,
-    # 2-way 一律不带 → 任一腿有 claim 即 [yes,no],否则 [home,away]),与 MatchedPair.outcomes 一致。
-    outcomes: list = field(default_factory=lambda: ["home", "away"])
+    # PlaceBets 在同一快照内做订单转换时使用的 NT 最小下单约束。
+    # 只冻结规划需要的标量,不把 live Instrument 对象泄漏给 Action。
+    instrument_constraints: dict = field(default_factory=dict)
+    # pair 内 binary outcome 统一为 yes/no；selection_role 仅保留匹配/展示语义。
+    outcomes: list = field(default_factory=lambda: ["yes", "no"])
 
 
 def build_snapshot(
@@ -72,8 +74,8 @@ def build_snapshot(
     positions = [p for p in cache.positions_open() if str(getattr(p, "instrument_id", None)) in id_set]
     # in_play 派生 + instrument_info 冻结(slice 9 / #49)+ outcomes 派生(#228):一次遍历
     in_play = False
-    has_claim = False
     instrument_info: dict = {}
+    instrument_constraints: dict = {}
     for iid in instrument_ids:
         inst = cache.instrument(iid_objs[iid])
         info = getattr(inst, "info", None) if inst is not None else None
@@ -81,10 +83,14 @@ def build_snapshot(
             instrument_info[iid] = dict(info)  # 浅拷贝 freeze(后续 cache 写不影响)
             if info.get("in_play"):
                 in_play = True
-            if info.get("claim"):
-                has_claim = True
         else:
             instrument_info[iid] = {}
+        instrument_constraints[iid] = {
+            "min_quantity": _object_value(getattr(inst, "min_quantity", None)),
+            "min_notional": _object_value(getattr(inst, "min_notional", None)),
+            "min_buy_notional": _object_value((info or {}).get("min_buy_notional")),
+            "size_increment": _object_value(getattr(inst, "size_increment", None)),
+        }
     return OpportunitySnapshot(
         pair_id=pair_id,
         instrument_ids=list(instrument_ids),
@@ -92,7 +98,8 @@ def build_snapshot(
         positions=positions,
         in_play=in_play,
         instrument_info=instrument_info,
-        outcomes=["yes", "no"] if has_claim else ["home", "away"],
+        instrument_constraints=instrument_constraints,
+        outcomes=["yes", "no"],
     )
 
 
@@ -112,3 +119,16 @@ def _as_instrument_id(iid):
     from nautilus_trader.model.identifiers import InstrumentId
 
     return iid if isinstance(iid, InstrumentId) else InstrumentId.from_str(str(iid))
+
+
+def _object_value(value) -> float | None:
+    if value is None:
+        return None
+    for method in ("as_double", "as_decimal"):
+        fn = getattr(value, method, None)
+        if callable(fn):
+            return float(fn())
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

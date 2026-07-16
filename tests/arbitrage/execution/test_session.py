@@ -124,8 +124,8 @@ def _harness(timeout_secs=30.0, pair_inflight=None):
     return client, clock, cache, pair_registry, published, factory
 
 
-def _order(factory, instrument, qty=10):
-    return factory.limit(instrument.id, OrderSide.BUY, Quantity.from_int(qty), instrument.make_price(0.4))
+def _order(factory, instrument, qty=10, *, side=OrderSide.BUY, price=0.4):
+    return factory.limit(instrument.id, side, Quantity.from_int(qty), instrument.make_price(price))
 
 
 def _cmd(order):
@@ -196,6 +196,20 @@ def test_accepted_reserves_probability_venue_available_balance():
     assert balance.locked.as_double() == 0.0
 
 
+def test_accepted_probability_sell_reduction_does_not_reserve_cash():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    pm = pm_instrument("match_1", "home"); cache.add_instrument(pm)
+    cache.add_account(pm.id.venue, AccountFactory.create(pm_account_state(100)))
+    pair_registry.register("match_1", [pm.id])
+    order = _order(factory, pm, qty=50, side=OrderSide.SELL)
+    cache.add_order(order)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_accepted(order))
+
+    assert client.account_states[-1]["balances"][0].free.as_double() == 100.0
+
+
 def test_accepted_reserves_decimal_venue_available_balance_without_fx():
     client, clock, cache, pair_registry, published, factory = _harness()
     oe = oe_instrument("match_1", "away"); cache.add_instrument(oe)
@@ -208,6 +222,20 @@ def test_accepted_reserves_decimal_venue_available_balance_without_fx():
     client._send_order_event(TestEventStubs.order_accepted(order))
 
     assert client.account_states[-1]["balances"][0].free.as_double() == 88.0
+
+
+def test_accepted_reserves_decimal_lay_liability():
+    client, clock, cache, pair_registry, published, factory = _harness()
+    oe = oe_instrument("match_1", "away"); cache.add_instrument(oe)
+    cache.add_account(oe.id.venue, AccountFactory.create(oe_account_state(total=100, free=100)))
+    pair_registry.register("match_1", [oe.id])
+    order = _order(factory, oe, qty=10, side=OrderSide.SELL, price=5.0)
+    cache.add_order(order)
+    client._begin_session(_cmd(order))
+
+    client._send_order_event(TestEventStubs.order_accepted(order))
+
+    assert client.account_states[-1]["balances"][0].free.as_double() == 60.0
 
 
 def test_accepted_reserves_sharpexch_available_balance_without_fx():
@@ -229,7 +257,14 @@ def test_accepted_order_reserved_notional_uses_venue_capability():
     oe = oe_instrument("match_1", "away")
 
     assert accepted_order_reserved_notional(pm.id, quantity=50.0, price=0.2) == 10.0
+    assert accepted_order_reserved_notional(
+        pm.id,
+        quantity=50.0,
+        price=0.8,
+        side=OrderSide.SELL,
+    ) == 0.0
     assert accepted_order_reserved_notional(oe.id, quantity=12.0, price=1.8) == 12.0
+    assert accepted_order_reserved_notional(oe.id, quantity=10.0, price=5.0, side=OrderSide.SELL) == 40.0
 
 
 # ── 终态(全成 / 撤单 → 结束 + finished + 取消 watchdog）───────────

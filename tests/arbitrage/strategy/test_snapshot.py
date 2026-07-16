@@ -13,8 +13,11 @@ from src.arbitrage.strategy.snapshot import build_snapshot
 class _FakeInstrument:
     """带 mutable `info` dict 的伪 instrument(snapshot.in_play 派生 slice 9 / #49 用)。"""
 
-    def __init__(self, info=None):
+    def __init__(self, info=None, *, min_quantity=None, min_notional=None, size_increment=None):
         self.info = dict(info or {})
+        self.min_quantity = min_quantity
+        self.min_notional = min_notional
+        self.size_increment = size_increment
 
 
 class _FakeCache:
@@ -30,9 +33,22 @@ class _FakeCache:
     def set_book(self, iid, book):
         self._books[str(iid)] = book
 
-    def set_instrument(self, iid, info=None):
+    def set_instrument(
+        self,
+        iid,
+        info=None,
+        *,
+        min_quantity=None,
+        min_notional=None,
+        size_increment=None,
+    ):
         """slice 9:setup `info["in_play"]` 等用。"""
-        self._instruments[str(iid)] = _FakeInstrument(info=info)
+        self._instruments[str(iid)] = _FakeInstrument(
+            info=info,
+            min_quantity=min_quantity,
+            min_notional=min_notional,
+            size_increment=size_increment,
+        )
 
     def add_position(self, pos):
         self._positions.append(pos)
@@ -111,6 +127,35 @@ def test_unknown_pair_id_yields_empty_snapshot():
     pair_registry = PairRegistry()  # 空
     snap = build_snapshot("missing", cache=cache, portfolio=SimpleNamespace(), pair_registry=pair_registry)
     assert snap.instrument_ids == [] and snap.order_books == {} and snap.positions == []
+
+
+def test_snapshot_freezes_instrument_minimums_for_order_planning():
+    cache = _FakeCache()
+    cache.set_instrument(
+        "A.POLYMARKET",
+        {"selection_role": "home", "min_buy_notional": 1.0},
+        min_quantity=_QtyLike(5.0),
+        min_notional=_QtyLike(7.0),
+        size_increment=_QtyLike(0.01),
+    )
+    pair_registry = PairRegistry(); pair_registry.register("p", ["A.POLYMARKET"])
+
+    snap = build_snapshot("p", cache=cache, portfolio=SimpleNamespace(), pair_registry=pair_registry)
+
+    assert snap.instrument_constraints["A.POLYMARKET"] == {
+        "min_quantity": 5.0,
+        "min_notional": 7.0,
+        "min_buy_notional": 1.0,
+        "size_increment": 0.01,
+    }
+
+
+class _QtyLike:
+    def __init__(self, value):
+        self.value = value
+
+    def as_double(self):
+        return self.value
 
 
 def test_snapshot_uses_tradable_pair_ids_not_anchor_ids():

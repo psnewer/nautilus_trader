@@ -141,5 +141,5 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 ## #228:SE 3-way 合成 no 腿(与 OE 同构,2026-07-15)
 
-- `test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`:3-way 每 selection 产 yes + 合成 no(handicap 哨兵 id + `claim`/`exec_instrument_id` info);2-way 不变。
+- `test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`:3-way 每 selection 产 yes + 合成 no(`-0.125` id + `claim=no/quote_claim=no/exec_instrument_id`);2-way 真实 runner 统一 claim=yes/no。
 - `test_data.py` / `test_data_client.py`:`se_update_subscription_state` / `se_*_market_routing` / `se_*_message_to_book_deltas` 路由多值化(`[(iid, claim)]`),`se_runner_to_book_deltas(claim="no")` 两侧换位存原始值。

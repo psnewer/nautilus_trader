@@ -18,7 +18,7 @@
 
 PM WS 配置约束:`ArbConfig.venues.polymarket.ws_url` 的推荐值是上游 base URL `.../ws/`。为兼容旧 discovery / odds 订阅配置,dispatcher 接受旧 full endpoint `.../ws/market` / `.../ws/user` 并归一化后再交给 PM Data/Exec client。
 
-最小下单元数据契约:PM 的 venue 最小值是 **share 数量 5**,写入 `BinaryOption.min_quantity`;OE 的 venue 最小值是 **stake 7 GBP**,但 adapter 外部 OE `quantity` 统一按 USD stake 解释,因此 Provider 写入 `BettingInstrument.min_notional = Money(7 * arbitrage.fx, USD)`。Risk 不另维护 venue 常量,只经 NT 父类读取 instrument 元数据。
+最小下单元数据契约:PM 的 venue 最小 share 从市场 `minimum_order_size` 写入 `BinaryOption.min_quantity`(当前通常 5);PM 另有 BUY-only 1 USD 下限,因 `BinaryOption.min_notional` 无法表达 side 语义,解析层写入 `instrument.info["min_buy_notional"]=1.0`。OE 的 venue 最小值是 **stake 7 GBP**,但 adapter 外部 OE `quantity` 统一按 USD stake 解释,因此 Provider 写入 `BettingInstrument.min_notional = Money(7 * arbitrage.fx, USD)`。
 
 **明确不做**:
 - ⚠️ ~~DataClient 不拥有调度(归 Refresher,Q8)~~ **#59 反转**:Q8 的"调度归 Refresher"被验证为重造 NT 原生(refresher 3 个 bug 都是脱离原生路径的症状)→ **调度迁回 DataClient 原生**(refactor.md #58/#59)。
@@ -54,7 +54,9 @@ flowchart LR
 ### 3.2 `OrbitExchInstrumentProvider`(`nautilus_trader/adapters/orbitexch/providers.py`)
 
 > **#228(已落地 2026-07-15)**:3-way 赛事每个 selection 产 yes + 合成 no **两条** instrument
-> (no 为同 selection 的 lay 投影,id 加 `-NO` 后缀,`claim="no"`);2-way 不变。PM 3-way 同步
+> (no 为同 selection 的 lay 投影,保持真实 market/selection,用非合法 handicap `-0.125` 生成唯一
+> id,`claim="no"`,`quote_claim="no"`);2-way 仍只产两个真实 runner,但统一标
+> home=`claim=yes`、away=`claim=no`,二者都没有执行重定向。
 > 暴露 NO token。腿模型/book 写入的真理源在 data 架构 §3.1b 与 §3.2 的 #228 注记,此处不复述。
 
 ```python
@@ -113,14 +115,14 @@ class OrbitExchInstrumentProvider(InstrumentProvider):
 > matching info:
 > - **home/away 队名**:权威源 `event["teams"]`(`name`+`ordering`+`abbreviation`,列表顺序无关);缺则 fallback `_parse_team_names(title)`。
 > - **selection_role**:
->   - 2-way / 单市场 3-outcome(`slug == ticker`):按 **competition `ordering`** 选映射 —— `home`→`[home,(draw),away]`;`away`→反排 `[away,(draw),home]`(如 MLB)。**不赌 outcomes 固定顺序**(MLB `ordering=away` 时 `[away,home]`,按固定下标会错位)。
+>   - 2-way(`slug == ticker`):按 **competition `ordering`** 选 role 映射,再统一 home=`claim=yes`、away=`claim=no`。**不赌 outcomes 固定顺序**。
 >   - 3-way binary(`slug == ticker-{abbr}`):仅 `Yes` token;`abbr` 取自 `teams.abbreviation`;`-{home_abbr}`→home / `-{away_abbr}`→away / `-draw`→draw;其它(`No` token / 未知后缀)→ 跳过。
 > - **sport**:`ArbContext.competition_to_sport_by_data_source["PMSPORTS"]` 查表(config 派生)。
 > - **competition**:写 `info` 时经 `competition_aliases_by_venue["POLYMARKET"]` 标准化(matching `(sport,competition)` 分组键两边对齐:PM "atp" / OE 别名 → 同值)。
 >
 > **关键 audit**:`tag_id=101232`(ATP tag)在 gamma `/events` 只返 5 个 outright winners;match-level H2H 在 **series**(`series_id=10365`)里;`/series/{id}` 内嵌 events 截断,`/events?series_id=&limit=N` 才全量。
 > **性能**:单请求拿全(ATP ~70、足球 ~100,每 event 内嵌 markets),无 per-event 二跳。launcher `timeout_connection` 现为 180s(初次 load + OE 登录 + 启动对账窗口);#53 曾从 20s 提到 120s,后随 #105 reconciliation 接入统一到 180s。
-> **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。
+> **交易最小值**:Gamma/CLOB 归一化字段 `minimum_order_size` 是 PM limit order 的最小 share 数,Provider 产出的 `BinaryOption.min_quantity` 必须填该值(当前默认/实盘为 5),使 NT RiskEngine 能在本地拒绝 `quantity < 5` 的 PM 订单。BUY 还要求 `quantity × price >= 1 USD`,SELL 无此金额下限；解析层把该侧别约束写成 `info["min_buy_notional"]=1.0`,不写 `BinaryOption.min_notional`，避免 NT 对 SELL 误用金额下限。
 
 **PMSPORTS event anchor discovery(#127,已落地 slice B)**:
 `PolymarketSportsInstrumentProvider` 复用同一组公开 Gamma discovery 目标(`ArbContext.target_competitions_by_data_source["PMSPORTS"]`,

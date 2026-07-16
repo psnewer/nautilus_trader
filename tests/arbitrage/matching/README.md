@@ -222,5 +222,11 @@
 
 - `test_actor.py::test_three_way_pm_anchor_splits_into_role_pairs`:PM-anchor 路径 3-way 拆 3 个 role pair(role 后缀在 venue 后缀之前),每 pair `outcomes=["yes","no"]`、每 venue 每 outcome 恰好一条腿、event_key 正确。
 - `test_actor.py::test_three_way_pmsports_anchor_splits_and_duplicates_anchor`:PMSPORTS 聚合路径拆 3 个无 venue 后缀 pair;每场唯一合成锚在各 pair `anchor_instrument_ids` 重复登记(`PairRegistry._by_anchor` 多值);`game_to_pair[gid]` 覆盖 3 个 pair。
-- `test_actor.py::test_three_way_validation_fail_evicts_event_siblings`:门控 pair 级 + FAIL 连坐双向——先到 pair(已 PASS 注册)被反注册置 sticky FAILED;后到 pair 入场即 FAILED 不订阅不发布;decimal no 腿 ask 概率经 claim 感知换算(1−1/lay)。
+- `test_actor.py::test_three_way_validation_publishes_only_after_all_roles_pass`:home/draw/away 全部 PASS 后才统一注册发布;任一 `_finalize_pair` 执行时整组状态已全为 PASSED。
+- `test_actor.py::test_three_way_validation_fail_never_publishes_event_siblings`:门控 pair 级 + FAIL 连坐双向——早到 pair 即使先 PASS 也不发布;任一 sibling FAIL 后整组 sticky FAILED,不存在先发布后反注册的真钱窗口;decimal no 腿 ask 概率经 claim 感知换算(1−1/lay)。
+
+## #233:binary pair outcome 统一
+
+- 2-way 与拆分后的 3-way role pair 均声明 `outcomes=[yes,no]`。
+- matching 概率校验按逻辑 `claim` 分组，但 decimal 概率换算读 `quote_claim`；真实 NO runner 不取补集，合成 NO 才取 `1−1/lay`。
 - 2-way 存量用例全部不变(pair_id 零迁移回归锚)。

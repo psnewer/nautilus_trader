@@ -20,41 +20,59 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nautilus_trader.model.enums import PositionSide
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
-from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.portfolio.portfolio import Portfolio
-
 from src.arbitrage.common.pair_registry import PairRegistry
-from src.arbitrage.common.venues import is_decimal_odds_venue
+from src.arbitrage.common.venues import leg_economics
+from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
 class _Leg:
     """从 NT Position 反推的单腿(outcome 指标计算用,size 已是 USD 口径)。"""
 
-    __slots__ = ("venue", "market_type", "size", "price")
+    __slots__ = ("venue", "market_type", "size", "price", "is_lay")
 
-    def __init__(self, venue: str, market_type: str, size: float, price: float) -> None:
+    def __init__(
+        self,
+        venue: str,
+        market_type: str,
+        size: float,
+        price: float,
+        is_lay: bool = False,
+    ) -> None:
         self.venue = venue
         self.market_type = market_type
         self.size = size
         self.price = price
+        self.is_lay = is_lay
 
     def profit_if_wins(self) -> float:
-        if is_decimal_odds_venue(self.venue):
-            return self.size * (self.price - 1.0)
-        return self.size * (1.0 - self.price)
+        return leg_economics(
+            self.venue,
+            self.price,
+            self.size,
+            is_lay=self.is_lay,
+        ).profit_if_wins
 
     def loss_if_loses(self) -> float:
-        if is_decimal_odds_venue(self.venue):
-            return self.size
-        return self.size * self.price
+        return leg_economics(
+            self.venue,
+            self.price,
+            self.size,
+            is_lay=self.is_lay,
+        ).loss_if_loses
 
     def share_if_wins(self) -> float:
-        if is_decimal_odds_venue(self.venue):
-            return self.size * self.price
-        return self.size
+        return leg_economics(
+            self.venue,
+            self.price,
+            self.size,
+            is_lay=self.is_lay,
+        ).share_if_wins
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +115,8 @@ class ArbitragePortfolio(Portfolio):
     def outcome_exposures(self, pair_id: str, account_id=None) -> dict[str, OutcomeExposure]:
         """各 outcome 的绝对金额净利润与 liability。Risk 门控只读这个接口。"""
         legs = self._legs_for_pair(pair_id, account_id)
-        return self._compute_outcome_exposures(legs, outcomes=self._outcomes_for_pair(pair_id, legs))
+        outcomes = self._outcomes_for_pair(pair_id, legs)
+        return self._compute_outcome_exposures(legs, outcomes=outcomes)
 
     def outcome_shares(self, pair_id: str, account_id=None) -> dict[str, float]:
         """各 outcome 当前持仓 share。Strategy share_limit action 用于计算剩余额度。"""
@@ -113,8 +132,9 @@ class ArbitragePortfolio(Portfolio):
     ) -> dict[str, float]:
         """某 venue 各 outcome 的 share。PM 按单腿门控用。"""
         venue_lower = venue.lower()
-        legs = [leg for leg in self._legs_for_pair(pair_id, account_id) if leg.venue == venue_lower]
-        outcomes = self._outcomes_from_legs(legs) or {"home", "away"}
+        all_legs = self._legs_for_pair(pair_id, account_id)
+        legs = [leg for leg in all_legs if leg.venue == venue_lower]
+        outcomes = self._outcomes_for_pair(pair_id, all_legs)
         return {
             outcome: sum(leg.share_if_wins() for leg in legs if leg.market_type == outcome)
             for outcome in outcomes
@@ -160,9 +180,13 @@ class ArbitragePortfolio(Portfolio):
             instrument = self._arb_cache.instrument(InstrumentId.from_str(str(instrument_id)))
             if instrument is None or not instrument.info:
                 continue
-            market_type = instrument.info.get("selection_role") or instrument.info.get("market_type")
+            market_type = (
+                instrument.info.get("claim")
+                or instrument.info.get("selection_role")
+                or instrument.info.get("market_type")
+            )
             if market_type:
-                outcomes.add(str(market_type))
+                outcomes.add(str(market_type).lower())
         return outcomes
 
     def _active_pair_ids(self, account_id=None) -> set[str]:
@@ -174,14 +198,32 @@ class ArbitragePortfolio(Portfolio):
         return pair_ids
 
     def _legs_for_pair(self, pair_id: str, account_id=None) -> list[_Leg]:
+        positions = [
+            position
+            for position in self._arb_cache.positions_open(account_id=account_id)
+            if self._resolve_pair_id(position) == pair_id
+        ]
+        outcomes = self._outcomes_from_registry(pair_id) or self._outcomes_from_positions(positions)
         legs: list[_Leg] = []
-        for position in self._arb_cache.positions_open(account_id=account_id):
-            if self._resolve_pair_id(position) != pair_id:
-                continue
-            leg = self._leg_from_position(position)
+        for position in positions:
+            leg = self._leg_from_position(position, outcomes=outcomes)
             if leg is not None:
                 legs.append(leg)
         return legs
+
+    def _outcomes_from_positions(self, positions) -> set[str]:
+        infos = []
+        for position in positions:
+            instrument = self._arb_cache.instrument(position.instrument_id)
+            info = getattr(instrument, "info", None)
+            if info:
+                infos.append(info)
+        if any(info.get("claim") for info in infos):
+            return {"yes", "no"}
+        outcomes = {"home", "away"}
+        if any((info.get("selection_role") or info.get("market_type")) == "draw" for info in infos):
+            outcomes.add("draw")
+        return outcomes
 
     # ── pair_id 来源(#34:由 matching 经 PairRegistry 提供;**不是** info["competition"])──
     def _resolve_pair_id(self, position) -> str | None:
@@ -190,13 +232,13 @@ class ArbitragePortfolio(Portfolio):
             return None  # registry 未注入(测试/启动早期)→ 不参与 pair 聚合
         return registry.get(position.instrument_id)
 
-    def _leg_from_position(self, position) -> _Leg | None:
+    def _leg_from_position(self, position, *, outcomes: set[str] | None = None) -> _Leg | None:
         instrument = self._arb_cache.instrument(position.instrument_id)
         if instrument is None or not instrument.info:
             return None
-        # Q9 标准 key:`selection_role`("home"/"draw"/"away");兼容旧 `market_type`
-        market_type = instrument.info.get("selection_role") or instrument.info.get("market_type")
-        if not market_type:
+        selection_role = instrument.info.get("selection_role") or instrument.info.get("market_type")
+        claim = instrument.info.get("claim")
+        if not (claim or selection_role):
             return None
         if not isinstance(instrument, (BinaryOption, BettingInstrument)):
             return None
@@ -204,9 +246,22 @@ class ArbitragePortfolio(Portfolio):
         if not venue_id:
             return None
         venue = venue_id.lower()
+        position_side = getattr(position, "side", None)
+        if outcomes is None:
+            outcomes = {"yes", "no"} if claim else {"home", "away", str(selection_role).lower()}
+        market_type = outcome_for_position(
+            venue_id,
+            outcomes,
+            selection_role=selection_role,
+            claim=claim,
+            position_side=position_side,
+        )
+        if market_type is None:
+            return None
         return _Leg(
             venue=venue,
             market_type=market_type,
             size=abs(position.quantity.as_double()),
             price=position.avg_px_open,
+            is_lay=position_side == PositionSide.SHORT,
         )

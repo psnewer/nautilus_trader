@@ -21,6 +21,7 @@ class OpportunityMeta:
     leg_key: str
     expected_legs: tuple[str, ...]
     intent: str = "arbitrage"
+    venue_required_balance: float | None = None
 
 
 def new_opportunity_id() -> str:
@@ -35,6 +36,8 @@ def tags_from_meta(meta: OpportunityMeta) -> list[str]:
         f"{TAG_PREFIX}expected_legs={','.join(meta.expected_legs)}",
         f"{TAG_PREFIX}intent={meta.intent}",
     ]
+    if meta.venue_required_balance is not None:
+        tags.append(f"{TAG_PREFIX}venue_required_balance={meta.venue_required_balance}")
     return tags
 
 
@@ -49,12 +52,14 @@ def meta_from_tags(tags) -> OpportunityMeta | None:
     expected = tuple(part for part in expected_raw.split(",") if part)
     if leg_key not in expected:
         return None
+    required_balance = _optional_float(values.get("venue_required_balance"))
     return OpportunityMeta(
         opportunity_id=opportunity_id,
         pair_id=pair_id,
         leg_key=leg_key,
         expected_legs=expected,
         intent=values.get("intent", "arbitrage"),
+        venue_required_balance=required_balance,
     )
 
 
@@ -75,3 +80,13 @@ def _tag_values(tags) -> dict[str, str]:
         key, value = tag[len(TAG_PREFIX):].split("=", 1)
         values[key] = value
     return values
+
+
+def _optional_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None

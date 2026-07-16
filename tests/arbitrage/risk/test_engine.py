@@ -345,6 +345,43 @@ def test_balance_pm_does_not_self_deduct_open_orders():
     assert ctx.engine._check_balance(pm, order) is True
 
 
+def test_balance_pm_sell_reduction_requires_no_quote_balance():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=0))
+    order = _DuckOrder(pm.id, price=0.8, qty=Quantity.from_int(100), side="SELL")
+
+    assert ctx.engine._check_balance(pm, order) is True
+
+
+def test_pm_buy_below_minimum_notional_is_denied():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+    order = _DuckOrder(pm.id, price=0.1, qty=Quantity.from_int(5), side="BUY")
+
+    assert ctx.engine._check_min_buy_notional(pm, order) is False
+    assert any("notional=0.5000" in reason for reason in denials)
+
+
+def test_pm_buy_at_minimum_notional_passes():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(pm.id, price=0.2, qty=Quantity.from_int(5), side="BUY")
+
+    assert ctx.engine._check_min_buy_notional(pm, order) is True
+
+
+def test_pm_sell_does_not_apply_buy_notional_minimum():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(pm.id, price=0.1, qty=Quantity.from_int(5), side="SELL")
+
+    assert ctx.engine._check_min_buy_notional(pm, order) is True
+
+
 def test_balance_oe_uses_free_and_decimal_quantity_cost():
     ctx = _Ctx()
     oe = oe_instrument("match_X", "away", 2)
@@ -355,6 +392,43 @@ def test_balance_oe_uses_free_and_decimal_quantity_cost():
     order = _DuckOrder(oe.id, price=2.5, qty=Quantity.from_int(50))    # OE cost = USD size = 50 > free 40
     assert ctx.engine._check_balance(oe, order) is False
     assert any("Insufficient balance" in d for d in denials)
+
+
+def test_balance_decimal_lay_uses_liability_not_stake():
+    ctx = _Ctx()
+    oe = oe_instrument("match_X", "away", 2)
+    ctx.cache.add_instrument(oe)
+    ctx.cache.add_account(_oe_account(ctx, total=100, free=30))
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+    order = _DuckOrder(oe.id, price=5.0, qty=Quantity.from_int(10), side="SELL")
+
+    assert ctx.engine._check_balance(oe, order) is False
+    assert any("cost=40.0000" in reason for reason in denials)
+
+
+def test_balance_uses_opportunity_venue_total_for_each_leg():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=10))
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+    order = _DuckOrder(
+        pm.id,
+        price=0.2,
+        qty=Quantity.from_int(5),  # 单腿 cost=1,但同 venue 整组需要 12
+        tags=[
+            "arb:opportunity_id=opp-1",
+            "arb:pair_id=pair-1",
+            "arb:leg_key=pm:away:0:buy",
+            "arb:expected_legs=pm:away:0:reduce,pm:away:0:buy",
+            "arb:venue_required_balance=12.0",
+        ],
+    )
+
+    assert ctx.engine._check_balance(pm, order) is False
+    assert any("cost=12.0000" in reason for reason in denials)
 
 
 def test_balance_sharpexch_uses_free_and_decimal_quantity_cost():
@@ -433,6 +507,45 @@ def test_check_order_override_dispatched_and_denies_on_real_submit_path():
 
     assert len(denied) >= 1, "deny 事件未发出(覆盖未派发或未自调 _deny_order)"
     assert exec_engine.command_count == 0, "deny 后订单仍泄漏到 execution"
+
+
+def test_pm_buy_minimum_notional_denies_on_real_submit_path():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    ctx.cache.add_instrument(pm)
+    ctx.cache.add_account(_pm_account(ctx, total=100))
+
+    exec_engine = ExecutionEngine(msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock, config=ExecEngineConfig())
+    exec_client = MockExecutionClient(
+        client_id=ClientId("POLYMARKET"), venue=Venue("POLYMARKET"), account_type=AccountType.CASH,
+        base_currency=None, msgbus=ctx.msgbus, cache=ctx.cache, clock=ctx.clock,
+    )
+    exec_engine.register_client(exec_client)
+    denied = []
+    ctx.msgbus.subscribe(topic="events.order.*", handler=lambda event: denied.append(event))
+
+    strategy = Strategy()
+    strategy.register(
+        trader_id=ctx.trader_id,
+        portfolio=ctx.portfolio,
+        msgbus=ctx.msgbus,
+        cache=ctx.cache,
+        clock=ctx.clock,
+    )
+    order = strategy.order_factory.limit(pm.id, OrderSide.BUY, Quantity.from_int(5), pm.make_price(0.1))
+    cmd = SubmitOrder(
+        trader_id=ctx.trader_id,
+        strategy_id=strategy.id,
+        position_id=None,
+        order=order,
+        command_id=UUID4(),
+        ts_init=ctx.clock.timestamp_ns(),
+    )
+
+    ctx.engine._handle_submit_order(cmd)
+
+    assert denied
+    assert exec_engine.command_count == 0
 
 
 def test_recovery_intent_skips_profit_gates_on_real_submit_path():

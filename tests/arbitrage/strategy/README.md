@@ -196,10 +196,10 @@ strategy_registry.register_sport("Soccer", dbg if debug_cfg.enabled else prod)
 **用户域 Check/Action**(slice 9 #49):
 - ✅ `pre_match` 只作为 `StrategyEvaluator` 从 snapshot 派生的 self_hits signal 使用,不再注册为 Check 类型;配置写 `{"type":"pre_match"}` 会 fail-fast
 - ✅ `test_check_mean_rebate.py`:3-way 套利 > 阈值 → True 写带 `share_if_wins` 的 legs / rate < 阈值 → False 不写 / 缺方向 → False / 2-way 也支持 / 从 NT `InstrumentId.venue` 或兼容字符串提真实 venue / SE 作为 registry decimal odds venue 可触发 / 同概率 tie-break 经 Venue Registry `venue_preference_rank` 稳定排序 / strategy params.share 覆盖 Web 默认 share
-- ✅ `test_check_one_side_rebate.py`:2-way 多 venue 同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤 / 3-way home/draw/away candidate 生成 / SE candidate 经 Venue Registry 使用 decimal odds stake qty / decimal venue 作为 target outcome 时用剩余预算集中返利并写 `qty/share_if_wins/cost` / rate 低于阈值不写 candidates / 未配 share 时使用 Web 默认 share / 缺 snapshot、缺 role、缺 order book、非正价格、非正 share 均 fail-fast 且不写 candidates
+- ✅ `test_check_one_side_rebate.py`:binary pair 的 `[yes,no]` 多 venue同 outcome 全部参与笛卡尔积枚举 + target 阈值过滤；3-way event 拆出的每个 market 仍按独立 `[yes,no]` pair 生成 candidate；SE candidate 经 Venue Registry 使用 decimal odds stake qty；decimal venue 作为 target outcome 时用剩余预算集中返利并写 `qty/share_if_wins/cost`；rate 低于阈值不写 candidates；未配 share 时使用 Web 默认 share；缺 snapshot、缺 role、缺 order book、非正价格、非正 share 均 fail-fast 且不写 candidates
 - ✅ `test_check_cross_venue.py`:套利树 checktion 过滤全同 venue 的 `legs`;对 `candidates` 数组删除全同 venue candidate,剩余为空则拒绝;补偿树不使用该 check
 - ✅ `test_check_mean_rebate_recovery.py`(7):已有单边持仓 → 生成缺口 outcome recovery leg 到最大实际 share / 修复后最差 rebate 低于阈值不触发 / 无缺口不触发 / OE/SE 缺口 qty 与实际 share 经 Venue Registry 按 USD stake gross payout 反算(`missing/odds`,不乘 fx) / 同概率 tie-break 经 Venue Registry `venue_preference_rank` / typed `InstrumentId` info map 兼容 / 既有持仓 `avg_px_open=0` 时不触发 recovery
-- ✅ `test_action_place_bets.py`:PM size=share / OE/SE 经 Venue Registry size=share/odds / OE 无效价 → 0 / 无 legs scratch 不 raise / log 每 leg / recovery Check 预写 `leg["qty"]` 时复用该 qty / 用 `leg["share_if_wins"]` 推 qty,不再用 action share 兜底 / decimal odds venue 的 `claim=no` 转 `SELL @ lay/bid` 并按 lay 重算 qty / probability venue 的 `claim=no` 不转 lay、保持买入路径 / leg 缺 `qty/share_if_wins` 或 non-tradable anchor leg 时整次机会 abort / venue-keyed `price_overrides`+`qty_overrides` 只改 submit spec(用于 live probe 不成交挂单,且 qty override 优先于 leg qty) / compensation tree 可用 `intent="recovery"` 标记补救单
+- ✅ `test_action_place_bets.py`:基础 size/override/fail-closed 行为；真实 decimal `claim=no` 保持 BUY/BACK，只有带执行重定向的合成 no 转 SELL@lay；PM 互斥仓位拆单及最小数量回退见 #233。
 - ✅ `test_action_share_limit.py`:单一 `legs` 在 share_limit 内直接缩放 USD 口径 `qty/share_if_wins` / remaining 与 qty 公式按 Venue Registry `odds_model` 分支 / probability venue 用真实 venue查 Portfolio share / candidate 数组逐个缩放并输出 `adjusted_share` / 无 remaining 或缺 `qty/share_if_wins` 的 candidate 被移除 / 单一 legs 缺 `qty/share_if_wins` 时清空 / 未配 max_leg_share 时使用 Web 默认 / strategy params.max_leg_share 覆盖 Web 默认 / 不再用 action share 兜底
 - ✅ `fx` 边界收口:Strategy Check/Action params 不再接收无效 `fx`;`fx` 只保留在顶层 `ArbitrageParams` 和 adapter 入站/出站换汇边界。
 - ✅ `test_action_candi_select.py`(2):从调整后的 candidate 数组选择“内部最大 `share_if_wins`”最大的 candidate 并写回 `legs` / 空 candidate 清空旧 legs
@@ -381,5 +381,20 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 - `test_check_mean_rebate.py::test_3way_split_pair_yes_no_arb_triggers_above_threshold` / `test_3way_split_pair_decimal_no_leg_carries_lay_and_exec_redirect`:[yes,no] pair 按 `claim or selection_role` 分组,合法集 = `snap.outcomes`(旧 home/draw/away 三 role 分支退役);decimal no 腿 prob=1−1/lay,选中时 leg 带 `claim/lay_price/exec_instrument_id`。
 - `test_check_one_side_rebate.py::test_3way_split_pair_yes_no_generates_candidates`:candidate legs 透传 claim 执行字段。
 - `test_action_place_bets.py::test_decimal_no_claim_redirects_to_exec_instrument`:合成 no 腿真单重定向到同 selection 的 yes instrument(SELL@lay,qty=share/lay)。
+
+## #233:canonical outcome + 下单前等价拆单
+
+- 2-way/3-way snapshot 的经济 outcome 统一为 `yes/no`;真实 decimal NO 仍 BUY/BACK，只有带 `exec_instrument_id` 的合成 NO 转 SELL/LAY。
+- `test_action_place_bets.py` 覆盖 PM 目标 BUY 100、有互斥仓位 60 时拆为 SELL 60 + BUY 40；仓位 97 时按最小 5 调成 SELL 95 + BUY 5；仓位 3 时回退原 BUY；仓位 100 时只 SELL。
+- 同 venue 子单共享实际 `expected_legs` 与 `venue_required_balance`；PM SELL 对资金需求贡献 0。
 - `test_mean_rebate_e2e.py`:e2e fixture 改为 [yes,no] 拆分 pair(2 腿)。
-- mean_rebate_recovery 对 `[yes,no]` pair 显式 bail(no 敞口 SHORT/lay 头寸核算未建模,另行设计)。
+- mean_rebate_recovery 已按 #230 支持 `[yes,no]` pair,策略内用例覆盖:
+  - PM NO LONG 已持仓 → 正确归 no,缺 yes 时生成 BUY yes recovery leg。
+  - decimal LAY SHORT 已持仓 → 正确归 no,缺 yes 时生成 BACK/BUY recovery leg。
+  - 已有 yes 持仓、no 缺口 → 可选择 PM NO BUY 或 decimal SELL@lay,并透传 `claim/lay_price/exec_instrument_id`。
+  - repaired rebate 低于阈值仍拒绝;现有 2-way recovery 行为不回归。
+
+## #234:PM 拆单的 BUY-only 最小金额
+
+- Snapshot 冻结 `min_quantity/min_buy_notional/size_increment`，不泄漏 live Instrument。
+- `test_probability_split_keeps_minimum_buy_notional_at_low_price`:目标 BUY 100 @ 0.02、互斥 LONG 97 时，BUY 子单至少 50 shares，最终拆为 SELL 50 + BUY 50；SELL 子单不应用 1 USD 下限。

@@ -85,6 +85,7 @@ def make_submitter(*, cache, msgbus, clock, trader_id, log):
                 leg_key=str(spec["leg_key"]),
                 expected_legs=tuple(str(v) for v in spec["expected_legs"]),
                 intent=str(spec.get("intent", "arbitrage")),
+                venue_required_balance=spec.get("venue_required_balance"),
             ))
         order = LimitOrder(
             trader_id=trader_id,

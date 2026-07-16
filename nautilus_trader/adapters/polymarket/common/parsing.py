@@ -228,6 +228,9 @@ def parse_polymarket_instrument(
         expiration_ns = (pd.Timestamp.now(tz="UTC") + pd.DateOffset(years=10)).value
 
     maker_fee, taker_fee = extract_fee_rates(market_info)
+    instrument_info = dict(market_info)
+    # PM 的 1 USD 下限只适用于 BUY；BinaryOption.min_notional 无法表达侧别约束。
+    instrument_info.setdefault("min_buy_notional", 1.0)
 
     ts_init = ts_init if ts_init is not None else time.time_ns()
 
@@ -250,7 +253,7 @@ def parse_polymarket_instrument(
         taker_fee=taker_fee,
         ts_event=ts_init,
         ts_init=ts_init,
-        info=market_info,
+        info=instrument_info,
     )
 
 

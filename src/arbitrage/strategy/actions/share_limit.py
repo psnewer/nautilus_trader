@@ -177,29 +177,18 @@ class ShareLimitModification(Action):
         return max_leg_share - current
 
     def _decimal_remaining(self, portfolio, pair_id: str, venue: str, role: str, max_leg_share: float) -> float:
-        """Decimal odds venue:按 merge 后的单腿 share 计算 remaining。
+        """Decimal odds venue:按二元 outcome 净额计算 remaining。
 
-        OE/SE 平台自动对冲，margin 按净敞口计算。remaining 基于 merge 后的 share:
-        - home=60, away=40 → merge后 home=20, away=0
-        - home remaining = max - 20 = 80
-        - away remaining = max - 0 = 100
+        OE/SE 平台自动对冲，margin 按净敞口计算；outcome 名称统一为 yes/no，
+        但算法只依赖“恰好两个互斥 outcome”，不硬编码名称。
         """
         shares = portfolio.outcome_shares_for_venue(pair_id, venue.lower(), None)
-        home = shares.get("home", 0.0)
-        away = shares.get("away", 0.0)
-
-        # merge 后的 share
-        if home >= away:
-            merged_home = home - away
-            merged_away = 0.0
-        else:
-            merged_home = 0.0
-            merged_away = away - home
-
-        if role == "home":
-            return max_leg_share - merged_home
-        else:  # away
-            return max_leg_share - merged_away
+        outcomes = tuple(shares)
+        if role not in shares or len(outcomes) != 2:
+            return max_leg_share - shares.get(role, 0.0)
+        opposite = next(outcome for outcome in outcomes if outcome != role)
+        merged = max(0.0, shares.get(role, 0.0) - shares.get(opposite, 0.0))
+        return max_leg_share - merged
 
     def _configured_max_leg_share(self, ctx: EvalContext) -> float | None:
         if self._max_leg_share is not None:

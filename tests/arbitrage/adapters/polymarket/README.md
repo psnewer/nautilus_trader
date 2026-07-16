@@ -51,6 +51,10 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: 产出的 `BinaryOption.min_quantity` 等于 `minimum_order_size`(当前 venue 默认 5 shares),由 NT RiskEngine 在本地拒绝 `quantity < 5`。
 **验收**: `tests/arbitrage/adapters/polymarket/test_parsing_min_size.py::test_parse_polymarket_instrument_sets_min_quantity_from_order_min_size`
 
+## #233:2-way canonical claim
+
+- `test_arb_provider.py::test_2way_tokens_use_canonical_yes_no_claims` 与 `test_load_moneyline_market_writes_matching_info_keys` 锁定 2-way home token=`claim=yes`、away token=`claim=no`；两者都是真实 PM token。
+
 ### pm-adapter-2.1: 上游 DataClient 输出 OrderBookDelta 而非 dict
 
 **前置**: 启动上游 `PolymarketDataClient`,订阅一个 `BinaryOption`
@@ -422,3 +426,7 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 ## #228:PM 3-way 暴露 NO token(2026-07-15)
 
 - `test_arb_provider.py`:`_role_and_claim_for_token`(原 `_role_for_token`)3-way binary 路径 YES/NO 都产腿,role 同为所属 market 的 role,claim="yes"/"no" 区分;2-way / 单市场路径 claim 恒空。`test_load_moneyline_market_3way_binary_exposes_yes_and_no` 覆盖一个 binary market 产 2 条 instrument(info 带 claim);2-way 用例断言 `"claim" not in info`。
+
+## #234:PM BUY-only 最小金额
+
+- `test_parsing_min_size.py` 同时锁定市场 `minimum_order_size → BinaryOption.min_quantity` 与 `info["min_buy_notional"]=1.0`；`BinaryOption.min_notional` 保持 None，防止 SELL 被错误套用 1 USD 下限。

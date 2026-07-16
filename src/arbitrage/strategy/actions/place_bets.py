@@ -4,7 +4,8 @@ PlaceBetsAction —— 通用下单(slice 9 / #49,Q-D1=A log-only smoke)。
 Action 通用 — 读 `ctx.scratch["legs"]`(由 Check/Condition 算好的完整计划腿),经 Venue Registry 按 odds model 算 size:
   - probability venue: size = share(1 share = $1 win)
   - decimal odds venue: size = share / price(stake = share / odds,确保 win = share)
-  - decimal odds venue 若 `claim=no`:最终下单转为 SELL/LAY,price 使用 bid/lay,size 按 lay price 重算
+  - decimal odds 合成 no 腿(`exec_instrument_id` 重定向):转为 SELL/LAY,按 lay 价重算 size
+  - probability BUY 可用同 pair 互斥 LONG 仓位拆成 SELL 减仓 + BUY 剩余量
   - 若 leg 已带 `qty`,优先使用该值;否则从 leg 的 `share_if_wins` 推 qty
   - intent 默认 `"arbitrage"`;补救树可配置 `"recovery"`,经 submitter 写入 order tags 供 Risk 判定。
 """
@@ -13,9 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from src.arbitrage.common.opportunity import new_opportunity_id
+from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import is_decimal_odds_venue
+from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
@@ -50,9 +54,8 @@ class PlaceBetsAction(Action):
             f"PlaceBets[{mode}]: pair={ctx.pair_id} legs={len(legs)} "
             f"mean_rebate_rate={rate}",
         )
-        expected_legs = tuple(_leg_key(leg, idx) for idx, leg in enumerate(legs))
         opportunity_id = new_opportunity_id()
-        prepared = []
+        drafts = []
         for idx, leg in enumerate(legs):
             if _is_non_tradable_leg(leg):
                 _LOG.warning(
@@ -75,32 +78,47 @@ class PlaceBetsAction(Action):
                     "missing qty/share_if_wins, abort opportunity",
                 )
                 return
-            spec = {
-                # #228:合成 no 腿(-NO instrument)只作行情/身份载体,真单落在同 selection 的
-                # yes instrument 上(SELL@lay),保证 venue 对账 LAY=SHORT 落在真 selection。
+            draft = {
                 "instrument_id": leg.get("exec_instrument_id") or leg["instrument_id"],
                 "side": side,
                 "qty": size,
                 "price": price,
+                "venue": str(venue).upper(),
+                "role": str(leg.get("claim") or leg.get("role") or idx),
+                "source_index": idx,
+            }
+            drafts.extend(_expand_probability_inventory(draft, leg, ctx.snapshot))
+
+        expected_legs = tuple(_draft_leg_key(draft) for draft in drafts)
+        required_by_venue = _required_balance_by_venue(drafts)
+        prepared = []
+        for draft, leg_key in zip(drafts, expected_legs, strict=True):
+            spec = {
+                "instrument_id": draft["instrument_id"],
+                "side": draft["side"],
+                "qty": draft["qty"],
+                "price": draft["price"],
                 "intent": self._intent,
                 "opportunity_id": opportunity_id,
                 "pair_id": ctx.pair_id,
-                "leg_key": expected_legs[idx],
+                "leg_key": leg_key,
                 "expected_legs": expected_legs,
+                "venue_required_balance": required_by_venue[draft["venue"]],
             }
-            prepared.append((leg, venue, size, price, spec))
+            prepared.append((draft, spec))
 
         if submitter is not None:
             # #105:多腿**并发**提交(顺序 workaround 退役)。同页并发 placeBets 丢回执的风险由
             # OE/SE ExecClient 页锁串行碰页操作兜底;PM 与外部腿并行 → 对冲窗口更窄(synchronization §8.3)。
             # slice 10a(#50):SkipExecutionClient 在 debug.skip_execution=true 下兜底 mock 全成。
-            await asyncio.gather(*(submitter(spec) for (_, _, _, _, spec) in prepared))
+            await asyncio.gather(*(submitter(spec) for (_, spec) in prepared))
         else:
             # log-only fallback(无 submitter 注入;单测 / smoke)
-            for leg, venue, size, price, spec in prepared:
+            for draft, spec in prepared:
                 _LOG.info(
-                    f"  would submit: instrument={leg['instrument_id']} side={spec['side']} "
-                    f"role={leg['role']} venue={venue} qty={size:.4f} price={price}",
+                    f"  would submit: instrument={spec['instrument_id']} side={spec['side']} "
+                    f"role={draft['role']} venue={draft['venue']} qty={spec['qty']:.4f} "
+                    f"price={spec['price']}",
                 )
 
 
@@ -123,7 +141,7 @@ def _compute_leg_size(
     """按优先级决定最终 qty:显式 override > leg qty > leg share_if_wins。"""
     if venue in qty_overrides:
         return qty_overrides[venue]
-    if _is_decimal_no_claim(leg, venue) and leg.get("share_if_wins") is not None:
+    if _is_synthetic_decimal_no(leg, venue) and leg.get("share_if_wins") is not None:
         return _compute_size(venue, float(leg["share_if_wins"]), price)
     if "qty" in leg:
         return float(leg["qty"])
@@ -140,27 +158,28 @@ def _resolve_side_and_price(
 ) -> tuple[str, float | None]:
     """将语义 leg 转成最终 submit side/price。
 
-    decimal venue 的 `claim=no` 表示 lay 该 outcome,因此最终 NT order 为 SELL @ bid/lay。
-    其它情况保持现有买入路径。
+    只有带执行重定向的 decimal 合成 no instrument 才转成 SELL @ bid/lay。
+    真实 instrument 即使逻辑 claim=no 也保持正常 BUY/BACK。
     """
     venue_key = str(venue).upper()
     if venue_key in price_overrides:
         price = price_overrides[venue_key]
         return _execution_side(leg, venue), price
-    if _is_decimal_no_claim(leg, venue):
+    if _is_synthetic_decimal_no(leg, venue):
         return "SELL", _leg_bid_price(leg)
     return str(leg.get("side") or "BUY").upper(), _try_float(leg.get("price"))
 
 
 def _execution_side(leg: dict, venue: str) -> str:
-    if _is_decimal_no_claim(leg, venue):
+    if _is_synthetic_decimal_no(leg, venue):
         return "SELL"
     return str(leg.get("side") or "BUY").upper()
 
 
-def _is_decimal_no_claim(leg: dict, venue: str) -> bool:
-    claim = str(leg.get("claim") or "").strip().lower()
-    if claim != "no":
+def _is_synthetic_decimal_no(leg: dict, venue: str) -> bool:
+    instrument_id = str(leg.get("instrument_id") or "")
+    exec_instrument_id = str(leg.get("exec_instrument_id") or "")
+    if not exec_instrument_id or exec_instrument_id == instrument_id:
         return False
     try:
         return is_decimal_odds_venue(venue)
@@ -192,11 +211,169 @@ def _normalize_venue_overrides(raw: dict[str, float] | None) -> dict[str, float]
     return {str(k).upper(): float(v) for k, v in raw.items()}
 
 
-def _leg_key(leg: dict, idx: int) -> str:
-    role = str(leg.get("role") or idx)
-    venue = str(leg.get("venue") or "venue").lower()
-    return f"{venue}:{role}:{idx}"
+def _draft_leg_key(draft: dict) -> str:
+    base = f"{draft['venue'].lower()}:{draft['role']}:{draft['source_index']}"
+    suffix = draft.get("key_suffix")
+    return f"{base}:{suffix}" if suffix else base
 
 
 def _is_non_tradable_leg(leg: dict) -> bool:
     return leg.get("tradable") is False or leg.get("anchor") is True
+
+
+def _expand_probability_inventory(draft: dict, leg: dict, snapshot) -> list[dict]:
+    """把 probability BUY 优先转换成“卖互斥仓位 + 买剩余量”。
+
+    只使用本轮 OpportunitySnapshot；快照过期造成 venue 拒单时由现有执行流程收口。
+    """
+    if snapshot is None or draft["side"] != "BUY":
+        return [draft]
+    try:
+        if not is_probability_odds_venue(draft["venue"]):
+            return [draft]
+    except KeyError:
+        return [draft]
+
+    target_qty = float(draft["qty"])
+    target_price = float(draft["price"])
+    if target_qty <= 0 or not 0 < target_price < 1:
+        return [draft]
+
+    opposite_iid = _opposite_real_instrument(snapshot, leg, draft)
+    if opposite_iid is None:
+        return [draft]
+    available = _long_position_quantity(snapshot, opposite_iid)
+    if available <= 0:
+        return [draft]
+
+    constraints = getattr(snapshot, "instrument_constraints", {}) or {}
+    sell_min = _effective_minimum_quantity(
+        constraints.get(str(opposite_iid), {}),
+        price=1.0 - target_price,
+        side="SELL",
+    )
+    buy_min = _effective_minimum_quantity(
+        constraints.get(str(draft["instrument_id"]), {}),
+        price=target_price,
+        side="BUY",
+    )
+    sell_qty = _reduction_quantity(target_qty, available, sell_min, buy_min)
+    if sell_qty <= 0:
+        return [draft]
+
+    sell = dict(draft)
+    sell.update({
+        "instrument_id": str(opposite_iid),
+        "side": "SELL",
+        "qty": sell_qty,
+        "price": 1.0 - target_price,
+        "key_suffix": "reduce",
+    })
+    remainder = target_qty - sell_qty
+    if remainder <= 1e-9:
+        return [sell]
+
+    buy = dict(draft)
+    buy.update({"qty": remainder, "key_suffix": "buy"})
+    return [sell, buy]
+
+
+def _opposite_real_instrument(snapshot, leg: dict, draft: dict) -> str | None:
+    info_by_iid = getattr(snapshot, "instrument_info", {}) or {}
+    source_info = info_by_iid.get(str(leg.get("instrument_id")), {})
+    outcome = str(
+        leg.get("claim")
+        or source_info.get("claim")
+        or leg.get("role")
+        or source_info.get("selection_role")
+        or ""
+    ).lower()
+    outcomes = tuple(str(value).lower() for value in (getattr(snapshot, "outcomes", None) or ()))
+    if len(outcomes) != 2 or outcome not in outcomes:
+        return None
+    opposite = next(value for value in outcomes if value != outcome)
+    venue = draft["venue"]
+    for iid in getattr(snapshot, "instrument_ids", []) or []:
+        iid_text = str(iid)
+        if not iid_text.upper().endswith(f".{venue}"):
+            continue
+        info = info_by_iid.get(iid_text, {})
+        candidate = str(info.get("claim") or info.get("selection_role") or "").lower()
+        if candidate != opposite or info.get("exec_instrument_id"):
+            continue
+        return iid_text
+    return None
+
+
+def _long_position_quantity(snapshot, instrument_id: str) -> float:
+    total = 0.0
+    for position in getattr(snapshot, "positions", []) or []:
+        if str(getattr(position, "instrument_id", "")) != str(instrument_id):
+            continue
+        side = str(getattr(getattr(position, "side", None), "name", getattr(position, "side", ""))).upper()
+        if side and side != "LONG":
+            continue
+        quantity = getattr(position, "quantity", None)
+        value = quantity.as_double() if hasattr(quantity, "as_double") else quantity
+        try:
+            total += abs(float(value))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _minimum_quantity(constraint: dict) -> float:
+    try:
+        return max(0.0, float(constraint.get("min_quantity") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _effective_minimum_quantity(constraint: dict, *, price: float, side: str) -> float:
+    """返回实际子单的最小 quantity；PM BUY 额外满足 quote notional 下限。"""
+    minimum = _minimum_quantity(constraint)
+    if side != "BUY" or price <= 0:
+        return minimum
+    try:
+        min_buy_notional = max(0.0, float(constraint.get("min_buy_notional") or 0.0))
+    except (TypeError, ValueError):
+        min_buy_notional = 0.0
+    if min_buy_notional <= 0:
+        return minimum
+    raw = min_buy_notional / price
+    try:
+        increment = max(0.0, float(constraint.get("size_increment") or 0.0))
+    except (TypeError, ValueError):
+        increment = 0.0
+    notional_minimum = math.ceil((raw / increment) - 1e-12) * increment if increment > 0 else raw
+    return max(minimum, notional_minimum)
+
+
+def _reduction_quantity(target: float, available: float, sell_min: float, buy_min: float) -> float:
+    """在两个子单都合法的前提下最大化减仓量；无法合法拆分时返回 0。"""
+    max_sell = min(target, available)
+    if max_sell + 1e-9 < sell_min:
+        return 0.0
+    if max_sell + 1e-9 >= target:
+        return target
+    if target - max_sell + 1e-9 >= buy_min:
+        return max_sell
+    adjusted = target - buy_min
+    if adjusted + 1e-9 >= sell_min and adjusted <= available + 1e-9:
+        return adjusted
+    return 0.0
+
+
+def _required_balance_by_venue(drafts: list[dict]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for draft in drafts:
+        venue = draft["venue"]
+        qty = float(draft["qty"])
+        price = float(draft["price"])
+        descriptor = descriptor_for(venue)
+        if descriptor.odds_model == "probability":
+            required = 0.0 if draft["side"] == "SELL" else qty * price
+        else:
+            required = qty * max(0.0, price - 1.0) if draft["side"] == "SELL" else qty
+        totals[venue] = totals.get(venue, 0.0) + required
+    return totals

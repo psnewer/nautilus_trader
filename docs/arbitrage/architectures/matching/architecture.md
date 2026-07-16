@@ -96,7 +96,7 @@ class MatchedPair(Data):
     event_key: str             # 所属 event(#228:`competition|home|away`;2-way 时 == pair_id 基础部分)
     sport: str
     competition: str           # 联赛名(非 pair_id;#34)
-    outcomes: list[str]        # #228:pair 的互斥 outcome 集,2-way `["home","away"]`,3-way 拆分 pair `["yes","no"]`
+    outcomes: list[str]        # pair 的互斥 outcome 集,统一为 `["yes","no"]`
     confidence: float          # total_confidence = home_confidence + away_confidence
     anchor_instrument_ids: list[str]       # non-tradable anchor,如 .PMSPORTS
     tradable_instrument_ids: list[str]     # strategy/risk/portfolio 消费的可交易腿
@@ -214,7 +214,7 @@ Risk 门控。
 
 状态按 `pair_id` 保存在 `_pair_validations`:
 - `PENDING`:已生成 candidate,MatchingActor 对 candidate 的可交易腿临时订阅 OBD,等待可用于校验的 best ask。
-- `PASSED`:已通过,已 register + publish,并取消 Matching 自己的临时 OBD 订阅。
+- `PASSED`:该 pair 自身已通过。2-way 可立即交接；3-way 仍须等待同一 validation group 的 home/draw/away 全部 `PASSED`。
 - `FAILED`:已失败,不 register、不 publish,并取消 Matching 自己的临时 OBD 订阅。进程内 sticky;同 `pair_id` 后续 candidate 直接跳过。
 
 同一个 `pair_id` 已存在于 `_pair_validations` 时,新的 matching candidate 直接跳过,不更新
@@ -225,21 +225,29 @@ candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pa
 2. 按 venue 聚合其互斥腿 ask 概率和。若任一 venue 缺 role、缺 book、缺 ask,或 ask 和
    `> probability_validation_clean_sum`(默认 `1.05`),保持 `PENDING`,继续等待后续 OBD。
 3. 若所有 venue 的 ask 和都可校验,按 outcome 取跨 venue 最小 ask 概率,再求和。
-4. 若该 best sum `>= probability_validation_min_best_sum`(默认 `0.95`),置 `PASSED`,
-   register + publish;否则置 `FAILED` 并不再发布。
+4. 若该 best sum `>= probability_validation_min_best_sum`(默认 `0.95`),置 `PASSED`;否则置
+   `FAILED` 并不再发布。2-way 的 validation group 只有自身,可立即 register+publish。
 
 ended eviction 会清理对应 `pair_id` 的 validation 状态和临时 OBD 订阅,避免结束赛事的
 failed/pending 记录阻塞未来生命周期。
 
 > **#228 pair 级化(已落地 2026-07-15)**:3-way 拆分(§4.2.2)后门控按拆出的 pair 独立走上述
 > 状态机;"互斥腿 ask 概率和"即 pair `outcomes` 两侧的 ask 概率和(outcome 标签 = `claim or
-> selection_role`),decimal venue 的 no 腿 ask 概率经 Venue Registry
-> `probability_from_price(venue, price, claim)` 换算(与 strategy 同一个家,见 strategy §3.7)。
+> selection_role`),所有 binary pair 的 outcome 均为 `[yes,no]`。decimal 行情概率经 Venue Registry
+> `probability_from_price(venue, price, quote_claim)` 换算；只有合成 no 腿的 `quote_claim=no`,
+> 真实 2-way NO runner 仍按 BACK 概率解释。
 > **FAIL 连坐(双向)**:任一 role pair FAIL,同 `event_key` 的全部 pair 一并置 FAIL 并走
 > eviction——门控抓的是 event 级错配(队名配错不会只错一个 market)。已存在的兄弟由
 > `_fail_event_siblings` 反注册+置 sticky FAILED;**后到的兄弟 candidate 在
 > `_handle_pair_candidate` 入场时检查 `_event_has_failed_pair` 直接置 FAILED**(不订阅不校验),
 > 覆盖"home 先 FAIL 时 draw/away candidate 尚未出现"的时序。
+>
+> **3-way 原子可见性(#231)**:同一拆分批次的三个 candidate 保存相同
+> `validation_group_pair_ids=(home,draw,away)`。单个 role PASS 不得 register/publish;只有三者状态全部
+> `PASSED` 后才统一逐 pair register+publish；全部 publish 完成后才统一释放 Matching 临时 OBD 订阅。
+> 该顺序保证 Strategy 的正式订阅先接住行情，避免 DataEngine 短暂退订 venue、重建空 order book，
+> 而已打开的 competition 页又未立即重推初始快照。任一 role 缺少至少两个 tradable venue时整批不进入门控。
+> 因此后续 sibling FAIL 前不存在 Strategy 已收到早到 role 的真钱窗口。
 
 ### 4.2.2 3-way 多 market 拆分(#228,已落地 2026-07-15)
 
@@ -251,7 +259,7 @@ event 级名称匹配成功后、进入概率校验(§4.2.1)前,按 market 拆 p
   - PM 腿:该 role 对应 binary market 的 YES + NO 两个 token instrument(role 相同,`claim` 区分);
   - OE/SE 腿:该 role selection 的 yes instrument + 合成 no instrument(data 架构"OE/SE 3-way 腿模型"节);
   - PMSPORTS 锚:同一条锚 instrument 进每个 pair 的 `anchor_instrument_ids`。
-- 2-way pair `outcomes=["home","away"]`,腿集合与现状一致,pair_id 不变。
+- 2-way pair `outcomes=["yes","no"]`,pair_id 不变；selection_role 仍是 home/away。
 - Matching 维护 `event_key → set[pair_id]`(供 §4.2.1 FAIL 连坐与 ended eviction);
   `game_to_pair[game_id]` 本就是 set,天然容纳多 pair。
 
