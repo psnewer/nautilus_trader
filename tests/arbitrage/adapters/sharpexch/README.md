@@ -24,8 +24,14 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 **前置**:SE Data/Exec factory 使用 `SharpExch` 子树导出的 `PlaywrightBrowserManager`。
 **输入**:`venues.sharpexch.headless` / `venues.sharpexch.user_data_dir`。
-**期望**:生产 Data/Exec 与 probes 共用同一个 BrowserManager 实现;Chromium `AutomationControlled`、固定 user-agent、`navigator.webdriver` 隐藏、plugins 模拟、visible spoof 均在生产生效;probe 的 `--user-data-dir` 只有写入 `venues.sharpexch.user_data_dir` 后才被生产复用。
-**验收**:代码路径已确认:`SharpExchLiveDataClientFactory` / `ArbSharpExchLiveExecClientFactory` 经 `_shared_se_browser_manager` 构造 `PlaywrightBrowserManager`,该导出复用 OE browser manager 的 stealth/init-script;browser manager、login state 与兼容 browser lock 均经 `ctx_map_get_or_create` 读取/回写。`test_factories.py` 覆盖 Data+Exec 共享 browser manager 与 login state,并断言 `browser_manager_by_venue["SHARPEXCH"]` / `browser_login_state_by_venue["SHARPEXCH"]` 写回;`test_dispatcher.py` 覆盖 SE Data/Exec config 映射。
+**期望**:生产 Data/Exec 与 probes 共用同一个 BrowserManager 实现;Chromium `AutomationControlled`、浏览器原生 user-agent、`navigator.webdriver` 隐藏、plugins 模拟、visible spoof 均在生产生效;probe 的 `--user-data-dir` 只有写入 `venues.sharpexch.user_data_dir` 后才被生产复用。
+**验收**:代码路径已确认:`SharpExchLiveDataClientFactory` / `ArbSharpExchLiveExecClientFactory` 经 `_shared_se_browser_manager` 构造 `PlaywrightBrowserManager`,该导出复用 OE browser manager 的 stealth/init-script;browser manager、login state 与兼容 browser lock 均经 `ctx_map_get_or_create` 读取/回写。`test_factories.py` 覆盖 Data+Exec 共享 browser manager 与 login state,并断言 `browser_manager_by_venue["SHARPEXCH"]` / `browser_login_state_by_venue["SHARPEXCH"]` 写回;`test_dispatcher.py` 覆盖 SE Data/Exec config 映射；`test_browser_manager_sharing.py` 断言 BrowserContext 不覆盖原生 user-agent。
+
+### se-adapter-1.1c:Cloudflare 独立等待预算
+
+**输入**:`venues.sharpexch.cloudflare_timeout_sec`，本机 headed 或服务端 headless。
+**期望**:该字段只控制 Execution 登录遇到 Cloudflare challenge 后等待自动放行的时间；不复用页面导航/CSRF 的 `page_load_timeout_sec`，不执行验证码规避或人工交互。挑战后进入 customer app 则继续，回到登录表单则正常提交，超时使本次连接失败。
+**验收**:`test_dispatcher.py::test_sharpexch_exec_client_config_maps_credentials` 覆盖秒到毫秒映射；`test_probe_script.py::test_cloudflare_wait_uses_dedicated_timeout_and_continues_to_login` 覆盖挑战结束后回到登录表单并继续登录。
 
 ### se-adapter-1.2:API discovery 生成 BettingInstrument
 
@@ -70,6 +76,8 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **验收**:general 帧纯 parser 已落地:`test_message_parser.py` 覆盖 `BALANCE` dict/嵌套 JSON、`CURRENT_BETS` list/嵌套 JSON、未知帧忽略、`parse_order_message` 兼容别名。余额纯映射已落地:`test_execution_translation.py` 覆盖 `se_balance_to_account_balances` 生成 USD 口径 `total=free=balance,locked=0`。SE runtime 现在按真实站点 USD 原生口径处理:`CURRENT_BETS` / fills / place payload 均不乘除 fx;`normalize_current_bets_to_usd` 纯函数保留,但 ExecutionClient 调用 `fx=1.0`。`SharpExchExecutionClient` 已接入 runtime,离线测试覆盖构造与生命周期:`test_execution_client.py` 覆盖 `_connect` 用 fake browser/page 启动共享 browser、创建 `"execution"` page、先注册 websocket/response handler 再经 `se_login` 导航、登录后最多等待 30s 让 HTTP profile/balance 与 WS `CURRENT_BETS` 两个业务信号到达、未捕获 HTTP 余额时生成 0 USD 兜底 `AccountState`,HTTP profile/balance response 会持续更新 `AccountState` 且同值去重,`_disconnect` 停 WS handler/移除 response listener 并清 page、WS `BALANCE` 不写账户状态、fx command 不改变 SE USD runtime、未知帧忽略、`CURRENT_BETS` 刷新 USD 快照、维护 `SE CURRENT_BETS routed` 一次性锚点计数并标记 execution liveness。`test_websocket_handler.py` 覆盖 `on_frame` 对 SockJS 心跳也触发,供 ExecutionClient 刷新 general WS 存活锚;`test_execution_client.py` 覆盖 report 入口在无可信快照时 reload execution page 并等待 CURRENT_BETS 重推、超时则 fail-closed 标记 SE liveness dead。`test_probe_script.py` 覆盖 customer iframe 与登录表单并存时仍必须提交凭据、无登录表单时才复用 customer iframe、`SharpExchLoginState.authenticated=True` 时第二个 page 优先复用 context session 不二次提交旧登录页、`browser_lock` 兼容旧调用、登录后 `postLoginPopup` 可见时点击主页面关闭、无弹窗时按 120s 总预算静默继续。`test_factories.py` 覆盖 Data/Exec 共享 `browser_login_state_by_venue["SHARPEXCH"]`。2026-07-01 zero-order probe 复验:真实登录后 competition 页 general WS 收到 `BALANCE` 2 帧与 `CURRENT_BETS` 2 帧,parser 识别 4 个 general 业务帧;`OPEN_BETS_COUNTER` 仍可能出现 `DENIED/CLOSED`,不作为 execution hard gate。
 
 **登录等待回归**:`test_probe_script.py::test_wait_after_login_uses_configured_timeout_for_frame_and_url` 验证提交表单后的 customer iframe 与 URL fallback 都使用配置的 `page_timeout`，不再固定为 10 秒。
+
+**reconcile 等待回归**:`test_execution_client.py::test_reload_current_bets_wait_budget_uses_page_timeout` 验证 reload 导航与等待新 `CURRENT_BETS` 共用配置的 `page_timeout` 总预算，不再固定为 8 秒。
 
 ### se-adapter-5.1b:accepted 后本地预扣 SE 可用余额(Q17 修订已落地)
 

@@ -146,6 +146,9 @@ class SharpExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     staleness_timeout_secs: float = 300.0
 ```
 
+`SharpExchExecClientConfig` 另有 `cloudflare_timeout: int = 120000`。它只控制登录页处于
+Cloudflare challenge 时等待站点自动放行的预算，不复用 `page_timeout`。
+
 `ArbConfig` 第一阶段增加:
 - `discovery.sharpexch: VenueDiscoveryConfig`
 - `venues.sharpexch: SharpExchSectionConfig`
@@ -163,8 +166,8 @@ SharpExch 的 `base_url` 指 portal 域,`login_url` 指外层登录页。这样�
   enabled tradable venues。`venues.sharpexch.enabled=true` 且 `venues.orbitexch.enabled=false`
   时可跑 PM+SE smoke,不会启动 OE。
 - 生产 Data/Exec factory 与 SE probes 共用 `SharpExch` 子树导出的 `PlaywrightBrowserManager`。
-  该 manager 继承 OE 的反自动化/可见性设置:Chromium `AutomationControlled` 参数、固定
-  user-agent、隐藏 `navigator.webdriver`、模拟 plugins、固定 `document.visibilityState`
+  该 manager 继承 OE 的反自动化/可见性设置:Chromium `AutomationControlled` 参数、
+  使用浏览器原生 user-agent、隐藏 `navigator.webdriver`、模拟 plugins、固定 `document.visibilityState`
   为 visible。probe 通过 `--user-data-dir` 复用的人工 Cloudflare 验证 profile 不会自动进入生产;
   生产若要复用,必须显式配置 `venues.sharpexch.user_data_dir` 为同一路径。
 
@@ -505,6 +508,11 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
 **历史问题**:NT 启动时并发连接 Data/Exec clients。旧 discovery 会创建 `se-discovery` 页并调用 `se_login`,Execution 也创建 `execution` 页并登录,两者并发登录会触发 Cloudflare 验证。仅用裸 lock 串行化还不够:第二个 page 可能在第一个 page 登录前已经打开旧登录页,拿到锁后仍会基于旧 DOM 二次提交表单。
 
 **当前方案**:Discovery 不再创建页面、不登录、不导航;只等待共享 BrowserContext 中已有 `CSRF-TOKEN`,最多等 `config.page_timeout`,拿到后用 context request 调 `sport/details`。Execution 仍是唯一会提交账号凭据的路径,并在 `se_login` 中使用 browser context 级 `SharpExchLoginState`:第一个 execution page 成功登录后标记 context 已认证;后续 execution 登录先等待 customer app/session 复用,不直接提交旧登录页。
+
+Execution 导航后若既看不到登录表单也看不到 customer app，按 Cloudflare challenge 处理，使用
+`config.cloudflare_timeout` 轮询自动放行结果。出现 customer app 即继续；出现登录表单则进入正常
+凭据提交；超时抛错并由连接重试恢复。服务端 headless 部署同样只等待自动挑战，不依赖人工点击。
+共享 BrowserManager 使用 Chromium 原生 user-agent，不再注入与实际 OS/浏览器版本矛盾的固定值。
 
 #### 3.6.1 原理
 

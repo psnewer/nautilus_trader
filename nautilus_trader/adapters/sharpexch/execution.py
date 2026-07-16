@@ -124,7 +124,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._last_frame_ns = 0
         self._exec_ws_idle_timeout_ns = secs_to_nanos(_EXEC_WS_IDLE_TIMEOUT_SECS)
         self._reload_inflight = None
-        self._reload_bets_wait_ns = secs_to_nanos(8.0)
+        # 从 reload 发起起算，导航与 CURRENT_BETS 重推共用页面加载总预算。
+        self._reload_bets_wait_ns = secs_to_nanos(self._config.page_timeout / 1000.0)
         self._current_bets_frames_seen = 0
         self._balance_seen = False
         self._last_balance_value: float | None = None

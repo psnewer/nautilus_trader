@@ -133,6 +133,7 @@ class SharpExchSectionConfig(Struct, kw_only=True):
     base_url:                 str = "https://portal.sharpxch.com"
     login_url:                str = "https://sharpxch.com/player/"
     page_load_timeout_sec:    float = 120.0
+    cloudflare_timeout_sec:   float = 120.0
     staleness_timeout_sec:    int = 300
     headless:                 bool = True
     browser_type:             str = "chromium"
@@ -143,7 +144,7 @@ class SharpExchSectionConfig(Struct, kw_only=True):
 
 `venues.orbitexch.user_data_dir` / `venues.sharpexch.user_data_dir` 是 Playwright 持久
 profile 路径。OE/SE 生产 Data/Exec factory 都使用各自共享的 `PlaywrightBrowserManager`,
-该 manager 默认启用 `AutomationControlled` 参数、固定 user-agent、隐藏
+该 manager 默认启用 `AutomationControlled` 参数、使用浏览器原生 user-agent、隐藏
 `navigator.webdriver`、模拟 plugins,并强制页面 visible。上述反自动化/可见性设置在生产
 launcher、skip smoke 与 probe 中走同一条 BrowserManager 路径。
 
@@ -370,6 +371,14 @@ OE `venues.orbitexch.page_load_timeout_sec` 是共享页面加载超时,dispatch
 `OrbitExchDataClientConfig.page_timeout`、`OrbitExchExecClientConfig.page_timeout` 和 discovery scraper
 `BrowserConfig.timeout_ms`。默认 120s 与 OE 页面等待策略一致;30s/60s/90s 在 OE 首页或 competition 页
 均出现过 timeout。
+
+SE 的 `venues.sharpexch.page_load_timeout_sec` 只控制页面导航、登录后 customer iframe 与
+discovery CSRF 等待；`venues.sharpexch.cloudflare_timeout_sec` 是独立的 Cloudflare 自动挑战
+预算，仅映射到 `SharpExchExecClientConfig.cloudflare_timeout`。挑战期间 ExecutionClient 轮询
+customer app 或登录表单：自动进入 customer app 即继续，回到登录表单则提交凭据；超过预算
+连接失败并交后续重连。该流程不执行验证码规避或人工交互，因而 headed 本机与 headless
+服务端语义一致。BrowserManager 不覆盖 user-agent，避免 macOS/Linux/容器中的浏览器版本与
+硬编码平台指纹冲突。
 
 **OE DataClient 健康检查 cadence**(宿主=DataClient,详设见 data `architecture.md`):
 `to_orbitexch_data_client_config` 把 `venues.orbitexch` 字段直传进 `OrbitExchDataClientConfig`:

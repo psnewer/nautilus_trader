@@ -29,7 +29,7 @@ from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from tests.arbitrage.adapters.sharpexch.test_provider import _event
 
 
-def _client(*, liveness=None, browser_manager=None, browser_lock=None):
+def _client(*, liveness=None, browser_manager=None, browser_lock=None, config=None):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     return SharpExchExecutionClient(
@@ -39,7 +39,7 @@ def _client(*, liveness=None, browser_manager=None, browser_lock=None):
         cache=TestComponentStubs.cache(),
         clock=clock,
         instrument_provider=InstrumentProvider(),
-        config=SharpExchExecClientConfig(username="u", password="p"),
+        config=config or SharpExchExecClientConfig(username="u", password="p"),
         venue_liveness=liveness,
         browser_lock=browser_lock,
     )
@@ -656,6 +656,13 @@ def test_reconcile_reload_waits_for_current_bets_snapshot():
     assert len(reports) == 1
     assert reports[0].venue_order_id == VenueOrderId("SE-OFFER-1")
     assert reports[0].order_status == OrderStatus.ACCEPTED
+
+
+def test_reload_current_bets_wait_budget_uses_page_timeout():
+    client = _client(
+        config=SharpExchExecClientConfig(username="u", password="p", page_timeout=4321),
+    )
+    assert client._reload_bets_wait_ns == 4_321_000_000
 
 
 def test_reconcile_without_current_bets_marks_liveness_dead():

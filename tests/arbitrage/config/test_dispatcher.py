@@ -208,12 +208,14 @@ def test_sharpexch_exec_client_config_maps_credentials():
         "password": "p",
         "user_data_dir": "/tmp/se-playwright-profile",
         "page_load_timeout_sec": 90.0,
+        "cloudflare_timeout_sec": 150.0,
     }})
     cc = to_sharpexch_exec_client_config(cfg)
     assert cc.username == "u"
     assert cc.password == "p"
     assert cc.user_data_dir == "/tmp/se-playwright-profile"
     assert cc.page_timeout == 90000
+    assert cc.cloudflare_timeout == 150000
 
 
 # ─── Actors ───────────────────────────────────────────────────────────

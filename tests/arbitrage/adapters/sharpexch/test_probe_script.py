@@ -35,6 +35,85 @@ def test_wait_after_login_uses_configured_timeout_for_frame_and_url(monkeypatch)
     assert calls == [("frame", 120000), ("**/customer**", 120000)]
 
 
+def test_cloudflare_wait_uses_dedicated_timeout_and_continues_to_login(monkeypatch):
+    sleeps = []
+
+    class Page:
+        url = "https://sharpxch.com/cdn-cgi/challenge-platform/"
+        frames = []
+
+    page = Page()
+    cfg = type("Config", (), {"page_timeout": 90000})()
+
+    async def login_form_visible(_page, *, timeout_ms):
+        assert timeout_ms == 250
+        return len(sleeps) == 1
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    submitted = []
+
+    async def submit(_page, _config):
+        submitted.append(True)
+
+    async def wait_after(_page, *, timeout_ms):
+        assert timeout_ms == 90000
+
+    monkeypatch.setattr(se_web, "_login_form_visible", login_form_visible)
+    monkeypatch.setattr(se_web.asyncio, "sleep", sleep)
+    monkeypatch.setattr(se_web, "_submit_login_form", submit)
+    monkeypatch.setattr(se_web, "_wait_after_login", wait_after)
+
+    asyncio.run(se_web._wait_for_cloudflare_resolution(page, cfg, timeout_ms=120000))
+
+    assert sleeps == [0.25]
+    assert submitted == [True]
+
+
+def test_login_challenge_branch_passes_configured_cloudflare_timeout(monkeypatch):
+    class Page:
+        url = "about:blank"
+        frames = []
+
+        async def goto(self, url, *, wait_until, timeout):
+            self.url = "https://sharpxch.com/cdn-cgi/challenge-platform/"
+
+    async def login_form_missing(page, *, timeout_ms):
+        return False
+
+    async def customer_frame_missing(page, *, timeout_ms):
+        raise TimeoutError("missing")
+
+    async def settled(page):
+        return None
+
+    waits = []
+
+    async def wait_for_cloudflare(page, config, *, timeout_ms):
+        waits.append(timeout_ms)
+
+    monkeypatch.setattr(se_web, "_login_form_visible", login_form_missing)
+    monkeypatch.setattr(se_web, "se_wait_for_customer_frame", customer_frame_missing)
+    monkeypatch.setattr(se_web, "_settle_customer_app", settled)
+    monkeypatch.setattr(se_web, "_wait_for_cloudflare_resolution", wait_for_cloudflare)
+
+    cfg = type(
+        "Config",
+        (),
+        {
+            "login_url": "https://sharpxch.com/player/",
+            "page_timeout": 90000,
+            "cloudflare_timeout": 150000,
+            "username": "u",
+            "password": "p",
+        },
+    )()
+    asyncio.run(se_web._se_login_impl(Page(), cfg))
+
+    assert waits == [150000]
+
+
 def test_probe_sanitize_redacts_sensitive_nested_keys():
     payload = {
         "username": "alice",

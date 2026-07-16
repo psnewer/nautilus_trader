@@ -336,7 +336,8 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # reload 后 CURRENT_BETS 重推(刷 `_last_current_bets_ns`);order/position reports 共用该快照。
         self._last_current_bets_ns = 0
         self._reload_inflight = None
-        self._reload_bets_wait_ns = secs_to_nanos(8.0)   # reload 后等 CURRENT_BETS 重推上限
+        # 从 reload 发起起算，导航与 CURRENT_BETS 重推共用页面加载总预算。
+        self._reload_bets_wait_ns = secs_to_nanos(self._config.page_timeout / 1000.0)
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
 
     def _current_fx(self) -> float:

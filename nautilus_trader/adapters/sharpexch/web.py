@@ -149,16 +149,31 @@ async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
         await _wait_after_login(page, timeout_ms=config.page_timeout)
         return
 
-    # Page is neither login form nor customer app - might be Cloudflare challenge or error
-    # Wait a bit longer for manual challenge resolution, then re-check
-    await asyncio.sleep(5.0)
-    if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
-        await _settle_customer_app(page)
-        return
+    await _wait_for_cloudflare_resolution(
+        page,
+        config,
+        timeout_ms=getattr(config, "cloudflare_timeout", 120000),
+    )
+
+
+async def _wait_for_cloudflare_resolution(page, config, *, timeout_ms: int) -> None:
+    """等待 Cloudflare 自动放行，不执行验证码规避或人工交互。"""
+
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000
+    _log.info("SE login: waiting for Cloudflare challenge resolution")
+    while time.monotonic() < deadline:
+        if se_is_customer_url(getattr(page, "url", "")) or se_customer_frame(page) is not None:
+            await _settle_customer_app(page)
+            return
+        if await _login_form_visible(page, timeout_ms=250):
+            await _submit_login_form(page, config)
+            await _wait_after_login(page, timeout_ms=config.page_timeout)
+            return
+        await asyncio.sleep(0.25)
 
     raise TimeoutError(
-        f"SE login stuck: not on customer URL ({getattr(page, 'url', '')!r}) "
-        "and login form not visible - possible Cloudflare challenge"
+        f"SE login stuck after Cloudflare timeout ({timeout_ms}ms): "
+        f"not on customer URL ({getattr(page, 'url', '')!r}) and login form not visible"
     )
 
 

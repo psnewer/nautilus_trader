@@ -45,5 +45,6 @@ class SharpExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True)
     browser_type: str = "chromium"
     user_data_dir: Optional[str] = None
     page_timeout: int = 120000
+    cloudflare_timeout: int = 120000
     max_bet_amount: float = 10000.0
     confirm_bet: bool = True

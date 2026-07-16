@@ -123,6 +123,7 @@ class SharpExchSectionConfig(ConfigStruct):
     base_url: str = "https://portal.sharpxch.com"
     login_url: str = "https://sharpxch.com/player/"
     page_load_timeout_sec: float = 120.0
+    cloudflare_timeout_sec: float = 120.0
     staleness_timeout_sec: int = 300
     headless: bool = True
     browser_type: str = "chromium"

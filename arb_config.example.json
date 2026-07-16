@@ -62,7 +62,8 @@
       "base_url": "https://portal.sharpxch.com",
       "login_url": "https://sharpxch.com/player/",
       "headless": false,
-      "page_load_timeout_sec": 120
+      "page_load_timeout_sec": 120,
+      "cloudflare_timeout_sec": 120
     }
   },
   "arbitrage": {

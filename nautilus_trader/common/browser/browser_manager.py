@@ -108,7 +108,6 @@ class PlaywrightBrowserManager:
                 headless=self.headless,
                 args=launch_args,
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             )
             self._browser = self._context.browser
         else:
@@ -118,7 +117,6 @@ class PlaywrightBrowserManager:
             )
             self._context = await self._browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             )
         
         # Anti-detection

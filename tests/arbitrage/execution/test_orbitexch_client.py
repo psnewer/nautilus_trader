@@ -29,7 +29,7 @@ from nautilus_trader.adapters.orbitexch.execution import current_bets_to_positio
 from nautilus_trader.adapters.orbitexch.execution import oe_balance_to_account_balances
 
 
-def _client():
+def _client(*, config=None):
     clock = LiveClock()
     msgbus = MessageBus(trader_id=TraderId("TESTER-000"), clock=clock)
     liveness = VenueExecutionLiveness()
@@ -40,7 +40,7 @@ def _client():
         cache=TestComponentStubs.cache(),
         clock=clock,
         instrument_provider=InstrumentProvider(),
-        config=OrbitExchExecClientConfig(username="u", password="p"),
+        config=config or OrbitExchExecClientConfig(username="u", password="p"),
         venue_liveness=liveness,
     )
 
@@ -568,6 +568,11 @@ class _FakePageReload:
         self.reload_count += 1
         if self._on_reload is not None:
             self._on_reload()              # 模拟 reload 后 CURRENT_BETS 重推
+
+
+def test_reload_current_bets_wait_budget_uses_page_timeout():
+    c = _client(config=OrbitExchExecClientConfig(username="u", password="p", page_timeout=4321))
+    assert c._reload_bets_wait_ns == 4_321_000_000
 
 
 def test_ensure_fresh_skips_reload_when_current_bets_and_ws_fresh():

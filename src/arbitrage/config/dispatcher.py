@@ -159,6 +159,7 @@ def to_sharpexch_exec_client_config(cfg: ArbConfig) -> SharpExchExecClientConfig
         browser_type=se.browser_type,
         user_data_dir=se.user_data_dir,
         page_timeout=int(se.page_load_timeout_sec * 1000),
+        cloudflare_timeout=int(se.cloudflare_timeout_sec * 1000),
     )
 
 

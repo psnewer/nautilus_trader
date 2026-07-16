@@ -54,3 +54,37 @@ def test_concurrent_start_launches_browser_once(monkeypatch):
 
     asyncio.run(run())
     assert launch_count["n"] == 1
+
+
+def test_browser_context_uses_native_user_agent(monkeypatch):
+    context_options = {}
+
+    class _FakeContext:
+        pass
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            context_options.update(kwargs)
+            return _FakeContext()
+
+    class _FakeChromium:
+        async def launch(self, **kwargs):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        chromium = _FakeChromium()
+
+    class _FakePWManager:
+        async def start(self):
+            return _FakePlaywright()
+
+    monkeypatch.setattr(_bm_mod, "async_playwright", lambda: _FakePWManager())
+    bm = PlaywrightBrowserManager(headless=True)
+
+    async def _no_stealth():
+        return None
+
+    monkeypatch.setattr(bm, "_setup_stealth", _no_stealth)
+    asyncio.run(bm.start())
+
+    assert "user_agent" not in context_options

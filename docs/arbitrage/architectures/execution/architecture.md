@@ -316,6 +316,9 @@ async def _ensure_exec_snapshot_fresh():
 | **OE** | reload-then-report | 拿到新 `CURRENT_BETS` | reload 超时/报错、无新帧 |
 | **PM** | REST 拉 positions/orders | REST 正常返回 | REST 超时/报错 |
 
+OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待新 `CURRENT_BETS`
+共用该 venue 的 `page_timeout` 总预算（由 `page_load_timeout_sec` 转换），不再另设固定 8 秒窗口。
+
 - **order/open-order reconcile 成功(真实 response)→ `venue_order_alive=true`**。
 - **position reconcile 成功(真实 response)→ `venue_position_alive=true`**。
 - **reconcile 失败 → 对应 order/position alive=false + 持续重试 reconcile 直到成功**(OE 重试 reload / PM 重试 REST;cadence/backoff 实现细节,待 live 调)。这是两 venue **对称**的断线保护,也是 Path B 后的恢复驱动。
