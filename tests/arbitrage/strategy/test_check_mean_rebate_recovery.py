@@ -262,6 +262,31 @@ def test_recovery_maps_decimal_short_position_to_no_outcome():
     assert ctx.scratch["legs"][0]["role"] == "yes"
 
 
+def test_recovery_rejects_probability_short_position():
+    books = {
+        "Y.POLYMARKET": _fake_book(0.50),
+        "N.POLYMARKET": _fake_book(0.50),
+    }
+    infos = {
+        "Y.POLYMARKET": {"selection_role": "home", "claim": "yes"},
+        "N.POLYMARKET": {"selection_role": "home", "claim": "no"},
+    }
+    ctx = _ctx(
+        books=books,
+        infos=infos,
+        positions=[_position(
+            "Y.POLYMARKET",
+            qty=5.0,
+            price=0.50,
+            side=PositionSide.SHORT,
+        )],
+        outcomes=["yes", "no"],
+    )
+
+    assert MeanRebateRecoveryCheck(min_repaired_rebate=-0.05).passes(ctx) is False
+    assert "legs" not in ctx.scratch
+
+
 def test_recovery_decimal_no_candidate_keeps_lay_execution_fields():
     books = {
         "Y.POLYMARKET": _fake_book(0.50),

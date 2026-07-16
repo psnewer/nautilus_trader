@@ -12,6 +12,7 @@ from nautilus_trader.common.component import TestClock
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
 from src.arbitrage.risk.portfolio import _Leg
 from tests.arbitrage.risk._factories import DuckPosition
@@ -35,21 +36,19 @@ def _portfolio(cache=None) -> ArbitragePortfolio:
 # ── 公式(risk-6.9.2b / 6.9.2c / 6.9.2d)──────────────────────────────
 def test_compute_outcome_exposures_net_profit_and_liability():
     pf = _portfolio()
-    legs = [_Leg("polymarket", "home", 100, 0.4), _Leg("orbitexch", "away", 40, 2.5)]
+    legs = [_Leg("polymarket", "yes", 100, 0.4), _Leg("orbitexch", "no", 40, 2.5)]
     exposures = pf._compute_outcome_exposures(legs)
-    assert exposures["home"].net_profit == pytest.approx(20.0)
-    assert exposures["home"].liability == pytest.approx(40.0)
-    assert exposures["away"].net_profit == pytest.approx(20.0)
-    assert exposures["away"].liability == pytest.approx(40.0)
+    assert exposures["yes"].net_profit == pytest.approx(20.0)
+    assert exposures["yes"].liability == pytest.approx(40.0)
+    assert exposures["no"].net_profit == pytest.approx(20.0)
+    assert exposures["no"].liability == pytest.approx(40.0)
 
 
-def test_compute_outcome_exposures_three_way_adds_draw():
+def test_compute_outcome_exposures_rejects_legacy_outcomes():
     pf = _portfolio()
     legs = [_Leg("polymarket", "home", 100, 0.4), _Leg("polymarket", "draw", 50, 0.3)]
-    exposures = pf._compute_outcome_exposures(legs)
-    assert set(exposures.keys()) == {"home", "draw", "away"}
-    assert exposures["away"].net_profit == pytest.approx(-55.0)
-    assert exposures["away"].liability == pytest.approx(55.0)
+    with pytest.raises(PositionOutcomeInvariantError, match="yes/no"):
+        pf._compute_outcome_exposures(legs)
 
 
 def test_empty_legs_returns_empty_outcome_exposures():
@@ -60,29 +59,28 @@ def test_outcome_exposures_uses_registered_outcomes_even_without_position():
     from src.arbitrage.common.pair_registry import PairRegistry
 
     cache = TestComponentStubs.cache()
-    home = pm_instrument("match_1", "home", token="home")
-    draw = pm_instrument("match_1", "draw", token="draw")
-    away = pm_instrument("match_1", "away", token="away")
-    cache.add_instrument(home)
-    cache.add_instrument(draw)
-    cache.add_instrument(away)
+    yes = pm_instrument("match_1", "home", token="yes")
+    yes.info["claim"] = "yes"
+    no = pm_instrument("match_1", "home", token="no")
+    no.info["claim"] = "no"
+    cache.add_instrument(yes)
+    cache.add_instrument(no)
 
     pf = _portfolio(cache=cache)
     registry = PairRegistry()
-    registry.register("match_1", [home.id, draw.id, away.id])
+    registry.register("match_1", [yes.id, no.id])
     pf.configure_arb(pair_registry=registry)
     _stub_legs(
         pf,
         [
-            _Leg("polymarket", "home", 100, 0.4),
-            _Leg("polymarket", "away", 100, 0.4),
+            _Leg("polymarket", "yes", 100, 0.4),
         ],
     )
 
     exposures = pf.outcome_exposures("match_1")
-    assert set(exposures.keys()) == {"home", "draw", "away"}
-    assert exposures["draw"].net_profit == pytest.approx(-80.0)
-    assert exposures["draw"].liability == pytest.approx(80.0)
+    assert set(exposures.keys()) == {"yes", "no"}
+    assert exposures["no"].net_profit == pytest.approx(-40.0)
+    assert exposures["no"].liability == pytest.approx(40.0)
 
 
 def test_outcome_shares_aggregates_by_outcome():
@@ -90,45 +88,48 @@ def test_outcome_shares_aggregates_by_outcome():
     _stub_legs(
         pf,
         [
-            _Leg("polymarket", "home", 5, 0.4),
-            _Leg("orbitexch", "home", 3, 2.0),
-            _Leg("orbitexch", "away", 4, 2.5),
+            _Leg("polymarket", "yes", 5, 0.4),
+            _Leg("orbitexch", "yes", 3, 2.0),
+            _Leg("orbitexch", "no", 4, 2.5),
         ],
     )
 
     shares = pf.outcome_shares("match_1")
 
-    assert shares["home"] == pytest.approx(11.0)
-    assert shares["away"] == pytest.approx(10.0)
+    assert shares["yes"] == pytest.approx(11.0)
+    assert shares["no"] == pytest.approx(10.0)
 
 
 # ── 腿提取 seam(risk-6.9.6)──────────────────────────────────────────
 def test_leg_from_position_pm_and_oe():
     cache = TestComponentStubs.cache()
     pm = pm_instrument("match_1", "home")
+    pm.info["claim"] = "yes"
     oe = oe_instrument("match_1", "away", 2)
+    oe.info["claim"] = "no"
     cache.add_instrument(pm)
     cache.add_instrument(oe)
     pf = _portfolio(cache=cache)
 
     leg_pm = pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
-    assert leg_pm.venue == "polymarket" and leg_pm.market_type == "home"
+    assert leg_pm.venue == "polymarket" and leg_pm.market_type == "yes"
     assert leg_pm.size == pytest.approx(100.0) and leg_pm.price == pytest.approx(0.4)
 
     leg_oe = pf._leg_from_position(DuckPosition(oe.id, 50.0, 2.5))
-    assert leg_oe.venue == "orbitexch" and leg_oe.market_type == "away"
+    assert leg_oe.venue == "orbitexch" and leg_oe.market_type == "no"
 
 
 def test_leg_from_position_sharpexch_keeps_venue_identity():
     cache = TestComponentStubs.cache()
     se = se_instrument("match_1", "away", 3)
+    se.info["claim"] = "no"
     cache.add_instrument(se)
     pf = _portfolio(cache=cache)
 
     leg = pf._leg_from_position(DuckPosition(se.id, 50.0, 2.5))
 
     assert leg.venue == "sharpexch"
-    assert leg.market_type == "away"
+    assert leg.market_type == "no"
     assert leg.share_if_wins() == pytest.approx(125.0)
 
 
@@ -137,13 +138,13 @@ def test_outcome_shares_for_venue_keeps_oe_and_se_separate():
     _stub_legs(
         pf,
         [
-            _Leg("orbitexch", "home", 3, 2.0),
-            _Leg("sharpexch", "home", 4, 2.5),
+            _Leg("orbitexch", "yes", 3, 2.0),
+            _Leg("sharpexch", "yes", 4, 2.5),
         ],
     )
 
-    assert pf.outcome_shares_for_venue("match_1", "orbitexch")["home"] == pytest.approx(6.0)
-    assert pf.outcome_shares_for_venue("match_1", "sharpexch")["home"] == pytest.approx(10.0)
+    assert pf.outcome_shares_for_venue("match_1", "orbitexch")["yes"] == pytest.approx(6.0)
+    assert pf.outcome_shares_for_venue("match_1", "sharpexch")["yes"] == pytest.approx(10.0)
 
 
 def test_claim_aware_positions_include_pm_no_long_and_decimal_lay_short():
@@ -190,59 +191,63 @@ def test_claim_aware_positions_include_pm_no_long_and_decimal_lay_short():
     ("instrument_factory", "expected_venue"),
     [(oe_instrument, "orbitexch"), (se_instrument, "sharpexch")],
 )
-def test_decimal_short_in_two_way_pair_maps_to_other_role(
+def test_decimal_short_in_two_way_pair_maps_to_other_claim(
     instrument_factory,
     expected_venue,
 ):
     cache = TestComponentStubs.cache()
     instrument = instrument_factory("match_1", "home", 2)
-    instrument.info.update({"selection_role": "home"})
+    instrument.info.update({"selection_role": "home", "claim": "yes"})
     cache.add_instrument(instrument)
     pf = _portfolio(cache=cache)
 
     leg = pf._leg_from_position(
         DuckPosition(instrument.id, 4.0, 2.5, side=PositionSide.SHORT),
-        outcomes={"home", "away"},
+        outcomes={"yes", "no"},
     )
 
     assert leg is not None
     assert leg.venue == expected_venue
-    assert leg.market_type == "away"
+    assert leg.market_type == "no"
     assert leg.share_if_wins() == pytest.approx(10.0)
     assert leg.profit_if_wins() == pytest.approx(4.0)
     assert leg.loss_if_loses() == pytest.approx(6.0)
 
 
-def test_leg_from_position_missing_info_returns_none():
+def test_leg_from_position_missing_claim_fails_closed():
     cache = TestComponentStubs.cache()
     pm = pm_instrument("match_1", "")  # market_type 空
     cache.add_instrument(pm)
     pf = _portfolio(cache=cache)
-    assert pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4)) is None
+    with pytest.raises(PositionOutcomeInvariantError, match="missing claim"):
+        pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
 
 
-def test_leg_from_position_prefers_selection_role_q9_key():
-    """#34/35:Q9 标准 key 是 selection_role;Provider 写它,本类优先读它。"""
+def test_leg_from_position_probability_short_fails_closed():
+    cache = TestComponentStubs.cache()
+    pm = pm_instrument("match_1", "home")
+    pm.info["claim"] = "yes"
+    cache.add_instrument(pm)
+    pf = _portfolio(cache=cache)
+
+    with pytest.raises(PositionOutcomeInvariantError, match="cannot be SHORT"):
+        pf._leg_from_position(
+            DuckPosition(pm.id, 10.0, 0.4, side=PositionSide.SHORT),
+            outcomes={"yes", "no"},
+        )
+
+
+def test_leg_from_position_uses_claim_not_selection_role():
+    """统一 outcome 后 selection_role 只用于匹配和展示。"""
     cache = TestComponentStubs.cache()
     pm = pm_instrument("match_1", "home")
     # 模拟 Provider(matching/discovery)用 Q9 标准 selection_role 而非旧 market_type
-    pm.info.update({"selection_role": "draw"})
+    pm.info.update({"selection_role": "draw", "claim": "yes"})
     pm.info.pop("market_type", None)
     cache.add_instrument(pm)
     pf = _portfolio(cache=cache)
     leg = pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
-    assert leg is not None and leg.market_type == "draw"
-
-
-def test_leg_from_position_falls_back_to_market_type():
-    """selection_role 缺、market_type 在 → 用 market_type(向后兼容旧 _factories 风格)。"""
-    cache = TestComponentStubs.cache()
-    pm = pm_instrument("match_1", "away")   # _factories 设的 info["market_type"]="away"
-    pm.info.pop("selection_role", None)     # 显式去掉新 key
-    cache.add_instrument(pm)
-    pf = _portfolio(cache=cache)
-    leg = pf._leg_from_position(DuckPosition(pm.id, 100.0, 0.4))
-    assert leg is not None and leg.market_type == "away"
+    assert leg is not None and leg.market_type == "yes"
 
 
 def test_resolve_pair_id_reads_from_pair_registry():

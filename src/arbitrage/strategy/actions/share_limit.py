@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
@@ -64,9 +65,19 @@ class ShareLimitModification(Action):
                 ctx.scratch["legs"] = []
                 return
             if is_decimal_odds_venue(venue):
-                remaining = self._decimal_remaining(portfolio, ctx.pair_id, venue, role, max_leg_share)
+                try:
+                    remaining = self._decimal_remaining(portfolio, ctx.pair_id, venue, role, max_leg_share)
+                except PositionOutcomeInvariantError as e:
+                    _LOG.error(f"ShareLimitModification: pair={ctx.pair_id} portfolio invariant: {e}")
+                    ctx.scratch["legs"] = []
+                    return
             else:
-                remaining = self._probability_remaining(portfolio, ctx.pair_id, venue, role, max_leg_share)
+                try:
+                    remaining = self._probability_remaining(portfolio, ctx.pair_id, venue, role, max_leg_share)
+                except PositionOutcomeInvariantError as e:
+                    _LOG.error(f"ShareLimitModification: pair={ctx.pair_id} portfolio invariant: {e}")
+                    ctx.scratch["legs"] = []
+                    return
             if remaining <= 0:
                 _LOG.info(
                     f"ShareLimitModification: pair={ctx.pair_id} remaining={remaining:.4f} "
@@ -109,7 +120,12 @@ class ShareLimitModification(Action):
 
         adjusted_candidates = []
         for idx, candidate in enumerate(candidates):
-            adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx, max_leg_share)
+            try:
+                adjusted = self._adjust_candidate(portfolio, ctx.pair_id, candidate, idx, max_leg_share)
+            except PositionOutcomeInvariantError as e:
+                _LOG.error(f"ShareLimitModification: pair={ctx.pair_id} portfolio invariant: {e}")
+                ctx.scratch["candidates"] = []
+                return True
             if adjusted is not None:
                 adjusted_candidates.append(adjusted)
 

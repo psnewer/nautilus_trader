@@ -26,6 +26,7 @@ from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.portfolio.portfolio import Portfolio
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -166,10 +167,14 @@ class ArbitragePortfolio(Portfolio):
 
     @staticmethod
     def _outcomes_from_legs(legs: list[_Leg]) -> set[str]:
-        outcomes = {"home", "away"}
-        if any(leg.market_type == "draw" for leg in legs):
-            outcomes.add("draw")
-        return outcomes
+        if not legs:
+            return set()
+        outcomes = {leg.market_type for leg in legs}
+        if not outcomes.issubset({"yes", "no"}):
+            raise PositionOutcomeInvariantError(
+                f"portfolio legs must use yes/no outcomes: outcomes={sorted(outcomes)}",
+            )
+        return {"yes", "no"}
 
     def _outcomes_from_registry(self, pair_id: str) -> set[str]:
         registry = self._pair_registry
@@ -180,13 +185,16 @@ class ArbitragePortfolio(Portfolio):
             instrument = self._arb_cache.instrument(InstrumentId.from_str(str(instrument_id)))
             if instrument is None or not instrument.info:
                 continue
-            market_type = (
-                instrument.info.get("claim")
-                or instrument.info.get("selection_role")
-                or instrument.info.get("market_type")
+            claim = instrument.info.get("claim")
+            if not claim:
+                raise PositionOutcomeInvariantError(
+                    f"registered instrument missing claim: instrument_id={instrument_id}",
+                )
+            outcomes.add(str(claim).lower())
+        if outcomes and outcomes != {"yes", "no"}:
+            raise PositionOutcomeInvariantError(
+                f"pair outcomes must be yes/no: pair_id={pair_id}, outcomes={sorted(outcomes)}",
             )
-            if market_type:
-                outcomes.add(str(market_type).lower())
         return outcomes
 
     def _active_pair_ids(self, account_id=None) -> set[str]:
@@ -212,18 +220,17 @@ class ArbitragePortfolio(Portfolio):
         return legs
 
     def _outcomes_from_positions(self, positions) -> set[str]:
-        infos = []
+        outcomes: set[str] = set()
         for position in positions:
             instrument = self._arb_cache.instrument(position.instrument_id)
             info = getattr(instrument, "info", None)
-            if info:
-                infos.append(info)
-        if any(info.get("claim") for info in infos):
-            return {"yes", "no"}
-        outcomes = {"home", "away"}
-        if any((info.get("selection_role") or info.get("market_type")) == "draw" for info in infos):
-            outcomes.add("draw")
-        return outcomes
+            claim = (info or {}).get("claim")
+            if not claim:
+                raise PositionOutcomeInvariantError(
+                    f"position instrument missing claim: instrument_id={position.instrument_id}",
+                )
+            outcomes.add(str(claim).lower())
+        return {"yes", "no"} if outcomes else set()
 
     # ── pair_id 来源(#34:由 matching 经 PairRegistry 提供;**不是** info["competition"])──
     def _resolve_pair_id(self, position) -> str | None:
@@ -236,10 +243,11 @@ class ArbitragePortfolio(Portfolio):
         instrument = self._arb_cache.instrument(position.instrument_id)
         if instrument is None or not instrument.info:
             return None
-        selection_role = instrument.info.get("selection_role") or instrument.info.get("market_type")
         claim = instrument.info.get("claim")
-        if not (claim or selection_role):
-            return None
+        if not claim:
+            raise PositionOutcomeInvariantError(
+                f"position instrument missing claim: instrument_id={position.instrument_id}",
+            )
         if not isinstance(instrument, (BinaryOption, BettingInstrument)):
             return None
         venue_id = venue_id_from_instrument_id(instrument.id)
@@ -248,16 +256,18 @@ class ArbitragePortfolio(Portfolio):
         venue = venue_id.lower()
         position_side = getattr(position, "side", None)
         if outcomes is None:
-            outcomes = {"yes", "no"} if claim else {"home", "away", str(selection_role).lower()}
+            outcomes = {"yes", "no"}
         market_type = outcome_for_position(
             venue_id,
             outcomes,
-            selection_role=selection_role,
+            selection_role=None,
             claim=claim,
             position_side=position_side,
         )
         if market_type is None:
-            return None
+            raise PositionOutcomeInvariantError(
+                f"position cannot map to pair outcome: instrument_id={position.instrument_id}",
+            )
         return _Leg(
             venue=venue,
             market_type=market_type,

@@ -2,10 +2,8 @@
 
 import asyncio
 
-import pytest
-
-from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
 from nautilus_trader.config import ExecEngineConfig
 from nautilus_trader.config import LiveRiskEngineConfig
 from nautilus_trader.core.uuid import UUID4
@@ -20,17 +18,16 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.mocks.exec_clients import MockExecutionClient
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.trading.strategy import Strategy
-
+from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.params import ArbitrageParams
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.risk.config import ArbRiskParams
 from src.arbitrage.risk.engine import ArbitrageLiveRiskEngine
-from src.arbitrage.risk.portfolio import OutcomeExposure
 from src.arbitrage.risk.portfolio import ArbitragePortfolio
-from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
-from src.arbitrage.common.params import ArbitrageParams
-from src.arbitrage.common.pair_registry import PairRegistry
-from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.risk.portfolio import OutcomeExposure
 from tests.arbitrage.risk._factories import oe_account_state
 from tests.arbitrage.risk._factories import oe_instrument
 from tests.arbitrage.risk._factories import pm_account_state
@@ -314,6 +311,29 @@ def test_probability_gate_lay_order_uses_complement_probability():
     assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=1.02, side="SELL")) is False
     assert ctx.engine._check_probability_gate(oe, _DuckOrder(oe.id, price=40.0, side="SELL")) is False
     assert len(denials) == 2
+
+
+def test_probability_gate_pm_sell_uses_acquired_complement_probability():
+    """PM 减仓 SELL 应按获得的互补敞口概率检查。"""
+    ctx = _Ctx(ArbRiskParams(min_probability=0.03, max_probability=0.95))
+    pm = pm_instrument("match_X", "away")
+
+    assert ctx.engine._check_probability_gate(pm, _DuckOrder(pm.id, price=0.96, side="SELL")) is True
+
+
+def test_profit_gate_denies_when_portfolio_invariant_is_broken():
+    ctx = _Ctx()
+    pm = pm_instrument("match_X", "home")
+    order = _DuckOrder(pm.id)
+    ctx.engine._pair_id_for_order = lambda _: "match_X"
+    ctx.portfolio.outcome_exposures = lambda *_: (_ for _ in ()).throw(
+        PositionOutcomeInvariantError("probability venue position cannot be SHORT"),
+    )
+    denials = []
+    ctx.engine._deny_order = lambda order, reason: denials.append(reason)
+
+    assert ctx.engine._check_profit_gates(order) is False
+    assert denials == ["portfolio invariant: probability venue position cannot be SHORT"]
 
 
 def test_probability_bounds_hot_update_rejects_invalid_interval():

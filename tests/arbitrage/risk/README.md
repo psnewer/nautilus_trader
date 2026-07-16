@@ -353,7 +353,17 @@ Risk 不再按 `way_rebate` 比率门控,也不再执行全局止盈/止损。`A
   - PM NO token LONG 归 `no`;OE/SE 真 selection SHORT(LAY)也归 `no`,但使用 lay 的 profit/loss。
   - `[yes,no]` 混合持仓的 `outcome_exposures` 同时返回两侧正确 `net_profit/liability`。
   - `outcome_shares` / `outcome_shares_for_venue` 将 LAY gross share=`qty*odds` 计入 complement outcome,使 share limit 同步正确。
-  - 2-way 外部 SHORT 映射到另一个 role;既有 LONG/BACK 和 probability LONG 用例不回归。
+  - decimal SHORT 映射到 claim 的互补 outcome;既有 LONG/BACK 和 probability LONG 用例不回归。
+
+## #235:SELL 概率与严格 Portfolio 不变量(2026-07-16)
+
+- `test_probability_gate_pm_sell_uses_acquired_complement_probability`:非对称概率区间下，PM SELL
+  按 `1-price` 而非原始卖价校验。
+- `test_profit_gate_denies_when_portfolio_invariant_is_broken`:Portfolio 报持仓不变量异常时，Risk
+  明确 deny 新单。
+- `test_portfolio.py` 覆盖 PairRegistry 缺 `claim`、Position 缺 `claim` 与 probability SHORT
+  均 fail-closed；不再用 `selection_role/market_type` 兜底成旧 outcome。
+- Risk 余额门控只消费 Venue Registry `order_required_balance`，不维护独立 liability 公式。
 
 ## #234:PM BUY-only 1 USD 门控
 

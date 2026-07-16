@@ -398,3 +398,14 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
 
 - Snapshot 冻结 `min_quantity/min_buy_notional/size_increment`，不泄漏 live Instrument。
 - `test_probability_split_keeps_minimum_buy_notional_at_low_price`:目标 BUY 100 @ 0.02、互斥 LONG 97 时，BUY 子单至少 50 shares，最终拆为 SELL 50 + BUY 50；SELL 子单不应用 1 USD 下限。
+
+## #235:共享候选腿与持仓异常 fail-closed
+
+- mean_rebate、one_side_rebate、mean_rebate_recovery 的行情候选腿统一由
+  `checks/quote_legs.py::quote_legs_by_outcome` 构造；现有三组 check 用例共同覆盖 best ask、
+  `quote_claim` 概率与 lay 执行字段透传，避免三份构造逻辑漂移。
+- PlaceBets 的 `venue_required_balance` 汇总逐单调用 Venue Registry `order_required_balance`。
+- ShareLimit 经严格 Portfolio 遇到缺 claim 或 probability SHORT 时清空本轮输出；Recovery 遇到
+  probability SHORT 等经济投影不变量错误时停止，不按零敞口继续。直接验收用例为
+  `test_single_legs_are_cleared_when_portfolio_invariant_is_broken` 与
+  `test_recovery_rejects_probability_short_position`。

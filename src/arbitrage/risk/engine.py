@@ -22,23 +22,22 @@ from dataclasses import replace
 
 from nautilus_trader.live.risk_engine import LiveRiskEngine
 from nautilus_trader.model.enums import TradingState
-
-from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
-from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import TOPIC_RISK_PARAMS
 from src.arbitrage.common.control import TOPIC_TRADING_STATE
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.control import SetRiskParamsCommand
 from src.arbitrage.common.control import SetTradingStateCommand
+from src.arbitrage.common.opportunity import RISK_LEG_DENIED_TOPIC
+from src.arbitrage.common.opportunity import meta_from_order
 from src.arbitrage.common.opportunity import order_intent
 from src.arbitrage.common.params import ArbitrageParams
-from src.arbitrage.common.venues import probability_from_price
-from src.arbitrage.common.venues import is_probability_odds_venue
-from src.arbitrage.common.venues import order_liability
+from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
+from src.arbitrage.common.venues import order_exposure_probability
+from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.common.venues import venue_id_from_leg_key
-from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
 from src.arbitrage.risk.config import ArbRiskParams
 
 
@@ -211,15 +210,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
     def _order_cost(self, instrument, order) -> float:
         """新单的潜在占用(= 输掉时的 liability,与 outcome exposure 口径对齐)。"""
         size = order.leaves_qty.as_double()
-        side = getattr(order, "side", None)
-        side_name = str(getattr(side, "name", side) or "").upper()
-        if side_name == "SELL" and is_probability_odds_venue(order.instrument_id.venue.value):
-            return 0.0  # 卖已有 outcome token 只释放仓位,不占用 quote balance
-        return order_liability(
+        return order_required_balance(
             order.instrument_id.venue.value,
             size,
             float(order.price),
-            is_lay=_is_lay_order(order),
+            getattr(order, "side", None),
         )
 
     # ── 应用层:赔率/概率门控───────────────────────────────────────
@@ -240,10 +235,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
             return False
 
         try:
-            # #228:decimal venue 的 SELL 即 lay(合成 no 腿执行已重定向回真 selection instrument,
-            # instrument.info 的 claim 不可用作订单级判别),获得的敞口隐含概率是补集 1−1/price。
-            claim = "no" if _is_lay_order(order) else "yes"
-            probability = probability_from_price(order.instrument_id.venue.value, float(order.price), claim)
+            probability = order_exposure_probability(
+                order.instrument_id.venue.value,
+                float(order.price),
+                getattr(order, "side", None),
+            )
         except (KeyError, ZeroDivisionError):
             self._deny_order(order=order, reason=f"probability gate: unsupported venue={order.instrument_id.venue}")
             return False
@@ -318,7 +314,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
         if pair_id is None:
             return True
 
-        exposures = pf.outcome_exposures(pair_id, order.account_id)
+        try:
+            exposures = pf.outcome_exposures(pair_id, order.account_id)
+        except PositionOutcomeInvariantError as e:
+            self._deny_order(order=order, reason=f"portfolio invariant: {e}")
+            return False
         if not exposures:
             return True
 

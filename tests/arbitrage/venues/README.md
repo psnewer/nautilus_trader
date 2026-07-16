@@ -62,3 +62,12 @@ PM+OE+SE 三家均注册;PMSPORTS sports anchor 由 `data_sources.sports_status`
 **输入**:经 `launchers/arb_node.py` 启动真实连接但跳过真实订单 IO。
 **期望**:每组只注册 enabled tradable venues 与 PMSPORTS data source;Matching 走 `.PMSPORTS` anchor 聚合 tradable venues;Strategy/Risk/Execution 不消费 `.PMSPORTS` anchor;无真实下单。
 **验收**:部分完成。PM+SE smoke 已由 SE README 记录;PM+OE、OE+SE-only、PM+OE+SE 仍待按用户明确要求启动后验收。
+
+## venues-9:订单方向与持仓不变量
+
+**输入**:PM BUY/SELL、decimal BUY/SELL，以及 probability venue SHORT Position。
+**期望**:`order_exposure_probability` 对 SELL 返回获得的互补敞口概率；
+`order_required_balance` 是 Strategy/Risk/Execution 的实际订单资金需求唯一入口；probability SHORT
+抛 `PositionOutcomeInvariantError`，不静默映射或丢弃。
+**验收**:`tests/arbitrage/common/test_venues.py` 覆盖 PM SELL 互补概率、各订单方向资金需求和
+probability SHORT fail-closed；具体经济公式的唯一真理源为 `venues.md §4.1`。

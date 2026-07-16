@@ -2,6 +2,7 @@
 
 import asyncio
 
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -40,6 +41,11 @@ class _RecordingPortfolio(_Portfolio):
         return self._shares
 
 
+class _InvariantPortfolio(_Portfolio):
+    def outcome_shares_for_venue(self, pair_id, venue, account_id):
+        raise PositionOutcomeInvariantError("position instrument missing claim")
+
+
 def test_single_legs_are_adjusted_in_share_limit():
     ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"home": 60.0}, oe={"away": 20.0}))
     ctx.scratch["legs"] = [
@@ -61,6 +67,17 @@ def test_single_legs_missing_share_are_cleared():
     ctx = EvalContext(pair_id="p", portfolio=_Portfolio(pm={"home": 0.0}))
     ctx.scratch["legs"] = [
         {"venue": "POLYMARKET", "role": "home", "price": 0.4},
+    ]
+
+    _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))
+
+    assert ctx.scratch["legs"] == []
+
+
+def test_single_legs_are_cleared_when_portfolio_invariant_is_broken():
+    ctx = EvalContext(pair_id="p", portfolio=_InvariantPortfolio())
+    ctx.scratch["legs"] = [
+        {"venue": "POLYMARKET", "role": "yes", "price": 0.4, "share_if_wins": 50.0},
     ]
 
     _run(ShareLimitModification(max_leg_share=100.0).execute(ctx))

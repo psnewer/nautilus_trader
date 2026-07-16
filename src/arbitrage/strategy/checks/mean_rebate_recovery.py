@@ -8,23 +8,25 @@ rebate 不低于 `min_repaired_rebate`。命中时只写缺口 legs,供 `PlaceBe
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from nautilus_trader.model.enums import PositionSide
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.common.venues import venue_preference_rank
-from src.arbitrage.strategy.checks.mean_rebate import _best_ask
-from src.arbitrage.strategy.checks.mean_rebate import _to_prob
-from src.arbitrage.strategy.checks.mean_rebate import _venue_of
+from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
+from src.arbitrage.strategy.checks.quote_legs import venue_of as _venue_of
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
 
 _EPS = 1e-9
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,11 @@ class MeanRebateRecoveryCheck(Check):
         if len(valid_outcomes) < 2:
             return False
 
-        existing = _existing_legs(snap, valid_outcomes)
+        try:
+            existing = _existing_legs(snap, valid_outcomes)
+        except PositionOutcomeInvariantError as e:
+            _LOG.error(f"MeanRebateRecovery: pair={ctx.pair_id} portfolio invariant: {e}")
+            return False
         if not existing:
             return False
         actual_by_role = _actual_share_by_role(existing)
@@ -179,38 +185,7 @@ def _actual_share_by_role(legs: list[_CalcLeg]) -> dict[str, float]:
 
 
 def _best_candidates_by_role(snap, outcomes: tuple[str, ...]) -> dict[str, dict]:
-    candidates: dict[str, list[dict]] = {}
-    for iid in snap.instrument_ids:
-        info = _info_for(snap, iid)
-        claim = str(info.get("claim") or "").lower()
-        quote_claim = str(info.get("quote_claim") or "yes").lower()
-        role = claim or str(info.get("selection_role") or info.get("market_type") or "").lower()
-        if role not in outcomes:
-            continue
-        book = snap.order_books.get(iid)
-        if book is None:
-            continue
-        venue = _venue_of(iid)
-        price = _best_ask(book)
-        if price is None or price <= 0:
-            continue
-        prob = _to_prob(venue, price, quote_claim)
-        if prob <= 0:
-            continue
-        leg = {
-            "instrument_id": iid,
-            "venue": venue,
-            "price": price,
-            "prob": prob,
-        }
-        if claim:
-            leg["claim"] = claim
-        if info.get("exec_instrument_id"):
-            leg["lay_price"] = price
-            exec_iid = info.get("exec_instrument_id")
-            if exec_iid:
-                leg["exec_instrument_id"] = str(exec_iid)
-        candidates.setdefault(role, []).append(leg)
+    candidates = quote_legs_by_outcome(snap)
     return {
         role: min(legs, key=lambda leg: (leg["prob"], venue_preference_rank(leg["venue"])))
         for role, legs in candidates.items()

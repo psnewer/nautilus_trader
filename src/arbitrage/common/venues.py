@@ -59,6 +59,10 @@ class LegEconomics:
     loss_if_loses: float
 
 
+class PositionOutcomeInvariantError(ValueError):
+    """持仓无法映射到声明 outcome 时抛出，调用方必须 fail-closed。"""
+
+
 VENUE_REGISTRY: dict[str, VenueDescriptor] = {
     POLYMARKET: VenueDescriptor(
         venue_id=POLYMARKET,
@@ -245,6 +249,13 @@ def probability_from_price(venue: str, price: float, claim: str = "yes") -> floa
     return price
 
 
+def order_exposure_probability(venue: str, price: float, side: str) -> float:
+    """订单实际增加的 outcome 敞口概率。SELL 增加报价 outcome 的互补敞口。"""
+    probability = probability_from_price(venue, price, "yes")
+    side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
+    return 1.0 - probability if side_name == "SELL" else probability
+
+
 def qty_from_share(venue: str, share: float, price: float) -> float:
     if descriptor_for(venue).odds_model == "decimal":
         return share / price
@@ -267,7 +278,11 @@ def outcome_for_position(
         return None
     if side == "LONG":
         return base_outcome
-    if side != "SHORT" or not is_decimal_odds_venue(venue):
+    if side == "SHORT" and not is_decimal_odds_venue(venue):
+        raise PositionOutcomeInvariantError(
+            f"probability venue position cannot be SHORT: venue={venue}, outcome={base_outcome}",
+        )
+    if side != "SHORT":
         return None
     if len(normalized_outcomes) != 2:
         return None
@@ -312,3 +327,17 @@ def order_liability(
 ) -> float:
     """订单可能占用的最大本金,与持仓敞口使用同一 venue 经济口径。"""
     return leg_economics(venue, price, quantity, is_lay=is_lay).loss_if_loses
+
+
+def order_required_balance(venue: str, quantity: float, price: float, side: str) -> float:
+    """订单需要的可用余额；统一处理 probability SELL 与 decimal LAY。"""
+    descriptor = descriptor_for(venue)
+    side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
+    if descriptor.odds_model == "probability" and side_name == "SELL":
+        return 0.0
+    return order_liability(
+        venue,
+        quantity,
+        price,
+        is_lay=descriptor.odds_model == "decimal" and side_name == "SELL",
+    )

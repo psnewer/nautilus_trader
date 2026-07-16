@@ -10,17 +10,15 @@ import pandas as pd
 
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDC
-from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import OrderBookDelta
-from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
@@ -33,7 +31,6 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import MarketMatchingConfig
@@ -696,6 +693,24 @@ def test_three_way_validation_publishes_only_after_all_roles_pass():
         "EPL|Arsenal|Chelsea|away",
     }
     assert all(registry.instrument_ids_for_pair(pair.pair_id) for pair in published)
+
+
+def test_three_way_tradable_anchor_skips_event_when_role_has_only_one_venue():
+    """PM-anchor 路径与 PMSPORTS 聚合路径一致，不发布单 venue role。"""
+    actor, clock, cache, registry, _ = _harness()
+    for role, token in (("home", "h"), ("away", "a")):
+        cache.add_instrument(_pm("EPL", "Arsenal", "Chelsea", role, f"{token}y", claim="yes"))
+        cache.add_instrument(_pm("EPL", "Arsenal", "Chelsea", role, f"{token}n", claim="no"))
+    for role, selection in (("home", 11), ("draw", 12), ("away", 13)):
+        cache.add_instrument(_oe("EPL", "Arsenal", "Chelsea", role, selection, claim="yes"))
+        cache.add_instrument(_oe("EPL", "Arsenal", "Chelsea", role, selection + 100, claim="no"))
+    published = []
+    actor.publish_data = lambda **kwargs: published.append(kwargs["data"])
+
+    actor._maybe_match()
+
+    assert published == []
+    assert registry.instrument_ids_for_pair("EPL|Arsenal|Chelsea|draw|ORBITEXCH") == set()
 
 
 def test_three_way_validation_fail_never_publishes_event_siblings():

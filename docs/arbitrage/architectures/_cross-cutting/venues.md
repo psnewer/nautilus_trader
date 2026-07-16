@@ -122,6 +122,7 @@ def enabled_sports_client_ids(cfg: ArbConfig) -> tuple[str, ...]: ...
 def descriptor_for(venue: str) -> VenueDescriptor: ...
 def is_decimal_odds_venue(venue: str) -> bool: ...
 def probability_from_price(venue: str, price: float, claim: str = "yes") -> float: ...
+def order_exposure_probability(venue: str, price: float, side: str) -> float: ...
 def qty_from_share(venue: str, share: float, price: float) -> float: ...
 def outcome_for_position(
     venue: str,
@@ -133,6 +134,7 @@ def outcome_for_position(
 ) -> str | None: ...
 def leg_economics(venue: str, price: float, size: float, *, is_lay: bool = False) -> LegEconomics: ...
 def order_liability(venue: str, quantity: float, price: float, *, is_lay: bool = False) -> float: ...
+def order_required_balance(venue: str, quantity: float, price: float, side: str) -> float: ...
 ```
 
 ### 4.1 净 Position → outcome 经济腿(#230)
@@ -147,16 +149,17 @@ def order_liability(venue: str, quantity: float, price: float, *, is_lay: bool =
 
 | Position | outcome 归属 |
 |---|---|
-| LONG | `claim or selection_role`,且必须存在于 `outcomes` |
-| decimal SHORT(LAY) | `claim or selection_role` 在二元 `outcomes` 中的**另一个 outcome** |
-| probability SHORT / FLAT / 未知 side / 非二元 complement | 返回 `None`,调用方跳过该腿,不猜测 |
+| LONG | `claim or selection_role`,且必须存在于 `outcomes`;Portfolio 调用方只允许显式 `claim=yes/no` |
+| decimal SHORT(LAY) | 上述 base outcome 在二元 `outcomes` 中的**另一个 outcome** |
+| probability SHORT | 违反执行/对账不变量,抛 `PositionOutcomeInvariantError`,调用方 fail-closed |
+| FLAT / 未知 side / 非二元 complement | 返回 `None`,不猜测 |
 
 这同时覆盖两类二元 pair:
 
 - 3-way 拆分 pair:`outcomes=[yes,no]`;OE/SE no 腿真单重定向到 yes instrument 后形成
   `SHORT`,因此 `yes → no`。PM NO token 是独立 instrument 的 `LONG claim=no`,直接归 `no`。
-- 2-way 与 3-way 拆分 pair 均为 `outcomes=[yes,no]`;`selection_role` 只用于匹配和展示。
-  真实 home/away runner 分别映射为 yes/no；decimal SHORT 仍映射到其 instrument claim 的互补 outcome。
+- 2-way 与 3-way 拆分 pair 均为 `outcomes=[yes,no]`;`selection_role` 只用于匹配和展示,
+  Portfolio 不再用它兜底经济 outcome。decimal SHORT 映射到其 instrument claim 的互补 outcome。
 
 `leg_economics` 只计算已经完成 outcome 归属后的金额:
 
@@ -170,9 +173,14 @@ lay 行推导:lay size q 押 liability `q(L−1)`;互补 outcome 赢时收回 li
 回收 `qL`,与 back 的 share_if_wins 同形(这也是 `qty_from_share(venue, share, lay)` = `share/lay`
 对 no 腿直接成立的原因)。
 
-`order_liability` 是下单前余额门控与 `OrderAccepted` 后本地预扣的统一入口,直接返回相同经济模型的
-`loss_if_loses`:probability 为 `quantity × price`,decimal BACK 为 `quantity`,decimal LAY 为
-`quantity × (price−1)`。Risk 与 Execution 禁止各自重写该公式。
+`order_liability` 是不含订单方向约束的底层经济函数。实际订单统一调用
+`order_required_balance(venue, quantity, price, side)`:probability SELL 减仓返回 0；其余订单按
+`order_liability` 计算。Strategy 的机会级资金汇总、Risk 下单前余额门控与 Execution
+`OrderAccepted` 后本地预扣都必须委托该 helper,禁止各自重写公式。
+
+`order_exposure_probability(venue, price, side)` 是订单概率门控的唯一入口。BUY 取报价对应的
+yes 概率；SELL 取其补集。因此 PM SELL 减仓与 decimal LAY 都按订单实际获得的互补敞口校验,
+不受概率上下界是否对称影响。
 
 输入边界是 **NT 当前净 Position**(`side/quantity/avg_px_open`),不是历史 bet 明细。OE/SE
 reconciliation 已把同 selection 的 BACK/LAY 聚合为一个 LONG/SHORT 净 Position;本模型正确计算

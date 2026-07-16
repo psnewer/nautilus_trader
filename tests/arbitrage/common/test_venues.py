@@ -6,6 +6,7 @@ from src.arbitrage.common.venues import ORBITEXCH
 from src.arbitrage.common.venues import POLYMARKET
 from src.arbitrage.common.venues import SHARPEXCH
 from src.arbitrage.common.venues import SPORTS_CLIENT
+from src.arbitrage.common.venues import PositionOutcomeInvariantError
 from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import enabled_data_source_client_ids
 from src.arbitrage.common.venues import enabled_settlement_venues
@@ -17,6 +18,8 @@ from src.arbitrage.common.venues import is_known_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import is_venue_enabled
 from src.arbitrage.common.venues import leg_economics
+from src.arbitrage.common.venues import order_exposure_probability
+from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import outcome_for_position
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import qty_from_share
@@ -126,6 +129,32 @@ def test_decimal_no_claim_probability_is_complement(venue):
     assert probability_from_price(venue, 4.0) == 0.25  # 默认 yes,向后兼容
 
 
+@pytest.mark.parametrize(
+    ("venue", "side", "price", "expected"),
+    [
+        (POLYMARKET, "BUY", 0.40, 0.40),
+        (POLYMARKET, "SELL", 0.96, 0.04),
+        (ORBITEXCH, "BUY", 2.00, 0.50),
+        (ORBITEXCH, "SELL", 4.00, 0.75),
+    ],
+)
+def test_order_exposure_probability(venue, side, price, expected):
+    assert order_exposure_probability(venue, price, side) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("venue", "side", "quantity", "price", "expected"),
+    [
+        (POLYMARKET, "BUY", 10.0, 0.40, 4.0),
+        (POLYMARKET, "SELL", 10.0, 0.40, 0.0),
+        (ORBITEXCH, "BUY", 10.0, 3.00, 10.0),
+        (ORBITEXCH, "SELL", 10.0, 3.00, 20.0),
+    ],
+)
+def test_order_required_balance(venue, side, quantity, price, expected):
+    assert order_required_balance(venue, quantity, price, side) == pytest.approx(expected)
+
+
 def test_polymarket_helpers_use_probability_share_semantics():
     assert is_decimal_odds_venue(POLYMARKET) is False
     assert is_probability_odds_venue(POLYMARKET) is True
@@ -156,13 +185,14 @@ def test_position_outcome_maps_decimal_short_to_binary_complement(venue):
 
 
 def test_position_outcome_rejects_probability_short_and_nonbinary_decimal_short():
-    assert outcome_for_position(
-        POLYMARKET,
-        ["yes", "no"],
-        selection_role="home",
-        claim="yes",
-        position_side="SHORT",
-    ) is None
+    with pytest.raises(PositionOutcomeInvariantError, match="cannot be SHORT"):
+        outcome_for_position(
+            POLYMARKET,
+            ["yes", "no"],
+            selection_role="home",
+            claim="yes",
+            position_side="SHORT",
+        )
     assert outcome_for_position(
         ORBITEXCH,
         ["home", "draw", "away"],

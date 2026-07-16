@@ -18,11 +18,10 @@ from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.actor import ActorConfig
 from nautilus_trader.core.datetime import secs_to_nanos
-from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
-
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.pair_registry import PairRegistry
@@ -376,6 +375,8 @@ class MarketMatchingActor(Actor):
             if tradable_anchor_ids:
                 venue_ids[self._anchor_venue_str] = tradable_anchor_ids
             venue_ids[str(tradable_venue).upper()] = tradable_ids
+            if len(venue_ids) < 2:
+                continue   # 与 PMSPORTS 聚合路径一致：单 venue role 没有套利面
             candidate = _PairCandidate(
                 pair_id=pair_id,
                 sport=anchor_ev.sport,

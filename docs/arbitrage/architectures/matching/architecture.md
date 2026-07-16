@@ -214,7 +214,8 @@ Risk 门控。
 
 状态按 `pair_id` 保存在 `_pair_validations`:
 - `PENDING`:已生成 candidate,MatchingActor 对 candidate 的可交易腿临时订阅 OBD,等待可用于校验的 best ask。
-- `PASSED`:该 pair 自身已通过。2-way 可立即交接；3-way 仍须等待同一 validation group 的 home/draw/away 全部 `PASSED`。
+- `PASSED`:该 pair 自身已通过，并立即取消该 pair 的 Matching 临时 OBD 订阅。2-way 可立即交接；
+  3-way 仍须等待同一 validation group 的 home/draw/away 全部 `PASSED`。
 - `FAILED`:已失败,不 register、不 publish,并取消 Matching 自己的临时 OBD 订阅。进程内 sticky;同 `pair_id` 后续 candidate 直接跳过。
 
 同一个 `pair_id` 已存在于 `_pair_validations` 时,新的 matching candidate 直接跳过,不更新
@@ -244,9 +245,10 @@ failed/pending 记录阻塞未来生命周期。
 >
 > **3-way 原子可见性(#231)**:同一拆分批次的三个 candidate 保存相同
 > `validation_group_pair_ids=(home,draw,away)`。单个 role PASS 不得 register/publish;只有三者状态全部
-> `PASSED` 后才统一逐 pair register+publish；全部 publish 完成后才统一释放 Matching 临时 OBD 订阅。
-> 该顺序保证 Strategy 的正式订阅先接住行情，避免 DataEngine 短暂退订 venue、重建空 order book，
-> 而已打开的 competition 页又未立即重推初始快照。任一 role 缺少至少两个 tradable venue时整批不进入门控。
+> `PASSED` 后才统一逐 pair register+publish。每个 role pair 在自身转为 `PASSED` 时已经单独释放
+> 自己的 Matching 临时 OBD 订阅，不等待同 event 其余 role，也不等待统一 publish。
+> PM anchor 与 PMSPORTS anchor 两条聚合路径
+> 都要求每个 role 至少包含两个 tradable venue；任一 role 不满足时整批不进入门控。
 > 因此后续 sibling FAIL 前不存在 Strategy 已收到早到 role 的真钱窗口。
 
 ### 4.2.2 3-way 多 market 拆分(#228,已落地 2026-07-15)
@@ -329,9 +331,11 @@ sequenceDiagram
             MA->>MA: 临时订阅 candidate 可交易腿 OBD
             MA->>CA: 读 best ask 做概率校验
             alt 校验通过
-              MA->>PR: register(pair_id, tradable legs, anchor_instrument_ids=...)
-              MA->>MB: publish MatchedPair
-              MA->>MA: 取消临时 OBD 订阅
+              MA->>MA: 标记 PASSED,取消该 pair 临时 OBD 订阅
+              opt validation group 全部 PASSED
+                MA->>PR: 逐 pair register(...)
+                MA->>MB: 逐 pair publish MatchedPair
+              end
             else 校验失败
               MA->>MA: 标记 FAILED,取消临时 OBD 订阅
             else 暂不可校验

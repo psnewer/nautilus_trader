@@ -28,9 +28,8 @@ PlaceBetsAction 用 leg 自带 `share_if_wins` 经 Venue Registry 推 qty。
 
 from __future__ import annotations
 
-from src.arbitrage.common.venues import probability_from_price
-from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.common.venues import venue_preference_rank
+from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -47,45 +46,8 @@ class MeanRebateCheck(Check):
         if snap is None:
             return False
 
-        # 经 snapshot.instrument_info 给每 leg 打 venue+outcome 标签(decouple from cache)
-        # #228:分组键 = claim 优先(3-way 腿),fallback selection_role(2-way);合法集 = snap.outcomes。
         valid_outcomes = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
-        legs_by_outcome: dict[str, list] = {}
-        for iid in snap.instrument_ids:
-            book = snap.order_books.get(iid)
-            if book is None:
-                continue
-            info = snap.instrument_info.get(iid) or {}
-            claim = str(info.get("claim") or "").lower()
-            quote_claim = str(info.get("quote_claim") or "yes").lower()
-            outcome = claim or str(info.get("selection_role") or "").lower()
-            if outcome not in valid_outcomes:
-                continue
-            venue = _venue_of(iid)
-            best_ask = _best_ask(book)
-            if best_ask is None or best_ask <= 0:
-                continue
-            prob = _to_prob(venue, best_ask, quote_claim)
-            if prob <= 0:
-                continue
-            leg = {
-                "instrument_id": iid,
-                "venue": venue,
-                "side": "BUY",
-                "price": best_ask,
-                "prob": prob,
-                "role": outcome,
-            }
-            if claim:
-                leg["claim"] = claim
-            if info.get("exec_instrument_id"):
-                # #228:no 腿 price 即 lay 原值;place_bets 经 lay_price 转 SELL,
-                # 经 exec_instrument_id 重定向到同 selection 的 yes instrument(如有)。
-                leg["lay_price"] = best_ask
-                exec_iid = info.get("exec_instrument_id")
-                if exec_iid:
-                    leg["exec_instrument_id"] = str(exec_iid)
-            legs_by_outcome.setdefault(outcome, []).append(leg)
+        legs_by_outcome = quote_legs_by_outcome(snap)
 
         # 必须 outcome 集合齐(#228:snap.outcomes 声明);每方向至少 2 条可比腿。
         if sorted(legs_by_outcome.keys()) != sorted(valid_outcomes):
@@ -122,34 +84,3 @@ class MeanRebateCheck(Check):
         if self._share is not None:
             return self._share
         return float((ctx.strategy_defaults or {}).get("share") or 0.0)
-
-
-# ─── 辅助 ──────────────────────────────────────────────────────────
-
-
-def _venue_of(instrument_id) -> str:
-    """从 NT `InstrumentId` 或兼容字符串提真实 venue 名。"""
-    return venue_id_from_instrument_id(instrument_id)
-
-
-def _best_ask(book) -> float | None:
-    """从 NT OrderBook / 兼容对象取 best_ask 价。"""
-    # NT OrderBook 接口:best_ask_price()(返 Price 对象)/ best_ask()(返 BookOrder)
-    fn = getattr(book, "best_ask_price", None)
-    if callable(fn):
-        try:
-            v = fn()
-            return float(v) if v is not None else None
-        except Exception:
-            return None
-    # fallback:test fake 用 dict {"ask": x}
-    if isinstance(book, dict):
-        return book.get("ask") or book.get("best_ask")
-    return None
-
-
-def _to_prob(venue: str, price: float, claim: str = "yes") -> float:
-    try:
-        return probability_from_price(venue, price, claim or "yes")
-    except KeyError:
-        return 0.0

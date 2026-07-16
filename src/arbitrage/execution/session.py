@@ -27,11 +27,10 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
-
 from src.arbitrage.common.pair_registry import PairRegistry
-from src.arbitrage.common.venues import descriptor_for
-from src.arbitrage.common.venues import order_liability
+from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import venue_id_from_instrument_id
+
 
 # submit 终态(OrderFilled 仅在全成时,见 _send_order_event);cancel 终态只看撤单完成/失败。
 _SUBMIT_TERMINAL = (OrderCanceled, OrderRejected, OrderExpired)
@@ -294,9 +293,4 @@ def accepted_order_reserved_notional(instrument_id, quantity: float, price: floa
     - decimal LAY:liability = quantity * (odds - 1)
     """
     venue = venue_id_from_instrument_id(instrument_id)
-    side_name = str(getattr(side, "name", side) or "").rsplit(".", 1)[-1].upper()
-    descriptor = descriptor_for(venue)
-    if descriptor.odds_model == "probability" and side_name == "SELL":
-        return 0.0
-    is_lay = descriptor.odds_model == "decimal" and side_name == "SELL"
-    return order_liability(venue, quantity, price, is_lay=is_lay)
+    return order_required_balance(venue, quantity, price, side)

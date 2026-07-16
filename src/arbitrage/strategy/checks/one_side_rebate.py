@@ -15,10 +15,8 @@ from __future__ import annotations
 
 from itertools import product
 
-from src.arbitrage.strategy.checks.mean_rebate import _best_ask
 from src.arbitrage.common.venues import qty_from_share
-from src.arbitrage.strategy.checks.mean_rebate import _to_prob
-from src.arbitrage.strategy.checks.mean_rebate import _venue_of
+from src.arbitrage.strategy.checks.quote_legs import quote_legs_by_outcome
 from src.arbitrage.strategy.condition import Check
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -142,42 +140,7 @@ class OneSideRebateCheck(Check):
 
 def _legs_by_role(snap) -> dict[str, list[dict]]:
     """#228:分组键 = claim 优先(3-way 腿),fallback selection_role(2-way);合法集 = snap.outcomes。"""
-    valid_outcomes = tuple(getattr(snap, "outcomes", None) or ("home", "away"))
-    result: dict[str, list[dict]] = {}
-    for iid in snap.instrument_ids:
-        info = snap.instrument_info.get(iid) or {}
-        claim = str(info.get("claim") or "").lower()
-        quote_claim = str(info.get("quote_claim") or "yes").lower()
-        outcome = claim or str(info.get("selection_role") or "").lower()
-        if outcome not in valid_outcomes:
-            continue
-        book = snap.order_books.get(iid)
-        if book is None:
-            continue
-        venue = _venue_of(iid)
-        price = _best_ask(book)
-        if price is None or price <= 0:
-            continue
-        prob = _to_prob(venue, price, quote_claim)
-        if prob <= 0:
-            continue
-        leg = {
-            "instrument_id": iid,
-            "venue": venue,
-            "side": "BUY",
-            "price": price,
-            "prob": prob,
-            "role": outcome,
-        }
-        if claim:
-            leg["claim"] = claim
-        if info.get("exec_instrument_id"):
-            leg["lay_price"] = price   # no 腿 price 即 lay 原值(#228)
-            exec_iid = info.get("exec_instrument_id")
-            if exec_iid:
-                leg["exec_instrument_id"] = str(exec_iid)
-        result.setdefault(outcome, []).append(leg)
-    return result
+    return quote_legs_by_outcome(snap)
 
 
 def _roles_present(legs_by_role: dict[str, list[dict]], snap) -> tuple[str, ...] | None:

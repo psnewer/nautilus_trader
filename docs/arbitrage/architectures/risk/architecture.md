@@ -123,12 +123,11 @@ class ArbitrageLiveRiskEngine(LiveRiskEngine):
 | 输入 | Risk 行为 | 说明 |
 |---|---|---|
 | 任意 tradable venue | `available = account.balance_free(currency)` | AccountState 的 `free` 已由 ExecutionClient 维护为可用余额;Risk 不再关心余额真值来自 REST、WS、profile response 还是 accepted 本地预扣 |
-| probability venue(当前 PM) | 订单成本仍按 `leaves_qty * probability_from_price(venue, price)` 算 | PM `quantity` 是 share,成本是 `share * 概率`;公式经 Venue Registry `odds_model` 派生,不写死 PM |
+| probability venue(当前 PM) | BUY 占 quote balance；SELL 减仓不占 quote balance | 具体换算委托 Venue Registry |
 | probability SELL 减仓 | `0` | 卖已有 outcome token 释放仓位,不占 quote balance |
-| decimal BACK(当前 OE/SE) | 订单成本按 `leaves_qty` 算 | adapter 外部 quantity 是 USD stake |
-| decimal LAY(SELL) | 订单成本按 `leaves_qty * (odds - 1)` 算 | LAY 占用是 liability,不能按 stake 低估;与 Portfolio 持仓经济公式同源 |
+| decimal BACK/LAY(当前 OE/SE) | 按对应 stake/liability 占用 | adapter 外部 quantity 已归一为 USD |
 
-Risk 读 **live** cache(非快照)。订单成本统一调用 Venue Registry `order_liability`,真实 venue identity
+Risk 读 **live** cache(非快照)。订单成本统一调用 Venue Registry `order_required_balance`,真实 venue identity
 仍用于账户、持仓和 liveness 查询。旧实现中的 probability venue `total - open_orders` 自扣已删除,
 避免和 ExecutionClient accepted 预扣重复。
 
@@ -149,8 +148,8 @@ def _check_profit_gates(self, order: Order) -> bool:
 
 **`_check_probability_gate` —— 概率/赔率上下界门控(2026-06-29)**:逐 submit deny,用于过滤极端概率/赔率订单。配置字段为 `min_probability` / `max_probability`,默认 `0.03 / 0.97`,闭区间放行:概率 `< min_probability` 或 `> max_probability` 才 deny。
 
-- 概率转换统一调用 `src.arbitrage.common.venues.probability_from_price(venue, price)`。
-- PM `odds_model=probability`,价格本身就是概率;OE/SE `odds_model=decimal`,十进制赔率换算为隐含概率 `1 / price`。
+- 订单概率统一调用 `src.arbitrage.common.venues.order_exposure_probability(venue, price, side)`。
+- BUY 按报价对应的 yes 概率校验；SELL 按其补集概率校验。该规则同时覆盖 PM 减仓 SELL 与 decimal LAY。
 - Web 可热改上下界,由 `command.arb.risk_params` 送入 `ArbitrageLiveRiskEngine`;组件侧校验 `0 <= min < max <= 1`,非法区间不 apply。
 - recovery 下单不跳过该门控:极端赔率/概率属于订单本身风险,不是 profit gate。
 
@@ -252,17 +251,18 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 - `match_tp`:若所有 outcome 的 `net_profit > share * match_tp`,deny 新开仓。
 - `match_sl`:若所有 outcome 的 `net_profit < share * match_sl`,deny 新开仓。
 - 比较使用配置目标规模 `share`(当前示例 22.5)作为绝对金额阈值基数。
-- outcome 集合优先来自 `PairRegistry` 注册的所有 instrument,标签使用
-  `claim or selection_role`;保证某 outcome 暂无持仓时仍参与“所有 outcome”判断。
+- outcome 集合来自 `PairRegistry` 注册的所有 instrument,每条 instrument 必须显式携带
+  `claim=yes/no`;保证某 outcome 暂无持仓时仍参与“所有 outcome”判断。
 - **#230 已落地(2026-07-15)**:Portfolio 不再把 Position 的
   `abs(quantity)` 一律当作该 instrument role 的 BACK/LONG。它必须将 pair outcomes 连同
-  `instrument.info.claim/selection_role`、`position.side` 交给 Venue Registry
+  `instrument.info.claim`、`position.side` 交给 Venue Registry
   `outcome_for_position` 和 `leg_economics`:
   - PM NO token = `LONG claim=no`,归 no;
   - OE/SE LAY = 真 yes instrument 上的 `SHORT`,归二元 complement no,使用 lay 损益公式;
-  - 2-way 外部 SHORT 同理映射到另一个 role。
-  `_outcomes_from_registry` 已同步改为 claim 优先;`outcome_shares_for_venue` 也使用 pair 的完整
+  `_outcomes_from_registry` 不再用 `selection_role/market_type` 兜底;`outcome_shares_for_venue` 也使用 pair 的完整
   outcome 集合,因此 share limit 能看到 decimal LAY 归属的 complement share。详细公式唯一真理源见 venues §4.1。
+  若缺 claim,或 probability venue 出现 SHORT,Portfolio 抛出持仓不变量异常；Risk deny 新单,
+  ShareLimit/Recovery 放弃本轮机会,不把真实敞口静默当成零。
   RiskEngine `_check_profit_gates` 本身不改,仍只消费修正后的 `outcome_exposures`。
 - 全局止盈/止损已撤掉;Risk 不再调用全局持仓收益指标做门控。
 
@@ -270,17 +270,12 @@ liability[outcome]  = Σ loss_if_loses(leg) for leg.market_type != outcome
 
 Risk 在 NT 父类基础检查之后、venue liveness/余额/profit gates 之前检查订单隐含概率:
 
-```
-probability = probability_from_price(order.instrument_id.venue.value, float(order.price))
-```
+`probability = order_exposure_probability(venue, price, order.side)`。
 
 若 `probability < min_probability` 或 `probability > max_probability`,调用 `_deny_order` 并阻止订单继续进入 execution。默认闭区间为 `[0.03, 0.97]`,等于边界允许通过。
 
-> **#228 已落地(2026-07-15)**:decimal venue 的 lay 单隐含概率是 `1−1/price` 而非 `1/price`。
-> 订单级判别子是 **`order.side == SELL`**(不是 instrument.info 的 claim——合成 no 腿的执行已
-> 重定向回真 selection 的 yes instrument,其 info.claim 为 yes,见 data §3.1b):
-> `claim = "no" if SELL+decimal else "yes"` 后调 `probability_from_price(venue, price, claim)`
-> (Venue Registry 单一家,strategy §3.7 / matching §4.2.1 同源)。
+> 订单级判别子是 **`order.side == SELL`**,不是 instrument.info 的 claim。SELL 一律校验获得的
+> 互补敞口；公式与 venue 分支的唯一真理源见 venues §4.1。
 
 `outcome_shares(pair_id)` 返回每个 outcome 当前持仓 share(所有 venue 合并),供止盈止损门控参考。
 

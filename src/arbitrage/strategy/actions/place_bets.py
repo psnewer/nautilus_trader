@@ -17,9 +17,9 @@ import logging
 import math
 
 from src.arbitrage.common.opportunity import new_opportunity_id
-from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
+from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
@@ -370,10 +370,6 @@ def _required_balance_by_venue(drafts: list[dict]) -> dict[str, float]:
         venue = draft["venue"]
         qty = float(draft["qty"])
         price = float(draft["price"])
-        descriptor = descriptor_for(venue)
-        if descriptor.odds_model == "probability":
-            required = 0.0 if draft["side"] == "SELL" else qty * price
-        else:
-            required = qty * max(0.0, price - 1.0) if draft["side"] == "SELL" else qty
+        required = order_required_balance(venue, qty, price, draft["side"])
         totals[venue] = totals.get(venue, 0.0) + required
     return totals

@@ -372,13 +372,10 @@ async def _ensure_exec_snapshot_fresh():
 **已落地:accepted 后本地可用余额预扣(Q17 修订,venue-pluggable)**:
 - 三个 tradable venue 的 AccountState 统一表达“当前可用余额快照”:`total = free = available`,`locked = 0`。PM 的 CLOB `get_balance_allowance`、OE 的 WS `BALANCE.balance`、SE 的 profile/balance response 都按“可用余额”进入 cache。
 - accepted 后不请求 venue,只做本地计算并 `generate_account_state` 覆盖 cache free。真实余额帧/账户查询之后仍可覆盖本地估算。
-- 公式不按 venue 名硬编码,而是按 Venue Registry capability:
-  - `odds_model="probability"` 且 BUY: `reserved = order.leaves_qty * probability_from_price(venue, order.price)`。当前 PM price 本身是概率,等价于 `share * 概率`。
-  - `odds_model="probability"` 且 SELL:`reserved = 0`；它是已有互斥 token 的减仓,不占 quote balance。
-  - `odds_model="decimal"` 且 BACK/BUY:`reserved = order.leaves_qty`。adapter 外部 quantity 已是 USD stake。
-  - `odds_model="decimal"` 且 LAY/SELL:`reserved = order.leaves_qty * (order.price - 1)`。这是实际 liability,不能只预扣 stake。
+- 预扣金额统一调用 Venue Registry `order_required_balance`;各 odds model/side 的公式只在
+  `architectures/_cross-cutting/venues.md §4.1` 定义。Execution 不按 venue 名或订单方向重写公式。
 - fx 不在 accepted 预扣层处理:OE 的 `BALANCE/CURRENT_BETS` 入站已乘 `arbitrage.fx` 归一成 USD,Strategy/Risk/Execution session 看到的 OE `order.quantity` 也是 USD stake;只有 OE 出站 `placeBets` payload 前再除以 fx 转回 venue stake。SE 当前 USD 原生,同样不做 fx。若未来接入非 USD decimal venue,也应先在 adapter 边界归一到系统基准币,而不是在预扣 helper 里写 venue/fx 分支。
-- 实现落点:在 `ArbExecutionSessionMixin._send_order_event()` 看到 `OrderAccepted` 后调用共用 helper。session 入口同时保存 `instrument_id/qty/price/side`;helper 经 Venue Registry `order_liability` 计算 `reserved`,读取当前 account `balance_free(currency)`,写回 `max(0, old_free - reserved)`。为避免依赖 ExecEngine apply event 的时序,helper优先读 cache order,读不到时使用 session 保存值。
+- 实现落点:在 `ArbExecutionSessionMixin._send_order_event()` 看到 `OrderAccepted` 后调用共用 helper。session 入口同时保存 `instrument_id/qty/price/side`;helper 经 Venue Registry `order_required_balance` 计算 `reserved`,读取当前 account `balance_free(currency)`,写回 `max(0, old_free - reserved)`。为避免依赖 ExecEngine apply event 的时序,helper优先读 cache order,读不到时使用 session 保存值。
 - 第一阶段不处理 cancel 加回。这样余额会偏保守;后续 venue 真实余额刷新会覆盖。若后续要加回,应仍由 execution 的 order terminal 事件驱动,不能在 Risk 中倒推。
 - Risk 消费端对应调整:不再对 probability venue 做 `total - open_orders` 自扣,统一读 `account.balance_free(currency)`。否则 accepted 后本地预扣 + Risk 自扣会双重扣减。
 
