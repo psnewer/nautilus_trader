@@ -64,8 +64,10 @@ flowchart LR
 ```
 > 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣;RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
-SE 登录提交表单后等待 customer iframe/URL 的单次上限统一取
-`venues.sharpexch.page_load_timeout_sec`；不是固定 10 秒等待。任一 customer 信号到达即继续，等待失败才判登录失败。
+SE 登录提交表单后，在同一个 deadline 内等待顶层 customer URL 或 customer iframe，
+总预算统一取 `venues.sharpexch.page_load_timeout_sec`，不会先后各等待一轮；任一信号到达即继续。
+随后等待并关闭登录后弹窗也使用该配置作为最大等待时间，弹窗出现即处理并提前返回，不是固定等待。
+Cloudflare challenge 仍使用独立的 `cloudflare_timeout_sec`。
 
 ---
 

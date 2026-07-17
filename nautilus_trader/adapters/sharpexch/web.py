@@ -49,8 +49,18 @@ async def se_wait_for_customer_frame(page, *, timeout_ms: int) -> None:
     raise TimeoutError("SE customer iframe did not appear")
 
 
+async def se_wait_for_customer_app(page, *, timeout_ms: int) -> None:
+    """在一个总预算内等待顶层 customer URL 或 customer iframe。"""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if se_is_customer_url(getattr(page, "url", "") or "") or se_customer_frame(page) is not None:
+            return
+        await asyncio.sleep(0.2)
+    raise TimeoutError("SE customer app did not appear")
+
+
 async def se_login(page, config, browser_lock=None, login_state: SharpExchLoginState | None = None) -> None:
-    """登录 SE 并等待 customer iframe 出现。
+    """登录 SE 并等待 customer app 与登录后弹窗处理完成。
 
     不使用 `networkidle`:customer app 会长期维持 websocket,该条件不稳定。
 
@@ -75,7 +85,7 @@ async def se_login(page, config, browser_lock=None, login_state: SharpExchLoginS
         await _se_login_impl(page, config)
     # 弹窗在登录成功、customer app 启动完成后才渲染,必须在登录完成后再等;
     # 放在锁外,避免持登录锁等弹窗。
-    await se_dismiss_post_login_popup(page)
+    await se_dismiss_post_login_popup(page, timeout_ms=config.page_timeout)
 
 
 async def _se_login_impl(page, config, *, authenticated: bool = False) -> None:
@@ -216,18 +226,15 @@ async def _submit_login_form(page, config) -> None:
 
 
 async def _wait_after_login(page, *, timeout_ms: int) -> None:
-    try:
-        await se_wait_for_customer_frame(page, timeout_ms=timeout_ms)
-    except Exception:
-        await page.wait_for_url("**/customer**", timeout=timeout_ms)
+    # 顶层跳转与 iframe app 是同一登录结果的两种形态，共用一个等待预算。
+    await se_wait_for_customer_app(page, timeout_ms=timeout_ms)
     await _settle_customer_app(page)
 
 
 _POPUP_WAIT_SLICE_MS = 1000
-_POST_LOGIN_POPUP_TIMEOUT_MS = 120000
 
 
-async def se_dismiss_post_login_popup(page, *, timeout_ms: int = _POST_LOGIN_POPUP_TIMEOUT_MS) -> bool:
+async def se_dismiss_post_login_popup(page, *, timeout_ms: int) -> bool:
     """关闭 SE 登录后弹窗。
 
     该弹窗可能挡住 customer app 初始化/接口请求,且在登录成功、app 启动完成后才渲染,

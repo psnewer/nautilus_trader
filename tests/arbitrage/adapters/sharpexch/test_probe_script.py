@@ -17,22 +17,52 @@ from nautilus_trader.adapters.sharpexch.web import se_login
 from nautilus_trader.adapters.sharpexch.web import SharpExchLoginState
 
 
-def test_wait_after_login_uses_configured_timeout_for_frame_and_url(monkeypatch):
+def test_wait_after_login_uses_one_configured_budget_for_customer_app(monkeypatch):
     calls = []
 
-    async def wait_for_frame(page, *, timeout_ms):
-        calls.append(("frame", timeout_ms))
-        raise TimeoutError("no iframe")
+    async def wait_for_customer_app(page, *, timeout_ms):
+        calls.append(("customer", timeout_ms))
 
     class Page:
-        async def wait_for_url(self, pattern, *, timeout):
-            calls.append((pattern, timeout))
+        pass
 
-    monkeypatch.setattr(se_web, "se_wait_for_customer_frame", wait_for_frame)
+    async def settle(page):
+        calls.append(("settle", page))
 
-    asyncio.run(se_web._wait_after_login(Page(), timeout_ms=120000))
+    monkeypatch.setattr(se_web, "se_wait_for_customer_app", wait_for_customer_app)
+    monkeypatch.setattr(se_web, "_settle_customer_app", settle)
 
-    assert calls == [("frame", 120000), ("**/customer**", 120000)]
+    page = Page()
+    asyncio.run(se_web._wait_after_login(page, timeout_ms=120000))
+
+    assert calls == [("customer", 120000), ("settle", page)]
+
+
+def test_wait_for_customer_app_accepts_top_level_url_without_iframe():
+    class Page:
+        url = "https://portal.sharpxch.com/customer/"
+        frames = []
+
+    asyncio.run(se_web.se_wait_for_customer_app(Page(), timeout_ms=120000))
+
+
+def test_login_passes_page_timeout_to_post_login_popup(monkeypatch):
+    calls = []
+
+    async def login_impl(page, config, *, authenticated=False):
+        calls.append(("login", authenticated))
+
+    async def dismiss(page, *, timeout_ms):
+        calls.append(("popup", timeout_ms))
+        return False
+
+    monkeypatch.setattr(se_web, "_se_login_impl", login_impl)
+    monkeypatch.setattr(se_web, "se_dismiss_post_login_popup", dismiss)
+    config = type("Config", (), {"page_timeout": 90000})()
+
+    asyncio.run(se_login(object(), config))
+
+    assert calls == [("login", False), ("popup", 90000)]
 
 
 def test_cloudflare_wait_uses_dedicated_timeout_and_continues_to_login(monkeypatch):
@@ -489,7 +519,7 @@ def test_dismiss_post_login_popup_clicks_main_page_when_popup_visible():
 
     page = Page()
 
-    assert asyncio.run(se_dismiss_post_login_popup(page)) is True
+    assert asyncio.run(se_dismiss_post_login_popup(page, timeout_ms=120000)) is True
     assert page.mouse.clicks == [(24, 160)]
 
 

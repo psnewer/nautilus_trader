@@ -372,8 +372,9 @@ OE `venues.orbitexch.page_load_timeout_sec` 是共享页面加载超时,dispatch
 `BrowserConfig.timeout_ms`。默认 120s 与 OE 页面等待策略一致;30s/60s/90s 在 OE 首页或 competition 页
 均出现过 timeout。
 
-SE 的 `venues.sharpexch.page_load_timeout_sec` 只控制页面导航、登录后 customer iframe 与
-discovery CSRF 等待；`venues.sharpexch.cloudflare_timeout_sec` 是独立的 Cloudflare 自动挑战
+SE 的 `venues.sharpexch.page_load_timeout_sec` 控制页面导航、登录后 customer URL/iframe
+共享等待预算、登录后弹窗最大等待时间与 discovery CSRF 等待；URL 与 iframe 是同一 deadline
+内的两个成功条件，不顺序叠加超时。`venues.sharpexch.cloudflare_timeout_sec` 是独立的 Cloudflare 自动挑战
 预算，仅映射到 `SharpExchExecClientConfig.cloudflare_timeout`。挑战期间 ExecutionClient 轮询
 customer app 或登录表单：自动进入 customer app 即继续，回到登录表单则提交凭据；超过预算
 连接失败并交后续重连。该流程不执行验证码规避或人工交互，因而 headed 本机与 headless
