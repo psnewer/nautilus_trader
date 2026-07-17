@@ -69,6 +69,13 @@ SE 登录提交表单后，在同一个 deadline 内等待顶层 customer URL �
 随后等待并关闭登录后弹窗也使用该配置作为最大等待时间，弹窗出现即处理并提前返回，不是固定等待。
 Cloudflare challenge 仍使用独立的 `cloudflare_timeout_sec`。
 
+OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立：OE 等 general WS 的
+`BALANCE + CURRENT_BETS`，SE 等 profile/balance response + general WS `CURRENT_BETS`。
+这样登录期间先到的业务帧会直接完成 future，登录结束后的最多 30 秒等待不会丢失早到信号。
+各 ExecutionClient 已负责初始业务状态，launcher 因此把 NT
+`reconciliation_startup_delay_secs` 显式设为 `0`，startup reconciliation 后不再固定睡 10 秒；
+不改变 startup reconciliation 本身及连续 reconciliation 的周期配置。
+
 ---
 
 ## 3. 接口设计
@@ -203,6 +210,7 @@ class OrbitExchExecutionClient(LiveExecutionClient):
 - venue 终态映射:
   - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
+  - OE `CancelAllOrders` 只调用 `/customer/api/cancelAllUnmatchedBets`；API 失败直接返回失败，不再点击页面 UI 兜底。旧 `take-at-market/modify-and-take` 页面能力已删除：它不在 NT 套利执行链路内，且不能用固定 sleep 代替真实成交确认。
 - session mixin 只维护 `_active_sessions`、tracking timeout、`execution.started/finished` 和 `PairInFlightGate.exec_started/exec_finished`。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
 - **submit 异常收口**:只对“确定尚未提交到 venue”的本地失败立即生成终态；请求已发出但结果未知必须保留在飞状态:
   - PM 在签名后、POST 前按 CLOB order hash 算法得到确定性 `venue_order_id`，先写

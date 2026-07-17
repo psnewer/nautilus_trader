@@ -90,10 +90,16 @@
 对应设计:`docs/arbitrage/architectures/_cross-cutting/synchronization.md §8.5` + execution §4.3bis/§4.4。
 
 ### execution-4.3bis.1: OE connect 等待 BALANCE + CURRENT_BETS
-- 前置:OE ExecutionClient 已在导航前注册 general WS handler。
-- 输入:登录后 general WS 依次推送 `BALANCE` 与 `CURRENT_BETS`。
+- 前置:OE ExecutionClient 已在导航前注册 general WS handler，并创建两个业务 future。
+- 输入:导航/登录期间 general WS 依次推送 `BALANCE` 与 `CURRENT_BETS`。
 - 期望:`_connect` 最多等待 30s;两者到齐时使用真实余额,不先生成 0 余额;若超时缺余额才生成 0 USD 兜底,缺 CURRENT_BETS 后续由 reconcile reload 自愈。
-- 验收:`tests/arbitrage/execution/test_orbitexch_client.py::test_connect_ready_waits_for_balance_and_current_bets_signals`。
+- 验收:`test_connect_ready_waits_for_balance_and_current_bets_signals` 覆盖等待中收齐；`test_connect_ready_consumes_signals_received_before_wait_starts` 覆盖登录期间早到后立即返回。
+
+### execution-4.3bis.1a:删除未接入 NT 的 OE 页面执行能力
+- 前置:OE 正常逐单撤单与 `CancelAllOrders` API 路径保留。
+- 输入:批量撤单 API 返回失败，或调用方检查旧 take/modify 方法。
+- 期望:不点击 `Cancel All Unmatched` 页面控件兜底；executor 不再暴露 `take_remaining_at_market` / `modify_size_and_take`，旧 services HTTP `take-at-market` 入口与 MODIFY planner/tracker 分支一并删除。
+- 验收:`test_execution_translation.py::test_cancel_all_unmatched_api_failure_has_no_ui_fallback` / `test_oe_executor_does_not_expose_legacy_take_at_market`。
 
 ### execution-4.3bis.2: OE snapshot fresh 必须已有 CURRENT_BETS
 - 前置:OE execution WS 已有任意帧,但 `_last_current_bets_ns==0`。

@@ -153,6 +153,36 @@ def test_oe_executor_classifies_empty_response_as_transport_unknown():
     assert result.venue_response["_transport_error"] is True
 
 
+def test_cancel_all_unmatched_api_failure_has_no_ui_fallback():
+    import asyncio
+
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
+    class _Page:
+        def context(self):
+            return _Context()
+
+        async def evaluate(self, _script, _payload):
+            return {"error": "cancel failed"}
+
+        def locator(self, _selector):
+            raise AssertionError("cancel-all must not fall back to UI")
+
+    result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).cancel_all_unmatched(_Page()))
+
+    assert result.success is False
+    assert result.message == "cancel failed"
+
+
+def test_oe_executor_does_not_expose_legacy_take_at_market():
+    executor = OrbitExchExecutor(config=ExecutionConfig())
+
+    assert not hasattr(executor, "take_remaining_at_market")
+    assert not hasattr(executor, "modify_size_and_take")
+
+
 def test_current_bets_amount_fields_normalized_to_usd():
     bets = [{
         "offerId": "1",

@@ -381,6 +381,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._ws_handler.on_frame(self._mark_exec_frame)          # #105 A1:每帧(含心跳)刷存活锚
         self._ws_handler.on_disconnect(self._mark_exec_stale)     # close:orders → 下次 reconcile 触发 reload-then-report
         await self._ws_handler.start()
+        # general WS 可能在首次导航/登录期间立即推送业务帧，必须先建立 waiter，
+        # 否则状态虽已更新，登录后新建的 future 仍会白等完整 timeout。
+        loop = asyncio.get_running_loop()
+        self._balance_ready_fut = loop.create_future()
+        self._current_bets_ready_fut = loop.create_future()
         await self._page.goto(
             self._config.base_url,
             wait_until="domcontentloaded",
@@ -404,12 +409,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def _wait_for_initial_business_state(self) -> None:
         """登录后最多等待 OE execution 页两个业务真值:BALANCE + CURRENT_BETS。
 
+        waiter 在首次页面导航前建立，登录期间到达的业务帧也能完成它。
         超时不阻断连接:余额缺失时 `_connect` 仍发 0 兜底;CURRENT_BETS 后续由 reconcile reload 自愈。
         """
-        loop = asyncio.get_running_loop()
-        self._balance_ready_fut = loop.create_future()
-        self._current_bets_ready_fut = loop.create_future()
-        futures = [self._balance_ready_fut, self._current_bets_ready_fut]
+        futures = [f for f in (self._balance_ready_fut, self._current_bets_ready_fut) if f is not None]
+        if not futures:
+            return
         try:
             await asyncio.wait_for(asyncio.gather(*futures), timeout=self._connect_ready_timeout_secs)
         except asyncio.TimeoutError:

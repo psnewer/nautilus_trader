@@ -48,6 +48,7 @@ def test_build_trading_node_config_has_pm_oe_data_exec_clients():
     assert nc.exec_engine.position_check_interval_secs == 300.0  # #110:连续 position 对账驱动 PM merge/redeem + position liveness
     assert nc.exec_engine.inflight_check_interval_ms == 2_000
     assert nc.exec_engine.inflight_check_retries == 1
+    assert nc.exec_engine.reconciliation_startup_delay_secs == 0.0
     assert nc.timeout_connection == 180.0
 
 

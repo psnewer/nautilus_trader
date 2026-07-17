@@ -729,6 +729,9 @@ def test_connect_ready_waits_for_balance_and_current_bets_signals():
     )
 
     async def _run_wait():
+        loop = asyncio.get_running_loop()
+        c._balance_ready_fut = loop.create_future()
+        c._current_bets_ready_fut = loop.create_future()
         task = asyncio.create_task(c._wait_for_initial_business_state())
         await asyncio.sleep(0)
         assert not task.done()
@@ -742,6 +745,23 @@ def test_connect_ready_waits_for_balance_and_current_bets_signals():
     assert captured["balances"][0].total.as_double() == pytest.approx(37.49)
     assert c._balance_reported is True
     assert c._last_current_bets_ns > 0
+
+
+def test_connect_ready_consumes_signals_received_before_wait_starts():
+    c = _client()
+
+    async def _run_wait():
+        loop = asyncio.get_running_loop()
+        c._balance_ready_fut = loop.create_future()
+        c._current_bets_ready_fut = loop.create_future()
+        c.generate_account_state = lambda **kwargs: None
+
+        # 模拟首次导航/登录期间业务帧先到，登录结束后才进入等待。
+        c._on_general_frame({"BALANCE": {"balance": "37.49", "avBalance": None}})
+        c._on_current_bets([])
+        await asyncio.wait_for(c._wait_for_initial_business_state(), timeout=0.1)
+
+    _run(_run_wait())
 
 
 # ── #105 A2 reload-then-report 机制(_reload_exec_page / _ensure_exec_snapshot_fresh)──

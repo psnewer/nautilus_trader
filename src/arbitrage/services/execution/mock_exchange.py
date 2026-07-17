@@ -28,7 +28,7 @@ class MockExchange:
     功能：
     - 下单并异步流转状态
     - 支持部分成交/延迟回报
-    - 支持撤单与市价成交
+    - 支持撤单
     """
 
     def __init__(
@@ -96,30 +96,6 @@ class MockExchange:
             order_id=order.order_id,
             venue_order_id=order.venue_order_id,
             message="[MOCK] Order cancelled",
-        )
-
-    async def take_remaining_at_market(self, order: Order) -> ExecutionResult:
-        """模拟未成交部分市价成交"""
-        self._cancel_timeline(order.order_id)
-
-        if order.is_done:
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message="[MOCK] Order already completed",
-            )
-
-        order.filled_size = order.size
-        order.avg_fill_price = order.avg_fill_price or order.price
-        order.status = OrderStatus.FILLED
-        order.updated_at = time.time()
-        order.metadata["mock_exchange"] = True
-        self._emit_update(order)
-
-        return ExecutionResult(
-            success=True,
-            order=order,
-            message="[MOCK] Remaining size filled",
         )
 
     async def cancel_all_unmatched(self, orders: list[Order]) -> CancelResult:

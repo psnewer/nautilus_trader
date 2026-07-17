@@ -163,10 +163,7 @@ class OrderTracker:
                     f"CANCEL confirmed via API response: order_id={result.venue_order_id}"
                 )
                 continue
-            if op_result.get("venue_order_id") and operation.operation_type in (
-                OperationType.PLACE,
-                OperationType.MODIFY,
-            ):
+            if op_result.get("venue_order_id") and operation.operation_type == OperationType.PLACE:
                 # 有下单回执时先标记为已确认挂单，避免被误判为失败
                 self._results[key].status = TrackingStatus.CONFIRMED
                 self._results[key].size_matched = 0.0
@@ -211,7 +208,7 @@ class OrderTracker:
                 continue
 
             operation = result.operation
-            if operation.operation_type not in (OperationType.PLACE, OperationType.MODIFY):
+            if operation.operation_type != OperationType.PLACE:
                 continue
 
             try:
@@ -266,8 +263,8 @@ class OrderTracker:
         for r in self._results.values():
             if r.status in (TrackingStatus.PENDING, TrackingStatus.FAILED):
                 return False
-            # PLACE/MODIFY: 必须 size_remaining == 0 才算完全成交
-            if r.operation.operation_type in (OperationType.PLACE, OperationType.MODIFY):
+            # PLACE:必须 size_remaining == 0 才算完全成交
+            if r.operation.operation_type == OperationType.PLACE:
                 if r.size_remaining > 0:
                     return False
         return True

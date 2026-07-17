@@ -160,19 +160,6 @@ async def cancel_order(order_id: str):
     return result.to_dict()
 
 
-@router.post("/orders/{order_id}/take-at-market")
-async def take_at_market(order_id: str):
-    """将未成交部分按市价执行"""
-    service = app_state.get_execution_service()
-
-    if not service or not service._initialized:
-        raise HTTPException(status_code=503, detail="Execution service not initialized")
-
-    result = await service.take_remaining_at_market(order_id)
-
-    return result.to_dict()
-
-
 @router.get("/orders")
 async def get_orders(
     venue: str | None = None,

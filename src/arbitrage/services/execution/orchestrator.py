@@ -39,7 +39,6 @@ class ExecutionOrchestrator:
         order_canceller: Callable,
         order_info_getter: Callable,
         probabilities_getter: Callable,
-        orbitexch_modify_and_take: Callable | None = None,
         fx_getter: Callable | None = None,
         logger: logging.Logger | None = None,
     ):
@@ -50,7 +49,6 @@ class ExecutionOrchestrator:
             order_canceller: 订单撤销函数 async (order_id) -> CancelResult
             order_info_getter: 订单信息获取函数 (pair_id, market_type) -> order_info
             probabilities_getter: 实时概率获取函数 (pair_id) -> {outcome: probability}
-            orbitexch_modify_and_take: OrbitExch 修改并 Take 函数 async (order, new_size) -> ExecutionResult
             fx_getter: 汇率获取函数 () -> float (GBP/USD)
         """
         self._config = config
@@ -58,7 +56,6 @@ class ExecutionOrchestrator:
         self._cancel_order = order_canceller
         self._get_order_info = order_info_getter
         self._get_probabilities = probabilities_getter
-        self._orbitexch_modify_and_take = orbitexch_modify_and_take
         self._get_fx = fx_getter
         self._polymarket_client = None  # 由 set_polymarket_client 设置
         self._log = logger or logging.getLogger(self.__class__.__name__)
@@ -262,7 +259,7 @@ class ExecutionOrchestrator:
 
         initial_plan_operations = [
             op for op in initial_plan.operations
-            if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+            if op.operation_type == OperationType.PLACE
         ]
 
         if self._has_tracking_failure(operation_results, tracking_result):
@@ -327,8 +324,6 @@ class ExecutionOrchestrator:
                 task = self._execute_place_operation(session, operation)
             elif operation.operation_type == OperationType.CANCEL:
                 task = self._execute_cancel_operation(session, operation)
-            elif operation.operation_type == OperationType.MODIFY:
-                task = self._execute_modify_operation(session, operation)
             else:
                 self._log.warning(f"Unknown operation type: {operation.operation_type}")
                 continue
@@ -413,63 +408,6 @@ class ExecutionOrchestrator:
             "venue_order_id": operation.order_id,
             "message": result.message if hasattr(result, 'message') else "",
         }
-
-    async def _execute_modify_operation(
-        self,
-        session: ExecutionSession,
-        operation: OrderOperation,
-    ) -> dict:
-        """
-        执行修改操作（修改 size 后按市价执行）
-
-        对于 OrbitExch: 修改 Stake 输入框后点击 Take 按钮
-        对于 Polymarket: 不支持修改，使用 FOK 模式避免此情况
-        """
-        if operation.venue == OperationVenue.ORBITEXCH:
-            if self._orbitexch_modify_and_take:
-                # 构建临时订单对象用于修改
-                order = Order(
-                    venue=Venue.ORBITEXCH,
-                    pair_id=session.pair_id,
-                    market_type=operation.market_type,
-                    market_id=operation.market_id,
-                    selection_id=operation.selection_id,
-                    side=OrderSide.BACK,
-                    price=operation.price,
-                    size=operation.size,
-                    order_type=OrderType.GTC,
-                )
-                order.venue_order_id = operation.order_id
-
-                self._log.info(
-                    f"Modifying OrbitExch order and taking at market: "
-                    f"order_id={operation.order_id}, new_size={operation.size}"
-                )
-
-                result = await self._orbitexch_modify_and_take(order, operation.size)
-
-                return {
-                    "success": result.success,
-                    "order_id": operation.order_id,
-                    "message": result.message if hasattr(result, 'message') else "",
-                }
-            else:
-                self._log.warning("OrbitExch modify_and_take not configured")
-                return {
-                    "success": False,
-                    "order_id": operation.order_id,
-                    "message": "OrbitExch modify_and_take not configured",
-                }
-        else:
-            # Polymarket 使用 FOK，不应该有部分成交需要修改的情况
-            self._log.warning(
-                f"Modify not supported for {operation.venue.value} (using FOK mode)"
-            )
-            return {
-                "success": False,
-                "order_id": operation.order_id,
-                "message": f"Modify not supported for {operation.venue.value}",
-            }
 
     async def _recovery_loop(
         self,
@@ -577,7 +515,7 @@ class ExecutionOrchestrator:
                     last_plan_operations = current_plan_operations
                     current_plan_operations = [
                         op for op in plan.operations
-                        if op.operation_type in {OperationType.PLACE, OperationType.MODIFY}
+                        if op.operation_type == OperationType.PLACE
                     ]
 
                 # =============================================

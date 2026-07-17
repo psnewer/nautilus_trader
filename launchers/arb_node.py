@@ -130,6 +130,8 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         logging=LoggingConfig(log_level="INFO"),
         exec_engine=LiveExecEngineConfig(
             reconciliation=True,
+            # 各 ExecutionClient 已显式等待初始业务状态，startup reconciliation 完成后无需固定 grace period。
+            reconciliation_startup_delay_secs=0.0,
             # 已卡在飞只查询 venue 一次；失败后下轮由 NT 原生 UNKNOWN 收口。
             inflight_check_retries=1,
             # #111:开连续 open/order 对账(全局)—— 周期调 venue `generate_order_status_reports`:

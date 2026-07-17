@@ -137,7 +137,6 @@ class ExecutionService:
             order_canceller=self.cancel_order,
             order_info_getter=self._get_order_info_wrapper,
             probabilities_getter=self._get_probabilities_wrapper,
-            orbitexch_modify_and_take=self._orbitexch_modify_and_take_wrapper,
             fx_getter=self._get_fx,
             logger=logging.getLogger("ExecutionOrchestrator"),
         )
@@ -537,73 +536,6 @@ class ExecutionService:
             return CancelResult(
                 success=False,
                 order_id=order_id,
-                message=f"Unknown venue: {venue}",
-            )
-
-        return result
-
-    async def take_remaining_at_market(self, order_id: str, venue: Venue | None = None) -> ExecutionResult:
-        """
-        将未成交部分按市价立即执行
-
-        Args:
-            order_id: 平台订单 ID
-            venue: 交易平台
-
-        Returns:
-            执行结果
-        """
-        # 从活跃订单中查找
-        order_data = None
-        for o in self.get_active_orders(venue=venue):
-            if o["order_id"] == order_id:
-                order_data = o
-                break
-
-        if not order_data:
-            return ExecutionResult(
-                success=False,
-                order=Order(order_id=order_id),
-                message="Active order not found",
-            )
-
-        venue = Venue(order_data["venue"])
-        remaining = order_data.get("size_remaining", 0)
-
-        if remaining <= 0:
-            return ExecutionResult(
-                success=True,
-                order=Order(order_id=order_id, venue=venue),
-                message="No remaining size",
-            )
-
-        # 构建 Order 对象
-        order = Order(
-            order_id=order_id,
-            venue=venue,
-            venue_order_id=order_id,
-            token_id=order_data.get("asset_id", order_data.get("token_id", "")),
-            condition_id=order_data.get("condition_id", ""),
-            market_id=order_data.get("market_id", ""),
-            selection_id=order_data.get("selection_id", ""),
-            side=OrderSide(order_data.get("side", "BUY")),
-            price=order_data.get("request_price", order_data.get("price", 0)),
-            size=order_data.get("original_size", 0),
-            filled_size=order_data.get("size_matched", 0),
-        )
-
-        if self._use_mock_exchange():
-            return await self._mock_exchange.take_remaining_at_market(order)
-
-        # 分发到对应执行器
-        if venue == Venue.POLYMARKET:
-            result = await self._polymarket_executor.take_remaining_at_market(order)
-        elif venue == Venue.ORBITEXCH:
-            result = await self._orbitexch_executor.take_remaining_at_market(order)
-        else:
-            return ExecutionResult(
-                success=False,
-                order=order,
                 message=f"Unknown venue: {venue}",
             )
 
@@ -1079,21 +1011,6 @@ class ExecutionService:
         if self._odds_service:
             return self._odds_service.get_order_info(pair_id, market_type)
         return None
-
-    async def _orbitexch_modify_and_take_wrapper(
-        self, order: Order, new_size: float
-    ) -> ExecutionResult:
-        """
-        OrbitExch 修改 size 并按市价执行（编排器回调）
-
-        Args:
-            order: 订单
-            new_size: 新的 size
-
-        Returns:
-            执行结果
-        """
-        return await self._orbitexch_executor.modify_size_and_take(order, new_size)
 
     def _get_probabilities_wrapper(self, pair_id: str) -> dict[str, float] | None:
         """

@@ -17,7 +17,6 @@ class OperationType(Enum):
     """操作类型"""
     PLACE = "place"       # 下单
     CANCEL = "cancel"     # 撤单
-    MODIFY = "modify"     # 修改（按市价执行未成交部分）
 
 
 class OperationVenue(Enum):
@@ -63,7 +62,6 @@ class ExecutionPlan:
     operations: list[OrderOperation]
     has_cancels: bool = False
     has_places: bool = False
-    has_modifies: bool = False
     description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,7 +69,6 @@ class ExecutionPlan:
             "operations": [op.to_dict() for op in self.operations],
             "has_cancels": self.has_cancels,
             "has_places": self.has_places,
-            "has_modifies": self.has_modifies,
             "description": self.description,
         }
 
@@ -180,9 +177,6 @@ class ExecutionPlanner:
         - 所有未成交订单由 orchestrator 统一撤单（撤单在调用本方法前已完成）
         - 本方法只规划新的 PLACE 操作，根据 session.outcome_venues 选择平台
 
-        注意：OrbitExch MODIFY 操作已弃用，改为撤单后重新下单。
-        MODIFY 实现保留在 orchestrator._execute_modify_operation 中供需要时使用。
-
         Args:
             session: 执行会话
             current_probabilities: 当前实时概率
@@ -269,43 +263,4 @@ class ExecutionPlanner:
             operations=operations,
             has_places=len(operations) > 0,
             description="Recovery: place orders on original venues",
-        )
-
-    def plan_modify_to_market(
-        self,
-        pending_orders: list[dict],
-    ) -> ExecutionPlan:
-        """
-        规划按市价执行未成交部分
-
-        Args:
-            pending_orders: 未成交订单列表
-
-        Returns:
-            修改计划
-        """
-        operations = []
-
-        for order in pending_orders:
-            if order.get("size_remaining", 0) > 0:
-                venue_str = order.get("venue", "")
-                venue = OperationVenue.POLYMARKET if venue_str == "polymarket" else OperationVenue.ORBITEXCH
-
-                operations.append(OrderOperation(
-                    operation_type=OperationType.MODIFY,
-                    venue=venue,
-                    market_type=order.get("market_type", ""),
-                    size=order.get("size_remaining", 0),
-                    order_id=order.get("order_id", ""),
-                    market_id=order.get("market_id", ""),
-                    selection_id=order.get("selection_id", ""),
-                    metadata={"action": "take_market_price"},
-                ))
-
-        self._log.info(f"Modify plan: {len(operations)} operations")
-
-        return ExecutionPlan(
-            operations=operations,
-            has_modifies=len(operations) > 0,
-            description="Modify orders to market price",
         )

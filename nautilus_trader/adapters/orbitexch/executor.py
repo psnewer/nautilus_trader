@@ -4,12 +4,10 @@ OrbitExch 订单执行器
 使用 Playwright 与网页交互执行订单。
 
 实现逻辑:
-1. 下单: 通过 HTTP POST 请求到 /customer/api/placeBets
-2. 撤单: 点击网页上的 'Cancel Bet' 按钮
-3. 市价成交: 点击 'Take @XX' 按钮
+1. 下单:通过 HTTP POST 请求到 `/customer/api/placeBets`
+2. 撤单:通过 OE API 撤单
 """
 
-import asyncio
 import json
 import logging
 import time
@@ -583,10 +581,7 @@ class OrbitExchExecutor:
             )
 
     async def cancel_all_unmatched(self, page: Page | None = None) -> CancelResult:
-        """
-        撤销所有未成交订单
-
-        通过点击 'Cancel All Unmatched' 链接执行批量撤单。
+        """通过 OE API 撤销所有未成交订单。
 
         Args:
             page: Playwright 页面
@@ -607,7 +602,6 @@ class OrbitExchExecutor:
         try:
             self._log.info("Cancelling all unmatched orders")
 
-            # 方法1: 使用 API 批量撤单
             csrf_token = await oe_csrf_token(page)
             response = await page.evaluate(
                 """async (csrfToken) => {
@@ -647,31 +641,10 @@ class OrbitExchExecutor:
                     venue_response=response,
                 )
 
-            # 方法2: 点击 "Cancel All Unmatched" 链接
-            cancel_all_link = page.locator('text="Cancel All Unmatched"')
-
-            if await cancel_all_link.count() > 0:
-                await cancel_all_link.click()
-                await asyncio.sleep(1.0)
-
-                self._log.info("All unmatched orders cancelled via UI")
-
-                # 清除本地追踪的活跃订单
-                for order in self._orders.values():
-                    if order.status in (OrderStatus.LIVE, OrderStatus.PARTIALLY_FILLED):
-                        order.status = OrderStatus.CANCELLED
-                        order.updated_at = time.time()
-
-                return CancelResult(
-                    success=True,
-                    order_id="all",
-                    message="All unmatched orders cancelled via UI",
-                )
-
             return CancelResult(
                 success=False,
                 order_id="all",
-                message="Cancel All Unmatched link not found",
+                message=(response or {}).get("error", "Cancel all unmatched failed"),
                 venue_response=response if response else {},
             )
 
@@ -683,149 +656,6 @@ class OrbitExchExecutor:
                 order_id="all",
                 message=str(e),
             )
-
-    async def take_remaining_at_market(
-        self, order: Order, page: Page | None = None, new_size: float | None = None
-    ) -> ExecutionResult:
-        """
-        将未成交部分按市价立即执行
-
-        通过修改 Stake 输入框（可选）然后点击 'Take @XX' 按钮执行。
-        OrbitExch UI 结构:
-        - Stake 输入框: class='_input__size_a91v6_40'
-        - Take 按钮: "Take @{price}" (绿色按钮)
-
-        Args:
-            order: 原订单
-            page: Playwright 页面
-            new_size: 新的 size（如果需要修改）
-
-        Returns:
-            执行结果
-        """
-        if not page and not self._pages:
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message="No page available",
-            )
-
-        if not page:
-            page = next(iter(self._pages.values()))
-
-        try:
-            self._log.info(
-                f"Taking at market: order={order.venue_order_id}, "
-                f"new_size={new_size}"
-            )
-
-            # 定位订单容器
-            order_container = None
-            if order.venue_order_id:
-                # 通过订单引用号定位
-                order_container = page.locator(f':has-text("Ref: {order.venue_order_id}")')
-                if await order_container.count() == 0:
-                    order_container = None
-
-            # 如果需要修改 size
-            if new_size is not None and new_size > 0:
-                self._log.info(f"Modifying stake to: {new_size}")
-
-                # 查找 Stake 输入框
-                stake_input = None
-                if order_container:
-                    stake_input = order_container.locator('input[class*="_input__size_"]').first
-                    if await stake_input.count() == 0:
-                        stake_input = None
-
-                if not stake_input:
-                    # 通用选择器
-                    stake_input = page.locator('input[class*="_input__size_"]').first
-
-                if stake_input and await stake_input.count() > 0:
-                    # 清空并填入新 size
-                    await stake_input.click()
-                    await stake_input.fill("")
-                    await stake_input.fill(str(new_size))
-                    await asyncio.sleep(0.5)  # 等待 UI 更新
-                    self._log.info(f"Stake modified to: {new_size}")
-                else:
-                    self._log.warning("Stake input not found, proceeding without modification")
-
-            # 查找 Take @XX 按钮
-            take_button = None
-            if order_container:
-                take_button = order_container.locator('button:has-text("Take @")').first
-                if await take_button.count() == 0:
-                    take_button = None
-
-            if not take_button:
-                take_button = page.locator('button:has-text("Take @")').first
-
-            if take_button and await take_button.count() > 0:
-                # 检查按钮是否可用
-                is_disabled = await take_button.is_disabled()
-                if is_disabled:
-                    self._log.warning("Take button is disabled - no market price available")
-                    return ExecutionResult(
-                        success=False,
-                        order=order,
-                        message="Take button disabled - no market price available",
-                    )
-
-                # 获取按钮文本以记录接受的价格
-                button_text = await take_button.text_content()
-                self._log.info(f"Clicking take button: {button_text}")
-
-                await take_button.click()
-                await asyncio.sleep(1.0)  # 等待成交
-
-                order.status = OrderStatus.FILLED
-                order.filled_size = new_size if new_size else order.size
-                order.updated_at = time.time()
-
-                self._log.info(f"Order filled at market: {order.venue_order_id}")
-
-                return ExecutionResult(
-                    success=True,
-                    order=order,
-                    message=f"Filled at market price ({button_text})",
-                )
-
-            # 如果找不到 Take 按钮
-            self._log.warning("Take button not found")
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message="Take button not found",
-            )
-
-        except Exception as e:
-            self._log.error(f"Failed to take at market: {e}")
-
-            return ExecutionResult(
-                success=False,
-                order=order,
-                message=str(e),
-            )
-
-    async def modify_size_and_take(
-        self, order: Order, new_size: float, page: Page | None = None
-    ) -> ExecutionResult:
-        """
-        修改订单 size 后按市价执行
-
-        这是 take_remaining_at_market 的便捷方法。
-
-        Args:
-            order: 原订单
-            new_size: 新的 size
-            page: Playwright 页面
-
-        Returns:
-            执行结果
-        """
-        return await self.take_remaining_at_market(order, page, new_size=new_size)
 
     async def get_current_bets(self, page: Page | None = None) -> list[dict]:
         """
