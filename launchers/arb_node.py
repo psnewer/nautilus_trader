@@ -130,6 +130,8 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
         logging=LoggingConfig(log_level="INFO"),
         exec_engine=LiveExecEngineConfig(
             reconciliation=True,
+            # 已卡在飞只查询 venue 一次；失败后下轮由 NT 原生 UNKNOWN 收口。
+            inflight_check_retries=1,
             # #111:开连续 open/order 对账(全局)—— 周期调 venue `generate_order_status_reports`:
             # PM 用于 order liveness 失败后的自动恢复;OE 健康时只读 CURRENT_BETS 内存,WS stale 时才 reload。
             open_check_interval_secs=cfg.execution.open_check_interval_secs,

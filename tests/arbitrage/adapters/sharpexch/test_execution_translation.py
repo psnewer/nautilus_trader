@@ -129,8 +129,10 @@ def test_parse_place_bets_response_success_falls_back_to_bet_uuid_without_offer_
 
 
 def test_parse_place_bets_response_global_errors():
-    assert parse_place_bets_response({}, "M1", "B1")["message"] == "No response"
-    assert parse_place_bets_response(["bad"], "M1", "B1")["message"] == "Invalid response"
+    empty = parse_place_bets_response({}, "M1", "B1")
+    invalid = parse_place_bets_response(["bad"], "M1", "B1")
+    assert empty["message"] == "No response" and empty["transport_unknown"] is True
+    assert invalid["message"] == "Invalid response" and invalid["transport_unknown"] is True
     assert parse_place_bets_response({"error": "csrf"}, "M1", "B1")["message"] == "csrf"
     assert parse_place_bets_response({"code": 405, "message": "rejected"}, "M1", "B1")["message"] == "rejected"
 
@@ -144,6 +146,7 @@ def test_parse_place_bets_response_market_errors():
 
     out = parse_place_bets_response({"M2": {"status": "OK"}}, "M1", "B1")
     assert out["message"] == "No response for market M1"
+    assert out["transport_unknown"] is True
 
 
 def test_cancel_bets_payload_uses_market_and_offer_id():
@@ -184,10 +187,15 @@ def test_parse_cancel_bets_response_success_and_failures():
         "success": True,
         "message": "Order cancelled via API",
     }
-    assert parse_cancel_bets_response({}) == {"success": False, "message": "Cancel failed"}
+    assert parse_cancel_bets_response({}) == {
+        "success": False,
+        "message": "Cancel failed",
+        "transport_unknown": True,
+    }
     assert parse_cancel_bets_response(["bad"]) == {
         "success": False,
         "message": "Invalid response",
+        "transport_unknown": True,
     }
     assert parse_cancel_bets_response({"error": "csrf"}) == {
         "success": False,

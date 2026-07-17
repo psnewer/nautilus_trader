@@ -144,3 +144,14 @@ def test_cancel_order_returns_failure_without_page_or_ids():
     result = asyncio.run(executor.cancel_order("", "OID-1", page))
     assert result == {"success": False, "message": "Missing market_id or venue_order_id"}
     assert page.calls == []
+
+
+def test_transport_errors_are_classified_as_unknown_results():
+    response = {"error": "Failed to fetch", "_transport_error": True}
+    executor = SharpExchExecutor()
+
+    place = asyncio.run(executor.place_order(_order(), _FakePage(response), timestamp_ms=123456))
+    cancel = asyncio.run(executor.cancel_order("1.259502313", "OID-1", _FakePage(response)))
+
+    assert place["success"] is False and place["transport_unknown"] is True
+    assert cancel["success"] is False and cancel["transport_unknown"] is True

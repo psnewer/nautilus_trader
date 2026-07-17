@@ -34,7 +34,10 @@ from py_clob_client_v2 import TradeParams
 from py_clob_client_v2.clob_types import AssetType
 from py_clob_client_v2.clob_types import OrderType as PolyOrderType
 from py_clob_client_v2.clob_types import PostOrdersV2Args as PostOrdersArgs
+from py_clob_client_v2.config import get_contract_config
 from py_clob_client_v2.exceptions import PolyApiException
+from py_clob_client_v2.order_utils import ExchangeOrderBuilderV1
+from py_clob_client_v2.order_utils import ExchangeOrderBuilderV2
 
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD
@@ -126,6 +129,19 @@ def _parse_position_avg_price(position: dict[str, Any]) -> Decimal | None:
         return Decimal(str(avg_price))
     except (InvalidOperation, ValueError):
         return None
+
+
+def polymarket_signed_order_id(signed_order, *, chain_id: int, neg_risk: bool) -> VenueOrderId:
+    """从 signed order 计算 CLOB 使用的确定性 order hash。"""
+    contracts = get_contract_config(chain_id)
+    if hasattr(signed_order, "timestamp"):
+        exchange = contracts.neg_risk_exchange_v2 if neg_risk else contracts.exchange_v2
+        builder = ExchangeOrderBuilderV2(exchange, chain_id, signer=None)
+    else:
+        exchange = contracts.neg_risk_exchange if neg_risk else contracts.exchange
+        builder = ExchangeOrderBuilderV1(exchange, chain_id, signer=None)
+    typed_data = builder.build_order_typed_data(signed_order)
+    return VenueOrderId(builder.build_order_hash(typed_data))
 
 
 class PolymarketExecutionClient(LiveExecutionClient):
@@ -583,6 +599,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
     async def generate_order_status_report(
         self,
         command: GenerateOrderStatusReport,
+        *,
+        retry: bool = True,
     ) -> OrderStatusReport | None:
         await self._maintain_active_market(command.instrument_id)
 
@@ -601,15 +619,22 @@ class PolymarketExecutionClient(LiveExecutionClient):
             f"{repr(command.venue_order_id) if command.venue_order_id else ''}",
         )
 
-        retry_manager = await self._retry_manager_pool.acquire()
+        retry_manager = None
         try:
-            response: JSON | None = await retry_manager.run(
-                "generate_order_status_report",
-                [command.client_order_id, venue_order_id],
-                asyncio.to_thread,
-                self._http_client.get_order,
-                order_id=venue_order_id.value,
-            )
+            if not retry:
+                response = await asyncio.to_thread(
+                    self._http_client.get_order,
+                    order_id=venue_order_id.value,
+                )
+            else:
+                retry_manager = await self._retry_manager_pool.acquire()
+                response = await retry_manager.run(
+                    "generate_order_status_report",
+                    [command.client_order_id, venue_order_id],
+                    asyncio.to_thread,
+                    self._http_client.get_order,
+                    order_id=venue_order_id.value,
+                )
 
             if not response:
                 return None
@@ -636,7 +661,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 ts_init=self._clock.timestamp_ns(),
             )
         finally:
-            await self._retry_manager_pool.release(retry_manager)
+            if retry_manager is not None:
+                await self._retry_manager_pool.release(retry_manager)
 
     async def generate_fill_reports(
         self,
@@ -1687,6 +1713,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
         interval = self._clock.timestamp() - signing_start
         self._log.info(f"Signed Polymarket market order in {interval:.3f}s", LogColor.BLUE)
 
+        self._register_signed_order_id(order, signed_order, neg_risk=neg_risk)
+
         self.generate_order_submitted(
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
@@ -1748,6 +1776,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
         interval = self._clock.timestamp() - signing_start
         self._log.info(f"Signed Polymarket order in {interval:.3f}s", LogColor.BLUE)
 
+        self._register_signed_order_id(order, signed_order, neg_risk=neg_risk)
+
         self.generate_order_submitted(
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
@@ -1778,7 +1808,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 poly_order_type,
             )
 
-            if not response or not response.get("success"):
+            if not response:
+                self._handle_ambiguous_submit_failure(order, retry_manager.message)
+            elif not response.get("success"):
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id,
                     instrument_id=order.instrument_id,
@@ -1847,6 +1879,26 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     )
         finally:
             await self._retry_manager_pool.release(retry_manager)
+
+    def _register_signed_order_id(self, order: Order, signed_order, *, neg_risk: bool) -> VenueOrderId:
+        """POST 前登记 order hash，使无 HTTP 回执时仍可查询真实订单。"""
+        venue_order_id = polymarket_signed_order_id(
+            signed_order,
+            chain_id=self._http_client.chain_id,
+            neg_risk=neg_risk,
+        )
+        self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
+        return venue_order_id
+
+    def _handle_ambiguous_submit_failure(self, order: Order, reason: str | None) -> None:
+        """默认保持上游拒单语义；套利子类覆盖后保留在飞状态。"""
+        self.generate_order_rejected(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            reason=str(reason),
+            ts_event=self._clock.timestamp_ns(),
+        )
 
     def _handle_ws_message(self, raw: bytes) -> None:
         try:

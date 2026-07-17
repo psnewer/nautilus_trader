@@ -201,7 +201,7 @@ class OrbitExchExecutor:
                         });
                         return await response.json();
                     } catch (error) {
-                        return { error: error.message };
+                        return { error: error.message, _transport_error: true };
                     }
                 }""",
                 {"payload": payload, "csrfToken": csrf_token},
@@ -222,12 +222,11 @@ class OrbitExchExecutor:
             if not response:
                 order.status = OrderStatus.REJECTED
                 order.error_message = "No response"
-                self._log.warning(f"Order rejected: {order.error_message}")
                 return ExecutionResult(
                     success=False,
                     order=order,
                     message=order.error_message,
-                    venue_response=response,
+                    venue_response={"_transport_error": True},
                 )
 
             if response.get("error"):
@@ -298,7 +297,11 @@ class OrbitExchExecutor:
                 success=False,
                 order=order,
                 message=order.error_message,
-                venue_response=response,
+                venue_response=(
+                    response
+                    if market_response is not None
+                    else {**response, "_transport_error": True}
+                ),
             )
 
         except Exception as e:
@@ -312,6 +315,7 @@ class OrbitExchExecutor:
                 success=False,
                 order=order,
                 message=str(e),
+                venue_response={"_transport_error": True},
             )
 
     async def cancel_order(self, order: Order, page: Page | None = None) -> CancelResult:
@@ -361,22 +365,7 @@ class OrbitExchExecutor:
                     message="Missing market_id for cancel",
                 )
 
-            self._log.info(f"[cancel-stage] 1/4 fetching cookies (order={order.venue_order_id})")
-            try:
-                cookies = await asyncio.wait_for(page.context.cookies(), timeout=5.0)
-            except asyncio.TimeoutError:
-                self._log.error(
-                    f"[cancel-stage] 1/4 page.context.cookies() timed out after 5s "
-                    f"(order={order.venue_order_id}, market={order.market_id}). "
-                    f"Likely cause: browser CDP unresponsive after page refresh."
-                )
-                return CancelResult(
-                    success=False,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="page.context.cookies() timeout (5s)",
-                )
-            self._log.info(f"[cancel-stage] 2/4 cookies fetched, count={len(cookies)}")
+            cookies = await page.context.cookies()
             cookie_names = {
                 "BIAB_AN",
                 "BIAB_LANGUAGE",
@@ -406,20 +395,15 @@ class OrbitExchExecutor:
                     break
 
             if not csrf_token:
-                self._log.error(f"[cancel-stage] 3/4 CSRF token not found in cookies")
+                self._log.error("Cancel failed: CSRF token not found in cookies")
                 return CancelResult(
                     success=False,
                     order_id=order.order_id,
                     venue_order_id=order.venue_order_id,
                     message="CSRF token not found",
                 )
-            self._log.info(f"[cancel-stage] 3/4 CSRF token OK (len={len(csrf_token)})")
-
-            self._log.info(f"[cancel-stage] 4/4 entering page.evaluate")
-            try:
-                response = await asyncio.wait_for(
-                    page.evaluate(
-                        """async (payload) => {
+            response = await page.evaluate(
+                """async (payload) => {
                             const trace = [];
                             trace.push({s: 'start', t: Date.now()});
                             try {
@@ -454,44 +438,32 @@ class OrbitExchExecutor:
                                     trace.push({s: 'json-fail', err: e.message, t: Date.now()});
                                     return {
                                         error: 'json_parse_failed: ' + e.message,
+                                        _transport_error: true,
                                         _trace: trace,
                                         _raw_sample: text.slice(0, 500),
                                     };
                                 }
                             } catch (error) {
                                 trace.push({s: 'fetch-error', err: error.message, t: Date.now()});
-                                return {error: error.message, _trace: trace};
+                                return {error: error.message, _transport_error: true, _trace: trace};
                             }
-                        }""",
-                        {
-                            "csrfToken": csrf_token,
-                            "cookieHeader": cookie_header,
-                            "body": {
-                                order.market_id: [
-                                    {
-                                        "offerId": order.venue_order_id,
-                                        "betType": "EXCHANGE",
-                                    }
-                                ]
+                }""",
+                {
+                    "csrfToken": csrf_token,
+                    "cookieHeader": cookie_header,
+                    "body": {
+                        order.market_id: [
+                            {
+                                "offerId": order.venue_order_id,
+                                "betType": "EXCHANGE",
                             },
-                        },
-                    ),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                self._log.error(
-                    f"Cancel page.evaluate timed out after 10s: "
-                    f"order={order.venue_order_id}, market={order.market_id}"
-                )
-                return CancelResult(
-                    success=False,
-                    order_id=order.order_id,
-                    venue_order_id=order.venue_order_id,
-                    message="page.evaluate timeout (10s)",
-                )
+                        ],
+                    },
+                },
+            )
 
             if response and isinstance(response, dict) and "_trace" in response:
-                self._log.info(f"Cancel trace: {response.get('_trace')}")
+                self._log.debug(f"Cancel trace: {response.get('_trace')}")
                 if response.get("_raw_sample"):
                     self._log.warning(
                         f"Cancel response not JSON, raw sample: {response.get('_raw_sample')!r}"
@@ -515,8 +487,8 @@ class OrbitExchExecutor:
                 success=False,
                 order_id=order.order_id,
                 venue_order_id=order.venue_order_id,
-                message=response.get("error", "Cancel failed"),
-                venue_response=response if response else {},
+                message=response.get("error", "Cancel failed") if response else "Cancel failed",
+                venue_response=response if response else {"_transport_error": True},
             )
 
         except Exception as e:
@@ -527,6 +499,7 @@ class OrbitExchExecutor:
                 order_id=order.order_id,
                 venue_order_id=order.venue_order_id,
                 message=str(e),
+                venue_response={"_transport_error": True},
             )
 
     async def _cancel_order_legacy(self, order: Order, page: Page | None = None) -> CancelResult:

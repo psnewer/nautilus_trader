@@ -202,12 +202,23 @@ class OrbitExchExecutionClient(LiveExecutionClient):
   - PM:REST `cancel_order` 的 `canceled[]` 只记录“请求已接收”;真实撤单完成以 USER channel `CANCELLATION` 事件为准,由 adapter 转 `generate_order_canceled`。`not_canceled` 中的真实失败转 `generate_order_cancel_rejected`;`already canceled or matched` 继续抑制,等待 WS 给出取消或成交真相。
   - OE/SE:`executor.cancel_order` 成功只记录“请求已接收”;后续新的 `CURRENT_BETS` 完整快照中,该 `offerId` 消失或 `offerState` 为 `CANCELLED/CANCELED` 时,由 adapter 转 `generate_order_canceled`。旧缓存不用于完成判定。
 - session mixin 只维护 `_active_sessions`、tracking timeout、`execution.started/finished` 和 `PairInFlightGate.exec_started/exec_finished`。它不再写执行健康状态;order/position liveness 由 venue ExecutionClient / reconcile 成功路径写入 `VenueExecutionLiveness`。
-- **submit 异常收口(PM/OE 对称,#105 ①)**:submit 若在收到 venue ack 前发生本地/传输异常,
-  **立刻**生成订单终态 + `_end_session`(收口 session / 释放 pair 闸),不干等 §4.2 watchdog 整个超时:
-  - PM:`ArbPolymarketExecutionClient._submit_order` `try/except` → `generate_order_denied` + `_end_session`。
-  - OE:`OrbitExchExecutionClient._submit_order` 把 `_place_via_executor` 的 await 包入 `try/except`
-    (Playwright 崩 / executor 抛 / 页锁异常)→ `generate_order_rejected` + `_end_session`。
-    (`_place_via_executor` **返回 None**(instrument/executor 缺失)走既有 rejected 分支;`try/except` 仅兜**抛异常**。)
+- **submit 异常收口**:只对“确定尚未提交到 venue”的本地失败立即生成终态；请求已发出但结果未知必须保留在飞状态:
+  - PM 在签名后、POST 前按 CLOB order hash 算法得到确定性 `venue_order_id`，先写
+    `client_order_id -> venue_order_id` 映射，再生成 `OrderSubmitted`。POST 返回明确拒绝时正常
+    `OrderRejected`；签名/构造阶段失败且尚无 hash 映射时 `OrderDenied + _end_session`；POST
+    传输异常、空回执或抛错但 hash 已登记时不生成本地终态、不结束 session，订单保持
+    `SUBMITTED`，等待 NT 的 in-flight threshold 判定。
+  - OE/SE 在本地 instrument/executor/payload 校验通过后、进入真实 `placeBets` 前生成
+    `OrderSubmitted`。HTTP/业务响应明确拒绝时生成 `OrderRejected`；断线、execution context
+    销毁、fetch transport error 等结果未知路径不生成终态、不结束 session，保留 `SUBMITTED`
+    等 NT in-flight check。ExecutionClient 对“等待页锁 + cookies + page evaluate/fetch”完整
+    place/cancel 使用统一 5 秒 I/O 总预算；超时取消该调用并释放页锁，但只表示结果未知，不代表
+    venue 拒绝。该 timeout 与 QueryOrder 解耦，也不复用页面导航的 `page_timeout`。旧 OE cancel
+    内部 cookies 5 秒 + evaluate 10 秒的分段 timeout 已删除。
+  - OE/SE cancel 命令进入 adapter 前已由 NT Strategy 生成 `OrderPendingCancel`。`cancelBets`
+    明确失败才生成 `OrderCancelRejected`；结果未知保留 `PENDING_CANCEL`。cancel-only 残单由 base
+    先建立 session，adapter 复用该 session 发真实请求，不得再次 `_begin_cancel_session` 后把请求
+    当重复操作跳过。
   - `OrderDenied`/异常 `OrderRejected` 只负责收口,不把"未知是否到达 venue"误写成 execution liveness。
 
 ### 4.2 Tracking timeout(Q15,NT clock 绝对超时)
@@ -332,7 +343,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 **(5) VenueExecutionLiveness 写入不变量(已落地,2026-06-15)**:
 - `venue_order_alive=true` 只表示该 venue 的订单真相可信,即拿到真实 order/open-order response。
 - `venue_position_alive=true` 只表示该 venue 的持仓真相可信,即拿到真实 position response。
-- OE 当前 `CURRENT_BETS` 是完整 order/position 快照,所以 `_on_current_bets` 同时标记 OE `order_alive` 与 `position_alive`;`generate_order_status_report(s)` 和 `generate_position_status_reports` 先确认 `_ensure_exec_snapshot_fresh()` 成功且至少收到过 CURRENT_BETS,成功返回才分别标记对应维度,否则标记对应维度 dead。
+- OE/SE 当前 `CURRENT_BETS` 是完整 order/position 快照。`_on_current_bets` 先生成撤单/已知订单成交事件，再把全部 `OrderStatusReport` 与按 selection 聚合的 `PositionStatusReport` 依次送入 `ExecEngine.reconcile_execution_report`；两类报告都已发送后才推进 `_last_current_bets_ns` 并同时标记 `order_alive` / `position_alive`。`generate_order_status_report(s)` 和 `generate_position_status_reports` 先确认 `_ensure_exec_snapshot_fresh()` 成功且至少完整处理过一帧 CURRENT_BETS，成功返回才分别标记对应维度，否则标记对应维度 dead。
 - PM 子类包裹上游 `generate_order_status_report(s)` / `generate_position_status_reports`:成功标 alive;**失败标 dead 后 `return []`(单条 `return None`),不再 raise(#122 对齐 OE)**。原先失败 raise 给 NT reconciliation,但 PM 启动期偶发瞬时失败(data-api 超时 / geoblock 403)→ `generate_mass_status` 抛 →「Execution state could not be reconciled」→ kernel 跳过 `trader.start()` → actors 卡 READY、web 不绑;改返空后启动不被瞬时失败卡死,venue 仍 fail-closed(标 dead,靠后续成功对账自愈,**不** mark_alive)。**PM order reports 额外处理上游 RetryManager 语义**:上游 `RetryManager.run()` 网络失败时记 ERROR 返回 `None`,部分 report 方法把它当空结果返回;Arb 子类经 `_RetryFailureRecorder` 在 report 调用期间识别 `generate_order_status_report(s)` / `generate_fill_reports` 的 retry failure,若发生则 `mark_order_dead` + 返空(不再 raise),避免"无真实 response"被误判为 alive。PM position reports 同理:Data API 异常 → `mark_position_dead` + 返空。**对齐参照**:OE base `generate_order_status_reports`/`generate_position_status_reports` 早就是"失败 `mark_dead + return []`、不抛"(`orbitexch/execution.py:691/733`)。
 - PM `generate_fill_reports` 读取用户历史 trades 时可能遇到当前未加载/未匹配的 instrument;这是目标市场外历史成交的正常跳过路径,只打 DEBUG,不影响 order/position liveness。open-order report 中未知 instrument 仍保留 WARNING,因为它代表当前 venue open-order response 无法映射到 NT instrument。
 - PM ExecClient 上游 retry 参数(`max_retries` / `retry_delay_initial_ms` / `retry_delay_max_ms`)已通过 ArbConfig 显式透传,但默认仍为 None(不改变上游 submit/cancel/report 的共享 retry pool 语义)。周期 order 对账若要抗瞬时 SSL/proxy timeout,应通过显式配置启用,不能默认打开以免影响真钱 submit/cancel。
@@ -345,14 +356,38 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 - 出站:`OrbitExchExecutor.place_order` 在构造 `/customer/api/placeBets` payload 前把 legacy order 的 USD `size` 除以当前 `fx`,payload 的 `"size"` 才是 OE 要求的 GBP stake。
 - `fx` 启动值经 `ArbContext.arbitrage_params` 注入 OE factory;PM/OE/SE execution session timeout 只从 `ArbContext.session_timeout_secs_by_venue[venue]` 读取。缺失该 keyed 值时 factory fail-fast,不再用 venue 专属字段兜底。Web 热改 `arbitrage.fx` 通过 `command.arb.arbitrage_params` 同步到 `OrbitExchExecutionClient`,executor 通过 getter 读取最新值。
 
-**(5b) in-flight check / reconcile 失败语义(#105 已定)**:
-- **in-flight check 保持开**(全局,PM 需要;不为 OE 单独关)。OE 同步生成终态 + 页锁 → 订单几乎不滞留在飞 → 极少对 OE 触发。
+**(5b) in-flight check / reconcile 失败语义(#105/#242/#243 已定；已落地 2026-07-17)**:
+- **in-flight check 全 venue 开启**。PM/OE/SE 的明确业务结果直接进入终态；传输结果未知分别保留
+  `SUBMITTED` / `PENDING_CANCEL`，统一由 NT 原生 delayed in-flight 检测触发 `QueryOrder`。
+  传输结果未知包括请求超时、断线、fetch 异常、空响应、响应不可解析，以及 place 响应缺少目标
+  market；这些情形不得伪造 `OrderRejected` / `OrderCancelRejected`。venue 明确返回的业务错误才是
+  terminal reject。
+- **查询次数统一为一次**:`LiveExecEngineConfig.inflight_check_retries=1`。超过 NT
+  `inflight_check_threshold_ms`(当前默认 5 秒)后只发送一次 `QueryOrder`;若没有有效 report，
+  下一次检查直接由 NT `_resolve_inflight_order()` 收口，不再次访问 venue。
+- **PM 已卡在飞时序**:`ArbPolymarketExecutionClient._query_order` 收到 `QueryOrder` 即先
+  `mark_order_dead(POLYMARKET)`，再按 POST 前缓存的 order hash 执行一次且仅一次 `get_order`
+  (该路径不使用 PM RetryManager)。失败/空响应/查不到/解析失败均不发 report，order liveness
+  保持 dead；成功则先用 `_send_order_status_report(report)` 进入 NT 通用
+  `ExecEngine.reconcile_execution_report` 更新订单，调用返回后才 `mark_order_alive(POLYMARKET)`。
+  该恢复流程独立于 execution session，不读写 `_active_sessions`、session timer 或
+  `pair_inflight`。
+- **OE/SE 已卡在飞时序**:place/cancel 自身的统一 5 秒 I/O timeout 先保证页锁及时释放；NT 的
+  5 秒 inflight threshold 独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task，
+  先把对应 venue 的 order/position liveness 都置 dead，再强制 reload execution page 并等待一帧新的完整
+  `CURRENT_BETS`；不按目标订单字段做猜测或单笔认领，也不会先等待 120 秒 `page_timeout`。
+- **CURRENT_BETS 通用更新顺序**:每帧先整体替换快照，再依次生成撤单事件、成交事件和全部有效
+  `OrderStatusReport`，随后生成并发送聚合 `PositionStatusReport`；两类报告都进入 ExecEngine 后才推进
+  快照完成时间并同时置该 venue 的 order/position alive。因此
+  `QueryOrder` 只负责触发 reload，不包含 inflight 专属的 alive 特判或第二份
+  report 循环。reload、等待业务帧或通用更新失败时保持 dead，等价于 PM 单次 `get_order`
+  失败。空 `CURRENT_BETS` 是有效完整快照，订单与仓位报告集合均可为空，属于成功而非查询失败。
 - **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;并按失败维度置 liveness false)。
 - **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → liveness 保持 false,新 submit 被 Risk 安全挡住,但 NT cache order 错置终态(通道其实在时需人工对账)。
 
 **(6) 互斥**:reload 与 place/cancel 同页冲突由 **OE ExecClient 页锁**串行(NT 不串行化,详见 synchronization §8.1/§8.2);本节只负责"reload-then-report"读写 `_current_bets`,锁的归属与 strategy 侧状态位迁移在横切章。
 
-**(7) NT 开关 / 配置(#105/#108/#110/#111 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, open_check_interval_secs=300, position_check_interval_secs=300)`。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持默认开。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
+**(7) NT 开关 / 配置(#105/#108/#110/#111 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
 
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
@@ -486,7 +521,7 @@ sequenceDiagram
 - [x] `class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient)`(离线可构造:super 只需 instrument_provider+标准 NT 依赖,browser 仅 `_connect` 用);`_submit_order` 接 `_begin_session` + 结果映射(成功→`generate_order_accepted`/失败→`rejected`);`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单)
 - [x] **`general` 帧分型 + BALANCE 解析**(`parse_general_frame`,8 passed)+ **`_on_general_frame`:BALANCE→乘 fx 后 `generate_account_state`**(`oe_balance_to_account_balances`:WS 已净挂单 → total=free,数值按 USD 解释;已测)
 - [x] **Gap C 接线已写(#63)+ 连接路径 live 验证通过(#67/#89/#216)**:`_connect`(共享 BM `create_page("execution")` + 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置 page timeout + 登录 `/customer/` + `OrbitExchExecutor` + general WS `on_order_update(_on_general_frame)` + 最多 30s 等 `BALANCE`/`CURRENT_BETS`,缺余额才发 0 USD 兜底 account state)、`_login`(+ `_dismiss_post_login_popup` 关登录后弹窗)、`_place_via_executor`(`nt_order_to_legacy_order`:market_id/selection_id 取自 OE instrument)、`_cancel_order`/`_cancel_all_orders`/`_cancel_residual_one`(executor + `generate_order_canceled/_cancel_rejected`)。**登录后弹窗语义(#89)**:不靠固定 sleep,而是在有限 timeout 内等待 `postLoginPopup` 容器可见;出现后点击主页面区域关闭,超时/无弹窗则静默继续,不阻断连接。**#67 关键时序**:`ws_handler.start()`(挂 `page.on('websocket')`)**必须早于 `goto/_login`**,否则错过登录导航期间建立的 general WS → 收不到 BALANCE/CURRENT_BETS。**live 验证**(`launchers/arb_node.py` + skip=true,2026-06-07):登录✓/关弹窗✓/general WS✓/真 BALANCE 帧 `0.00→37.49 GBP`✓。**#77 修正**:`_cancel_order` 传给 `executor.cancel_order` 的 legacy Order 必须带 `market_id`/`selection_id`;若 instrument 不足,从 `_current_bets[venue_order_id]` 回填。**注**:`place_and_cancel` scenario 跑老 `services/` 栈,**不验 NT client**([[gap_c_oe_exec_live_validated]])
-- [x] **`_on_current_bets` → `generate_order_filled` + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 读取累计 `sizeMatched`;`test_execution_translation.py` 6 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查 NT order → 用累计 `sizeMatched` 与 NT order `filled_qty` 推出本次 `last_qty`,last_px=averagePrice,liquidity=MAKER 假设);accepted 由 `_submit_order` 同步发、撤单由 `_cancel_*` 发,此处只补成交;任一完整 CURRENT_BETS 快照同时标记 OE `order_alive`/`position_alive`
+- [x] **`_on_current_bets` → 完整 order/position reconcile + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 读取累计 `sizeMatched`;`test_execution_translation.py` 6 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查已知 NT order → 用累计 `sizeMatched` 与 NT order `filled_qty` 推出本次 `last_qty`,last_px=averagePrice,liquidity=MAKER 假设);未知 `offerId` 不认领原 order,但全量 order reports 与按 selection 聚合的 position reports 仍进入 ExecEngine;两类报告发送完成后才标记 OE `order_alive`/`position_alive`
 - [x] **#85 live 校准:venue 回执已到;未成交等待 30s timeout 属 Q15 默认语义**。`launchers/arb_node.py`
   真执行复验显示 OE 两笔 `placeBets` 均返回 `status=OK + offerIds`;NT accepted 事件本身无独立日志锚点,
   但下一轮机会先 cancel-only 撤旧 open order(`222032569`/`222032570`)再丢弃当次 submit,说明 cache 中已有

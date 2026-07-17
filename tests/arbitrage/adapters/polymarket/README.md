@@ -136,15 +136,17 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 **期望**: API-blocked / close-only / REST 不通的出口不会进入真下单路径;JP 这类 frontend-only restricted 不误拦 API 路径;`signature_type` / funder 配错导致余额为 0 时也在启动前失败;错误信息包含 country/region、signature_type 或 SDK transport 失败原因。
 **验收**: `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_geoblock_preflight_rejects_blocked_route` / `test_polymarket_geoblock_preflight_allows_frontend_only_restricted_country` / `test_polymarket_geoblock_preflight_uses_configured_proxy`;`tests/arbitrage/launchers/test_arb_node.py::test_main_preflight_polymarket_sdk_error_returns_2` / `test_preflight_polymarket_trading_uses_exec_proxy` / `test_preflight_polymarket_trading_rejects_zero_balance`。2026-06-10 JP 出口实测 preflight OK:`server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`;AU/NSW 仍按官方 API-blocked fail fast。
 
-### pm-adapter-5.1d: PM submit 本地/传输异常不拖满 session timeout
+### pm-adapter-5.1d: PM submit 结果未知的一次性 in-flight 恢复
 
-**前置**: `ArbPolymarketExecutionClient._submit_order` 已 `_begin_session`,但上游 PM submit 在收到 venue ack 前抛异常(例如 market WS / CLOB 路由 `Connection reset by peer`)。
-**输入**: 一笔 PM `LimitOrder` 进入 `_submit_order`。
+**前置**:`LiveExecEngineConfig.inflight_check_retries=1`;PM signed order 在 POST 前已有确定性 order hash。
+**输入**:一笔 PM `LimitOrder` 的 POST 结果因超时/断线/回执丢失而不明确，订单保持 `SUBMITTED`;超过 NT in-flight threshold 后收到 `QueryOrder`。
 **期望**:
-- 生成 `OrderDenied`,原因包含 `PM submit exception before venue acknowledgement`
-- 立即结束当前 execution session,发布 `execution.finished`,释放 per-pair 执行闸
-- 不生成 `OrderRejected`,不写 `VenueExecutionLiveness`,避免把本地/传输异常误写成 venue 真相可信
-**验收**: live 日志应看到 `Polymarket submit failed before venue acknowledgement ...` 后不再等待 `Execution session timeout`。当前尚未补离线 fake-client 单测;后续可用 stub 上游 `_submit_order` 抛异常覆盖。
+- POST 前登记 `client_order_id -> order hash`;明确拒绝仍生成 `OrderRejected`，结果不明确不生成本地终态、不提前结束 session
+- `QueryOrder` 入口先把 PM order liveness 置 dead，然后只调用一次 `get_order`
+- 有效 report 先经 `_send_order_status_report` 进入 ExecEngine 通用订单更新，完成后才置 alive
+- 异常、空响应、查不到或解析失败不发送 report，PM 保持 dead；NT 不再次访问 venue
+- 已卡在飞处理不调用 `_end_session`，不读写 `_active_sessions` / `pair_inflight`
+**验收**:`test_polymarket_client.py` 覆盖 signed hash、submit 歧义、dead→update→alive 顺序、失败保持 dead 与无 session 调用；launcher 测试锁定 `inflight_check_retries=1`。
 
 ### pm-adapter-5.2: 撤单接口
 

@@ -23,6 +23,7 @@ from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.execution import polymarket_signed_order_id
 from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
 from nautilus_trader.adapters.polymarket.http import transport as pm_transport
 from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
@@ -231,6 +232,168 @@ def test_polymarket_execution_uses_py_clob_client_v2_surface():
     cancel_source = inspect.getsource(PolymarketExecutionClient._cancel_order)
     assert "self._http_client.cancel_order" in cancel_source
     assert "OrderPayload(orderID=venue_order_id.value)" in cancel_source
+
+
+def test_polymarket_signed_order_id_is_deterministic_clob_hash():
+    signed_order = SimpleNamespace(
+        salt="1",
+        maker="0x0000000000000000000000000000000000000001",
+        signer="0x0000000000000000000000000000000000000002",
+        tokenId="3",
+        makerAmount="4000000",
+        takerAmount="5000000",
+        side=0,
+        signatureType=2,
+        timestamp="1710000000000",
+        metadata="0x" + "00" * 32,
+        builder="0x" + "00" * 32,
+        expiration="0",
+        signature="0x",
+    )
+
+    assert polymarket_signed_order_id(signed_order, chain_id=137, neg_risk=False) == VenueOrderId(
+        "0x926967de7a3565093df01b8db43a0890bf5f3f7d6d9863c0f04f9e1cd60c1f6f",
+    )
+
+
+def test_arb_ambiguous_submit_failure_keeps_session_untouched():
+    client = SimpleNamespace(
+        _cache=SimpleNamespace(
+            venue_order_id=lambda _coid: VenueOrderId("0x" + "a" * 64),
+        ),
+        _log=_TrackingLog(),
+    )
+    order = SimpleNamespace(client_order_id=ClientOrderId("O-INFLIGHT"))
+
+    ArbPolymarketExecutionClient._handle_ambiguous_submit_failure(
+        client,
+        order,
+        "post response lost",
+    )
+
+    assert any("retaining SUBMITTED order" in args[0] for args in client._log.warnings)
+
+
+def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():
+    captured = []
+    client = SimpleNamespace(
+        _retry_manager_pool=_RetryPool(),
+        _http_client=SimpleNamespace(post_order=lambda *_args: None),
+        _handle_ambiguous_submit_failure=lambda order, reason: captured.append(
+            (order.client_order_id, reason),
+        ),
+        generate_order_rejected=lambda **_kwargs: pytest.fail("empty response is not a definite rejection"),
+    )
+    client._post_signed_order = PolymarketExecutionClient._post_signed_order.__get__(client)
+    order = SimpleNamespace(
+        client_order_id=ClientOrderId("O-INFLIGHT"),
+        time_in_force="GTC",
+    )
+
+    _run(client._post_signed_order(order, SimpleNamespace(), order_type_override="GTC"))
+
+    assert captured == [(ClientOrderId("O-INFLIGHT"), "")]
+
+
+def test_arb_inflight_query_updates_order_before_marking_alive():
+    calls = []
+
+    class Liveness:
+        def mark_order_dead(self, venue):
+            calls.append(("dead", venue))
+
+        def mark_order_alive(self, venue):
+            calls.append(("alive", venue))
+
+    report = SimpleNamespace()
+    client = SimpleNamespace(
+        _venue_liveness=Liveness(),
+        _clock=_Clock(),
+        _log=_TrackingLog(),
+        _send_order_status_report=lambda value: calls.append(("update", value)),
+    )
+
+    async def generate(_command, *, retry=True):
+        calls.append(("query", retry))
+        return report
+
+    client.generate_order_status_report = generate
+    command = SimpleNamespace(
+        instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+        client_order_id=ClientOrderId("O-INFLIGHT"),
+        venue_order_id=VenueOrderId("0x" + "a" * 64),
+    )
+
+    _run(ArbPolymarketExecutionClient._query_order(client, command))
+
+    assert calls == [
+        ("dead", POLYMARKET),
+        ("query", False),
+        ("update", report),
+        ("alive", POLYMARKET),
+    ]
+
+
+def test_arb_inflight_query_failure_stays_dead_without_session_call():
+    calls = []
+
+    class Liveness:
+        def mark_order_dead(self, venue):
+            calls.append(("dead", venue))
+
+        def mark_order_alive(self, venue):
+            pytest.fail(f"must remain dead: {venue}")
+
+    client = SimpleNamespace(
+        _venue_liveness=Liveness(),
+        _clock=_Clock(),
+        _log=_TrackingLog(),
+    )
+
+    async def generate(_command, *, retry=True):
+        calls.append(("query", retry))
+        return None
+
+    client.generate_order_status_report = generate
+    command = SimpleNamespace(
+        instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+        client_order_id=ClientOrderId("O-INFLIGHT"),
+        venue_order_id=VenueOrderId("0x" + "a" * 64),
+    )
+
+    _run(ArbPolymarketExecutionClient._query_order(client, command))
+
+    assert calls == [("dead", POLYMARKET), ("query", False)]
+
+
+def test_polymarket_single_report_without_retry_calls_http_once():
+    calls = []
+
+    class NoRetryPool:
+        async def acquire(self):
+            pytest.fail("one-shot in-flight query must not acquire RetryManager")
+
+    client = SimpleNamespace(
+        _maintain_active_market=lambda _instrument_id: _noop_async(),
+        _cache=SimpleNamespace(venue_order_id=lambda _coid: VenueOrderId("0x" + "a" * 64)),
+        _clock=_Clock(),
+        _log=_Log(),
+        _retry_manager_pool=NoRetryPool(),
+        _http_client=SimpleNamespace(
+            get_order=lambda **_kwargs: calls.append("get_order"),
+        ),
+    )
+    client.generate_order_status_report = PolymarketExecutionClient.generate_order_status_report.__get__(client)
+    command = SimpleNamespace(
+        instrument_id=InstrumentId.from_str("1.POLYMARKET"),
+        client_order_id=ClientOrderId("O-INFLIGHT"),
+        venue_order_id=None,
+    )
+
+    report = _run(client.generate_order_status_report(command, retry=False))
+
+    assert report is None
+    assert calls == ["get_order"]
 
 
 def test_polymarket_cancel_order_success_waits_for_ws_cancellation_event():
@@ -804,7 +967,7 @@ def test_arb_generate_order_reports_retry_failure_marks_dead(monkeypatch):
 def test_arb_generate_single_order_report_retry_failure_marks_dead(monkeypatch):
     """single order report 查询失败也必须使 order liveness dead。"""
 
-    async def fake_super(self, command):
+    async def fake_super(self, command, *, retry=True):
         retry_manager = await self._retry_manager_pool.acquire()
         try:
             await retry_manager.run("generate_order_status_report", [], None)

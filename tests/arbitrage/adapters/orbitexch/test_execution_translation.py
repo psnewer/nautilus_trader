@@ -97,6 +97,62 @@ def test_oe_executor_converts_usd_size_to_gbp_payload():
     assert captured["payload"]["1.23"][0]["size"] == 16.0
 
 
+def test_oe_executor_preserves_transport_error_marker():
+    import asyncio
+
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
+    class _Page:
+        def context(self):
+            return _Context()
+
+        async def evaluate(self, _script, payload):
+            return {"error": "Failed to fetch", "_transport_error": True}
+
+    order = Order(
+        venue=Venue.ORBITEXCH,
+        market_id="1.23",
+        selection_id="456",
+        side=ArbOrderSide.BACK,
+        price=2.5,
+        size=20.0,
+    )
+    result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).place_order(order, _Page()))
+
+    assert result.success is False
+    assert result.venue_response["_transport_error"] is True
+
+
+def test_oe_executor_classifies_empty_response_as_transport_unknown():
+    import asyncio
+
+    class _Context:
+        async def cookies(self):
+            return [{"name": "CSRF-TOKEN", "value": "test-csrf-token"}]
+
+    class _Page:
+        def context(self):
+            return _Context()
+
+        async def evaluate(self, _script, payload):
+            return None
+
+    order = Order(
+        venue=Venue.ORBITEXCH,
+        market_id="1.23",
+        selection_id="456",
+        side=ArbOrderSide.BACK,
+        price=2.5,
+        size=20.0,
+    )
+    result = asyncio.run(OrbitExchExecutor(config=ExecutionConfig()).place_order(order, _Page()))
+
+    assert result.success is False
+    assert result.venue_response["_transport_error"] is True
+
+
 def test_current_bets_amount_fields_normalized_to_usd():
     bets = [{
         "offerId": "1",

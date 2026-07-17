@@ -98,7 +98,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:SE populated `CURRENT_BETS` fixture。
 **输入**:parser + report 生成。
 **期望**:offer/order id 能 join NT order;`sizeMatched` / `sizeRemaining` / `averagePrice` 正确转 fill/order progress;position report 聚合 BACK/LAY 净持仓。
-**验收**:order/fill/position 纯函数已部分落地。`test_execution_translation.py` 覆盖 `current_bets_to_fills` 的 empty/unmatched/累计 `sizeMatched`/更大累计快照/no-price/missing-offer 分支;`bet_order_progress` 覆盖 accepted/partially_filled/filled/unknown、side/market/selection/price 透出、`sizePlaced` 优先与 fallback;`current_bets_to_positions` 覆盖单 BACK、BACK 加权均价、BACK/LAY 混合、LAY dominant、net zero、unmatched skip。`test_execution_client.py` 覆盖 `_on_current_bets` 对已 join 的 `offerId` 生成 `generate_order_filled`,成交进度使用 SE USD 原生累计 `sizeMatched`,NT `last_qty` 由累计成交量与 order `filled_qty` 推出;同时覆盖 `generate_order_status_reports` / `generate_order_status_report` 从 `_current_bets` 生成 `OrderStatusReport`,按 venue_order_id 过滤单条 report,`generate_position_status_reports` 聚合净持仓,以及无 CURRENT_BETS 快照时 reload execution page、等待重推、超时 fail-closed 标记 liveness dead。
+**验收**:order/fill/position 纯函数已部分落地。`test_execution_translation.py` 覆盖 `current_bets_to_fills` 的 empty/unmatched/累计 `sizeMatched`/更大累计快照/no-price/missing-offer 分支;`bet_order_progress` 覆盖 accepted/partially_filled/filled/unknown、side/market/selection/price 透出、`sizePlaced` 优先与 fallback;`current_bets_to_positions` 覆盖单 BACK、BACK 加权均价、BACK/LAY 混合、LAY dominant、net zero、unmatched skip。`test_execution_client.py` 覆盖 `_on_current_bets` 对已 join 的 `offerId` 生成 `generate_order_filled`,成交进度使用 SE USD 原生累计 `sizeMatched`,NT `last_qty` 由累计成交量与 order `filled_qty` 推出;同时覆盖全量 `OrderStatusReport` 与聚合 `PositionStatusReport` 先发送、随后恢复 liveness，`generate_order_status_reports` / `generate_order_status_report` 按 venue_order_id 过滤单条 report，`generate_position_status_reports` 复用同一仓位 builder，以及无 CURRENT_BETS 快照时 reload execution page、等待重推、超时 fail-closed 标记 liveness dead。
 
 ### se-adapter-5.4:SE 撤单 payload 与响应解析
 
@@ -153,3 +153,22 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 
 - `test_provider.py::test_build_legs_three_way_exposes_yes_and_no_legs`:3-way 每 selection 产 yes + 合成 no；合成腿使用负 selection + null handicap 的非 composite identity，真实 selection 存 `venue_selection_id`，并带 `claim=no/quote_claim=no/exec_instrument_id`;2-way 真实 runner 统一 claim=yes/no。
 - `test_data.py` / `test_data_client.py`:`se_update_subscription_state` / `se_*_market_routing` / `se_*_message_to_book_deltas` 路由多值化(`[(iid, claim)]`),合成腿按 `venue_selection_id` 命中真实 runner，`se_runner_to_book_deltas(claim="no")` 两侧换位存原始值。
+
+## #243-#246:SE place/cancel 已卡在飞
+
+### se-adapter-5.inflight.1:传输结果未知不伪造拒单
+**前置**:NT order 已进入 submit 或 cancel 流程。
+**输入**:`placeBets/cancelBets` 超过统一 5 秒总预算、断线、fetch 异常、空响应、JSON 不可解析或缺目标 market。
+**步骤**:执行 adapter 请求并观察 NT order event。
+**期望/验收**:place 已先发 `OrderSubmitted`，cancel 保持 `PENDING_CANCEL`；均不发明确 reject，等待 NT `QueryOrder`。
+
+### se-adapter-5.inflight.2:5 秒 I/O timeout 与 QueryOrder 解耦
+**前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
+**输入**:ExecEngine 发出一次 `QueryOrder`。
+**步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder，先置 SE order/position dead再强制 reload。
+**期望/验收**:QueryOrder 不取消或感知 page task，不等待 120 秒 `page_timeout`；新的 `CURRENT_BETS` 通用路径按撤单→已知订单成交→全量 order reports→聚合 position reports→alive 更新。未知 `offerId` 不猜测原订单归属，但其累计成交仍通过 position report 进入 NT 仓位；任一步失败则保持 dead。用例:`test_query_order_*`、`test_current_bets_sends_aggregated_position_report_before_marking_alive`。
+
+### se-adapter-5.inflight.3:cancel-only 复用既有 session
+**前置**:execution mixin 已为残留单建立 cancel session。
+**输入**:调用 residual cancel。
+**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。

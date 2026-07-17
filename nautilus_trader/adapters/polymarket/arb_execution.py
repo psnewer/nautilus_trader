@@ -24,6 +24,8 @@ from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateOrderStatusReport
+from nautilus_trader.execution.messages import QueryOrder
 
 from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.venue_liveness import VenueExecutionLiveness
@@ -127,6 +129,13 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             await super()._submit_order(command)
         except Exception as e:
             order = command.order
+            venue_order_id = self._cache.venue_order_id(order.client_order_id)
+            if venue_order_id is not None:
+                self._log.warning(
+                    "Polymarket submit result unknown; retaining SUBMITTED order for NT inflight query "
+                    f"client_order_id={order.client_order_id}, venue_order_id={venue_order_id}: {e!r}",
+                )
+                return
             self._log.error(
                 f"Polymarket submit failed before venue acknowledgement "
                 f"client_order_id={order.client_order_id}: {e!r}",
@@ -139,6 +148,32 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
                 ts_event=self._clock.timestamp_ns(),
             )
             self._end_session(order.client_order_id)
+
+    def _handle_ambiguous_submit_failure(self, order, reason: str | None) -> None:
+        venue_order_id = self._cache.venue_order_id(order.client_order_id)
+        self._log.warning(
+            "Polymarket submit result unknown; retaining SUBMITTED order for NT inflight query "
+            f"client_order_id={order.client_order_id}, venue_order_id={venue_order_id}, reason={reason!r}",
+        )
+
+    async def _query_order(self, command: QueryOrder) -> None:
+        """PM 卡在飞只查询一次；订单更新仍走 NT 通用 report 管道。"""
+        self._venue_liveness.mark_order_dead(POLYMARKET)
+        report_command = GenerateOrderStatusReport(
+            instrument_id=command.instrument_id,
+            client_order_id=command.client_order_id,
+            venue_order_id=command.venue_order_id,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+        report = await self.generate_order_status_report(report_command, retry=False)
+        if report is None:
+            self._log.warning("PM in-flight order query returned no valid OrderStatusReport; order remains dead")
+            return
+
+        # MessageBus.send 同步调用 ExecEngine endpoint；返回后订单已走完通用 reconcile。
+        self._send_order_status_report(report)
+        self._venue_liveness.mark_order_alive(POLYMARKET)
 
     async def _cancel_residual_one(self, order) -> None:
         """#105:撤一条残单 —— 构 `CancelOrder` 走 `_cancel_order`。循环 + exec_count 跟踪由 base
@@ -210,7 +245,19 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return reports
 
-    async def generate_order_status_report(self, command):
+    async def generate_order_status_report(self, command, *, retry: bool = True):
+        if not retry:
+            try:
+                report = await super().generate_order_status_report(command, retry=False)
+            except Exception as e:
+                self._venue_liveness.mark_order_dead(POLYMARKET)
+                if self._log is not None:
+                    self._log.warning(f"PM one-shot order query failed (mark dead, None): {e!r}")
+                return None
+            if report is None:
+                self._venue_liveness.mark_order_dead(POLYMARKET)
+            return report
+
         recorder = _RetryFailureRecorder(
             self._retry_manager_pool,
             {"generate_order_status_report"},
@@ -230,6 +277,9 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             self._venue_liveness.mark_order_dead(POLYMARKET)
             if self._log is not None:
                 self._log.warning(f"PM order report query failed (mark dead, None): {recorder.failures!r}")
+            return None
+        if report is None:
+            self._venue_liveness.mark_order_dead(POLYMARKET)
             return None
         self._venue_liveness.mark_order_alive(POLYMARKET)
         return report

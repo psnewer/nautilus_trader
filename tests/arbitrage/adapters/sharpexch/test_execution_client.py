@@ -17,6 +17,7 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -363,14 +364,17 @@ def test_place_via_executor_translates_nt_order_and_passes_page():
     order = _order(client, inst, qty=12.5, price=2.34)
     page = object()
     captured = {}
+    calls = []
 
     class Executor:
         async def place_order(self, legacy_order, passed_page):
+            calls.append("request")
             captured.update(legacy_order=legacy_order, page=passed_page)
             return {"success": True, "venue_order_id": "SE-OFFER-1", "message": "ok"}
 
     client._executor = Executor()
     client._page = page
+    client.generate_order_submitted = lambda **kwargs: calls.append("submitted")
 
     result = _run(client._place_via_executor(order))
 
@@ -383,9 +387,30 @@ def test_place_via_executor_translates_nt_order_and_passes_page():
     assert legacy.size == pytest.approx(12.5)
     assert legacy.price == pytest.approx(2.34)
     assert captured["page"] is page
+    assert calls == ["submitted", "request"]
 
 
-def test_submit_order_rejects_executor_failure_and_exception_ends_session():
+def test_place_via_executor_timeout_releases_page_lock():
+    client = _client()
+    client._order_io_timeout_secs = 0.001
+    inst = _instrument("away")
+    client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.5, price=2.34)
+
+    class Executor:
+        async def place_order(self, legacy_order, passed_page):
+            await asyncio.Event().wait()
+
+    client._executor = Executor()
+    client._page = object()
+    client.generate_order_submitted = lambda **kwargs: None
+
+    with pytest.raises(asyncio.TimeoutError):
+        _run(client._place_via_executor(order))
+    assert not client._page_lock.locked()
+
+
+def test_submit_order_rejects_explicit_failure_but_keeps_transport_exception_inflight():
     client = _client()
     events = {}
     ended = []
@@ -409,8 +434,32 @@ def test_submit_order_rejects_executor_failure_and_exception_ends_session():
 
     client._place_via_executor = boom
     _run(client._submit_order(SimpleNamespace(order=order)))
-    assert "exception before venue acknowledgement" in events["reason"]
-    assert ended == [order.client_order_id]
+    assert events["reason"] == "venue rejected"
+    assert ended == []
+
+
+def test_submit_order_transport_result_keeps_inflight_session():
+    client = _client()
+    rejected = []
+    client._begin_session = lambda command: True
+    client.generate_order_rejected = lambda **kwargs: rejected.append(kwargs)
+
+    async def unknown(order):
+        return {
+            "success": False,
+            "message": "connection reset",
+            "transport_unknown": True,
+        }
+
+    client._place_via_executor = unknown
+    order = SimpleNamespace(
+        strategy_id="S",
+        instrument_id="I",
+        client_order_id=ClientOrderId("COID-1"),
+    )
+    _run(client._submit_order(SimpleNamespace(order=order)))
+
+    assert rejected == []
 
 
 def test_submit_order_cancel_only_discards():
@@ -462,16 +511,49 @@ def test_cancel_order_uses_instrument_market_id_and_accepts_success():
     assert captured["canceled"] is True
 
 
+def test_cancel_order_transport_failure_keeps_pending_cancel():
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.0, price=1.01)
+    client._cache.add_order(order)
+    voi = VenueOrderId("SE-OFFER-1")
+    client._cache.add_venue_order_id(order.client_order_id, voi)
+    rejected = []
+
+    class Executor:
+        async def cancel_order(self, market_id, venue_order_id, page, *, bet=None):
+            return {
+                "success": False,
+                "message": "connection reset",
+                "transport_unknown": True,
+            }
+
+    client._executor = Executor()
+    client._begin_cancel_session = lambda nt_order: True
+    client.generate_order_cancel_rejected = lambda *args, **kwargs: rejected.append((args, kwargs))
+
+    _run(client._cancel_order(SimpleNamespace(
+        strategy_id=order.strategy_id,
+        instrument_id=inst.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=voi,
+    )))
+
+    assert rejected == []
+
+
 def test_cancel_residual_one_reuses_normal_cancel_path():
     client = _client()
     captured = {}
 
-    async def cancel_one(strategy_id, instrument_id, client_order_id, venue_order_id):
+    async def cancel_one(strategy_id, instrument_id, client_order_id, venue_order_id, *, session_started=False):
         captured.update(
             strategy_id=strategy_id,
             instrument_id=instrument_id,
             client_order_id=client_order_id,
             venue_order_id=venue_order_id,
+            session_started=session_started,
         )
 
     client._cancel_one = cancel_one
@@ -489,6 +571,7 @@ def test_cancel_residual_one_reuses_normal_cancel_path():
         "instrument_id": "I",
         "client_order_id": residual.client_order_id,
         "venue_order_id": residual.venue_order_id,
+        "session_started": True,
     }
 
 
@@ -626,6 +709,36 @@ def test_position_status_reports_aggregate_current_bets():
     assert float(report.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
 
 
+def test_current_bets_sends_aggregated_position_report_before_marking_alive():
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    calls = []
+    client._build_order_report = lambda bet: None
+    client._send_position_status_report = lambda report: calls.append(("position_report", report))
+    client._venue_liveness = SimpleNamespace(
+        mark_order_alive=lambda venue: calls.append(("order_alive", venue)),
+        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
+    )
+
+    client._on_current_bets([{
+        "offerId": "SE-OFFER-1",
+        "marketId": inst.market_id,
+        "selectionId": str(inst.selection_id),
+        "side": "BACK",
+        "sizeMatched": "10.00",
+        "averagePrice": "2.0",
+        "sizeRemaining": "0.00",
+    }])
+
+    assert calls[0][0] == "position_report"
+    assert calls[0][1].quantity.as_double() == pytest.approx(10.0)
+    assert calls[1:] == [
+        ("order_alive", "SHARPEXCH"),
+        ("position_alive", "SHARPEXCH"),
+    ]
+
+
 def test_reconcile_reload_waits_for_current_bets_snapshot():
     client = _client()
     inst = _instrument("home")
@@ -656,6 +769,105 @@ def test_reconcile_reload_waits_for_current_bets_snapshot():
     assert len(reports) == 1
     assert reports[0].venue_order_id == VenueOrderId("SE-OFFER-1")
     assert reports[0].order_status == OrderStatus.ACCEPTED
+
+
+def test_query_order_forces_reload_and_uses_common_current_bets_update():
+    client = _client()
+    calls = []
+    client._venue_liveness = SimpleNamespace(
+        mark_order_dead=lambda venue: calls.append(("dead", venue)),
+        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
+        mark_order_alive=lambda venue: calls.append(("alive", venue)),
+    )
+    async def fresh(*, force=False):
+        calls.append(("fresh", force))
+        return True
+
+    client._ensure_exec_snapshot_fresh = fresh
+
+    _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
+
+    assert calls == [
+        ("dead", "SHARPEXCH"),
+        ("position_dead", "SHARPEXCH"),
+        ("fresh", True),
+    ]
+
+
+def test_query_order_reload_failure_keeps_order_liveness_dead():
+    client = _client()
+    calls = []
+    client._venue_liveness = SimpleNamespace(
+        mark_order_dead=lambda venue: calls.append(("dead", venue)),
+        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
+        mark_order_alive=lambda venue: calls.append(("alive", venue)),
+    )
+
+    async def stale(*, force=False):
+        calls.append(("fresh", force))
+        return False
+
+    client._ensure_exec_snapshot_fresh = stale
+
+    _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
+
+    assert calls == [
+        ("dead", "SHARPEXCH"),
+        ("position_dead", "SHARPEXCH"),
+        ("fresh", True),
+    ]
+
+
+def test_current_bets_marks_liveness_after_common_updates():
+    client = _client()
+    calls = []
+    client._emit_cancel_events_from_current_bets = lambda: calls.append("updates")
+    client._build_order_report = lambda bet: calls.append("build_report") or "R-A"
+    client._send_order_status_report = lambda report: calls.append("send_report")
+    client._build_position_status_reports_from_current_bets = (
+        lambda: calls.append("build_positions") or ["P-A"]
+    )
+    client._send_position_status_report = lambda report: calls.append("send_position")
+    client._venue_liveness = SimpleNamespace(
+        mark_order_alive=lambda venue: calls.append("order_alive"),
+        mark_position_alive=lambda venue: calls.append("position_alive"),
+    )
+
+    client._on_current_bets([{"offerId": "A"}])
+
+    assert calls == [
+        "updates",
+        "build_report",
+        "send_report",
+        "build_positions",
+        "send_position",
+        "order_alive",
+        "position_alive",
+    ]
+
+
+def test_cancel_io_timeout_releases_page_lock_and_keeps_pending():
+    client = _client()
+    client._order_io_timeout_secs = 0.001
+    rejected = []
+
+    class Executor:
+        async def cancel_order(self, market_id, venue_order_id, page, *, bet=None):
+            await asyncio.Event().wait()
+
+    client._executor = Executor()
+    client._page = object()
+    client.generate_order_cancel_rejected = lambda *args, **kwargs: rejected.append(args)
+
+    _run(client._cancel_order(SimpleNamespace(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1-1-1-None.SHARPEXCH"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=VenueOrderId("111"),
+    )))
+
+    assert rejected == []
+    assert not client._page_lock.locked()
 
 
 def test_reload_current_bets_wait_budget_uses_page_timeout():

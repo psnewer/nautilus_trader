@@ -48,6 +48,7 @@ ORBITEXCH = "ORBITEXCH"
 # #105 §4.3bis(4):exec 页 WS 存活锚 idle_timeout(live 实测心跳 ≈35s,300s 保守;config-wire 待 cutover)
 _EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
 _CONNECT_READY_TIMEOUT_SECS = 30.0
+_ORDER_IO_TIMEOUT_SECS = 5.0
 
 
 def oe_balance_to_account_balances(balance: float, currency=USD) -> list:
@@ -62,6 +63,11 @@ def oe_balance_to_account_balances(balance: float, currency=USD) -> list:
 def _resolve_future(fut) -> None:
     if fut is not None and not fut.done():
         fut.set_result(None)
+
+
+def _oe_result_is_transport_unknown(result) -> bool:
+    response = getattr(result, "venue_response", None)
+    return isinstance(response, dict) and bool(response.get("_transport_error"))
 
 
 def _coerce_handicap(value) -> float:
@@ -323,6 +329,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # #105:页锁 —— 串行所有"碰 OE execution 页"的操作(place / cancel / 未来 reload),
         # 因 NT 不串行化命令(均 create_task);同页并发 placeBets 会丢回执(synchronization §8.1/§8.2)。
         self._page_lock = asyncio.Lock()
+        self._order_io_timeout_secs = _ORDER_IO_TIMEOUT_SECS
         # #105 A1 §4.3bis(4):exec 页 WS 存活锚 —— general WS 任一帧(含 SockJS 心跳)刷新;
         # `_exec_ws_fresh()` 据此判 idle(reconcile/venue-liveness 用,A2+ 接入)。0 = 还没收过帧。
         self._last_frame_ns = 0
@@ -454,6 +461,12 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         try:
             result = await self._place_via_executor(order)
             if result is None or not result.success:
+                if result is not None and _oe_result_is_transport_unknown(result):
+                    self._log.warning(
+                        "OE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
+                        f"client_order_id={order.client_order_id}: {result.message}",
+                    )
+                    return
                 reason = (result.message if result is not None else "no executor result") or "submit failed"
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id, instrument_id=order.instrument_id,
@@ -469,19 +482,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
         except Exception as e:
-            # #105:placement 抛异常(Playwright 崩 / executor 抛 / 页锁异常)→ 立刻落终态 + 结束 session,
-            # 不干等 watchdog 整个 session_timeout(对齐 PM `arb_execution._submit_order`)。
-            self._log.error(
-                f"OE submit failed before venue acknowledgement "
+            self._log.warning(
+                f"OE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
                 f"client_order_id={order.client_order_id}: {e!r}",
             )
-            self.generate_order_rejected(
-                strategy_id=order.strategy_id, instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                reason=f"OE submit exception before venue acknowledgement: {e!r}",
-                ts_event=self._clock.timestamp_ns(),
-            )
-            self._end_session(order.client_order_id)
 
     async def _place_via_executor(self, nt_order):
         """NT Order → executor 旧 Order(`nt_order_to_legacy_order`)→ `executor.place_order`(Playwright)。
@@ -498,8 +502,16 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("OE place: executor 未初始化(_connect 未接线 / 非 live)")
             return None
-        async with self._page_lock:  # #105:页锁串行碰页操作(place / cancel / reload)
-            return await self._executor.place_order(legacy, self._page)
+        self.generate_order_submitted(
+            strategy_id=nt_order.strategy_id,
+            instrument_id=nt_order.instrument_id,
+            client_order_id=nt_order.client_order_id,
+            ts_event=self._clock.timestamp_ns(),
+        )
+        return await asyncio.wait_for(
+            self._run_page_write(lambda: self._executor.place_order(legacy, self._page)),
+            timeout=self._order_io_timeout_secs,
+        )
 
     async def _cancel_order(self, command) -> None:
         await self._cancel_one(
@@ -507,7 +519,15 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             command.client_order_id, command.venue_order_id,
         )
 
-    async def _cancel_one(self, strategy_id, instrument_id, client_order_id, venue_order_id) -> None:
+    async def _cancel_one(
+        self,
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        venue_order_id,
+        *,
+        session_started: bool = False,
+    ) -> None:
         """Gap C(#63):NT cancel → executor.cancel_order(需 venue_order_id)→ NT canceled/rejected 事件。
         仅非 skip 触达;/live-test 验。"""
         from src.arbitrage.common.order_models import Order as _Order
@@ -516,7 +536,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         nt_order = self._cache.order(client_order_id)
         voi = venue_order_id or (nt_order.venue_order_id if nt_order is not None else None)
         now = self._clock.timestamp_ns()
-        if nt_order is not None and not self._begin_cancel_session(nt_order):
+        if nt_order is not None and not session_started and not self._begin_cancel_session(nt_order):
             return
         if self._executor is None or voi is None:
             self.generate_order_cancel_rejected(
@@ -532,16 +552,41 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             market_id=str(getattr(inst, "market_id", "") or (bet or {}).get("marketId", "")),
             selection_id=str(getattr(inst, "selection_id", "") or (bet or {}).get("selectionId", "")),
         )
-        async with self._page_lock:  # #105:页锁(同 place,串行碰页)
-            result = await self._executor.cancel_order(legacy, self._page)
+        try:
+            result = await asyncio.wait_for(
+                self._run_page_write(lambda: self._executor.cancel_order(legacy, self._page)),
+                timeout=self._order_io_timeout_secs,
+            )
+        except Exception as e:  # noqa: BLE001 — 结果未知,保留 PENDING_CANCEL 给 NT inflight reconcile
+            self._log.warning(
+                "OE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                f"client_order_id={client_order_id}, venue_order_id={voi}: {e!r}",
+            )
+            return
         if result is not None and getattr(result, "success", False):
             self._log.info(
                 f"OE cancel request accepted: client_order_id={client_order_id}, "
                 f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
             )
         else:
+            if result is not None and _oe_result_is_transport_unknown(result):
+                self._log.warning(
+                    "OE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                    f"client_order_id={client_order_id}, venue_order_id={voi}: {result.message}",
+                )
+                return
             reason = (getattr(result, "message", None) if result is not None else None) or "cancel failed"
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
+
+    async def _query_order(self, command) -> None:
+        """卡在飞后强制刷新 CURRENT_BETS，走完整订单与仓位对账。"""
+        self._venue_liveness.mark_order_dead(ORBITEXCH)
+        self._venue_liveness.mark_position_dead(ORBITEXCH)
+        await self._ensure_exec_snapshot_fresh(force=True)
+
+    async def _run_page_write(self, operation):
+        async with self._page_lock:
+            return await operation()
 
     async def _modify_order(self, command) -> None:
         order = self._cache.order(command.client_order_id)
@@ -568,6 +613,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         await self._cancel_one(
             order.strategy_id, order.instrument_id,
             order.client_order_id, order.venue_order_id,
+            session_started=True,
         )
 
     def _mark_exec_frame(self) -> None:
@@ -608,10 +654,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             await asyncio.sleep(0.1)
         return True
 
-    async def _ensure_exec_snapshot_fresh(self) -> bool:
+    async def _ensure_exec_snapshot_fresh(self, *, force: bool = False) -> bool:
         """#105 §4.3bis(3):确保 `_current_bets` 新鲜(reconcile)。WS 活(`_exec_ws_fresh`)→ True 不 reload;
         否则 single-flight reload 一次(并发调用共享同一 future)。返回 True=快照可信,False=reconcile 失败(venue dead)。"""
-        if self._last_current_bets_ns > 0 and self._exec_ws_fresh():
+        if not force and self._last_current_bets_ns > 0 and self._exec_ws_fresh():
             return True
         if self._reload_inflight is not None:
             return await self._reload_inflight
@@ -658,13 +704,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         # 快照(非增量)→ 缓存供 reconcile reports;键 = offerId。缓存值为 USD 口径。
         self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
-        # #105 A2:CURRENT_BETS 重推时刻 = reconcile 成功信号(`_reload_exec_page` 等它越过 reload_ts)
-        self._last_current_bets_ns = self._clock.timestamp_ns()
-        _resolve_future(self._current_bets_ready_fut)
-        # CURRENT_BETS 是 OE 执行页的完整 order/position response;收到即认为 OE 执行端可对账。
-        self._venue_liveness.mark_order_alive(ORBITEXCH)
-        self._venue_liveness.mark_position_alive(ORBITEXCH)
-
         self._emit_cancel_events_from_current_bets()
 
         # `sizeMatched` 是 OE 原始 GBP 累计成交量。这里不维护 prevMatched;生成 NT fill 时用
@@ -703,6 +742,20 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 liquidity_side=LiquiditySide.MAKER,
                 ts_event=self._clock.timestamp_ns(),
             )
+
+        for bet in self._current_bets.values():
+            report = self._build_order_report(bet)
+            if report is not None:
+                self._send_order_status_report(report)
+
+        for report in self._build_position_status_reports_from_current_bets():
+            self._send_position_status_report(report)
+
+        # reload 只在订单和仓位报告都已进入 ExecEngine 后才视为完成。
+        self._last_current_bets_ns = self._clock.timestamp_ns()
+        _resolve_future(self._current_bets_ready_fut)
+        self._venue_liveness.mark_order_alive(ORBITEXCH)
+        self._venue_liveness.mark_position_alive(ORBITEXCH)
 
     @staticmethod
     def _bet_is_cancelled(bet: dict) -> bool:
@@ -867,6 +920,13 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if not await self._ensure_exec_snapshot_fresh() or self._last_current_bets_ns <= 0:
             self._venue_liveness.mark_position_dead(ORBITEXCH)
             return []
+
+        reports = self._build_position_status_reports_from_current_bets()
+        self._venue_liveness.mark_position_alive(ORBITEXCH)
+        return reports
+
+    def _build_position_status_reports_from_current_bets(self) -> list:
+        """从当前完整 CURRENT_BETS 快照构造仓位报告，不修改 liveness。"""
         from decimal import Decimal
 
         from nautilus_trader.core.uuid import UUID4
@@ -892,5 +952,4 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_init=now,
                 avg_px_open=Decimal(str(pos["avg_px"])) if pos["avg_px"] > 0 else None,
             ))
-        self._venue_liveness.mark_position_alive(ORBITEXCH)
         return reports

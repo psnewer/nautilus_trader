@@ -34,6 +34,17 @@ from src.arbitrage.execution.session import ArbExecutionSessionMixin
 SHARPEXCH = "SHARPEXCH"
 _EXEC_WS_IDLE_TIMEOUT_SECS = 300.0
 _CONNECT_READY_TIMEOUT_SECS = 30.0
+_ORDER_IO_TIMEOUT_SECS = 5.0
+
+
+def _se_result_is_transport_unknown(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    response = result.get("venue_response")
+    return bool(result.get("transport_unknown")) or (
+        isinstance(response, dict) and bool(response.get("_transport_error"))
+    )
+
 
 _FX_AMOUNT_KEYS = {
     "liability",
@@ -116,6 +127,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._page = None
         self._ws_handler = None
         self._page_lock = asyncio.Lock()
+        self._order_io_timeout_secs = _ORDER_IO_TIMEOUT_SECS
         self._browser_lock = browser_lock or asyncio.Lock()
         self._login_state = login_state
         self._bet_fill_seq: dict[str, int] = {}
@@ -280,6 +292,12 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         try:
             result = await self._place_via_executor(order)
             if result is None or not result.get("success"):
+                if result is not None and _se_result_is_transport_unknown(result):
+                    self._log.warning(
+                        "SE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
+                        f"client_order_id={order.client_order_id}: {result.get('message')}",
+                    )
+                    return
                 reason = (result or {}).get("message") or "submit failed"
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id,
@@ -300,15 +318,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
         except Exception as exc:  # noqa: BLE001
-            self._log.error(f"SE submit failed before venue acknowledgement {order.client_order_id}: {exc!r}")
-            self.generate_order_rejected(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                reason=f"SE submit exception before venue acknowledgement: {exc!r}",
-                ts_event=self._clock.timestamp_ns(),
+            self._log.warning(
+                "SE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
+                f"client_order_id={order.client_order_id}: {exc!r}",
             )
-            self._end_session(order.client_order_id)
 
     async def _place_via_executor(self, nt_order):
         inst = self._cache.instrument(nt_order.instrument_id)
@@ -322,8 +335,16 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if self._executor is None:
             self._log.error("SE place: executor is not initialized")
             return None
-        async with self._page_lock:
-            return await self._executor.place_order(legacy, self._page)
+        self.generate_order_submitted(
+            strategy_id=nt_order.strategy_id,
+            instrument_id=nt_order.instrument_id,
+            client_order_id=nt_order.client_order_id,
+            ts_event=self._clock.timestamp_ns(),
+        )
+        return await asyncio.wait_for(
+            self._run_page_write(lambda: self._executor.place_order(legacy, self._page)),
+            timeout=self._order_io_timeout_secs,
+        )
 
     async def _cancel_order(self, command) -> None:
         await self._cancel_one(
@@ -345,13 +366,22 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             order.instrument_id,
             order.client_order_id,
             order.venue_order_id,
+            session_started=True,
         )
 
-    async def _cancel_one(self, strategy_id, instrument_id, client_order_id, venue_order_id) -> None:
+    async def _cancel_one(
+        self,
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        venue_order_id,
+        *,
+        session_started: bool = False,
+    ) -> None:
         nt_order = self._cache.order(client_order_id)
         voi = venue_order_id or (nt_order.venue_order_id if nt_order is not None else None)
         now = self._clock.timestamp_ns()
-        if nt_order is not None and not self._begin_cancel_session(nt_order):
+        if nt_order is not None and not session_started and not self._begin_cancel_session(nt_order):
             return
         if self._executor is None or voi is None:
             self.generate_order_cancel_rejected(
@@ -366,16 +396,44 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         inst = self._cache.instrument(instrument_id)
         bet = self._current_bets.get(str(voi)) or {}
         market_id = str(getattr(inst, "market_id", "") or bet.get("marketId", ""))
-        async with self._page_lock:
-            result = await self._executor.cancel_order(market_id, str(voi), self._page, bet=bet)
+        try:
+            result = await asyncio.wait_for(
+                self._run_page_write(
+                    lambda: self._executor.cancel_order(market_id, str(voi), self._page, bet=bet),
+                ),
+                timeout=self._order_io_timeout_secs,
+            )
+        except Exception as exc:  # noqa: BLE001 — 结果未知,保留 PENDING_CANCEL 给 NT inflight reconcile
+            self._log.warning(
+                "SE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                f"client_order_id={client_order_id}, venue_order_id={voi}: {exc!r}",
+            )
+            return
         if result is not None and result.get("success"):
             self._log.info(
                 f"SE cancel request accepted: client_order_id={client_order_id}, "
                 f"venue_order_id={voi}; awaiting CURRENT_BETS confirmation",
             )
         else:
+            if result is not None and _se_result_is_transport_unknown(result):
+                self._log.warning(
+                    "SE cancel result unknown; retaining PENDING_CANCEL order for NT inflight reconcile "
+                    f"client_order_id={client_order_id}, venue_order_id={voi}: {result.get('message')}",
+                )
+                return
             reason = (result or {}).get("message") or "cancel failed"
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
+
+    async def _query_order(self, command) -> None:
+        """卡在飞后强制刷新 CURRENT_BETS，走完整订单与仓位对账。"""
+        if self._venue_liveness is not None:
+            self._venue_liveness.mark_order_dead(SHARPEXCH)
+            self._venue_liveness.mark_position_dead(SHARPEXCH)
+        await self._ensure_exec_snapshot_fresh(force=True)
+
+    async def _run_page_write(self, operation):
+        async with self._page_lock:
+            return await operation()
 
     async def _modify_order(self, command) -> None:
         order = self._cache.order(command.client_order_id)
@@ -406,8 +464,8 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             await asyncio.sleep(0.1)
         return True
 
-    async def _ensure_exec_snapshot_fresh(self) -> bool:
-        if self._last_current_bets_ns > 0 and self._exec_ws_fresh():
+    async def _ensure_exec_snapshot_fresh(self, *, force: bool = False) -> bool:
+        if not force and self._last_current_bets_ns > 0 and self._exec_ws_fresh():
             return True
         if self._reload_inflight is not None:
             return await self._reload_inflight
@@ -432,15 +490,9 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
 
         usd_bets = normalize_current_bets_to_usd(bets, 1.0)
         self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
-        self._last_current_bets_ns = self._clock.timestamp_ns()
-        _resolve_future(self._current_bets_ready_fut)
         self._current_bets_frames_seen += 1
         if self._current_bets_frames_seen == 1:
             self._log.info(f"SE CURRENT_BETS routed: bets={len(self._current_bets)}")
-        if self._venue_liveness is not None:
-            self._venue_liveness.mark_order_alive(SHARPEXCH)
-            self._venue_liveness.mark_position_alive(SHARPEXCH)
-
         self._emit_cancel_events_from_current_bets()
 
         for fill in current_bets_to_fills(bets):
@@ -478,6 +530,20 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                 liquidity_side=LiquiditySide.MAKER,
                 ts_event=self._clock.timestamp_ns(),
             )
+
+        for bet in self._current_bets.values():
+            report = self._build_order_report(bet)
+            if report is not None:
+                self._send_order_status_report(report)
+
+        for report in self._build_position_status_reports_from_current_bets():
+            self._send_position_status_report(report)
+
+        self._last_current_bets_ns = self._clock.timestamp_ns()
+        _resolve_future(self._current_bets_ready_fut)
+        if self._venue_liveness is not None:
+            self._venue_liveness.mark_order_alive(SHARPEXCH)
+            self._venue_liveness.mark_position_alive(SHARPEXCH)
 
     @staticmethod
     def _bet_is_cancelled(bet: dict) -> bool:
@@ -637,6 +703,14 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             if self._venue_liveness is not None:
                 self._venue_liveness.mark_position_dead(SHARPEXCH)
             return []
+
+        reports = self._build_position_status_reports_from_current_bets()
+        if self._venue_liveness is not None:
+            self._venue_liveness.mark_position_alive(SHARPEXCH)
+        return reports
+
+    def _build_position_status_reports_from_current_bets(self) -> list:
+        """从当前完整 CURRENT_BETS 快照构造仓位报告，不修改 liveness。"""
         from decimal import Decimal
 
         from nautilus_trader.core.uuid import UUID4
@@ -665,8 +739,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                     avg_px_open=Decimal(str(pos["avg_px"])) if pos["avg_px"] > 0 else None,
                 ),
             )
-        if self._venue_liveness is not None:
-            self._venue_liveness.mark_position_alive(SHARPEXCH)
         return reports
 
 
@@ -779,19 +851,28 @@ def parse_place_bets_response(response, market_id: str, bet_uuid: str) -> dict:
     """
 
     if not response:
-        return {"success": False, "venue_order_id": None, "message": "No response"}
+        return {
+            "success": False,
+            "venue_order_id": None,
+            "message": "No response",
+            "transport_unknown": True,
+        }
     if not isinstance(response, dict):
         return {
             "success": False,
             "venue_order_id": None,
             "message": "Invalid response",
+            "transport_unknown": True,
         }
     if response.get("error"):
-        return {
+        result = {
             "success": False,
             "venue_order_id": None,
             "message": str(response.get("error")),
         }
+        if response.get("_transport_error"):
+            result["transport_unknown"] = True
+        return result
     error_code = response.get("code")
     if error_code and error_code != 200:
         return {
@@ -816,7 +897,14 @@ def parse_place_bets_response(response, market_id: str, bet_uuid: str) -> dict:
         message = market_response.get("message") or market_response.get("status") or "Unknown market error"
     else:
         message = f"No response for market {market_id}"
-    return {"success": False, "venue_order_id": None, "message": str(message)}
+    result = {
+        "success": False,
+        "venue_order_id": None,
+        "message": str(message),
+    }
+    if market_response is None:
+        result["transport_unknown"] = True
+    return result
 
 
 def se_order_to_cancel_bets_payload(
@@ -871,11 +959,17 @@ def parse_cancel_bets_response(response) -> dict:
     """SE/OE 型 `cancelBets` 响应 → 简单撤单结果。"""
 
     if not response:
-        return {"success": False, "message": "Cancel failed"}
+        return {"success": False, "message": "Cancel failed", "transport_unknown": True}
     if not isinstance(response, dict):
-        return {"success": False, "message": "Invalid response"}
+        return {"success": False, "message": "Invalid response", "transport_unknown": True}
     if response.get("error"):
-        return {"success": False, "message": str(response.get("error"))}
+        result = {
+            "success": False,
+            "message": str(response.get("error")),
+        }
+        if response.get("_transport_error"):
+            result["transport_unknown"] = True
+        return result
     return {"success": True, "message": "Order cancelled via API"}
 
 

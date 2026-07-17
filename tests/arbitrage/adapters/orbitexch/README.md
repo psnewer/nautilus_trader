@@ -219,7 +219,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 **前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
 **输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
-**期望**: `oe_order_alive=true`;`_on_current_bets` 因 CURRENT_BETS 同时是 position 真值来源,也会写 `oe_position_alive=true`。
+**期望**: `oe_order_alive=true`;`_on_current_bets` 因 CURRENT_BETS 同时是 position 真值来源,会先发送聚合 position reports，再写 `oe_position_alive=true`。
 **验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 OE order reports;WS 新鲜时只读 `_current_bets` 内存,WS stale 时才经 `_ensure_exec_snapshot_fresh` reload execution 页。
 
 ### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)
@@ -270,13 +270,13 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **✅ 已落地 2026-07-09**。前置:ExecClient `_connect` 已先注册 `OrbitExchWebSocketHandler.on_frame` / `on_order_update`;输入:登录后 execution 页 general WS 推送 `BALANCE` 与 `CURRENT_BETS`。步骤:`BALANCE` 路由到 `_on_general_frame` 写真实 AccountState 并 resolve balance ready;`CURRENT_BETS` 路由到 `_on_current_bets` 刷 `_last_current_bets_ns` 并 resolve bets ready;`_connect` 最多等待 30s。期望:两个业务真值到齐时 `_connect` 不再先发 0 余额;若超时,缺余额才发 0 USD 兜底,缺 CURRENT_BETS 留给后续 reports/reconciliation reload 自愈。**验收**:`test_connect_ready_waits_for_balance_and_current_bets_signals`;`test_exec_first_frame_resolves_connect_waiter` 只保留为 WS frame 存活锚单元测试。
 
 ### oe-adapter-5.liveness-current-bets(#108):_on_current_bets → VenueExecutionLiveness
-**✅ 已落地 2026-06-15**。前置:`OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` 缓存完整快照并标记 `ORBITEXCH` 的 `order_alive=true` 与 `position_alive=true`;期望:`venue_alive("ORBITEXCH")` 为 true。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive`。
+**✅ 已落地 2026-06-15；完整报告顺序于 2026-07-17/#246 收紧**。前置:`OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;输入:任一 CURRENT_BETS 帧(`_on_current_bets([])`);步骤:`_on_current_bets` 缓存完整快照，依次发送 order/position reports，最后标记 `ORBITEXCH` 的 `order_alive=true` 与 `position_alive=true`;期望:`venue_alive("ORBITEXCH")` 为 true。**验收**:`test_orbitexch_client.py::test_on_current_bets_marks_oe_liveness_alive` / `test_current_bets_sends_aggregated_position_report_before_marking_alive`。
 
 ### oe-adapter-5.reload(#105 A2):reload-then-report 机制(§4.3bis(3))
 **✅ 已接入 reports 2026-06-15;CURRENT_BETS 前置收紧 2026-07-09**。前置:`_FakePageReload`(记 reload 次数 + 可选 on_reload 模拟 CURRENT_BETS 重推)。用例:① 已有 CURRENT_BETS 且 WS 新鲜(`_mark_exec_frame` 后)→ `_ensure_exec_snapshot_fresh` 不 reload(reload_count==0);② WS 新鲜但从未收到 CURRENT_BETS → reload + CURRENT_BETS 重推 → True;③ 陈旧 → reload + CURRENT_BETS 重推 → True(reload_count==1);④ reload 后 CURRENT_BETS 不重推 → `_reload_exec_page` 超时(`_reload_bets_wait_ns` 调小)→ False(reconcile 失败=venue dead);⑤ 两并发 `_ensure_exec_snapshot_fresh` → single-flight 只 reload 一次;⑥ 历史 `_current_bets` 存在但 WS stale 且 reload 失败 → `generate_order_status_report(s)` / `generate_position_status_reports` 不再沿用陈旧快照,按维度 mark dead;⑦ reload 成功 → reports 继续保持 alive。**验收**:`test_orbitexch_client.py::test_ensure_fresh_skips_reload_when_current_bets_and_ws_fresh` / `test_ensure_fresh_reloads_when_ws_fresh_but_no_current_bets` / `_reloads_when_stale_and_succeeds` / `test_reload_exec_page_timeout_returns_false` / `test_ensure_fresh_single_flight_one_reload` / `test_reconcile_reports_stale_snapshot_reload_failure_marks_dead` / `test_reconcile_reports_stale_snapshot_reload_success_stays_alive`。
 
 ### oe-adapter-5.position(#105):CURRENT_BETS → 持仓聚合(§4.3bis(2))
-**✅ 已落地并接入 reconciliation(2026-06-15/#108,2026-06-16/#110/#111;fx 入站校准 2026-06-30)**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`),且快照已在 `_on_current_bets` 入站时按 `fx` 归一为 USD;算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;`generate_position_status_reports` 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`。**验收**:`test_execution_translation.py::test_current_bets_amount_fields_normalized_to_usd` / `test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates`;reports 入口另由 reload-then-report 用例覆盖。launcher 当前 `reconciliation=True` 且 `open_check_interval_secs=300` / `position_check_interval_secs=300` 全局开启。
+**✅ 已落地并接入 reconciliation(2026-06-15/#108,2026-06-16/#110/#111;fx 入站校准 2026-06-30；CURRENT_BETS 直接发送于 2026-07-17/#246)**。前置:`_current_bets` 快照(BACK/LAY bet,带 `sizeMatched`/`averagePrice`/`marketId`/`selectionId`),且快照已在 `_on_current_bets` 入站时按 `fx` 归一为 USD;算法:纯函数 `current_bets_to_positions` 按 selection 聚合 `net=ΣBACK_matched−ΣLAY_matched`、`avg_px=主方向(net 符号侧)成交量加权 averagePrice`(反向当平仓只减 qty),`net==0`/matched=0 跳过;共享 builder 经 `_resolve_oe_instrument(market_id,selection_id)` 反查 instrument → `PositionStatusReport(quantity, position_side, avg_px_open)`，同时供 `_on_current_bets` 直接发送与 `generate_position_status_reports` 周期查询复用。**验收**:`test_execution_translation.py::test_current_bets_amount_fields_normalized_to_usd` / `test_orbitexch_client.py::test_positions_single_back_long` / `_two_back_size_weighted_avg` / `_mixed_back_lay_dominant_side_avg` / `_lay_dominant_short` / `_net_zero_skipped` / `_unmatched_skipped` / `test_generate_position_status_reports_aggregates` / `test_current_bets_sends_aggregated_position_report_before_marking_alive`。launcher 当前 `reconciliation=True` 且 `open_check_interval_secs=300` / `position_check_interval_secs=300` 全局开启。
 
 **`general` 频道帧格式(2026-05-22 实测抓帧锁定)**:`prices` 与 `general` 两个 WS;`general`(SockJS 下行 `a[...]`)**承载多类帧,按顶层 key 分型**(`message_parser.parse_general_frame` 已实现,`test_ws_general_frames.py` 覆盖):
 - `{"BALANCE":{"balance":"37.49","avBalance":null}}` —— `balance` 是**字符串**,WS 已含挂单占用;入站乘当前 `arbitrage.fx` 后写 NT account cache,cache 数值按 USD 解释。
@@ -486,3 +486,22 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 - 3-way 合成 no 腿 info 带 `claim=no/quote_claim=no/exec_instrument_id`;2-way 真实 home/away runner 分别带 `claim=yes/no`，但没有 `quote_claim=no` 或执行重定向。
 - `test_data_client_step2.py::test_runner_to_book_deltas_no_claim_swaps_sides_with_raw_prices`:claim=no 的 deltas 两侧换位,ask=LAY 原值 / bid=BACK 原值(下单价零换算不变量)。
 - 路由多值:`_market_to_instruments[market][selection]` = `[(iid, claim)]`,同帧对 yes/no 各发一份 deltas；合成 no 的缓存 selection 为负值，路由读取 `info.venue_selection_id` 命中真实 runner。
+
+## #243-#246:OE place/cancel 已卡在飞
+
+### oe-adapter-5.inflight.1:传输结果未知不伪造拒单
+**前置**:NT order 已进入 submit 或 cancel 流程。
+**输入**:`placeBets/cancelBets` 超过统一 5 秒总预算、断线、fetch 异常、空响应或缺目标 market。
+**步骤**:执行 adapter 请求并观察 NT order event。
+**期望/验收**:place 已先发 `OrderSubmitted`，cancel 保持 `PENDING_CANCEL`；均不发明确 reject，等待 NT `QueryOrder`。
+
+### oe-adapter-5.inflight.2:5 秒 I/O timeout 与 QueryOrder 解耦
+**前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
+**输入**:ExecEngine 发出一次 `QueryOrder`。
+**步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder，先置 OE order/position dead再强制 reload。
+**期望/验收**:QueryOrder 不取消或感知 page task，不等待 120 秒 `page_timeout`；新的 `CURRENT_BETS` 通用路径按撤单→已知订单成交→全量 order reports→聚合 position reports→alive 更新。未知 `offerId` 不猜测原订单归属，但其累计成交仍通过 position report 进入 NT 仓位；任一步失败则保持 dead。用例:`test_query_order_*`、`test_current_bets_sends_aggregated_position_report_before_marking_alive`。
+
+### oe-adapter-5.inflight.3:cancel-only 复用既有 session
+**前置**:execution mixin 已为残留单建立 cancel session。
+**输入**:调用 residual cancel。
+**期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。

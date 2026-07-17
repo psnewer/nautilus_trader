@@ -189,6 +189,7 @@ class _FakeResult:
     success: bool
     order: object = None
     message: str = ""
+    venue_response: dict | None = None
 
 
 def test_submit_order_rejects_on_executor_failure():
@@ -207,9 +208,8 @@ def test_submit_order_rejects_on_executor_failure():
     assert events.get("rej") == "venue rejected" and "acc" not in events
 
 
-def test_submit_order_exception_rejects_and_ends_session():
-    """#105 ①:_place_via_executor 抛异常 → 立刻 generate_order_rejected + _end_session,
-    不干等 watchdog 整个 session_timeout(对齐 PM)。"""
+def test_submit_order_transport_exception_keeps_inflight_session():
+    """结果未知时不伪造拒单,保留 SUBMITTED/session 给 NT inflight reconcile。"""
     c = _client()
     events = {}
     ended = []
@@ -225,9 +225,33 @@ def test_submit_order_exception_rejects_and_ends_session():
     coid = SimpleNamespace(value="O-1")
     order = SimpleNamespace(strategy_id="S", instrument_id="I", client_order_id=coid)
     _run(c._submit_order(SimpleNamespace(order=order)))
-    assert "exception before venue acknowledgement" in events.get("rej", "")
+    assert "rej" not in events
     assert "acc" not in events
-    assert ended == [coid]                           # session 立刻收口(非靠 watchdog)
+    assert ended == []
+
+
+def test_submit_order_transport_result_keeps_inflight_session():
+    c = _client()
+    rejected = []
+    c._begin_session = lambda command: True
+    c.generate_order_rejected = lambda **kwargs: rejected.append(kwargs)
+
+    async def _unknown(order):
+        return _FakeResult(
+            success=False,
+            message="connection reset",
+            venue_response={"_transport_error": True},
+        )
+
+    c._place_via_executor = _unknown
+    order = SimpleNamespace(
+        strategy_id="S",
+        instrument_id="I",
+        client_order_id=SimpleNamespace(value="O-1"),
+    )
+    _run(c._submit_order(SimpleNamespace(order=order)))
+
+    assert rejected == []
 
 
 def test_submit_order_cancel_only_discards():
@@ -237,6 +261,65 @@ def test_submit_order_cancel_only_discards():
     c._place_via_executor = lambda order: placed.append(order)
     _run(c._submit_order(SimpleNamespace(order=SimpleNamespace())))
     assert placed == []                              # 未下单
+
+
+def test_place_via_executor_emits_submitted_before_venue_request():
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    calls = []
+
+    class _Executor:
+        async def place_order(self, legacy, page):
+            calls.append("request")
+            return _FakeResult(success=True, order=legacy)
+
+    c._executor = _Executor()
+    c._page = object()
+    c.generate_order_submitted = lambda **kwargs: calls.append("submitted")
+
+    _run(c._place_via_executor(order))
+
+    assert calls == ["submitted", "request"]
+
+
+def test_place_via_executor_timeout_releases_page_lock():
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    c._order_io_timeout_secs = 0.001
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+
+    class _Executor:
+        async def place_order(self, legacy, page):
+            await asyncio.Event().wait()
+
+    c._executor = _Executor()
+    c._page = object()
+    c.generate_order_submitted = lambda **kwargs: None
+
+    with pytest.raises(asyncio.TimeoutError):
+        _run(c._place_via_executor(order))
+    assert not c._page_lock.locked()
 
 
 def test_cancel_order_passes_market_id_from_current_bets():
@@ -290,6 +373,82 @@ def test_cancel_order_passes_market_id_from_current_bets():
     c._on_current_bets([])                            # 新快照中订单消失 → 撤单完成
     assert captured["canceled"] is True
     assert captured["canceled_kwargs"]["client_order_id"] == order.client_order_id
+
+
+def test_cancel_order_transport_failure_keeps_pending_cancel():
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+    from nautilus_trader.model.identifiers import TraderId
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=8266399)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"),
+        strategy_id=StrategyId("S-000"),
+        clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    voi = VenueOrderId("221972467")
+    c._cache.add_venue_order_id(order.client_order_id, voi)
+    rejected = []
+
+    class _UnknownExecutor:
+        async def cancel_order(self, legacy, page):
+            return SimpleNamespace(
+                success=False,
+                message="connection reset",
+                venue_response={"_transport_error": True},
+            )
+
+    c._executor = _UnknownExecutor()
+    c._page = object()
+    c._begin_cancel_session = lambda nt_order: True
+    c.generate_order_cancel_rejected = lambda *args, **kwargs: rejected.append((args, kwargs))
+
+    _run(c._cancel_order(SimpleNamespace(
+        strategy_id=order.strategy_id,
+        instrument_id=inst.id,
+        client_order_id=order.client_order_id,
+        venue_order_id=voi,
+    )))
+
+    assert rejected == []
+
+
+def test_cancel_residual_one_reuses_existing_session():
+    c = _client()
+    captured = {}
+
+    async def cancel_one(
+        strategy_id,
+        instrument_id,
+        client_order_id,
+        venue_order_id,
+        *,
+        session_started=False,
+    ):
+        captured.update(
+            strategy_id=strategy_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            session_started=session_started,
+        )
+
+    c._cancel_one = cancel_one
+    residual = SimpleNamespace(
+        strategy_id="S",
+        instrument_id="I",
+        client_order_id="COID-1",
+        venue_order_id="VOI-1",
+    )
+
+    _run(c._cancel_residual_one(residual))
+
+    assert captured["session_started"] is True
 
 
 # ── #105 页锁:并发碰页操作串行 ──────────────────────────────────
@@ -481,6 +640,33 @@ def test_generate_position_status_reports_aggregates():
     assert float(r.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
 
 
+def test_current_bets_sends_aggregated_position_report_before_marking_alive():
+    from nautilus_trader.model.objects import Quantity
+
+    c = _client()
+    calls = []
+    fake_inst = SimpleNamespace(
+        id=InstrumentId.from_str("1-23-8266-None.ORBITEXCH"),
+        make_qty=lambda v: Quantity(v, precision=2),
+    )
+    c._resolve_oe_instrument = lambda market_id, selection_id: fake_inst
+    c._build_order_report = lambda bet: None
+    c._send_position_status_report = lambda report: calls.append(("position_report", report))
+    c._venue_liveness = SimpleNamespace(
+        mark_order_alive=lambda venue: calls.append(("order_alive", venue)),
+        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
+    )
+
+    c._on_current_bets([_pos_bet("1.23", "8266", "BACK", 10.0, 2.0)])
+
+    assert calls[0][0] == "position_report"
+    assert calls[0][1].quantity.as_double() == pytest.approx(10.0)
+    assert calls[1:] == [
+        ("order_alive", "ORBITEXCH"),
+        ("position_alive", "ORBITEXCH"),
+    ]
+
+
 # ── #105 A1 存活锚(_last_frame_ns / on_frame / _exec_ws_fresh)──────
 def test_handler_on_frame_fires_for_heartbeat_and_data_not_empty():
     from nautilus_trader.adapters.orbitexch.websocket_handler import OrbitExchWebSocketHandler
@@ -619,6 +805,53 @@ def test_ensure_fresh_single_flight_one_reload():
     assert c._page.reload_count == 1                 # single-flight → 只 reload 一次
 
 
+def test_query_order_forces_reload_and_uses_common_current_bets_update():
+    c = _client()
+    calls = []
+    c._venue_liveness = SimpleNamespace(
+        mark_order_dead=lambda venue: calls.append(("dead", venue)),
+        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
+        mark_order_alive=lambda venue: calls.append(("alive", venue)),
+    )
+    async def _fresh(*, force=False):
+        calls.append(("fresh", force))
+        return True
+
+    c._ensure_exec_snapshot_fresh = _fresh
+
+    _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
+
+    assert calls == [
+        ("dead", "ORBITEXCH"),
+        ("position_dead", "ORBITEXCH"),
+        ("fresh", True),
+    ]
+
+
+def test_query_order_reload_failure_keeps_order_liveness_dead():
+    c = _client()
+    calls = []
+    c._venue_liveness = SimpleNamespace(
+        mark_order_dead=lambda venue: calls.append(("dead", venue)),
+        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
+        mark_order_alive=lambda venue: calls.append(("alive", venue)),
+    )
+
+    async def _stale(*, force=False):
+        calls.append(("fresh", force))
+        return False
+
+    c._ensure_exec_snapshot_fresh = _stale
+
+    _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
+
+    assert calls == [
+        ("dead", "ORBITEXCH"),
+        ("position_dead", "ORBITEXCH"),
+        ("fresh", True),
+    ]
+
+
 # ── CURRENT_BETS → OE execution liveness 真值锚点 ─────────────────────
 def test_on_current_bets_marks_oe_liveness_alive():
     c = _client()
@@ -626,6 +859,58 @@ def test_on_current_bets_marks_oe_liveness_alive():
     assert c._venue_liveness.order_alive("ORBITEXCH")
     assert c._venue_liveness.position_alive("ORBITEXCH")
     assert c._venue_liveness.venue_alive("ORBITEXCH")
+
+
+def test_on_current_bets_marks_liveness_after_common_updates():
+    c = _client()
+    calls = []
+    c._emit_cancel_events_from_current_bets = lambda: calls.append("updates")
+    c._build_order_report = lambda bet: calls.append("build_report") or "R-A"
+    c._send_order_status_report = lambda report: calls.append("send_report")
+    c._build_position_status_reports_from_current_bets = (
+        lambda: calls.append("build_positions") or ["P-A"]
+    )
+    c._send_position_status_report = lambda report: calls.append("send_position")
+    c._venue_liveness = SimpleNamespace(
+        mark_order_alive=lambda venue: calls.append("order_alive"),
+        mark_position_alive=lambda venue: calls.append("position_alive"),
+    )
+
+    c._on_current_bets([{"offerId": "A"}])
+
+    assert calls == [
+        "updates",
+        "build_report",
+        "send_report",
+        "build_positions",
+        "send_position",
+        "order_alive",
+        "position_alive",
+    ]
+
+
+def test_cancel_io_timeout_releases_page_lock_and_keeps_pending():
+    c = _client()
+    c._order_io_timeout_secs = 0.001
+    rejected = []
+
+    class _Executor:
+        async def cancel_order(self, order, page):
+            await asyncio.Event().wait()
+
+    c._executor = _Executor()
+    c._page = object()
+    c.generate_order_cancel_rejected = lambda *args, **kwargs: rejected.append(args)
+
+    _run(c._cancel_order(SimpleNamespace(
+        strategy_id="S",
+        instrument_id=InstrumentId.from_str("1-1-1-None.ORBITEXCH"),
+        client_order_id=ClientOrderId("O-1"),
+        venue_order_id=VenueOrderId("111"),
+    )))
+
+    assert rejected == []
+    assert not c._page_lock.locked()
 
 
 def test_reconcile_reports_without_current_bets_marks_oe_liveness_dead():

@@ -45,10 +45,11 @@ _PLACE_BETS_JS = """async (arg) => {
                 error: `json_parse_failed: ${e.message}`,
                 status: response.status,
                 raw_sample: text.slice(0, 500),
+                _transport_error: true,
             };
         }
     } catch (error) {
-        return { error: error.message };
+        return { error: error.message, _transport_error: true };
     }
 }"""
 
@@ -81,10 +82,11 @@ _CANCEL_BETS_JS = """async (arg) => {
                 error: `json_parse_failed: ${e.message}`,
                 status: response.status,
                 raw_sample: text.slice(0, 500),
+                _transport_error: true,
             };
         }
     } catch (error) {
-        return { error: error.message };
+        return { error: error.message, _transport_error: true };
     }
 }"""
 
