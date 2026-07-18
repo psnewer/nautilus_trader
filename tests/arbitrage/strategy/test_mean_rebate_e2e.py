@@ -91,12 +91,12 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
         "HNO.ORBITEXCH":  _fake_book(2.0),    # 合成 no:prob=1−1/2.0=0.50
     }
     infos = {
-        "HY.POLYMARKET":  {"selection_role": "home", "claim": "yes", "in_play": in_play},
-        "HN.POLYMARKET":  {"selection_role": "home", "claim": "no", "in_play": in_play},
-        "H.ORBITEXCH":    {"selection_role": "home", "claim": "yes", "in_play": in_play},
+        "HY.POLYMARKET":  {"selection_role": "home", "claim": "yes"},
+        "HN.POLYMARKET":  {"selection_role": "home", "claim": "no"},
+        "H.ORBITEXCH":    {"selection_role": "home", "claim": "yes"},
         "HNO.ORBITEXCH":  {"selection_role": "home", "claim": "no",
                            "quote_claim": "no",
-                           "exec_instrument_id": "H.ORBITEXCH", "in_play": in_play},
+                           "exec_instrument_id": "H.ORBITEXCH"},
     }
     return OpportunitySnapshot(
         pair_id="pair_X",
@@ -175,10 +175,10 @@ def test_no_arb_below_threshold_no_action(caplog):
         "A.ORBITEXCH":  _fake_book(2.5),    # 0.40
     }
     infos = {
-        "H.POLYMARKET": {"selection_role": "home", "in_play": False},
-        "A.POLYMARKET": {"selection_role": "away", "in_play": False},
-        "H.ORBITEXCH":  {"selection_role": "home", "in_play": False},
-        "A.ORBITEXCH":  {"selection_role": "away", "in_play": False},
+        "H.POLYMARKET": {"selection_role": "home"},
+        "A.POLYMARKET": {"selection_role": "away"},
+        "H.ORBITEXCH":  {"selection_role": "home"},
+        "A.ORBITEXCH":  {"selection_role": "away"},
     }
     # 2-way: min(0.50, 0.40) * 2 = 0.80 → rate=0.20
     # 用 min_rate=0.30 → 不命中

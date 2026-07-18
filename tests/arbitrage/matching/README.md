@@ -238,3 +238,29 @@
 - `test_actor.py::test_three_way_tradable_anchor_skips_event_when_role_has_only_one_venue`:PM-anchor
   路径中任一 role 少于两个 tradable venue 时整组不发布。
 - 与 PMSPORTS-anchor 路径使用相同“每 role 至少两个 tradable venue”门槛；不恢复 role 独立发布。
+
+## #250:PMSPORTS per-game 订阅(已落地,`test_actor.py` / `test_pair_registry.py`)
+
+### matching-3.sports.1:per-game topic 隔离
+
+**用例**:`test_unsubscribed_game_topic_does_not_reach_matching`。
+**期望/验收**:未订阅比赛的发布不触发 eviction(每场独立 topic,handler 只挂已订场次)。
+
+### matching-3.sports.2:per-game 订阅驱动 eviction + 退订
+
+**用例**:`test_per_game_subscription_drives_eviction_and_unsubscribe`。
+**期望/验收**:per-game topic 发布经 NT 路由到达 Matching → eviction 全部关联 pair,
+并退订本场 sports(与 strategy 侧退订汇合归零后,client 回收 Store 条目)。
+
+### matching-3.sports.3:PairRegistry game_id 双向反查
+
+**用例**:`test_pair_ids_for_game_multi_value_and_unregister` /
+`test_pair_ids_for_game_reregister_moves_mapping`(`test_pair_registry.py`)。
+**期望/验收**:game→pairs 多值反查与 pair→game 反查(`game_id_for_pair`)一致;
+unregister/re-register 时映射同步清理。
+
+### matching-3.sports.4:发现扫描逐场订阅,evict 后不重订
+
+**用例**:`test_anchor_scan_subscribes_games_and_skips_ended`。
+**期望/验收**:`_maybe_match` 对 universe 内带 game_id 的 anchor 逐场订阅(幂等);
+`ended`/evict 后从订阅集合移除,后续扫描跳过(anchor 实体仍留 cache)。

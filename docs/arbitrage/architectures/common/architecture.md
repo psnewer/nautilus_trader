@@ -48,10 +48,12 @@
 
 | API | 用途 |
 |---|---|
-| `register(pair_id, instrument_ids, *, anchor_instrument_ids=())` | matching 成功后注册该 pair 的可交易 leg instrument id;PMSPORTS event anchor 等 non-tradable id 单独传 `anchor_instrument_ids` |
+| `register(pair_id, instrument_ids, *, anchor_instrument_ids=(), game_id=None)` | matching 成功后注册该 pair 的可交易 leg instrument id;PMSPORTS event anchor 等 non-tradable id 单独传 `anchor_instrument_ids`;`game_id`(#250)登记 sports 事件路由键 |
 | `get(instrument_id)` | 下游从任一可交易 instrument id 或 anchor id 反查 pair_id |
 | `instrument_ids_for_pair(pair_id, *, tradable_only=True)` | Portfolio/Strategy/Risk 反查该 pair 的可交易 instrument id;`tradable_only=False` 才包含 anchor id |
 | `anchor_ids_for_pair(pair_id)` | matching/lifecycle/test 读取该 pair 的 anchor instrument id |
+| `pair_ids_for_game(game_id)` | **#250 已落地**:按 game_id 反查当前注册的全部 pair;供 PMSPORTS sports update 扇出(3-way 同场多 pair;PM-anchor 路径 pair 无 PMSPORTS anchor,按 game_id 才全覆盖)|
+| `game_id_for_pair(pair_id)` | **#250**:pair → game_id;strategy 在 MatchedPair 到达时反查,发起该场 per-game sports 订阅 |
 | `unregister_pair(pair_id)` | 结束/eviction 时清理该 pair 的映射 |
 | `all_pair_ids()` | 低频观测 / 扫描用 |
 
@@ -59,6 +61,8 @@
 - register/get 两侧都用 `str(instrument_id)` 归一,避免 matching 写字符串、consumer 传 `InstrumentId` 对象导致 miss。
 - `instrument_ids_for_pair` 默认返回**可交易腿**字符串集合;读取 instrument 详情的一方负责转回 `InstrumentId` 并从 NT Cache 取 instrument。
 - PMSPORTS synthetic event anchor 等 non-tradable id 只用于 matching/lifecycle 反查,默认不暴露给 Strategy/Risk/Portfolio,避免进入套利快照 / risk gate / execution。
+- `get(anchor_id)` 的单值兼容行为不能用于 PMSPORTS strategy event 路由;#250 使用多值
+  `pair_ids_for_game`,防止同场的 3-way pair 只触发排序后的第一个。
 - MatchingActor 是唯一写者;其它组件只读或按 matching/eviction 归属调用 `unregister_pair`。
 
 ## 4. 控制台命令(`control.py`,#119)

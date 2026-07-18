@@ -27,7 +27,6 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 | `../execution/test_orbitexch_client.py` | OE ExecutionClient(Step 5)离线核心覆盖:BALANCE→AccountState、submit/cancel/session/page-lock、CURRENT_BETS fills/reports、execution liveness/reload；reload 导航与等待 CURRENT_BETS 共用配置的 page timeout 总预算 |
 | `test_execution_translation.py` | **Gap C(#63/#64)纯映射 + fx 边界**:① `nt_order_to_legacy_order`(NT Order→executor 旧 Order)5 case:BUY→BACK / SELL→LAY / `null_handicap`(-9999999.0 sentinel)→0 / 真 handicap 保留 / 缺 market\|selection→None。② **OE 出站 fx**:`OrbitExchExecutor.place_order` 接收 USD `order.size`,payload `"size"` 除以 `fx` 转 GBP。③ **OE 入站 fx**:`normalize_current_bets_to_usd` 把 `size*`/`liability`/`profitNet` 等字段乘 `fx`,价格字段不变。④ **`current_bets_to_fills`(成交回执)6 case**:空→[] / unmatched→[] / matched→累计 `sizeMatched` / 更大快照→仍输出累计 `sizeMatched` / 无价(avg=0)→跳过 / 缺 offerId→跳过。⑤ **`bet_order_progress`(reconcile 派生)8 case**:缺 offerId→None / 仅 remaining→accepted / remaining+matched→partially_filled / 仅 matched→filled / 都 0→unknown / **bet 自带 side+market+selection+price 透出** / **原始量优先 sizePlaced** / 无 sizePlaced→matched+remaining 兜底。真 `executor.place_order` + `_connect` + `_on_current_bets`→`generate_order_filled` + `generate_order_status_report(s)`(**bet 自带 `side`/`sizePlaced` 直接派生,`market+selection` 反查 instrument → 外部/重启单也能 reconcile**)= **真钱,/live-test 经 `launchers/arb_node.py` 验**(scenario 跑老栈不验 NT client)。`test_orbitexch_client.py::test_on_current_bets_fill_uses_cumulative_raw_matched_and_clamps_remaining` 锁定成交进度使用 OE 原始 GBP 累计 `sizeMatched`,生成 NT `last_qty` 时按当前 fx 转 USD 并按订单剩余量裁剪 |
 | `test_data_factory_provider_wiring.py` | **slice 7A(#46) + fx 最小 stake接线 + venue keyed context**:`OrbitExchLiveDataClientFactory.create` 只读 `ArbContext.discovery_config_by_venue["ORBITEXCH"]`(缺→fallback `InstrumentProvider()` / 有→真 `OrbitExchInstrumentProvider(scraper, aliases, fx)`),`fx` 来自 `ArbContext.arbitrage_params`;构造后回写 `instrument_provider_by_venue["ORBITEXCH"]`,data/exec 共享 BrowserManager 由 keyed map 保证 |
-| `test_data_client_inplay_writeback.py` | **slice 9(#49)**:`write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper(`_on_price_frame` 路径 NT 重,_cache cdef readonly Mock 困难,验 helper 即可)。case:present True / present False / cache 缺 instrument 不 raise / info=None 不 raise |
 | `test_data_client_step2.py::test_update_instruments_continues_after_provider_error` | **2026-06-29 overnight 修**:OE 周期 instrument rediscovery 单轮 `load_all_async` 抛异常后 task 不退出,下一轮仍继续并成功 `_send_all_instruments_to_data_engine` |
 
 ## Slice 10c smoke 浮上(#51):OE live connect 接线修
@@ -505,3 +504,14 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 **前置**:execution mixin 已为残留单建立 cancel session。
 **输入**:调用 residual cancel。
 **期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
+
+## #251:退订归零关 competition 页(`test_data_client_step2.py`)
+
+- `test_unregister_routing_returns_orphaned_page_key`:同页两 market 退订第一个不孤儿;退订
+  最后一个返回该 page_key,且 `_market_to_instruments` 空 market 条目与 `_market_to_page_key`
+  同步清空(修复旧残留)。
+- `test_unsubscribe_closes_orphaned_page`:孤儿页 → stop handler + `close_page("comp-<key>")` +
+  摘表(整个动作持 `_comp_pages_lock`);重复退订幂等不再关。
+- `test_oe_subscription_plan_from_instrument_pure` / `test_oe_update_and_remove_subscription_state_pure`:
+  订阅状态机纯函数(对齐 SE):plan 提取缺字段返 None、合成 no 腿优先 venue_selection_id、
+  写入幂等、移除返回孤儿 page_key 且两表同步清空。

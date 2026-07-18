@@ -33,9 +33,12 @@ class OpportunitySnapshot:
     instrument_ids: list = field(default_factory=list)
     order_books: dict = field(default_factory=dict)         # instrument_id → OrderBook 视图(builder 决定具体形态)
     positions: list = field(default_factory=list)           # 该 pair 所有腿的 cache Position 引用 / 拷贝
-    # slice 9(#49):比赛进行中标志,从 OE leg `instrument.info["in_play"]` 派生(OE WS 帧带 inPlay,
-    # 由 OE DataClient 写入 cache.instrument.info)。任一 OE leg in_play=True → pair in_play。
+    # 比赛进行中标志。#250:单源 `sports_state.live/ended`(旧 instrument.info["in_play"] 路径
+    # 已废除);无 sports state 时为 False(覆盖判定待新架构下重新实现)。
     in_play: bool = False
+    # #250:PMSPORTS 实时状态冻结视图(SportsGameStateStore 反序列化重建的 SportsGameUpdate;
+    # 无状态时 None)。只读;不是交易腿,不进 order_books/positions/instrument_constraints/候选 legs。
+    sports_state: object = None
     # slice 9(#49):per-instrument info 冻结副本(每 iid → cache.instrument.info dict 浅拷贝)。
     # Check/Action 经 snapshot 读 `selection_role` / 其他 matching key,**不直接调 cache**(decouple)。
     instrument_info: dict = field(default_factory=dict)
@@ -52,6 +55,7 @@ def build_snapshot(
     cache,
     portfolio,
     pair_registry,
+    sports_store=None,
 ) -> OpportunitySnapshot:
     """evaluator 开跑时调一次,返回 per-pair 快照。
 
@@ -72,8 +76,7 @@ def build_snapshot(
     # position.instrument_id 是 InstrumentId(live);经 str() 归一与 registry str id 比对。
     id_set = set(instrument_ids)
     positions = [p for p in cache.positions_open() if str(getattr(p, "instrument_id", None)) in id_set]
-    # in_play 派生 + instrument_info 冻结(slice 9 / #49)+ outcomes 派生(#228):一次遍历
-    in_play = False
+    # instrument_info 冻结(slice 9 / #49)+ outcomes 派生(#228):一次遍历
     instrument_info: dict = {}
     instrument_constraints: dict = {}
     for iid in instrument_ids:
@@ -81,8 +84,6 @@ def build_snapshot(
         info = getattr(inst, "info", None) if inst is not None else None
         if info:
             instrument_info[iid] = dict(info)  # 浅拷贝 freeze(后续 cache 写不影响)
-            if info.get("in_play"):
-                in_play = True
         else:
             instrument_info[iid] = {}
         instrument_constraints[iid] = {
@@ -91,6 +92,20 @@ def build_snapshot(
             "min_buy_notional": _object_value((info or {}).get("min_buy_notional")),
             "size_increment": _object_value(getattr(inst, "size_increment", None)),
         }
+    # #250:按腿 info["game_id"] 从 SportsGameStateStore 冻结实时状态(store.get 每次反序列化,
+    # 天然是本轮私有副本);in_play 单源 sports_state.live/ended,无状态即 False。
+    sports_state = None
+    if sports_store is not None:
+        game_id = next(
+            (info.get("game_id") for info in instrument_info.values() if info.get("game_id") is not None),
+            None,
+        )
+        if game_id is not None:
+            try:
+                sports_state = sports_store.get(game_id)
+            except Exception:  # noqa: BLE001 — store 读失败视为无状态,不挡评估
+                sports_state = None
+    in_play = sports_state is not None and bool(sports_state.live or sports_state.ended)
     return OpportunitySnapshot(
         pair_id=pair_id,
         instrument_ids=list(instrument_ids),
@@ -100,6 +115,7 @@ def build_snapshot(
         instrument_info=instrument_info,
         instrument_constraints=instrument_constraints,
         outcomes=["yes", "no"],
+        sports_state=sports_state,
     )
 
 

@@ -144,6 +144,79 @@ def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
     return max(valid, key=lambda item: item[0]) if highest else min(valid, key=lambda item: item[0])
 
 
+def oe_subscription_plan_from_instrument(inst) -> dict | None:
+    """OE instrument → 订阅状态写入计划(#251,对齐 SE `se_subscription_plan_from_instrument`)。
+
+    routing 必需 market_id/selection_id(缺任一 → None,调用方记 warning 跳过);
+    page_key 可缺(不建页映射)。selection 优先 `info["venue_selection_id"]`
+    (#228 合成 no 腿复用真实 venue selection)。
+    """
+    if inst is None:
+        return None
+    market_id = getattr(inst, "market_id", None)
+    info = getattr(inst, "info", None) or {}
+    selection_id = info.get("venue_selection_id")
+    if selection_id is None:
+        selection_id = getattr(inst, "selection_id", None)
+    if market_id is None or selection_id is None:
+        return None
+    sport_id = str(getattr(inst, "event_type_id", "") or "")
+    competition_id = str(getattr(inst, "competition_id", "") or "")
+    return {
+        "market_id": str(market_id),
+        "selection_id": str(selection_id),
+        "claim": str(info.get("quote_claim") or "yes").lower(),
+        # market → page_key(§6.8.3:`_on_price_frame` 廉价定位帧所属 competition 页;
+        # `_delayed_reopen` 据此判断页是否仍被订阅)
+        "page_key": f"{sport_id}_{competition_id}" if sport_id and competition_id else None,
+    }
+
+
+def oe_update_subscription_state(
+    *,
+    market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
+    market_to_page_key: dict[str, str],
+    instrument_id: InstrumentId,
+    plan: dict,
+) -> None:
+    """按 plan 写入订阅状态两表(幂等;对齐 SE `se_update_subscription_state`)。"""
+    entries = market_routing.setdefault(plan["market_id"], {}).setdefault(plan["selection_id"], [])
+    if not any(iid == instrument_id for iid, _ in entries):
+        entries.append((instrument_id, plan["claim"]))
+    if plan["page_key"] is not None:
+        market_to_page_key[plan["market_id"]] = plan["page_key"]
+
+
+def oe_remove_subscription_state(
+    *,
+    market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
+    market_to_page_key: dict[str, str],
+    instrument_id: InstrumentId,
+) -> list[str]:
+    """移除该 instrument 的订阅状态;返回因此失去全部 market 订阅的 page_key 列表(#251,供关页)。
+
+    同时清理空 market 条目与 `market_to_page_key` 映射(对齐 SE `se_remove_subscription_state`)。
+    """
+    removed_markets: list[str] = []
+    for market_id, sel_map in list(market_routing.items()):
+        for sel_key, entries in list(sel_map.items()):
+            remaining = [(iid, c) for iid, c in entries if iid != instrument_id]
+            if remaining:
+                sel_map[sel_key] = remaining
+            else:
+                del sel_map[sel_key]
+        if not sel_map:
+            del market_routing[market_id]
+            removed_markets.append(market_id)
+    orphaned: list[str] = []
+    for market_id in removed_markets:
+        page_key = market_to_page_key.pop(market_id, None)
+        if page_key is not None and page_key not in orphaned:
+            orphaned.append(page_key)
+    active_page_keys = set(market_to_page_key.values())
+    return [pk for pk in orphaned if pk not in active_page_keys]
+
+
 class OrbitExchDataClient(LiveMarketDataClient):
     def __init__(
         self,
@@ -255,8 +328,26 @@ class OrbitExchDataClient(LiveMarketDataClient):
         await self._ensure_competition_page(command.instrument_id)
 
     async def _unsubscribe_order_book_deltas(self, command) -> None:
-        # #68:关页 = 保持打开(对齐老 odds_client;competition 数有界,空页成本可接受)。
-        self._unregister_instrument_routing(command.instrument_id)
+        # #251:退订对称关页 —— 该 competition 页无任何剩余 market 订阅时关闭
+        # (#68"保持打开"废除;#250 eviction 驱动真实退订后,空页 = Chromium tab + 价格 WS 泄漏)。
+        for page_key in self._unregister_instrument_routing(command.instrument_id):
+            await self._close_competition_page(page_key)
+
+    async def _close_competition_page(self, page_key: str) -> None:
+        """关闭失去全部 market 订阅的 competition 页。**整个动作持 `_comp_pages_lock`**:
+        摘表使 `_on_comp_disconnect` no-op(不触发 reload);关闭完成前锁住同 competition
+        的再订阅开页,防"摘表后-关闭前"窗口内同名新页与旧页关闭交错(#251)。"""
+        async with self._comp_pages_lock:
+            page = self._comp_pages.pop(page_key, None)
+            handler = self._comp_handlers.pop(page_key, None)
+            if page is None and handler is None:
+                return
+            if handler is not None:
+                with suppress(Exception):
+                    await handler.stop()
+            with suppress(Exception):
+                await self._browser_manager.close_page(f"comp-{page_key}")
+        self._log.info(f"OE competition page closed (no remaining subscriptions): {page_key}")
 
     # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
     async def _ensure_competition_page(self, instrument_id: InstrumentId) -> None:
@@ -353,36 +444,28 @@ class OrbitExchDataClient(LiveMarketDataClient):
         return f"ws_count={len(active)}, ws_types={counts}"
 
     def _register_instrument_routing(self, instrument_id: InstrumentId) -> None:
+        # #251:状态机抽为模块级纯函数(对齐 SE);client 只留 cache 读取与 warning。
         inst = self._cache.instrument(instrument_id)
         if inst is None:
             self._log.warning(f"OE subscribe: instrument {instrument_id} not in cache; skip")
             return
-        market_id = getattr(inst, "market_id", None)
-        info = getattr(inst, "info", None) or {}
-        selection_id = info.get("venue_selection_id")
-        if selection_id is None:
-            selection_id = getattr(inst, "selection_id", None)
-        if market_id is None or selection_id is None:
+        plan = oe_subscription_plan_from_instrument(inst)
+        if plan is None:
             self._log.warning(f"OE subscribe: {instrument_id} missing market_id/selection_id; skip")
             return
-        claim = str(info.get("quote_claim") or "yes").lower()
-        entries = self._market_to_instruments.setdefault(str(market_id), {}).setdefault(str(selection_id), [])
-        if not any(iid == instrument_id for iid, _ in entries):
-            entries.append((instrument_id, claim))
-        # market → page_key(§6.8.3 时间维度:_on_price_frame 廉价定位帧所属 competition 页)
-        sport_id = str(getattr(inst, "event_type_id", "") or "")
-        competition_id = str(getattr(inst, "competition_id", "") or "")
-        if sport_id and competition_id:
-            self._market_to_page_key[str(market_id)] = f"{sport_id}_{competition_id}"
+        oe_update_subscription_state(
+            market_routing=self._market_to_instruments,
+            market_to_page_key=self._market_to_page_key,
+            instrument_id=instrument_id,
+            plan=plan,
+        )
 
-    def _unregister_instrument_routing(self, instrument_id: InstrumentId) -> None:
-        for sel_map in list(self._market_to_instruments.values()):
-            for sel_key, entries in list(sel_map.items()):
-                remaining = [(iid, c) for iid, c in entries if iid != instrument_id]
-                if remaining:
-                    sel_map[sel_key] = remaining
-                else:
-                    del sel_map[sel_key]
+    def _unregister_instrument_routing(self, instrument_id: InstrumentId) -> list[str]:
+        return oe_remove_subscription_state(
+            market_routing=self._market_to_instruments,
+            market_to_page_key=self._market_to_page_key,
+            instrument_id=instrument_id,
+        )
 
     # ── #109:WS handler on_disconnect(close 或心跳超时)→ reload(对称 PM `_schedule_delayed_connect`)──
     def _on_comp_disconnect(self, page_key: str, reason: str) -> None:
@@ -429,15 +512,14 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 f"OE price frame routed: market_id={market_id}, runners={len(parsed.get('runners', []))}, "
                 f"subscribed_selections={len(routing)}",
             )
-        # slice 9(#49):透 marketDefinition.inPlay 到 instrument.info["in_play"]
-        in_play = bool(parsed.get("in_play", False))
         ts = self._clock.timestamp_ns()
         # #109:WS 存活由 handler 内部封装(心跳超时 + close → on_disconnect),此处不写任何存活锚。
+        # #250:instrument.info["in_play"] 写回已废除 —— 比赛状态归 PMSPORTS sports 管线
+        # (snapshot.sports_state),赔率帧只产出 OrderBookDeltas。
         for runner in parsed.get("runners", []):
             sel_id = str(runner.get("selection_id", ""))
             # #228:同一 selection 可有 yes + 合成 no 两条 instrument,同帧各发一份 deltas
             for instrument_id, claim in routing.get(sel_id, []):
-                write_inplay_to_instrument_info(self._cache, instrument_id, in_play)
                 deltas = oe_runner_to_book_deltas(instrument_id, runner, ts, claim=claim)
                 if deltas is not None:
                     self._price_deltas_published += 1
@@ -447,16 +529,3 @@ class OrbitExchDataClient(LiveMarketDataClient):
                             f"deltas={len(deltas.deltas)}",
                         )
                     self._handle_data(deltas)
-
-
-def write_inplay_to_instrument_info(cache, instrument_id, in_play: bool) -> None:
-    """slice 9(#49)module-level helper:把 inplay 写到 `cache.instrument.info["in_play"]`。
-
-    Strategy snapshot 派生 in_play 从这读(避走 SignalStore 二跳);PM-only 事件触发评估时
-    仍能读到 OE 最近一次写入值(`instrument.info` 是 cache-resident mutable dict)。
-
-    冷启动 / 路由表跟 cache 不同步(instrument 还没进 cache)→ 跳过 inplay 写,不 raise。
-    """
-    inst = cache.instrument(instrument_id)
-    if inst is not None and getattr(inst, "info", None) is not None:
-        inst.info["in_play"] = in_play

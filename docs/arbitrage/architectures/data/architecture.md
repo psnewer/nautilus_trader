@@ -129,7 +129,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
 - **页面注册表**:`_comp_pages: dict[page_key, Page]` + `_comp_handlers: dict[page_key, WS handler]`,每 competition 一组。
 - **周期发现容错(2026-06-29 overnight 修)**:`_update_instruments(interval)` 是 60min 级别的 instrument rediscovery,不是行情 WS 恢复路径。每轮 `provider.load_all_async()` / `initialize(reload=True)` 的普通异常只记录 warning 并等下一轮继续;只有 `CancelledError` 退出 task。否则一次 `ERR_NAME_NOT_RESOLVED` / `ERR_INTERNET_DISCONNECTED` 会让 NT `create_task` 记录 `Error running '_update_instruments'` 后整个周期发现永久停止。
 - **开页时机 = 订阅即开(eager)**:#61 的目的是"`MatchedPair`→订阅→策略拿真实赔率";赔率住 competition 页 WS,故订阅时立即开页,不推迟(老 odds_client 推迟到健康检查)。
-- **关页 = 保持打开**(对齐老 odds_client;competition 数量有界,空页成本可接受)。
+- **关页 = 退订归零对称关闭(#251,废除 #68"保持打开")**:`_unsubscribe_order_book_deltas` 清路由后,若该 competition 页已无任何剩余 market 订阅(`_market_to_page_key` 反查),**整个关闭动作持 `_comp_pages_lock`**:摘 `_comp_pages/_comp_handlers`(断开回调因此 no-op,不触发 reload)→ stop handler → `close_page`,关闭完成前锁住同 competition 的再订阅开页(防同名新页竞态)。#250 eviction 驱动真实退订后,空页 = Chromium tab + 价格 WS 泄漏,与 engine 侧归零回收(book/Store)对称。订阅状态机抽为模块级纯函数 `oe_subscription_plan_from_instrument` / `oe_update_subscription_state` / `oe_remove_subscription_state`(对齐 SE 风格,可单测;client 方法只留 cache 读取与 warning);remove 同步清空 market 条目与 `market_to_page_key`(旧实现残留导致 `_delayed_reopen` 的"已解订"判据永不生效,一并修复)。
 - **competition 页存活 = WS handler 自洽封装(#109,2026-06-16;#111 feed-specific 修正,2026-06-19,✅ 已落地代码 + 离线测 + 心跳已 live 验证 prices ~25s 空闲)**:**存活检测封装进 `OrbitExchWebSocketHandler`**(像 PM 把 ping-timeout 藏在 pyo3 WS client 里),DataClient 只收事件、对称 PM。**单一真理源 = 本节**;handler 是契约定义者,DataClient 是消费者(规则 3 主判据:单一自然归属 → 不单独成章)。
   - **handler 内部(契约定义者)**:可选传 `clock` / `loop` / `liveness_timeout_secs`(传了才开存活;**执行页 general WS 不传 → 行为不变**)与 `liveness_ws_type`(为空=任一 WS 非空帧刷新;指定=仅该 feed 刷新)。`_on_frame_received` 对命中 feed 的非空帧(含 SockJS 心跳 `'h'`)更新 `_last_frame_ns`(廉价);单个 **lazy self-rescheduling** NT clock alert 到期读它 —— 还活着(`now-last_frame<timeout`)就重排到 `last_frame+timeout`,死了(心跳停=静默死亡)fire `on_disconnect`。重排前必须先 `cancel_timer(name)` 再 `set_time_alert_ns(...)`,因为 LiveClock callback 执行期间同名 timer 仍占用 name。**prices WS close** 也 fire `on_disconnect`(干净关闭快路)。**零 per-frame timer churn**(每帧只写 ns,不碰 timer)。暴露 `on_disconnect(callback)`。
   - **DataClient(消费者,对称 PM)**:competition 页开 handler 时传 `liveness_ws_type="prices"`;因此只有 prices feed 的数据/心跳能证明盘口存活,`orders/general` 心跳不能掩盖 prices WS 未出现或不下发。开页时 `handler.on_disconnect(lambda pk=page_key: <schedule reload>)`;收到 → reload 该页(`_reload_comp_on_disconnect`,带 `_disconnecting` / `_comp_reloading` / `_COMP_RELOAD_COOLDOWN_SECS` 三重防护防自触发/关停/风暴)。**DataClient 无 HealthCheckLoop、无周期 scan、无自身 watchdog** —— 纯事件驱动(`on_disconnect` 事件 + 开页失败重试),与 PM `_schedule_delayed_connect` 对称。
@@ -229,6 +229,69 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 - **映射键 `game_id`** == gamma `event["gameId"]`(`arb_provider` 抽入 `info["game_id"]`,#60 实采证实双向对上);消费者经 game_id 查 pair。
 - 消费:**matching** `ended`→eviction(matching §4.4);**strategy** 经 `signal_collector` seam(strategy)。详见 refactor.md §5.9 / #60。
 
+#### 3.4.1 CustomData 状态管线(#250,已落地)
+
+旧 `SportsGameUpdate` 直接裸发 MessageBus,只有事件语义,没有像 NT 内置
+`OrderBookDeltas` 那样形成"最新状态在 Cache、事件只负责通知"的读模型。本架构**严格对标
+NT/OE 赔率链路**:消费者按键下发订阅命令 → client 持订阅注册表 → 未订阅帧在源头静默丢弃
+→ 命中帧归一后经 DataEngine 路由到 per-key topic。实现位于 `adapters/polymarket/sports.py`。
+
+**订阅模型:game_id 即订阅键。**
+
+```python
+sports_data_type(game_id)  # = DataType(SportsGameUpdate, metadata={"game_id": gid})
+#  → topic "data.SportsGameUpdate.game_id=<gid>"
+```
+
+- 每场比赛一个独立 DataType/topic。metadata 参与 DataType 身份(NT 泛型 SubscribeData 路径
+  唯一的参数槽;`instrument_id` 变体不可用 —— engine 转发去重按 DataType 键,忽略 instrument_id),
+  engine 因此**逐场转发** subscribe/unsubscribe → 兴趣记账直接复用 **NT client 基类原生
+  订阅注册表**(`subscribed_custom_data()`,engine 首订转发/归零退订时同步更新;
+  对标 OE `_market_to_instruments` 路由表),不另建集合。
+- **无 lifecycle/strategy 通道、无 PublishPolicy**:推送内容统一(完整 `SportsGameUpdate`),
+  消费者自选所用字段;字段级筛选属二级架构(`SportsGameDataFilter` seam 占位,未设计)。
+
+**数据面固定顺序**(`SportsGameDataProcessor.process`):
+
+1. **兴趣门控**:未订阅比赛整体丢弃,不存不推("定了就推,不定就不推")。
+2. filter seam(二级占位,默认全收)。
+3. **终态拒收**:Store 旧状态 `ended=True` 即终态,后续任何帧丢弃;ended 帧本身放行恰好一次
+   (eviction 依赖),覆盖退订命令异步生效前的小窗。
+4. **过期拒收**:`ts_event` 倒退整体丢弃,Store 不回退。
+5. **去重**:业务字段(除 `ts_event/ts_init`)与旧状态相同的重复帧只刷新 Cache 时戳,不发布。
+6. **先写 `SportsGameStateStore`**(key `pmsports:game:{gid}`,NT Cache 通用对象区,codec Store 私有)。
+7. 发布 `CustomData(sports_data_type(gid), update)` → DataEngine → per-game topic。
+
+**错误边界**:Store 写失败 → 不发布(记录 error,后续帧重试);publish 失败 → Cache 不回滚。
+
+**订阅生命周期与归零回收**:
+
+| 消费者 | 订阅时机 | 退订时机 |
+|---|---|---|
+| Matching | 发现扫描见 anchor(gid ∉ ended)逐场订 | `_evict_game` |
+| Strategy | `MatchedPair` 到达(gid 经 PairRegistry `game_id_for_pair`)| 收到 ended、扇出分发完毕后 |
+
+双侧退订汇合 → msgbus 订阅数归零 → engine 转发 unsubscribe → client `_unsubscribe`:
+移出兴趣集合(= 断该场"feed")+ **`store.delete(gid)` 回收 Store 条目**。Store 条目生命周期
+= 订阅生命周期;进程重启即清(纯内存)。
+
+**本轮 NT Cython 核心修补**(#250 定夺;升级合并时需保留):
+
+| 位置 | 修补 |
+|---|---|
+| `data/engine.pyx` `_handle_unsubscribe_data` | 修上游 bug:归零判断误用 `f"data.{DataType}"`(`__str__` 人类格式)查 msgbus,与 metadata topic 永不匹配 → 首个退订即转发 client。改用订阅侧同款 `get_custom_data_topic` topic 串,归零计数变真实 |
+| `data/engine.pyx` `_handle_unsubscribe_order_book` | 归零分支(断 client feed 后)新增 `cache.remove_order_book(iid)`:赔率 book 订阅归零即从 Cache 回收,不再留存陈旧值 |
+| `cache/cache.pyx(.pxd)` | 新增 `delete(key)`(通用对象区删除;database facade 无对应 API,仅内存)与 `remove_order_book(instrument_id)` |
+
+Strategy 侧配套:ended 分发完毕后除退订 sports 外,同时退订该场各 pair 腿的 OBD
+(自记 `game→iids` 映射,不依赖 PairRegistry 以免与 matching unregister 抢顺序)→ OBD
+订阅归零 → NT 收尾(断上游 feed、摘 managed book 维护 handler)+ **book 从 Cache 回收**。
+matching 概率校验 handoff 不受影响:三阶段交接(register → publish → 释放校验订阅)保证
+strategy 的订阅先于 matching 释放建立,校验 book 不会中途归零。
+
+**已接受残差**:订阅建立前到达的帧丢弃(matching 在发现扫描即订,窗口极小;PMS 重复推送可补);
+ended 的发布只有一次,无重复帧兜底(会话内 matching 订阅早于 WS 首帧,错过窗口不存在)。
+
 ---
 
 ## 4. 与横切的咬合
@@ -240,7 +303,6 @@ Gamma discovery,产出 `.PMSPORTS` non-tradable synthetic instruments 供 matchi
 | §4.3 OE 健康检查 | **历史设计已失效**:execution 页 reload 宿主已迁到 `OrbitExchExecutionClient`;本文件只保留 competition 页健康检查,见 execution §4.3bis |
 | 订阅去重 | NT `DataEngine` 引用计数自动,客户端不自管 |
 | **Q11.A Debug 行情掉包**(#39) | `Debug{PM,OE}DataClient`(`src/arbitrage/debug/data_clients.py`)子类化 `_handle_data`,按 `DebugConfig.mock_data(ODDS)` 替换 / 注入;两 factory 读 `ArbContext.debug_config`,`enabled` → 装 Debug 子类,否则装生产。框架只提供 `_maybe_substitute(data) → data|None` 钩子(默认 passthrough),具体替换算法由 user 按 mock_data schema 子类化覆盖。详见 `_cross-cutting/debug-injection.md` |
-| **#49 OE 透 inPlay 到 instrument.info**(slice 9) | `OrbitExchDataClient._on_price_frame` 解析 `marketDefinition.inPlay` 后调 module 级 `write_inplay_to_instrument_info(cache, iid, in_play)` → 写 `cache.instrument(iid).info["in_play"]`(NT cache-resident mutable dict)。Strategy `OpportunitySnapshot` 派生 in_play 从这读,**避走 SignalStore 二跳**;PM-only 事件触发评估时仍能读到 OE 最近一次写入值。Helper 防御:instrument 不在 cache → 跳过不 raise(冷启动场景)。详见 `architectures/strategy/architecture.md §3.8` |
 | **#51 OE DataClient `_connect` 自管 BrowserManager**(slice 10c smoke 修) | 原设计注释"factory 层先调 `start()`",实际 factory 未接;**slice 10c 改 DataClient `_connect` 自管 `await self._browser_manager.start()`(幂等)+ `self._browser_manager.create_page("data")`**(原 bug:用 `get_page` — 只读,首次连返 None → `.goto` AttributeError)。共享 BrowserManager 仍由 OE Data/Exec/Discovery 三方使用;`start()` 幂等保护重复触发。 |
 
 ---

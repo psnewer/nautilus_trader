@@ -885,7 +885,7 @@ def test_market_price_message_to_book_deltas_keeps_frame_metadata_when_no_deltas
     assert out["deltas"] == []
 
 
-def test_publish_routed_book_deltas_publishes_and_writes_in_play():
+def test_publish_routed_book_deltas_publishes():
     message = {
         "id": "1.259502313",
         "marketDefinition": {"inPlay": True},
@@ -900,31 +900,18 @@ def test_publish_routed_book_deltas_publishes_and_writes_in_play():
         ts_init_ns=1000,
     )
     published = []
-    in_play_writes = []
 
-    count = se_publish_routed_book_deltas(
-        routed,
-        published.append,
-        write_in_play=lambda instrument_id, in_play: in_play_writes.append((instrument_id, in_play)),
-    )
+    count = se_publish_routed_book_deltas(routed, published.append)
 
     assert count == 2
     assert [item.instrument_id for item in published] == [_iid(), _iid_away()]
-    assert in_play_writes == [(_iid(), True), (_iid_away(), True)]
 
 
 def test_publish_routed_book_deltas_handles_empty_payloads():
     published = []
-    in_play_writes = []
     assert se_publish_routed_book_deltas(None, published.append) == 0
     assert se_publish_routed_book_deltas({"deltas": [], "in_play": True}, published.append) == 0
-    assert se_publish_routed_book_deltas(
-        {"deltas": [], "in_play": True},
-        published.append,
-        write_in_play=lambda instrument_id, in_play: in_play_writes.append((instrument_id, in_play)),
-    ) == 0
     assert published == []
-    assert in_play_writes == []
 
 
 def test_handle_price_frame_routes_publishes_and_returns_summary():
@@ -937,21 +924,18 @@ def test_handle_price_frame_routes_publishes_and_returns_summary():
         ],
     }
     published = []
-    in_play_writes = []
 
     out = se_handle_price_frame(
         message,
         {"1.259502313": {"111": [(_iid(), "yes")], "222": [(_iid_away(), "yes")]}},
         1000,
         published.append,
-        write_in_play=lambda instrument_id, in_play: in_play_writes.append((instrument_id, in_play)),
     )
 
     assert out["market_id"] == "1.259502313"
     assert out["published_count"] == 2
     assert out["subscribed_selections"] == 2
     assert [item.instrument_id for item in published] == [_iid(), _iid_away()]
-    assert in_play_writes == [(_iid(), True), (_iid_away(), True)]
 
 
 def test_handle_price_frame_returns_none_for_unrouted_frame():

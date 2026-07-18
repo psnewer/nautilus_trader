@@ -150,12 +150,31 @@ class SharpExchDataClient(LiveMarketDataClient):
             )
 
     async def _unsubscribe_order_book_deltas(self, command) -> None:
-        se_remove_subscription_state(
+        # #251:退订对称关页 —— 该 competition 页无任何剩余 market 订阅时关闭(对齐 OE)。
+        orphaned = se_remove_subscription_state(
             market_routing=self._market_to_instruments,
             market_to_page_key=self._market_to_page_key,
             comp_page_refs=self._comp_page_refs,
             instrument_id=command.instrument_id,
         )
+        for page_key in orphaned:
+            await self._close_competition_page(page_key)
+
+    async def _close_competition_page(self, page_key: str) -> None:
+        """关闭失去全部 market 订阅的 competition 页。**整个动作持 `_comp_pages_lock`**:
+        摘表使断开回调 no-op;关闭完成前锁住同 competition 的再订阅开页,
+        防"摘表后-关闭前"窗口内同名新页与旧页关闭交错(#251,与 OE 对称)。"""
+        async with self._comp_pages_lock:
+            page = self._comp_pages.pop(page_key, None)
+            handler = self._comp_handlers.pop(page_key, None)
+            if page is None and handler is None:
+                return
+            if handler is not None:
+                with suppress(Exception):
+                    await handler.stop()
+            with suppress(Exception):
+                await self._browser_manager.close_page(f"comp-{page_key}")
+        self._log.info(f"SE competition page closed (no remaining subscriptions): {page_key}")
 
     async def _open_or_reload_competition_page(
         self,
@@ -188,7 +207,6 @@ class SharpExchDataClient(LiveMarketDataClient):
             self._market_to_instruments,
             self._clock.timestamp_ns(),
             self._handle_data,
-            write_in_play=self._write_in_play_to_instrument_info,
         )
         if out is None:
             return
@@ -269,12 +287,6 @@ class SharpExchDataClient(LiveMarketDataClient):
 
     def _schedule_task(self, coro) -> None:
         self._loop.create_task(coro)
-
-    def _write_in_play_to_instrument_info(self, instrument_id: InstrumentId, in_play: bool) -> None:
-        inst = self._cache.instrument(instrument_id)
-        if inst is not None and getattr(inst, "info", None) is not None:
-            inst.info["in_play"] = in_play
-
 
 def se_should_reload_on_disconnect(
     *,
@@ -410,8 +422,8 @@ def se_remove_subscription_state(
     market_to_page_key: dict[str, str],
     comp_page_refs: dict[str, tuple[str, str]],
     instrument_id: InstrumentId,
-) -> None:
-    """移除 SE instrument 的订阅状态。"""
+) -> list[str]:
+    """移除 SE instrument 的订阅状态;返回因此失去全部 market 引用的 page_key 列表(#251,供关页)。"""
 
     removed_markets: list[str] = []
     for market_id, selection_map in list(market_routing.items()):
@@ -428,13 +440,16 @@ def se_remove_subscription_state(
     removed_page_keys = []
     for market_id in removed_markets:
         page_key = market_to_page_key.pop(market_id, None)
-        if page_key is not None:
+        if page_key is not None and page_key not in removed_page_keys:
             removed_page_keys.append(page_key)
 
+    orphaned: list[str] = []
     active_page_keys = set(market_to_page_key.values())
     for page_key in removed_page_keys:
         if page_key not in active_page_keys:
             comp_page_refs.pop(page_key, None)
+            orphaned.append(page_key)
+    return orphaned
 
 
 def se_competition_page_ref_from_instrument(inst) -> tuple[str, str, str] | None:
@@ -756,22 +771,17 @@ def se_market_price_message_to_book_deltas(
 def se_publish_routed_book_deltas(
     routed_payload: dict | None,
     publish: Callable,
-    *,
-    write_in_play: Callable | None = None,
 ) -> int:
     """发布 `se_market_price_message_to_book_deltas` 的 routed payload。
 
     返回实际发布的 `OrderBookDeltas` 数量。
+    #250:instrument.info["in_play"] 写回已废除(比赛状态归 PMSPORTS sports 管线)。
     """
 
     if not routed_payload:
         return 0
-    in_play = bool(routed_payload.get("in_play", False))
     count = 0
     for deltas in routed_payload.get("deltas") or []:
-        instrument_id = getattr(deltas, "instrument_id", None)
-        if write_in_play is not None and instrument_id is not None:
-            write_in_play(instrument_id, in_play)
         publish(deltas)
         count += 1
     return count
@@ -783,7 +793,6 @@ def se_handle_price_frame(
     ts_init_ns: int,
     publish: Callable,
     *,
-    write_in_play: Callable | None = None,
     price_precision: int = 2,
     size_precision: int = 2,
 ) -> dict | None:
@@ -801,7 +810,6 @@ def se_handle_price_frame(
     published_count = se_publish_routed_book_deltas(
         routed,
         publish,
-        write_in_play=write_in_play,
     )
     return {**routed, "published_count": published_count}
 

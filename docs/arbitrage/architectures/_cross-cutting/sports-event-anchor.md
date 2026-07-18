@@ -5,7 +5,7 @@
 > anchor/tradable 分离、MatchedPair 新字段、Strategy OBD/snapshot 隔离、MatchingActor
 > PMSPORTS anchor 聚合、ended eviction、launcher/config 独立 data source enablement 已落地并有离线测试;
 > target competitions 默认复用 `discovery.polymarket.sports`;`data_sources.sports_status.sports`
-> 仅作为可选覆盖。
+> 仅作为可选覆盖。#250:CustomData 状态管线 + per-game 订阅 + 归零回收已落地(game_id 即订阅键与路由键)。
 > **归属判据**:该机制同时约束 PMSPORTS data source、matching、PairRegistry、Strategy 输入边界与
 > launcher/config,没有单一组件能完整拥有不变量,按 P11 放在横切章节。
 
@@ -46,6 +46,8 @@
 | PairRegistry 区分 anchor 与 tradable | 下游从 pair 查 instruments 时必须能只取 tradable ids |
 | Strategy 只消费 tradable ids | MatchedPair 触发 OBD 订阅与 snapshot 构造时跳过 anchor ids |
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
+| 实时状态先缓存后发布 | 最新 `SportsGameUpdate` 的真理源是 data 层 Store;事件只负责唤醒 consumer |
+| game_id 即订阅键 | 每场独立 per-game DataType/topic;matching(扫描订/evict 退)与 strategy(MatchedPair 订/ended 退)双侧退订汇合归零 → 回收 Store 条目与 OBD book(#250)|
 
 ---
 
@@ -106,12 +108,16 @@ account   = None
 2. Lifecycle:
    - 连接公开 `wss://sports-api.polymarket.com/ws` firehose。
    - 解析 `SportsGameUpdate`。
-   - publish 到 `data.SportsGameUpdate*`。
+   - **#250 已落地**:经 data architecture §3.4.1 的 StateStore/Processor,
+     兴趣门控(未订阅不存不推)→ 先写最新状态 → 发布到该场 per-game topic(旧裸 publish 与
+     lifecycle/strategy 双通道均已废除);字段级筛选属二级架构,未设计。
 
-3. 可选 interest filter:
-   - 第一版可继续全量 publish,由 matching consumer 侧过滤。
-   - 后续若要 publish 前过滤,filter 必须基于 discovery universe 的 `game_id`,
-     不能只基于已 matched pair,否则会漏掉 pair 尚未生成前到达的 `ended`。
+3. 数据准入与发布:
+   - data source 必须提供独立的准入 filter,选择哪些归一化数据允许进入 Store;具体筛选配置留后续设计。
+   - filter 不得只依赖已 matched pair,否则会漏掉 pair 尚未生成前到达的生命周期状态。
+   - 通过 filter 的有效数据先写 Cache;publish policy 再独立决定发布目标,可以返回空集合形成 cache-only。
+   - lifecycle 通道保留 matching 的 `ended` 可达性;strategy 通道只负责触发计算。完整接口与错误边界
+     只在 data architecture §3.4.1 定义,本文不复述。
 
 当前代码 `adapters/polymarket/sports.py` 已经是独立 client 形态。注册生命周期由
 `DATA_SOURCE_REGISTRY["sports_status"]` 与 `data_sources.sports_status.enabled` 控制,
@@ -218,6 +224,10 @@ anchor_ids_for_pair(pair_id)
 
 - `StrategyEvaluator._ensure_obd_subscribed` 只订阅 tradable ids。
 - `build_snapshot` 只收集 tradable ids。
+- #250(已落地):Strategy 在 MatchedPair 到达时按场 `subscribe_data`;收到事件后按
+  **`game_id`** 查当前注册的**全部** pair(PM-anchor 路径 pair 同样覆盖),逐 pair 调度评估;
+  ended 分发完毕后释放本场 sports + 各腿 OBD 订阅。事件只唤醒,
+  `OpportunitySnapshot.sports_state` 从 data 层 Store 冻结,不直接信事件 payload。
 - Check/Action 的 `ctx.scratch["legs"]` 只能包含 tradable venue。
 - `PlaceBetsAction` 若收到 `tradable=False` leg,必须拒绝/跳过并记录 error。
 - Risk required venues 从 `expected_legs` 推导时不会看到 `PMSPORTS`。
@@ -265,6 +275,8 @@ Venue Registry 仍只描述 trading venues。若需要 registry,新增 `DATA_SOU
 | MatchingActor 增 `anchor_venue="PMSPORTS"` 路径,用 PMSPORTS anchors 匹配 enabled tradable venues | 已落地 |
 | Eviction 从 `game_id -> pair_id` 继续工作,game_id 来源改为 anchor instrument | 已落地 |
 | launcher/config 将 PMSPORTS 注册从 PM descriptor 下移到 data source enablement | 已落地 |
+| SportsGameUpdate 最新状态 Store + per-game CustomData 订阅 + 归零回收 | 已落地(#250) |
+| Strategy 按 game_id 触发同场全部 pair,并从 Store 冻结 sports_state;ended 释放全部订阅 | 已落地(#250) |
 | PM/OE、PM/SE、OE/SE、PM/OE/SE skip smoke | 待第二阶段 smoke;OE/SE-only 离线注册/dispatcher 已可表达 |
 
 ---
@@ -281,6 +293,9 @@ Venue Registry 仍只描述 trading venues。若需要 registry,新增 `DATA_SOU
 - Strategy snapshot 不包含 `.PMSPORTS`。
 - Risk required venues 不包含 `PMSPORTS`。
 - Sports `ended` 能 unregister 以 PMSPORTS anchor 建出的 pair。
+- #250:未订阅比赛不存不推;发布的更新在 consumer handler 运行前已可从 Store 读取。
+- #250:同场 3-way 多个 pair 时,一次 sports update 触发全部注册 pair。
+- #250:双侧退订汇合归零 → Store 条目回收 + OBD book 回收;evict 后不重订。
 
 Smoke 验收:
 

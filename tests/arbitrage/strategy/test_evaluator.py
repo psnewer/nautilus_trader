@@ -575,3 +575,108 @@ def test_registered_executor_loop_used_without_running_loop():
 # ── eval.17 已删除(#108):strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)退役 ——
 # 执行页 reload 已迁 NT reconciliation,competition 页 reload 在另一张页、OE 下单 page.evaluate
 # 与焦点无关,不冲突。详见 synchronization §8.6 / refactor #108。
+
+
+# ── #250:PMSPORTS strategy channel 触发(game_id 扇出)─────────────────────
+def _sports_update(game_id=888, *, ts=1, live=True, ended=False):
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+
+    return SportsGameUpdate(
+        ts_event=ts, ts_init=ts, game_id=game_id, league="x", home_team="A", away_team="B",
+        status="InProgress", score="1-0", period="Q1", elapsed="", live=live, ended=ended,
+        finished_ts="",
+    )
+
+
+def test_sports_update_fans_out_to_all_registered_pairs_for_game():
+    """strategy-4.sports.2:同 game 注册多 pair(3-way 场景)→ 一次 strategy 事件全部调度。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
+    strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
+    strat_reg.register_pair("m2", _strategy(True, False, arb_action=a2))
+    store.view("m1").set_persistent("arb_on", True)
+    store.view("m2").set_persistent("arb_on", True)
+    pair_reg.register("m1", ["H1.PM", "H2.OE"], game_id=888)
+    pair_reg.register("m2", ["A1.PM", "A2.OE"], game_id=888)
+
+    actor.on_data(_sports_update(888))
+    _run(_drain(loop))
+
+    assert a1.calls == 1 and a2.calls == 1
+
+
+def test_sports_update_unregistered_game_is_noop():
+    """strategy-4.sports.3:Store 有状态但 PairRegistry 无 pair → 不创建评估 task,不报错。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    actor.on_data(_sports_update(999))
+    assert loop.tasks == []
+
+
+def test_sports_fanout_respects_pair_inflight_gate():
+    """strategy-4.sports.2 补:扇出各 pair 独立受 PairInFlightGate 约束,无 event 级全局锁。"""
+    from src.arbitrage.common.pair_inflight import PairInFlightGate
+
+    gate = PairInFlightGate()
+    actor, store, pair_reg, strat_reg, loop, _ = _harness(pair_inflight=gate)
+    a1, a2 = _RecordingAction("m1"), _RecordingAction("m2")
+    strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
+    strat_reg.register_pair("m2", _strategy(True, False, arb_action=a2))
+    store.view("m1").set_persistent("arb_on", True)
+    store.view("m2").set_persistent("arb_on", True)
+    pair_reg.register("m1", ["H1.PM"], game_id=888)
+    pair_reg.register("m2", ["A1.PM"], game_id=888)
+
+    assert gate.try_enter("m1")            # m1 已在飞
+    actor.on_data(_sports_update(888))
+    _run(_drain(loop))
+
+    assert a1.calls == 0 and a2.calls == 1
+
+
+def test_matched_pair_subscribes_per_game_topic_and_routes_events():
+    """strategy-4.sports.1:MatchedPair 到达 → 按场订阅;per-game topic 发布经 NT
+    路由到 on_data 并触发评估;不再依赖裸 `data.SportsGameUpdate*`。"""
+    from nautilus_trader.adapters.polymarket.sports import sports_data_type
+
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    action = _RecordingAction("m1")
+    strat_reg.register_pair("m1", _strategy(True, False, arb_action=action))
+    store.view("m1").set_persistent("arb_on", True)
+    pair_reg.register("m1", ["H1.PM"], game_id=888)   # matching 注册先于 MatchedPair 发布
+
+    actor.start()   # FSM → RUNNING(handle_data 门槛)+ on_start
+    actor.on_data(_mp("m1", tradable_instrument_ids=["H1.PM"]))   # → 订 game 888(自身也评估一次)
+    assert 888 in actor._sports_subscribed
+    _run(_drain(loop))
+    calls_after_mp = action.calls
+
+    actor.msgbus.publish(
+        topic=f"data.{sports_data_type(888).topic}",
+        msg=_sports_update(888),
+    )
+    _run(_drain(loop))
+
+    assert action.calls == calls_after_mp + 1      # sports 事件恰好触发一次评估
+
+
+def test_ended_releases_sports_and_obd_subscriptions():
+    """strategy-4.sports.6:ended 分发完毕后释放本场全部订阅(sports + 各腿 OBD)→
+    与 matching 侧退订汇合归零,触发 NT 收尾 + 内存回收。"""
+    actor, store, pair_reg, strat_reg, loop, _ = _harness()
+    a1 = _RecordingAction("m1")
+    strat_reg.register_pair("m1", _strategy(True, False, arb_action=a1))
+    store.view("m1").set_persistent("arb_on", True)
+    pair_reg.register("m1", ["H1.PM", "H2.OE"], game_id=888)
+
+    actor.start()
+    actor.on_data(_mp("m1", tradable_instrument_ids=["H1.PM", "H2.OE"]))
+    assert 888 in actor._sports_subscribed
+    assert actor._game_obd[888] == {"H1.PM", "H2.OE"}
+    assert actor._obd_subscribed == {"H1.PM", "H2.OE"}
+
+    actor.on_data(_sports_update(888, live=False, ended=True))
+    _run(_drain(loop))
+
+    assert 888 not in actor._sports_subscribed
+    assert 888 not in actor._game_obd
+    assert actor._obd_subscribed == set()           # 各腿 OBD 已退订(归零 → book 回收)

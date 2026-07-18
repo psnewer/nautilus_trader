@@ -30,7 +30,11 @@ from src.arbitrage.common.pair_registry import PairRegistry
 from src.arbitrage.common.control import TOPIC_ARBITRAGE_PARAMS
 from src.arbitrage.common.control import SetArbitrageParamsCommand
 from src.arbitrage.common.params import ArbitrageParams
+from nautilus_trader.adapters.polymarket.sports import SPORTS_CLIENT
+from nautilus_trader.adapters.polymarket.sports import SportsGameStateStore
 from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+from nautilus_trader.adapters.polymarket.sports import sports_data_type
+from nautilus_trader.model.identifiers import ClientId
 from src.arbitrage.matching.events import MatchedPair
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.condition import evaluate_tree
@@ -149,6 +153,9 @@ class StrategyEvaluator(Actor):
         self._log_evaluations = config.log_evaluations
         self._obd_subscribed: set[str] = set()  # slice 10e:已订 OBD 的 instrument_id(去重)
         self._pair_inflight = deps.pair_inflight  # §6.10 §7:per-pair 串行闸(None → 不串行)
+        self._sports_store = None                 # #250:SportsGameStateStore(lazy,注册后经 self.cache 建)
+        self._sports_subscribed: set[int] = set()  # #250:已订 sports 状态的 gameId
+        self._game_obd: dict[int, set[str]] = {}   # #250:gameId → 本 actor 订过的 OBD 腿(ended 全退)
 
     # ── 生命周期 ─────────────────────────────────────────────────────
     def register_executor(self, loop, executor) -> None:
@@ -164,13 +171,8 @@ class StrategyEvaluator(Actor):
             topic=f"data.{MatchedPair.__name__}*",
             handler=self.on_data,
         )
-        # #60:比分信号 —— 订 PM Sports `SportsGameUpdate`(firehose)→ on_data → `signal_collector`
-        # 消化进 SignalStore 供条件树用(collector 为用户域 slice 9;未设时 on_data 对其 no-op,
-        # _extract_evaluation_target 返 None 不触发评估)。兑现下方"比分/比赛开始信号接入点"。
-        self._msgbus.subscribe(
-            topic=f"data.{SportsGameUpdate.__name__}*",
-            handler=self.on_data,
-        )
+        # #250:sports 订阅按 game 粒度,在 MatchedPair 到达时逐场发起(`_ensure_sports_subscribed`),
+        # ended 分发完毕后退订;on_start 无全局 sports 订阅。
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
         # #108:strategy⊥健康检查互斥(`_hc_running` + `health_check.*`)已退役 —— 旧理由是"健康检查 reload
         # **执行页**会撞下单",但执行页 reload 已迁 NT reconciliation;剩余 competition 页 reload 在另一张页、
@@ -185,9 +187,14 @@ class StrategyEvaluator(Actor):
         if self._signal_collector is not None:
             self._signal_collector(data, self._signal_store)
         # 2. slice 10e:MatchedPair fire → per-iid 订阅 OBD,把真实赔率引进 cache(下游 snapshot 读)
+        #    #250:同时按场订阅 sports 状态 + 记录该场的 OBD 腿(ended 时全退)
         if isinstance(data, MatchedPair):
             self._ensure_obd_subscribed(data)
-        # 3. 路由评估
+            self._ensure_sports_subscribed(data)
+        # 3. 路由评估(#250:sports 事件按 game_id 扇出全部注册 pair;其余单 pair 路由)
+        if isinstance(data, SportsGameUpdate):
+            self._route_eval_sports(data)
+            return
         self._route_eval(data)
 
     def on_order_book_deltas(self, deltas) -> None:
@@ -199,6 +206,70 @@ class StrategyEvaluator(Actor):
         if target is None:
             return
         pair_id, sport, competition = target
+        self._dispatch_eval(pair_id, sport, competition, event_name=type(data).__name__)
+
+    def _route_eval_sports(self, update: SportsGameUpdate) -> None:
+        """#250:sports 事件只负责唤醒+定位 —— `game_id` 反查全部已注册 pair,
+        按确定性顺序逐 pair 调度(各自受 PairInFlightGate 约束,无 event 级全局锁);
+        未注册 game no-op。状态由 `build_snapshot` 从 Store 冻结,不直接信事件 payload。
+        ended:分发完毕后释放本场全部订阅(sports + 各 pair 腿 OBD)→ 归零回收。"""
+        for pair_id in sorted(self._pair_registry.pair_ids_for_game(update.game_id)):
+            sport, competition = self._pair_scope(pair_id)
+            self._dispatch_eval(pair_id, sport, competition, event_name=type(update).__name__)
+        if update.ended:
+            self._release_game_subscriptions(update.game_id)
+
+    def _ensure_sports_subscribed(self, mp: MatchedPair) -> None:
+        """#250:MatchedPair 到达时订该 pair 所属场的 sports 状态,并记录该场的 OBD 腿。
+
+        gid 经 PairRegistry 反查(matching 注册先于发布,同步时序安全);无 gid 的 pair
+        (无 sports 覆盖的赛事)静默跳过,该类 pair 的 snapshot.in_play 保持 False。
+        """
+        gid = self._pair_registry.game_id_for_pair(mp.pair_id)
+        if gid is None:
+            return
+        self._game_obd.setdefault(gid, set()).update(mp.tradable_instrument_ids)
+        if gid in self._sports_subscribed:
+            return
+        self._sports_subscribed.add(gid)
+        try:
+            self.subscribe_data(sports_data_type(gid), client_id=ClientId(SPORTS_CLIENT))
+        except Exception as e:  # noqa: BLE001 — 订阅失败不挡 OBD 主链路;同场下个 MatchedPair 重试
+            self._sports_subscribed.discard(gid)
+            self._log.warning(f"sports subscribe game {gid} failed: {e!r}")
+
+    def _release_game_subscriptions(self, game_id: int) -> None:
+        """#250:比赛终局 —— 退订本场 sports 与各 pair 腿 OBD(与 matching 侧退订汇合后
+        归零,NT 收尾 + 内存回收:sports Store 条目、OBD managed book)。"""
+        from nautilus_trader.model.identifiers import InstrumentId
+
+        if game_id in self._sports_subscribed:
+            self._sports_subscribed.discard(game_id)
+            try:
+                self.unsubscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
+            except Exception as e:  # noqa: BLE001
+                self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
+        for iid_str in sorted(self._game_obd.pop(game_id, set())):
+            if iid_str not in self._obd_subscribed:
+                continue
+            self._obd_subscribed.discard(iid_str)
+            try:
+                self.unsubscribe_order_book_deltas(InstrumentId.from_str(iid_str))
+            except Exception as e:  # noqa: BLE001 — 单腿退订失败不挡其它
+                self._log.warning(f"OBD unsubscribe {iid_str} failed: {e!r}")
+
+    def _pair_scope(self, pair_id: str) -> tuple[str | None, str | None]:
+        """从该 pair 任一腿的 instrument.info 解析 (sport, competition)(策略 scope 查找用)。"""
+        from nautilus_trader.model.identifiers import InstrumentId
+
+        for iid_str in sorted(self._pair_registry.instrument_ids_for_pair(pair_id)):
+            inst = self.cache.instrument(InstrumentId.from_str(iid_str))
+            info = getattr(inst, "info", None) if inst is not None else None
+            if info and (info.get("sport") or info.get("competition")):
+                return info.get("sport"), info.get("competition")
+        return None, None
+
+    def _dispatch_eval(self, pair_id: str, sport, competition, *, event_name: str) -> None:
         # scope-priority 查策略(挂载存在锁定,Q21-a)
         strategy = self._strategy_registry.get_for(pair_id, competition, sport)
         if strategy is None:
@@ -209,10 +280,9 @@ class StrategyEvaluator(Actor):
                 )
             return
         if self._log_evaluations:
-            event_type = type(data).__name__
             self._log.info(
                 f"Strategy evaluate scheduled: pair_id={pair_id}, sport={sport}, "
-                f"competition={competition}, event={event_type}",
+                f"competition={competition}, event={event_name}",
             )
         # §6.10 §7:per-pair 串行 —— 同步 acquire(`create_task` 前,首个 await 前)。
         # 同 pair 已在飞(评估中/执行中)→ 直接放弃,不派发评估。单 loop 串行保证同突发后到的评估立刻看到。
@@ -257,6 +327,7 @@ class StrategyEvaluator(Actor):
             # Q20:取一次 snapshot,整轮评估 + Action 决策用同一份(safety gate 走 live)
             snapshot = build_snapshot(
                 pair_id, cache=self.cache, portfolio=self._portfolio, pair_registry=self._pair_registry,
+                sports_store=self._get_sports_store(),
             )
             store = self._signal_store.view(pair_id)
             store.set_transient("pre_match", not bool(getattr(snapshot, "in_play", False)))
@@ -304,6 +375,15 @@ class StrategyEvaluator(Actor):
         finally:
             if not fired and self._pair_inflight is not None:
                 self._pair_inflight.release_eval(pair_id)
+
+    def _get_sports_store(self):
+        """#250:lazy 建 SportsGameStateStore(注册后 self.cache 可用;失败返 None → snapshot 无 sports_state,in_play=False)。"""
+        if self._sports_store is None:
+            try:
+                self._sports_store = SportsGameStateStore(self.cache)
+            except Exception:  # noqa: BLE001 — 未注册 harness 无 cache
+                return None
+        return self._sports_store
 
     def _create_task(self, coro):
         """把 coroutine 投递到 NT kernel 为 Actor 注册的运行 loop。

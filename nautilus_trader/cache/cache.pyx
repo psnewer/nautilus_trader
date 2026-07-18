@@ -1612,6 +1612,23 @@ cdef class Cache(CacheFacade):
         if self._database is not None:
             self._database.add(key, value)
 
+    cpdef void delete(self, str key):
+        """
+        Delete the given general object from the cache (no-op if the key is absent).
+
+        In-memory only: the general-object database facade has no delete API,
+        so any persisted copy is not removed.
+
+        Parameters
+        ----------
+        key : str
+            The cache key of the object to delete.
+
+        """
+        Condition.not_none(key, "key")
+
+        self._general.pop(key, None)
+
     cpdef void add_order_book(self, OrderBook order_book):
         """
         Add the given order book to the cache.
@@ -1625,6 +1642,24 @@ cdef class Cache(CacheFacade):
         Condition.not_none(order_book, "order_book")
 
         self._order_books[order_book.instrument_id] = order_book
+
+    cpdef void remove_order_book(self, InstrumentId instrument_id):
+        """
+        Remove the order book for the given instrument ID from the cache
+        (no-op if absent).
+
+        Called by the ``DataEngine`` when an order book subscription count
+        reaches zero, so the reclaimed book is not left stale in the cache.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID of the order book to remove.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        self._order_books.pop(instrument_id, None)
 
     cpdef void add_own_order_book(self, own_order_book):
         """

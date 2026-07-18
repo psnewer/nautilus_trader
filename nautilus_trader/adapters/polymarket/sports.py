@@ -12,16 +12,20 @@ firehose 推所有活跃赛事状态(事件驱动、稀疏)。NT 原生 PM 适�
 本模块:
 - `SportsGameUpdate`:NT `@customdataclass` Data 事件(matching eviction + strategy 订阅)。
 - `parse_sport_result`:原始 `sport_result` dict → `SportsGameUpdate`(纯映射,可单测)。
+- **#250 状态管线**(严格对标 NT 内置数据链路,"Cache 是状态、事件是通知"):
+  `SportsGameStateStore`(最新状态真理源,物理存储 = NT Cache 通用对象区)+
+  `SportsGameDataFilter`(二级内容过滤 seam)+
+  `SportsGameDataProcessor`(固定顺序:兴趣门控 → 过滤 → 有效性 → 先写 Cache → 发布)。
 - `PolymarketSportsDataClient`:`LiveMarketDataClient` 子类,`_connect` 开 WS firehose →
-  `msgbus.publish` 裸发 `SportsGameUpdate` 到 `data.SportsGameUpdate*`(同 MatchedPair/
-  InstrumentsRefreshed 的 publish_data 风格)。**注**:`_handle_data` 走 DataEngine.process 只认
-  内置/CustomData,裸自定义 Data 报 "unrecognized type"(#60 smoke 抓);消费者用
-  `msgbus.subscribe("data.{Type}*")`(带 #58 的 `*` 通配)。
+  processor 处理;**game_id 即订阅键**,消费者按场
+  `subscribe_data(sports_data_type(game_id), client_id=PMSPORTS)`,发布走该场 per-game topic。
+  兴趣记账复用 NT 原生订阅注册表(engine 逐场转发命令);订阅归零时 `_unsubscribe` 回收
+  Store 条目。
 
 映射:`gameId` 与 gamma `event["gameId"]` 同值(本会话实采证实:wnba 13002300 双向对上,
-ATP 36 events 全有 gameId)→ 下游经 `info["game_id"]` 查 pair。
+ATP 36 events 全有 gameId)→ 下游经 `info["game_id"]` 查 pair(#250 路由键统一 game_id)。
 
-设计见 `refactor.md §5.9`。
+设计见 `refactor.md §5.9` / `docs/arbitrage/architectures/data/architecture.md §3.4.1`(#250)。
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.custom import customdataclass
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments.betting import null_handicap
@@ -321,14 +326,142 @@ def parse_sport_result(d: dict, *, ts: int) -> SportsGameUpdate | None:
     )
 
 
-class PolymarketSportsDataClient(LiveMarketDataClient):
-    """PM Sports WS firehose → publish `SportsGameUpdate`(#60)。
+# ── #250:CustomData 状态管线(设计 data §3.4.1)─────────────────────────────
 
-    无 instrument 订阅:`_connect` 即开 WS 流式收;消费者经 `subscribe_data(DataType(SportsGameUpdate))`。
+_STORE_KEY_PREFIX = "pmsports:game:"
+
+
+def sports_data_type(game_id) -> DataType:
+    """game_id → NT `DataType`(metadata 进 topic:`data.SportsGameUpdate.game_id=<gid>`)。
+
+    **game_id 即订阅键**:每场比赛一个独立 DataType/topic,消费者按场 `subscribe_data`。
+    metadata 参与 DataType 身份,engine 因此逐场转发 subscribe/unsubscribe,NT client 基类
+    原生记账(严格对标 OE 赔率链路的 routing 表)。无通道概念:推送内容统一,消费者自选所用。
+    """
+    return DataType(SportsGameUpdate, metadata={"game_id": int(game_id)})
+
+
+def game_id_of_data_type(data_type: DataType) -> int | None:
+    """从订阅命令的 DataType 反解 game_id;非本模型的 DataType 返 None。"""
+    if data_type.type is not SportsGameUpdate:
+        return None
+    gid = (data_type.metadata or {}).get("game_id")
+    try:
+        return int(gid)
+    except (TypeError, ValueError):
+        return None
+
+
+class SportsGameStateStore:
+    """最新赛事状态真理源(#250)。
+
+    物理存储 = NT Cache 通用对象区(`cache.add/get(key, bytes)`),key/codec 为 Store 私有,
+    调用方不得自行拼 key 或解释 bytes。写者:PMSPORTS processor(put)+ client 归零回收(delete)。
+    条目生命周期 = 订阅生命周期:该场订阅数归零时 client `_unsubscribe` 调 `delete`
+    真删除(依赖 #250 新增的 NT `Cache.delete` API);`ended=True` 条目在删除前充当终态标记。
+    """
+
+    def __init__(self, cache) -> None:
+        self._cache = cache
+
+    @staticmethod
+    def _key(game_id) -> str:
+        return f"{_STORE_KEY_PREFIX}{int(game_id)}"
+
+    def get(self, game_id) -> SportsGameUpdate | None:
+        raw = self._cache.get(self._key(game_id))
+        if not raw:
+            return None
+        return SportsGameUpdate.from_dict(json.loads(raw.decode("utf-8")))
+
+    def put(self, update: SportsGameUpdate) -> None:
+        raw = json.dumps(update.to_dict()).encode("utf-8")
+        self._cache.add(self._key(update.game_id), raw)
+
+    def delete(self, game_id) -> None:
+        self._cache.delete(self._key(game_id))
+
+
+class SportsGameDataFilter:
+    """附加内容过滤 seam(二级架构占位):决定已订阅比赛的更新是否进入 Store。默认全收。
+
+    主准入门是订阅本身(processor 的兴趣门控);具体字段级规则留后续设计。
+    """
+
+    def accepts(self, update: SportsGameUpdate) -> bool:
+        return True
+
+
+def _business_fields(update: SportsGameUpdate) -> dict[str, Any]:
+    d = update.to_dict()
+    d.pop("ts_event", None)
+    d.pop("ts_init", None)
+    return d
+
+
+class SportsGameDataProcessor:
+    """固定顺序:**兴趣门控(未订阅:不存不推)** → filter → 终态拒收 → 过期拒收 → 去重
+    → **先写 Store** → 发布到该场 per-game topic。
+
+    错误边界(data §3.4.1):Store 写失败 → 不发布(消费者不能被唤醒后读到旧状态);
+    publish 失败 → Cache 不回滚。去重:业务字段与旧状态完全相同的重复帧只刷新 Cache 时戳,
+    不发布。终态:ended 帧放行恰好一次(eviction 依赖),覆盖退订命令异步生效前的小窗。
+    """
+
+    def __init__(self, *, store, data_filter, is_subscribed, publish, log) -> None:
+        self._store = store
+        self._filter = data_filter
+        self._is_subscribed = is_subscribed   # callable(game_id) -> bool — client 兴趣集合
+        self._publish = publish               # callable(update) — client 注入
+        self._log = log
+
+    def process(self, update: SportsGameUpdate) -> None:
+        if not self._is_subscribed(update.game_id):
+            return   # 定了就推,不定就不推:未订阅比赛不存不推(对标 OE 未路由帧静默丢弃)
+        if not self._filter.accepts(update):
+            return
+        try:
+            previous = self._store.get(update.game_id)
+        except Exception as e:  # noqa: BLE001 — 旧值损坏不挡新状态写入
+            self._log.warning(f"sports store read game {update.game_id} failed: {e!r}; treat as absent")
+            previous = None
+        if previous is not None and previous.ended:
+            return   # 终态:ended 帧已放行过一次(eviction 依赖),后续该场所有帧准入层拒收
+        if previous is not None and update.ts_event < previous.ts_event:
+            return
+        duplicate = previous is not None and _business_fields(previous) == _business_fields(update)
+        try:
+            self._store.put(update)
+        except Exception as e:  # noqa: BLE001
+            self._log.error(f"sports store write game {update.game_id} failed: {e!r}; not published")
+            return
+        if duplicate:
+            return
+        try:
+            self._publish(update)
+        except Exception as e:  # noqa: BLE001 — Cache 已是新状态,不回滚
+            self._log.error(f"sports publish game {update.game_id} failed: {e!r}")
+
+
+class PolymarketSportsDataClient(LiveMarketDataClient):
+    """PM Sports WS firehose → #250 状态管线(兴趣门控 → 先写 Store → per-game 发布)。
+
+    无 instrument 订阅:`_connect` 即开 WS 流式收;消费者按场经
+    `subscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))`。
     服务端协议层 ping 由 websockets 自动回 pong;另兼容偶发 app-level text `"ping"`(回 `"pong"`)。
     """
 
-    def __init__(self, loop, msgbus, cache, clock, instrument_provider, config) -> None:
+    def __init__(
+        self,
+        loop,
+        msgbus,
+        cache,
+        clock,
+        instrument_provider,
+        config,
+        *,
+        data_filter: SportsGameDataFilter | None = None,
+    ) -> None:
         super().__init__(
             loop=loop,
             client_id=ClientId(SPORTS_CLIENT),
@@ -343,10 +476,17 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
         self._ws_url = getattr(config, "sports_ws_url", None) or SPORTS_WS_URL
         self._ws_task: asyncio.Task | None = None
         self._update_instruments_task: asyncio.Task | None = None
-        # publish_data 风格裸 publish:`_handle_data` 走 DataEngine.process 只认内置/CustomData,
-        # 裸自定义 Data 被拒("unrecognized type",#60 smoke 抓出)。消费者用 `msgbus.subscribe`
-        # 订 `data.{Type}*`,故生产者也裸 publish 到同 topic(同 MatchedPair/InstrumentsRefreshed)。
-        self._sports_topic = "data." + DataType(SportsGameUpdate).topic   # = "data.SportsGameUpdate*"
+        # #250:兴趣注册表直接复用 NT 原生订阅记账(client 基类 `_add_subscription` 同步维护,
+        # engine 首订转发/归零退订;归零时序依赖本轮 engine 归零判断修复)。
+        # 定了就推(先写 Store 再发布),不定不存不推。
+        self._sports_store = SportsGameStateStore(cache)
+        self._processor = SportsGameDataProcessor(
+            store=self._sports_store,
+            data_filter=data_filter or SportsGameDataFilter(),
+            is_subscribed=self._is_game_subscribed,
+            publish=self._publish_update,
+            log=self._log,
+        )
         self._first_frame_logged = False  # 一次性"feed 活着"确认日志(稀疏 firehose 运维可观测）
 
     async def _connect(self) -> None:
@@ -422,7 +562,35 @@ class PolymarketSportsDataClient(LiveMarketDataClient):
                         f"Sports feed live: first update {update.league}/{update.game_id} "
                         f"({update.home_team} vs {update.away_team}, live={update.live} ended={update.ended})",
                     )
-                self._msgbus.publish(topic=self._sports_topic, msg=update)
+                self._processor.process(update)
+
+    def _publish_update(self, update: SportsGameUpdate) -> None:
+        # CustomData 经 DataEngine 路由到该场 per-game topic(`data.SportsGameUpdate.game_id=<gid>`)。
+        self._handle_data(CustomData(sports_data_type(update.game_id), update))
+
+    # ── NT per-game 订阅(#250)──────────────────────────────────────
+    # 上游是无订阅 firehose,"断某场的 feed" = 订阅注册表移除(对标 OE 路由表)。
+    # 兴趣记账由 NT client 基类原生维护(`subscribed_custom_data()`,engine 首订转发/
+    # 归零退订时同步更新);`_subscribe/_unsubscribe` 只补日志与归零回收。
+    def _is_game_subscribed(self, game_id) -> bool:
+        return sports_data_type(game_id) in self.subscribed_custom_data()
+
+    async def _subscribe(self, command) -> None:
+        gid = game_id_of_data_type(command.data_type)
+        if gid is None:
+            self._log.warning(f"PMSPORTS ignoring subscribe for unsupported data type: {command.data_type}")
+            return
+        self._log.info(f"PMSPORTS game subscribed: {gid}")
+
+    async def _unsubscribe(self, command) -> None:
+        gid = game_id_of_data_type(command.data_type)
+        if gid is None:
+            return
+        try:
+            self._sports_store.delete(gid)
+        except Exception as e:  # noqa: BLE001 — 回收失败不影响退订本体
+            self._log.warning(f"PMSPORTS store reclaim for game {gid} failed: {e!r}")
+        self._log.info(f"PMSPORTS game unsubscribed (zero subscribers), store reclaimed: {gid}")
 
 
 def _parse_start_ts(date_str: str) -> int:

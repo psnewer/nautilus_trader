@@ -323,7 +323,7 @@ def test_delayed_reopen_failure_schedules_next_retry():
     scheduled[0].close()
 
 
-def test_on_price_frame_publishes_deltas_and_writes_in_play():
+def test_on_price_frame_publishes_deltas():
     client = _client()
     inst = _instrument("home")
     client._cache.add_instrument(inst)
@@ -347,7 +347,7 @@ def test_on_price_frame_publishes_deltas_and_writes_in_play():
 
     assert len(captured) == 1
     assert isinstance(captured[0], OrderBookDeltas)
-    assert inst.info["in_play"] is True
+    assert "in_play" not in inst.info      # #250:info["in_play"] 写回已废除
     assert client._price_frames_seen == 1
     assert client._price_deltas_published == 1
 
@@ -410,3 +410,36 @@ def test_reload_comp_on_disconnect_logs_and_clears_reloading_on_failure():
     client._loop.run_until_complete(client._reload_comp_on_disconnect("2_12597512"))
 
     assert client._comp_reloading == set()
+
+
+# ── #251:退订归零关 competition 页(对齐 OE)──────────────────────────────
+def test_unsubscribe_closes_orphaned_page():
+    """退订使页失去全部 market 引用 → stop handler + close_page + 摘表;同页仍有 market 时不关。"""
+    from unittest.mock import AsyncMock
+
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    client = _client()
+    iid1 = InstrumentId.from_str("A-1.SHARPEXCH")
+    iid2 = InstrumentId.from_str("B-1.SHARPEXCH")
+    client._market_to_instruments = {"m1": {"s1": [(iid1, "yes")]}, "m2": {"s2": [(iid2, "yes")]}}
+    client._market_to_page_key = {"m1": "2_200", "m2": "2_200"}
+    client._comp_page_refs = {"2_200": ("2", "200")}
+    handler = SimpleNamespace(stop=AsyncMock())
+    client._comp_pages["2_200"] = object()
+    client._comp_handlers["2_200"] = handler
+    client._browser_manager = SimpleNamespace(close_page=AsyncMock())
+
+    client._loop.run_until_complete(
+        client._unsubscribe_order_book_deltas(SimpleNamespace(instrument_id=iid1)),
+    )
+    assert client._comp_pages != {}                  # 页仍被 m2 引用,不关
+    handler.stop.assert_not_awaited()
+
+    client._loop.run_until_complete(
+        client._unsubscribe_order_book_deltas(SimpleNamespace(instrument_id=iid2)),
+    )
+    handler.stop.assert_awaited_once()
+    client._browser_manager.close_page.assert_awaited_once_with("comp-2_200")
+    assert client._comp_pages == {} and client._comp_handlers == {}
+    assert client._comp_page_refs == {}

@@ -91,6 +91,38 @@ def test_multiple_pairs_isolated():
     assert r.all_pair_ids() == {"p1", "p2"} and len(r) == 3
 
 
+# ── #250:game_id → pair_ids 多值反查(strategy 事件扇出路由键)──────────
+def test_pair_ids_for_game_multi_value_and_unregister():
+    """matching-3.sports.3:同 game 注册 home/draw/away 三 pair → 反查三项;
+    unregister 一个 → 剩余两项;未知 game → 空集合。"""
+    r = PairRegistry()
+    r.register("p_home", ["H1.PM", "H2.OE"], game_id=888)
+    r.register("p_draw", ["D1.PM", "D2.OE"], game_id=888)
+    r.register("p_away", ["A1.PM", "A2.OE"], game_id=888)
+    assert r.pair_ids_for_game(888) == {"p_home", "p_draw", "p_away"}
+
+    assert r.game_id_for_pair("p_home") == 888      #strategy 反查订阅键
+    assert r.game_id_for_pair("unknown") is None
+
+    r.unregister_pair("p_draw")
+    assert r.pair_ids_for_game(888) == {"p_home", "p_away"}
+    assert r.game_id_for_pair("p_draw") is None
+    assert r.pair_ids_for_game(999) == set()
+    assert r.pair_ids_for_game(None) == set()
+
+
+def test_pair_ids_for_game_reregister_moves_mapping():
+    """re-register 换 game(罕见重匹配)→ 旧 game 反查不再包含该 pair。"""
+    r = PairRegistry()
+    r.register("p1", ["L1"], game_id=1)
+    r.register("p1", ["L1"], game_id=2)
+    assert r.pair_ids_for_game(1) == set()
+    assert r.pair_ids_for_game(2) == {"p1"}
+    # 无 game_id 的 register 清除映射(PM-anchor 早期 pair 无 gid 场景)
+    r.register("p1", ["L1"])
+    assert r.pair_ids_for_game(2) == set()
+
+
 # ── 控制台热改 refresh_interval(#119,方案乙 consumer)──────────────────
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.common.control import SetRefreshIntervalCommand

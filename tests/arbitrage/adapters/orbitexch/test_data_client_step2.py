@@ -617,3 +617,93 @@ def test_disconnect_cooldown_suppresses_storm():
     assert len(c._loop.tasks) == 1
     for t in c._loop.tasks:
         t.close()
+
+
+# ── #251:退订归零关 competition 页(#68"保持打开"废除)────────────────────
+def test_unregister_routing_returns_orphaned_page_key():
+    """同页两 market:退订第一个不孤儿;退订最后一个返回该 page_key,且路由/映射清空。"""
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    c = _client()
+    iid1 = InstrumentId.from_str("A-1.ORBITEXCH")
+    iid2 = InstrumentId.from_str("B-1.ORBITEXCH")
+    c._market_to_instruments = {"m1": {"s1": [(iid1, "yes")]}, "m2": {"s2": [(iid2, "yes")]}}
+    c._market_to_page_key = {"m1": "1_100", "m2": "1_100"}
+
+    assert c._unregister_instrument_routing(iid1) == []          # 页仍被 m2 引用
+    assert "m1" not in c._market_to_instruments and "m1" not in c._market_to_page_key
+
+    assert c._unregister_instrument_routing(iid2) == ["1_100"]   # 最后一个 market → 孤儿页
+    assert c._market_to_instruments == {} and c._market_to_page_key == {}
+
+
+def test_unsubscribe_closes_orphaned_page():
+    """退订使页失去全部 market 订阅 → stop handler + close_page + 摘表;再次退订 no-op。"""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    c = _client()
+    iid = InstrumentId.from_str("A-1.ORBITEXCH")
+    c._market_to_instruments = {"m1": {"s1": [(iid, "yes")]}}
+    c._market_to_page_key = {"m1": "1_100"}
+    handler = SimpleNamespace(stop=AsyncMock())
+    c._comp_pages["1_100"] = object()
+    c._comp_handlers["1_100"] = handler
+    c._browser_manager = SimpleNamespace(close_page=AsyncMock())
+
+    asyncio.run(c._unsubscribe_order_book_deltas(SimpleNamespace(instrument_id=iid)))
+
+    handler.stop.assert_awaited_once()
+    c._browser_manager.close_page.assert_awaited_once_with("comp-1_100")
+    assert c._comp_pages == {} and c._comp_handlers == {}
+
+    asyncio.run(c._unsubscribe_order_book_deltas(SimpleNamespace(instrument_id=iid)))  # 幂等
+    assert c._browser_manager.close_page.await_count == 1
+
+
+def test_oe_subscription_plan_from_instrument_pure():
+    """#251:订阅状态机纯函数(对齐 SE)—— plan 提取:缺 market/selection → None;
+    合成 no 腿优先 venue_selection_id;缺 sport/comp → page_key None。"""
+    from types import SimpleNamespace
+
+    from nautilus_trader.adapters.orbitexch.data import oe_subscription_plan_from_instrument
+
+    assert oe_subscription_plan_from_instrument(None) is None
+    assert oe_subscription_plan_from_instrument(
+        SimpleNamespace(market_id=None, info={}, selection_id=None),
+    ) is None
+
+    plan = oe_subscription_plan_from_instrument(SimpleNamespace(
+        market_id="1-123", info={"venue_selection_id": 42, "quote_claim": "NO"},
+        selection_id=99, event_type_id=1, competition_id=100,
+    ))
+    assert plan == {"market_id": "1-123", "selection_id": "42", "claim": "no", "page_key": "1_100"}
+
+    plan2 = oe_subscription_plan_from_instrument(SimpleNamespace(
+        market_id="1-123", info={}, selection_id=7, event_type_id="", competition_id="",
+    ))
+    assert plan2["selection_id"] == "7" and plan2["claim"] == "yes" and plan2["page_key"] is None
+
+
+def test_oe_update_and_remove_subscription_state_pure():
+    """#251:写入幂等(同 iid 不重复)+ 移除返回孤儿 page_key,两表同步清空。"""
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    from nautilus_trader.adapters.orbitexch.data import oe_remove_subscription_state
+    from nautilus_trader.adapters.orbitexch.data import oe_update_subscription_state
+
+    iid = InstrumentId.from_str("A-1.ORBITEXCH")
+    routing: dict = {}
+    pages: dict = {}
+    plan = {"market_id": "m1", "selection_id": "s1", "claim": "yes", "page_key": "1_100"}
+    oe_update_subscription_state(market_routing=routing, market_to_page_key=pages, instrument_id=iid, plan=plan)
+    oe_update_subscription_state(market_routing=routing, market_to_page_key=pages, instrument_id=iid, plan=plan)
+    assert routing == {"m1": {"s1": [(iid, "yes")]}} and pages == {"m1": "1_100"}
+
+    assert oe_remove_subscription_state(
+        market_routing=routing, market_to_page_key=pages, instrument_id=iid,
+    ) == ["1_100"]
+    assert routing == {} and pages == {}

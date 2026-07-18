@@ -1727,6 +1727,10 @@ cdef class DataEngine(Component):
                 if command.instrument_id in client.subscribed_order_book_depth():
                     client.unsubscribe_order_book_depth(command)
 
+            # Reclaim the cached book: nothing maintains or consumes it anymore,
+            # otherwise it would linger stale in the cache for the process lifetime
+            self._cache.remove_order_book(command.instrument_id)
+
         # Cancel any snapshot timers for this instrument that no longer have subscribers
         cdef:
             tuple[InstrumentId, int] key
@@ -1822,8 +1826,13 @@ cdef class DataEngine(Component):
     cpdef void _handle_unsubscribe_data(self, DataClient client, UnsubscribeData command):
         Condition.not_none(client, "client")
 
+        # Use the same topic string as the subscribe side (`get_custom_data_topic`);
+        # f-string formatting of `DataType` produced a repr that never matched
+        # metadata-based topics, so the zero-subscriber check always passed.
+        cdef str topic = self._topic_cache.get_custom_data_topic(command.data_type, command.instrument_id)
+
         try:
-            if not self._msgbus.has_subscribers(f"data.{command.data_type}"):
+            if not self._msgbus.has_subscribers(topic):
                 if command.data_type in client.subscribed_custom_data():
                     client.unsubscribe(command)
         except NotImplementedError:

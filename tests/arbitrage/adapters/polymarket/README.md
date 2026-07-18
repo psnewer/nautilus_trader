@@ -433,3 +433,41 @@ PM 部分**完全使用上游 NT 的适配器**(`nautilus_trader/adapters/polyma
 ## #234:PM BUY-only 最小金额
 
 - `test_parsing_min_size.py` 同时锁定市场 `minimum_order_size → BinaryOption.min_quantity` 与 `info["min_buy_notional"]=1.0`；`BinaryOption.min_notional` 保持 None，防止 SELL 被错误套用 1 USD 下限。
+
+## #250:PMSPORTS CustomData 状态管线(已落地,`test_sports.py`)
+
+### pm-adapter-sports.state.1:准入更新先写 Cache 再发布
+
+**用例**:`test_processor_writes_store_before_publish`。
+**期望/验收**:调用顺序严格为 `store.put` → publish;发布时 Store 已可读到本次完整状态。
+
+### pm-adapter-sports.state.2:兴趣门控(定了就推,不定就不推)
+
+**用例**:`test_processor_interest_gate_drops_unsubscribed_games`。
+**期望/验收**:未订阅比赛的帧不存不推;已订阅比赛正常入库并发布。
+
+### pm-adapter-sports.state.3:附加 filter 拒绝不污染 Cache
+
+**用例**:`test_processor_filter_reject_keeps_store`。
+**期望/验收**:Store 保持旧值,不发布(filter 为二级架构 seam,默认全收)。
+
+### pm-adapter-sports.state.4:Store 写失败禁止发布
+
+**用例**:`test_processor_store_write_failure_blocks_publish_and_retries`。
+**期望/验收**:不发布;下一条更新仍可重试成功。
+
+### pm-adapter-sports.state.5:per-game DataType/topic
+
+**用例**:`test_per_game_data_types_route_to_distinct_topics` +
+matching/strategy README 的接线用例(经 NT per-game topic 路由到 consumer)。
+**期望/验收**:每场独立 topic `SportsGameUpdate.game_id=<gid>`;metadata 参与 DataType 身份;
+`game_id_of_data_type` 正确反解;不再依赖裸 `data.SportsGameUpdate*` 与 channel 通道。
+
+### pm-adapter-sports.state.6:有效性规则与归零回收
+
+**用例**:`test_processor_duplicate_frame_refreshes_cache_without_publish` /
+`test_processor_stale_frame_dropped` / `test_processor_rejects_frames_after_ended_terminal_state` /
+`test_store_roundtrip_and_delete`。
+**期望/验收**:重复业务帧只刷时戳不发布;`ts_event` 倒退丢弃;ended 放行一次后该场帧全拒
+(终态,覆盖退订异步小窗);Store codec roundtrip 正确,`delete` 真删除
+(归零回收路径,依赖 #250 新增的 NT `Cache.delete`)。动态状态只存 Store,不写 `Instrument.info`。

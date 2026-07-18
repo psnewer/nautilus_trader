@@ -30,9 +30,12 @@ class PairRegistry:
         self._by_instrument: dict[Hashable, str] = {}
         # #228:anchor → pair_ids 多值(PMSPORTS 每场唯一锚在 3-way 拆出的多个 role pair 重复登记)
         self._by_anchor: dict[Hashable, set[str]] = {}
+        # #250:game_id → pair_ids 多值(PMSPORTS 实时状态事件按 game_id 扇出全部已注册 pair)
+        self._by_game: dict[int, set[str]] = {}
+        self._game_by_pair: dict[str, int] = {}
 
     # ── matching 写入侧 ──────────────────────────────────────────────
-    def register(self, pair_id: str, instrument_ids, *, anchor_instrument_ids=()) -> None:
+    def register(self, pair_id: str, instrument_ids, *, anchor_instrument_ids=(), game_id=None) -> None:
         """匹配成功后把该 pair 的可交易腿和 anchor instrument_id 映射到同一 pair_id。
 
         幂等:同 pair_id 再 register 时,新腿集合覆盖旧映射(也清理旧腿——若该腿不再属于
@@ -58,6 +61,12 @@ class PairRegistry:
         for iid in new_anchor_set:
             self._by_anchor.setdefault(iid, set()).add(pair_id)
 
+        self._unlink_game(pair_id)
+        if game_id is not None:
+            gid = int(game_id)
+            self._by_game.setdefault(gid, set()).add(pair_id)
+            self._game_by_pair[pair_id] = gid
+
     def unregister_pair(self, pair_id: str) -> None:
         """清除该 pair 所有腿映射(可选,主要给重匹配 / 测试用)。"""
         stale = [iid for iid, pid in self._by_instrument.items() if pid == pair_id]
@@ -67,6 +76,17 @@ class PairRegistry:
             pids.discard(pair_id)
             if not pids:
                 del self._by_anchor[iid]
+        self._unlink_game(pair_id)
+
+    def _unlink_game(self, pair_id: str) -> None:
+        gid = self._game_by_pair.pop(pair_id, None)
+        if gid is None:
+            return
+        pids = self._by_game.get(gid)
+        if pids is not None:
+            pids.discard(pair_id)
+            if not pids:
+                del self._by_game[gid]
 
     # ── consumers 读取侧 ─────────────────────────────────────────────
     def get(self, instrument_id: Hashable) -> str | None:
@@ -103,6 +123,23 @@ class PairRegistry:
     def anchor_ids_for_pair(self, pair_id: str) -> set[str]:
         """返回该 pair 当前注册的 anchor instrument_id 字符串。"""
         return {iid for iid, pids in self._by_anchor.items() if pair_id in pids}
+
+    def game_id_for_pair(self, pair_id: str) -> int | None:
+        """#250:pair → game_id(strategy 在 MatchedPair 到达时反查,发起该场 sports 订阅)。"""
+        return self._game_by_pair.get(pair_id)
+
+    def pair_ids_for_game(self, game_id) -> set[str]:
+        """#250:按 game_id 反查当前注册的全部 pair(3-way 同场多 pair 扇出;未知 game 返空集)。
+
+        路由键统一 game_id(非 anchor instrument_id):PM-anchor 路径注册的 pair 无 PMSPORTS
+        anchor,但腿 instrument 同样携带 `info["game_id"]`,按 game_id 才能全覆盖。
+        返回副本,调用方可安全迭代。
+        """
+        try:
+            gid = int(game_id)
+        except (TypeError, ValueError):
+            return set()
+        return set(self._by_game.get(gid, ()))
 
     def __len__(self) -> int:
         return len(self._by_instrument) + len(self._by_anchor)

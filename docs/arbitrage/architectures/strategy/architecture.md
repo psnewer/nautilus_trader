@@ -201,7 +201,7 @@ class StrategyEvaluator(Actor):
         # MatchedPair fire 后按 per-iid 订阅；概率校验通路按 matching 的 managed handoff 契约
         # 使用 managed=False，关闭校验时使用 managed=True 首次建立 book。
         # 只订 tradable_instrument_ids;PMSPORTS 等 non-tradable anchor 不订,旧 PM/OE 字段不作为 fallback。
-        # 外部事件(比分 / 比赛开始):自建 topic 或 custom Data type,具体接入点 Step 4 落地时定
+        # #250:SportsGameUpdate 按场经 NT subscribe_data 订阅,MatchedPair 时发起(§3.8.1)
 
     def on_data(self, data):
         # 1. SignalCollector 先消化 event → 写 SignalStore(可选)
@@ -254,7 +254,7 @@ strategy evaluate,默认 `False` 保持生产路径安静。
 
 | 类 | 接收 | 发布 |
 |---|---|---|
-| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / 外部事件 topics | `submit_order`(经 Action;走 RiskEngine 标准管道)|
+| `StrategyEvaluator` | `OrderBookDeltas` / `MatchedPair` / NT per-game `SportsGameUpdate` CustomData(#250) | `submit_order`(经 Action;走 RiskEngine 标准管道)|
 | `Action` 类 | (无订阅) | `submit_order` / `cancel_order`(NT 标准 client 接口)|
 
 ### 3.7 Check/Action 类型注册 + JSON loader(#44 slice 5)
@@ -299,10 +299,10 @@ Condition 树,Q21 框架的"参数 first-class"特性配合 registry 实现了�
 |---|---|---|---|
 | 同 condition 树内 Check→Action 传值 | mean_rebate 算的 legs | `EvalContext.scratch: dict` | **per-eval 自动**(每次 evaluate 新建 ctx)|
 | per-pair 持久态(跨 evaluate)| 真"持久信号"(外部输入 user_pause 等;**注**:`in_play` 不走这,见下)| `SignalStore.view(pair_id)` 子视图 | **per-pair**(内部 key 加 `.{pair_id}` 后缀)|
-| 派生自最新瞬时数据(每事件能从 cache 重读)| `in_play`(OE WS 帧带)| OE DataClient 写 `cache.instrument.info["in_play"]` + `build_snapshot` 派生 | **天然**(instrument.info 是 per-instrument mutable dict,cache-resident)|
+| 派生自最新瞬时数据(每事件能从 Store 重读)| `in_play`(PMS sports 状态)| PMSPORTS 管线写 `SportsGameStateStore` + `build_snapshot` 冻结派生(#250)| **天然**(Store 按 game_id 键,cache-resident)|
 
 **`OpportunitySnapshot` 新字段**:
-- `in_play: bool` — 任一 OE leg `instrument.info["in_play"]=True` → True
+- `in_play: bool` — `sports_state.live/ended` 为真 → True(#250 单源;无 sports state → False)
 - `instrument_info: dict[InstrumentId, dict]` — 各 leg `instrument.info` 浅拷贝冻结(Check/Action decouple from cache;直接读 `selection_role` 等 matching key)
 - `outcomes: list[str]`(#233)— 所有 binary pair 固定为 `["yes","no"]`。builder 自足,
   不依赖 evaluator 留存 MatchedPair 状态。`claim` 是经济 outcome；`selection_role` 只用于匹配/展示。
@@ -350,9 +350,42 @@ legs/candidates,不把未知敞口当成零继续下单。
 买到 111.11 share,rate=11.11%。`candi_select` 后续只看 share-limit 调整后的 candidate 内最大
 `share_if_wins`,不依赖 `target_role`。
 
-**OE DataClient `_on_price_frame` 透 inPlay**:每帧调 `write_inplay_to_instrument_info(cache, iid, in_play)` module 级 helper;helper 防御性 — instrument 不在 cache 不 raise(冷启动场景)。
+**来源(#250)**:`in_play` 单源 PMSPORTS sports 状态(data §3.4.1);OE/SE 赔率帧的
+`marketDefinition.inPlay` 写回 instrument.info 已删除。**已知边界**:无 sports 覆盖的 pair
+(腿无 game_id / Store 无状态)`in_play=False` → `pre_match` 恒 True,该类赛事的比赛状态
+判定待新架构下另行实现。
 
-**冷启动假阳性**:不存在 —— OE 赔率是 MeanRebateCheck 的硬前置(没 OE best_ask 算不出 prob),OE 赔率帧本身就携带 inplay → 赔率到 = in_play 到。同一时刻发生。
+#### 3.8.1 PMSPORTS 状态触发与快照(#250,已落地)
+
+状态生产、订阅模型、Cache key、归零回收与错误边界的单一真理源在
+`architectures/data/architecture.md §3.4.1`;本节只定义 Strategy 消费契约。
+
+接线:
+
+1. **按场订阅**:`MatchedPair` 到达时,gid 经 PairRegistry `game_id_for_pair(pair_id)` 反查
+   (matching 注册先于发布,同步时序安全),`subscribe_data(sports_data_type(gid),
+   client_id=PMSPORTS)`;同时自记 `game→OBD 腿` 映射。无 gid 的 pair 静默跳过(`in_play` 保持 False)。
+2. **`game_id` 是事件路由键**:一次 per-game 事件按确定性顺序(`sorted`)对
+   `pair_ids_for_game(gid)` 的全部注册 pair 走 `_route_eval_sports` → `_dispatch_eval`;
+   未注册 game no-op。每个 pair 仍受既有 `PairInFlightGate` 约束,不引入 event 级全局锁。
+3. **事件 payload 只负责唤醒和定位**。`build_snapshot(pair_id, sports_store=...)` 从该 pair
+   任一腿的 `info["game_id"]` 定位,从 `SportsGameStateStore` 读取最新状态(`get` 每次自 bytes
+   反序列化重建,天然本轮私有副本)冻结为 `OpportunitySnapshot.sports_state`。
+4. **ended 释放**:ended 事件扇出分发完毕后,退订本场 sports 与该场各 pair 腿的 OBD
+   (自记映射,不依赖 registry)→ 与 matching 侧退订汇合归零 → NT 收尾 + 内存回收
+   (Store 条目、managed book;见 data §3.4.1)。
+5. `snapshot.in_play` **单源** `sports_state.live/ended`(旧 instrument.info["in_play"]
+   写回与派生已随 #250 删除)。无 sports state(pair 无 game_id / Store 无状态)→ `in_play=False`
+   即 `pre_match=True` —— 无覆盖赛事的比赛状态判定待新架构下另行实现。
+6. 同一轮 condition/check/action 只读冻结后的 `snapshot.sports_state`;评估期间新 sports update
+   不改写本轮上下文,下一个已发布事件再触发新评估。
+
+`OpportunitySnapshot.sports_state` 是只读的归一状态视图,至少保留
+`game_id/status/score/period/elapsed/live/ended/finished_ts/ts_event`;它不是 `.PMSPORTS`
+交易腿,不得进入 `order_books/positions/instrument_constraints` 或候选 legs。
+
+当前 `signal_collector` seam 可以继续把冻结状态派生为 DSL signal,但不得把事件 payload 直接写成
+长期真理;具体“哪些字段变化才值得触发评估”的字段级筛选属二级架构,不属于本轮设计。
 
 ### 3.9 slice 10a 落地(#50):`EvalContext.submitter` + 真出单链路
 
@@ -540,7 +573,10 @@ sequenceDiagram
 **外部事件接入(part of Step 4 + Step 7)**:
 - [x] `pre_match` 已由 `StrategyEvaluator` 每轮从 `OpportunitySnapshot.in_play` 派生为 self_hits signal,不再作为 Check 类型。
 - [x] PMSPORTS sports firehose / synthetic anchor 已经接入 matching→strategy 主链路;Strategy 只订阅 `tradable_instrument_ids`,不订阅/不下单 non-tradable anchor。
-- [ ] 通用比分/比赛开始等第三方外部事件 DSL 仍未设计;当前实盘所需的 pre_match/in_play 语义已由 snapshot + PMSPORTS 路径覆盖。
+- [x] #250:per-game CustomData subscription(MatchedPair 订 / ended 释放)→ `game_id`
+  扇出全部注册 pair → Store-backed `OpportunitySnapshot.sports_state` 已落地(§3.8.1);
+  覆盖见 `test_evaluator.py` sports 用例 + `test_snapshot.py` sports_state/in_play 用例。
+- [ ] 通用比分/比赛开始等第三方外部事件 DSL 与具体 publish policy 仍未设计;#250 只锁数据/触发架构。
 
 **集成 + /live-test**:
 - [x] launcher 接 `StrategyEvaluator` Actor + 注册 `StrategyRegistry`(配置加载)+ 通过 `ArbContext` 共享 PairRegistry / SignalStore / PairInFlightGate。覆盖见 `tests/arbitrage/launchers/test_arb_node.py` 与 `tests/arbitrage/strategy/test_evaluator.py`。
@@ -548,4 +584,5 @@ sequenceDiagram
 
 > **仍待**:
 > - 钱真链路 live 验证:小 scope 配置跑通 evaluate → submit → Risk → barrier → execution。
-> - 通用第三方外部事件接入若后续需要,另起设计;不要恢复旧 `strategy.signals` 配置表。
+> - #250 的具体 publish policy 与准入 filter 规则另起设计,不要恢复旧 `strategy.signals` 配置表;
+>   无 sports 覆盖赛事的比赛状态判定(§3.8.1 第 5 点已知边界)另起实现。

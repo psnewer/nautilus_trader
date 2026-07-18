@@ -175,7 +175,9 @@ cdef class Cache(CacheFacade):
     cpdef void load_actor(self, Actor actor)
     cpdef void load_strategy(self, Strategy strategy)
 
+    cpdef void delete(self, str key)
     cpdef void add_order_book(self, OrderBook order_book)
+    cpdef void remove_order_book(self, InstrumentId instrument_id)
     cpdef void add_own_order_book(self, own_order_book)
     cpdef void add_quote_tick(self, QuoteTick tick)
     cpdef void add_trade_tick(self, TradeTick tick)

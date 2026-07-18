@@ -228,7 +228,8 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   handlers、清空 page registry,但不关闭共享 browser;`_update_instruments` 单轮失败只 log,
   下一轮继续;`_subscribe_order_book_deltas`
   复用 subscription helper 注册状态并调用注入式 open/reload;`_unsubscribe_order_book_deltas`
-  复用移除 helper;`_on_price_frame` 复用 `se_handle_price_frame(...)` 发布 deltas 并写 `in_play`;
+  复用移除 helper,并对失去全部 market 引用的 page_key 关页(#251:整个关闭动作持 `_comp_pages_lock`,
+  摘表 → stop handler → `close_page`,与 OE 对称);`_on_price_frame` 复用 `se_handle_price_frame(...)` 发布 deltas(#250:不再写 instrument.info["in_play"]);
   `_on_comp_disconnect` 对 `close:prices` / `liveness_timeout` 建 reload task,`_reload_comp_on_disconnect`
   调用同一 open/reload 方法并在失败时只 log + 清 reload-in-flight;订阅开页失败时排
   `_delayed_reopen`,醒来后复用 `se_reopen_missing_page(...)`,失败时再排下一轮。
@@ -246,7 +247,8 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   缺任一必要字段时不写状态。
 - `se_remove_subscription_state(...)` 已落地:解订时移除目标 instrument 的 selection routing;
   若 market 已无 selection,同步删除 `market_to_page_key`;若该 page_key 已无任何 market 引用,
-  再删除 `comp_page_refs`。这避免开页失败重试在解订后误判 page 仍被订阅。
+  再删除 `comp_page_refs` 并**返回该 page_key 列表**(#251,供 client 关页)。这同时避免
+  开页失败重试在解订后误判 page 仍被订阅。
 - `se_competition_page_ref_from_instrument` / `se_competition_page_url` 已落地:
   从 `BettingInstrument.event_type_id` / `competition_id` 生成 `(page_key,sport_id,competition_id)`,
   page key 为 `{sport_id}_{competition_id}`,URL 为
@@ -297,10 +299,10 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   先按 price frame 的 `market_id` 找 selection routing,再生成 `{market_id,in_play,runners,
   subscribed_selections,deltas}`。未路由 market / 非法消息返回 `None`;已路由但空档时保留
   frame 元信息并返回空 `deltas`。
-- `se_publish_routed_book_deltas(routed_payload, publish, write_in_play=None)` 已落地:
+- `se_publish_routed_book_deltas(routed_payload, publish)` 已落地:
   输入上一条 helper 的 routed payload,逐个 `OrderBookDeltas` 调用注入的 publish 函数,
-  并可选按 instrument 写入 `in_play`;返回实际发布数量。空 payload / 空 deltas no-op。
-- `se_handle_price_frame(message, market_routing, ts, publish, write_in_play=None)` 已落地:
+  返回实际发布数量;空 payload / 空 deltas no-op(#250:in_play 写回参数已删)。
+- `se_handle_price_frame(message, market_routing, ts, publish)` 已落地:
   组合 market-level routing 与 publish 两步,返回 routed payload 并追加 `published_count`。
   未路由 frame 返回 `None`;已路由但空档时返回 frame 元信息且 `published_count=0`。
 - `SharpExchWebSocketHandler` 已落地:监听 Playwright `page.on("websocket")`,按 URL 分型

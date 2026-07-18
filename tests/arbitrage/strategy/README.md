@@ -415,3 +415,42 @@ Strategy 的 debug 是**配置 vs 配置**(prod Strategy / dbg Strategy 同 scop
   probability SHORT 等经济投影不变量错误时停止，不按零敞口继续。直接验收用例为
   `test_single_legs_are_cleared_when_portfolio_invariant_is_broken` 与
   `test_recovery_rejects_probability_short_position`。
+
+## #250:PMSPORTS 状态触发 Strategy(已落地,`test_evaluator.py` / `test_snapshot.py`)
+
+### strategy-4.sports.1:MatchedPair 按场订阅 + per-game topic 触发评估
+
+**用例**:`test_matched_pair_subscribes_per_game_topic_and_routes_events`。
+**期望/验收**:MatchedPair 到达时经 `game_id_for_pair` 反查并订阅该场;per-game topic 发布
+经 NT 路由到 `on_data` 并恰好触发一次评估;不再依赖裸 topic 或 channel 通道。
+
+### strategy-4.sports.2:同 game 的全部 pair 均被触发
+
+**用例**:`test_sports_update_fans_out_to_all_registered_pairs_for_game` /
+`test_sports_fanout_respects_pair_inflight_gate`。
+**期望/验收**:`pair_ids_for_game` 扇出全部注册 pair,各 pair 独立过 `PairInFlightGate`;
+不得沿用单值反查只触发第一个。
+
+### strategy-4.sports.3:未注册 game no-op
+
+**用例**:`test_sports_update_unregistered_game_is_noop`。
+**期望/验收**:不创建评估 task,不报错。
+
+### strategy-4.sports.4:sports state 冻结进 OpportunitySnapshot
+
+**用例**:`test_snapshot_sports_state_frozen_from_store`(`test_snapshot.py`)。
+**期望/验收**:开始评估后 Store 更新不改写本轮 `snapshot.sports_state`;下一轮重建读取新值。
+
+### strategy-4.sports.5:in_play 单源 sports_state
+
+**用例**:`test_snapshot_in_play_from_sports_state_only` /
+`test_snapshot_without_game_id_or_store_has_no_sports_state` /
+`test_snapshot_ignores_legacy_instrument_info_in_play`(`test_snapshot.py`)。
+**期望/验收**:`sports_state.live/ended` 为真 → `in_play=True`;无 sports state → False
+(遗留 `info["in_play"]` 字段不参与,写回链已随 #250 删除)。
+
+### strategy-4.sports.6:ended 释放本场全部订阅
+
+**用例**:`test_ended_releases_sports_and_obd_subscriptions`。
+**期望/验收**:ended 扇出分发完毕后,退订本场 sports 与自记的各 pair 腿 OBD;与 matching 侧
+退订汇合归零 → NT 收尾 + 内存回收(Store 条目、managed book)。

@@ -761,3 +761,83 @@ def test_three_way_validation_fail_never_publishes_event_siblings():
     assert registry.instrument_ids_for_pair(home_pair) == set()
     assert registry.instrument_ids_for_pair(draw_pair) == set()
     assert registry.instrument_ids_for_pair(away_pair) == set()
+
+
+# ── #250:PMSPORTS lifecycle channel(NT subscribe_data 接线)──────────────
+def _sports_update(game_id=888, *, ts=0, ended=False, live=False):
+    from nautilus_trader.adapters.polymarket.sports import SportsGameUpdate
+
+    return SportsGameUpdate(
+        ts_event=ts, ts_init=ts, game_id=game_id, league="x", home_team="", away_team="",
+        status="", score="", period="", elapsed="", live=live, ended=ended,
+        finished_ts="2030-01-01T00:00:00Z" if ended else "",
+    )
+
+
+def test_per_game_subscription_drives_eviction_and_unsubscribe():
+    """matching-3.sports.2:per-game topic 发布经 NT 路由到达 → eviction 关联 pair,
+    并退订本场 sports(归零后 client 回收 Store 条目;client 侧行为见 PM adapter 用例)。"""
+    from nautilus_trader.adapters.polymarket.sports import sports_data_type
+
+    actor, clock, cache, registry, msgbus = _harness()
+    actor.start()   # FSM → RUNNING(handle_data 门槛)
+
+    actor._ensure_sports_subscription(888)          # 发现扫描的订阅动作
+    registry.register("p1", ["L1.PM", "L2.OE"], game_id=888)
+    actor._game_to_pair[888] = {"p1"}
+    actor._emitted_pairs.add("p1")
+
+    msgbus.publish(
+        topic=f"data.{sports_data_type(888).topic}",
+        msg=_sports_update(888, ts=2, ended=True),
+    )
+
+    assert registry.get("L1.PM") is None
+    assert 888 in actor._ended_games
+    assert 888 not in actor._sports_subscribed      # eviction 已退订本场
+
+
+def test_unsubscribed_game_topic_does_not_reach_matching():
+    """matching-3.sports.1:per-game topic 隔离 —— 未订阅比赛的发布不触发 eviction。"""
+    from nautilus_trader.adapters.polymarket.sports import sports_data_type
+
+    actor, clock, cache, registry, msgbus = _harness()
+    actor.start()
+    actor._ensure_sports_subscription(888)
+    registry.register("p1", ["L1.PM"], game_id=999)
+    actor._game_to_pair[999] = {"p1"}
+
+    msgbus.publish(
+        topic=f"data.{sports_data_type(999).topic}",   # 999 未订阅 → 无 handler
+        msg=_sports_update(999, ts=2, ended=True),
+    )
+
+    assert registry.get("L1.PM") == "p1"
+    assert 999 not in actor._ended_games
+
+
+def test_anchor_scan_subscribes_games_and_skips_ended():
+    """matching-3.sports.4:发现扫描对 universe 内 anchor 逐场订阅;ended/evict 后
+    不重订(anchor 实体仍留 cache)。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+    )
+    actor.start()
+    for instrument in [
+        _pmsports("ATP", "Rafael Jodar", "Felix Gill", game_id=888),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a"),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
+    ]:
+        cache.add_instrument(instrument)
+    actor.publish_data = lambda **k: None
+
+    actor._maybe_match()
+    assert 888 in actor._sports_subscribed          # 扫描即订
+
+    actor._evict_game(888)
+    assert 888 not in actor._sports_subscribed
+    actor._maybe_match()                            # ended 后重扫
+    assert 888 not in actor._sports_subscribed      # 不重订
