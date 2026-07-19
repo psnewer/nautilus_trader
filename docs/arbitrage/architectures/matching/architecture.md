@@ -303,12 +303,14 @@ def _evict_game(gid):
 - **纯 `ended` 无兜底**(D4 用户定):漏 `ended` 就不清(`finished_timestamp` 与 ended 绑定不能当 fallback)。
 - **P11 归属 = matching**(MarketMatchingActor 是 PairRegistry 唯一写者 + game→pair 索引宿主;`SportsGameUpdate` 生产者是 sports DataClient,单一归属挂 data 主方)—— 不耦合 execution。expiration 静态属性**不再用于 eviction**。
 
-> **#250 接线(已落地)**:matching 在发现扫描(`_maybe_match`)对 universe 内每个
-> 带 game_id 的 anchor 逐场 `subscribe_data(sports_data_type(gid), client_id=PMSPORTS)`
-> (gid ∈ `_ended_games` 跳过,防 evict 后重订);`_evict_game` 退订本场。eviction 语义不变;
-> 与 strategy 侧退订汇合归零后由 client 回收 Store 条目。旧裸 `data.SportsGameUpdate*` 订阅
-> 与 lifecycle/strategy 通道已废除。生产、订阅模型与归零回收契约见 data §3.4.1;本文只拥有
-> eviction 行为。
+> **#250/#252 接线(已落地)**:matching 的 sports 订阅随 **candidate 产生**逐场发起
+> (`_maybe_match` emit 点 `_ensure_sports_subscription(gid)`,幂等,gid ∈ `_ended_games` 跳过;
+> **不再**对 anchor 宇宙全量订阅 —— gamma closed=false 延迟会造出永收不到帧的死订阅,#252)。
+> 每 tick 末 `_reconcile_sports_subscriptions`:已订阅 − 本 tick candidate 的差集,有 PASSED
+> pair 的不动(eviction 仍纯 ended 驱动,D4),PENDING 清校验态+释放订阅,FAILED 保留 sticky
+> 标记仅释放订阅。`_evict_game`(ended)退订本场;与 strategy 侧退订汇合归零后由 client 回收
+> Store 条目。旧裸 `data.SportsGameUpdate*` 订阅与 lifecycle/strategy 通道已废除。生产、订阅
+> 模型与归零回收契约见 data §3.4.1;本文只拥有 eviction 行为。
 
 ---
 

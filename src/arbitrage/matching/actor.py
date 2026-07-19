@@ -111,6 +111,7 @@ class MarketMatchingActor(Actor):
         self._game_to_pair: dict[int, set[str]] = {}  # #60:gameId → pair_id set(emit 时填,sports ended 时查)
         self._ended_games: set[int] = set()      # #60:已结束 gameId(matching 排除,不再 re-emit)
         self._sports_subscribed: set[int] = set()  # #250:已发起 per-game sports 订阅的 gameId
+        self._scan_candidate_gids: set[int] = set()  # #252:本 tick candidate 场次(差集清理基准)
         self._pair_validations: dict[str, _PairValidationState] = {}
         self._validation_pairs_by_instrument: dict[str, set[str]] = {}
         self._event_pairs: dict[str, set[str]] = {}   # #228:event_key → pair_ids(FAIL 连坐)
@@ -133,7 +134,7 @@ class MarketMatchingActor(Actor):
             self.log.info(f"matching refresh_interval hot-updated: {cmd.secs}s")
 
     def _ensure_sports_subscription(self, game_id: int) -> None:
-        """#250:发现扫描见到 anchor 即按场订阅 sports 状态(gid ∈ `_ended_games` 的跳过,
+        """#252:candidate 产生时按场订阅 sports 状态(幂等;gid ∈ `_ended_games` 的跳过,
         anchor 实体 evict 后仍留 cache,不跳会重订)。"""
         if game_id in self._sports_subscribed or game_id in self._ended_games:
             return
@@ -144,18 +145,41 @@ class MarketMatchingActor(Actor):
             self._sports_subscribed.discard(game_id)
             self._log.warning(f"sports subscribe game {game_id} failed: {e!r}")
 
+    def _release_sports_subscription(self, game_id: int) -> None:
+        if game_id not in self._sports_subscribed:
+            return
+        self._sports_subscribed.discard(game_id)
+        try:
+            self.unsubscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
+        except Exception as e:  # noqa: BLE001
+            self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
+
     def _evict_game(self, game_id: int) -> None:
         # #250:eviction 退订本场 sports(strategy 侧同场退订后归零,client 回收 Store 条目)。
         self._ended_games.add(game_id)
         pair_ids = self._game_to_pair.pop(game_id, set())
         for pair_id in pair_ids:
             self._evict_pair(pair_id, reason=f"game {game_id} ended")
-        if game_id in self._sports_subscribed:
-            self._sports_subscribed.discard(game_id)
-            try:
-                self.unsubscribe_data(sports_data_type(game_id), client_id=ClientId(SPORTS_CLIENT))
-            except Exception as e:  # noqa: BLE001
-                self._log.warning(f"sports unsubscribe game {game_id} failed: {e!r}")
+        self._release_sports_subscription(game_id)
+
+    def _reconcile_sports_subscriptions(self, candidate_gids: set[int]) -> None:
+        """#252:candidate 差集清理 —— 已订阅但本 tick 无 candidate 的场次:
+        有已注册(PASSED)pair → 不动(其 eviction 仍纯 PMS ended 驱动,D4 不变);
+        PENDING → 清校验态(退校验 books)+ 释放 sports 订阅 → 归零回收;
+        FAILED → 保留 sticky 标记(连坐语义),仅释放 sports 订阅。
+        兜住 gamma closed=false 延迟造出的死订阅(PMS 重推窗口有限,永收不到帧)。
+        venue 瞬时无 instrument 引发的 PENDING 误清自愈:下 tick candidate 重现即重订重校验。"""
+        for gid in sorted(self._sports_subscribed - candidate_gids):
+            pair_ids = self._game_to_pair.get(gid, set())
+            if any(self._pair_registry.instrument_ids_for_pair(pid) for pid in pair_ids):
+                continue
+            for pid in sorted(pair_ids):
+                state = self._pair_validations.get(pid)
+                if state is not None and state.status == "PENDING":
+                    self._clear_pair_validation(pid)
+                    self._emitted_pairs.discard(pid)
+                    self.log.info(f"Evicted pending pair {pid} (game {gid} left candidate set)")
+            self._release_sports_subscription(gid)
 
     def _evict_pair(self, pair_id: str, *, reason: str) -> None:
         self._pair_registry.unregister_pair(pair_id)
@@ -221,25 +245,24 @@ class MarketMatchingActor(Actor):
         ]
         if not anchor_instruments:
             return
-        # #250:对发现宇宙内每个带 game_id 的 anchor 发起 per-game sports 订阅(幂等)。
-        for instrument in anchor_instruments:
-            gid = self._game_id_of(instrument)
-            if gid is not None:
-                self._ensure_sports_subscription(gid)
         anchor_events = events_from_instruments(anchor_instruments)
         if not anchor_events:
             return
+        # #252:sports 订阅随 candidate 产生(emit 点逐场订),不再对 anchor 宇宙全量订阅
+        # (gamma closed=false 延迟会造出永收不到帧的死订阅);tick 尾对订阅集做 candidate 差集清理。
+        self._scan_candidate_gids = set()
         if any(_event_is_non_tradable(event) for event in anchor_events):
             self._maybe_match_non_tradable_anchor(anchor_events)
-            return
-        for tradable_venue in self._tradable_venue_strs:
-            tradable_instruments = list(self.cache.instruments(venue=Venue(tradable_venue)))
-            if not tradable_instruments:
-                continue
-            tradable_events = events_from_instruments(tradable_instruments)
-            results = self._engine.match_events(anchor_events, tradable_events)
-            for result in results:
-                self._emit_pair(result, tradable_venue=tradable_venue)
+        else:
+            for tradable_venue in self._tradable_venue_strs:
+                tradable_instruments = list(self.cache.instruments(venue=Venue(tradable_venue)))
+                if not tradable_instruments:
+                    continue
+                tradable_events = events_from_instruments(tradable_instruments)
+                results = self._engine.match_events(anchor_events, tradable_events)
+                for result in results:
+                    self._emit_pair(result, tradable_venue=tradable_venue)
+        self._reconcile_sports_subscriptions(self._scan_candidate_gids)
 
     def _maybe_match_non_tradable_anchor(self, anchor_events) -> None:
         """PMSPORTS event-anchor path:同一 anchor event 聚合所有 tradable venues 后发一个 pair。
@@ -361,6 +384,9 @@ class MarketMatchingActor(Actor):
             return
         if gid is not None:
             self._game_to_pair.setdefault(gid, set()).update(candidate.pair_id for candidate, _ in candidates)
+            # #252:candidate 产生即订阅本场 sports(幂等),并计入本 tick 差集基准
+            self._scan_candidate_gids.add(gid)
+            self._ensure_sports_subscription(gid)
         self._handle_pair_candidates(candidates)
 
     def _emit_pair(self, result: MatchResult, *, tradable_venue: str) -> None:
@@ -432,6 +458,9 @@ class MarketMatchingActor(Actor):
             return
         if gid is not None:
             self._game_to_pair.setdefault(gid, set()).update(candidate.pair_id for candidate, _ in candidates)
+            # #252:candidate 产生即订阅本场 sports(幂等),并计入本 tick 差集基准
+            self._scan_candidate_gids.add(gid)
+            self._ensure_sports_subscription(gid)
         self._handle_pair_candidates(candidates)
 
     def _handle_pair_candidates(self, candidates: list[tuple[_PairCandidate, str]]) -> None:

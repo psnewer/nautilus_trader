@@ -816,8 +816,8 @@ def test_unsubscribed_game_topic_does_not_reach_matching():
     assert 999 not in actor._ended_games
 
 
-def test_anchor_scan_subscribes_games_and_skips_ended():
-    """matching-3.sports.4:发现扫描对 universe 内 anchor 逐场订阅;ended/evict 后
+def test_candidate_scan_subscribes_games_and_skips_ended():
+    """matching-3.sports.4(#252):candidate 产生时按场订阅;ended/evict 后
     不重订(anchor 实体仍留 cache)。"""
     actor, clock, cache, registry, _ = _harness(
         anchor_venue="PMSPORTS",
@@ -841,3 +841,70 @@ def test_anchor_scan_subscribes_games_and_skips_ended():
     assert 888 not in actor._sports_subscribed
     actor._maybe_match()                            # ended 后重扫
     assert 888 not in actor._sports_subscribed      # 不重订
+
+
+def test_anchor_without_tradable_counterpart_not_subscribed():
+    """matching-3.sports.5(#252):纯 anchor(无 tradable 对手)不产生 candidate → 不订阅。
+    兜住 gamma closed=false 延迟场景:死比赛进宇宙但配不出 candidate,不再造出死订阅。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+    )
+    actor.start()
+    cache.add_instrument(_pmsports("ATP", "Rafael Jodar", "Felix Gill", game_id=777))
+    # 不放任何 tradable instrument
+    actor.publish_data = lambda **k: None
+
+    actor._maybe_match()
+    assert actor._sports_subscribed == set()
+
+
+def test_reconcile_evicts_pending_keeps_passed_and_failed_marker():
+    """matching-3.sports.6(#252):差集清理 —— PENDING 清态+释放订阅;PASSED 不动;
+    FAILED 保留 sticky 标记仅释放订阅。"""
+    actor, clock, cache, registry, _ = _harness(
+        anchor_venue="PMSPORTS",
+        tradable_venues=("POLYMARKET", "ORBITEXCH"),
+        probability_validation_enabled=True,
+    )
+    actor.start()
+    for instrument in [
+        _pmsports("ATP", "Rafael Jodar", "Felix Gill", game_id=888),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "home", "h"),
+        _pm("ATP", "Rafael Jodar", "Felix Gill", "away", "a"),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "home", 11),
+        _oe("ATP", "Rafael Jodar", "Felix Gill", "away", 12),
+    ]:
+        cache.add_instrument(instrument)
+    actor.publish_data = lambda **k: None
+
+    actor._maybe_match()                       # candidate → PENDING + 订阅
+    assert 888 in actor._sports_subscribed
+    pending = [pid for pid, st in actor._pair_validations.items() if st.status == "PENDING"]
+    assert pending
+
+    actor._reconcile_sports_subscriptions(set())   # 模拟下 tick candidate 消失
+    assert 888 not in actor._sports_subscribed
+    assert all(pid not in actor._pair_validations for pid in pending)   # PENDING 清态
+    assert actor._validation_pairs_by_instrument == {}                  # 校验 books 退订
+
+    # PASSED 保留:注册后再 reconcile 空集,订阅不动
+    actor._ensure_sports_subscription(999)
+    actor._game_to_pair[999] = {"p_pass"}
+    registry.register("p_pass", ["L1.PM"], game_id=999)
+    actor._reconcile_sports_subscriptions(set())
+    assert 999 in actor._sports_subscribed
+
+    # FAILED 保留标记,仅释放订阅
+    from src.arbitrage.matching.actor import _PairCandidate, _PairValidationState
+    cand = _PairCandidate(
+        pair_id="p_fail", sport="Tennis", competition="ATP", confidence=1.0,
+        anchor_instrument_ids=[], tradable_instrument_ids=[], venue_instrument_ids={},
+        registry_instrument_ids=[], registry_anchor_ids=[], game_id=666,
+    )
+    actor._pair_validations["p_fail"] = _PairValidationState(candidate=cand, status="FAILED")
+    actor._ensure_sports_subscription(666)
+    actor._game_to_pair[666] = {"p_fail"}
+    actor._reconcile_sports_subscriptions(set())
+    assert 666 not in actor._sports_subscribed
+    assert actor._pair_validations["p_fail"].status == "FAILED"   # sticky 连坐标记保留

@@ -268,7 +268,7 @@ sports_data_type(game_id)  # = DataType(SportsGameUpdate, metadata={"game_id": g
 
 | 消费者 | 订阅时机 | 退订时机 |
 |---|---|---|
-| Matching | 发现扫描见 anchor(gid ∉ ended)逐场订 | `_evict_game` |
+| Matching | candidate 产生时逐场订(#252;gid ∉ ended) | `_evict_game`(ended)或差集清理(candidate 消失且无 PASSED pair,#252) |
 | Strategy | `MatchedPair` 到达(gid 经 PairRegistry `game_id_for_pair`)| 收到 ended、扇出分发完毕后 |
 
 双侧退订汇合 → msgbus 订阅数归零 → engine 转发 unsubscribe → client `_unsubscribe`:

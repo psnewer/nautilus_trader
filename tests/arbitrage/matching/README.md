@@ -259,8 +259,20 @@
 **期望/验收**:game→pairs 多值反查与 pair→game 反查(`game_id_for_pair`)一致;
 unregister/re-register 时映射同步清理。
 
-### matching-3.sports.4:发现扫描逐场订阅,evict 后不重订
+### matching-3.sports.4:candidate 产生时订阅,evict 后不重订(#252)
 
-**用例**:`test_anchor_scan_subscribes_games_and_skips_ended`。
-**期望/验收**:`_maybe_match` 对 universe 内带 game_id 的 anchor 逐场订阅(幂等);
-`ended`/evict 后从订阅集合移除,后续扫描跳过(anchor 实体仍留 cache)。
+**用例**:`test_candidate_scan_subscribes_games_and_skips_ended`。
+**期望/验收**:candidate 产生的场次被幂等订阅;`ended`/evict 后从订阅集合移除,
+后续扫描跳过(anchor 实体仍留 cache)。
+
+### matching-3.sports.5:纯 anchor 不订阅(#252)
+
+**用例**:`test_anchor_without_tradable_counterpart_not_subscribed`。
+**期望/验收**:无 tradable 对手的 anchor 配不出 candidate → 不订阅(gamma closed=false
+延迟的死比赛零状态,不再产生死订阅)。
+
+### matching-3.sports.6:差集清理(#252)
+
+**用例**:`test_reconcile_evicts_pending_keeps_passed_and_failed_marker`。
+**期望/验收**:已订阅 − 本 tick candidate:PENDING 清校验态(退校验 books)+ 释放订阅;
+PASSED 不动(eviction 纯 ended 驱动);FAILED 保留 sticky 连坐标记、仅释放订阅。

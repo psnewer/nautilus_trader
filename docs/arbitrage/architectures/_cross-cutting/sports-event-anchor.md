@@ -47,7 +47,7 @@
 | Strategy 只消费 tradable ids | MatchedPair 触发 OBD 订阅与 snapshot 构造时跳过 anchor ids |
 | Eviction 仍归 matching | Sports `ended` 事件驱动 matching unregister;PMSPORTS 只是生产 event/update |
 | 实时状态先缓存后发布 | 最新 `SportsGameUpdate` 的真理源是 data 层 Store;事件只负责唤醒 consumer |
-| game_id 即订阅键 | 每场独立 per-game DataType/topic;matching(扫描订/evict 退)与 strategy(MatchedPair 订/ended 退)双侧退订汇合归零 → 回收 Store 条目与 OBD book(#250)|
+| game_id 即订阅键 | 每场独立 per-game DataType/topic;matching(candidate 订 / ended 或差集退,#252)与 strategy(MatchedPair 订 / ended 退)双侧退订汇合归零 → 回收 Store 条目与 OBD book |
 
 ---
 
@@ -113,8 +113,10 @@ account   = None
      lifecycle/strategy 双通道均已废除);字段级筛选属二级架构,未设计。
 
 3. 数据准入与发布:
-   - data source 必须提供独立的准入 filter,选择哪些归一化数据允许进入 Store;具体筛选配置留后续设计。
-   - filter 不得只依赖已 matched pair,否则会漏掉 pair 尚未生成前到达的生命周期状态。
+   - data source 的主准入门是订阅本身(#250 兴趣门控);字段级 filter seam 留后续设计。
+   - **#252 修订**:matching 的订阅面 = candidate 集合(非 anchor 宇宙)。防赛后配对由概率校验门
+     (死盘无健康双边 book,PENDING 永不 PASS)+ 每 tick candidate 差集清理(卡死 PENDING 回收)
+     承担;gamma closed=false 延迟的死比赛因配不出 candidate 而零状态。
    - 通过 filter 的有效数据先写 Cache;publish policy 再独立决定发布目标,可以返回空集合形成 cache-only。
    - lifecycle 通道保留 matching 的 `ended` 可达性;strategy 通道只负责触发计算。完整接口与错误边界
      只在 data architecture §3.4.1 定义,本文不复述。
