@@ -172,3 +172,13 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:execution mixin 已为残留单建立 cancel session。
 **输入**:调用 residual cancel。
 **期望/验收**:adapter 不重复 begin session，真实 cancel 请求仍发出；离线用例覆盖 `session_started=True`。
+
+## 2026-07-19:debug 工厂接线修复 + 持久 profile(实盘验证)
+
+- `SharpExchLiveDataClientFactory` 补 debug 分支(返回 `DebugSharpExchDataClient`,对齐 OE/PM);
+  修复前 SE `mock_data` odds 永不生效。实盘验证:mock 盘口(PM 0.35/0.69 + SE 3.55/1.48)使
+  ATP pair 概率校验 PASS(best_sum≈0.957)→ one_side 命中 → PlaceBets → RiskEngine 以 WARN
+  显示拒因 `NOTIONAL_LESS_THAN_MIN_FOR_INSTRUMENT: min_notional=12.00 USD, notional=9.30 USD`
+  —— 即 0718 实盘"PlaceBets 无 Submit"静默洪流的根因(SE 最小注 12 USD,高赔率腿 stake 不足)。
+- `user_data_dir=/Users/miller/.arb-profiles/sharpexch` 持久 profile 落地:连续 3 轮 discovery
+  403(CF 挑战 `context.request`)→ 配置后连续 2 轮一次通过。

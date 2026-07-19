@@ -228,6 +228,13 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   handlers、清空 page registry,但不关闭共享 browser;`_update_instruments` 单轮失败只 log,
   下一轮继续;`_subscribe_order_book_deltas`
   复用 subscription helper 注册状态并调用注入式 open/reload;`_unsubscribe_order_book_deltas`
+- **debug 工厂分支(2026-07-19 修)**:`SharpExchLiveDataClientFactory` 在 `debug.enabled` 时返回
+  `DebugSharpExchDataClient`(mock odds 拦截),对齐 OE/PM factory;第一阶段接入时漏此分支,
+  导致 SE 的 `mock_data` odds 永不生效(0719 复现拒单时发现)。
+- **持久 profile(2026-07-19)**:`venues.sharpexch.user_data_dir` 配置持久 browser profile;
+  未配置时每次启动全新浏览器身份,discovery 的 `context.request` API POST 会被 Cloudflare 挑战
+  (页面登录可过,独立 HTTP 客户端指纹过不去,连续 403 实测)。持久 profile 携带 CF clearance
+  后 discovery 稳定通过。
   复用移除 helper,并对失去全部 market 引用的 page_key 关页(#251:整个关闭动作持 `_comp_pages_lock`,
   摘表 → stop handler → `close_page`,与 OE 对称);`_on_price_frame` 复用 `se_handle_price_frame(...)` 发布 deltas(#250:不再写 instrument.info["in_play"]);
   `_on_comp_disconnect` 对 `close:prices` / `liveness_timeout` 建 reload task,`_reload_comp_on_disconnect`

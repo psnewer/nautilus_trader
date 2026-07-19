@@ -135,6 +135,20 @@ class SharpExchLiveDataClientFactory(LiveDataClientFactory):
             _log.warning("SE factory: no discovery config found, using empty InstrumentProvider")
             provider = InstrumentProvider()
         ctx_map_set(ctx, "instrument_provider_by_venue", SHARPEXCH, provider)
+        debug = ctx.debug_config
+        if debug is not None and getattr(debug, "enabled", False):
+            # 对齐 OE/PM factory:debug 启用时换 Debug 子类(mock odds 拦截);SE 首阶段接入时漏此分支。
+            from src.arbitrage.debug.data_clients import DebugSharpExchDataClient
+            return DebugSharpExchDataClient(
+                loop=loop,
+                browser_manager=browser_manager,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+                instrument_provider=provider,
+                config=config,
+                debug=debug,
+            )
         return SharpExchDataClient(
             loop=loop,
             browser_manager=browser_manager,
