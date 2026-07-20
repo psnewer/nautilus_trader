@@ -59,10 +59,10 @@ flowchart LR
 flowchart LR
   PMev["PM:连接 + 显式 QueryAccount + position reconcile 成功"] -->|_update_account_state → generate_account_state| C[(Cache.account_state)]
   OEws["OE:WS 余额帧(已含挂单占用)"] -->|generate_account_state| C
-  ACCEPT["OrderAccepted<br/>本地预扣"] -->|generate_account_state| C
+  ACCEPT["OrderAccepted<br/>本地预扣(仅 OE/SE,#254)"] -->|generate_account_state| C
   C --> RISK["RiskEngine._check_balance 读 live"]
 ```
-> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣;RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
+> 账户余额由 ExecutionClient 写入(Q17):PM 在连接、显式账户查询、position reconciliation 成功后拉余额;OE 靠 WS `BALANCE`;SE 靠 profile/balance response。accepted 后由 execution session 本地预扣(**仅 OE/SE;PM 关闭,#254 见 §4.5**);RiskEngine 统一读 cache `free`,不再按 venue 自算 open-order 占用。
 
 SE 登录提交表单后，在同一个 deadline 内等待顶层 customer URL 或 customer iframe，
 总预算统一取 `venues.sharpexch.page_load_timeout_sec`，不会先后各等待一轮；任一信号到达即继续。
@@ -94,6 +94,8 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 该约束由 `tests/arbitrage/execution/test_polymarket_client.py::test_polymarket_execution_uses_py_clob_client_v2_surface` 锁定;下一次 PM cancel-only live 验收必须先看到 `orderID` / `venue_order_id` 落 cache,再继续验证下一轮 cancel-only。
 
 **PM cancel 终态约束(#99/#113/#cancel-session,已落地)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当前把 `canceled[]` 解释为“撤单请求已被 CLOB 接收”,不再立即 `generate_order_canceled`。真实撤单完成以 USER WS `CANCELLATION` 事件为准,由 `_generate_cancel_success_event` 写回 NT cache / session terminal。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(等待 WS/成交事件给出正确终态)。REST 与 USER WS 都可能回报同一撤单终态,WS 侧必须幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply 第一条 `OrderCanceled`、但同一 `client_order_id` 的 cancel terminal 已由 PM client 发出时,用有界 `_cancel_terminal_client_ids` 窗口跳过第二条,避免向 NT 重放 `CANCELED -> CANCELED`。覆盖范围:单笔 `_cancel_order`、deferred cancel、USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
+
+**PM ack 语义:下单回执即 ack(#253,2026-07-19 落地)**:PM 的 `OrderAccepted` 有两个可能来源——HTTP `POST /order` 成功回执(同步、必达)与 USER WS `PLACEMENT` 消息(**仅挂簿单才发**;taker 秒成交单从不挂簿,PM 不发 PLACEMENT)。上游原实现只接 WS:taker 单停在 SUBMITTED → NT inflight-check(阈值 ~5s)`Query` → `/data/order` status report 无 `avg_px` → ExecEngine 兜底生成 **0 价 inferred fill**,随后真正的 CONFIRMED 命中 "Order already closed" 被跳过;session 预扣(§4.5)/终态跟踪(§4.1)因从未见到 accepted 全断(2026-07-18 实盘复盘)。现行为:`_post_signed_order` 与 `_process_batch_response` 的成功分支(拿到 `orderID` 处)即 `generate_order_accepted`(与 OE placeBets result / SE PlaceBets response 的"回执即 ack"语义对齐);WS `PLACEMENT` 保留但幂等跳过。双路去重靠 `_accepted_emitted` 有界 OrderedDict——事件经 ExecEngine 异步 apply,只查 `order.status` 有竞态窗口,重复 accepted 会让 session 预扣双扣。**成交确认语义不变**:fill 仍只在 trade `CONFIRMED` 生成(`POLYMARKET_FINALIZED_TRADE_STATUSES`),MATCHED/MINED 只记录。测试:`tests/arbitrage/adapters/polymarket/test_execution_ack.py`。
 
 **PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并在显式 `proxy_url` 存在时关闭环境代理继承(`trust_env=False`)。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
 
@@ -386,12 +388,23 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   5 秒 inflight threshold 独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task，
   先把对应 venue 的 order/position liveness 都置 dead，再强制 reload execution page 并等待一帧新的完整
   `CURRENT_BETS`；不按目标订单字段做猜测或单笔认领，也不会先等待 120 秒 `page_timeout`。
-- **CURRENT_BETS 通用更新顺序**:每帧先整体替换快照，再依次生成撤单事件、成交事件和全部有效
-  `OrderStatusReport`，随后生成并发送聚合 `PositionStatusReport`；两类报告都进入 ExecEngine 后才推进
-  快照完成时间并同时置该 venue 的 order/position alive。因此
-  `QueryOrder` 只负责触发 reload，不包含 inflight 专属的 alive 特判或第二份
-  report 循环。reload、等待业务帧或通用更新失败时保持 dead，等价于 PM 单次 `get_order`
-  失败。空 `CURRENT_BETS` 是有效完整快照，订单与仓位报告集合均可为空，属于成功而非查询失败。
+- **CURRENT_BETS 更新语义:单一 fill 源不变量(#255,2026-07-19 修订 #244 的逐帧推送)**:
+  任何时刻订单成交只有一个派生源。**常规帧**(venue 主动推送)只走事件路径(自派生
+  `generate_order_filled`),**不推任何 report**;**reload 后首帧是静默对账帧**——
+  `_reload_exec_page` 在触发 reload 前置 `_reload_frame_pending`,该帧只替换快照 + 撤单事件,
+  **不自派生 fill、不推报告、不标 alive**;**报告与 alive 归触发 reload 的调用方**:
+  `_query_order` 在 `_ensure_exec_snapshot_fresh(force=True)` 成功后自己调
+  `_push_reports_from_snapshot()`(全量 `OrderStatusReport` + 聚合 `PositionStatusReport`)再置
+  order/position alive;NT 拉取式对账((7) 启动 + 300s 连续)本来就把报告**返回**引擎并自标 liveness,
+  其 stale-WS 分支触发的 reload 同样得到静默帧,不产生第二 fill 源。
+  互斥的原因(2026-07-18 实盘):fill 事件经 msgbus 异步 apply,而报告对账同步读 cache,
+  同帧双路对同一份快照派生必读到滞后 `filled_qty` → 每笔部分成交双计、终态触发 overfill 拒绝;
+  且报告对账在常规帧本应恒为 no-op,逐帧推送是纯冗余 + 结构性竞态源。
+  报告通路的不可替代场景(无 `offerId↔client_order_id` 映射的孤儿 bet——映射由 place 回执建立,
+  丢回执 ⟺ 孤儿——重启外部单、回执丢失恢复)全部收敛到 QueryOrder 推送与 NT 拉取式对账。
+  reload、等待业务帧或推送失败时保持 dead,等价于 PM 单次 `get_order` 失败;reload 失败时静默标记
+  不清除、顺延到下一自然帧(该帧被跳过的成交由再下一帧的累计差分自愈)。空 `CURRENT_BETS`
+  是有效完整快照,订单与仓位报告集合均可为空,属于成功而非查询失败。
 - **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;并按失败维度置 liveness false)。
 - **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → liveness 保持 false,新 submit 被 Risk 安全挡住,但 NT cache order 错置终态(通道其实在时需人工对账)。
 
@@ -420,7 +433,9 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 | OE | WS 余额帧(已含挂单占用)→ `generate_account_state` | 被动 reactive(Step 5 实写第三类 WS 帧捕获) |
 | SE | HTTP profile/balance response → `generate_account_state` | 被动 reactive(response listener 捕获 profile/balance);WS `BALANCE` 不作为余额真值 |
 
-**已落地:accepted 后本地可用余额预扣(Q17 修订,venue-pluggable)**:
+**已落地:accepted 后本地可用余额预扣(Q17 修订,venue-pluggable;#254 起仅 OE/SE)**:
+
+**PM 关闭预扣(#254,2026-07-19)**:`ArbPolymarketExecutionClient` 覆盖 `_reserve_available_balance_for_accepted_order` 为 no-op(与 `_handle_ambiguous_submit_failure` 同款子类特化模式)。原因:#253 回执即 ack 后 PM taker 单几秒内即 CONFIRMED,NT 原生 fill **增量记账**(Portfolio → `AccountsManager.update_balances`,按笔叠加 delta,`reported=False`)会及时扣减;预扣(reported=True 覆盖)+ fill 增量叠加 = 双扣,而 PM 无余额推送源,要等下一轮 position reconcile(~5min)拉真值才纠正,小账户会压住窗口内的后续机会。OE/SE 预扣保留:挂单驻留时间长(fill 增量可能迟迟不来,预扣是唯一的占用表达),且 venue 高频真值(OE WS `BALANCE` / SE profile response)很快覆盖本地估算,双扣窗口短。mixin 通用路径与 `order_required_balance` 公式不动(下述各条对 OE/SE 仍有效);"Execution session accepted" 日志锚点三家保留。测试:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`。
 - 三个 tradable venue 的 AccountState 统一表达“当前可用余额快照”:`total = free = available`,`locked = 0`。PM 的 CLOB `get_balance_allowance`、OE 的 WS `BALANCE.balance`、SE 的 profile/balance response 都按“可用余额”进入 cache。
 - accepted 后不请求 venue,只做本地计算并 `generate_account_state` 覆盖 cache free。真实余额帧/账户查询之后仍可覆盖本地估算。
 - 预扣金额统一调用 Venue Registry `order_required_balance`;各 odds model/side 的公式只在
@@ -482,8 +497,8 @@ sequenceDiagram
   EC->>EC: publish execution.started, _execution_active=true
   EC->>CK: set_time_alert exec_timeout_{coid}
   EC->>V: _submit_order
-  V-->>EC: OrderAccepted (WS/帧)
-  EC->>EC: generate_order_accepted
+  V-->>EC: 下单回执(PM HTTP result / OE placeBets result / SE response)
+  EC->>EC: generate_order_accepted(回执即 ack,PM 详见 §3.1 #253)
   alt 成交 terminal
     V-->>EC: OrderFilled
     EC->>CK: cancel_timer exec_timeout_{coid}
@@ -531,7 +546,7 @@ sequenceDiagram
 - [x] `class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient)`(离线可构造:super 只需 instrument_provider+标准 NT 依赖,browser 仅 `_connect` 用);`_submit_order` 接 `_begin_session` + 结果映射(成功→`generate_order_accepted`/失败→`rejected`);`_modify_order`→`generate_order_modify_rejected`(OE 不支持改单)
 - [x] **`general` 帧分型 + BALANCE 解析**(`parse_general_frame`,8 passed)+ **`_on_general_frame`:BALANCE→乘 fx 后 `generate_account_state`**(`oe_balance_to_account_balances`:WS 已净挂单 → total=free,数值按 USD 解释;已测)
 - [x] **Gap C 接线已写(#63)+ 连接路径 live 验证通过(#67/#89/#216)**:`_connect`(共享 BM `create_page("execution")` + 按 `cfg.venues.orbitexch.page_load_timeout_sec` 设置 page timeout + 登录 `/customer/` + `OrbitExchExecutor` + general WS `on_order_update(_on_general_frame)` + 最多 30s 等 `BALANCE`/`CURRENT_BETS`,缺余额才发 0 USD 兜底 account state)、`_login`(+ `_dismiss_post_login_popup` 关登录后弹窗)、`_place_via_executor`(`nt_order_to_legacy_order`:market_id/selection_id 取自 OE instrument)、`_cancel_order`/`_cancel_all_orders`/`_cancel_residual_one`(executor + `generate_order_canceled/_cancel_rejected`)。**登录后弹窗语义(#89)**:不靠固定 sleep,而是在有限 timeout 内等待 `postLoginPopup` 容器可见;出现后点击主页面区域关闭,超时/无弹窗则静默继续,不阻断连接。**#67 关键时序**:`ws_handler.start()`(挂 `page.on('websocket')`)**必须早于 `goto/_login`**,否则错过登录导航期间建立的 general WS → 收不到 BALANCE/CURRENT_BETS。**live 验证**(`launchers/arb_node.py` + skip=true,2026-06-07):登录✓/关弹窗✓/general WS✓/真 BALANCE 帧 `0.00→37.49 GBP`✓。**#77 修正**:`_cancel_order` 传给 `executor.cancel_order` 的 legacy Order 必须带 `market_id`/`selection_id`;若 instrument 不足,从 `_current_bets[venue_order_id]` 回填。**注**:`place_and_cancel` scenario 跑老 `services/` 栈,**不验 NT client**([[gap_c_oe_exec_live_validated]])
-- [x] **`_on_current_bets` → 完整 order/position reconcile + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 读取累计 `sizeMatched`;`test_execution_translation.py` 6 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查已知 NT order → 用累计 `sizeMatched` 与 NT order `filled_qty` 推出本次 `last_qty`,last_px=averagePrice,liquidity=MAKER 假设);未知 `offerId` 不认领原 order,但全量 order reports 与按 selection 聚合的 position reports 仍进入 ExecEngine;两类报告发送完成后才标记 OE `order_alive`/`position_alive`
+- [x] **`_on_current_bets` → 完整 order/position reconcile + OE liveness**:`current_bets_to_fills` 纯函数(快照非增量 → `offerId` 读取累计 `sizeMatched`;`test_execution_translation.py` 6 case)+ `_on_current_bets`(`offerId==venue_order_id` 反查已知 NT order → 用累计 `sizeMatched` 与 NT order `filled_qty` 推出本次 `last_qty`,last_px=averagePrice,liquidity=MAKER 假设);未知 `offerId` 不认领原 order;**#255 起单一 fill 源**:常规帧只走事件路径不推报告;reload 后首帧静默(不派生 fill/不推报告/不标 alive),报告与 alive 归触发方——`_query_order` 经 `_push_reports_from_snapshot()` 推送后标 alive,拉取式对账返回报告自标(见 §4.3bis(5b))
 - [x] **#85 live 校准:venue 回执已到;未成交等待 30s timeout 属 Q15 默认语义**。`launchers/arb_node.py`
   真执行复验显示 OE 两笔 `placeBets` 均返回 `status=OK + offerIds`;NT accepted 事件本身无独立日志锚点,
   但下一轮机会先 cancel-only 撤旧 open order(`222032569`/`222032570`)再丢弃当次 submit,说明 cache 中已有

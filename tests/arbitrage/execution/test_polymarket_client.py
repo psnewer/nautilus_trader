@@ -274,6 +274,19 @@ def test_arb_ambiguous_submit_failure_keeps_session_untouched():
     assert any("retaining SUBMITTED order" in args[0] for args in client._log.warnings)
 
 
+def test_arb_pm_accepted_reserve_is_noop():
+    """#254:PM 关闭 accepted 预扣 —— 覆盖为 no-op,不读账户不写 AccountState。"""
+    client = SimpleNamespace()  # 无任何依赖:实现若读 cache/account 会 AttributeError
+
+    result = ArbPolymarketExecutionClient._reserve_available_balance_for_accepted_order(
+        client,
+        event=SimpleNamespace(),
+        sess={},
+    )
+
+    assert result is None
+
+
 def test_polymarket_empty_submit_response_is_ambiguous_not_rejected():
     captured = []
     client = SimpleNamespace(

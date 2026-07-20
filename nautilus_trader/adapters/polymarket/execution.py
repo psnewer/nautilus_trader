@@ -272,6 +272,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._processed_fills: OrderedDict[tuple[TradeId, VenueOrderId], None] = OrderedDict()
         self._processed_trades: OrderedDict[TradeId, PolymarketTradeStatus] = OrderedDict()
         self._finalized_trades: OrderedDict[TradeId, None] = OrderedDict()
+        self._accepted_emitted: OrderedDict[ClientOrderId, None] = OrderedDict()
         self._ack_events_order: dict[VenueOrderId, asyncio.Event] = {}
         self._ack_events_trade: dict[VenueOrderId, asyncio.Event] = {}
 
@@ -1624,6 +1625,16 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 venue_order_id = VenueOrderId(result["orderID"])
                 self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
 
+                # Receipt-is-ack (see _post_signed_order)
+                if self._mark_accepted_emitted(order.client_order_id):
+                    self.generate_order_accepted(
+                        strategy_id=order.strategy_id,
+                        instrument_id=order.instrument_id,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=venue_order_id,
+                        ts_event=self._clock.timestamp_ns(),
+                    )
+
                 # Signal order event
                 event = self._ack_events_order.get(venue_order_id)
                 if event:
@@ -1821,6 +1832,19 @@ class PolymarketExecutionClient(LiveExecutionClient):
             else:
                 venue_order_id = VenueOrderId(response["orderID"])
                 self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
+
+                # Receipt-is-ack: a marketable taker order never rests on the book,
+                # so the user channel sends no PLACEMENT message — without this the
+                # order would sit in SUBMITTED until the inflight check infers a
+                # px-less fill from a status report.
+                if self._mark_accepted_emitted(order.client_order_id):
+                    self.generate_order_accepted(
+                        strategy_id=order.strategy_id,
+                        instrument_id=order.instrument_id,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=venue_order_id,
+                        ts_event=self._clock.timestamp_ns(),
+                    )
 
                 # Emit quote-to-base conversion after successful submission
                 if base_quantity is not None:
@@ -2032,7 +2056,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         match msg.type:
             case PolymarketEventType.PLACEMENT:
-                if order is None or order.status == OrderStatus.SUBMITTED:
+                if (
+                    order is None or order.status == OrderStatus.SUBMITTED
+                ) and self._mark_accepted_emitted(client_order_id):
                     self.generate_order_accepted(
                         strategy_id=strategy_id,
                         instrument_id=instrument_id,
@@ -2042,7 +2068,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
                     )
                 else:
                     self._log.debug(
-                        f"Order {client_order_id!r} in state {order.status_string()} - "
+                        f"Order {client_order_id!r} already acked or in state "
+                        f"{order.status_string() if order is not None else '<unknown>'} - "
                         "skipping placement event",
                     )
             case PolymarketEventType.CANCELLATION:
@@ -2109,6 +2136,21 @@ class PolymarketExecutionClient(LiveExecutionClient):
         self._processed_trades[trade_id] = status
         self._processed_trades.move_to_end(trade_id)
         self._truncate_ordered_dict(self._processed_trades)
+
+    def _mark_accepted_emitted(self, client_order_id: ClientOrderId) -> bool:
+        """
+        Return True only on the first call for this order (caller may then ack).
+
+        OrderAccepted has two sources (HTTP submit receipt + WS PLACEMENT); events
+        apply asynchronously in the ExecEngine, so checking order.status alone has
+        a race window — a duplicate accepted would double the session's local
+        balance reserve.
+        """
+        if client_order_id in self._accepted_emitted:
+            return False
+        self._accepted_emitted[client_order_id] = None
+        self._truncate_ordered_dict(self._accepted_emitted)
+        return True
 
     def _record_processed_fill(
         self,

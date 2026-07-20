@@ -218,7 +218,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 **前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
 **输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
-**期望**: `oe_order_alive=true`;`_on_current_bets` 因 CURRENT_BETS 同时是 position 真值来源,会先发送聚合 position reports，再写 `oe_position_alive=true`。
+**期望**: `oe_order_alive=true`;**#255 起单一 fill 源**:常规帧不推报告、帧末直接置 alive;任何 reload 后首帧静默(`_reload_exec_page` 置 `_reload_frame_pending`:不派生 fill、不推报告、不标 alive),报告与 alive 归触发方——QueryOrder 经 `_push_reports_from_snapshot()` 推送(先报告后 alive,#244 顺序),拉取式对账返回报告自标。用例:`test_on_current_bets_normal_frame_skips_report_push` / `test_on_current_bets_reload_frame_is_quiet` / `test_reload_exec_page_marks_next_frame_quiet` / `test_query_order_forces_reload_and_pushes_reports_itself` / `test_query_order_sends_aggregated_position_report_before_marking_alive`。
 **验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 OE order reports;WS 新鲜时只读 `_current_bets` 内存,WS stale 时才经 `_ensure_exec_snapshot_fresh` reload execution 页。
 
 ### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)

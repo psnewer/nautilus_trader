@@ -165,11 +165,18 @@
 - 期望:不因“每次下单”把 alive 置 false;session 生命周期仍由 `PairInFlightGate` + watchdog 管。
 - 验收:只有 stuck/reconcile failure 等真相不可信路径才置 false。
 
-## AccountState accepted 本地预扣(Q17 修订,已落地)
+## AccountState accepted 本地预扣(Q17 修订,已落地;#254 起仅 OE/SE)
 
 对应设计:execution §4.5 + risk §3.1。AccountState 统一表达可用余额快照:
 `total = free = available`,`locked = 0`。accepted 后不请求 venue,只按订单本身本地预扣并写
 `generate_account_state`;后续真实余额帧/账户查询可覆盖该估算。
+
+**#254:PM 关闭 accepted 预扣** —— `ArbPolymarketExecutionClient` 覆盖
+`_reserve_available_balance_for_accepted_order` 为 no-op(#253 回执即 ack 后 PM taker 秒 CONFIRMED,
+NT fill 增量记账及时扣减,预扣叠加成双扣且 PM 无推送源要等 ~5min reconcile 纠正)。
+mixin 通用路径与 `order_required_balance` 公式不动(本节 4.5.5-4.5.7 的 mixin 级用例继续锁定
+OE/SE 语义与公式契约,PM instrument 用例锁定的是 mixin/公式层,真实 PM client 不再触发);
+PM 侧验收:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`。
 
 ### execution-4.5.5: accepted 后按 venue capability 本地预扣余额
 - 前置:任意 tradable venue account cache 已有 `free=100 USD`;订单进入 submit session 并收到 `OrderAccepted`。

@@ -166,7 +166,7 @@ SharpExch(SE) 第一阶段按 OE 型 venue 接入,但测试独立成目录,避�
 **前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
 **输入**:ExecEngine 发出一次 `QueryOrder`。
 **步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder，先置 SE order/position dead再强制 reload。
-**期望/验收**:QueryOrder 不取消或感知 page task，不等待 120 秒 `page_timeout`；新的 `CURRENT_BETS` 通用路径按撤单→已知订单成交→全量 order reports→聚合 position reports→alive 更新。未知 `offerId` 不猜测原订单归属，但其累计成交仍通过 position report 进入 NT 仓位；任一步失败则保持 dead。用例:`test_query_order_*`、`test_current_bets_sends_aggregated_position_report_before_marking_alive`。
+**期望/验收(#255 修订,单一 fill 源)**:QueryOrder 不取消或感知 page task,不等待 120 秒 `page_timeout`;置 order/position dead → 强制 reload → 成功后**自己**调 `_push_reports_from_snapshot()`(全量 order reports→聚合 position reports)→ 标 alive。常规帧只走撤单→已知订单成交(自派生 fill),**不推报告**;**任何 reload 后首帧静默**(`_reload_exec_page` 置 `_reload_frame_pending`,含拉取路径 stale-WS 自发 reload):不派生 fill、不推报告、不标 alive——同帧双路派生因 fill 异步 apply 会双计部分成交(2026-07-18 实盘 overfill 根因)。未知 `offerId` 不猜测原订单归属,其累计成交经 QueryOrder 推送/拉取式对账的报告进入 NT;任一步失败保持 dead 且静默标记不清(顺延下一帧,成交由累计差分自愈)。用例:`test_query_order_forces_reload_and_pushes_reports_itself`、`test_query_order_sends_aggregated_position_report_before_marking_alive`、`test_current_bets_normal_frame_skips_report_push`、`test_current_bets_reload_frame_is_quiet`、`test_reload_exec_page_marks_next_frame_quiet`、`test_push_reports_from_snapshot_sends_order_then_position`。
 
 ### se-adapter-5.inflight.3:cancel-only 复用既有 session
 **前置**:execution mixin 已为残留单建立 cancel session。

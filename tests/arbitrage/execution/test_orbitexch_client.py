@@ -640,7 +640,8 @@ def test_generate_position_status_reports_aggregates():
     assert float(r.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
 
 
-def test_current_bets_sends_aggregated_position_report_before_marking_alive():
+def test_query_order_sends_aggregated_position_report_before_marking_alive():
+    """#255:报告推送归 QueryOrder;alive 晚于报告进入 ExecEngine(#244 顺序)。"""
     from nautilus_trader.model.objects import Quantity
 
     c = _client()
@@ -652,16 +653,26 @@ def test_current_bets_sends_aggregated_position_report_before_marking_alive():
     c._resolve_oe_instrument = lambda market_id, selection_id: fake_inst
     c._build_order_report = lambda bet: None
     c._send_position_status_report = lambda report: calls.append(("position_report", report))
+    c._on_current_bets([_pos_bet("1.23", "8266", "BACK", 10.0, 2.0)])  # 常规帧建快照
     c._venue_liveness = SimpleNamespace(
+        mark_order_dead=lambda venue: calls.append(("order_dead", venue)),
+        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
         mark_order_alive=lambda venue: calls.append(("order_alive", venue)),
         mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
     )
 
-    c._on_current_bets([_pos_bet("1.23", "8266", "BACK", 10.0, 2.0)])
+    async def _fresh(*, force=False):
+        return True
 
-    assert calls[0][0] == "position_report"
-    assert calls[0][1].quantity.as_double() == pytest.approx(10.0)
-    assert calls[1:] == [
+    c._ensure_exec_snapshot_fresh = _fresh
+
+    _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
+
+    assert calls[0] == ("order_dead", "ORBITEXCH")
+    assert calls[1] == ("position_dead", "ORBITEXCH")
+    assert calls[2][0] == "position_report"
+    assert calls[2][1].quantity.as_double() == pytest.approx(10.0)
+    assert calls[3:] == [
         ("order_alive", "ORBITEXCH"),
         ("position_alive", "ORBITEXCH"),
     ]
@@ -825,19 +836,21 @@ def test_ensure_fresh_single_flight_one_reload():
     assert c._page.reload_count == 1                 # single-flight → 只 reload 一次
 
 
-def test_query_order_forces_reload_and_uses_common_current_bets_update():
+def test_query_order_forces_reload_and_pushes_reports_itself():
     c = _client()
     calls = []
     c._venue_liveness = SimpleNamespace(
         mark_order_dead=lambda venue: calls.append(("dead", venue)),
         mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
         mark_order_alive=lambda venue: calls.append(("alive", venue)),
+        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
     )
     async def _fresh(*, force=False):
         calls.append(("fresh", force))
         return True
 
     c._ensure_exec_snapshot_fresh = _fresh
+    c._push_reports_from_snapshot = lambda: calls.append(("push_reports",))
 
     _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
 
@@ -845,6 +858,9 @@ def test_query_order_forces_reload_and_uses_common_current_bets_update():
         ("dead", "ORBITEXCH"),
         ("position_dead", "ORBITEXCH"),
         ("fresh", True),
+        ("push_reports",),  # #255:报告推送归 QueryOrder 本人
+        ("alive", "ORBITEXCH"),
+        ("position_alive", "ORBITEXCH"),
     ]
 
 
@@ -881,16 +897,32 @@ def test_on_current_bets_marks_oe_liveness_alive():
     assert c._venue_liveness.venue_alive("ORBITEXCH")
 
 
-def test_on_current_bets_marks_liveness_after_common_updates():
+def test_push_reports_from_snapshot_sends_order_then_position():
+    """#255:QueryOrder 恢复通路的报告推送 helper。"""
     c = _client()
     calls = []
-    c._emit_cancel_events_from_current_bets = lambda: calls.append("updates")
+    c._current_bets = {"A": {"offerId": "A"}}
     c._build_order_report = lambda bet: calls.append("build_report") or "R-A"
     c._send_order_status_report = lambda report: calls.append("send_report")
     c._build_position_status_reports_from_current_bets = (
         lambda: calls.append("build_positions") or ["P-A"]
     )
     c._send_position_status_report = lambda report: calls.append("send_position")
+
+    c._push_reports_from_snapshot()
+
+    assert calls == ["build_report", "send_report", "build_positions", "send_position"]
+
+
+def test_on_current_bets_normal_frame_skips_report_push():
+    """#255:常规帧只走事件路径,不推 order/position 报告(同帧双路 = 双计根因)。"""
+    c = _client()
+    calls = []
+    c._emit_cancel_events_from_current_bets = lambda: calls.append("updates")
+    c._build_order_report = lambda bet: calls.append("build_report") or "R-A"
+    c._build_position_status_reports_from_current_bets = (
+        lambda: calls.append("build_positions") or ["P-A"]
+    )
     c._venue_liveness = SimpleNamespace(
         mark_order_alive=lambda venue: calls.append("order_alive"),
         mark_position_alive=lambda venue: calls.append("position_alive"),
@@ -898,15 +930,57 @@ def test_on_current_bets_marks_liveness_after_common_updates():
 
     c._on_current_bets([{"offerId": "A"}])
 
-    assert calls == [
-        "updates",
-        "build_report",
-        "send_report",
-        "build_positions",
-        "send_position",
-        "order_alive",
-        "position_alive",
-    ]
+    assert calls == ["updates", "order_alive", "position_alive"]
+
+
+def test_on_current_bets_reload_frame_is_quiet(monkeypatch):
+    """#255:reload 后首帧静默 —— 不自派生 fill、不推报告、不标 alive(归触发方)。"""
+    from nautilus_trader.adapters.orbitexch import execution as oe_exec
+
+    c = _client()
+    calls = []
+    monkeypatch.setattr(
+        oe_exec, "current_bets_to_fills", lambda bets: calls.append("fills") or [],
+    )
+    c._build_order_report = lambda bet: calls.append("build_report") or "R-A"
+    c._send_order_status_report = lambda report: calls.append("send_report")
+    c._build_position_status_reports_from_current_bets = lambda: calls.append("build_positions") or []
+    c._venue_liveness = SimpleNamespace(
+        mark_order_alive=lambda venue: calls.append("order_alive"),
+        mark_position_alive=lambda venue: calls.append("position_alive"),
+    )
+    c._reload_frame_pending = True
+
+    c._on_current_bets([{"offerId": "A"}])
+
+    assert calls == []                          # 静默:无 fill、无报告、无 alive
+    assert c._reload_frame_pending is False
+    assert c._last_current_bets_ns > 0          # 快照完成时间仍推进(reload 等待依赖它)
+
+    c._on_current_bets([{"offerId": "A"}])
+    assert "fills" in calls                     # 下一常规帧恢复事件路径
+
+
+def test_reload_exec_page_marks_next_frame_quiet(monkeypatch):
+    """#255:任何 reload 入口(含拉取路径 stale-WS)都经 _reload_exec_page 置静默标记。"""
+    from nautilus_trader.adapters.orbitexch import execution as oe_exec
+
+    c = _client()
+    fills_calls = []
+    monkeypatch.setattr(
+        oe_exec, "current_bets_to_fills", lambda bets: fills_calls.append("fills") or [],
+    )
+
+    class ReloadPage:
+        async def reload(self, *, wait_until=None, timeout=None):
+            assert c._reload_frame_pending is True  # 标记先于重推
+            c._on_current_bets([{"offerId": "A"}])
+
+    c._page = ReloadPage()
+
+    assert _run(c._reload_exec_page()) is True
+    assert fills_calls == []                    # reload 帧未自派生 fill
+    assert c._reload_frame_pending is False
 
 
 def test_cancel_io_timeout_releases_page_lock_and_keeps_pending():

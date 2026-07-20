@@ -156,6 +156,12 @@ class ArbPolymarketExecutionClient(ArbExecutionSessionMixin, PolymarketExecution
             f"client_order_id={order.client_order_id}, venue_order_id={venue_order_id}, reason={reason!r}",
         )
 
+    def _reserve_available_balance_for_accepted_order(self, event, sess: dict) -> None:
+        """PM 关闭 accepted 预扣(#254):#253 回执即 ack 后,taker 秒成交单 CONFIRMED
+        数秒内即由 NT fill 增量记账扣减;预扣 + fill 增量会在下一轮 reconcile(~5min)
+        覆盖前双扣可用余额,压住小账户的后续机会。OE/SE 保留预扣(挂单驻留时间长,
+        且 venue 高频真值帧/响应很快覆盖本地估算)。"""
+
     async def _query_order(self, command: QueryOrder) -> None:
         """PM 卡在飞只查询一次；订单更新仍走 NT 通用 report 管道。"""
         self._venue_liveness.mark_order_dead(POLYMARKET)

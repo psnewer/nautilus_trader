@@ -138,6 +138,9 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._reload_inflight = None
         # 从 reload 发起起算，导航与 CURRENT_BETS 重推共用页面加载总预算。
         self._reload_bets_wait_ns = secs_to_nanos(self._config.page_timeout / 1000.0)
+        # #255:reload 后首帧 = 静默对账帧(不自派生 fill / 不推报告 / 不标 alive);
+        # 报告与 alive 由触发 reload 的调用方负责(QueryOrder 推送 / NT 拉取返回)。
+        self._reload_frame_pending = False
         self._current_bets_frames_seen = 0
         self._balance_seen = False
         self._last_balance_value: float | None = None
@@ -425,11 +428,16 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
 
     async def _query_order(self, command) -> None:
-        """卡在飞后强制刷新 CURRENT_BETS，走完整订单与仓位对账。"""
+        """卡在飞:dead → 强制 reload(静默帧)→ 本方法推送全量报告对账 → alive(#255)。"""
         if self._venue_liveness is not None:
             self._venue_liveness.mark_order_dead(SHARPEXCH)
             self._venue_liveness.mark_position_dead(SHARPEXCH)
-        await self._ensure_exec_snapshot_fresh(force=True)
+        if not await self._ensure_exec_snapshot_fresh(force=True):
+            return  # reload 失败 / CURRENT_BETS 未重推 → 保持 dead
+        self._push_reports_from_snapshot()
+        if self._venue_liveness is not None:
+            self._venue_liveness.mark_order_alive(SHARPEXCH)
+            self._venue_liveness.mark_position_alive(SHARPEXCH)
 
     async def _run_page_write(self, operation):
         async with self._page_lock:
@@ -450,6 +458,9 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
     async def _reload_exec_page(self) -> bool:
         if self._page is None:
             return False
+        # #255:reload 皆对账 —— 重推的首帧必须静默(报告消费者=触发方);失败时标记不清,
+        # 顺延到下一自然帧(该帧成交由再下一帧的累计差分自愈)。
+        self._reload_frame_pending = True
         reload_ts = self._clock.timestamp_ns()
         try:
             async with self._page_lock:
@@ -495,55 +506,64 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self._log.info(f"SE CURRENT_BETS routed: bets={len(self._current_bets)}")
         self._emit_cancel_events_from_current_bets()
 
-        for fill in current_bets_to_fills(bets):
-            offer_id = fill["offer_id"]
-            voi = VenueOrderId(offer_id)
-            client_order_id = self._cache.client_order_id(voi)
-            nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
-            if nt_order is None:
-                self._log.warning(f"CURRENT_BETS fill offerId={offer_id} has no NT order; skip")
-                continue
-            inst = self._cache.instrument(nt_order.instrument_id)
-            if inst is None:
-                continue
-            matched_qty = fill["size_matched"]
-            already_filled = nt_order.filled_qty.as_double()
-            remaining_qty = nt_order.quantity.as_double() - already_filled
-            last_qty = min(matched_qty - already_filled, remaining_qty)
-            if last_qty <= 0:
-                continue
-            seq = self._bet_fill_seq.get(offer_id, 0) + 1
-            self._bet_fill_seq[offer_id] = seq
-            self.generate_order_filled(
-                strategy_id=nt_order.strategy_id,
-                instrument_id=nt_order.instrument_id,
-                client_order_id=client_order_id,
-                venue_order_id=voi,
-                venue_position_id=None,
-                trade_id=TradeId(f"SE-{offer_id}-{seq}"),
-                order_side=nt_order.side,
-                order_type=nt_order.order_type,
-                last_qty=inst.make_qty(last_qty),
-                last_px=inst.make_price(fill["avg_price"]),
-                quote_currency=USD,
-                commission=Money(0, USD),
-                liquidity_side=LiquiditySide.MAKER,
-                ts_event=self._clock.timestamp_ns(),
-            )
+        # #255:reload 后首帧是静默对账帧(同 OE)——不自派生 fill,成交由触发 reload 的
+        # 调用方经报告对账(inferred fill)补齐;同帧双路派生会因 fill 事件异步 apply
+        # 双计部分成交(2026-07-18 实盘 overfill 根因)。常规帧只走事件路径,不推报告。
+        reload_frame = self._reload_frame_pending
+        if reload_frame:
+            self._reload_frame_pending = False
+        else:
+            for fill in current_bets_to_fills(bets):
+                offer_id = fill["offer_id"]
+                voi = VenueOrderId(offer_id)
+                client_order_id = self._cache.client_order_id(voi)
+                nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
+                if nt_order is None:
+                    self._log.warning(f"CURRENT_BETS fill offerId={offer_id} has no NT order; skip")
+                    continue
+                inst = self._cache.instrument(nt_order.instrument_id)
+                if inst is None:
+                    continue
+                matched_qty = fill["size_matched"]
+                already_filled = nt_order.filled_qty.as_double()
+                remaining_qty = nt_order.quantity.as_double() - already_filled
+                last_qty = min(matched_qty - already_filled, remaining_qty)
+                if last_qty <= 0:
+                    continue
+                seq = self._bet_fill_seq.get(offer_id, 0) + 1
+                self._bet_fill_seq[offer_id] = seq
+                self.generate_order_filled(
+                    strategy_id=nt_order.strategy_id,
+                    instrument_id=nt_order.instrument_id,
+                    client_order_id=client_order_id,
+                    venue_order_id=voi,
+                    venue_position_id=None,
+                    trade_id=TradeId(f"SE-{offer_id}-{seq}"),
+                    order_side=nt_order.side,
+                    order_type=nt_order.order_type,
+                    last_qty=inst.make_qty(last_qty),
+                    last_px=inst.make_price(fill["avg_price"]),
+                    quote_currency=USD,
+                    commission=Money(0, USD),
+                    liquidity_side=LiquiditySide.MAKER,
+                    ts_event=self._clock.timestamp_ns(),
+                )
 
+        self._last_current_bets_ns = self._clock.timestamp_ns()
+        _resolve_future(self._current_bets_ready_fut)
+        # 静默帧不标 alive:恢复语境下 alive 必须晚于报告进入 ExecEngine(#244 顺序),由触发方标。
+        if not reload_frame and self._venue_liveness is not None:
+            self._venue_liveness.mark_order_alive(SHARPEXCH)
+            self._venue_liveness.mark_position_alive(SHARPEXCH)
+
+    def _push_reports_from_snapshot(self) -> None:
+        """全量 order/position 报告 → ExecEngine 对账;QueryOrder 恢复通路专用(#255)。"""
         for bet in self._current_bets.values():
             report = self._build_order_report(bet)
             if report is not None:
                 self._send_order_status_report(report)
-
         for report in self._build_position_status_reports_from_current_bets():
             self._send_position_status_report(report)
-
-        self._last_current_bets_ns = self._clock.timestamp_ns()
-        _resolve_future(self._current_bets_ready_fut)
-        if self._venue_liveness is not None:
-            self._venue_liveness.mark_order_alive(SHARPEXCH)
-            self._venue_liveness.mark_position_alive(SHARPEXCH)
 
     @staticmethod
     def _bet_is_cancelled(bet: dict) -> bool:
