@@ -1623,17 +1623,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
         for order, result in zip(orders, response, strict=False):
             if result.get("success"):
                 venue_order_id = VenueOrderId(result["orderID"])
-                self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
-
-                # Receipt-is-ack (see _post_signed_order)
-                if self._mark_accepted_emitted(order.client_order_id):
-                    self.generate_order_accepted(
-                        strategy_id=order.strategy_id,
-                        instrument_id=order.instrument_id,
-                        client_order_id=order.client_order_id,
-                        venue_order_id=venue_order_id,
-                        ts_event=self._clock.timestamp_ns(),
-                    )
+                self._cache.add_venue_order_id(order.client_order_id, venue_order_id)  # 见 _post_signed_order
 
                 # Signal order event
                 event = self._ack_events_order.get(venue_order_id)
@@ -1831,20 +1821,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
                 )
             else:
                 venue_order_id = VenueOrderId(response["orderID"])
+                # 显式预索引(与是否 ack 无关):taker 单不会有 PLACEMENT,后续 WS trade
+                # 消息(MATCHED/MINED/CONFIRMED)靠这份映射才能反查 client_order_id;
+                # ack 本身不在此处触发,见 _handle_user_trade_in_ws_trade_msg。
                 self._cache.add_venue_order_id(order.client_order_id, venue_order_id)
-
-                # Receipt-is-ack: a marketable taker order never rests on the book,
-                # so the user channel sends no PLACEMENT message — without this the
-                # order would sit in SUBMITTED until the inflight check infers a
-                # px-less fill from a status report.
-                if self._mark_accepted_emitted(order.client_order_id):
-                    self.generate_order_accepted(
-                        strategy_id=order.strategy_id,
-                        instrument_id=order.instrument_id,
-                        client_order_id=order.client_order_id,
-                        venue_order_id=venue_order_id,
-                        ts_event=self._clock.timestamp_ns(),
-                    )
 
                 # Emit quote-to-base conversion after successful submission
                 if base_quantity is not None:
@@ -2054,24 +2034,30 @@ class PolymarketExecutionClient(LiveExecutionClient):
 
         order = self._cache.order(client_order_id) if client_order_id else None
 
+        # ack:PLACEMENT/CANCELLATION/UPDATE 任一先到达都证明订单已被 venue 接收(#256 追加;
+        # trade 消息的 MATCHED/MINED/CONFIRMED 同理,见 `_handle_user_trade_in_ws_trade_msg`)。
+        # 去重靠 `_mark_accepted_emitted`,与其它来源共用同一张表,谁先到谁 ack。
+        if (
+            msg.type
+            in (
+                PolymarketEventType.PLACEMENT,
+                PolymarketEventType.CANCELLATION,
+                PolymarketEventType.UPDATE,
+            )
+            and (order is None or order.status == OrderStatus.SUBMITTED)
+            and self._mark_accepted_emitted(client_order_id)
+        ):
+            self.generate_order_accepted(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
         match msg.type:
             case PolymarketEventType.PLACEMENT:
-                if (
-                    order is None or order.status == OrderStatus.SUBMITTED
-                ) and self._mark_accepted_emitted(client_order_id):
-                    self.generate_order_accepted(
-                        strategy_id=strategy_id,
-                        instrument_id=instrument_id,
-                        client_order_id=client_order_id,
-                        venue_order_id=venue_order_id,
-                        ts_event=self._clock.timestamp_ns(),
-                    )
-                else:
-                    self._log.debug(
-                        f"Order {client_order_id!r} already acked or in state "
-                        f"{order.status_string() if order is not None else '<unknown>'} - "
-                        "skipping placement event",
-                    )
+                pass  # ack 已在上面统一处理,PLACEMENT 本身没有其它动作
             case PolymarketEventType.CANCELLATION:
                 self._generate_cancel_success_event(
                     strategy_id=strategy_id,
@@ -2141,10 +2127,10 @@ class PolymarketExecutionClient(LiveExecutionClient):
         """
         Return True only on the first call for this order (caller may then ack).
 
-        OrderAccepted has two sources (HTTP submit receipt + WS PLACEMENT); events
-        apply asynchronously in the ExecEngine, so checking order.status alone has
-        a race window — a duplicate accepted would double the session's local
-        balance reserve.
+        OrderAccepted 现有多个 WS 来源(PLACEMENT,或 MATCHED/MINED/CONFIRMED 任一先到达
+        的 trade 消息 —— taker 单没有 PLACEMENT);events apply asynchronously in the
+        ExecEngine, so checking order.status alone has a race window — a duplicate
+        accepted would double the session's local balance reserve.
         """
         if client_order_id in self._accepted_emitted:
             return False
@@ -2227,6 +2213,26 @@ class PolymarketExecutionClient(LiveExecutionClient):
         if wait_for_ack:
             self.create_task(self._wait_for_ack_trade(msg, venue_order_id))
             return
+
+        # Ack:taker 单没有 PLACEMENT,MATCHED/MINED/CONFIRMED 任一先到达都证明订单已被
+        # venue 接收 —— 与是否 finalized 无关,故放在 finalized 门槛之前。去重靠
+        # `_mark_accepted_emitted`(与 PLACEMENT 共用同一去重表,谁先到谁 ack)。
+        ack_client_order_id = self._cache.client_order_id(venue_order_id)
+        if ack_client_order_id is not None:
+            ack_strategy_id = self._cache.strategy_id_for_order(ack_client_order_id)
+            ack_order = self._cache.order(ack_client_order_id)
+            if (
+                ack_strategy_id is not None
+                and (ack_order is None or ack_order.status == OrderStatus.SUBMITTED)
+                and self._mark_accepted_emitted(ack_client_order_id)
+            ):
+                self.generate_order_accepted(
+                    strategy_id=ack_strategy_id,
+                    instrument_id=instrument_id,
+                    client_order_id=ack_client_order_id,
+                    venue_order_id=venue_order_id,
+                    ts_event=self._clock.timestamp_ns(),
+                )
 
         if msg.status not in POLYMARKET_FINALIZED_TRADE_STATUSES:
             self._record_processed_trade(trade_id, msg.status)

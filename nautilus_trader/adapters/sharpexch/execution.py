@@ -142,6 +142,10 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # 报告与 alive 由触发 reload 的调用方负责(QueryOrder 推送 / NT 拉取返回)。
         self._reload_frame_pending = False
         self._current_bets_frames_seen = 0
+        # ack via CURRENT_BETS(不再由 place 回执 ack):offerId -> client_order_id,
+        # 下单后暂存;首次在任意一帧 CURRENT_BETS(含 reload 静默帧)中出现该 offerId
+        # 即证明订单已被 venue 接收,弹出并 ack(不看是否已成交)。见 `_on_current_bets`。
+        self._pending_accept: dict[str, ClientOrderId] = {}
         self._balance_seen = False
         self._last_balance_value: float | None = None
         self._balance_ready_fut = None
@@ -310,16 +314,11 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
                 return
-            from nautilus_trader.model.identifiers import VenueOrderId
-
-            venue_order_id = result.get("venue_order_id") or order.client_order_id.value
-            self.generate_order_accepted(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                venue_order_id=VenueOrderId(str(venue_order_id)),
-                ts_event=self._clock.timestamp_ns(),
-            )
+            # ack 不在此处触发(不再是回执即 ack):暂存 offerId -> client_order_id,
+            # 等下一条 CURRENT_BETS 帧(不论是否已成交)首次带出这个 offerId 时才 ack,
+            # 见 `_on_current_bets`。
+            venue_order_id = str(result.get("venue_order_id") or order.client_order_id.value)
+            self._pending_accept[venue_order_id] = order.client_order_id
         except Exception as exc:  # noqa: BLE001
             self._log.warning(
                 "SE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
@@ -428,13 +427,15 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
 
     async def _query_order(self, command) -> None:
-        """卡在飞:dead → 强制 reload(静默帧)→ 本方法推送全量报告对账 → alive(#255)。"""
+        """卡在飞:dead → 强制 reload(复用既有 reload 成功判定,同 #255)→ alive。
+        #256:不再对账——不主动构造/推送报告,reload 成功后的状态同步交给 WS 监听在
+        后续自然帧里做(与常规 WS-stale 场景一致);ack 也已不靠这里兜底(见 `_on_current_bets`
+        的 `_pending_accept`)。"""
         if self._venue_liveness is not None:
             self._venue_liveness.mark_order_dead(SHARPEXCH)
             self._venue_liveness.mark_position_dead(SHARPEXCH)
         if not await self._ensure_exec_snapshot_fresh(force=True):
             return  # reload 失败 / CURRENT_BETS 未重推 → 保持 dead
-        self._push_reports_from_snapshot()
         if self._venue_liveness is not None:
             self._venue_liveness.mark_order_alive(SHARPEXCH)
             self._venue_liveness.mark_position_alive(SHARPEXCH)
@@ -506,6 +507,27 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self._log.info(f"SE CURRENT_BETS routed: bets={len(self._current_bets)}")
         self._emit_cancel_events_from_current_bets()
 
+        # ack via CURRENT_BETS:offerId 首次出现在任意一帧(含 reload 静默帧)即证明订单
+        # 已被 venue 接收,不看是否已成交;与 fill 派生是独立的一次性状态跃迁,不受
+        # #255 静默帧规则约束(不会双计)。`newly_acked` 供本帧 fill 派生兜底解析
+        # client_order_id(NT 引擎对刚 ack 的事件是异步 apply,cache 索引还没跟上)。
+        newly_acked: dict[str, ClientOrderId] = {}
+        for offer_id in list(self._pending_accept):
+            if offer_id not in self._current_bets:
+                continue
+            coid = self._pending_accept.pop(offer_id)
+            nt_order = self._cache.order(coid)
+            if nt_order is None:
+                continue
+            self.generate_order_accepted(
+                strategy_id=nt_order.strategy_id,
+                instrument_id=nt_order.instrument_id,
+                client_order_id=coid,
+                venue_order_id=VenueOrderId(offer_id),
+                ts_event=self._clock.timestamp_ns(),
+            )
+            newly_acked[offer_id] = coid
+
         # #255:reload 后首帧是静默对账帧(同 OE)——不自派生 fill,成交由触发 reload 的
         # 调用方经报告对账(inferred fill)补齐;同帧双路派生会因 fill 事件异步 apply
         # 双计部分成交(2026-07-18 实盘 overfill 根因)。常规帧只走事件路径,不推报告。
@@ -516,7 +538,7 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             for fill in current_bets_to_fills(bets):
                 offer_id = fill["offer_id"]
                 voi = VenueOrderId(offer_id)
-                client_order_id = self._cache.client_order_id(voi)
+                client_order_id = self._cache.client_order_id(voi) or newly_acked.get(offer_id)
                 nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
                 if nt_order is None:
                     self._log.warning(f"CURRENT_BETS fill offerId={offer_id} has no NT order; skip")
@@ -555,15 +577,6 @@ class SharpExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         if not reload_frame and self._venue_liveness is not None:
             self._venue_liveness.mark_order_alive(SHARPEXCH)
             self._venue_liveness.mark_position_alive(SHARPEXCH)
-
-    def _push_reports_from_snapshot(self) -> None:
-        """全量 order/position 报告 → ExecEngine 对账;QueryOrder 恢复通路专用(#255)。"""
-        for bet in self._current_bets.values():
-            report = self._build_order_report(bet)
-            if report is not None:
-                self._send_order_status_report(report)
-        for report in self._build_position_status_reports_from_current_bets():
-            self._send_position_status_report(report)
 
     @staticmethod
     def _bet_is_cancelled(bet: dict) -> bool:

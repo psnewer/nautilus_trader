@@ -348,6 +348,10 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         # #255:reload 后首帧 = 静默对账帧(不自派生 fill / 不推报告 / 不标 alive);
         # 报告与 alive 由触发 reload 的调用方负责(QueryOrder 推送 / NT 拉取返回)。
         self._reload_frame_pending = False
+        # ack via CURRENT_BETS(不再由 place 回执 ack):offerId -> client_order_id,下单后
+        # 暂存;首次在任意一帧 CURRENT_BETS(含 reload 静默帧)中出现该 offerId 即证明订单
+        # 已被 venue 接收,弹出并 ack(不看是否已成交)。见 `_on_current_bets`。
+        self._pending_accept: dict[str, ClientOrderId] = {}
         self._msgbus.subscribe(topic=TOPIC_ARBITRAGE_PARAMS, handler=self._on_set_arbitrage_params_cmd)
 
     def _current_fx(self) -> float:
@@ -482,13 +486,11 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
                 return
-            from nautilus_trader.model.identifiers import VenueOrderId
-            self.generate_order_accepted(
-                strategy_id=order.strategy_id, instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                venue_order_id=VenueOrderId(result.order.venue_order_id or order.client_order_id.value),
-                ts_event=self._clock.timestamp_ns(),
-            )
+            # ack 不在此处触发(不再是回执即 ack):暂存 offerId -> client_order_id,
+            # 等下一条 CURRENT_BETS 帧(不论是否已成交)首次带出这个 offerId 时才 ack,
+            # 见 `_on_current_bets`。
+            venue_order_id = str(result.order.venue_order_id or order.client_order_id.value)
+            self._pending_accept[venue_order_id] = order.client_order_id
         except Exception as e:
             self._log.warning(
                 f"OE submit result unknown; retaining SUBMITTED order for NT inflight reconcile "
@@ -587,12 +589,14 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self.generate_order_cancel_rejected(strategy_id, instrument_id, client_order_id, voi, reason, now)
 
     async def _query_order(self, command) -> None:
-        """卡在飞:dead → 强制 reload(静默帧)→ 本方法推送全量报告对账 → alive(#255)。"""
+        """卡在飞:dead → 强制 reload(复用既有 reload 成功判定,同 #255)→ alive。
+        #256:不再对账——不主动构造/推送报告,reload 成功后的状态同步交给 WS 监听在
+        后续自然帧里做(与常规 WS-stale 场景一致);ack 也已不靠这里兜底(见 `_on_current_bets`
+        的 `_pending_accept`)。"""
         self._venue_liveness.mark_order_dead(ORBITEXCH)
         self._venue_liveness.mark_position_dead(ORBITEXCH)
         if not await self._ensure_exec_snapshot_fresh(force=True):
             return  # reload 失败 / CURRENT_BETS 未重推 → 保持 dead
-        self._push_reports_from_snapshot()
         self._venue_liveness.mark_order_alive(ORBITEXCH)
         self._venue_liveness.mark_position_alive(ORBITEXCH)
 
@@ -721,6 +725,27 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
         self._current_bets = {str(b.get("offerId", "")): b for b in usd_bets if b.get("offerId")}
         self._emit_cancel_events_from_current_bets()
 
+        # ack via CURRENT_BETS:offerId 首次出现在任意一帧(含 reload 静默帧)即证明订单
+        # 已被 venue 接收,不看是否已成交;与 fill 派生是独立的一次性状态跃迁,不受
+        # #255 静默帧规则约束(不会双计)。`newly_acked` 供本帧 fill 派生兜底解析
+        # client_order_id(NT 引擎对刚 ack 的事件是异步 apply,cache 索引还没跟上)。
+        newly_acked: dict[str, ClientOrderId] = {}
+        for offer_id in list(self._pending_accept):
+            if offer_id not in self._current_bets:
+                continue
+            coid = self._pending_accept.pop(offer_id)
+            nt_order = self._cache.order(coid)
+            if nt_order is None:
+                continue
+            self.generate_order_accepted(
+                strategy_id=nt_order.strategy_id,
+                instrument_id=nt_order.instrument_id,
+                client_order_id=coid,
+                venue_order_id=VenueOrderId(offer_id),
+                ts_event=self._clock.timestamp_ns(),
+            )
+            newly_acked[offer_id] = coid
+
         # #255:reload 后首帧是静默对账帧 —— 不自派生 fill,成交由触发 reload 的调用方经
         # 报告对账(inferred fill)补齐;fill 事件异步 apply,同帧双路对同一快照派生必读到
         # 滞后 filled_qty → 每笔部分成交双计 + 终态 overfill(2026-07-18 实盘)。
@@ -735,7 +760,7 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             for fill in current_bets_to_fills(bets):
                 offer_id = fill["offer_id"]
                 voi = VenueOrderId(offer_id)
-                client_order_id = self._cache.client_order_id(voi)
+                client_order_id = self._cache.client_order_id(voi) or newly_acked.get(offer_id)
                 nt_order = self._cache.order(client_order_id) if client_order_id is not None else None
                 if nt_order is None:
                     self._log.warning(f"CURRENT_BETS 成交 offerId={offer_id} 无对应 NT order;跳过")
@@ -773,14 +798,6 @@ class OrbitExchExecutionClient(ArbExecutionSessionMixin, LiveExecutionClient):
             self._venue_liveness.mark_order_alive(ORBITEXCH)
             self._venue_liveness.mark_position_alive(ORBITEXCH)
 
-    def _push_reports_from_snapshot(self) -> None:
-        """全量 order/position 报告 → ExecEngine 对账;QueryOrder 恢复通路专用(#255)。"""
-        for bet in self._current_bets.values():
-            report = self._build_order_report(bet)
-            if report is not None:
-                self._send_order_status_report(report)
-        for report in self._build_position_status_reports_from_current_bets():
-            self._send_position_status_report(report)
 
     @staticmethod
     def _bet_is_cancelled(bet: dict) -> bool:

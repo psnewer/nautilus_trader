@@ -367,7 +367,11 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   WS 新鲜”的状态;否则 `_ensure_exec_snapshot_fresh()` 触发 single-flight `_reload_exec_page()`,
   reload execution page 后等待 `CURRENT_BETS` 重推。超时未重推则 report 返回空/None 并把
   SE order/position liveness 标记 dead。
-- `_submit_order` 已接 session gate 与 executor result → `generate_order_accepted/rejected`;
+- `_submit_order` 已接 session gate 与 executor result → `generate_order_rejected`(失败分支)。
+  ⚠️ **变更(#256,2026-07-20)**:成功分支不再直接 `generate_order_accepted`——只登记
+  `_pending_accept[offer_id] = client_order_id`;真正的 ack 推迟到下一条 `CURRENT_BETS` 帧首次
+  带出该 offerId 时,由 `_on_current_bets` 发出(不看是否已成交,见 execution architecture
+  §4.3bis "CURRENT_BETS 更新语义:ack 来源(#256)")。
   `_place_via_executor` 从 cache instrument 翻译 `SharpExchLegacyOrder`,再走
   `SharpExchExecutor.place_order`;`_cancel_order` / `_cancel_one` 走 `SharpExchExecutor.cancel_order`;
   `_cancel_residual_one` 复用 `_cancel_one`,因此 cancel-only 检测到 SE 残留挂单时会真实撤

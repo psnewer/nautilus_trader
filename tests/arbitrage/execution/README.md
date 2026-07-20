@@ -172,8 +172,9 @@
 `generate_account_state`;后续真实余额帧/账户查询可覆盖该估算。
 
 **#254:PM 关闭 accepted 预扣** —— `ArbPolymarketExecutionClient` 覆盖
-`_reserve_available_balance_for_accepted_order` 为 no-op(#253 回执即 ack 后 PM taker 秒 CONFIRMED,
-NT fill 增量记账及时扣减,预扣叠加成双扣且 PM 无推送源要等 ~5min reconcile 纠正)。
+`_reserve_available_balance_for_accepted_order` 为 no-op(taker 单 accepted 后——现由
+MATCHED/MINED/CONFIRMED 任一先到达 ack,见 execution architecture §3.1 #256——数秒内即
+CONFIRMED,NT fill 增量记账及时扣减,预扣叠加成双扣且 PM 无推送源要等 ~5min reconcile 纠正)。
 mixin 通用路径与 `order_required_balance` 公式不动(本节 4.5.5-4.5.7 的 mixin 级用例继续锁定
 OE/SE 语义与公式契约,PM instrument 用例锁定的是 mixin/公式层,真实 PM client 不再触发);
 PM 侧验收:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`。

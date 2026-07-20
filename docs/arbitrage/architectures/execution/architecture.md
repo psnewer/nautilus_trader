@@ -95,7 +95,28 @@ OE/SE 的初始业务状态 waiter 都必须在首次导航/登录之前建立�
 
 **PM cancel 终态约束(#99/#113/#cancel-session,已落地)**:CLOB cancel 成功响应形如 `{"canceled":[order_id], "not_canceled":{}}`;当前把 `canceled[]` 解释为“撤单请求已被 CLOB 接收”,不再立即 `generate_order_canceled`。真实撤单完成以 USER WS `CANCELLATION` 事件为准,由 `_generate_cancel_success_event` 写回 NT cache / session terminal。`not_canceled` 中的失败原因仍走 `_generate_cancel_event` → `generate_order_cancel_rejected`,其中 `"already canceled or matched"` 保持既有抑制语义(等待 WS/成交事件给出正确终态)。REST 与 USER WS 都可能回报同一撤单终态,WS 侧必须幂等:① cache 当前 `order.status == CANCELED` 时跳过;② cache 尚未 apply 第一条 `OrderCanceled`、但同一 `client_order_id` 的 cancel terminal 已由 PM client 发出时,用有界 `_cancel_terminal_client_ids` 窗口跳过第二条,避免向 NT 重放 `CANCELED -> CANCELED`。覆盖范围:单笔 `_cancel_order`、deferred cancel、USER WS cancellation;全局/market cancel 仍是 fire-and-forget 日志路径。
 
-**PM ack 语义:下单回执即 ack(#253,2026-07-19 落地)**:PM 的 `OrderAccepted` 有两个可能来源——HTTP `POST /order` 成功回执(同步、必达)与 USER WS `PLACEMENT` 消息(**仅挂簿单才发**;taker 秒成交单从不挂簿,PM 不发 PLACEMENT)。上游原实现只接 WS:taker 单停在 SUBMITTED → NT inflight-check(阈值 ~5s)`Query` → `/data/order` status report 无 `avg_px` → ExecEngine 兜底生成 **0 价 inferred fill**,随后真正的 CONFIRMED 命中 "Order already closed" 被跳过;session 预扣(§4.5)/终态跟踪(§4.1)因从未见到 accepted 全断(2026-07-18 实盘复盘)。现行为:`_post_signed_order` 与 `_process_batch_response` 的成功分支(拿到 `orderID` 处)即 `generate_order_accepted`(与 OE placeBets result / SE PlaceBets response 的"回执即 ack"语义对齐);WS `PLACEMENT` 保留但幂等跳过。双路去重靠 `_accepted_emitted` 有界 OrderedDict——事件经 ExecEngine 异步 apply,只查 `order.status` 有竞态窗口,重复 accepted 会让 session 预扣双扣。**成交确认语义不变**:fill 仍只在 trade `CONFIRMED` 生成(`POLYMARKET_FINALIZED_TRADE_STATUSES`),MATCHED/MINED 只记录。测试:`tests/arbitrage/adapters/polymarket/test_execution_ack.py`。
+**PM ack 语义:只来自 WS,不再回执即 ack(#256,2026-07-20 落地,取代 #253)**:
+
+> ⚠️ **失效横幅**:#253(2026-07-19,"下单回执即 ack")已被本条取代——HTTP 回执现在只做
+> `cache.add_venue_order_id` 预索引,不再 `generate_order_accepted`。原因:#253 解决了 taker
+> 单无 ack 信号的问题,但用户复盘后判断"信任一次性 HTTP 响应"不是必须的——taker 单没有
+> PLACEMENT,但 WS trade 消息(MATCHED/MINED/CONFIRMED)任一先到达本身就证明订单已被
+> venue 接收,不需要额外依赖 receipt。
+
+PM 的 `OrderAccepted` 现有两条**互相独立**的来源,分别在两个不同的 WS 消息处理方法里:
+**order 消息**的 `PLACEMENT`/`CANCELLATION`/`UPDATE` 任一先到达(`_handle_ws_order_msg`;PLACEMENT
+是 #253 就有的,CANCELLATION/UPDATE 是 2026-07-20 追加——三者任一到达都证明订单已被 venue
+接收,判断放在 `match msg.type` **之前**统一做一次,`PLACEMENT` 分支因此简化为 `pass`);**trade 消息**的
+`MATCHED`/`MINED`/`CONFIRMED` 任一先到达(`_handle_user_trade_in_ws_trade_msg`,在
+finalized 门槛判断**之前**做 ack 尝试,故非 finalized 的 MATCHED/MINED 也能 ack)。两条来源
+共用同一张 `_accepted_emitted` 去重表,谁先到谁 ack,互不知道对方存在。`_post_signed_order`/
+`_process_batch_response` 成功分支只索引 `venue_order_id`(供后续任一 WS 消息按
+`cache.client_order_id(venue_order_id)` 反查,taker 单靠这份索引才能在没有 PLACEMENT 时被
+trade 消息命中)。去重靠 `_accepted_emitted` 有界
+OrderedDict——事件经 ExecEngine 异步 apply,只查 `order.status` 有竞态窗口,重复 accepted 会让
+session 预扣双扣。**成交确认语义不变**:fill 仍只在 trade `CONFIRMED` 生成
+(`POLYMARKET_FINALIZED_TRADE_STATUSES`),MATCHED/MINED 只记录 + 补 ack、不生成 fill。
+测试:`tests/arbitrage/adapters/polymarket/test_execution_ack.py`。
 
 **PM CLOB REST 路由 / geoblock 约束(#98,已落地 / JP 误拦已修正)**:`get_polymarket_http_client()` 必须把 `PolymarketExecClientConfig.proxy_url` 接到 `py_clob_client_v2` 的共享 `httpx.Client`,并在显式 `proxy_url` 存在时关闭环境代理继承(`trust_env=False`)。原因:PM WS 由 NT pyo3 client 显式吃 `proxy_url`,而 v2 CLOB REST SDK 默认读进程 `HTTP_PROXY/HTTPS_PROXY`;若两者走不同出口,会出现"PM/OE WS 正常、PM REST 下单 / open-orders reset 或 timeout"。`PolymarketExecutionClient._connect` 在真连接前按官方 `https://polymarket.com/api/geoblock` 做只读 preflight,但不能把 `blocked=true` 一刀切解释为 API 禁止:官方文档列 `JP` 为 `Frontend UI restricted`(API 本身不受限),因此 JP 只记录 geoblock 响应并继续;`AU/US/...` API-blocked、`PL/SG/TH/TW` close-only、以及 CA/ON、UA 指定地区仍 fail fast,不进入真实下单。launcher 的 `--preflight-polymarket` 还会用同一路由跑 CLOB `get_server_time()` + authenticated `get_open_orders()` + `get_balance_allowance()` 三个只读检查;余额为 0 或 v2 SDK transport 失败时返回 2 并打印单行错误,用于提前暴露 proxy wallet 常见的 `signature_type` 配错或代理链路不可用。2026-06-10 JP 出口实测 `server_time` 可读、`open_order_count=0`、`balance=67.916080 USDC.e`。
 
@@ -257,9 +278,12 @@ def _on_session_timeout(self, event):
   这样**只要 `exec_started` 自增了,就一定有人(终态或看门狗)来减**,不会出现"exec_count++ 却无看门狗"的永久泄漏。
   出口对称:`_end_session` 把 `pair_inflight.exec_finished` 提到 `cancel_timer`/`publish` **之前**,
   保证 publish 抛也不漏减。
-- **2026-06-09 live 校准(#85)**:OE `placeBets` venue 回执已直接确认返回 `status=OK + offerIds`;
-  NT `OrderAccepted` 无独立日志锚点,但代码路径会在成功 result 后调用 `generate_order_accepted`,且下一轮
-  cancel-only 能从 cache open order 取到 `venue_order_id` 并撤旧单,可反证 open order 已落入 NT。
+- **2026-06-09 live 校准(#85)**:OE `placeBets` venue 回执已直接确认返回 `status=OK + offerIds`。
+  ⚠️ **失效(#256,2026-07-20)**:下一句"代码路径会在成功 result 后调用 `generate_order_accepted`"
+  已不成立——OE/SE 现在都改为 ack via CURRENT_BETS(§4.3bis 新增块),回执成功只登记
+  `_pending_accept[offerId] = client_order_id`,`generate_order_accepted` 推迟到下一条
+  CURRENT_BETS 帧首次带出该 offerId 时才发。cancel-only 仍能从 cache open order 取到
+  `venue_order_id`——因为 ack(不论快慢)最终都会落地,索引随之建立,只是时间点后移。
   若订单未成交/未撤销,submit+track session 按 Q15 继续等到 30s 绝对超时。当前代码不包含
   timeout cleanup / stale accepted 特例。
 
@@ -374,9 +398,12 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   传输结果未知包括请求超时、断线、fetch 异常、空响应、响应不可解析，以及 place 响应缺少目标
   market；这些情形不得伪造 `OrderRejected` / `OrderCancelRejected`。venue 明确返回的业务错误才是
   terminal reject。
-- **查询次数统一为一次**:`LiveExecEngineConfig.inflight_check_retries=1`。超过 NT
-  `inflight_check_threshold_ms`(当前默认 5 秒)后只发送一次 `QueryOrder`;若没有有效 report，
-  下一次检查直接由 NT `_resolve_inflight_order()` 收口，不再次访问 venue。
+- **查询次数统一为一次**:`LiveExecEngineConfig.inflight_check_retries=1`。超过
+  `inflight_check_threshold_ms`(#256 起 launcher 显式设 30 秒,不再用 NT 默认 5 秒——ack 改为
+  venue 广播式信号驱动后不是一次性回执,阈值放宽给信号到达留正常余量,同时仍小于
+  `tracking_timeout_sec`=60 秒的 session 超时,保证 inflight-check 能在 session 结束前生效)后
+  只发送一次 `QueryOrder`;若没有有效 report,下一次检查直接由 NT `_resolve_inflight_order()`
+  收口,不再次访问 venue。
 - **PM 已卡在飞时序**:`ArbPolymarketExecutionClient._query_order` 收到 `QueryOrder` 即先
   `mark_order_dead(POLYMARKET)`，再按 POST 前缓存的 order hash 执行一次且仅一次 `get_order`
   (该路径不使用 PM RetryManager)。失败/空响应/查不到/解析失败均不发 report，order liveness
@@ -384,33 +411,70 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
   `ExecEngine.reconcile_execution_report` 更新订单，调用返回后才 `mark_order_alive(POLYMARKET)`。
   该恢复流程独立于 execution session，不读写 `_active_sessions`、session timer 或
   `pair_inflight`。
-- **OE/SE 已卡在飞时序**:place/cancel 自身的统一 5 秒 I/O timeout 先保证页锁及时释放；NT 的
-  5 秒 inflight threshold 独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task，
-  先把对应 venue 的 order/position liveness 都置 dead，再强制 reload execution page 并等待一帧新的完整
-  `CURRENT_BETS`；不按目标订单字段做猜测或单笔认领，也不会先等待 120 秒 `page_timeout`。
+- **OE/SE 已卡在飞时序**:place/cancel 自身的统一 5 秒 I/O timeout 先保证页锁及时释放(与
+  inflight threshold 是两个独立的 5 秒,不是同一个数字);NT 的 inflight threshold(#256 起 30 秒,
+  见 (5) 一次性查询语义)独立触发 `QueryOrder`。`QueryOrder` 不查询、取消或感知原 page task,
+  先把对应 venue 的 order/position liveness 都置 dead,再强制 reload execution page 并等待一帧新的完整
+  `CURRENT_BETS`(与常规 WS-stale 触发的 reload **复用同一套** `_ensure_exec_snapshot_fresh`/
+  `_reload_exec_page` 成功判定逻辑,只是这里显式传 `force=True`,不等 WS 判定为 stale 才重载);
+  不按目标订单字段做猜测或单笔认领,也不会先等待 120 秒 `page_timeout`。
+  ⚠️ **修订(#256,2026-07-20)**:reload 成功后**不再**主动构造/推送任何报告(原
+  `_push_reports_from_snapshot()` 全量 order+position report 已删除)——reload 只负责让
+  `_current_bets` 快照追上真值,状态同步(fill 派生、pending-accept 转 ack、撤单检测)交给
+  reload 之后 WS 监听自然收到的后续帧去做,同常规 WS-stale 场景。强制 reload 这件事本身
+  **没有改**(仍 `force=True`,仍是定制 override,不是落到 NT 基类)。删这一步的原因:ack
+  改为 CURRENT_BETS 驱动后(见下方新增块)inflight-check 命中概率已经显著降低,而 reload 本身
+  从不负责对账,对账原本就该由 WS 监听接住——旧版在 reload 成功后又手动扫一遍快照推报告,是
+  给本来就会自然发生的事情多绕了一圈。PM `_query_order` 不受影响,仍是自定义单次 `get_order`
+  + 单笔报告推送(见上方 PM 已卡在飞时序)——结构不对称的原因:OE/SE 的 CURRENT_BETS 是**周期性全量快照**广播,等下一帧自然会把当前
+  全部状态重新推一遍;PM 的 USER WS 是**逐单逐事件**推送(PLACEMENT/trade 消息只对应
+  它触发时的那一单),没有"等下一条消息就会把所有状态重新广播一遍"这种周期性全量重放,
+  丢了的事件只能靠显式查询(`get_order`)补,等不到。
 - **CURRENT_BETS 更新语义:单一 fill 源不变量(#255,2026-07-19 修订 #244 的逐帧推送)**:
   任何时刻订单成交只有一个派生源。**常规帧**(venue 主动推送)只走事件路径(自派生
   `generate_order_filled`),**不推任何 report**;**reload 后首帧是静默对账帧**——
   `_reload_exec_page` 在触发 reload 前置 `_reload_frame_pending`,该帧只替换快照 + 撤单事件,
-  **不自派生 fill、不推报告、不标 alive**;**报告与 alive 归触发 reload 的调用方**:
-  `_query_order` 在 `_ensure_exec_snapshot_fresh(force=True)` 成功后自己调
-  `_push_reports_from_snapshot()`(全量 `OrderStatusReport` + 聚合 `PositionStatusReport`)再置
-  order/position alive;NT 拉取式对账((7) 启动 + 300s 连续)本来就把报告**返回**引擎并自标 liveness,
-  其 stale-WS 分支触发的 reload 同样得到静默帧,不产生第二 fill 源。
+  **不自派生 fill、不推报告、不标 alive**;报告与 alive 归触发 reload 的调用方——
+  NT 拉取式对账((7) 启动 + 300s 连续)本来就把报告**返回**引擎并自标 liveness,其 stale-WS
+  分支触发的 reload 同样得到静默帧,不产生第二 fill 源。
+  ⚠️ **变更(#256,2026-07-20)**:`_query_order` 仍是 OE/SE 定制 override,`force=True` 强制
+  reload 这件事**没有改**;改的只是 reload 成功之后那一步——原来会自己调
+  `_push_reports_from_snapshot()`(全量 order+position report)再置 alive,现在**直接置 alive,
+  不推任何报告**。reload 只负责让 `_current_bets` 追上真值,状态怎么进 ExecEngine 交给 WS 监听
+  接住 reload 之后的自然帧去做(同下方"ack 来源"块的静默帧规则——reload 首帧本就静默,不派生
+  也不推,是下一条自然帧在处理)。连带影响:原"报告通路的不可替代场景"(无
+  `offerId↔client_order_id` 映射的孤儿 bet,靠 QueryOrder 全量推送顺带扫出)现在完全没有
+  QueryOrder 这条腿了,**只剩 NT 拉取式对账(300s 周期)**能覆盖。这是可接受的收窄:孤儿单
+  恢复延迟从"下次 inflight-check 触发"退化为"最长 300s",而 inflight-check 本身触发频率因
+  #256(ack 提前到 CURRENT_BETS 首次出现)已大幅降低。
   互斥的原因(2026-07-18 实盘):fill 事件经 msgbus 异步 apply,而报告对账同步读 cache,
   同帧双路对同一份快照派生必读到滞后 `filled_qty` → 每笔部分成交双计、终态触发 overfill 拒绝;
   且报告对账在常规帧本应恒为 no-op,逐帧推送是纯冗余 + 结构性竞态源。
-  报告通路的不可替代场景(无 `offerId↔client_order_id` 映射的孤儿 bet——映射由 place 回执建立,
-  丢回执 ⟺ 孤儿——重启外部单、回执丢失恢复)全部收敛到 QueryOrder 推送与 NT 拉取式对账。
   reload、等待业务帧或推送失败时保持 dead,等价于 PM 单次 `get_order` 失败;reload 失败时静默标记
   不清除、顺延到下一自然帧(该帧被跳过的成交由再下一帧的累计差分自愈)。空 `CURRENT_BETS`
   是有效完整快照,订单与仓位报告集合均可为空,属于成功而非查询失败。
+- **CURRENT_BETS 更新语义:ack 来源(#256,2026-07-20,取代 OE/SE 的"回执即 ack")**:
+  OE/SE 的 `_submit_order` 成功分支不再直接 `generate_order_accepted`,只登记
+  `_pending_accept[offer_id] = client_order_id`;`_on_current_bets` 每帧先扫一遍
+  `_pending_accept`,offer_id 首次出现在 `self._current_bets`(原始快照,**不看是否已成交**,
+  与只保留 `sizeMatched>0` 的 `current_bets_to_fills` 不同)即弹出并 ack。ack 检查在
+  reload-frame 分支**之前**跑,对静默帧同样生效(ack 是一次性状态跃迁,与 #255 的 fill 双计
+  问题无关,不受静默帧约束)。同帧内若该 offer_id 已经开始成交(刚下单即秒成交),fill 派生
+  这一步 `self._cache.client_order_id(voi)` 还查不到(accepted 事件刚同步 enqueue,未出队应用)
+  ——用本帧局部构造的 `newly_acked: dict[offer_id, client_order_id]` 兜底解析,同帧 ack+fill
+  都不丢。动机:用户判断"回执即 ack"(#253/#85)信任的是一次性、可能丢失的 HTTP/executor
+  响应;CURRENT_BETS 是持续在收的广播式信号,offerId 出现即证明 venue 已接收,不需要额外
+  相信回执本身。PM 对称地把 ack 从"HTTP 回执"移到"WS PLACEMENT/trade 消息"(见 §3.1 #256)。
+  测试:OE/SE `test_pending_accept_acks_on_first_current_bets_sighting_unmatched` /
+  `test_pending_accept_acks_during_reload_quiet_frame` /
+  `test_pending_accept_same_frame_fill_resolves_via_newly_acked` /
+  `test_submit_order_success_registers_pending_accept_not_immediate_ack`。
 - **reconcile"无真实 response"必须明确返回失败**:reload 在 timeout 内没等到新 `CURRENT_BETS` → 报告方法**返回 None / 抛 query-failed**(让 NT 当"查询失败"重试,不应用假的空快照对账;并按失败维度置 liveness false)。
 - **Path B 后恢复驱动** = (4) 的统一 reconcile 重试(reconcile 失败 → 持续重试直到成功);残留:exec 通道真死时 NT 可能 Path B 错判 Reject 一个其实活着的 OE 单 → liveness 保持 false,新 submit 被 Risk 安全挡住,但 NT cache order 错置终态(通道其实在时需人工对账)。
 
 **(6) 互斥**:reload 与 place/cancel 同页冲突由 **OE ExecClient 页锁**串行(NT 不串行化,详见 synchronization §8.1/§8.2);本节只负责"reload-then-report"读写 `_current_bets`,锁的归属与 strategy 侧状态位迁移在横切章。
 
-**(7) NT 开关 / 配置(#105/#108/#110/#111 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
+**(7) NT 开关 / 配置(#105/#108/#110/#111/#256 已定)**:launcher `LiveExecEngineConfig(reconciliation=True, inflight_check_threshold_ms=30_000, inflight_check_retries=1, open_check_interval_secs=300, position_check_interval_secs=300)`(`inflight_check_threshold_ms` 为 #256 追加,不再用 NT 默认 5s,配套 `tracking_timeout_sec=60`)。启动期 reconciliation 是 `VenueExecutionLiveness` 从 false→true 的主要来源;连续 open/order 对账 #111 全局开启,用于 PM order liveness 失败后的自动恢复,OE 健康时只读 `_current_bets` 内存、WS stale 时才 reload execution 页;连续 position 对账 #110 全局开启,用于 PM merge/redeem 触发与 position liveness 刷新。`inflight_check` 保持开启，单次查询语义见 (5b)。`TradingNodeConfig.timeout_connection=180s`,覆盖 OE 登录 + PM 初次 instrument load + 启动对账前置耗时。
 
 **仍待 live 确认(非阻塞)**:~~SockJS 心跳周期~~(✅ 2026-06-13 实测 ≈35s,idle=300s 定稿);reconcile 重试 cadence/backoff;`place_bets` 改并发后两腿回执 live 重验。
 
@@ -435,7 +499,7 @@ OE/SE 的 reload-then-report 从发起 reload 起计时，页面导航与等待�
 
 **已落地:accepted 后本地可用余额预扣(Q17 修订,venue-pluggable;#254 起仅 OE/SE)**:
 
-**PM 关闭预扣(#254,2026-07-19)**:`ArbPolymarketExecutionClient` 覆盖 `_reserve_available_balance_for_accepted_order` 为 no-op(与 `_handle_ambiguous_submit_failure` 同款子类特化模式)。原因:#253 回执即 ack 后 PM taker 单几秒内即 CONFIRMED,NT 原生 fill **增量记账**(Portfolio → `AccountsManager.update_balances`,按笔叠加 delta,`reported=False`)会及时扣减;预扣(reported=True 覆盖)+ fill 增量叠加 = 双扣,而 PM 无余额推送源,要等下一轮 position reconcile(~5min)拉真值才纠正,小账户会压住窗口内的后续机会。OE/SE 预扣保留:挂单驻留时间长(fill 增量可能迟迟不来,预扣是唯一的占用表达),且 venue 高频真值(OE WS `BALANCE` / SE profile response)很快覆盖本地估算,双扣窗口短。mixin 通用路径与 `order_required_balance` 公式不动(下述各条对 OE/SE 仍有效);"Execution session accepted" 日志锚点三家保留。测试:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`。
+**PM 关闭预扣(#254,2026-07-19)**:`ArbPolymarketExecutionClient` 覆盖 `_reserve_available_balance_for_accepted_order` 为 no-op(与 `_handle_ambiguous_submit_failure` 同款子类特化模式)。原因:PM taker 单 accepted(现由 MATCHED/MINED/CONFIRMED 任一先到达 ack,§3.1 #256)后几秒内即 CONFIRMED,NT 原生 fill **增量记账**(Portfolio → `AccountsManager.update_balances`,按笔叠加 delta,`reported=False`)会及时扣减;预扣(reported=True 覆盖)+ fill 增量叠加 = 双扣,而 PM 无余额推送源,要等下一轮 position reconcile(~5min)拉真值才纠正,小账户会压住窗口内的后续机会。OE/SE 预扣保留:挂单驻留时间长(fill 增量可能迟迟不来,预扣是唯一的占用表达),且 venue 高频真值(OE WS `BALANCE` / SE profile response)很快覆盖本地估算,双扣窗口短。mixin 通用路径与 `order_required_balance` 公式不动(下述各条对 OE/SE 仍有效);"Execution session accepted" 日志锚点三家保留。测试:`test_polymarket_client.py::test_arb_pm_accepted_reserve_is_noop`。
 - 三个 tradable venue 的 AccountState 统一表达“当前可用余额快照”:`total = free = available`,`locked = 0`。PM 的 CLOB `get_balance_allowance`、OE 的 WS `BALANCE.balance`、SE 的 profile/balance response 都按“可用余额”进入 cache。
 - accepted 后不请求 venue,只做本地计算并 `generate_account_state` 覆盖 cache free。真实余额帧/账户查询之后仍可覆盖本地估算。
 - 预扣金额统一调用 Venue Registry `order_required_balance`;各 odds model/side 的公式只在

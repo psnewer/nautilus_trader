@@ -263,6 +263,28 @@ def test_submit_order_cancel_only_discards():
     assert placed == []                              # 未下单
 
 
+def test_submit_order_success_registers_pending_accept_not_immediate_ack():
+    """ack 不再由 place 回执触发(见 `_on_current_bets`);回执成功只登记待确认表。"""
+    c = _client()
+    events = {}
+    c._begin_session = lambda command: True
+    c.generate_order_accepted = lambda **kwargs: events.update(accepted=kwargs)
+    c.generate_order_rejected = lambda **kwargs: events.update(rejected=kwargs)
+
+    async def _place(order):
+        return _FakeResult(success=True, order=SimpleNamespace(venue_order_id="OE-OFFER-1"))
+    c._place_via_executor = _place
+
+    order = SimpleNamespace(
+        strategy_id="S", instrument_id="I", client_order_id=ClientOrderId("O-1"),
+    )
+    _run(c._submit_order(SimpleNamespace(order=order)))
+
+    assert "accepted" not in events
+    assert "rejected" not in events
+    assert c._pending_accept["OE-OFFER-1"] == ClientOrderId("O-1")
+
+
 def test_place_via_executor_emits_submitted_before_venue_request():
     from nautilus_trader.common.factories import OrderFactory
     from nautilus_trader.model.enums import OrderSide
@@ -528,6 +550,100 @@ def test_on_current_bets_matched_fires_generate_order_filled():
     assert f["liquidity_side"] == LiquiditySide.MAKER    # 硬编码假设
 
 
+def test_pending_accept_acks_on_first_current_bets_sighting_unmatched():
+    """ack 不看是否成交:offerId 首次出现即 ack,即便 sizeMatched=0(纯挂单)。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=4290403)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    c._pending_accept["222016509"] = order.client_order_id
+    accepted = []
+    c.generate_order_accepted = lambda **kw: accepted.append(kw)
+
+    c._on_current_bets([{
+        "offerId": "222016509", "marketId": inst.market_id, "selectionId": "4290403",
+        "side": "BACK", "sizePlaced": "7.00", "sizeMatched": "0.00",
+        "sizeRemaining": "7.00", "averagePrice": "0", "price": "1.01",
+    }])
+
+    assert len(accepted) == 1
+    assert accepted[0]["client_order_id"] == order.client_order_id
+    assert accepted[0]["venue_order_id"] == VenueOrderId("222016509")
+    assert "222016509" not in c._pending_accept  # 弹出,防重复 ack
+
+
+def test_pending_accept_acks_during_reload_quiet_frame():
+    """ack 与 fill 派生的静默帧规则无关(#255 只管 fill),reload 首帧也照常 ack。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=4290403)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    c._pending_accept["222016509"] = order.client_order_id
+    c._reload_frame_pending = True
+    accepted = []
+    c.generate_order_accepted = lambda **kw: accepted.append(kw)
+
+    c._on_current_bets([{
+        "offerId": "222016509", "marketId": inst.market_id, "selectionId": "4290403",
+        "side": "BACK", "sizeMatched": "0.00", "sizeRemaining": "7.00",
+    }])
+
+    assert len(accepted) == 1
+    assert "222016509" not in c._pending_accept
+
+
+def test_pending_accept_same_frame_fill_resolves_via_newly_acked():
+    """同一帧内 offerId 既是首次 ack 又已开始成交:fill 派生要靠 `newly_acked` 兜底
+    解析 client_order_id(cache 索引还没跟上刚 enqueue 的 accepted 事件)。"""
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.identifiers import StrategyId
+
+    from tests.arbitrage.risk._factories import oe_instrument
+
+    c = _client()
+    inst = oe_instrument("ATP Stuttgart 2026", "home", selection_id=4290403)
+    c._cache.add_instrument(inst)
+    order = OrderFactory(
+        trader_id=TraderId("T-000"), strategy_id=StrategyId("S-000"), clock=LiveClock(),
+    ).limit(inst.id, OrderSide.BUY, inst.make_qty(7), inst.make_price(1.01))
+    c._cache.add_order(order)
+    c._pending_accept["222016509"] = order.client_order_id
+    accepted = []
+    filled = []
+    c.generate_order_accepted = lambda **kw: accepted.append(kw)
+    c.generate_order_filled = lambda **kw: filled.append(kw)
+
+    c._on_current_bets([{
+        "offerId": "222016509", "marketId": inst.market_id, "selectionId": "4290403",
+        "side": "BACK", "sizePlaced": "7.00", "sizeMatched": "7.00",
+        "sizeRemaining": "0.00", "averagePrice": "2.3", "price": "1.01",
+    }])
+
+    assert len(accepted) == 1
+    assert len(filled) == 1
+    assert filled[0]["client_order_id"] == order.client_order_id
+    assert filled[0]["last_qty"].as_double() == pytest.approx(7.0)
+
+
 def test_on_current_bets_fill_uses_cumulative_raw_matched_and_clamps_remaining():
     """成交判断使用 OE 原始 GBP 累计 sizeMatched,NT last_qty 按剩余量裁剪。"""
     from nautilus_trader.common.factories import OrderFactory
@@ -640,42 +756,6 @@ def test_generate_position_status_reports_aggregates():
     assert float(r.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
 
 
-def test_query_order_sends_aggregated_position_report_before_marking_alive():
-    """#255:报告推送归 QueryOrder;alive 晚于报告进入 ExecEngine(#244 顺序)。"""
-    from nautilus_trader.model.objects import Quantity
-
-    c = _client()
-    calls = []
-    fake_inst = SimpleNamespace(
-        id=InstrumentId.from_str("1-23-8266-None.ORBITEXCH"),
-        make_qty=lambda v: Quantity(v, precision=2),
-    )
-    c._resolve_oe_instrument = lambda market_id, selection_id: fake_inst
-    c._build_order_report = lambda bet: None
-    c._send_position_status_report = lambda report: calls.append(("position_report", report))
-    c._on_current_bets([_pos_bet("1.23", "8266", "BACK", 10.0, 2.0)])  # 常规帧建快照
-    c._venue_liveness = SimpleNamespace(
-        mark_order_dead=lambda venue: calls.append(("order_dead", venue)),
-        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
-        mark_order_alive=lambda venue: calls.append(("order_alive", venue)),
-        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
-    )
-
-    async def _fresh(*, force=False):
-        return True
-
-    c._ensure_exec_snapshot_fresh = _fresh
-
-    _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
-
-    assert calls[0] == ("order_dead", "ORBITEXCH")
-    assert calls[1] == ("position_dead", "ORBITEXCH")
-    assert calls[2][0] == "position_report"
-    assert calls[2][1].quantity.as_double() == pytest.approx(10.0)
-    assert calls[3:] == [
-        ("order_alive", "ORBITEXCH"),
-        ("position_alive", "ORBITEXCH"),
-    ]
 
 
 # ── #105 A1 存活锚(_last_frame_ns / on_frame / _exec_ws_fresh)──────
@@ -836,7 +916,18 @@ def test_ensure_fresh_single_flight_one_reload():
     assert c._page.reload_count == 1                 # single-flight → 只 reload 一次
 
 
-def test_query_order_forces_reload_and_pushes_reports_itself():
+# ── CURRENT_BETS → OE execution liveness 真值锚点 ─────────────────────
+def test_on_current_bets_marks_oe_liveness_alive():
+    c = _client()
+    c._on_current_bets([])                            # 任一 CURRENT_BETS 帧(order 真值)
+    assert c._venue_liveness.order_alive("ORBITEXCH")
+    assert c._venue_liveness.position_alive("ORBITEXCH")
+    assert c._venue_liveness.venue_alive("ORBITEXCH")
+
+
+def test_query_order_forces_reload_without_pushing_reports():
+    """#256:卡在飞仍是 dead → 强制 reload(同 #255 判定逻辑)→ alive,但不再对账
+    (不构造/推送任何报告——状态同步交给 WS 监听在后续自然帧里做)。"""
     c = _client()
     calls = []
     c._venue_liveness = SimpleNamespace(
@@ -845,12 +936,12 @@ def test_query_order_forces_reload_and_pushes_reports_itself():
         mark_order_alive=lambda venue: calls.append(("alive", venue)),
         mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
     )
+
     async def _fresh(*, force=False):
         calls.append(("fresh", force))
         return True
 
     c._ensure_exec_snapshot_fresh = _fresh
-    c._push_reports_from_snapshot = lambda: calls.append(("push_reports",))
 
     _run(c._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
 
@@ -858,10 +949,10 @@ def test_query_order_forces_reload_and_pushes_reports_itself():
         ("dead", "ORBITEXCH"),
         ("position_dead", "ORBITEXCH"),
         ("fresh", True),
-        ("push_reports",),  # #255:报告推送归 QueryOrder 本人
         ("alive", "ORBITEXCH"),
         ("position_alive", "ORBITEXCH"),
     ]
+    assert not hasattr(c, "_push_reports_from_snapshot")
 
 
 def test_query_order_reload_failure_keeps_order_liveness_dead():
@@ -886,32 +977,6 @@ def test_query_order_reload_failure_keeps_order_liveness_dead():
         ("position_dead", "ORBITEXCH"),
         ("fresh", True),
     ]
-
-
-# ── CURRENT_BETS → OE execution liveness 真值锚点 ─────────────────────
-def test_on_current_bets_marks_oe_liveness_alive():
-    c = _client()
-    c._on_current_bets([])                            # 任一 CURRENT_BETS 帧(order 真值)
-    assert c._venue_liveness.order_alive("ORBITEXCH")
-    assert c._venue_liveness.position_alive("ORBITEXCH")
-    assert c._venue_liveness.venue_alive("ORBITEXCH")
-
-
-def test_push_reports_from_snapshot_sends_order_then_position():
-    """#255:QueryOrder 恢复通路的报告推送 helper。"""
-    c = _client()
-    calls = []
-    c._current_bets = {"A": {"offerId": "A"}}
-    c._build_order_report = lambda bet: calls.append("build_report") or "R-A"
-    c._send_order_status_report = lambda report: calls.append("send_report")
-    c._build_position_status_reports_from_current_bets = (
-        lambda: calls.append("build_positions") or ["P-A"]
-    )
-    c._send_position_status_report = lambda report: calls.append("send_position")
-
-    c._push_reports_from_snapshot()
-
-    assert calls == ["build_report", "send_report", "build_positions", "send_position"]
 
 
 def test_on_current_bets_normal_frame_skips_report_push():

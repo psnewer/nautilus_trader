@@ -132,6 +132,10 @@ def build_trading_node_config(cfg: ArbConfig) -> TradingNodeConfig:
             reconciliation=True,
             # 各 ExecutionClient 已显式等待初始业务状态，startup reconciliation 完成后无需固定 grace period。
             reconciliation_startup_delay_secs=0.0,
+            # #256:ack 改为 venue 广播式信号驱动(WS PLACEMENT/trade 消息 / CURRENT_BETS 帧)后不再
+            # 是一次性回执,阈值从 NT 默认 5s 放宽到 30s,给广播信号到达留出正常余量(与 tracking_timeout
+            # 60s 配套,阈值需小于 tracking session 超时,否则 inflight-check 来不及在 session 内生效)。
+            inflight_check_threshold_ms=30_000,
             # 已卡在飞只查询 venue 一次；失败后下轮由 NT 原生 UNKNOWN 收口。
             inflight_check_retries=1,
             # #111:开连续 open/order 对账(全局)—— 周期调 venue `generate_order_status_reports`:

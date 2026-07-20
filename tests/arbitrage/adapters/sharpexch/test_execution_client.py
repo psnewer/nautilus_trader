@@ -332,13 +332,12 @@ def test_current_bets_matched_fires_generate_order_filled():
     assert fill["liquidity_side"] == LiquiditySide.MAKER
 
 
-def test_submit_order_accepts_executor_success():
+def test_submit_order_success_registers_pending_accept_not_immediate_ack():
+    """ack 不再由 place 回执触发(见 `_on_current_bets`);回执成功只登记待确认表。"""
     client = _client()
     events = {}
     client._begin_session = lambda command: True
-    client.generate_order_accepted = lambda *, strategy_id, instrument_id, client_order_id, venue_order_id, ts_event: events.update(
-        venue_order_id=venue_order_id,
-    )
+    client.generate_order_accepted = lambda **kwargs: events.update(accepted=kwargs)
     client.generate_order_rejected = lambda **kwargs: events.update(rejected=kwargs)
 
     async def place(order):
@@ -348,12 +347,14 @@ def test_submit_order_accepts_executor_success():
     order = SimpleNamespace(
         strategy_id="S",
         instrument_id="I",
-        client_order_id=SimpleNamespace(value="COID-1"),
+        client_order_id=ClientOrderId("COID-1"),
     )
 
     _run(client._submit_order(SimpleNamespace(order=order)))
 
-    assert str(events["venue_order_id"]) == "SE-OFFER-1"
+    assert "accepted" not in events
+    assert "rejected" not in events
+    assert client._pending_accept["SE-OFFER-1"] == ClientOrderId("COID-1")
     assert "rejected" not in events
 
 
@@ -709,47 +710,6 @@ def test_position_status_reports_aggregate_current_bets():
     assert float(report.avg_px_open) == pytest.approx((10 * 2.0 + 5 * 2.2) / 15)
 
 
-def test_query_order_sends_aggregated_position_report_before_marking_alive():
-    """#255:报告推送归 QueryOrder;alive 晚于报告进入 ExecEngine(#244 顺序)。"""
-    client = _client()
-    inst = _instrument("home")
-    client._cache.add_instrument(inst)
-    calls = []
-    client._build_order_report = lambda bet: None
-    client._send_position_status_report = lambda report: calls.append(("position_report", report))
-    client._on_current_bets([{
-        "offerId": "SE-OFFER-1",
-        "marketId": inst.market_id,
-        "selectionId": str(inst.selection_id),
-        "side": "BACK",
-        "sizeMatched": "10.00",
-        "averagePrice": "2.0",
-        "sizeRemaining": "0.00",
-    }])  # 常规帧建快照
-    client._venue_liveness = SimpleNamespace(
-        mark_order_dead=lambda venue: calls.append(("order_dead", venue)),
-        mark_position_dead=lambda venue: calls.append(("position_dead", venue)),
-        mark_order_alive=lambda venue: calls.append(("order_alive", venue)),
-        mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
-    )
-
-    async def _fresh(*, force=False):
-        return True
-
-    client._ensure_exec_snapshot_fresh = _fresh
-
-    _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
-
-    assert calls[0] == ("order_dead", "SHARPEXCH")
-    assert calls[1] == ("position_dead", "SHARPEXCH")
-    assert calls[2][0] == "position_report"
-    assert calls[2][1].quantity.as_double() == pytest.approx(10.0)
-    assert calls[3:] == [
-        ("order_alive", "SHARPEXCH"),
-        ("position_alive", "SHARPEXCH"),
-    ]
-
-
 def test_reconcile_reload_waits_for_current_bets_snapshot():
     client = _client()
     inst = _instrument("home")
@@ -782,7 +742,91 @@ def test_reconcile_reload_waits_for_current_bets_snapshot():
     assert reports[0].order_status == OrderStatus.ACCEPTED
 
 
-def test_query_order_forces_reload_and_pushes_reports_itself():
+def test_pending_accept_acks_on_first_current_bets_sighting_unmatched():
+    """ack 不看是否成交:offerId 首次出现即 ack,即便 sizeMatched=0(纯挂单)。"""
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.0, price=1.01)
+    client._cache.add_order(order)
+    client._pending_accept["SE-OFFER-1"] = order.client_order_id
+    accepted = []
+    client.generate_order_accepted = lambda **kwargs: accepted.append(kwargs)
+
+    client._on_current_bets([{
+        "offerId": "SE-OFFER-1",
+        "marketId": inst.market_id,
+        "selectionId": str(inst.selection_id),
+        "side": "BACK",
+        "sizeMatched": "0.00",
+        "averagePrice": "0",
+        "sizeRemaining": "12.00",
+    }])
+
+    assert len(accepted) == 1
+    assert accepted[0]["client_order_id"] == order.client_order_id
+    assert accepted[0]["venue_order_id"] == VenueOrderId("SE-OFFER-1")
+    assert "SE-OFFER-1" not in client._pending_accept  # 弹出,防重复 ack
+
+
+def test_pending_accept_acks_during_reload_quiet_frame():
+    """ack 与 fill 派生的静默帧规则无关(#255 只管 fill),reload 首帧也照常 ack。"""
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.0, price=1.01)
+    client._cache.add_order(order)
+    client._pending_accept["SE-OFFER-1"] = order.client_order_id
+    client._reload_frame_pending = True
+    accepted = []
+    client.generate_order_accepted = lambda **kwargs: accepted.append(kwargs)
+
+    client._on_current_bets([{
+        "offerId": "SE-OFFER-1",
+        "marketId": inst.market_id,
+        "selectionId": str(inst.selection_id),
+        "side": "BACK",
+        "sizeMatched": "0.00",
+        "sizeRemaining": "12.00",
+    }])
+
+    assert len(accepted) == 1
+    assert "SE-OFFER-1" not in client._pending_accept
+
+
+def test_pending_accept_same_frame_fill_resolves_via_newly_acked():
+    """同一帧内 offerId 既是首次 ack 又已开始成交:fill 派生要靠 `newly_acked` 兜底
+    解析 client_order_id(cache 索引还没跟上刚 enqueue 的 accepted 事件)。"""
+    client = _client()
+    inst = _instrument("home")
+    client._cache.add_instrument(inst)
+    order = _order(client, inst, qty=12.0, price=1.01)
+    client._cache.add_order(order)
+    client._pending_accept["SE-OFFER-1"] = order.client_order_id
+    accepted = []
+    filled = []
+    client.generate_order_accepted = lambda **kwargs: accepted.append(kwargs)
+    client.generate_order_filled = lambda **kwargs: filled.append(kwargs)
+
+    client._on_current_bets([{
+        "offerId": "SE-OFFER-1",
+        "marketId": inst.market_id,
+        "selectionId": str(inst.selection_id),
+        "side": "BACK",
+        "sizeMatched": "12.00",
+        "averagePrice": "1.01",
+        "sizeRemaining": "0.00",
+    }])
+
+    assert len(accepted) == 1
+    assert len(filled) == 1
+    assert filled[0]["client_order_id"] == order.client_order_id
+    assert filled[0]["last_qty"].as_double() == pytest.approx(12.0)
+
+
+def test_query_order_forces_reload_without_pushing_reports():
+    """#256:卡在飞仍是 dead → 强制 reload(同 #255 判定逻辑)→ alive,但不再对账
+    (不构造/推送任何报告——状态同步交给 WS 监听在后续自然帧里做)。"""
     client = _client()
     calls = []
     client._venue_liveness = SimpleNamespace(
@@ -791,12 +835,12 @@ def test_query_order_forces_reload_and_pushes_reports_itself():
         mark_order_alive=lambda venue: calls.append(("alive", venue)),
         mark_position_alive=lambda venue: calls.append(("position_alive", venue)),
     )
+
     async def fresh(*, force=False):
         calls.append(("fresh", force))
         return True
 
     client._ensure_exec_snapshot_fresh = fresh
-    client._push_reports_from_snapshot = lambda: calls.append(("push_reports",))
 
     _run(client._query_order(SimpleNamespace(client_order_id=ClientOrderId("O-1"))))
 
@@ -804,10 +848,10 @@ def test_query_order_forces_reload_and_pushes_reports_itself():
         ("dead", "SHARPEXCH"),
         ("position_dead", "SHARPEXCH"),
         ("fresh", True),
-        ("push_reports",),  # #255:报告推送归 QueryOrder 本人
         ("alive", "SHARPEXCH"),
         ("position_alive", "SHARPEXCH"),
     ]
+    assert not hasattr(client, "_push_reports_from_snapshot")
 
 
 def test_query_order_reload_failure_keeps_order_liveness_dead():
@@ -832,23 +876,6 @@ def test_query_order_reload_failure_keeps_order_liveness_dead():
         ("position_dead", "SHARPEXCH"),
         ("fresh", True),
     ]
-
-
-def test_push_reports_from_snapshot_sends_order_then_position():
-    """#255:QueryOrder 恢复通路的报告推送 helper。"""
-    client = _client()
-    calls = []
-    client._current_bets = {"A": {"offerId": "A"}}
-    client._build_order_report = lambda bet: calls.append("build_report") or "R-A"
-    client._send_order_status_report = lambda report: calls.append("send_report")
-    client._build_position_status_reports_from_current_bets = (
-        lambda: calls.append("build_positions") or ["P-A"]
-    )
-    client._send_position_status_report = lambda report: calls.append("send_position")
-
-    client._push_reports_from_snapshot()
-
-    assert calls == ["build_report", "send_report", "build_positions", "send_position"]
 
 
 def test_current_bets_normal_frame_skips_report_push():

@@ -218,7 +218,7 @@ OE **没有上游适配器,全部自写**。本目录覆盖:
 
 **前置**: `OrbitExchExecutionClient` 注入共享 `VenueExecutionLiveness`;OE `order_alive=false`。
 **输入**: `_on_current_bets` 收到完整 `CURRENT_BETS` 真实快照,或 order/open-order reconcile 成功并基于该快照生成完整 reports。
-**期望**: `oe_order_alive=true`;**#255 起单一 fill 源**:常规帧不推报告、帧末直接置 alive;任何 reload 后首帧静默(`_reload_exec_page` 置 `_reload_frame_pending`:不派生 fill、不推报告、不标 alive),报告与 alive 归触发方——QueryOrder 经 `_push_reports_from_snapshot()` 推送(先报告后 alive,#244 顺序),拉取式对账返回报告自标。用例:`test_on_current_bets_normal_frame_skips_report_push` / `test_on_current_bets_reload_frame_is_quiet` / `test_reload_exec_page_marks_next_frame_quiet` / `test_query_order_forces_reload_and_pushes_reports_itself` / `test_query_order_sends_aggregated_position_report_before_marking_alive`。
+**期望**: `oe_order_alive=true`;**#255 起单一 fill 源**:常规帧不推报告、帧末直接置 alive;任何 reload 后首帧静默(`_reload_exec_page` 置 `_reload_frame_pending`:不派生 fill、不推报告、不标 alive)。**#256 起**:QueryOrder 仍是 OE 定制 override、强制 reload 不变,只删掉 reload 成功后 `_push_reports_from_snapshot()` 那一步——直接置 alive,不再手动推报告,状态同步交给 reload 之后 WS 监听自然收到的下一帧。拉取式对账(启动/300s 连续)不变,返回报告自标 liveness。用例:`test_on_current_bets_normal_frame_skips_report_push` / `test_on_current_bets_reload_frame_is_quiet` / `test_reload_exec_page_marks_next_frame_quiet` / `test_query_order_forces_reload_without_pushing_reports`。
 **验收**: 不再调用 `LegSettledRegistry.mark_venue(ORBITEXCH)`;Path B/NT fabricate 事件不置 alive;从未收到 CURRENT_BETS 快照时 report 方法应 mark dead 而不是 mark alive。launcher `LiveExecEngineConfig.open_check_interval_secs=300` 周期触发 OE order reports;WS 新鲜时只读 `_current_bets` 内存,WS stale 时才经 `_ensure_exec_snapshot_fresh` reload execution 页。
 
 ### oe-adapter-5.live.2: OE position reconcile 写 position_alive(2026-06-15)
@@ -497,8 +497,13 @@ BrowserManager 的 `"execution"` page 提交订单,并由 general WS `CURRENT_BE
 ### oe-adapter-5.inflight.2:5 秒 I/O timeout 与 QueryOrder 解耦
 **前置**:order 超过 NT inflight threshold；`inflight_check_retries=1`。
 **输入**:ExecEngine 发出一次 `QueryOrder`。
-**步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder，先置 OE order/position dead再强制 reload。
-**期望/验收**:QueryOrder 不取消或感知 page task，不等待 120 秒 `page_timeout`；新的 `CURRENT_BETS` 通用路径按撤单→已知订单成交→全量 order reports→聚合 position reports→alive 更新。未知 `offerId` 不猜测原订单归属，但其累计成交仍通过 position report 进入 NT 仓位；任一步失败则保持 dead。用例:`test_query_order_*`、`test_current_bets_sends_aggregated_position_report_before_marking_alive`。
+**步骤**:place/cancel 超过 5 秒时由 ExecutionClient timeout 并释放页锁；NT 独立触发 QueryOrder。
+**期望/验收(#256 起,保留 QueryOrder 定制,只删对账推送)**:ack 已改为 CURRENT_BETS 驱动(见 oe-adapter-1.3bis),NT inflight-check 命中概率显著降低。`_query_order` 强制 reload 没有改——仍是 OE 定制 override,dead → `_ensure_exec_snapshot_fresh(force=True)`(复用与常规 WS-stale 场景相同的 reload 判定逻辑)→ alive;删的只是 reload 成功后原本会调的 `_push_reports_from_snapshot()`(全量 order+position report 推送),现在直接置 alive,状态同步交给 reload 之后 WS 监听自然收到的下一帧。用例:`test_query_order_forces_reload_without_pushing_reports`、`test_query_order_reload_failure_keeps_order_liveness_dead`。
+
+### oe-adapter-1.3bis:ack 来自 CURRENT_BETS,不再是 place 回执(#256)
+**前置**:`_submit_order` 收到 executor 成功结果。
+**输入**:随后到达的 CURRENT_BETS 帧(含 reload 静默帧)首次带出该 offerId。
+**期望/验收**:`_submit_order` 成功分支只登记 `_pending_accept[offerId] = client_order_id`,不调用 `generate_order_accepted`;`_on_current_bets` 每帧先检查 `_pending_accept` 中的 offerId 是否已出现在 `_current_bets`(不看是否已成交),命中即弹出并 ack;ack 与 fill 派生是独立的一次性状态跃迁,不受 #255 静默帧规则约束(reload 首帧也照常 ack)。同帧内若该 offerId 已开始成交,fill 派生经 `newly_acked` 兜底解析 client_order_id。用例:`test_submit_order_success_registers_pending_accept_not_immediate_ack`、`test_pending_accept_acks_on_first_current_bets_sighting_unmatched`、`test_pending_accept_acks_during_reload_quiet_frame`、`test_pending_accept_same_frame_fill_resolves_via_newly_acked`。
 
 ### oe-adapter-5.inflight.3:cancel-only 复用既有 session
 **前置**:execution mixin 已为残留单建立 cancel session。
