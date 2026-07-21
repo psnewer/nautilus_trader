@@ -343,6 +343,8 @@ class _FakePage:
         self.bring_to_front_calls = 0
         self._callbacks = {}
         self.context = _FakeContext()
+        self.closed = False
+    def is_closed(self): return self.closed
     def on(self, event, cb): self._callbacks.setdefault(event, []).append(cb)
     def remove_listener(self, event, cb): pass
     async def bring_to_front(self): self.bring_to_front_calls += 1
@@ -465,6 +467,31 @@ def test_open_or_reload_reloads_existing_page():
     page = c._comp_pages["2_999"]
     assert len(page.goto_calls) == 1 and page.reload_calls == 1   # 首次 goto,二次 reload
     assert page.bring_to_front_calls == 2
+
+
+def test_open_or_reload_discards_closed_page_and_reopens():
+    """死页逃生口:reload 分支遇 `is_closed()` 的 page → 摘账 + close_page + 降级新建。
+
+    没有这一步,死 page 永久占着 `_comp_pages`,本方法进不了新建分支,每轮 liveness_timeout
+    都在对尸体 reload(必抛),盘口静默停更且 venue 仍 alive(data 侧不接 VenueExecutionLiveness)。
+    """
+    bm = _FakeBM()
+    c = _client_with_bm(bm)
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+    dead_page = c._comp_pages["2_999"]
+    dead_handler = c._comp_handlers["2_999"]
+    dead_page.closed = True   # 模拟 tab 崩掉 / 被关
+
+    loop.run_until_complete(c._open_or_reload_competition_page("2_999", "2", "999"))
+
+    assert dead_page.reload_calls == 0                  # 没有对尸体 reload
+    assert bm.closed == ["comp-2_999"]                  # 摘账时关旧 tab / 清 registry
+    assert bm.created == ["comp-2_999", "comp-2_999"]   # 随后新建同名页
+    fresh_page = c._comp_pages["2_999"]
+    assert fresh_page is not dead_page                  # 注册表换成新 page
+    assert c._comp_handlers["2_999"] is not dead_handler
+    assert fresh_page.goto_calls == ["https://oe.test/customer/sport/2/competition/999"]
 
 
 def test_open_page_failure_does_not_cache_stale_page():

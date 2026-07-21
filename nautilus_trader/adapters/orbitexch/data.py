@@ -361,6 +361,19 @@ class OrbitExchDataClient(LiveMarketDataClient):
                 await self._browser_manager.close_page(f"comp-{page_key}")
         self._log.info(f"OE competition page closed (no remaining subscriptions): {page_key}")
 
+    async def _discard_dead_competition_page(self, page_key: str) -> None:
+        """摘掉已死(tab 崩/被关)的 competition 页,使 `_open_or_reload_competition_page`
+        能降级到新建分支。**调用方必须已持 `_comp_pages_lock`**(与 `_close_competition_page`
+        自持锁不同,本方法在开/刷新路径内部调用)。`close_page` 先 pop 注册表再 close,
+        因此即使 close 抛异常,`create_page` 下次也必定新建而不是取回死 page。"""
+        self._comp_pages.pop(page_key, None)
+        handler = self._comp_handlers.pop(page_key, None)
+        if handler is not None:
+            with suppress(Exception):
+                await handler.stop()
+        with suppress(Exception):
+            await self._browser_manager.close_page(f"comp-{page_key}")
+
     # ── #68 每 competition 一页:新开/刷新统一 ────────────────────────
     async def _ensure_competition_page(self, instrument_id: InstrumentId) -> None:
         """确保该 instrument 所属 competition 页已开(去重);未开则 open。"""
@@ -405,7 +418,8 @@ class OrbitExchDataClient(LiveMarketDataClient):
     ) -> None:
         """**新开/刷新统一入口**(#68;对齐老 odds_client `_open_or_reload_page`)。
         - page 不存在 → `create_page` + 挂 WS 监听(#67 先挂后 goto)+ goto
-        - 已存在 → `reload`(page-level 监听跨 reload 自动存活,#67 实测,无需重挂)
+        - 已存在但**已死**(`is_closed()`)→ 摘账关页,降级走新建分支(见下)
+        - 已存在且活着 → `reload`(page-level 监听跨 reload 自动存活,#67 实测,无需重挂)
 
         §4.3 健康检查 reload 将来复用本方法的 reload 分支。"""
         url = f"{self._config.base_url}/customer/sport/{sport_id}/competition/{competition_id}"
@@ -413,6 +427,13 @@ class OrbitExchDataClient(LiveMarketDataClient):
         # 使用 domcontentloaded(不用 networkidle):OE prices WS 长连会让 networkidle 不稳定或超时。
         timeout_ms = self._config.page_timeout
         page = self._comp_pages.get(page_key)
+        if page is not None and page.is_closed():
+            # 死页逃生口:reload 对已死 page 永不可能成功,而死 page 占着 `_comp_pages` 会让
+            # 本方法永远进不了新建分支 → liveness_timeout 每轮 reload 报错、盘口静默停更且
+            # venue 仍 alive(data 侧不接 VenueExecutionLiveness)。摘账后 fallthrough 新建。
+            self._log.warning(f"OE competition page {page_key} is closed; discarding and reopening")
+            await self._discard_dead_competition_page(page_key)
+            page = None
         if page is None:
             page_name = f"comp-{page_key}"
             page = await self._browser_manager.create_page(page_name)

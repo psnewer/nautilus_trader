@@ -39,9 +39,11 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     update_instruments_interval_mins : int or None, default 60
         Periodic instrument re-discovery interval (mins); None disables. #58(slice A):
         DataClient 拥有周期发现(原生 `_update_instruments`),替代退役的 InstrumentRefresher。
-    staleness_timeout_secs : float, default 30.0
+    staleness_timeout_secs : float, default 300.0
         #109:competition 页 WS handler 内部 liveness timeout —— 超 此时间无任何帧(含 SockJS 心跳 ~25s)
         → 视为 WS 死 → `on_disconnect` → reload。(旧 `health_interval_secs` 随 HealthCheckLoop #109 退役。)
+        默认 300.0 对齐 SE 与 `config/schema.py` 的 arb 默认:#110 实测空闲盘口心跳 median 25.0s /
+        **max 35.4s**,旧默认 30.0 低于实测最大间隔 → 安静市场会误判 disconnect、reload 空转。
     """
 
     username: str
@@ -53,7 +55,7 @@ class OrbitExchDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True)
     page_timeout: int = 120000
     scrape_interval_ms: int = 1000
     update_instruments_interval_mins: Optional[int] = 60
-    staleness_timeout_secs: float = 30.0
+    staleness_timeout_secs: float = 300.0
 
 
 class OrbitExchExecClientConfig(LiveExecClientConfig, frozen=True, kw_only=True):

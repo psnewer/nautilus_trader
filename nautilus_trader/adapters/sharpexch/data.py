@@ -562,6 +562,25 @@ def se_websocket_summary(handler) -> str:
     return f"ws_count={len(active)}, ws_types={counts}, frame_counts={frame_counts}"
 
 
+async def se_discard_dead_competition_page(
+    *,
+    page_key: str,
+    browser_manager,
+    comp_pages: dict[str, object],
+    comp_handlers: dict[str, object],
+) -> None:
+    """摘掉已死(tab 崩/被关)的 competition 页,使 `se_open_or_reload_competition_page`
+    能降级到新建分支。**调用方必须已持 `_comp_pages_lock`**。`close_page` 先 pop 注册表
+    再 close,因此即使 close 抛异常,`create_page` 下次也必定新建而不是取回死 page。"""
+    comp_pages.pop(page_key, None)
+    handler = comp_handlers.pop(page_key, None)
+    if handler is not None:
+        with suppress(Exception):
+            await handler.stop()
+    with suppress(Exception):
+        await browser_manager.close_page(f"comp-{page_key}")
+
+
 async def se_open_or_reload_competition_page(
     *,
     page_key: str,
@@ -588,6 +607,18 @@ async def se_open_or_reload_competition_page(
 
     url = se_competition_page_url(base_url, sport_id, competition_id)
     page = comp_pages.get(page_key)
+    if page is not None and page.is_closed():
+        # 死页逃生口(对齐 OE):reload 对已死 page 永不可能成功,而死 page 占着 `comp_pages`
+        # 会让本 helper 永远进不了新建分支 → 盘口静默停更且 venue 仍 alive。摘账后 fallthrough。
+        if logger is not None:
+            logger.warning(f"SE competition page {page_key} is closed; discarding and reopening")
+        await se_discard_dead_competition_page(
+            page_key=page_key,
+            browser_manager=browser_manager,
+            comp_pages=comp_pages,
+            comp_handlers=comp_handlers,
+        )
+        page = None
     if page is None:
         page_name = f"comp-{page_key}"
         page = await browser_manager.create_page(page_name)

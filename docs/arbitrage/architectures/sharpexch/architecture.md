@@ -283,7 +283,10 @@ snapshot 处理。存入值是 `probability_from_price` 换算后的隐含概率
   helper 负责新开时 `create_page -> handler.start -> bring_to_front -> goto(domcontentloaded) -> registry 写入`,
   reload 时复用已有 page 并 `bring_to_front -> reload(domcontentloaded)`;与 OE 一致,`domcontentloaded`
   之后不再等 prices 首帧(SockJS feed 由 handler 后续帧与 staleness liveness 自愈),
-  新开失败时 stop handler 并 close page。`SharpExchDataClient` 调用时把 NT `clock`、
+  新开失败时 stop handler 并 close page。进入 reload 分支前先判 `page.is_closed()`,死页经
+  `se_discard_dead_competition_page(...)` 摘 registry + stop handler + close page 后降级走新建分支
+  (#258 死页逃生口,与 OE `_discard_dead_competition_page` 对称;机制真理源见
+  `architectures/data/architecture.md` §3.1 的 #109 条目)。`SharpExchDataClient` 调用时把 NT `clock`、
   `config.staleness_timeout_secs`、`liveness_ws_type="prices"` 注入 handler,因此
   `venues.sharpexch.staleness_timeout_sec` 是 competition prices WS 的静默断流 timeout。
   它不创建 runtime task、不注册 NT client,由 `SharpExchDataClient` 在订阅开页与 reload 路径调用。

@@ -48,9 +48,13 @@ def _iid_away():
 
 
 class _FakePage:
-    def __init__(self, calls, fail_goto=False):
+    def __init__(self, calls, fail_goto=False, closed=False):
         self.calls = calls
         self.fail_goto = fail_goto
+        self.closed = closed
+
+    def is_closed(self):
+        return self.closed
 
     async def bring_to_front(self):
         self.calls.append("bring_to_front")
@@ -573,6 +577,51 @@ def test_reload_competition_page_reuses_existing_page():
     assert result["action"] == "reloaded"
     assert result["summary"] == "ws_count=1, ws_types={'prices': 1}, frame_counts={}"
     assert calls == ["bring_to_front", ("reload", "domcontentloaded", 120000)]
+
+
+def test_reload_competition_page_discards_closed_page_and_reopens():
+    """死页逃生口:reload 分支遇 `is_closed()` 的 page → 摘账 + close_page + 走新建分支。
+
+    没有这一步,死 page 会永久占着 `comp_pages`,helper 进不了新建分支,每轮 liveness_timeout
+    都在对尸体 reload,盘口静默停更(data 侧不接 VenueExecutionLiveness,venue 仍 alive)。
+    """
+    dead_calls = []
+    fresh_calls = []
+    dead_page = _FakePage(dead_calls, closed=True)
+    fresh_page = _FakePage(fresh_calls)
+    browser_manager = _FakeBrowserManager(fresh_page)
+    dead_handler = _FakeHandler(dead_page)
+    comp_pages = {"2_12597512": dead_page}
+    comp_handlers = {"2_12597512": dead_handler}
+
+    result = asyncio.run(
+        se_open_or_reload_competition_page(
+            page_key="2_12597512",
+            sport_id="2",
+            competition_id="12597512",
+            base_url="https://portal.sharpxch.com",
+            browser_manager=browser_manager,
+            comp_pages=comp_pages,
+            comp_handlers=comp_handlers,
+            price_callback=lambda message: None,
+            page_timeout=120000,
+            handler_factory=_FakeHandler,
+        ),
+    )
+
+    # 降级为新建,而不是对死 page reload
+    assert result["action"] == "opened"
+    assert dead_calls == ["handler_stop"]              # 死页只被 stop,未 bring_to_front/reload
+    assert dead_handler.stopped is True
+    assert browser_manager.closed == ["comp-2_12597512"]   # 摘账时关掉旧 tab / 清 registry
+    assert browser_manager.created == ["comp-2_12597512"]  # 随后新建同名页
+    assert comp_pages == {"2_12597512": fresh_page}        # 注册表换成新 page
+    assert comp_handlers["2_12597512"] is not dead_handler
+    assert fresh_calls == [
+        "handler_start",
+        "bring_to_front",
+        ("goto", "https://portal.sharpxch.com/customer/sport/2/competition/12597512", "domcontentloaded", 120000),
+    ]
 
 
 def test_open_competition_page_cleans_up_on_goto_failure():
