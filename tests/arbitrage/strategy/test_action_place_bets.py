@@ -4,6 +4,11 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+from nautilus_trader.adapters.orbitexch.data import oe_runner_to_book_deltas
+from nautilus_trader.model.book import OrderBook
+from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.identifiers import InstrumentId
+from src.arbitrage import bootstrap
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
 from src.arbitrage.strategy.actions.place_bets import _compute_size
 from src.arbitrage.strategy.condition import EvalContext
@@ -491,3 +496,177 @@ def test_action_aborts_when_leg_is_non_tradable_anchor(caplog):
 
     assert calls == []
     assert any("non-tradable anchor" in r.message for r in caplog.records)
+
+
+# ── #256 续:market_order_enabled 最差价覆盖 ─────────────────────────
+
+def _oe_book_with_depth(iid_str: str, *, back, lay, claim: str = "yes") -> OrderBook:
+    """经真实 `oe_runner_to_book_deltas` 构造多档 book(概率编码,claim 决定 ask/bid 换位)。"""
+    iid = InstrumentId.from_str(iid_str)
+    runner = {
+        "back": [{"price": p, "size": 10.0} for p in back],
+        "lay": [{"price": p, "size": 10.0} for p in lay],
+    }
+    deltas = oe_runner_to_book_deltas(iid, runner, ts_init_ns=1000, claim=claim)
+    book = OrderBook(iid, BookType.L2_MBP)
+    book.apply_deltas(deltas)
+    return book
+
+
+def test_market_order_disabled_uses_original_price():
+    """默认关闭:即使 book 有更深档位,提交价仍是 Check 算出的原始限价(最优价)。"""
+    bootstrap.reset_arb_context()
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    iid = "A.ORBITEXCH"
+    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
+    snapshot = OpportunitySnapshot(
+        pair_id="p", instrument_ids=[iid], order_books={iid: book},
+        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    )
+    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["price"] == 2.5
+    bootstrap.reset_arb_context()
+
+
+def test_market_order_enabled_uses_worst_back_price():
+    """打开后用 book 内最差 back 价(最低赔率)下单,不是最优价。"""
+    bootstrap.reset_arb_context()
+    bootstrap.prepare_arb_context(market_order_enabled=True)
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    iid = "A.ORBITEXCH"
+    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
+    snapshot = OpportunitySnapshot(
+        pair_id="p", instrument_ids=[iid], order_books={iid: book},
+        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    )
+    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["price"] == 2.0  # worst back(最低赔率),不是最优的 2.5
+    bootstrap.reset_arb_context()
+
+
+def test_market_order_enabled_uses_worst_lay_price_for_synthetic_no_leg():
+    """合成 no 腿(exec_instrument_id 重定向):worst price 来自定价 instrument 的 book
+    (ask←lay 列),提交目标仍是 exec_instrument_id,side 仍是 SELL。"""
+    bootstrap.reset_arb_context()
+    bootstrap.prepare_arb_context(market_order_enabled=True)
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    quote_iid = "ANO.ORBITEXCH"
+    exec_iid = "A.ORBITEXCH"
+    book = _oe_book_with_depth(quote_iid, back=[2.6, 2.7], lay=[2.5, 2.0], claim="no")
+    snapshot = OpportunitySnapshot(
+        pair_id="p", instrument_ids=[quote_iid], order_books={quote_iid: book},
+        instrument_info={quote_iid: {
+            "selection_role": "away", "claim": "no", "quote_claim": "no",
+            "exec_instrument_id": exec_iid,
+        }},
+        outcomes=["home", "away"],
+    )
+    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": quote_iid, "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.0, "prob": 0.5, "share_if_wins": 10.0,
+         "claim": "no", "lay_price": 2.0, "exec_instrument_id": exec_iid},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["instrument_id"] == exec_iid
+    assert calls[0]["side"] == "SELL"
+    assert calls[0]["price"] == 2.5  # worst lay(最高赔率),不是最优的 2.0
+    assert calls[0]["qty"] == 4.0    # share_if_wins(10.0) / price(2.5)
+    bootstrap.reset_arb_context()
+
+
+def test_market_order_missing_depth_falls_back_to_original_price():
+    """打开但该 instrument 还没收到过赔率帧(snapshot 无 book)→ 退回原限价,不报错。"""
+    bootstrap.reset_arb_context()
+    bootstrap.prepare_arb_context(market_order_enabled=True)
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)  # snapshot=None(默认)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "A.ORBITEXCH", "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["price"] == 2.5
+    bootstrap.reset_arb_context()
+
+
+def test_market_order_explicit_price_override_takes_precedence():
+    """显式 price_overrides(调试/live probe)优先于市价单开关,不被替换。"""
+    bootstrap.reset_arb_context()
+    bootstrap.prepare_arb_context(market_order_enabled=True)
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    iid = "A.ORBITEXCH"
+    book = _oe_book_with_depth(iid, back=[2.5, 2.0], lay=[2.6, 2.7])
+    snapshot = OpportunitySnapshot(
+        pair_id="p", instrument_ids=[iid], order_books={iid: book},
+        instrument_info={iid: {"selection_role": "away"}}, outcomes=["home", "away"],
+    )
+    ctx = EvalContext(pair_id="p", snapshot=snapshot, submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": iid, "venue": "ORBITEXCH", "side": "BUY",
+         "role": "away", "price": 2.5, "prob": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(PlaceBetsAction(price_overrides={"orbitexch": 1000.0}).execute(ctx))
+
+    assert calls[0]["price"] == 1000.0
+    bootstrap.reset_arb_context()
+
+
+def test_market_order_does_not_apply_to_probability_venue():
+    """开关只对 decimal venue 生效;PM 腿价格不受影响。"""
+    bootstrap.reset_arb_context()
+    bootstrap.prepare_arb_context(market_order_enabled=True)
+    calls = []
+
+    async def fake_submitter(spec: dict) -> None:
+        calls.append(spec)
+
+    ctx = EvalContext(pair_id="p", submitter=fake_submitter)
+    ctx.scratch["legs"] = [
+        {"instrument_id": "H.POLYMARKET", "venue": "POLYMARKET", "side": "BUY",
+         "role": "home", "price": 0.4, "prob": 0.4, "share_if_wins": 10.0},
+    ]
+
+    _run(PlaceBetsAction().execute(ctx))
+
+    assert calls[0]["price"] == 0.4
+    bootstrap.reset_arb_context()

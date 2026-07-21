@@ -216,8 +216,11 @@ runner → role 规则:
   dict-of-levels 结构(如 `{"0":[price,size]}`)以及 `batb/batl` 的 list 档结构。
 - live 验收锚点对齐 OE:首个已路由行情帧打印 `SE price frame routed`,首次实际发布 deltas 打印 `SE OrderBookDeltas published`;两者均只打印一次,用于区分“WS 已连但未路由”和“已进入 NT order book”。
 
-输出仍是 NT 标准 `OrderBookDeltas`:当前链路只消费 top-of-book,因此源头只发布
-BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snapshot 处理。
+输出仍是 NT 标准 `OrderBookDeltas`:⚠️ 2026-07-20/21(#256)起**全档发布**(取代此前
+"只发 top-of-book"设计),BACK 全部档位 → SELL/ask、LAY 全部档位 → BUY/bid,每帧按
+snapshot 处理。存入值是 `probability_from_price` 换算后的隐含概率,不是原始赔率——完整
+推导见 `docs/arbitrage/architectures/data/architecture.md` §2/§3.1 与 refactor.md #256
+决策记录(OE/SE 同构,一份推导两边适用)。
 
 当前已落地的是 DataClient runtime 接线与纯映射层:
 - `SharpExchDataClient` 已接入 launcher 显式 opt-in runtime:维护
@@ -295,8 +298,9 @@ BACK 侧最高赔率为 SELL/ask、LAY 侧最低赔率为 BUY/bid,每帧按 snap
   `bdatb`/`bdatl` dict 档、dict-of-levels 数组值(`{"0":[price,size]}`)和
   `batb`/`batl` list 档,输出 `{market_id, runners[]}` 结构。
 - `se_runner_to_book_deltas(instrument_id, runner, ts)` 把单 runner 快照转为 NT
-  `OrderBookDeltas`:先 `CLEAR`,再发布 top-of-book:BACK 最高价 `ADD(SELL)`、
-  LAY 最低价 `ADD(BUY)`。
+  `OrderBookDeltas`:先 `CLEAR`,再发布全档(⚠️ #256 取代此前 top-of-book-only):BACK
+  全部档 `ADD(SELL)`、LAY 全部档 `ADD(BUY)`,存入值是概率编码而非原始赔率(同 OE,详见
+  data/architecture.md §2/§3.1)。
 - `se_price_message_to_book_deltas(message, routing, ts)` 已落地:把 handler 收到的 price WS
   message 经 `SharpExchMessageParser` 解析后,按 DataClient 维护的
   `selection_id -> InstrumentId` routing 表生成要 publish 的 `OrderBookDeltas` 列表;

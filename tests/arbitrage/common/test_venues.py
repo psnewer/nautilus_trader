@@ -21,6 +21,7 @@ from src.arbitrage.common.venues import leg_economics
 from src.arbitrage.common.venues import order_exposure_probability
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import outcome_for_position
+from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import qty_from_share
 from src.arbitrage.common.venues import venue_id_from_instrument_id
@@ -127,6 +128,31 @@ def test_decimal_no_claim_probability_is_complement(venue):
     assert probability_from_price(venue, 4.0, claim="no") == 0.75
     assert probability_from_price(venue, 4.0, claim="yes") == 0.25
     assert probability_from_price(venue, 4.0) == 0.25  # 默认 yes,向后兼容
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+def test_price_from_probability_is_yes_inverse(venue):
+    assert price_from_probability(venue, 0.25) == pytest.approx(4.0)
+    assert price_from_probability(venue, 0.25, claim="yes") == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+def test_price_from_probability_is_no_inverse(venue):
+    """#228 补集反解:no 腿概率 0.75 应还原回 price=4.0(与 probability_from_price 对称)。"""
+    assert price_from_probability(venue, 0.75, claim="no") == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("venue", [ORBITEXCH, SHARPEXCH])
+@pytest.mark.parametrize("claim", ["yes", "no"])
+@pytest.mark.parametrize("price", [1.01, 1.85, 2.50, 4.00, 100.0, 1000.0])
+def test_price_probability_round_trip(venue, claim, price):
+    probability = probability_from_price(venue, price, claim=claim)
+    assert price_from_probability(venue, probability, claim=claim) == pytest.approx(price)
+
+
+def test_price_from_probability_is_identity_for_probability_venue():
+    assert price_from_probability(POLYMARKET, 0.25) == 0.25
+    assert price_from_probability(POLYMARKET, 0.25, claim="no") == 0.25
 
 
 @pytest.mark.parametrize(

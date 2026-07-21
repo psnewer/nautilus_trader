@@ -16,11 +16,14 @@ import asyncio
 import logging
 import math
 
+from src.arbitrage.bootstrap import get_arb_context
 from src.arbitrage.common.opportunity import new_opportunity_id
 from src.arbitrage.common.venues import is_decimal_odds_venue
 from src.arbitrage.common.venues import is_probability_odds_venue
 from src.arbitrage.common.venues import order_required_balance
 from src.arbitrage.common.venues import qty_from_share
+from src.arbitrage.strategy.checks.quote_legs import to_price
+from src.arbitrage.strategy.checks.quote_legs import worst_ask
 from src.arbitrage.strategy.condition import Action
 from src.arbitrage.strategy.condition import EvalContext
 
@@ -71,6 +74,7 @@ class PlaceBetsAction(Action):
                     "missing executable price, abort opportunity",
                 )
                 return
+            price = _apply_market_order_override(leg, venue, price, ctx.snapshot, self._price_overrides)
             size = _compute_leg_size(leg, venue, price, self._qty_overrides)
             if size is None:
                 _LOG.warning(
@@ -149,6 +153,48 @@ def _compute_leg_size(
     if leg_share is not None:
         return _compute_size(venue, float(leg_share), price)
     return None
+
+
+def _apply_market_order_override(
+    leg: dict,
+    venue: str,
+    price: float,
+    snapshot,
+    price_overrides: dict[str, float],
+) -> float:
+    """decimal venue(OE/SE)市价单开关(#256 续):打开时用书内最差价替代限价,保证成交
+    而非最优价。显式 `price_overrides`(调试/临时覆盖)优先于市价单,不被此处替换;
+    缺深度(查不到 worst price)时退回原限价,不报错、不阻断下单。
+
+    读取 `leg["instrument_id"]`(quote_legs 定价所用的原始 instrument,3-way 合成 no 腿的
+    `exec_instrument_id` 重定向只影响提交目标,不影响这里的定价来源)对应的 book,取
+    `worst_ask` 的隐含概率,用与 `quote_legs_by_outcome` 相同的 `quote_claim` 换算回真实价格。
+    """
+    venue_key = str(venue).upper()
+    if venue_key in price_overrides:
+        return price
+    try:
+        if not is_decimal_odds_venue(venue):
+            return price
+    except KeyError:
+        return price
+    if not get_arb_context().market_order_enabled:
+        return price
+    if snapshot is None:
+        return price
+    instrument_id = leg.get("instrument_id")
+    book = (getattr(snapshot, "order_books", None) or {}).get(instrument_id)
+    if book is None:
+        return price
+    worst_probability = worst_ask(book)
+    if worst_probability is None or worst_probability <= 0:
+        return price
+    info = (getattr(snapshot, "instrument_info", None) or {}).get(instrument_id) or {}
+    quote_claim = str(info.get("quote_claim") or "yes").lower()
+    worst_price = to_price(venue, worst_probability, quote_claim)
+    if worst_price is None or worst_price <= 0:
+        return price
+    return worst_price
 
 
 def _resolve_side_and_price(

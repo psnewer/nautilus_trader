@@ -8,8 +8,9 @@ OrbitExchDataClient —— OE 自写 `LiveMarketDataClient` 子类(Step 2,整体
 设计见 `docs/arbitrage/architectures/data/architecture.md`(refactor.md §5.2/§6.2,Q2)。
 
 = 自写 `LiveMarketDataClient` 子类:WS 价格帧(`multiple-market-prices`)→ NT 标准
-`OrderBookDeltas`(snapshot 一次 CLEAR + top-of-book ADD 入 NT 标准管道)。
-BACK 最高赔率写入 SELL/ask 侧,LAY 最低赔率写入 BUY/bid 侧。
+`OrderBookDeltas`(snapshot 一次 CLEAR + 全档 ADD 入 NT 标准管道,#256 深度改造)。
+BACK 写入 SELL/ask 侧,LAY 写入 BUY/bid 侧;存入值是 `probability_from_price` 换算后的
+隐含概率而非原始赔率(原因见 `oe_runner_to_book_deltas` docstring)。
 
 **位置**:`nautilus_trader/adapters/orbitexch/`(P9 唯一例外:OE 适配器整套住 adapter 目录;#33)。
 **BrowserManager 仅消费**(Q2 共享单例;不再 start/close):`get_page("data")` 拿专属页。
@@ -24,6 +25,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from typing import Optional
+
+from src.arbitrage.common.venues import probability_from_price
 
 from nautilus_trader.adapters.orbitexch.config import OrbitExchDataClientConfig
 from nautilus_trader.adapters.orbitexch.message_parser import OrbitExchMessageParser
@@ -56,20 +59,32 @@ def oe_runner_to_book_deltas(
     runner: dict,
     ts_init_ns: int,
     *,
-    price_precision: int = 2,
+    price_precision: int = 8,
     size_precision: int = 2,
     claim: str = "yes",
 ) -> Optional[OrderBookDeltas]:
-    """OE WS 一个 runner 的 back/lay 快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
+    """OE WS 一个 runner 的 back/lay 全档快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
 
-    WS 给的是**snapshot of best N levels**(非增量),故每帧:
+    WS 给的是**snapshot of N levels**(非增量),故每帧:
     - 1 个 `CLEAR`(刷掉旧本子)
-    - top back 档:`ADD(SELL)`(NT ask;decimal odds 最高 BACK 赔率)
-    - top lay 档: `ADD(BUY)`(NT bid;decimal odds 最低 LAY 赔率)
+    - back 全部档:`ADD(SELL)`(NT ask)
+    - lay 全部档: `ADD(BUY)`(NT bid)
     包成 `OrderBookDeltas`(NT 标准 batch)入 DataEngine。
 
-    #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列原值、bid ← BACK 列
-    原值(cache 只存 venue 原始价;隐含概率在读侧经 `probability_from_price(..., claim)`)。
+    #256(深度改造,取代 #85 的 top-of-book-only):cache 不再存 venue 原始赔率,存
+    `probability_from_price(ORBITEXCH, raw, claim)` 换算后的隐含概率。原因:decimal odds
+    是"back 越高越好、lay 越低越好",跟 NT book 的固定排序规则(ask 取原始值 min 为
+    best,bid 取 max 为 best)方向不一致——只发一档时这个不一致被 N=1 的退化掩盖,发全档
+    后 NT 原生 best_ask/best_bid 会真实生效,必须让存入值的单调方向配平。`1/price`
+    (claim=yes)对 price 严格递减、`1-1/price`(claim=no)严格递增,恰好让 back/lay 在
+    同一 claim 下换位后仍能被 NT 原生排序正确识别 best 与 worst(推导见 refactor.md
+    #256 决策记录)。精度选 8 位,避免相邻赔率档位换算后在高赔率区间(如 999 vs 1000)
+    撞位。读侧经 `checks/quote_legs.py`(仍读 best_ask,同一 claim 直接得到概率)/
+    `matching/actor.py`(同理)/`web/actor.py`(`price_from_probability` 逆变换取回真实
+    赔率用于展示)消费,详见 docs/arbitrage/architectures/data/architecture.md。
+
+    #228 `claim="no"`(3-way 合成 no 腿):两侧换位——ask ← LAY 列、bid ← BACK 列,换位后
+    仍用同一个 `claim` 做概率变换(数学上这正好让方向配平,见上)。
 
     返回 None 表示本 runner 无可用档(`back` + `lay` 都空)→ 调用方跳过 publish。
     """
@@ -91,19 +106,18 @@ def oe_runner_to_book_deltas(
     ]
     order_id = 1
     is_no = str(claim or "").lower() == "no"
-    # decimal odds 只发布 top-of-book:back 赔率越高越好,lay 赔率越低越好。
-    best_back = _best_level(back, highest=True)
-    best_lay = _best_level(lay, highest=False)
-    # yes 腿:ask=back / bid=lay;no 腿:ask=lay / bid=back(原值换位)。
-    ask_level = best_lay if is_no else best_back
-    bid_level = best_back if is_no else best_lay
-    if ask_level is not None:
-        price, size = ask_level
-        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
+    back_levels = _valid_levels(back)
+    lay_levels = _valid_levels(lay)
+    # yes 腿:ask←back / bid←lay;no 腿:ask←lay / bid←back(换位,claim 不变)。
+    ask_levels = lay_levels if is_no else back_levels
+    bid_levels = back_levels if is_no else lay_levels
+    for price, size in ask_levels:
+        probability = probability_from_price(ORBITEXCH, price, claim)
+        deltas.append(_make_add(instrument_id, OrderSide.SELL, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
-    if bid_level is not None:
-        price, size = bid_level
-        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
+    for price, size in bid_levels:
+        probability = probability_from_price(ORBITEXCH, price, claim)
+        deltas.append(_make_add(instrument_id, OrderSide.BUY, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
     if len(deltas) == 1:  # 只有 CLEAR,无实际档位 → 不发(避免空簿噪音)
@@ -128,7 +142,7 @@ def _make_add(instrument_id, side, price, size, order_id, ts_init_ns, price_prec
     )
 
 
-def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
+def _valid_levels(levels) -> list[tuple[float, float]]:
     valid: list[tuple[float, float]] = []
     for level in levels:
         try:
@@ -139,9 +153,7 @@ def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
         if price <= 0 or size <= 0:
             continue
         valid.append((price, size))
-    if not valid:
-        return None
-    return max(valid, key=lambda item: item[0]) if highest else min(valid, key=lambda item: item[0])
+    return valid
 
 
 def oe_subscription_plan_from_instrument(inst) -> dict | None:

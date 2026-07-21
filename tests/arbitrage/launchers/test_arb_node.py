@@ -352,7 +352,7 @@ def test_bootstrap_and_build_full_call_sequence():
 
 def test_bootstrap_populates_arb_context():
     """`prepare_arb_context` 是 module-global 状态修改;验证 ArbContext 被填满。"""
-    cfg = _cfg(execution={"tracking_timeout_sec": 45.0})
+    cfg = _cfg(execution={"tracking_timeout_sec": 45.0, "market_order_enabled": True})
     fake_node = MagicMock()
     settlement = object()
 
@@ -373,6 +373,7 @@ def test_bootstrap_populates_arb_context():
     assert not hasattr(ctx, "oe_health_interval_secs")
     assert not hasattr(ctx, "pm_positions_fetcher")
     assert ctx.pm_settlement is settlement
+    assert ctx.market_order_enabled is True  # #256 续:cfg.execution.market_order_enabled 透传
 
 
 def test_bootstrap_populates_sharpexch_context_when_enabled():

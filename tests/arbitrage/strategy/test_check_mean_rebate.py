@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock
 
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.mean_rebate import MeanRebateCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.snapshot import OpportunitySnapshot
@@ -36,8 +39,8 @@ def test_3way_split_pair_yes_no_arb_triggers_above_threshold():
     books = {
         "HY.POLYMARKET": _fake_book(0.40),    # home market YES token
         "HN.POLYMARKET": _fake_book(0.45),    # home market NO token(独立盘口)
-        "H.ORBITEXCH":   _fake_book(2.86),    # yes 腿(back)prob≈0.3497
-        "HNO.ORBITEXCH": _fake_book(2.5),     # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
+    "H.ORBITEXCH":   _fake_book(probability_from_price(ORBITEXCH, 2.86)),    # yes 腿(back)prob≈0.3497
+    "HNO.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.5, "no")),     # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
     }
     infos = {
         "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
@@ -66,8 +69,8 @@ def test_3way_split_pair_decimal_no_leg_carries_lay_and_exec_redirect():
     books = {
         "HY.POLYMARKET": _fake_book(0.40),
         "HN.POLYMARKET": _fake_book(0.62),     # PM no 更贵
-        "H.ORBITEXCH":   _fake_book(2.86),
-        "HNO.ORBITEXCH": _fake_book(2.5),      # OE no prob=0.60 ← 被选中
+    "H.ORBITEXCH":   _fake_book(probability_from_price(ORBITEXCH, 2.86)),
+    "HNO.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.5, "no")),      # OE no prob=0.60 ← 被选中
     }
     infos = {
         "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
@@ -90,8 +93,8 @@ def test_real_decimal_no_claim_uses_its_back_probability():
     books = {
         "Y.POLYMARKET": _fake_book(0.45),
         "N.POLYMARKET": _fake_book(0.40),
-        "Y.ORBITEXCH": _fake_book(2.0),
-        "N.ORBITEXCH": _fake_book(4.0),
+    "Y.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),
+    "N.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 4.0)),
     }
     infos = {
         "Y.POLYMARKET": {"selection_role": "home", "claim": "yes"},
@@ -114,8 +117,8 @@ def test_rate_below_threshold_returns_false():
     books = {
         "H.POLYMARKET": _fake_book(0.50),
         "A.POLYMARKET": _fake_book(0.49),
-        "H.ORBITEXCH":  _fake_book(2.0),
-        "A.ORBITEXCH":  _fake_book(2.0),
+    "H.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.0)),
+    "A.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.0)),
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -134,7 +137,7 @@ def test_missing_venue_for_role_returns_false():
     books = {
         "H.POLYMARKET": _fake_book(0.40),
         "A.POLYMARKET": _fake_book(0.40),
-        "H.ORBITEXCH":  _fake_book(2.5),
+    "H.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),
         # A.ORBITEXCH 缺
     }
     infos = {
@@ -152,8 +155,8 @@ def test_2way_arb_works():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.POLYMARKET": _fake_book(0.45),
-        "H.ORBITEXCH":  _fake_book(2.5),    # 0.40
-        "A.ORBITEXCH":  _fake_book(2.5),    # 0.40
+    "H.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),    # 0.40
+    "A.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),    # 0.40
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -172,8 +175,8 @@ def test_2way_arb_works_with_sharpexch_as_decimal_odds_venue():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.POLYMARKET": _fake_book(0.45),
-        "H.SHARPEXCH": _fake_book(2.5),    # 0.40
-        "A.SHARPEXCH": _fake_book(2.5),    # 0.40
+    "H.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.5)),    # 0.40
+    "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.5)),    # 0.40
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -193,8 +196,8 @@ def test_explicit_share_overrides_strategy_default():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.POLYMARKET": _fake_book(0.45),
-        "H.ORBITEXCH":  _fake_book(2.5),
-        "A.ORBITEXCH":  _fake_book(2.5),
+    "H.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),
+    "A.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},

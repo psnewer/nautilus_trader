@@ -223,7 +223,10 @@ Risk 门控。
 candidate payload,不重复订阅,不重复校验。已在 `PairRegistry` 的 pair 也直接跳过。
 
 校验算法:
-1. 对 candidate 中每个可交易 instrument 读取 cache order book 的 best ask,转换为概率。
+1. 对 candidate 中每个可交易 instrument 读取 cache order book 的 best ask。⚠️ 2026-07-20/21
+   (#256)起,该值直接就是隐含概率(decimal venue 的 book 写侧已按 claim 换算,见
+   `docs/arbitrage/architectures/data/architecture.md` §2/§3.1),`_ask_probability` 不再
+   二次调 `probability_from_price` 转换。
 2. 按 venue 聚合其互斥腿 ask 概率和。若任一 venue 缺 role、缺 book、缺 ask,或 ask 和
    `> probability_validation_clean_sum`(默认 `1.05`),保持 `PENDING`,继续等待后续 OBD。
 3. 若所有 venue 的 ask 和都可校验,按 outcome 取跨 venue 最小 ask 概率,再求和。
@@ -235,9 +238,10 @@ failed/pending 记录阻塞未来生命周期。
 
 > **#228 pair 级化(已落地 2026-07-15)**:3-way 拆分(§4.2.2)后门控按拆出的 pair 独立走上述
 > 状态机;"互斥腿 ask 概率和"即 pair `outcomes` 两侧的 ask 概率和(outcome 标签 = `claim or
-> selection_role`),所有 binary pair 的 outcome 均为 `[yes,no]`。decimal 行情概率经 Venue Registry
-> `probability_from_price(venue, price, quote_claim)` 换算；只有合成 no 腿的 `quote_claim=no`,
-> 真实 2-way NO runner 仍按 BACK 概率解释。
+> selection_role`),所有 binary pair 的 outcome 均为 `[yes,no]`。⚠️ decimal 行情概率此前(到
+> 2026-07-19)经 Venue Registry `probability_from_price(venue, price, quote_claim)` 在读侧换算;
+> #256 起 book 写侧已按 `quote_claim` 换算好隐含概率,读侧直接使用,不再二次换算。只有合成 no
+> 腿的 `quote_claim=no`,真实 2-way NO runner 仍按 BACK 概率解释(这条判据本身不受 #256 影响)。
 > **FAIL 连坐(双向)**:任一 role pair FAIL,同 `event_key` 的全部 pair 一并置 FAIL 并走
 > eviction——门控抓的是 event 级错配(队名配错不会只错一个 market)。已存在的兄弟由
 > `_fail_event_siblings` 反注册+置 sticky FAILED;**后到的兄弟 candidate 在

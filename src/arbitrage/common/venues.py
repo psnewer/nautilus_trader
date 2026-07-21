@@ -249,6 +249,17 @@ def probability_from_price(venue: str, price: float, claim: str = "yes") -> floa
     return price
 
 
+def price_from_probability(venue: str, probability: float, claim: str = "yes") -> float:
+    """隐含概率 → 价格,`probability_from_price` 的严格代数反解(book 深度概率编码,见
+    docs/arbitrage/architectures/data/architecture.md)。decimal venue 的 claim="no" 腿:
+    对补集反解,1 / (1 − probability)。"""
+    if descriptor_for(venue).odds_model == "decimal":
+        if str(claim or "").strip().lower() == "no":
+            return 1.0 / (1.0 - probability)
+        return 1.0 / probability
+    return probability
+
+
 def order_exposure_probability(venue: str, price: float, side: str) -> float:
     """订单实际增加的 outcome 敞口概率。SELL 增加报价 outcome 的互补敞口。"""
     probability = probability_from_price(venue, price, "yes")

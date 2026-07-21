@@ -5,6 +5,9 @@ from unittest.mock import MagicMock
 
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import InstrumentId
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.mean_rebate_recovery import MeanRebateRecoveryCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.snapshot import OpportunitySnapshot
@@ -121,7 +124,7 @@ def test_recovery_noops_when_no_missing_share():
 def test_recovery_uses_oe_qty_for_gross_payout_gap():
     books = {
         "H.POLYMARKET": _fake_book(0.50),
-        "A.ORBITEXCH": _fake_book(2.0),
+        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -143,7 +146,7 @@ def test_recovery_uses_oe_qty_for_gross_payout_gap():
 def test_recovery_uses_sharpexch_qty_for_gross_payout_gap():
     books = {
         "H.POLYMARKET": _fake_book(0.50),
-        "A.SHARPEXCH": _fake_book(2.0),
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -238,7 +241,7 @@ def test_recovery_maps_decimal_short_position_to_no_outcome():
     books = {
         "Y.POLYMARKET": _fake_book(0.50),
         "N.POLYMARKET": _fake_book(0.50),
-        "Y.ORBITEXCH": _fake_book(2.0),
+        "Y.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),
     }
     infos = {
         "Y.POLYMARKET": {"selection_role": "home", "claim": "yes"},
@@ -290,7 +293,7 @@ def test_recovery_rejects_probability_short_position():
 def test_recovery_decimal_no_candidate_keeps_lay_execution_fields():
     books = {
         "Y.POLYMARKET": _fake_book(0.50),
-        "N.ORBITEXCH": _fake_book(2.0),
+        "N.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0, "no")),
     }
     infos = {
         "Y.POLYMARKET": {"selection_role": "home", "claim": "yes"},

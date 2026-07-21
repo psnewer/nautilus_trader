@@ -5,6 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import price_from_probability
+from src.arbitrage.common.venues import probability_from_price
+
 from nautilus_trader.adapters.sharpexch.data import se_competition_page_ref_from_instrument
 from nautilus_trader.adapters.sharpexch.data import se_competition_page_url
 from nautilus_trader.adapters.sharpexch.data import se_ensure_competition_page
@@ -983,6 +987,8 @@ def test_price_message_to_book_deltas_returns_empty_for_bad_message():
 
 
 def test_runner_to_book_deltas_clears_then_adds_both_sides():
+    """#256 深度改造:全部 back(SELL)+ 全部 lay(BUY),存 `probability_from_price` 换算后
+    的隐含概率,不是原始赔率。"""
     runner = {
         "selection_id": "111",
         "back": [{"price": 2.0, "size": 10}, {"price": 1.99, "size": 7}],
@@ -991,17 +997,22 @@ def test_runner_to_book_deltas_clears_then_adds_both_sides():
     out = se_runner_to_book_deltas(_iid(), runner, ts_init_ns=1000)
     assert isinstance(out, OrderBookDeltas)
     deltas = list(out.deltas)
-    assert len(deltas) == 3
+    assert len(deltas) == 5  # 1 CLEAR + 2 back ADDs + 2 lay ADDs
     assert deltas[0].action == BookAction.CLEAR
-    # back → SELL (卖方出价 = asks),decimal odds 取最高赔率。
+    # back 全部档 → SELL(asks)
     assert deltas[1].order.side == OrderSide.SELL
-    assert float(deltas[1].order.price) == pytest.approx(2.0)
-    # lay → BUY (买方出价 = bids),decimal odds 取最低赔率。
-    assert deltas[2].order.side == OrderSide.BUY
-    assert float(deltas[2].order.price) == pytest.approx(2.08)
+    assert float(deltas[1].order.price) == pytest.approx(probability_from_price(SHARPEXCH, 2.0))
+    assert deltas[2].order.side == OrderSide.SELL
+    assert float(deltas[2].order.price) == pytest.approx(probability_from_price(SHARPEXCH, 1.99))
+    # lay 全部档 → BUY(bids)
+    assert deltas[3].order.side == OrderSide.BUY
+    assert float(deltas[3].order.price) == pytest.approx(probability_from_price(SHARPEXCH, 2.1))
+    assert deltas[4].order.side == OrderSide.BUY
+    assert float(deltas[4].order.price) == pytest.approx(probability_from_price(SHARPEXCH, 2.08))
 
 
 def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
+    """decimal 深度归一(#256):NT best_ask/best_bid 逆变换还原=最高 back/最低 lay。"""
     runner = {
         "back": [{"price": 1.85, "size": 10}, {"price": 1.82, "size": 20}],
         "lay": [{"price": 1.90, "size": 30}, {"price": 1.88, "size": 40}],
@@ -1010,8 +1021,8 @@ def test_runner_to_book_deltas_makes_nt_best_prices_match_back_and_lay_top():
     book = OrderBook(_iid(), BookType.L2_MBP)
     book.apply_deltas(deltas)
 
-    assert float(book.best_ask_price()) == pytest.approx(1.85)
-    assert float(book.best_bid_price()) == pytest.approx(1.88)
+    assert price_from_probability(SHARPEXCH, float(book.best_ask_price())) == pytest.approx(1.85)
+    assert price_from_probability(SHARPEXCH, float(book.best_bid_price())) == pytest.approx(1.88)
 
 
 def test_runner_to_book_deltas_returns_none_when_empty():

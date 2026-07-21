@@ -28,7 +28,6 @@ from nautilus_trader.model.identifiers import Venue
 from src.arbitrage.common.control import TOPIC_REFRESH_INTERVAL
 from src.arbitrage.common.control import SetRefreshIntervalCommand
 from src.arbitrage.common.pair_registry import PairRegistry
-from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 from src.arbitrage.matching.engine import MatchEngine
 from src.arbitrage.matching.engine import MatchResult
@@ -673,13 +672,14 @@ def _claim_of(instrument) -> str:
 
 
 def _ask_probability(book, venue: str, *, claim: str = "yes") -> float | None:
-    price = _best_ask(book)
-    if price is None or price <= 0:
+    """#256:book 存的就是 best_ask 处的隐含概率(写侧已按 claim 换算,decimal venue 见
+    `orbitexch/data.py::oe_runner_to_book_deltas`),不再需要 `probability_from_price` 二次转换。
+    `venue`/`claim` 形参保留,兼容调用签名(未来若有非概率编码的 venue 可在此分支)。
+    """
+    probability = _best_ask(book)
+    if probability is None or probability <= 0:
         return None
-    try:
-        return probability_from_price(venue, price, claim)
-    except (KeyError, ZeroDivisionError):
-        return None
+    return probability
 
 
 def _best_ask(book) -> float | None:

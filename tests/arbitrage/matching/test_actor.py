@@ -32,6 +32,8 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from src.arbitrage.common.pair_registry import PairRegistry
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.matching.actor import MarketMatchingActor
 from src.arbitrage.matching.actor import MarketMatchingConfig
 from src.arbitrage.matching.actor import _RuntimeDeps
@@ -178,7 +180,7 @@ def _add_order_book(cache, instrument_id, ask):
         action=BookAction.ADD,
         order=BookOrder(
             side=OrderSide.SELL,
-            price=Price.from_str(str(ask)),
+            price=Price(float(ask), precision=8),
             size=Quantity.from_int(100),
             order_id=1,
         ),
@@ -318,8 +320,8 @@ def test_probability_validation_passes_then_registers_and_publishes():
     subscribed, unsubscribed = _wire_validation_books(actor, cache, {
         str(pm_home.id): 0.50,
         str(pm_away.id): 0.50,
-        str(oe_home.id): 2.00,
-        str(oe_away.id): 2.00,
+        str(oe_home.id): probability_from_price(ORBITEXCH, 2.00),
+        str(oe_away.id): probability_from_price(ORBITEXCH, 2.00),
     })
     published = []
 
@@ -359,8 +361,8 @@ def test_probability_validation_waits_when_venue_sum_not_clean():
     subscribed, unsubscribed = _wire_validation_books(actor, cache, {
         str(pm_home.id): 0.60,
         str(pm_away.id): 0.60,
-        str(oe_home.id): 2.00,
-        str(oe_away.id): 2.00,
+        str(oe_home.id): probability_from_price(ORBITEXCH, 2.00),
+        str(oe_away.id): probability_from_price(ORBITEXCH, 2.00),
     })
     published = []
     actor.publish_data = lambda **k: published.append(k)
@@ -392,8 +394,8 @@ def test_probability_validation_failed_is_sticky_and_not_published():
     subscribed, unsubscribed = _wire_validation_books(actor, cache, {
         str(pm_home.id): 0.48,
         str(pm_away.id): 0.48,
-        str(oe_home.id): 2.20,
-        str(oe_away.id): 2.20,
+        str(oe_home.id): probability_from_price(ORBITEXCH, 2.20),
+        str(oe_away.id): probability_from_price(ORBITEXCH, 2.20),
     })
     published = []
     actor.publish_data = lambda **k: published.append(k)
@@ -429,8 +431,8 @@ def test_probability_validation_ended_game_clears_state_and_subscription():
     subscribed, unsubscribed = _wire_validation_books(actor, cache, {
         str(pm_home.id): 0.60,
         str(pm_away.id): 0.60,
-        str(oe_home.id): 2.00,
-        str(oe_away.id): 2.00,
+        str(oe_home.id): probability_from_price(ORBITEXCH, 2.00),
+        str(oe_away.id): probability_from_price(ORBITEXCH, 2.00),
     })
     actor.publish_data = lambda **k: None
 
@@ -677,8 +679,8 @@ def test_three_way_validation_publishes_only_after_all_roles_pass():
     for role in ("home", "draw", "away"):
         books[str(legs[f"pm_{role}_yes"].id)] = 0.50
         books[str(legs[f"pm_{role}_no"].id)] = 0.52
-        books[str(legs[f"oe_{role}_yes"].id)] = 2.00
-        books[str(legs[f"oe_{role}_no"].id)] = 2.10
+        books[str(legs[f"oe_{role}_yes"].id)] = probability_from_price(ORBITEXCH, 2.00)
+        books[str(legs[f"oe_{role}_no"].id)] = probability_from_price(ORBITEXCH, 2.10)
     subscribed, unsubscribed = _wire_validation_books(actor, cache, books)
     published = []
     expected_pair_ids = {
@@ -738,11 +740,11 @@ def test_three_way_validation_fail_never_publishes_event_siblings():
     # home pair 通过(≈1.0);draw pair 失败(best sum ≈ 0.85 < 0.95);away 后到被 event FAIL 拦截。
     books = {
         str(legs["pm_home_yes"].id): 0.50, str(legs["pm_home_no"].id): 0.52,
-        str(legs["oe_home_yes"].id): 2.00, str(legs["oe_home_no"].id): 2.10,   # no 腿 ask=lay 原值 → prob=1−1/2.1
+        str(legs["oe_home_yes"].id): probability_from_price(ORBITEXCH, 2.00), str(legs["oe_home_no"].id): probability_from_price(ORBITEXCH, 2.10),   # quote_claim 未设,统一走 yes 公式(#256)
         str(legs["pm_draw_yes"].id): 0.40, str(legs["pm_draw_no"].id): 0.45,
-        str(legs["oe_draw_yes"].id): 2.50, str(legs["oe_draw_no"].id): 1.90,
+        str(legs["oe_draw_yes"].id): probability_from_price(ORBITEXCH, 2.50), str(legs["oe_draw_no"].id): probability_from_price(ORBITEXCH, 1.90),
         str(legs["pm_away_yes"].id): 0.50, str(legs["pm_away_no"].id): 0.52,
-        str(legs["oe_away_yes"].id): 2.00, str(legs["oe_away_no"].id): 2.10,
+        str(legs["oe_away_yes"].id): probability_from_price(ORBITEXCH, 2.00), str(legs["oe_away_no"].id): probability_from_price(ORBITEXCH, 2.10),
     }
     _wire_validation_books(actor, cache, books)
     published = []

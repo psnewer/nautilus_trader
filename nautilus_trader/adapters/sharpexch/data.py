@@ -7,6 +7,8 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Optional
 
+from src.arbitrage.common.venues import probability_from_price
+
 from nautilus_trader.adapters.sharpexch.config import SharpExchDataClientConfig
 from nautilus_trader.adapters.sharpexch.message_parser import SharpExchMessageParser
 from nautilus_trader.adapters.sharpexch.websocket_handler import SharpExchWebSocketHandler
@@ -695,7 +697,7 @@ def se_price_message_to_book_deltas(
     routing: dict[str, list[tuple[InstrumentId, str]]],
     ts_init_ns: int,
     *,
-    price_precision: int = 2,
+    price_precision: int = 8,
     size_precision: int = 2,
 ) -> list[OrderBookDeltas]:
     """SE price WS message + selection routing → `OrderBookDeltas` 列表。
@@ -729,7 +731,7 @@ def se_market_price_message_to_book_deltas(
     market_routing: dict[str, dict[str, list[tuple[InstrumentId, str]]]],
     ts_init_ns: int,
     *,
-    price_precision: int = 2,
+    price_precision: int = 8,
     size_precision: int = 2,
 ) -> dict | None:
     """SE price WS message + market routing → routed book-delta payload。
@@ -793,7 +795,7 @@ def se_handle_price_frame(
     ts_init_ns: int,
     publish: Callable,
     *,
-    price_precision: int = 2,
+    price_precision: int = 8,
     size_precision: int = 2,
 ) -> dict | None:
     """SE price frame → routed deltas → publish 的组合 helper。"""
@@ -819,13 +821,21 @@ def se_runner_to_book_deltas(
     runner: dict,
     ts_init_ns: int,
     *,
-    price_precision: int = 2,
+    price_precision: int = 8,
     size_precision: int = 2,
     claim: str = "yes",
 ) -> Optional[OrderBookDeltas]:
-    """SE WS 一个 runner 的 back/lay 快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
+    """SE WS 一个 runner 的 back/lay 全档快照 → `OrderBookDeltas`(CLEAR + N×ADD)。
 
-    #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列原值、bid ← BACK 列原值。
+    #256(深度改造,取代 #85 的 top-of-book-only,与 OE 对称见
+    `orbitexch/data.py::oe_runner_to_book_deltas` docstring 完整推导):cache 不再存 venue
+    原始赔率,存 `probability_from_price(SHARPEXCH, raw, claim)` 换算后的隐含概率——`1/price`
+    (claim=yes)对 price 严格递减、`1-1/price`(claim=no)严格递增,让 back/lay 换位后仍能
+    被 NT 原生排序(ask 取 min、bid 取 max)正确识别 best 与 worst。精度选 8 位避免高赔率
+    区间(如 999 vs 1000)撞位。
+
+    #228 `claim="no"`(3-way 合成 no 腿):两侧换位重挂,ask ← LAY 列、bid ← BACK 列(换位后
+    仍用同一个 `claim` 做概率变换)。
     """
 
     back = runner.get("back") or []
@@ -846,19 +856,18 @@ def se_runner_to_book_deltas(
     ]
     order_id = 1
     is_no = str(claim or "").lower() == "no"
-    # decimal odds 只发布 top-of-book:back 赔率越高越好,lay 赔率越低越好。
-    best_back = _best_level(back, highest=True)
-    best_lay = _best_level(lay, highest=False)
-    # yes 腿:ask=back / bid=lay;no 腿:ask=lay / bid=back(原值换位)。
-    ask_level = best_lay if is_no else best_back
-    bid_level = best_back if is_no else best_lay
-    if ask_level is not None:
-        price, size = ask_level
-        deltas.append(_make_add(instrument_id, OrderSide.SELL, price, size, order_id, ts_init_ns, price_precision, size_precision))
+    back_levels = _valid_levels(back)
+    lay_levels = _valid_levels(lay)
+    # yes 腿:ask←back / bid←lay;no 腿:ask←lay / bid←back(换位,claim 不变)。
+    ask_levels = lay_levels if is_no else back_levels
+    bid_levels = back_levels if is_no else lay_levels
+    for price, size in ask_levels:
+        probability = probability_from_price(SHARPEXCH, price, claim)
+        deltas.append(_make_add(instrument_id, OrderSide.SELL, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
-    if bid_level is not None:
-        price, size = bid_level
-        deltas.append(_make_add(instrument_id, OrderSide.BUY, price, size, order_id, ts_init_ns, price_precision, size_precision))
+    for price, size in bid_levels:
+        probability = probability_from_price(SHARPEXCH, price, claim)
+        deltas.append(_make_add(instrument_id, OrderSide.BUY, probability, size, order_id, ts_init_ns, price_precision, size_precision))
         order_id += 1
 
     if len(deltas) == 1:
@@ -883,7 +892,7 @@ def _make_add(instrument_id, side, price, size, order_id, ts_init_ns, price_prec
     )
 
 
-def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
+def _valid_levels(levels) -> list[tuple[float, float]]:
     valid: list[tuple[float, float]] = []
     for level in levels:
         try:
@@ -894,6 +903,4 @@ def _best_level(levels, *, highest: bool) -> tuple[float, float] | None:
         if price <= 0 or size <= 0:
             continue
         valid.append((price, size))
-    if not valid:
-        return None
-    return max(valid, key=lambda item: item[0]) if highest else min(valid, key=lambda item: item[0])
+    return valid

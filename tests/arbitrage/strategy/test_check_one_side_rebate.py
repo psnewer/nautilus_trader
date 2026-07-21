@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock
 
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.checks.one_side_rebate import OneSideRebateCheck
 from src.arbitrage.strategy.condition import EvalContext
 from src.arbitrage.strategy.snapshot import OpportunitySnapshot
@@ -28,8 +31,8 @@ def test_2way_enumerates_all_venue_combos_and_targets_above_threshold():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
         "A.POLYMARKET": _fake_book(0.50),
-        "H.ORBITEXCH": _fake_book(2.0),   # prob=0.50
-        "A.ORBITEXCH": _fake_book(2.0),   # prob=0.50
+        "H.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),   # prob=0.50
+        "A.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.0)),   # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -78,7 +81,7 @@ def test_candidate_quantities_put_rebate_on_one_side():
 def test_sharpexch_candidate_uses_decimal_odds_qty():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
-        "A.SHARPEXCH": _fake_book(2.0),   # prob=0.50
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),   # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},
@@ -101,7 +104,7 @@ def test_3way_split_pair_yes_no_generates_candidates():
     books = {
         "HY.POLYMARKET": _fake_book(0.20),
         "HN.POLYMARKET": _fake_book(0.30),
-        "HNO.ORBITEXCH": _fake_book(2.5),   # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
+        "HNO.ORBITEXCH": _fake_book(probability_from_price(ORBITEXCH, 2.5, "no")),   # 合成 no 腿:ask=lay 原值 → prob=1−1/2.5=0.60
     }
     infos = {
         "HY.POLYMARKET": {"selection_role": "home", "claim": "yes"},
@@ -132,7 +135,7 @@ def test_3way_split_pair_yes_no_generates_candidates():
 def test_decimal_odds_target_qty_share_and_cost():
     books = {
         "H.POLYMARKET": _fake_book(0.45),
-        "A.SHARPEXCH": _fake_book(2.0),   # prob=0.50
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),   # prob=0.50
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},

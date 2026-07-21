@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.arbitrage.common.venues import probability_from_price
+from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.common.venues import venue_id_from_instrument_id
 
 
@@ -20,12 +20,15 @@ def quote_legs_by_outcome(snapshot) -> dict[str, list[dict]]:
         if book is None:
             continue
         venue = venue_of(instrument_id)
-        price = best_ask(book)
-        if price is None or price <= 0:
+        # #256:book 存的是 best_ask 处的隐含概率(写侧已用同一 quote_claim 换算,
+        # decimal venue 见 `orbitexch/data.py::oe_runner_to_book_deltas`),读侧不再需要
+        # `probability_from_price` 二次转换,直接就是 probability。
+        probability = best_ask(book)
+        if probability is None or probability <= 0:
             continue
         quote_claim = str(info.get("quote_claim") or "yes").lower()
-        probability = to_probability(venue, price, quote_claim)
-        if probability <= 0:
+        price = to_price(venue, probability, quote_claim)
+        if price is None:
             continue
         leg = {
             "instrument_id": instrument_id,
@@ -46,7 +49,12 @@ def quote_legs_by_outcome(snapshot) -> dict[str, list[dict]]:
 
 
 def best_ask(book) -> float | None:
-    """从 NT OrderBook 或测试字典读取 best ask。"""
+    """从 NT OrderBook 或测试字典读取 best ask。
+
+    #256:返回值就是隐含概率(decimal venue 的 book 写侧已按 quote_claim 换算,见
+    `orbitexch/data.py::oe_runner_to_book_deltas`;probability venue 本就是概率,不变)。
+    测试字典('ask'/'best_ask' 键)同样应传概率而非原始赔率。
+    """
     fn = getattr(book, "best_ask_price", None)
     if callable(fn):
         try:
@@ -59,11 +67,35 @@ def best_ask(book) -> float | None:
     return None
 
 
-def to_probability(venue: str, price: float, claim: str = "yes") -> float:
+def worst_ask(book) -> float | None:
+    """从 NT OrderBook 读最深(最差)ask 档的隐含概率(#256 续,市价单用)。
+
+    `book.asks()` 按价格升序(best 在前),`[-1]` 即最差档。纯 NT book 接口——不支持
+    `best_ask` 那种测试字典 fallback,因为深度语义只有真实 `OrderBook` 才有意义。
+    """
+    fn = getattr(book, "asks", None)
+    if not callable(fn):
+        return None
     try:
-        return probability_from_price(venue, price, claim or "yes")
-    except KeyError:
-        return 0.0
+        levels = fn()
+    except Exception:
+        return None
+    if not levels:
+        return None
+    try:
+        value = levels[-1].price
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def to_price(venue: str, probability: float, claim: str = "yes") -> float | None:
+    """隐含概率 → 真实价格,`price_from_probability` 的容错包装(#256,取代旧
+    `to_probability`——书方向反了,现在读到的已经是概率,要还原回真实赔率/概率)。"""
+    try:
+        return price_from_probability(venue, probability, claim or "yes")
+    except (KeyError, ZeroDivisionError):
+        return None
 
 
 def venue_of(instrument_id) -> str:

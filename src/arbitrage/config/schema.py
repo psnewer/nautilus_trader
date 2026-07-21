@@ -196,6 +196,9 @@ class ExecutionSectionConfig(ConfigStruct):
     # position=持仓对账(#110,驱动 PM merge/redeem)。改后需重启(LiveExecEngineConfig build 时定)。
     open_check_interval_secs: float = 300.0
     position_check_interval_secs: float = 300.0
+    # decimal venue(OE/SE)市价单开关(#256 续):打开后 place_bets 用书内最差价下单,
+    # 保证成交而非最优价。改后需重启(ArbContext 构造时定,见 bootstrap.py)。
+    market_order_enabled: bool = False
 
 
 class DebugSectionConfig(ConfigStruct):

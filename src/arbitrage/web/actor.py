@@ -38,6 +38,7 @@ from src.arbitrage.common.control import SetTradingStateCommand
 from src.arbitrage.common.params import ArbitrageParams
 from src.arbitrage.common.venues import descriptor_for
 from src.arbitrage.common.venues import is_known_venue
+from src.arbitrage.common.venues import price_from_probability
 from src.arbitrage.web.app import build_app
 
 
@@ -93,6 +94,16 @@ def _venue_map_from_instrument_ids(instrument_ids) -> dict[str, list[str]]:
         iid = InstrumentId.from_str(iid_str)
         grouped.setdefault(iid.venue.value.upper(), []).append(iid_str)
     return grouped
+
+
+def _display_price(venue: str, probability: float | None, quote_claim) -> float | None:
+    """#256:book 里的隐含概率 → 展示用真实价格;未知 venue 原样返回,不猜测换算方向。"""
+    if probability is None or not is_known_venue(venue):
+        return probability
+    try:
+        return price_from_probability(venue, probability, str(quote_claim or "yes").lower())
+    except (KeyError, ZeroDivisionError):
+        return None
 
 
 class WebGatewayActor(Actor):
@@ -339,7 +350,12 @@ class WebGatewayActor(Actor):
         return out
 
     def odds_snapshot(self) -> list[dict]:
-        """每场 matched pair 各腿的盘口最优价(读 PairRegistry + cache order book;无 firehose)。"""
+        """每场 matched pair 各腿的盘口最优价(读 PairRegistry + cache order book;无 firehose)。
+
+        #256:book 存的是隐含概率(decimal venue 写侧已按 quote_claim 换算,见
+        `orbitexch/data.py::oe_runner_to_book_deltas`),这里用 `price_from_probability`
+        换算回真实赔率展示;probability venue 是恒等映射,不受影响。
+        """
         reg = self._pair_registry
         if reg is None:
             return []
@@ -357,16 +373,17 @@ class WebGatewayActor(Actor):
                     role = inst.info.get("selection_role") or inst.info.get("market_type")
                     claim = inst.info.get("claim") or None
                     quote_claim = inst.info.get("quote_claim") or None
+                venue = iid.venue.value
                 bid = book.best_bid_price() if book is not None else None
                 ask = book.best_ask_price() if book is not None else None
                 legs.append({
-                    "venue": iid.venue.value,
+                    "venue": venue,
                     "role": role,
                     "claim": claim,
                     "quote_claim": quote_claim,
-                    "odds_model": descriptor_for(iid.venue.value).odds_model if is_known_venue(iid.venue.value) else "",
-                    "bid": float(bid) if bid is not None else None,
-                    "ask": float(ask) if ask is not None else None,
+                    "odds_model": descriptor_for(venue).odds_model if is_known_venue(venue) else "",
+                    "bid": _display_price(venue, float(bid) if bid is not None else None, quote_claim),
+                    "ask": _display_price(venue, float(ask) if ask is not None else None, quote_claim),
                 })
             out.append({"pair_id": pair_id, "legs": legs})
         return out

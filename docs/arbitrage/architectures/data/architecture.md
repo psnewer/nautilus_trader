@@ -12,7 +12,7 @@
 | PM `PolymarketDataClient` | 上游 + 本项目小补丁 | WS 订阅 → 输出 NT 标准 `OrderBookDelta`;订阅启动阶段 WS connect 失败时保留订阅并自动重试 |
 | `ArbPolymarketLiveDataClientFactory` | `LiveDataClientFactory` | **薄子类**,只为换用 `ArbPolymarketInstrumentProvider`(后者给 PM instrument.info 补 matching 字段;#35) |
 | `PolymarketSportsDataClient` / `PolymarketSportsInstrumentProvider` | 自写 `LiveMarketDataClient` + `InstrumentProvider` | 公开 Gamma discovery 产出 `.PMSPORTS` non-tradable synthetic event anchors + Sports WS firehose 产出 `SportsGameUpdate` |
-| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + top-of-book ADDs);BACK 最优价→SELL/ask 侧 / LAY 最优价→BUY/bid 侧;路由 market_id+selection_id → InstrumentId |
+| `OrbitExchDataClient` | 自写 `LiveMarketDataClient` | WS `multiple-market-prices` 帧 → NT 标准 `OrderBookDeltas`(snapshot CLEAR + **全档** ADDs,#256 深度改造,取代 #85 的 top-of-book-only);BACK→SELL/ask 侧 / LAY→BUY/bid 侧,存入值是 `probability_from_price` 换算后的隐含概率(⚠️ 非原始赔率,详见 §3.1);路由 market_id+selection_id → InstrumentId |
 | `OrbitExchLiveDataClientFactory` | `LiveDataClientFactory` | 构造 OE data client,共享 `PlaywrightBrowserManager`(§6.2 单例) |
 
 **位置**(refactor.md #33):venue-coupled 全在 `nautilus_trader/adapters/{polymarket,orbitexch}/`(P9 唯一例外)。
@@ -31,7 +31,7 @@ flowchart LR
   V[(OE WS multiple-market-prices)] --> WSH[OrbitExchWebSocketHandler]
   WSH -->|parse_price_message| DC[OrbitExchDataClient._on_price_frame]
   DC -->|routing market_id+sel_id → InstrumentId| MAP{命中订阅?}
-  MAP -->|是| CONV["oe_runner_to_book_deltas\n(CLEAR + best BACK ADD(SELL) + best LAY ADD(BUY))"]
+  MAP -->|是| CONV["oe_runner_to_book_deltas\n(CLEAR + 全档 BACK ADD(SELL) + 全档 LAY ADD(BUY),概率编码)"]
   CONV --> HD["_handle_data(OrderBookDeltas)"]
   HD --> DE[NT DataEngine]
   DE --> C[(Cache.order_book)]
@@ -42,8 +42,8 @@ flowchart LR
 ```
 
 要点:
-- OE WS 给的是 **snapshot of best N levels**(`bdatb`/`bdatl` 各档),但当前套利链路只消费 top-of-book;`oe_runner_to_book_deltas` 在源头归一为 `OrderBookDeltas`(1×CLEAR + 最优 BACK + 最优 LAY)入标准管道。
-- decimal odds 最优方向:BACK 取最高赔率并写入 `BookOrder side = SELL`(ask/back),LAY 取最低赔率并写入 `BookOrder side = BUY`(bid/lay)。这样 Web/Strategy 继续用 NT 标准 `best_ask_price()` / `best_bid_price()` 即可得到业务最优价。
+- OE WS 给的是 **snapshot of N levels**(`bdatb`/`bdatl` 各档),`oe_runner_to_book_deltas` 在源头归一为 `OrderBookDeltas`(1×CLEAR + 全档 BACK + 全档 LAY)入标准管道(#256 深度改造,⚠️ 取代此前 #85 的"只发 top-of-book"设计,决策见 refactor.md #256 条目)。
+- decimal odds side 映射不变:BACK 写入 `BookOrder side = SELL`(ask/back),LAY 写入 `BookOrder side = BUY`(bid/lay)。但**存入值不再是原始赔率,是 `probability_from_price(venue, raw_odds, claim)` 换算后的隐含概率**——NT book 的固定排序规则(ask 取原始值 min 为 best、bid 取 max 为 best)跟"back 越高越好、lay 越低越好"这种反向语义不匹配,只发一档时靠 N=1 退化掩盖;发全档后必须让存入值单调方向配平,`1/price`(claim=yes)对 price 严格递减、`1-1/price`(claim=no)严格递增,恰好在换位后仍自洽。Web/Strategy 用 NT 标准 `best_ask_price()`/`best_bid_price()` 仍能拿到"业务最优概率",但**要拿真实赔率(下单价、展示价)必须再经 `price_from_probability` 逆变换**——不能像改造前那样直接把 book 值当赔率用。3 个既有读取点(`strategy/checks/quote_legs.py`、`matching/actor.py`、`web/actor.py`)均已按此改造。
 - 未订阅市场的帧静默丢弃(routing 表查不到)。
 - PM CLOB market WS 由上游 `PolymarketWebSocketClient` 连接;`base_url_ws` 必须是 `.../ws/`,由 client 自行拼接 `market`。项目 dispatcher 兼容旧 `.../ws/market` 配置并归一化。`proxy_url` 由配置显式给出或 loader 从 `POLYMARKET_PROXY_URL` / 系统 proxy env 注入后透传给上游 client;NT pyo3 WS client 不自动读取系统代理,直连 PM WS 在当前网络下会超时。若启动订阅后的第一次 connect 因网络超时失败,`PolymarketDataClient._delayed_connect` 记录 warning 并按至少 5s 间隔重试,避免一次 transient timeout 后永久无 PM 盘口。PM DataClient 也记录首个 `PM OrderBookDeltas published` 低噪声锚点,用于 live smoke 区分"WS 已连"与"盘口已进入 NT 数据管道"。
 - PM HTTP/CLOB client 由 `get_polymarket_http_client()` 统一构造为 `py_clob_client_v2.ClobClient`(#97)。#98 起该 factory 同时把 `venues.polymarket.proxy_url` 接到 v2 SDK 的共享 HTTP transport,确保 PM Data/Provider 的 CLOB REST 读取与 PM WS 使用同一显式路由;显式代理存在时不再隐式继承进程代理。DataClient 不执行 geoblock 拦截;geoblock 只约束 PM Execution 真下单 preflight。DataClient 行为不变:仍只使用该 client 的 market/public/provider 能力,行情输出仍为 NT 标准 `OrderBookDelta(s)`。
@@ -138,7 +138,7 @@ class OrbitExchDataClient(LiveMarketDataClient):
   - ✅ **前提已验证(2026-06-16 `oe_heartbeat_probe.py` re-probe 空闲盘口)**:被动盯心跳依赖赔率(prices)WS 真发心跳——实测**空闲盘口** 600s 内 prices 仅 5 个 data 帧、却有 **23 个心跳 `'h'`(median 25.0s,max 35.4s)** → prices WS **空闲时照发心跳**,安静市场靠心跳保活、不误判 disconnect;`staleness_timeout=300s`(≈12 个心跳余量)充足。(此前据 2026-06-13 活跃盘口 probe 误以为 prices 无心跳,已证伪。)
   - **退役**:`HealthCheckLoop`(OE DataClient 不再用;**PM ExecClient 也已删 #110**,merge/redeem 改 NT 连续 position 对账驱动)、`_run_health_check` staleness 维度、DataClient 侧 `_comp_last_frame_ns`/`_mark_comp_frame`/`_on_comp_ws_close`/watchdog(全搬进 handler)。`leg_settled` 状态维度更早已退役(#108);执行真相可信度由 `OrbitExchExecutionClient` 写 `VenueExecutionLiveness`(见 execution §4.3bis / synchronization §8.5)。
 
-**纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。多档时只发布 top-of-book:BACK 最高价、LAY 最低价。
+**纯映射** `oe_runner_to_book_deltas(instrument_id, runner, ts) -> OrderBookDeltas | None`:模块级,可单测。runner 全空(back+lay 都空 / 全 size<=0)返 None,调用方不 publish 避空簿噪音。⚠️ 2026-07-20/21(#256)起**全档发布**(取代此前"只发 top-of-book"):BACK/LAY 各列所有合法档(price>0 且 size>0)都发 ADD,存入值是 `probability_from_price(venue, raw_odds, claim)` 换算后的隐含概率,不是原始赔率——原因与推导见 §2 要点及 refactor.md #256 决策记录。
 
 ### 3.1b OE/SE 3-way 腿模型:合成 no instrument(#228,已落地 2026-07-15)
 
@@ -161,18 +161,27 @@ OE/SE 的 3-way(1X2)在 venue 上是一个 market 三个 selection,每个 select
   instrument。执行重定向保证 venue 对账(CURRENT_BETS 的 LAY=SHORT 落在真 selection)与 NT 订单/持仓
   在同一 instrument 上闭合；合成 selection 只存在于不可执行的行情 identity，不进入 venue payload。
 
-**book 写入(cache 只存 venue 原始价不变量)**:`oe_runner_to_book_deltas` 收到同一 runner frame
+**book 写入(换位不变量,#228 原设;⚠️ 2026-07-20/21 #256 起"cache 只存 venue 原始价"
+这条假设已失效,见下)**:`oe_runner_to_book_deltas` 收到同一 runner frame
 时产**两份** `OrderBookDeltas`(同帧原子,每帧全量 CLEAR+ADD 故无镜像同步问题):
 
 ```text
-yes book(现状):ask ← BACK 列原值,bid ← LAY 列原值
-no  book(新)  :ask ← LAY 列原值, bid ← BACK 列原值(两侧换位重挂,size 跟随对应列)
+yes book(现状):ask ← BACK 列, bid ← LAY 列
+no  book(现状):ask ← LAY 列,  bid ← BACK 列(两侧换位重挂,size 跟随对应列)
 ```
 
-价格**不做任何换算**:下单价永远取 book 原值(claim=no 腿选中后 `price` 即 lay 原值,直通
-place_bets 的 SELL@lay 转换,无浮点往返/tick 风险);隐含概率在读侧经 Venue Registry
-`probability_from_price(venue, price, quote_claim)` 换算(`quote_claim=no` → `1−1/price`,真理源 venues.md §4)。
-真实 2-way away runner 虽然逻辑 `claim=no`,但没有 `quote_claim=no`,book 和概率仍按普通 BACK 处理。
+⚠️ **#256 修订**:上面这条"换位"结构不变——变的是每一档存的**数值**。此前(#228 原设,到
+2026-07-19)book 存的是 venue 原始赔率,零换算,下单价直通;#256(深度改造,详见 §2 要点
++ refactor.md #256 决策记录)之后,**每一档存的是 `probability_from_price(venue, raw_odds,
+claim)` 换算后的隐含概率**,不是原始赔率。原因:decimal odds"back 越高越好、lay 越低越好"
+跟 NT book 固定排序规则(ask 取原始值 min 为 best、bid 取 max 为 best)方向不一致,只发一档
+时靠 N=1 退化掩盖,发全档后必须做这个变换才能让 NT 原生排序继续正确识别 best/worst。
+换算方向由 claim 决定(与换位用的是同一个 `claim` 参数,数学上恰好让 back/lay 两列在换位
+后都能配平,见 §2 要点)。真实下单价不再"直通"——要拿真实赔率必须在读侧用
+`price_from_probability(venue, probability, quote_claim)` 逆变换(真理源仍是 venues.md §4,
+新增反函数);`quote_claim=no` 对应 `1/(1−probability)`。
+真实 2-way away runner 虽然逻辑 `claim=no`,但没有 `quote_claim=no`,book 和概率仍按普通
+(quote_claim 默认 yes)公式处理,这条判据本身不受 #256 影响。
 
 **路由**:data client 的 `_market_to_instruments[market_id][selection_id]` 从单值改多值
 (同一 selection → yes/no 两条),price frame 回调对两条各 publish 一份 deltas。

@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 import msgspec
 import pytest
 
+from src.arbitrage.common.venues import ORBITEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.config.dispatcher import to_strategy_registry
 from src.arbitrage.config.schema import ArbConfig
 from src.arbitrage.strategy.actions.place_bets import PlaceBetsAction
@@ -87,8 +89,8 @@ def _3way_arbitrage_snapshot(in_play: bool = False) -> OpportunitySnapshot:
     books = {
         "HY.POLYMARKET":  _fake_book(0.30),   # home market YES token
         "HN.POLYMARKET":  _fake_book(0.55),   # home market NO token
-        "H.ORBITEXCH":    _fake_book(4.0),    # yes(back)prob 0.25
-        "HNO.ORBITEXCH":  _fake_book(2.0),    # 合成 no:prob=1−1/2.0=0.50
+        "H.ORBITEXCH":    _fake_book(probability_from_price(ORBITEXCH, 4.0)),    # yes(back)prob 0.25
+        "HNO.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.0, "no")),    # 合成 no:prob=1−1/2.0=0.50
     }
     infos = {
         "HY.POLYMARKET":  {"selection_role": "home", "claim": "yes"},
@@ -171,8 +173,8 @@ def test_no_arb_below_threshold_no_action(caplog):
     books = {
         "H.POLYMARKET": _fake_book(0.50),   # 0.50
         "A.POLYMARKET": _fake_book(0.50),   # 0.50
-        "H.ORBITEXCH":  _fake_book(2.5),    # 0.40
-        "A.ORBITEXCH":  _fake_book(2.5),    # 0.40
+        "H.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),    # 0.40
+        "A.ORBITEXCH":  _fake_book(probability_from_price(ORBITEXCH, 2.5)),    # 0.40
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home"},

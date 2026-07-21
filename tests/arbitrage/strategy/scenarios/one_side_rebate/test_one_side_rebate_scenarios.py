@@ -8,6 +8,8 @@ import asyncio
 from unittest.mock import MagicMock
 
 from nautilus_trader.model.enums import PositionSide
+from src.arbitrage.common.venues import SHARPEXCH
+from src.arbitrage.common.venues import probability_from_price
 from src.arbitrage.strategy.actions.candi_select import CandiSelectAction
 from src.arbitrage.strategy.actions.share_limit import ShareLimitModification
 from src.arbitrage.strategy.bool_expr import AndExpr
@@ -82,7 +84,7 @@ class _MarkerAction(Action):
 def _snapshot(*, positions=None) -> OpportunitySnapshot:
     books = {
         "H.POLYMARKET": _fake_book(0.45),
-        "A.SHARPEXCH": _fake_book(2.0),
+        "A.SHARPEXCH": _fake_book(probability_from_price(SHARPEXCH, 2.0)),
     }
     infos = {
         "H.POLYMARKET": {"selection_role": "home", "claim": "yes"},

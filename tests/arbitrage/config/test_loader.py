@@ -52,6 +52,17 @@ def test_default_empty_json(cfg_path):
     assert cfg.debug is None
 
 
+def test_execution_market_order_enabled_default_and_override(cfg_path):
+    """#256 续:decimal venue 市价单开关默认关闭,execution 段可显式打开。"""
+    cfg_path.write_text("{}")
+    cfg = load_arb_config(cfg_path)
+    assert cfg.execution.market_order_enabled is False
+
+    cfg_path.write_text(json.dumps({"execution": {"market_order_enabled": True}}))
+    cfg = load_arb_config(cfg_path)
+    assert cfg.execution.market_order_enabled is True
+
+
 def test_config_package_exports_current_schema_types():
     assert DataSourcesConfig.__name__ == "DataSourcesConfig"
     assert SportsStatusDataSourceConfig.__name__ == "SportsStatusDataSourceConfig"
